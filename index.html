@@ -343,7 +343,16 @@ textarea.ifield{min-height:78px;}
     </div>
   </div>
   <div class="trainer-content">
-    <div style="font-family:'Bebas Neue',sans-serif;font-size:22px;letter-spacing:1px;margin-bottom:14px;">Your Clients</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      <div>
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:22px;letter-spacing:1px;line-height:1;">Your Clients</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px;" id="trainerActiveCount">Loading...</div>
+      </div>
+      <div style="text-align:right;">
+        <button onclick="loadTrainerDashboard()" style="background:var(--gold);border:none;border-radius:10px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">↻ Refresh</button>
+        <div style="font-size:10px;color:var(--muted);margin-top:4px;" id="trainerLastRefresh"></div>
+      </div>
+    </div>
     <div id="clientList"><div class="no-clients">Loading clients...</div></div>
   </div>
 </div>
@@ -857,6 +866,7 @@ async function launchApp(){
 
 function doLogout(){
   if(!confirm('Log out?'))return;
+  clearTimeout(trainerRefreshTimer);
   cl=null;profile=null;allFood=[];todayFood=[];todayWo=[];
   tots={cal:0,protein:0,carbs:0,fat:0};scores={food:0,workout:0,steps:0,sleep:0,weight:0,energy:0};
   photoData=null;curResult=null;wVal=null;badCt=0;lastWeight=null;
@@ -869,31 +879,72 @@ function doLogout(){
 }
 
 // ===== TRAINER DASHBOARD =====
-async function loadTrainerDashboard(){
-  showLoading(true);
-  var clientCodes = Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer; });
-  var html = '';
-  for(var i=0; i<clientCodes.length; i++){
-    var code = clientCodes[i];
-    var clientInfo = CLIENTS[code];
-    // Get today's food logs
-    var foods = await sbSelect('food_logs', 'client_code=eq.'+code+'&date_str=eq.'+encodeURIComponent(todayDateStr));
-    var totalCal = foods.reduce(function(s,e){return s+(e.calories||0);},0);
-    var totalPro = foods.reduce(function(s,e){return s+(e.protein||0);},0);
-    // Get latest weight
-    var weights = await sbSelect('weight_logs', 'client_code=eq.'+code+'&limit=1');
-    var latestWeight = weights.length>0?weights[0].weight:'—';
-    // Score color
-    var scoreCol = totalCal>0?'var(--green)':'var(--muted)';
-    var mealItems = foods.length>0 ? foods.slice(0,3).map(function(f){
-      var bc={clean:'bc',okay:'bo',bad:'bb'};
-      return '<div class="cc-meal"><div class="cc-meal-em">'+(f.emoji||'🍽️')+'</div><div class="cc-meal-info"><div class="cc-meal-name">'+f.name+'</div><div class="cc-meal-mac">'+f.calories+' cal · '+f.protein+'g protein · '+(f.eat_time||'')+'</div></div><div class="cc-meal-badge '+(bc[f.rating]||'bo')+'">'+(f.rating==='clean'?'✅ Clean':f.rating==='bad'?'🚫 Off-plan':'⚠️ Okay')+'</div></div>';
-    }).join('') : '<div style="padding:10px 0;font-size:13px;color:var(--muted);">Nothing logged today</div>';
+var trainerRefreshTimer = null;
 
-    html += '<div class="client-card"><div class="cc-head"><div class="cc-avi">'+clientInfo.initials[0]+'</div><div class="cc-info"><div class="cc-name">'+clientInfo.name+'</div><div class="cc-last">'+foods.length+' meals today · '+Math.round(totalCal)+' cal · '+Math.round(totalPro)+'g protein'+(latestWeight!=='—'?' · '+latestWeight+'lbs':'')+'</div></div><div><div class="cc-score" style="color:'+scoreCol+'">'+Math.round(totalCal)+'</div><div class="cc-score-lbl">cal today</div></div></div><div class="cc-meals">'+mealItems+'</div></div>';
+async function loadTrainerDashboard(){
+  var listEl = document.getElementById('clientList');
+  // Show subtle loading only on first load
+  if(listEl.innerHTML.indexOf('client-card') === -1){
+    listEl.innerHTML = '<div class="no-clients">Loading clients...</div>';
   }
-  document.getElementById('clientList').innerHTML = html || '<div class="no-clients">No client data yet.</div>';
-  showLoading(false);
+  try{
+    // Single request for ALL today's food logs
+    var allTodayFoods = await sbSelect('food_logs', 'date_str=eq.'+encodeURIComponent(todayDateStr)+'&limit=500');
+    // Single request for ALL weight logs (latest per client)
+    var allWeights = await sbSelect('weight_logs', 'limit=500');
+
+    // Group foods by client
+    var foodsByClient = {};
+    allTodayFoods.forEach(function(f){
+      if(!foodsByClient[f.client_code]) foodsByClient[f.client_code] = [];
+      foodsByClient[f.client_code].push(f);
+    });
+
+    // Get latest weight per client
+    var weightByClient = {};
+    allWeights.forEach(function(w){
+      if(!weightByClient[w.client_code]) weightByClient[w.client_code] = w.weight;
+    });
+
+    var clientCodes = Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer; });
+    // Sort: clients who logged today first
+    clientCodes.sort(function(a,b){
+      var aHas = foodsByClient[a] ? foodsByClient[a].length : 0;
+      var bHas = foodsByClient[b] ? foodsByClient[b].length : 0;
+      return bHas - aHas;
+    });
+
+    var html = '';
+    var activeCount = 0;
+    clientCodes.forEach(function(code){
+      var clientInfo = CLIENTS[code];
+      var foods = foodsByClient[code] || [];
+      var latestWeight = weightByClient[code] || null;
+      var totalCal = foods.reduce(function(s,e){return s+(e.calories||0);},0);
+      var totalPro = foods.reduce(function(s,e){return s+(e.protein||0);},0);
+      if(foods.length > 0) activeCount++;
+      var scoreCol = foods.length>0?'var(--green)':'var(--muted)';
+      var bc={clean:'bc',okay:'bo',bad:'bb'};
+      var mealItems = foods.length>0 ? foods.slice(0,3).map(function(f){
+        return '<div class="cc-meal"><div class="cc-meal-em">'+(f.emoji||'🍽️')+'</div><div class="cc-meal-info"><div class="cc-meal-name">'+f.name+'</div><div class="cc-meal-mac">'+f.calories+' cal · '+f.protein+'g protein · '+(f.eat_time||'')+'</div></div><div class="cc-meal-badge '+(bc[f.rating]||'bo')+'">'+(f.rating==='clean'?'✅ Clean':f.rating==='bad'?'🚫 Off-plan':'⚠️ Okay')+'</div></div>';
+      }).join('') : '<div style="padding:10px 0;font-size:13px;color:var(--muted);">Nothing logged today</div>';
+      html += '<div class="client-card"><div class="cc-head"><div class="cc-avi">'+clientInfo.initials[0]+'</div><div class="cc-info"><div class="cc-name">'+clientInfo.name+'</div><div class="cc-last">'+foods.length+' meals · '+Math.round(totalCal)+' cal · '+Math.round(totalPro)+'g protein'+(latestWeight?' · '+latestWeight+'lbs':'')+'</div></div><div><div class="cc-score" style="color:'+scoreCol+'">'+(foods.length>0?Math.round(totalCal):'—')+'</div><div class="cc-score-lbl">'+(foods.length>0?'cal today':'no logs')+'</div></div></div><div class="cc-meals">'+mealItems+'</div></div>';
+    });
+
+    listEl.innerHTML = html || '<div class="no-clients">No client data yet.</div>';
+    // Update header count
+    var countEl = document.getElementById('trainerActiveCount');
+    if(countEl) countEl.textContent = activeCount+' active today';
+    // Update last refresh time
+    var refreshEl = document.getElementById('trainerLastRefresh');
+    if(refreshEl) refreshEl.textContent = 'Updated '+new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+  } catch(e){
+    console.error(e);
+  }
+
+  // Auto refresh every 30 seconds
+  clearTimeout(trainerRefreshTimer);
+  trainerRefreshTimer = setTimeout(loadTrainerDashboard, 30000);
 }
 
 // ===== TABS =====
