@@ -623,34 +623,49 @@ textarea.ifield{min-height:78px;}
 <script>
 // ===== SUPABASE CONFIG =====
 var SB_URL = 'https://frxptalfyutukmnsvysg.supabase.co';
-var SB_KEY = 'sb_publishable_C8iJys5kHoxOZOYxIK4epA_PFgqd6bx';
+var SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZyeHB0YWxmeXV0dWttbnN2eXNnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4NDQzNTksImV4cCI6MjA5NTQyMDM1OX0.NjSM-7wF80oo2ypfRSf2TDRE9NFdT2w8-EjUdago5wk';
 
 function sbHeaders(){
-  return {'Content-Type':'application/json','apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY};
+  return {
+    'Content-Type':'application/json',
+    'apikey':SB_KEY,
+    'Authorization':'Bearer '+SB_KEY,
+    'Prefer':'return=minimal'
+  };
 }
 
 async function sbInsert(table, data){
-  var res = await fetch(SB_URL+'/rest/v1/'+table, {
-    method:'POST', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}),
-    body:JSON.stringify(data)
-  });
-  return res.ok;
+  try{
+    var res = await fetch(SB_URL+'/rest/v1/'+table, {
+      method:'POST', headers:sbHeaders(),
+      body:JSON.stringify(data)
+    });
+    return res.ok;
+  }catch(e){ console.error('sbInsert failed',e); return false; }
 }
 
 async function sbSelect(table, filter){
-  var url = SB_URL+'/rest/v1/'+table+'?'+filter+'&order=logged_at.desc';
-  var res = await fetch(url, {method:'GET', headers:sbHeaders()});
-  if(res.ok) return await res.json();
-  return [];
+  try{
+    var url = SB_URL+'/rest/v1/'+table+'?'+filter+'&order=logged_at.desc';
+    var controller = new AbortController();
+    var timeout = setTimeout(function(){ controller.abort(); }, 8000);
+    var res = await fetch(url, {method:'GET', headers:sbHeaders(), signal:controller.signal});
+    clearTimeout(timeout);
+    if(res.ok) return await res.json();
+    return [];
+  }catch(e){ console.error('sbSelect failed',e); return []; }
 }
 
 async function sbUpsert(table, data, onConflict){
-  var res = await fetch(SB_URL+'/rest/v1/'+table, {
-    method:'POST',
-    headers:Object.assign({},sbHeaders(),{'Prefer':'resolution=merge-duplicates,return=minimal'}),
-    body:JSON.stringify(data)
-  });
-  return res.ok;
+  try{
+    var headers = Object.assign({},sbHeaders(),{'Prefer':'resolution=merge-duplicates,return=minimal'});
+    delete headers['Prefer']; // remove default, use specific
+    headers['Prefer'] = 'resolution=merge-duplicates,return=minimal';
+    var res = await fetch(SB_URL+'/rest/v1/'+table, {
+      method:'POST', headers:headers, body:JSON.stringify(data)
+    });
+    return res.ok;
+  }catch(e){ console.error('sbUpsert failed',e); return false; }
 }
 
 // ===== CLIENTS =====
@@ -798,18 +813,37 @@ async function doLogin(){
     return;
   }
 
-  showLoading(true);
-  // Check for existing profile in Supabase
-  var profiles = await sbSelect('profiles', 'client_code=eq.'+cl.code+'&limit=1');
-  showLoading(false);
-
-  if(profiles && profiles.length > 0){
-    profile = profiles[0];
-    profile.calTarget = profile.cal_target;
-    profile.proteinTarget = profile.protein_target;
-    profile.goalWeight = profile.goal_weight;
+  // Check localStorage first (instant) then Supabase as backup
+  var localProfile = localStorage.getItem('yjb_profile_'+cl.code);
+  if(localProfile){
+    profile = JSON.parse(localProfile);
+    profile.calTarget = profile.cal_target || profile.calTarget;
+    profile.proteinTarget = profile.protein_target || profile.proteinTarget;
+    profile.goalWeight = profile.goal_weight || profile.goalWeight;
     launchApp();
-  } else {
+    return;
+  }
+
+  showLoading(true);
+  // Check Supabase
+  try{
+    var profiles = await sbSelect('profiles', 'client_code=eq.'+cl.code+'&limit=1');
+    showLoading(false);
+    if(profiles && profiles.length > 0){
+      profile = profiles[0];
+      profile.calTarget = profile.cal_target;
+      profile.proteinTarget = profile.protein_target;
+      profile.goalWeight = profile.goal_weight;
+      // Cache locally so next login is instant
+      localStorage.setItem('yjb_profile_'+cl.code, JSON.stringify(profile));
+      launchApp();
+    } else {
+      document.getElementById('sLogin').classList.remove('active');
+      document.getElementById('sSetup').classList.add('active');
+    }
+  } catch(e){
+    showLoading(false);
+    // Supabase failed - go to setup
     document.getElementById('sLogin').classList.remove('active');
     document.getElementById('sSetup').classList.add('active');
   }
@@ -831,9 +865,13 @@ async function saveSetup(){
   if(gender==='female')mult-=1;
   var calTarget=Math.round(weight*mult);
   var proteinTarget=Math.round(weight);
-  profile={client_code:cl.code, name:cl.name, weight:weight, goal_weight:goalWeight, age:age, gender:gender, goal:goal, cal_target:calTarget, protein_target:proteinTarget, calTarget:calTarget, proteinTarget:proteinTarget, goalWeight:goalWeight};
+  profile={client_code:cl.code, name:cl.name, weight:weight, goal_weight:goalWeight, goalWeight:goalWeight, age:age, gender:gender, goal:goal, cal_target:calTarget, calTarget:calTarget, protein_target:proteinTarget, proteinTarget:proteinTarget};
+  // Save to localStorage immediately
+  localStorage.setItem('yjb_profile_'+cl.code, JSON.stringify(profile));
   showLoading(true);
-  await sbInsert('profiles', {client_code:cl.code, name:cl.name, weight:weight, goal_weight:goalWeight, age:age, gender:gender, goal:goal, cal_target:calTarget, protein_target:proteinTarget});
+  try{
+    await sbInsert('profiles', {client_code:cl.code, name:cl.name, weight:weight, goal_weight:goalWeight, age:age, gender:gender, goal:goal, cal_target:calTarget, protein_target:proteinTarget});
+  }catch(e){ console.error('Profile save to Supabase failed', e); }
   showLoading(false);
   document.getElementById('sSetup').classList.remove('active');
   launchApp();
