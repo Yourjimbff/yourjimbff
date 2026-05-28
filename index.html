@@ -1378,8 +1378,8 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.4.1';
-var APP_BUILD = 'May 28 — training v2: instant log + tap-to-rate';
+var APP_VERSION = 'v2.5.0';
+var APP_BUILD = 'May 28 — instant log + duplicate detection + walks + auto-notes';
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -4631,6 +4631,33 @@ async function buildDayContext(){
     sections.push(wBits.join('\n'));
   }
 
+  // RECENT WORKOUTS — last 7 days, used for duplicate detection + past-workout enrichment
+  try{
+    var recentW = await sbSelect('workout_logs','client_code=eq.'+cl.code+'&limit=20');
+    if(recentW && recentW.length > 0){
+      var nowMs = Date.now();
+      var sevenDayMs = 7*24*60*60*1000;
+      var trimmed = recentW.filter(function(w){
+        if(!w.logged_at) return false;
+        return (nowMs - new Date(w.logged_at).getTime()) <= sevenDayMs;
+      });
+      if(trimmed.length > 0){
+        var rwBits = ['=== RECENT WORKOUTS (last 7 days) ===',
+          'Use this for duplicate detection. If user describes a workout that matches one of these (same workout type + same day), DO NOT log again — they are talking about THIS existing workout. Append a note to it via [WORKOUT_NOTE] instead, or just respond conversationally.'];
+        trimmed.forEach(function(w){
+          var d = new Date(w.logged_at);
+          var dayLabel = d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+          var timeLabel = d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+          var line = '[id:'+w.id+'] '+dayLabel+' '+timeLabel+' — '+(w.title || w.description || 'Workout');
+          if(w.intensity) line += ' ('+w.intensity+'/10)';
+          if(w.notes) line += ' · notes: "'+w.notes.replace(/"/g,'\\"').slice(0,80)+'"';
+          rwBits.push(line);
+        });
+        sections.push(rwBits.join('\n'));
+      }
+    }
+  }catch(e){}
+
   // TODAY — SLEEP
   if(typeof sleepHours!=='undefined' && sleepHours && sleepHours!==7){
     sections.push('=== LAST NIGHT\'S SLEEP ===\n'+sleepHours+' hrs');
@@ -4841,29 +4868,32 @@ function buildCoachVoice(){
     '- "Should I have a snack?" → If goal unclear from profile: ask about current hunger / when next meal is.\n'+
     'But don\'t over-ask. ONE follow-up max. If you have enough context, just answer.\n\n'+
 
-    'WORKOUT LOGGING — YOU LOG WORKOUTS IMMEDIATELY:\n'+
-    'When the user describes a workout they just did (e.g. "did a push day", "ran 5k", "leg day at the gym", "30 min yoga"), you LOG IT RIGHT AWAY — no confirmation step. The user describing it IS the consent.\n\n'+
-    'Procedure:\n'+
-    '1. Acknowledge the workout briefly and warmly — like a coach who actually heard them. One short paragraph max.\n'+
-    '2. Emit a hidden machine-readable marker at the end of your message. The user will NOT see this — the app strips it before display. EXACT format:\n\n'+
-    '[WORKOUT_LOG]{"title":"Push Day","description":"chest fly, machine shoulder press, lateral raises, push-ups + tricep pushdown circuit","duration":"45 min","exercises":[{"name":"Chest fly"},{"name":"Machine shoulder press"},{"name":"Lateral raises"},{"name":"Push-ups + tricep pushdowns circuit"}],"notes":"finisher style"}[/WORKOUT_LOG]\n\n'+
-    '3. After the marker, ASK FOR INTENSITY in natural conversational tone. Examples: "What intensity was that — 1 to 10?" or "How hard did that hit you, on a 1-10?" Keep it casual.\n'+
-    '4. The user will respond with a number (e.g. "7", "7/10", "8 out of 10") OR they may skip ("skip", "later", just move on to another topic). The app handles the rating patch automatically. Do NOT re-emit the marker on subsequent turns.\n\n'+
-    'Marker rules:\n'+
+    'WORKOUT LOGGING — INSTANT LOG, NO CONFIRMATION:\n'+
+    'When the user describes a workout they just did, you LOG IT IMMEDIATELY. The description is consent. Do not ask "want me to log this?" — just acknowledge warmly and emit the marker.\n\n'+
+    'BUT FIRST — check the RECENT WORKOUTS (last 7 days) section in the data. The rules:\n\n'+
+    'CASE A — NEW WORKOUT (most common):\n'+
+    'If the user describes a workout that is NOT already in today\'s logs, emit a [WORKOUT_LOG] marker. Format:\n'+
+    '[WORKOUT_LOG]{"title":"Push Day","description":"chest fly, machine shoulder press, lateral raises, push-ups + tricep circuit","exercises":[{"name":"Chest fly","sets":3},{"name":"Machine shoulder press","sets":4},{"name":"Lateral raises","sets":4},{"name":"Push-ups + tricep circuit","sets":3}]}[/WORKOUT_LOG]\n\n'+
+    'After emitting the marker, ask ONE question only: intensity. Keep it casual. Examples: "What intensity, 1-10?" or "How hard did it hit, 1-10?" — DO NOT ask about duration or anything else. Just intensity.\n\n'+
+    'CASE B — DUPLICATE DETECTION (skip the log):\n'+
+    'If the user is talking about a workout that is ALREADY logged today (same workout type — e.g. they say "the push day" and there\'s already a Push Day from earlier today in RECENT WORKOUTS), do NOT log again. Just respond conversationally. Examples:\n'+
+    '- User: "my chest is sore from the push day" → Do not log. Respond: "Yeah, three sets of fly + four of shoulder press will do that — chest is firing. How\'s the recovery feeling otherwise?"\n'+
+    '- User: "the workout this morning felt easy" → Do not log. Respond: "Interesting — you marked it 7/10 earlier. Want me to update the rating?"\n\n'+
+    'CASE C — PAST WORKOUT MENTION (enrich, don\'t duplicate):\n'+
+    'If the user mentions a workout from a previous day in RECENT WORKOUTS (e.g. "still sore from leg day Tuesday"), do NOT log a new workout. Instead, ADD a note to the existing past workout by emitting a [WORKOUT_NOTE] marker referencing the workout\'s id from the RECENT WORKOUTS list:\n'+
+    '[WORKOUT_NOTE]{"id":47,"note":"User reported lingering soreness 2 days post — leg day hit hard"}[/WORKOUT_NOTE]\n\n'+
+    'After emitting the note marker, respond conversationally about the soreness, recovery, etc. The user doesn\'t see the marker.\n\n'+
+    'CASE D — NOT A WORKOUT LOG AT ALL:\n'+
+    'If the user is asking a question ("should I do legs tomorrow?"), planning a future workout ("thinking about doing push later"), or venting, do NOT emit any marker. Just respond.\n\n'+
+    'WALKS COUNT AS WORKOUTS:\n'+
+    'If the user describes a deliberate walk as exercise ("just got back from a 45 min walk", "did a long walk for cardio"), treat it as a workout — emit [WORKOUT_LOG] with title "Walk" or "Cardio Walk". A casual mention like "walked to the store" is NOT a workout. Use judgment.\n\n'+
+    'MARKER RULES:\n'+
     '- Use valid JSON only — escape quotes inside strings, no trailing commas.\n'+
-    '- title: 2-4 word session name ("Push Day", "Leg Day", "Cardio", "Yoga", "Conditioning", "Run").\n'+
-    '- description: a clean one-line summary of what was done.\n'+
-    '- duration: short string like "45 min" or "1 hr" if user mentioned it. Omit if unknown.\n'+
-    '- exercises: array of {name, sets?, reps?, weight?}. Only include exercises actually mentioned. If user gave a high-level description ("went for a run", "did yoga") without naming movements, omit this field.\n'+
-    '- notes: capture any meaningful detail user mentioned ("felt strong", "shoulder tight").\n'+
-    '- DO NOT include intensity in the marker — it gets added in the follow-up turn.\n\n'+
-    'After ratings come in OR user skips, transition naturally to refuel/recovery coaching using the TRAINING-INTENSITY rules below. Do NOT re-log or re-emit the marker.\n\n'+
-    'WHEN NOT TO EMIT THE MARKER:\n'+
-    '- User is asking a QUESTION about training ("should I do legs tomorrow?", "what\'s a good push routine?") — answer normally, no marker.\n'+
-    '- User is venting or processing feelings about a workout — listen, no marker.\n'+
-    '- User is describing a PLAN ("thinking about doing push later") — that hasn\'t happened yet, no marker.\n'+
-    '- User already logged this workout this turn (you see "✓ Workout logged" earlier in this exchange or the most recent assistant message already has a marker) — don\'t re-log.\n'+
-    '- Description is too vague to log ("worked out", "did a thing") — ask a quick clarifier first, no marker until you have at least workout type.\n\n'+
+    '- title: 2-4 word session name ("Push Day", "Leg Day", "Walk", "Run", "Yoga", "Cardio", "Conditioning").\n'+
+    '- description: one clean line of what was done.\n'+
+    '- exercises: array of {name, sets?, reps?, weight?}. Include if user named movements. Omit for cardio/yoga/walks where there aren\'t discrete exercises.\n'+
+    '- DO NOT include intensity, duration, or notes in the marker. Intensity comes from the user\'s next reply (the app handles patching). Duration we skip — user can backfill later. Notes get auto-captured from your commentary.\n\n'+
+    'After the rating comes in OR user skips/moves on, transition naturally to refuel/recovery coaching. Never re-emit the marker for the same workout.\n\n'+
 
     'TRAINING-INTENSITY → REFUEL RULES:\n'+
     'When training intensity is logged today, factor it heavily:\n'+
@@ -4937,6 +4967,38 @@ function extractWorkoutLog(text){
   try{ log = JSON.parse(jsonStr); }catch(e){ console.error('workout log parse failed', e, jsonStr); }
   var cleanText = text.replace(m[0], '').trim();
   return {cleanText: cleanText, log: log};
+}
+
+function extractWorkoutNote(text){
+  // [WORKOUT_NOTE]{"id":123,"note":"text to append"}[/WORKOUT_NOTE]
+  var m = text.match(/\[WORKOUT_NOTE\]([\s\S]*?)\[\/WORKOUT_NOTE\]/);
+  if(!m) return {cleanText: text, note: null};
+  var jsonStr = m[1].trim();
+  var note = null;
+  try{ note = JSON.parse(jsonStr); }catch(e){ console.error('workout note parse failed', e, jsonStr); }
+  var cleanText = text.replace(m[0], '').trim();
+  return {cleanText: cleanText, note: note};
+}
+
+async function appendWorkoutNote(workoutId, addText){
+  if(!workoutId || !addText) return false;
+  try{
+    // Fetch existing notes
+    var res = await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+workoutId+'&select=notes', {headers:sbHeaders()});
+    if(!res.ok) return false;
+    var rows = await res.json();
+    var existing = (rows && rows[0] && rows[0].notes) || '';
+    var combined = existing ? (existing + '\n· ' + addText) : addText;
+    var patchRes = await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+workoutId, {
+      method:'PATCH',
+      headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}),
+      body: JSON.stringify({notes: combined})
+    });
+    return patchRes.ok;
+  }catch(e){
+    console.error('append note failed', e);
+    return false;
+  }
 }
 
 function parseIntensityFromText(text){
@@ -5142,21 +5204,38 @@ async function sendChatMessage(){
     reply=(reply||'').trim();
     if(!reply){ throw new Error('Empty reply'); }
 
-    // Extract a WORKOUT_LOG marker — Jim says "I logged it" AND ships structured data
-    var extracted = extractWorkoutLog(reply);
-    reply = extracted.cleanText;
-    if(extracted.log){
-      var newId = await logWorkoutFromOffer(extracted.log);
+    // Extract WORKOUT_LOG marker (new workout) AND WORKOUT_NOTE marker (append to existing)
+    var extractedLog = extractWorkoutLog(reply);
+    reply = extractedLog.cleanText;
+    var extractedNote = extractWorkoutNote(reply);
+    reply = extractedNote.cleanText;
+
+    // Handle WORKOUT_LOG: log a fresh workout. Use Jim's commentary (the visible reply) as the notes.
+    if(extractedLog.log){
+      // Use Jim's coaching commentary as the workout's note (auto-generated, editable later)
+      if(!extractedLog.log.notes && reply){
+        // Strip the intensity-ask question from the commentary if present (keep just the praise part)
+        var commentaryOnly = reply.split(/(?:Quick one|What intensity|How hard|How would you rate|Rate that|On a scale)/i)[0].trim();
+        if(commentaryOnly && commentaryOnly.length > 10) extractedLog.log.notes = commentaryOnly;
+      }
+      var newId = await logWorkoutFromOffer(extractedLog.log);
       if(newId){
         showToast('✓ Workout logged');
-        // If no intensity was supplied, queue this row for rating-prompt detection on the next turn
-        if(!extracted.log.intensity){
+        if(!extractedLog.log.intensity){
           pendingIntensityForId = newId;
         }
       } else {
-        // Save failed — let Jim's text still show, but warn
-        console.error('workout save failed for offer', extracted.log);
+        console.error('workout save failed for offer', extractedLog.log);
         showToast('Could not save workout — try the manual log button');
+      }
+    }
+
+    // Handle WORKOUT_NOTE: append commentary to existing workout (no new log)
+    if(extractedNote.note && extractedNote.note.id){
+      var noteText = extractedNote.note.note || extractedNote.note.text || '';
+      if(noteText){
+        var ok = await appendWorkoutNote(extractedNote.note.id, noteText);
+        if(ok) showToast('✓ Note added to workout');
       }
     }
 
