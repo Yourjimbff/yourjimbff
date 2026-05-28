@@ -760,6 +760,7 @@ textarea.ifield{min-height:78px;}
     <button class="sbtn" onclick="saveProfileTab()">Save Profile ✓</button>
     <button class="obtn" onclick="doLogout()">Log out</button>
     <div id="versionStamp" style="text-align:center;font-size:10px;color:var(--muted);margin-top:18px;letter-spacing:0.5px;opacity:0.6;"></div>
+    <div id="programDebugPanel" style="display:none;margin-top:14px;padding:10px 12px;background:#1a1a1a;border:1px solid #333;border-radius:8px;"></div>
   </div>
 
   <!-- TRAINING TAB (trainer only for now) -->
@@ -1509,8 +1510,8 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.12.2';
-var APP_BUILD = "May 28 — fixed trainer editor modal stacking + diagnostics + visible step/sleep errors";
+var APP_VERSION = 'v2.12.3';
+var APP_BUILD = "May 28 — visible program diagnostic + trainer fallback";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -3083,37 +3084,73 @@ async function loadClientAssignedProgram(){
   todayProgramWorkout = null;
   hideTodayWorkoutCard();
   hideClientAssignedProgramSection();
+  // Build a visible diagnostic string so we can see status without console access
+  var diag = ['code='+cl.code];
   try{
     console.log('[program] Loading for client_code='+cl.code);
     // Read profile to get assigned_program_id
-    var profRes = await fetch(SB_URL+'/rest/v1/profiles?client_code=eq.'+encodeURIComponent(cl.code)+'&limit=1', {headers: sbHeaders()});
-    if(!profRes.ok){ console.log('[program] profile fetch failed status='+profRes.status); return; }
+    var profUrl = SB_URL+'/rest/v1/profiles?client_code=eq.'+encodeURIComponent(cl.code)+'&select=client_code,assigned_program_id&limit=1';
+    var profRes = await fetch(profUrl, {headers: sbHeaders()});
+    diag.push('profStatus='+profRes.status);
+    if(!profRes.ok){
+      var et = ''; try{ et = await profRes.text(); }catch(e){}
+      diag.push('profErr='+et.slice(0,80));
+      renderProgramDebug(diag);
+      return;
+    }
     var profs = await profRes.json();
+    diag.push('profRows='+profs.length);
     console.log('[program] profile rows:', profs);
-    if(!profs || profs.length === 0){ console.log('[program] NO PROFILE ROW for '+cl.code); return; }
-    var p = profs[0];
-    if(!p.assigned_program_id){ console.log('[program] profile.assigned_program_id is null'); return; }
-    console.log('[program] assigned_program_id='+p.assigned_program_id);
+    var assignedId = null;
+    if(profs && profs.length > 0 && profs[0].assigned_program_id){
+      assignedId = profs[0].assigned_program_id;
+      diag.push('aid='+assignedId);
+    } else {
+      diag.push('no_aid');
+    }
+    // FALLBACK: if trainer has no assigned id, but has authored a Men's Program, use that
+    if(!assignedId && cl.isTrainer && templatePrograms && templatePrograms.men){
+      assignedId = templatePrograms.men.id;
+      diag.push('fallback_to_men='+assignedId);
+    }
+    if(!assignedId){
+      diag.push('giving_up_no_program');
+      renderProgramDebug(diag);
+      return;
+    }
     // Fetch the program + its workouts
-    var progRes = await fetch(SB_URL+'/rest/v1/programs?id=eq.'+p.assigned_program_id+'&limit=1', {headers: sbHeaders()});
-    if(!progRes.ok){ console.log('[program] program fetch failed status='+progRes.status); return; }
+    var progRes = await fetch(SB_URL+'/rest/v1/programs?id=eq.'+assignedId+'&limit=1', {headers: sbHeaders()});
+    diag.push('progStatus='+progRes.status);
+    if(!progRes.ok){ renderProgramDebug(diag); return; }
     var progs = await progRes.json();
-    if(!progs || progs.length === 0){ console.log('[program] no program found for id='+p.assigned_program_id); return; }
+    diag.push('progRows='+progs.length);
+    if(!progs || progs.length === 0){ renderProgramDebug(diag); return; }
     var program = progs[0];
-    console.log('[program] loaded program:', program.name, 'id='+program.id);
     var wRes = await fetch(SB_URL+'/rest/v1/program_workouts?program_id=eq.'+program.id+'&order=day_of_week.asc', {headers: sbHeaders()});
     var workouts = wRes.ok ? await wRes.json() : [];
-    console.log('[program] loaded '+workouts.length+' workouts');
+    diag.push('workouts='+workouts.length);
     clientAssignedProgram = {program: program, workouts: workouts};
-    // Find today's workout
     var todayDow = new Date().getDay();
     todayProgramWorkout = workouts.find(function(w){ return Number(w.day_of_week) === todayDow; }) || null;
-    console.log('[program] today dow='+todayDow+' workout:', todayProgramWorkout ? todayProgramWorkout.title : '(none/rest)');
+    diag.push('todayDow='+todayDow);
+    diag.push('todayMatch='+(todayProgramWorkout ? todayProgramWorkout.title : 'none'));
     renderTodayWorkoutCard();
     renderClientAssignedProgramSection();
+    renderProgramDebug(diag);
   }catch(e){
+    diag.push('EXC='+String(e).slice(0,80));
+    renderProgramDebug(diag);
     console.error('loadClientAssignedProgram', e);
   }
+}
+
+function renderProgramDebug(diag){
+  // Render diagnostic info into a small panel on the Profile tab so user can screenshot it
+  var el = document.getElementById('programDebugPanel');
+  if(!el) return;
+  el.style.display = 'block';
+  el.innerHTML = '<div style="font-size:9px;color:#888;letter-spacing:1px;margin-bottom:4px;">PROGRAM DIAGNOSTIC</div>'+
+    '<div style="font-family:monospace;font-size:10px;color:#bbb;line-height:1.5;word-break:break-all;">'+diag.join(' · ')+'</div>';
 }
 
 function renderTodayWorkoutCard(){
