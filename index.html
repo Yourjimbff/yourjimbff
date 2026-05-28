@@ -743,7 +743,6 @@ textarea.ifield{min-height:78px;}
       <label class="il">Confirm</label>
       <input class="ifield" type="text" id="acConfirm" placeholder="Type it again" autocomplete="off">
       <button class="sbtn" style="margin-top:14px;" onclick="changeAccessCode()">Update Access Code ✓</button>
-      <button onclick="restoreAllHiddenClients()" style="margin-top:10px;background:transparent;border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:11px;font-weight:600;color:var(--m2);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;width:100%;">↺ Restore hidden clients</button>
     </div>
     <button class="sbtn" onclick="saveProfileTab()">Save Profile ✓</button>
     <button class="obtn" onclick="doLogout()">Log out</button>
@@ -762,8 +761,19 @@ textarea.ifield{min-height:78px;}
 
     <!-- TIP CARD -->
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:13px 14px;margin-bottom:14px;font-size:12px;color:var(--m2);line-height:1.5;">
-      <div style="font-weight:700;color:var(--text);margin-bottom:4px;">💪 Just tell Jim about your workout.</div>
+      <div style="font-weight:700;color:var(--text);margin-bottom:4px;">💪 You can use Jim to log a workout.</div>
       Describe what you did and Jim will log it for you — exercises, sets, reps, intensity. He'll confirm before saving.
+    </div>
+
+    <!-- WEEK CALENDAR -->
+    <div id="trainingWeekCal" style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <button onclick="navTrainingWeek(-1)" aria-label="Previous week" style="background:transparent;border:none;font-size:18px;color:var(--m2);cursor:pointer;padding:4px 10px;line-height:1;">‹</button>
+        <div id="trainingWeekRange" style="font-family:'Bebas Neue',sans-serif;font-size:15px;letter-spacing:1px;color:var(--text);">—</div>
+        <button onclick="navTrainingWeek(1)" aria-label="Next week" style="background:transparent;border:none;font-size:18px;color:var(--m2);cursor:pointer;padding:4px 10px;line-height:1;">›</button>
+      </div>
+      <div id="trainingWeekGrid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;"></div>
+      <div style="text-align:center;font-size:10px;color:var(--muted);margin-top:10px;letter-spacing:0.5px;">Tap a day to filter · tap again to show all</div>
     </div>
 
     <div id="trainingHistory"></div>
@@ -800,11 +810,6 @@ textarea.ifield{min-height:78px;}
         <div style="font-family:'Bebas Neue',sans-serif;font-size:22px;color:#888;line-height:1;" id="statSilent">—</div>
         <div style="font-size:9px;color:var(--muted);margin-top:4px;letter-spacing:0.5px;text-transform:uppercase;">Silent</div>
       </div>
-    </div>
-
-    <!-- TRIM ROSTER ACTION -->
-    <div style="text-align:right;margin-bottom:10px;">
-      <button onclick="trimInactiveClients()" style="background:transparent;border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:11px;font-weight:600;color:var(--m2);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">🧹 Trim inactive</button>
     </div>
 
     <!-- JIM'S BRIEFING -->
@@ -1454,8 +1459,8 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.11.0';
-var APP_BUILD = 'May 28 — stripped training to history only + fixed steps/sleep saving';
+var APP_VERSION = 'v2.11.1';
+var APP_BUILD = 'May 28 — calendar back, small fixes (tip text, removed trim/restore buttons)';
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -1717,7 +1722,42 @@ function openManualWorkoutModal(){
 }
 
 // ===== TRAINING TAB =====
-// Simple chronological log of workouts. No calendar. No program. Just history.
+// Week calendar + filtered workout list. No program, no planned dots. Just history.
+var trainingViewWeekStart = null; // Monday 00:00 of currently-viewed week
+var trainingSelectedDay = null; // ISO date string ('YYYY-MM-DD') or null = show whole week
+var trainingAllRows = []; // cache of fetched workout rows
+
+function getMonday(d){
+  var dt = new Date(d);
+  dt.setHours(0,0,0,0);
+  var day = dt.getDay();
+  var diff = (day === 0 ? -6 : 1 - day);
+  dt.setDate(dt.getDate() + diff);
+  return dt;
+}
+
+function isoDateStr(d){
+  var y = d.getFullYear();
+  var m = String(d.getMonth()+1).padStart(2,'0');
+  var dd = String(d.getDate()).padStart(2,'0');
+  return y+'-'+m+'-'+dd;
+}
+
+function navTrainingWeek(direction){
+  if(!trainingViewWeekStart) trainingViewWeekStart = getMonday(new Date());
+  var d = new Date(trainingViewWeekStart);
+  d.setDate(d.getDate() + (direction * 7));
+  trainingViewWeekStart = d;
+  trainingSelectedDay = null;
+  renderTrainingView();
+}
+
+function selectTrainingDay(dateStr){
+  if(trainingSelectedDay === dateStr) trainingSelectedDay = null;
+  else trainingSelectedDay = dateStr;
+  renderTrainingView();
+}
+
 async function loadTrainingHistory(){
   if(!cl) return;
   var holder = document.getElementById('trainingHistory');
@@ -1726,30 +1766,114 @@ async function loadTrainingHistory(){
   holder.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted);font-size:13px;">Loading…</div>';
   try{
     var rows = await sbSelect('workout_logs','client_code=eq.'+cl.code+'&order=logged_at.desc&limit=200');
-    rows = rows || [];
-    if(sub) sub.textContent = rows.length+' session'+(rows.length===1?'':'s');
-    if(rows.length === 0){
-      holder.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:30px 18px;text-align:center;"><div style="font-size:32px;margin-bottom:8px;">🏋️</div><div style="font-weight:700;margin-bottom:4px;">No workouts logged yet</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Tell Jim about a workout you did and he\'ll log it for you. Or tap "+ Log Workout" above.</div></div>';
-      return;
-    }
-    renderTrainingHistoryList(rows, holder);
+    trainingAllRows = rows || [];
+    if(sub) sub.textContent = trainingAllRows.length+' session'+(trainingAllRows.length===1?'':'s');
+    if(!trainingViewWeekStart) trainingViewWeekStart = getMonday(new Date());
+    renderTrainingView();
   }catch(e){
     console.error('loadTrainingHistory', e);
     holder.innerHTML = '<div style="padding:20px;color:var(--muted);font-size:13px;text-align:center;">Could not load history. Try again.</div>';
   }
 }
 
-function renderTrainingHistoryList(rows, holder){
-  // Group rows by ISO date (always from logged_at — date_str is display-only)
-  function isoStr(d){
-    var y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), dd=String(d.getDate()).padStart(2,'0');
-    return y+'-'+m+'-'+dd;
+function renderTrainingView(){
+  if(!trainingViewWeekStart) trainingViewWeekStart = getMonday(new Date());
+  renderTrainingCalendar();
+  renderTrainingList();
+}
+
+function renderTrainingCalendar(){
+  var grid = document.getElementById('trainingWeekGrid');
+  var range = document.getElementById('trainingWeekRange');
+  if(!grid || !range) return;
+  var weekStart = trainingViewWeekStart;
+  var weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 6);
+  var sameMonth = weekStart.getMonth() === weekEnd.getMonth();
+  var rangeLabel = weekStart.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' – ' +
+    (sameMonth ? weekEnd.getDate() : weekEnd.toLocaleDateString('en-US',{month:'short',day:'numeric'})) +
+    ', ' + weekEnd.getFullYear();
+  var thisWeekMonday = getMonday(new Date());
+  if(weekStart.getTime() === thisWeekMonday.getTime()){
+    rangeLabel = 'THIS WEEK · '+rangeLabel;
   }
+  range.textContent = rangeLabel;
+
+  // Build per-day workout map (always from logged_at — date_str is display-only)
+  var weekMap = {};
+  for(var i=0;i<7;i++){
+    var d = new Date(weekStart); d.setDate(d.getDate()+i);
+    weekMap[isoDateStr(d)] = [];
+  }
+  trainingAllRows.forEach(function(w){
+    var ds = w.logged_at ? isoDateStr(new Date(w.logged_at)) : null;
+    if(ds && weekMap.hasOwnProperty(ds)) weekMap[ds].push(w);
+  });
+
+  var todayStr = isoDateStr(new Date());
+  var labels = ['M','T','W','T','F','S','S'];
+  var html = '';
+  for(var i=0;i<7;i++){
+    var d = new Date(weekStart); d.setDate(d.getDate()+i);
+    var ds = isoDateStr(d);
+    var dayWorkouts = weekMap[ds] || [];
+    var hasActivity = dayWorkouts.length > 0;
+    var isToday = (ds === todayStr);
+    var isSelected = (trainingSelectedDay === ds);
+    var isFuture = d.getTime() > new Date().getTime() && !isToday;
+    var maxIntensity = 0;
+    dayWorkouts.forEach(function(w){ if(w.intensity && w.intensity > maxIntensity) maxIntensity = w.intensity; });
+    var dotColor = '';
+    if(hasActivity){
+      if(maxIntensity >= 9) dotColor = '#ff4455';
+      else if(maxIntensity >= 7) dotColor = 'var(--gold)';
+      else if(maxIntensity >= 5) dotColor = '#22c77a';
+      else if(maxIntensity > 0) dotColor = '#888';
+      else dotColor = 'var(--m2)';
+    }
+    var borderStyle = isSelected ? '2px solid var(--gold)' : (isToday ? '1.5px dashed var(--gold)' : '1px solid var(--border)');
+    var bgStyle = isSelected ? 'rgba(245,197,24,0.12)' : (hasActivity ? 'var(--s2)' : 'transparent');
+    var opacity = isFuture ? '0.45' : '1';
+    var dotHtml = hasActivity
+      ? '<div style="width:7px;height:7px;border-radius:50%;background:'+dotColor+';margin-top:3px;"></div>'
+      : '<div style="width:7px;height:7px;margin-top:3px;"></div>';
+    html += '<div onclick="selectTrainingDay(\''+ds+'\')" style="border:'+borderStyle+';background:'+bgStyle+';border-radius:10px;padding:8px 4px;text-align:center;cursor:pointer;opacity:'+opacity+';display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:54px;">'+
+      '<div style="font-size:9px;color:var(--muted);letter-spacing:0.5px;font-weight:700;">'+labels[i]+'</div>'+
+      '<div style="font-size:14px;font-weight:700;color:var(--text);margin-top:1px;">'+d.getDate()+'</div>'+
+      dotHtml+
+    '</div>';
+  }
+  grid.innerHTML = html;
+}
+
+function renderTrainingList(){
+  var holder = document.getElementById('trainingHistory');
+  if(!holder) return;
+  var weekStart = trainingViewWeekStart;
+  var weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate()+6); weekEnd.setHours(23,59,59,999);
+  var weekStartStr = isoDateStr(weekStart);
+  var weekEndStr = isoDateStr(weekEnd);
+
+  var filtered = trainingAllRows.filter(function(w){
+    var ds = w.logged_at ? isoDateStr(new Date(w.logged_at)) : null;
+    if(!ds) return false;
+    if(trainingSelectedDay) return ds === trainingSelectedDay;
+    return ds >= weekStartStr && ds <= weekEndStr;
+  });
+
+  if(filtered.length === 0){
+    var emptyMsg = trainingSelectedDay
+      ? 'No workouts logged for this day.'
+      : 'No workouts logged this week.';
+    holder.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:22px 18px;text-align:center;"><div style="font-size:26px;margin-bottom:6px;">🏋️</div><div style="font-weight:700;margin-bottom:4px;font-size:14px;">'+emptyMsg+'</div><div style="font-size:11px;color:var(--muted);line-height:1.5;">Tell Jim about a workout you did and he\'ll log it for you.</div></div>';
+    return;
+  }
+
+  // Group by date
   var byDate = {};
-  rows.forEach(function(r){
-    var ds = r.logged_at ? isoStr(new Date(r.logged_at)) : 'unknown';
-    if(!byDate[ds]) byDate[ds] = [];
-    byDate[ds].push(r);
+  filtered.forEach(function(r){
+    var d = r.logged_at ? isoDateStr(new Date(r.logged_at)) : 'unknown';
+    if(!byDate[d]) byDate[d] = [];
+    byDate[d].push(r);
   });
   var sortedDates = Object.keys(byDate).sort().reverse();
 
@@ -1759,9 +1883,9 @@ function renderTrainingHistoryList(rows, holder){
     if(isNaN(d.getTime())) return ds;
     var today = new Date(); today.setHours(0,0,0,0);
     var yest = new Date(today.getTime()-86400000);
-    var dstr = isoStr(d);
-    if(dstr === isoStr(today)) return 'Today · '+d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
-    if(dstr === isoStr(yest)) return 'Yesterday · '+d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+    var dstr = isoDateStr(d);
+    if(dstr === isoDateStr(today)) return 'Today · '+d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+    if(dstr === isoDateStr(yest)) return 'Yesterday · '+d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
     return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
   }
 
