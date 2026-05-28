@@ -1049,6 +1049,26 @@ textarea.ifield{min-height:78px;}
   </div>
 </div>
 
+<!-- EDIT WORKOUT MODAL -->
+<div class="mbg" id="mEditWorkout">
+  <div class="msh">
+    <div class="mhnd"></div>
+    <div class="mtitle">Edit Workout</div>
+    <div class="msub" id="mEditWorkoutDate"></div>
+    <div class="il" style="margin-top:0;">Title</div>
+    <input class="ifield" id="ewTitle" type="text" placeholder="e.g. Push Day">
+    <div class="il">Intensity (1-10)</div>
+    <input class="ifield" id="ewIntensity" type="number" min="1" max="10" placeholder="e.g. 7">
+    <div class="il">Duration</div>
+    <input class="ifield" id="ewDuration" type="text" placeholder="e.g. 45 min">
+    <div class="il">Notes</div>
+    <textarea class="ifield" id="ewNotes" placeholder="Anything to remember about this session..."></textarea>
+    <button class="sbtn" style="margin-top:14px;" onclick="saveEditedWorkout()">Save Changes ✓</button>
+    <button onclick="deleteEditedWorkout()" style="margin-top:10px;width:100%;padding:11px;background:transparent;border:1px solid #ff4455;border-radius:10px;color:#ff4455;font-size:13px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">Delete Workout</button>
+    <button class="obtn" onclick="closeM('mEditWorkout')">Cancel</button>
+  </div>
+</div>
+
 <div class="mbg" id="mWorkout">
   <div class="msh">
     <div class="mhnd"></div>
@@ -1378,8 +1398,8 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.5.0';
-var APP_BUILD = 'May 28 — instant log + duplicate detection + walks + auto-notes';
+var APP_VERSION = 'v2.5.1';
+var APP_BUILD = 'May 28 — edit workouts + clearer "last logged" labels';
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -1690,17 +1710,27 @@ async function loadTrainingHistory(){
         else if(w.intensity >= 5) intColor = '#22c77a';
         var intensityHtml;
         if(w.intensity){
-          intensityHtml = 'intensity <span style="color:'+intColor+';font-weight:700;">'+intensity+'</span>';
+          // Tappable existing rating — re-rate
+          intensityHtml = 'intensity <span onclick="event.stopPropagation();openRateModal('+w.id+')" style="color:'+intColor+';font-weight:700;cursor:pointer;border-bottom:1px dotted '+intColor+';">'+intensity+'</span>';
         } else {
-          intensityHtml = '<button onclick="openRateModal('+w.id+')" style="background:transparent;border:1px solid var(--gold);border-radius:6px;padding:2px 8px;font-size:10px;font-weight:700;color:var(--gold);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;letter-spacing:0.3px;">⭐ Tap to rate</button>';
+          intensityHtml = '<button onclick="event.stopPropagation();openRateModal('+w.id+')" style="background:transparent;border:1px solid var(--gold);border-radius:6px;padding:2px 8px;font-size:10px;font-weight:700;color:var(--gold);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;letter-spacing:0.3px;">⭐ Tap to rate</button>';
         }
-        html += '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:8px;">'+
+        // Card-level tap = full edit; data attrs hold ALL workout fields so the modal can hydrate
+        var attrEsc = function(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); };
+        html += '<div onclick="openEditWorkoutModal('+w.id+')" '+
+          'data-w-id="'+w.id+'" '+
+          'data-w-title="'+attrEsc(w.title||title)+'" '+
+          'data-w-intensity="'+(w.intensity||'')+'" '+
+          'data-w-duration="'+attrEsc(w.duration||'')+'" '+
+          'data-w-notes="'+attrEsc(w.notes||'')+'" '+
+          'data-w-date="'+attrEsc(ds)+'" '+
+          'style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:8px;cursor:pointer;">'+
           '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">'+
             '<div style="flex:1;min-width:0;">'+
               '<div style="font-weight:700;font-size:14px;line-height:1.3;color:var(--text);">'+title+'</div>'+
               '<div style="font-size:11px;color:var(--muted);margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'+(when?'<span>'+when+'</span>':'')+(dur?'<span>· '+dur+'</span>':'')+'<span>'+(w.intensity?'· ':'')+intensityHtml+'</span></div>'+
             '</div>'+
-            '<button onclick="deleteWorkoutRow('+w.id+')" style="background:transparent;border:none;color:var(--muted);font-size:14px;cursor:pointer;padding:2px 6px;line-height:1;" aria-label="Delete">✕</button>'+
+            '<div style="font-size:12px;color:var(--muted);padding:2px 4px;line-height:1;">✏️</div>'+
           '</div>'+
           exHtml + notes +
         '</div>';
@@ -1759,6 +1789,93 @@ async function pickRate(val){
     loadTrainingHistory();
   } else {
     showToast('Could not save rating');
+  }
+}
+
+// ===== EDIT WORKOUT =====
+var currentEditWorkoutId = null;
+function openEditWorkoutModal(id){
+  if(!id) return;
+  currentEditWorkoutId = id;
+  // Hydrate from the card's data attributes (avoids a fetch round-trip)
+  try{
+    var card = document.querySelector('[data-w-id="'+id+'"]');
+    if(card){
+      document.getElementById('ewTitle').value = card.getAttribute('data-w-title') || '';
+      document.getElementById('ewIntensity').value = card.getAttribute('data-w-intensity') || '';
+      document.getElementById('ewDuration').value = card.getAttribute('data-w-duration') || '';
+      document.getElementById('ewNotes').value = card.getAttribute('data-w-notes') || '';
+      var ds = card.getAttribute('data-w-date') || '';
+      var dateLbl = document.getElementById('mEditWorkoutDate');
+      if(dateLbl) dateLbl.textContent = ds ? ('Logged '+ds) : '';
+    }
+  }catch(e){ console.error('hydrate edit modal', e); }
+  openM('mEditWorkout');
+}
+
+async function saveEditedWorkout(){
+  if(!currentEditWorkoutId) return;
+  var title = (document.getElementById('ewTitle').value || '').trim();
+  var intensityRaw = (document.getElementById('ewIntensity').value || '').trim();
+  var duration = (document.getElementById('ewDuration').value || '').trim();
+  var notes = (document.getElementById('ewNotes').value || '').trim();
+  var intensity = intensityRaw ? parseInt(intensityRaw, 10) : null;
+  if(intensity !== null && (isNaN(intensity) || intensity < 1 || intensity > 10)){
+    showToast('Intensity must be 1-10');
+    return;
+  }
+  // Build patch payload — only include fields user set
+  var payload = {
+    title: title || null,
+    intensity: intensity,
+    duration: duration || null,
+    notes: notes || null
+  };
+  try{
+    var res = await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+currentEditWorkoutId, {
+      method:'PATCH',
+      headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}),
+      body: JSON.stringify(payload)
+    });
+    if(!res.ok){
+      // Fallback: schema may not have title — strip it
+      if(res.status === 400 || res.status === 404){
+        delete payload.title;
+        var res2 = await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+currentEditWorkoutId, {
+          method:'PATCH',
+          headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}),
+          body: JSON.stringify(payload)
+        });
+        if(!res2.ok){ showToast('Could not save'); return; }
+      } else {
+        showToast('Could not save');
+        return;
+      }
+    }
+    closeM('mEditWorkout');
+    showToast('✓ Workout updated');
+    currentEditWorkoutId = null;
+    loadTrainingHistory();
+  }catch(e){
+    console.error('save edited workout', e);
+    showToast('Save failed');
+  }
+}
+
+async function deleteEditedWorkout(){
+  if(!currentEditWorkoutId) return;
+  if(!window.confirm('Delete this workout? This cannot be undone.')) return;
+  try{
+    await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+currentEditWorkoutId, {
+      method:'DELETE',
+      headers: sbHeaders()
+    });
+    closeM('mEditWorkout');
+    showToast('Deleted');
+    currentEditWorkoutId = null;
+    loadTrainingHistory();
+  }catch(e){
+    showToast('Could not delete');
   }
 }
 
@@ -2239,7 +2356,7 @@ async function loadTrainerDashboard(){
       else if(diffHr < 24) when = diffHr+'h ago';
       else if(diffDay < 7) when = diffDay+'d ago';
       else when = diffDay+'d ago';
-      return {label:'Last '+info.kind+' · '+when, isStale: diffHr >= 24, isHot: diffMin < 60};
+      return {label:'Last '+info.kind+' logged · '+when, isStale: diffHr >= 24, isHot: diffMin < 60};
     }
 
     var hiddenSet = getHiddenClientSet();
