@@ -1075,6 +1075,17 @@ textarea.ifield{min-height:78px;}
 </div>
 
 <!-- EDIT WORKOUT MODAL -->
+<!-- SAVE TO PROGRAM (DAY PICKER) MODAL -->
+<div class="mbg" id="mSaveToProgram">
+  <div class="msh">
+    <div class="mhnd"></div>
+    <div class="mtitle">Save to Program</div>
+    <div class="msub" id="mSaveToProgramSub">Which day in your program is this?</div>
+    <div id="mSaveToProgramBody"></div>
+    <button class="obtn" onclick="closeM('mSaveToProgram')">Cancel</button>
+  </div>
+</div>
+
 <!-- PROGRAM CREATE MODAL -->
 <div class="mbg" id="mCreateProgram">
   <div class="msh">
@@ -1128,6 +1139,7 @@ textarea.ifield{min-height:78px;}
     <div class="il" style="margin-top:0;">Notes</div>
     <textarea class="ifield" id="ewNotes" placeholder="Anything to remember about this session..."></textarea>
     <button class="sbtn" style="margin-top:14px;" onclick="saveEditedWorkout()">Save Changes ✓</button>
+    <button onclick="saveWorkoutToProgram()" style="margin-top:10px;width:100%;padding:11px;background:transparent;border:1.5px solid var(--gold);border-radius:10px;color:var(--gold);font-size:13px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">📋 Save to Program</button>
     <button onclick="deleteEditedWorkout()" style="margin-top:10px;width:100%;padding:11px;background:transparent;border:1px solid #ff4455;border-radius:10px;color:#ff4455;font-size:13px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">Delete Workout</button>
     <button class="obtn" onclick="closeM('mEditWorkout')">Cancel</button>
   </div>
@@ -1485,8 +1497,8 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.8.0';
-var APP_BUILD = 'May 28 — performed_at time + Program Builder Phase 1';
+var APP_VERSION = 'v2.9.0';
+var APP_BUILD = 'May 28 — Save Workout to Program (templatize from history)';
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -2207,6 +2219,153 @@ async function deleteEditedWorkout(){
     loadTrainingHistory();
   }catch(e){
     showToast('Could not delete');
+  }
+}
+
+// ===== SAVE LOGGED WORKOUT TO PROGRAM =====
+// User flow: from the workout edit modal, tap "Save to Program" → pick a day → app inserts/replaces.
+// If no program exists yet, offer to create one on the fly.
+var pendingProgramSaveWorkout = null; // snapshot of the workout being templatized
+
+async function saveWorkoutToProgram(){
+  if(!currentEditWorkoutId || !cl){ showToast('No workout selected'); return; }
+
+  // Capture the CURRENT form values (so any edits the user just made get templatized)
+  var title = (document.getElementById('ewTitle').value || '').trim();
+  var notes = (document.getElementById('ewNotes').value || '').trim();
+  var exercises = collectExerciseRows();
+  if(!title && exercises.length === 0){
+    showToast('Need a title or at least one exercise');
+    return;
+  }
+  pendingProgramSaveWorkout = {
+    title: title || 'Workout',
+    exercises: exercises,
+    notes: notes || null,
+    source_id: currentEditWorkoutId
+  };
+
+  // Check if user has an active program
+  try{
+    var url = SB_URL+'/rest/v1/programs?client_code=eq.'+encodeURIComponent(cl.code)+'&is_active=eq.true&order=created_at.desc&limit=1';
+    var res = await fetch(url, {headers: sbHeaders()});
+    if(!res.ok){
+      var body=''; try{ body = await res.text(); }catch(e){}
+      if(/relation.*programs.*does not exist/i.test(body)){
+        showToast('Run Program SQL setup first (see Program tab)');
+        return;
+      }
+      throw new Error('programs fetch failed');
+    }
+    var rows = await res.json();
+    if(!rows || rows.length === 0){
+      // No program — offer to create one on the fly
+      var ok = window.confirm('You don\'t have a program yet. Want me to create one called "My Program" and save this workout into it?');
+      if(!ok) return;
+      var createRes = await fetch(SB_URL+'/rest/v1/programs', {
+        method:'POST',
+        headers: Object.assign({}, sbHeaders(), {'Prefer':'return=representation'}),
+        body: JSON.stringify({client_code: cl.code, name: 'My Program', is_active: true})
+      });
+      if(!createRes.ok){ showToast('Could not create program'); return; }
+      var newPrograms = await createRes.json();
+      activeProgram = Array.isArray(newPrograms) ? newPrograms[0] : newPrograms;
+      activeProgramDays = [];
+    } else {
+      activeProgram = rows[0];
+      // Also fetch existing program days so we can show "already planned" indicators
+      var pwRes = await fetch(SB_URL+'/rest/v1/program_workouts?program_id=eq.'+activeProgram.id+'&order=day_of_week.asc', {headers: sbHeaders()});
+      activeProgramDays = pwRes.ok ? await pwRes.json() : [];
+    }
+    // Open the day picker
+    renderSaveToProgramDayPicker();
+    openM('mSaveToProgram');
+  }catch(e){
+    console.error('saveWorkoutToProgram', e);
+    showToast('Something went wrong');
+  }
+}
+
+function renderSaveToProgramDayPicker(){
+  if(!pendingProgramSaveWorkout) return;
+  var sub = document.getElementById('mSaveToProgramSub');
+  if(sub) sub.textContent = 'Save "'+pendingProgramSaveWorkout.title+'" to which day?';
+  var body = document.getElementById('mSaveToProgramBody');
+  if(!body) return;
+
+  // Build a quick lookup of which days already have planned workouts
+  var byDay = {};
+  activeProgramDays.forEach(function(d){ byDay[d.day_of_week] = d; });
+
+  // Default-pick today's day-of-week
+  var todayDow = new Date().getDay();
+  // Display order: Mon-Sun
+  var order = [1,2,3,4,5,6,0];
+  var dayShort = {0:'Sun',1:'Mon',2:'Tue',3:'Wed',4:'Thu',5:'Fri',6:'Sat'};
+  var dayFull = {0:'Sunday',1:'Monday',2:'Tuesday',3:'Wednesday',4:'Thursday',5:'Friday',6:'Saturday'};
+
+  var html = '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-bottom:12px;">';
+  order.forEach(function(dow){
+    var existing = byDay[dow];
+    var isToday = (dow === todayDow);
+    var existingTag = existing ? '<div style="font-size:8px;color:var(--gold);margin-top:2px;text-transform:uppercase;letter-spacing:0.5px;font-weight:700;">PLANNED</div>' : '';
+    var todayTag = isToday && !existing ? '<div style="font-size:8px;color:#22c77a;margin-top:2px;letter-spacing:0.5px;font-weight:700;">TODAY</div>' : '';
+    var border = isToday ? '2px solid var(--gold)' : (existing ? '1.5px solid var(--gold)' : '1px solid var(--border)');
+    var bg = existing ? 'rgba(245,197,24,0.08)' : 'var(--surface)';
+    html += '<div onclick="commitWorkoutToProgramDay('+dow+')" style="background:'+bg+';border:'+border+';border-radius:10px;padding:10px 4px;text-align:center;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:62px;">'+
+      '<div style="font-size:11px;color:var(--text);font-weight:700;letter-spacing:0.5px;">'+dayShort[dow]+'</div>'+
+      existingTag + todayTag +
+    '</div>';
+  });
+  html += '</div>';
+  html += '<div style="font-size:11px;color:var(--muted);text-align:center;line-height:1.5;">Days marked <strong style="color:var(--gold);">PLANNED</strong> already have a workout. Tapping will replace it.</div>';
+  body.innerHTML = html;
+}
+
+async function commitWorkoutToProgramDay(dow){
+  if(!pendingProgramSaveWorkout || !activeProgram){ showToast('Something went wrong'); return; }
+
+  // If a workout exists on this day, ask first
+  var existing = activeProgramDays.find(function(d){ return d.day_of_week === dow; });
+  var dayFull = {0:'Sunday',1:'Monday',2:'Tuesday',3:'Wednesday',4:'Thursday',5:'Friday',6:'Saturday'};
+  if(existing){
+    var confirmMsg = dayFull[dow]+' already has "'+(existing.title||'a workout')+'" planned. Replace it with "'+pendingProgramSaveWorkout.title+'"?';
+    if(!window.confirm(confirmMsg)) return;
+  }
+
+  var payload = {
+    program_id: activeProgram.id,
+    day_of_week: dow,
+    title: pendingProgramSaveWorkout.title,
+    exercises: pendingProgramSaveWorkout.exercises.length > 0 ? pendingProgramSaveWorkout.exercises : null,
+    notes: pendingProgramSaveWorkout.notes
+  };
+
+  try{
+    if(existing){
+      // PATCH existing row
+      var res = await fetch(SB_URL+'/rest/v1/program_workouts?id=eq.'+existing.id, {
+        method:'PATCH',
+        headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}),
+        body: JSON.stringify(payload)
+      });
+      if(!res.ok) throw new Error('patch failed');
+    } else {
+      var res = await fetch(SB_URL+'/rest/v1/program_workouts', {
+        method:'POST',
+        headers: sbHeaders(),
+        body: JSON.stringify(payload)
+      });
+      if(!res.ok) throw new Error('insert failed');
+    }
+    closeM('mSaveToProgram');
+    pendingProgramSaveWorkout = null;
+    showToast('✓ Saved to '+dayFull[dow]+' in your program');
+    // Refresh the program if user happens to be on it
+    if(trainingMode === 'program') loadProgram();
+  }catch(e){
+    console.error('commitWorkoutToProgramDay', e);
+    showToast('Could not save to program');
   }
 }
 
