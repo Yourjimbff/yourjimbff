@@ -766,6 +766,17 @@ textarea.ifield{min-height:78px;}
       Describe what you did and Jim will log it for you — exercises, sets, reps, intensity. He'll confirm before saving.
     </div>
 
+    <!-- WEEK CALENDAR -->
+    <div id="trainingWeekCal" style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <button onclick="navTrainingWeek(-1)" aria-label="Previous week" style="background:transparent;border:none;font-size:18px;color:var(--m2);cursor:pointer;padding:4px 10px;line-height:1;">‹</button>
+        <div id="trainingWeekRange" style="font-family:'Bebas Neue',sans-serif;font-size:15px;letter-spacing:1px;color:var(--text);">—</div>
+        <button onclick="navTrainingWeek(1)" aria-label="Next week" style="background:transparent;border:none;font-size:18px;color:var(--m2);cursor:pointer;padding:4px 10px;line-height:1;">›</button>
+      </div>
+      <div id="trainingWeekGrid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;"></div>
+      <div id="trainingWeekHint" style="text-align:center;font-size:10px;color:var(--muted);margin-top:10px;letter-spacing:0.5px;">Tap a day to filter · tap again to show all</div>
+    </div>
+
     <div id="trainingHistory"></div>
   </div>
 
@@ -1299,6 +1310,29 @@ window.addEventListener('load', function(){
       await doLogin();
     }
   }, 200);
+  // Swipe gestures on the training week calendar
+  setTimeout(function(){
+    var cal = document.getElementById('trainingWeekCal');
+    if(!cal) return;
+    var startX = 0, startY = 0, tracking = false;
+    cal.addEventListener('touchstart', function(e){
+      if(e.touches.length !== 1) return;
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+      tracking = true;
+    }, {passive:true});
+    cal.addEventListener('touchend', function(e){
+      if(!tracking) return;
+      tracking = false;
+      var t = e.changedTouches[0];
+      var dx = t.clientX - startX;
+      var dy = t.clientY - startY;
+      // Only act on a clearly horizontal swipe
+      if(Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)*1.5){
+        navTrainingWeek(dx < 0 ? 1 : -1);
+      }
+    }, {passive:true});
+  }, 600);
 });
 
 var CLIENTS = {
@@ -1401,8 +1435,8 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.6.0';
-var APP_BUILD = 'May 28 — exercise editor + tile states + honest activity labels';
+var APP_VERSION = 'v2.7.0';
+var APP_BUILD = 'May 28 — training calendar (Mon-Sun week view + swipe nav)';
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -1662,6 +1696,50 @@ function openManualWorkoutModal(){
   openM('mWorkout');
 }
 
+// ===== TRAINING TAB STATE =====
+// Track which week is being viewed and optionally which day within that week is selected as a filter
+var trainingViewWeekStart = null; // Date object set to Monday 00:00 of the week being viewed
+var trainingSelectedDay = null; // ISO date string 'YYYY-MM-DD' or null = whole week
+var trainingAllRows = []; // cache of fetched workout rows
+
+function getMonday(d){
+  var dt = new Date(d);
+  dt.setHours(0,0,0,0);
+  var day = dt.getDay(); // 0=Sun, 1=Mon...6=Sat
+  var diff = (day === 0 ? -6 : 1 - day); // shift to Monday
+  dt.setDate(dt.getDate() + diff);
+  return dt;
+}
+
+function isoDateStr(d){
+  var y = d.getFullYear();
+  var m = String(d.getMonth()+1).padStart(2,'0');
+  var dd = String(d.getDate()).padStart(2,'0');
+  return y+'-'+m+'-'+dd;
+}
+
+function navTrainingWeek(direction){
+  if(!trainingViewWeekStart) trainingViewWeekStart = getMonday(new Date());
+  var d = new Date(trainingViewWeekStart);
+  d.setDate(d.getDate() + (direction * 7));
+  // Don't allow navigation into the future beyond current week
+  var thisWeekMonday = getMonday(new Date());
+  if(d.getTime() > thisWeekMonday.getTime()) return;
+  trainingViewWeekStart = d;
+  trainingSelectedDay = null; // reset day filter when changing weeks
+  renderTrainingView();
+}
+
+function selectTrainingDay(dateStr){
+  // Toggle: if same day tapped, deselect
+  if(trainingSelectedDay === dateStr){
+    trainingSelectedDay = null;
+  } else {
+    trainingSelectedDay = dateStr;
+  }
+  renderTrainingView();
+}
+
 async function loadTrainingHistory(){
   if(!cl) return;
   var holder = document.getElementById('trainingHistory');
@@ -1669,110 +1747,204 @@ async function loadTrainingHistory(){
   if(!holder) return;
   holder.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted);font-size:13px;">Loading…</div>';
   try{
-    // Pull last 60 days of workouts for current user
-    var rows = await sbSelect('workout_logs','client_code=eq.'+cl.code+'&order=logged_at.desc&limit=100');
-    if(!rows || rows.length === 0){
-      holder.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:30px 18px;text-align:center;"><div style="font-size:32px;margin-bottom:8px;">🏋️</div><div style="font-weight:700;margin-bottom:4px;">No workouts logged yet</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Tell Jim about a workout you did and he\'ll log it for you. Or tap "+ Log Workout" above.</div></div>';
-      if(sub) sub.textContent = '0 sessions';
-      return;
-    }
-    if(sub) sub.textContent = rows.length+' session'+(rows.length===1?'':'s')+' · last 100';
-
-    // Group by date_str
-    var byDate = {};
-    rows.forEach(function(r){
-      var d = r.date_str || (r.logged_at ? new Date(r.logged_at).toISOString().slice(0,10) : 'unknown');
-      if(!byDate[d]) byDate[d] = [];
-      byDate[d].push(r);
-    });
-    var sortedDates = Object.keys(byDate).sort().reverse();
-
-    function fmtDateLabel(ds){
-      if(!ds || ds === 'unknown') return 'Unknown date';
-      var d = new Date(ds+'T12:00:00');
-      if(isNaN(d.getTime())) return ds;
-      var today = new Date(); today.setHours(0,0,0,0);
-      var yest = new Date(today.getTime()-86400000);
-      var dstr = d.toISOString().slice(0,10);
-      if(dstr === today.toISOString().slice(0,10)) return 'Today · '+d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
-      if(dstr === yest.toISOString().slice(0,10)) return 'Yesterday · '+d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
-      return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
-    }
-
-    var html = '';
-    sortedDates.forEach(function(ds){
-      html += '<div style="font-size:11px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;font-weight:700;margin:18px 0 8px;">'+fmtDateLabel(ds)+'</div>';
-      byDate[ds].forEach(function(w){
-        var title = w.title || (w.description ? (w.description.length>60 ? w.description.slice(0,60)+'…' : w.description) : 'Workout');
-        var intensity = w.intensity ? w.intensity+'/10' : '—';
-        var dur = w.duration || '';
-        var when = w.logged_at ? new Date(w.logged_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : '';
-        var notes = w.notes ? '<div style="font-size:12px;color:var(--m2);margin-top:8px;line-height:1.5;font-style:italic;">"'+w.notes.replace(/"/g,'&quot;')+'"</div>' : '';
-        // Exercise breakdown if structured
-        var exHtml = '';
-        if(w.exercises){
-          try{
-            var ex = typeof w.exercises === 'string' ? JSON.parse(w.exercises) : w.exercises;
-            if(Array.isArray(ex) && ex.length > 0){
-              exHtml = '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:12px;color:var(--m2);line-height:1.6;">';
-              ex.forEach(function(e){
-                var line = '• ' + (e.name || e.exercise || 'Exercise');
-                if(e.sets && e.reps) line += ' — ' + e.sets + '×' + e.reps;
-                else if(e.sets) line += ' — ' + e.sets + ' sets';
-                if(e.weight) line += ' @ ' + e.weight;
-                exHtml += '<div>'+line+'</div>';
-              });
-              exHtml += '</div>';
-            }
-          }catch(e){}
-        }
-        // Intensity badge — tap to rate if missing
-        var intColor = '#888';
-        if(w.intensity >= 9) intColor = '#ff4455';
-        else if(w.intensity >= 7) intColor = 'var(--gold)';
-        else if(w.intensity >= 5) intColor = '#22c77a';
-        var intensityHtml;
-        if(w.intensity){
-          // Tappable existing rating — re-rate
-          intensityHtml = 'intensity <span onclick="event.stopPropagation();openRateModal('+w.id+')" style="color:'+intColor+';font-weight:700;cursor:pointer;border-bottom:1px dotted '+intColor+';">'+intensity+'</span>';
-        } else {
-          intensityHtml = '<button onclick="event.stopPropagation();openRateModal('+w.id+')" style="background:transparent;border:1px solid var(--gold);border-radius:6px;padding:2px 8px;font-size:10px;font-weight:700;color:var(--gold);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;letter-spacing:0.3px;">⭐ Tap to rate</button>';
-        }
-        // Card-level tap = full edit; data attrs hold ALL workout fields so the modal can hydrate
-        var attrEsc = function(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); };
-        // Encode exercises JSON for hydration (safely escape for HTML attribute)
-        var exForAttr = '';
-        if(w.exercises){
-          try{
-            var exObj = typeof w.exercises === 'string' ? JSON.parse(w.exercises) : w.exercises;
-            exForAttr = JSON.stringify(exObj);
-          }catch(e){ exForAttr = ''; }
-        }
-        html += '<div onclick="openEditWorkoutModal('+w.id+')" '+
-          'data-w-id="'+w.id+'" '+
-          'data-w-title="'+attrEsc(w.title||title)+'" '+
-          'data-w-intensity="'+(w.intensity||'')+'" '+
-          'data-w-duration="'+attrEsc(w.duration||'')+'" '+
-          'data-w-notes="'+attrEsc(w.notes||'')+'" '+
-          'data-w-exercises="'+attrEsc(exForAttr)+'" '+
-          'data-w-date="'+attrEsc(ds)+'" '+
-          'style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:8px;cursor:pointer;">'+
-          '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">'+
-            '<div style="flex:1;min-width:0;">'+
-              '<div style="font-weight:700;font-size:14px;line-height:1.3;color:var(--text);">'+title+'</div>'+
-              '<div style="font-size:11px;color:var(--muted);margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'+(when?'<span>'+when+'</span>':'')+(dur?'<span>· '+dur+'</span>':'')+'<span>'+(w.intensity?'· ':'')+intensityHtml+'</span></div>'+
-            '</div>'+
-            '<div style="font-size:12px;color:var(--muted);padding:2px 4px;line-height:1;">✏️</div>'+
-          '</div>'+
-          exHtml + notes +
-        '</div>';
-      });
-    });
-    holder.innerHTML = html;
+    var rows = await sbSelect('workout_logs','client_code=eq.'+cl.code+'&order=logged_at.desc&limit=200');
+    trainingAllRows = rows || [];
+    if(sub) sub.textContent = trainingAllRows.length+' session'+(trainingAllRows.length===1?'':'s')+' · last 200';
+    if(!trainingViewWeekStart) trainingViewWeekStart = getMonday(new Date());
+    renderTrainingView();
   }catch(e){
     console.error('loadTrainingHistory', e);
     holder.innerHTML = '<div style="padding:20px;color:var(--muted);font-size:13px;text-align:center;">Could not load history. Try again.</div>';
   }
+}
+
+function renderTrainingView(){
+  if(!trainingViewWeekStart) trainingViewWeekStart = getMonday(new Date());
+  renderTrainingCalendar();
+  renderTrainingList();
+}
+
+function renderTrainingCalendar(){
+  var grid = document.getElementById('trainingWeekGrid');
+  var range = document.getElementById('trainingWeekRange');
+  if(!grid || !range) return;
+  var weekStart = trainingViewWeekStart;
+  var weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 6);
+  // Range label
+  var sameMonth = weekStart.getMonth() === weekEnd.getMonth();
+  var rangeLabel = weekStart.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' – ' +
+    (sameMonth ? weekEnd.getDate() : weekEnd.toLocaleDateString('en-US',{month:'short',day:'numeric'})) +
+    ', ' + weekEnd.getFullYear();
+  // Mark "This Week" if applicable
+  var thisWeekMonday = getMonday(new Date());
+  if(weekStart.getTime() === thisWeekMonday.getTime()){
+    rangeLabel = 'THIS WEEK · '+rangeLabel;
+  }
+  range.textContent = rangeLabel;
+
+  // Build a per-day map of workouts within this week
+  var weekMap = {}; // 'YYYY-MM-DD' -> [workouts]
+  for(var i=0;i<7;i++){
+    var d = new Date(weekStart); d.setDate(d.getDate()+i);
+    weekMap[isoDateStr(d)] = [];
+  }
+  trainingAllRows.forEach(function(w){
+    var ds = w.date_str || (w.logged_at ? isoDateStr(new Date(w.logged_at)) : null);
+    if(ds && weekMap.hasOwnProperty(ds)) weekMap[ds].push(w);
+  });
+
+  // Render 7 day cells: Mon-Sun
+  var todayStr = isoDateStr(new Date());
+  var labels = ['M','T','W','T','F','S','S'];
+  var html = '';
+  for(var i=0;i<7;i++){
+    var d = new Date(weekStart); d.setDate(d.getDate()+i);
+    var ds = isoDateStr(d);
+    var dayWorkouts = weekMap[ds] || [];
+    var hasActivity = dayWorkouts.length > 0;
+    var isToday = (ds === todayStr);
+    var isSelected = (trainingSelectedDay === ds);
+    var isFuture = d.getTime() > new Date().getTime() && !isToday;
+
+    // Determine cell color based on highest intensity that day
+    var maxIntensity = 0;
+    dayWorkouts.forEach(function(w){ if(w.intensity && w.intensity > maxIntensity) maxIntensity = w.intensity; });
+    var dotColor = '';
+    if(hasActivity){
+      if(maxIntensity >= 9) dotColor = '#ff4455';
+      else if(maxIntensity >= 7) dotColor = 'var(--gold)';
+      else if(maxIntensity >= 5) dotColor = '#22c77a';
+      else if(maxIntensity > 0) dotColor = '#888';
+      else dotColor = 'var(--m2)';
+    }
+
+    var borderStyle = isSelected ? '2px solid var(--gold)' : (isToday ? '1.5px dashed var(--gold)' : '1px solid var(--border)');
+    var bgStyle = isSelected ? 'rgba(245,197,24,0.12)' : (hasActivity ? 'var(--s2)' : 'transparent');
+    var opacity = isFuture ? '0.35' : '1';
+    var dotHtml = hasActivity
+      ? '<div style="width:7px;height:7px;border-radius:50%;background:'+dotColor+';margin-top:3px;"></div>'
+      : '<div style="width:7px;height:7px;margin-top:3px;"></div>';
+
+    html += '<div onclick="selectTrainingDay(\''+ds+'\')" style="border:'+borderStyle+';background:'+bgStyle+';border-radius:10px;padding:8px 4px;text-align:center;cursor:pointer;opacity:'+opacity+';display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:54px;">'+
+      '<div style="font-size:9px;color:var(--muted);letter-spacing:0.5px;font-weight:700;">'+labels[i]+'</div>'+
+      '<div style="font-size:14px;font-weight:700;color:var(--text);margin-top:1px;">'+d.getDate()+'</div>'+
+      dotHtml+
+    '</div>';
+  }
+  grid.innerHTML = html;
+}
+
+function renderTrainingList(){
+  var holder = document.getElementById('trainingHistory');
+  if(!holder) return;
+
+  var weekStart = trainingViewWeekStart;
+  var weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate()+6); weekEnd.setHours(23,59,59,999);
+  var weekStartStr = isoDateStr(weekStart);
+  var weekEndStr = isoDateStr(weekEnd);
+
+  // Filter to current week (or current day if selected)
+  var filtered = trainingAllRows.filter(function(w){
+    var ds = w.date_str || (w.logged_at ? isoDateStr(new Date(w.logged_at)) : null);
+    if(!ds) return false;
+    if(trainingSelectedDay) return ds === trainingSelectedDay;
+    return ds >= weekStartStr && ds <= weekEndStr;
+  });
+
+  if(filtered.length === 0){
+    var emptyMsg = trainingSelectedDay
+      ? 'No workouts logged for this day.'
+      : 'No workouts logged this week.';
+    holder.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:22px 18px;text-align:center;"><div style="font-size:26px;margin-bottom:6px;">🏋️</div><div style="font-weight:700;margin-bottom:4px;font-size:14px;">'+emptyMsg+'</div><div style="font-size:11px;color:var(--muted);line-height:1.5;">Tell Jim about a workout you did and he\'ll log it for you.</div></div>';
+    return;
+  }
+
+  // Group by date_str
+  var byDate = {};
+  filtered.forEach(function(r){
+    var d = r.date_str || (r.logged_at ? isoDateStr(new Date(r.logged_at)) : 'unknown');
+    if(!byDate[d]) byDate[d] = [];
+    byDate[d].push(r);
+  });
+  var sortedDates = Object.keys(byDate).sort().reverse();
+
+  function fmtDateLabel(ds){
+    if(!ds || ds === 'unknown') return 'Unknown date';
+    var d = new Date(ds+'T12:00:00');
+    if(isNaN(d.getTime())) return ds;
+    var today = new Date(); today.setHours(0,0,0,0);
+    var yest = new Date(today.getTime()-86400000);
+    var dstr = isoDateStr(d);
+    if(dstr === isoDateStr(today)) return 'Today · '+d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+    if(dstr === isoDateStr(yest)) return 'Yesterday · '+d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+    return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+  }
+
+  var attrEsc = function(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); };
+  var html = '';
+  sortedDates.forEach(function(ds){
+    html += '<div style="font-size:11px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;font-weight:700;margin:18px 0 8px;">'+fmtDateLabel(ds)+'</div>';
+    byDate[ds].forEach(function(w){
+      var title = w.title || (w.description ? (w.description.length>60 ? w.description.slice(0,60)+'…' : w.description) : 'Workout');
+      var intensity = w.intensity ? w.intensity+'/10' : '—';
+      var dur = w.duration || '';
+      var when = w.logged_at ? new Date(w.logged_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : '';
+      var notes = w.notes ? '<div style="font-size:12px;color:var(--m2);margin-top:8px;line-height:1.5;font-style:italic;">"'+w.notes.replace(/"/g,'&quot;')+'"</div>' : '';
+      var exHtml = '';
+      if(w.exercises){
+        try{
+          var ex = typeof w.exercises === 'string' ? JSON.parse(w.exercises) : w.exercises;
+          if(Array.isArray(ex) && ex.length > 0){
+            exHtml = '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:12px;color:var(--m2);line-height:1.6;">';
+            ex.forEach(function(e){
+              var line = '• ' + (e.name || e.exercise || 'Exercise');
+              if(e.sets && e.reps) line += ' — ' + e.sets + '×' + e.reps;
+              else if(e.sets) line += ' — ' + e.sets + ' sets';
+              if(e.weight) line += ' @ ' + e.weight;
+              exHtml += '<div>'+line+'</div>';
+            });
+            exHtml += '</div>';
+          }
+        }catch(e){}
+      }
+      var intColor = '#888';
+      if(w.intensity >= 9) intColor = '#ff4455';
+      else if(w.intensity >= 7) intColor = 'var(--gold)';
+      else if(w.intensity >= 5) intColor = '#22c77a';
+      var intensityHtml;
+      if(w.intensity){
+        intensityHtml = 'intensity <span onclick="event.stopPropagation();openRateModal('+w.id+')" style="color:'+intColor+';font-weight:700;cursor:pointer;border-bottom:1px dotted '+intColor+';">'+intensity+'</span>';
+      } else {
+        intensityHtml = '<button onclick="event.stopPropagation();openRateModal('+w.id+')" style="background:transparent;border:1px solid var(--gold);border-radius:6px;padding:2px 8px;font-size:10px;font-weight:700;color:var(--gold);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;letter-spacing:0.3px;">⭐ Tap to rate</button>';
+      }
+      var exForAttr = '';
+      if(w.exercises){
+        try{
+          var exObj = typeof w.exercises === 'string' ? JSON.parse(w.exercises) : w.exercises;
+          exForAttr = JSON.stringify(exObj);
+        }catch(e){ exForAttr = ''; }
+      }
+      html += '<div onclick="openEditWorkoutModal('+w.id+')" '+
+        'data-w-id="'+w.id+'" '+
+        'data-w-title="'+attrEsc(w.title||title)+'" '+
+        'data-w-intensity="'+(w.intensity||'')+'" '+
+        'data-w-duration="'+attrEsc(w.duration||'')+'" '+
+        'data-w-notes="'+attrEsc(w.notes||'')+'" '+
+        'data-w-exercises="'+attrEsc(exForAttr)+'" '+
+        'data-w-date="'+attrEsc(ds)+'" '+
+        'style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:8px;cursor:pointer;">'+
+        '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">'+
+          '<div style="flex:1;min-width:0;">'+
+            '<div style="font-weight:700;font-size:14px;line-height:1.3;color:var(--text);">'+title+'</div>'+
+            '<div style="font-size:11px;color:var(--muted);margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'+(when?'<span>'+when+'</span>':'')+(dur?'<span>· '+dur+'</span>':'')+'<span>'+(w.intensity?'· ':'')+intensityHtml+'</span></div>'+
+          '</div>'+
+          '<div style="font-size:12px;color:var(--muted);padding:2px 4px;line-height:1;">✏️</div>'+
+        '</div>'+
+        exHtml + notes +
+      '</div>';
+    });
+  });
+  holder.innerHTML = html;
 }
 
 async function deleteWorkoutRow(id){
