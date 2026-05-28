@@ -732,15 +732,14 @@ textarea.ifield{min-height:78px;}
       </div>
       <div style="background:var(--s2);border-radius:var(--rs);padding:12px 14px;margin-top:14px;font-size:13px;color:var(--m2);" id="pCalDisplay">Set your stats above to see your calorie target.</div>
     </div>
-    <div style="background:var(--surface);border-radius:var(--r);padding:16px;margin-bottom:12px;box-shadow:0 1px 4px rgba(0,0,0,0.07);">
-      <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:14px;">Change Password</div>
-      <label class="il" style="margin-top:0;">Current password</label>
-      <input class="ifield" type="text" id="pwCurrent" placeholder="Your current password" autocomplete="off">
-      <label class="il">New password</label>
-      <input class="ifield" type="text" id="pwNew" placeholder="Choose a new password" autocomplete="off">
+    <div id="changeAccessCard" style="background:var(--surface);border-radius:var(--r);padding:16px;margin-bottom:12px;box-shadow:0 1px 4px rgba(0,0,0,0.07);display:none;">
+      <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:6px;">Change Access Code</div>
+      <div style="font-size:12px;color:var(--m2);margin-bottom:14px;line-height:1.5;">Your current code: <strong id="acCurrentCode">—</strong>. Change it to something only you would guess. Your data migrates with you.</div>
+      <label class="il" style="margin-top:0;">New access code</label>
+      <input class="ifield" type="text" id="acNew" placeholder="e.g. thegoat" autocomplete="off">
       <label class="il">Confirm</label>
-      <input class="ifield" type="text" id="pwConfirm" placeholder="Type it again" autocomplete="off">
-      <button class="sbtn" style="margin-top:14px;" onclick="changePassword()">Update Password ✓</button>
+      <input class="ifield" type="text" id="acConfirm" placeholder="Type it again" autocomplete="off">
+      <button class="sbtn" style="margin-top:14px;" onclick="changeAccessCode()">Update Access Code ✓</button>
     </div>
     <button class="sbtn" onclick="saveProfileTab()">Save Profile ✓</button>
     <button class="obtn" onclick="doLogout()">Log out</button>
@@ -1302,8 +1301,8 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.1.0';
-var APP_BUILD = 'May 28 — collapsible briefing + Coach Jim (roster aware)';
+var APP_VERSION = 'v2.2.0';
+var APP_BUILD = 'May 28 — change access code (trainer)';
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -1378,11 +1377,23 @@ function showLoading(show){ document.getElementById('loadingOverlay').className 
 // ===== LOGIN =====
 async function doLogin(){
   var entered = document.getElementById('lcode').value.trim().toLowerCase();
-  // Simple: entered value must match a client code
+  // First check the hardcoded CLIENTS map
   var c = CLIENTS[entered];
+  // Then check custom trainer access codes (set via changeAccessCode)
+  if(!c){
+    var customMap = {};
+    try{ customMap = JSON.parse(localStorage.getItem('yjb_custom_trainer_codes')||'{}'); }catch(e){}
+    if(customMap[entered]){
+      c = customMap[entered];
+    }
+  }
   if(!c){ document.getElementById('lerr').classList.add('show'); return; }
   var code = entered;
   cl=Object.assign({},c,{code:code});
+  // Ensure trainer flag is honored if this is a custom trainer code
+  if(c.isTrainer && TRAINER_CODES.indexOf(code) === -1){
+    TRAINER_CODES.push(code);
+  }
   localStorage.setItem('yjb_logged_in', code);
 
   // Hide login screen completely
@@ -2580,6 +2591,15 @@ var coachMenuLoadedFor = null;
 
 // TRAINER ACCOUNTS (hardcoded for now, future: use profiles.is_trainer flag)
 var TRAINER_CODES = ['yusuf1'];
+// Load any custom trainer access codes registered via changeAccessCode
+try{
+  var _customMap = JSON.parse(localStorage.getItem('yjb_custom_trainer_codes')||'{}');
+  Object.keys(_customMap).forEach(function(k){
+    if(_customMap[k] && _customMap[k].isTrainer && TRAINER_CODES.indexOf(k) === -1){
+      TRAINER_CODES.push(k);
+    }
+  });
+}catch(e){}
 
 function isTrainer(code){
   return TRAINER_CODES.indexOf(code) !== -1;
@@ -3496,25 +3516,72 @@ function trigPerf(){document.getElementById('pov').classList.add('show');spawnCo
 function closePerfect(){document.getElementById('pov').classList.remove('show');document.getElementById('confw').innerHTML='';}
 function spawnConf(){var w=document.getElementById('confw');var cols=['#F5C518','#22c77a','#4488ff','#ff9500','#ff4455','#fff','#ffd700'];for(var i=0;i<100;i++){var p=document.createElement('div');p.className='cp';var sz=6+Math.random()*10;p.style.cssText='left:'+Math.random()*100+'%;width:'+sz+'px;height:'+sz+'px;background:'+cols[Math.floor(Math.random()*cols.length)]+';border-radius:'+(Math.random()>.5?'50%':'2px')+';animation-duration:'+(2+Math.random()*2)+'s;animation-delay:'+Math.random()*0.8+'s;';w.appendChild(p);}}
 
-async function changePassword(){
-  var current = document.getElementById('pwCurrent').value.trim().toLowerCase();
-  var newPw = document.getElementById('pwNew').value.trim().toLowerCase();
-  var confirm = document.getElementById('pwConfirm').value.trim().toLowerCase();
-  if(!current||!newPw||!confirm){showToast('Fill in all fields');return;}
-  if(newPw !== confirm){showToast('New passwords don\'t match');return;}
-  if(newPw.length < 4){showToast('Password must be at least 4 characters');return;}
-  // Verify current password
-  var storedPw = localStorage.getItem('yjb_pw_'+cl.code) || cl.code;
-  if(current !== storedPw){showToast('Current password is wrong');return;}
-  // Save new password locally
-  localStorage.setItem('yjb_pw_'+cl.code, newPw);
-  // Save to Supabase
-  await sbUpsert('profiles', {client_code:cl.code, custom_password:newPw}, 'client_code');
-  closeM('mPassword');
-  document.getElementById('pwCurrent').value='';
-  document.getElementById('pwNew').value='';
-  document.getElementById('pwConfirm').value='';
-  showToast('✓ Password updated');
+async function changeAccessCode(){
+  // Trainer-only feature
+  if(!cl || !isTrainer(cl.code)){
+    showToast('Not available');
+    return;
+  }
+  var newCode = document.getElementById('acNew').value.trim().toLowerCase().replace(/\s+/g,'');
+  var confirm = document.getElementById('acConfirm').value.trim().toLowerCase().replace(/\s+/g,'');
+  if(!newCode || !confirm){ showToast('Fill in both fields'); return; }
+  if(newCode !== confirm){ showToast('Codes don\'t match'); return; }
+  if(newCode.length < 4){ showToast('Code must be at least 4 characters'); return; }
+  if(newCode === cl.code){ showToast('That\'s already your code'); return; }
+  if(CLIENTS[newCode]){ showToast('That code is taken'); return; }
+  if(!/^[a-z0-9]+$/.test(newCode)){ showToast('Letters and numbers only, no spaces'); return; }
+
+  var oldCode = cl.code;
+  var ok = window.confirm('Change your access code from "'+oldCode+'" to "'+newCode+'"?\n\nThis migrates all your data and logs you out. You\'ll log back in with the new code.');
+  if(!ok) return;
+
+  showLoading(true);
+  try{
+    // Migrate every table that uses client_code
+    var tables = ['profiles','food_logs','weight_logs','workout_logs','step_logs','energy_checkins','chat_messages','coach_notes','trainer_briefings','menu_items'];
+    for(var i=0;i<tables.length;i++){
+      var tbl = tables[i];
+      try{
+        // Use PATCH with filter to update client_code
+        var col = (tbl === 'trainer_briefings') ? 'trainer_code' : 'client_code';
+        await fetch(SB_URL+'/rest/v1/'+tbl+'?'+col+'=eq.'+encodeURIComponent(oldCode), {
+          method:'PATCH',
+          headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
+          body:JSON.stringify({[col]: newCode})
+        });
+      }catch(e){ console.error('Migrate '+tbl+' failed', e); }
+    }
+
+    // Move localStorage entries from old key to new
+    var lsKeys = ['yjb_profile_','yjb_pw_','yjb_cnote_dismiss_','yjb_briefing_collapsed_','yjb_guide_seen_'];
+    lsKeys.forEach(function(prefix){
+      var v = localStorage.getItem(prefix+oldCode);
+      if(v !== null){
+        localStorage.setItem(prefix+newCode, v);
+        localStorage.removeItem(prefix+oldCode);
+      }
+    });
+
+    // Register new trainer code in the custom map so login accepts it after reload
+    var customMap = {};
+    try{ customMap = JSON.parse(localStorage.getItem('yjb_custom_trainer_codes')||'{}'); }catch(e){}
+    customMap[newCode] = {name: cl.name, initials: cl.initials, isTrainer: true};
+    localStorage.setItem('yjb_custom_trainer_codes', JSON.stringify(customMap));
+
+    showLoading(false);
+    showToast('✓ Access code updated — logging out');
+    setTimeout(function(){
+      // Force logout — user logs in with new code
+      doLogout();
+      // Show a hint in the login screen
+      var codeInput = document.getElementById('lcode');
+      if(codeInput) codeInput.placeholder = 'Log in with your new code: '+newCode;
+    }, 900);
+  }catch(e){
+    showLoading(false);
+    console.error('Access code change failed', e);
+    showToast('Something went wrong — your code did not change');
+  }
 }
 
 function loadProfileTab(){
@@ -3537,6 +3604,18 @@ function loadProfileTab(){
     else b.classList.remove('sel');
   });
   updCalDisplay();
+
+  // Show change-access-code card only for trainers
+  var accessCard = document.getElementById('changeAccessCard');
+  if(accessCard){
+    if(cl && isTrainer(cl.code)){
+      accessCard.style.display = 'block';
+      var currEl = document.getElementById('acCurrentCode');
+      if(currEl) currEl.textContent = cl.code;
+    } else {
+      accessCard.style.display = 'none';
+    }
+  }
 }
 
 function selPGender(el,val){
