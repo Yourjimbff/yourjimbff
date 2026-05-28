@@ -740,6 +740,7 @@ textarea.ifield{min-height:78px;}
       <label class="il">Confirm</label>
       <input class="ifield" type="text" id="acConfirm" placeholder="Type it again" autocomplete="off">
       <button class="sbtn" style="margin-top:14px;" onclick="changeAccessCode()">Update Access Code ✓</button>
+      <button onclick="restoreAllHiddenClients()" style="margin-top:10px;background:transparent;border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:11px;font-weight:600;color:var(--m2);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;width:100%;">↺ Restore hidden clients</button>
     </div>
     <button class="sbtn" onclick="saveProfileTab()">Save Profile ✓</button>
     <button class="obtn" onclick="doLogout()">Log out</button>
@@ -757,6 +758,31 @@ textarea.ifield{min-height:78px;}
         <button onclick="loadTrainerDashboard()" style="background:var(--gold);border:none;border-radius:10px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">↻ Refresh</button>
         <div style="font-size:10px;color:var(--muted);margin-top:4px;" id="trainerLastRefresh"></div>
       </div>
+    </div>
+
+    <!-- TODAY'S STATS ROW -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px;">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 6px;text-align:center;">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:22px;color:var(--green);line-height:1;" id="statActive">—</div>
+        <div style="font-size:9px;color:var(--muted);margin-top:4px;letter-spacing:0.5px;text-transform:uppercase;">Active</div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 6px;text-align:center;">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:22px;color:var(--text);line-height:1;" id="statMeals">—</div>
+        <div style="font-size:9px;color:var(--muted);margin-top:4px;letter-spacing:0.5px;text-transform:uppercase;">Meals</div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 6px;text-align:center;">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:22px;color:var(--text);line-height:1;" id="statWorkouts">—</div>
+        <div style="font-size:9px;color:var(--muted);margin-top:4px;letter-spacing:0.5px;text-transform:uppercase;">Trained</div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 6px;text-align:center;">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:22px;color:#888;line-height:1;" id="statSilent">—</div>
+        <div style="font-size:9px;color:var(--muted);margin-top:4px;letter-spacing:0.5px;text-transform:uppercase;">Silent</div>
+      </div>
+    </div>
+
+    <!-- TRIM ROSTER ACTION -->
+    <div style="text-align:right;margin-bottom:10px;">
+      <button onclick="trimInactiveClients()" style="background:transparent;border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:11px;font-weight:600;color:var(--m2);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">🧹 Trim inactive</button>
     </div>
 
     <!-- JIM'S BRIEFING -->
@@ -1301,8 +1327,8 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.2.0';
-var APP_BUILD = 'May 28 — change access code (trainer)';
+var APP_VERSION = 'v2.3.0';
+var APP_BUILD = 'May 28 — stats row + trim inactive';
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -1388,6 +1414,12 @@ async function doLogin(){
     }
   }
   if(!c){ document.getElementById('lerr').classList.add('show'); return; }
+  // Block hidden clients from logging in (trainer trimmed them)
+  if(!c.isTrainer){
+    var hiddenSet = {};
+    try{ var arr = JSON.parse(localStorage.getItem('yjb_hidden_clients')||'[]'); arr.forEach(function(x){hiddenSet[x]=true;}); }catch(e){}
+    if(hiddenSet[entered]){ document.getElementById('lerr').classList.add('show'); return; }
+  }
   var code = entered;
   cl=Object.assign({},c,{code:code});
   // Ensure trainer flag is honored if this is a custom trainer code
@@ -1553,6 +1585,94 @@ function doLogout(){
 
 // ===== TRAINER DASHBOARD =====
 var trainerRefreshTimer = null;
+
+// ===== TRIM INACTIVE CLIENTS =====
+// Hides clients with zero Supabase activity from the dashboard + login.
+// Reversible via localStorage 'yjb_hidden_clients' (an array of codes).
+function getHiddenClientSet(){
+  try{
+    var arr = JSON.parse(localStorage.getItem('yjb_hidden_clients')||'[]');
+    var s = {};
+    arr.forEach(function(c){ s[c]=true; });
+    return s;
+  }catch(e){ return {}; }
+}
+
+function setHiddenClients(arr){
+  localStorage.setItem('yjb_hidden_clients', JSON.stringify(arr));
+}
+
+async function trimInactiveClients(){
+  if(!cl || !isTrainer(cl.code)){
+    showToast('Trainer only');
+    return;
+  }
+  showToast('Scanning for inactive clients...');
+  // Pull every client_code that has logged ANY activity across all tables
+  var activeCodes = {};
+  try{
+    var queries = [
+      sbSelect('food_logs','limit=1000'),
+      sbSelect('workout_logs','limit=500'),
+      sbSelect('weight_logs','limit=500'),
+      sbSelect('step_logs','limit=500'),
+      sbSelect('energy_checkins','limit=500'),
+      sbSelect('chat_messages','limit=500'),
+      sbSelect('profiles','limit=500')
+    ];
+    var results = await Promise.all(queries);
+    results.forEach(function(rows){
+      (rows||[]).forEach(function(r){ if(r.client_code) activeCodes[r.client_code] = true; });
+    });
+  }catch(e){
+    showToast('Scan failed — try again');
+    return;
+  }
+  // Also keep all trainers regardless
+  TRAINER_CODES.forEach(function(t){ activeCodes[t] = true; });
+  // Always keep the currently-logged-in user, defensively
+  if(cl && cl.code) activeCodes[cl.code] = true;
+
+  // Build the inactive list from CLIENTS minus trainers minus already-hidden
+  var hiddenNow = getHiddenClientSet();
+  var inactive = [];
+  Object.keys(CLIENTS).forEach(function(code){
+    var info = CLIENTS[code];
+    if(info && info.isTrainer) return;
+    if(hiddenNow[code]) return; // already hidden
+    if(!activeCodes[code]) inactive.push({code:code, name:info.name});
+  });
+
+  if(inactive.length === 0){
+    showToast('No inactive clients to trim');
+    return;
+  }
+
+  // Show confirmation with the list
+  var preview = inactive.slice(0,10).map(function(p){return '• '+p.name;}).join('\n');
+  var more = inactive.length > 10 ? '\n…and '+(inactive.length-10)+' more' : '';
+  var msg = inactive.length+' client'+(inactive.length===1?'':'s')+' have never logged anything. Hide them from your dashboard + login?\n\n'+preview+more+'\n\nYou can restore them later from the Profile tab.';
+  if(!window.confirm(msg)) return;
+
+  // Save to localStorage and refresh
+  var existing = [];
+  try{ existing = JSON.parse(localStorage.getItem('yjb_hidden_clients')||'[]'); }catch(e){}
+  inactive.forEach(function(p){ if(existing.indexOf(p.code)===-1) existing.push(p.code); });
+  setHiddenClients(existing);
+  showToast('✓ Hid '+inactive.length+' inactive client'+(inactive.length===1?'':'s'));
+  loadTrainerDashboard();
+}
+
+function restoreAllHiddenClients(){
+  if(!cl || !isTrainer(cl.code)){ showToast('Trainer only'); return; }
+  var hidden = getHiddenClientSet();
+  var count = Object.keys(hidden).length;
+  if(count === 0){ showToast('Nothing hidden'); return; }
+  if(!window.confirm('Restore '+count+' hidden client'+(count===1?'':'s')+' to your dashboard?')) return;
+  setHiddenClients([]);
+  showToast('✓ Restored '+count+' client'+(count===1?'':'s'));
+  loadTrainerDashboard();
+}
 
 // ===== JIM'S BRIEFING =====
 function toggleBriefing(){
@@ -1923,7 +2043,8 @@ async function loadTrainerDashboard(){
       return {label:'Last '+info.kind+' · '+when, isStale: diffHr >= 24, isHot: diffMin < 60};
     }
 
-    var clientCodes = Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer; });
+    var hiddenSet = getHiddenClientSet();
+    var clientCodes = Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer && !hiddenSet[k]; });
     // Sort by most recent activity timestamp (newest first); clients with no activity sink to bottom
     clientCodes.sort(function(a,b){
       var aT = lastActivity[a] ? lastActivity[a].ts : 0;
@@ -1964,6 +2085,32 @@ async function loadTrainerDashboard(){
         openCoachReply(this.getAttribute('data-c'), this.getAttribute('data-n'));
       });
     });
+
+    // Compute and render top-of-tab stats
+    var clientSet = {}; clientCodes.forEach(function(c){ clientSet[c]=true; });
+    // Today cutoff = start of today local time
+    var startOfToday = new Date(); startOfToday.setHours(0,0,0,0);
+    var todayCutoffTs = startOfToday.getTime();
+    var workoutsTodayByClient = {};
+    recentWorkouts.forEach(function(w){
+      if(!clientSet[w.client_code]) return;
+      var t = w.logged_at ? new Date(w.logged_at).getTime() : 0;
+      if(t >= todayCutoffTs){
+        if(!workoutsTodayByClient[w.client_code]) workoutsTodayByClient[w.client_code] = 0;
+        workoutsTodayByClient[w.client_code]++;
+      }
+    });
+    var totalMealsToday = 0;
+    Object.keys(foodsByClient).forEach(function(k){ if(clientSet[k]) totalMealsToday += foodsByClient[k].length; });
+    var totalWorkoutsToday = 0;
+    Object.keys(workoutsTodayByClient).forEach(function(k){ totalWorkoutsToday += workoutsTodayByClient[k]; });
+    var silentCount = clientCodes.filter(function(c){ return !lastActivity[c]; }).length;
+    var setStat = function(id, val){ var el = document.getElementById(id); if(el) el.textContent = String(val); };
+    setStat('statActive', activeCount);
+    setStat('statMeals', totalMealsToday);
+    setStat('statWorkouts', totalWorkoutsToday);
+    setStat('statSilent', silentCount);
+
     // Update header count
     var countEl = document.getElementById('trainerActiveCount');
     if(countEl) countEl.textContent = activeCount+' active today';
@@ -4385,7 +4532,8 @@ async function buildDayContext(){
 async function buildTrainerRosterContext(){
   // Pull last 48 hours of activity per client across all metrics
   var cutoff = new Date(Date.now() - 48*60*60*1000).toISOString();
-  var allClients = Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer; });
+  var hiddenSet = (typeof getHiddenClientSet === 'function') ? getHiddenClientSet() : {};
+  var allClients = Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer && !hiddenSet[k]; });
   if(allClients.length === 0) return '';
 
   try{
