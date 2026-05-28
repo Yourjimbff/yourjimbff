@@ -1363,6 +1363,28 @@ async function launchApp(){
   renderWeightJourney();
   loadCoachNote();
   loadTodayCheckins();
+  loadTodayWorkouts();
+}
+
+async function loadTodayWorkouts(){
+  if(!cl) return;
+  try{
+    var workouts = await sbSelect('workout_logs','client_code=eq.'+cl.code+'&date_str=eq.'+encodeURIComponent(todayDateStr)+'&order=logged_at.desc&limit=20');
+    if(workouts && workouts.length > 0){
+      todayWo = workouts.map(function(w){
+        return {
+          desc: w.description,
+          dur: w.duration,
+          intensity: w.intensity,
+          notes: w.notes,
+          feel: w.feel,
+          logged_at: w.logged_at
+        };
+      });
+      rendTodayWo();
+      markTileDone('Workout');
+    }
+  } catch(e){}
 }
 
 function doLogout(){
@@ -1409,9 +1431,10 @@ function renderBriefing(b){
   var stampEl = document.getElementById('briefingStamp');
   var btnLabel = document.getElementById('briefingBtnLabel');
   if(bodyEl){
-    // Convert plain text to safer HTML with paragraph breaks preserved
     var txt = b.briefing_text || '';
-    bodyEl.innerHTML = '<div style="white-space:pre-wrap;">'+escapeHtml(txt)+'</div>';
+    // Escape HTML first, then convert markdown bold (**text**) to <strong>
+    var safe = escapeHtml(txt).replace(/\*\*([^*]+)\*\*/g, '<strong style="color:var(--gold);">$1</strong>');
+    bodyEl.innerHTML = '<div style="white-space:pre-wrap;">'+safe+'</div>';
   }
   if(stampEl && b.created_at){
     var d = new Date(b.created_at);
@@ -1467,15 +1490,17 @@ async function generateBriefing(){
         var foods = await sbSelect('food_logs','client_code=eq.'+p.client_code+'&order=logged_at.desc&limit=20');
         var weights = await sbSelect('weight_logs','client_code=eq.'+p.client_code+'&order=created_at.desc&limit=2');
         var checkins = await sbSelect('energy_checkins','client_code=eq.'+p.client_code+'&order=logged_at.desc&limit=10');
+        var workouts = await sbSelect('workout_logs','client_code=eq.'+p.client_code+'&order=logged_at.desc&limit=10');
         return {
           name: p.name || p.client_code,
           code: p.client_code,
           foods: (foods||[]).filter(function(f){ return f.logged_at >= cutoff; }),
           weights: weights||[],
-          checkins: (checkins||[]).filter(function(c){ return c.logged_at >= cutoff; })
+          checkins: (checkins||[]).filter(function(c){ return c.logged_at >= cutoff; }),
+          workouts: (workouts||[]).filter(function(w){ return w.logged_at >= cutoff; })
         };
       }catch(e){
-        return { name: p.name || p.client_code, code: p.client_code, foods:[], weights:[], checkins:[], error: true };
+        return { name: p.name || p.client_code, code: p.client_code, foods:[], weights:[], checkins:[], workouts:[], error: true };
       }
     });
 
@@ -1486,64 +1511,87 @@ async function generateBriefing(){
     allData.forEach(function(d){
       lines.push('\n--- '+d.name+' ('+d.code+') ---');
       if(d.error){ lines.push('  (data fetch failed)'); return; }
-      // Food activity
+
+      // FOOD
       if(d.foods.length === 0){
-        lines.push('  Food: NO LOGS in last 48h (ghosting)');
+        lines.push('  FOOD: No logs.');
       } else {
         var totalCal = d.foods.reduce(function(s,f){return s+(f.calories||0);},0);
         var totalP = d.foods.reduce(function(s,f){return s+(f.protein||0);},0);
         var badCt = d.foods.filter(function(f){return f.rating==='bad';}).length;
         var ndCt = d.foods.filter(function(f){return f.rating==='nutrient_dense';}).length;
-        lines.push('  Food: '+d.foods.length+' meals, ~'+totalCal+' cal, '+totalP+'g protein. '+ndCt+' nutrient-dense, '+badCt+' off-plan.');
-        // List the actual meals briefly
-        d.foods.slice(0,5).forEach(function(f){
-          lines.push('    - '+(f.name||'?')+' ('+f.calories+'cal, '+f.protein+'gP, '+(f.rating||'?')+')');
+        var goodCt = d.foods.filter(function(f){return f.rating==='good'||f.rating==='clean';}).length;
+        lines.push('  FOOD: '+d.foods.length+' meals · ~'+totalCal+' cal · '+totalP+'g protein · '+ndCt+' nutrient-dense · '+goodCt+' good · '+badCt+' off-plan');
+        d.foods.slice(0,6).forEach(function(f){
+          lines.push('    - '+(f.name||'?')+' ('+(f.calories||0)+'cal, '+(f.protein||0)+'gP, '+(f.rating||'?')+')');
         });
       }
-      // Weight trajectory
+
+      // WORKOUTS — this is the key new data point
+      if(d.workouts.length === 0){
+        lines.push('  WORKOUTS: None logged in last 48h.');
+      } else {
+        lines.push('  WORKOUTS: '+d.workouts.length+' logged');
+        d.workouts.forEach(function(w){
+          lines.push('    - '+(w.description||'?').substring(0,80)+' | Intensity '+(w.intensity||'?')+'/10 ('+(w.feel||'?')+')'+(w.duration?' · '+w.duration:''));
+        });
+      }
+
+      // WEIGHT
       if(d.weights.length >= 2){
         var change = (d.weights[0].weight - d.weights[1].weight).toFixed(1);
         var dir = change > 0 ? '+' : '';
-        lines.push('  Weight: '+d.weights[0].weight+' lbs (latest), '+dir+change+' lbs from previous');
+        lines.push('  WEIGHT: '+d.weights[0].weight+' lbs latest ('+dir+change+' lbs change)');
       } else if(d.weights.length === 1){
-        lines.push('  Weight: '+d.weights[0].weight+' lbs (only one entry)');
+        lines.push('  WEIGHT: '+d.weights[0].weight+' lbs (only one entry)');
       } else {
-        lines.push('  Weight: no logs');
+        lines.push('  WEIGHT: No logs.');
       }
-      // Check-ins
+
+      // CHECK-INS
       if(d.checkins.length > 0){
         var latest = d.checkins[0];
-        lines.push('  Last check-in: energy='+latest.energy+', mood='+(latest.mood||'?')+(latest.note?', note: "'+latest.note+'"':''));
+        lines.push('  CHECK-IN: energy='+(latest.energy||'?')+(latest.mood?', mood='+latest.mood:'')+(latest.note?', "'+latest.note.substring(0,80)+'"':''));
+      } else {
+        lines.push('  CHECK-IN: None.');
       }
     });
 
-    var dataBlock = lines.join('\n');
+    // Compute roster-level compliance stats up front so Jim leads with them
+    var totalClients = allData.length;
+    var loggedFood = allData.filter(function(d){return d.foods.length > 0;}).length;
+    var loggedWorkout = allData.filter(function(d){return d.workouts.length > 0;}).length;
+    var loggedCheckin = allData.filter(function(d){return d.checkins.length > 0;}).length;
+    var ghosting = allData.filter(function(d){return d.foods.length === 0 && d.workouts.length === 0 && d.checkins.length === 0;}).length;
 
-    // The system prompt — Jim writing the briefing
-    var systemPrompt = 'You are JIM — Yusuf\'s coaching AI assistant. Yusuf is a fitness/nutrition coach with multiple clients. Tonight, you are texting Yusuf a private briefing on his client roster.\n\n'+
-      'TONE & FORMAT:\n'+
-      '- This is a TEXT MESSAGE to Yusuf — written like you just spent 30 min reviewing every client\'s data and now you\'re telling him what you noticed.\n'+
-      '- Conversational. Direct. Operator voice. No corporate dashboard language.\n'+
-      '- No bullet lists, no markdown headers, no emojis sprinkled everywhere. Just clean prose, like one coach to another over text.\n'+
-      '- 3-5 short paragraphs maximum. Brevity over completeness.\n'+
-      '- Lead with what matters most. If someone\'s killing it, say it. If someone\'s ghosting, flag it. If something\'s subtle but important (a pattern, a streak, a worrying sign), call it out.\n'+
-      '- Use first names, not codes. Real names.\n'+
-      '- End with one direct recommendation — "I\'d check in with X first" or "Send Mike a voice note about Y" — only if there\'s a clear move.\n\n'+
-      'WHAT TO LOOK FOR:\n'+
-      '- Wins to acknowledge (clean streaks, hit goals, smart choices)\n'+
-      '- Ghosting (zero logs in 48h)\n'+
-      '- Off-plan patterns (multiple bad meals)\n'+
-      '- Energy/mood signals (low energy, "stressed", "bad sleep")\n'+
-      '- Weight trajectory (significant change, plateau)\n'+
-      '- Anyone who needs personal outreach vs. anyone who\'s self-managing\n\n'+
-      'AVOID:\n'+
-      '- Generic SaaS phrases ("Here\'s your daily summary")\n'+
-      '- Listing every client robotically — only the ones worth mentioning\n'+
-      '- Bullet points or headers\n'+
-      '- Anything that sounds like a Trainerize report\n\n'+
+    var statsBlock = '=== ROSTER COMPLIANCE (last 48h) ===\n'+
+      'Total active clients: '+totalClients+'\n'+
+      'Logged food: '+loggedFood+'/'+totalClients+'\n'+
+      'Logged workout: '+loggedWorkout+'/'+totalClients+'\n'+
+      'Logged check-in: '+loggedCheckin+'/'+totalClients+'\n'+
+      'Completely silent (ghosting): '+ghosting+'/'+totalClients+'\n';
+
+    var dataBlock = statsBlock + '\n' + lines.join('\n');
+
+    // The system prompt — Jim writing the briefing — OPERATIONAL VERSION
+    var systemPrompt = 'You are JIM — Yusuf\'s coaching AI assistant. Tonight you\'re briefing Yusuf on every client in his roster.\n\n'+
+      'CRITICAL: This is an OPERATIONAL BRIEFING, not a vibe check. Yusuf needs to know specifically what each client did — what they ate, whether they trained, whether they logged. Facts before feelings.\n\n'+
+      'FORMAT:\n'+
+      '- Open with 1 sentence summarizing roster compliance (the numbers — e.g. "12 of 30 logged food, 3 trained, 5 ghosted entirely").\n'+
+      '- Then go CLIENT BY CLIENT for anyone who logged ANYTHING. Use their first name as a mini-header followed by a 1-2 line summary of what they did.\n'+
+      '   Format: "**Michael** — Logged 2 meals (Habanero Filet, Protein Donut), 71g protein, no workout. Energy hasn\'t been checked in 3 days."\n'+
+      '   Or: "**Sarah** — 4 clean meals, hit 130g protein, logged a 7/10 leg day. Locked in."\n'+
+      '- Group the silent clients in ONE line at the end: "Silent (no logs of any kind): Michelle, Kent, Lizzy, Kelly, Bekim, Maryam, Robert, Devon..."\n'+
+      '- End with ONE recommended action only. Specific. Actionable. "I\'d ping Michelle first — she\'s been the longest gap." Or "Workout compliance is the bigger fire than food right now — broadcast asking about training would surface real data."\n\n'+
+      'TONE:\n'+
+      '- Conversational, like one coach to another over text. No bullet lists, no markdown headers. Use bold (**Name**) for client names only.\n'+
+      '- Direct, operator voice. No corporate or therapeutic language.\n'+
+      '- No emojis sprinkled around.\n'+
+      '- Don\'t editorialize about whether someone is "good" or "bad" — just report what they did.\n\n'+
+      'WORKOUT COMPLIANCE IS A KEY DATA POINT — always mention whether each client logged a workout when discussing them. "No workout logged" is meaningful information.\n\n'+
       '=== TODAY: '+todayStr+' ===\n\n'+
       dataBlock+'\n\n'+
-      'Now write the briefing. Speak directly to Yusuf as Jim. No preamble, no "here\'s your briefing" — just start.';
+      'Write the briefing. Start directly — no "here\'s your briefing" or "tonight\'s update".';
 
     var res = await fetch('/.netlify/functions/analyze', {
       method:'POST',
@@ -2822,6 +2870,18 @@ async function logWorkout(){
     logged_at: new Date().toISOString()
   };
   todayWo.unshift(entry);
+
+  // Persist to Supabase (fire and forget — UI doesn't wait)
+  sbInsert('workout_logs', {
+    client_code: cl.code,
+    description: desc,
+    duration: dur,
+    intensity: woIntensity,
+    notes: notes,
+    feel: entry.feel,
+    date_str: todayDateStr
+  });
+
   scores.workout=Math.min(2,scores.workout+fp*0.6);
   rendTodayWo();updHalo();pulseH();updStats();
   closeM('mWorkout');
