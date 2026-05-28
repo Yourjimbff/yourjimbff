@@ -489,6 +489,25 @@ textarea.ifield{min-height:78px;}
       </div>
     </div>
 
+    <!-- JIM'S BRIEFING -->
+    <div style="background:linear-gradient(135deg,#1a1a1a,#0a0a0a);border:1px solid rgba(245,197,24,0.35);border-radius:14px;padding:16px;margin-bottom:14px;position:relative;overflow:hidden;">
+      <div style="position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--gold),transparent);"></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div style="width:26px;height:26px;border-radius:50%;background:var(--gold);display:flex;align-items:center;justify-content:center;font-family:'Bebas Neue',sans-serif;font-size:13px;color:#000;flex-shrink:0;">J</div>
+          <div style="font-family:'Bebas Neue',sans-serif;font-size:16px;letter-spacing:1.5px;color:var(--gold);line-height:1;">JIM'S BRIEFING</div>
+        </div>
+        <div style="font-size:10px;color:#666;" id="briefingStamp"></div>
+      </div>
+      <div id="briefingBody" style="font-size:13px;color:#e8e8e8;line-height:1.65;min-height:60px;padding:6px 2px 2px;">
+        <div style="color:#888;font-style:italic;font-size:12px;line-height:1.55;">No briefing yet. Tap below and I'll read what your clients have been up to and send you the rundown.</div>
+      </div>
+      <button id="briefingGenBtn" onclick="generateBriefing()" style="margin-top:12px;background:var(--gold);border:none;border-radius:10px;padding:10px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;color:#000;width:100%;display:flex;align-items:center;justify-content:center;gap:6px;">
+        <span id="briefingBtnLabel">✦ Generate tonight's briefing</span>
+        <span id="briefingSpin" style="display:none;width:14px;height:14px;border:2px solid rgba(0,0,0,0.3);border-top-color:#000;border-radius:50%;animation:sp 0.8s linear infinite;"></span>
+      </button>
+    </div>
+
     <!-- BROADCAST INTERCOM -->
     <div style="background:linear-gradient(135deg,#0a0a0a,#1a1a1a);border:1px solid rgba(245,197,24,0.3);border-radius:14px;padding:14px;margin-bottom:18px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
@@ -833,7 +852,7 @@ textarea.ifield{min-height:78px;}
       <div class="chat-empty" id="chatEmpty">
         <div class="chat-empty-ic">🏋️</div>
         <div class="chat-empty-title">Jim's here.</div>
-        <div>Food, training, recovery, progress — ask anything.</div>
+        <div>Food, training, recovery, progress — ask anything.<br><span style="opacity:0.55;font-size:10px;letter-spacing:0.5px;margin-top:12px;display:inline-block;">👁️ Your coach sees this.</span></div>
       </div>
     </div>
     <div class="chat-input-wrap">
@@ -1370,6 +1389,197 @@ function doLogout(){
 // ===== TRAINER DASHBOARD =====
 var trainerRefreshTimer = null;
 
+// ===== JIM'S BRIEFING =====
+async function loadLatestBriefing(){
+  if(!cl || !isTrainer(cl.code)) return;
+  try{
+    var url = SB_URL+'/rest/v1/trainer_briefings?trainer_code=eq.'+cl.code+'&order=created_at.desc&limit=1';
+    var res = await fetch(url, {method:'GET', headers:sbHeaders()});
+    if(!res.ok) return;
+    var data = await res.json();
+    if(data && data.length > 0){
+      renderBriefing(data[0]);
+    }
+  }catch(e){}
+}
+
+function renderBriefing(b){
+  if(!b) return;
+  var bodyEl = document.getElementById('briefingBody');
+  var stampEl = document.getElementById('briefingStamp');
+  var btnLabel = document.getElementById('briefingBtnLabel');
+  if(bodyEl){
+    // Convert plain text to safer HTML with paragraph breaks preserved
+    var txt = b.briefing_text || '';
+    bodyEl.innerHTML = '<div style="white-space:pre-wrap;">'+escapeHtml(txt)+'</div>';
+  }
+  if(stampEl && b.created_at){
+    var d = new Date(b.created_at);
+    var now = new Date();
+    var diffH = Math.floor((now - d) / (60*60*1000));
+    var stamp;
+    if(diffH < 1) stamp = 'just now';
+    else if(diffH < 24) stamp = diffH+'h ago';
+    else stamp = d.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' · '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    stampEl.textContent = stamp;
+  }
+  if(btnLabel) btnLabel.textContent = '↻ Regenerate briefing';
+}
+
+async function generateBriefing(){
+  if(!cl || !isTrainer(cl.code)){
+    showToast('Trainer access required');
+    return;
+  }
+  var btn = document.getElementById('briefingGenBtn');
+  var spin = document.getElementById('briefingSpin');
+  var lbl = document.getElementById('briefingBtnLabel');
+  btn.disabled = true;
+  btn.style.opacity = '0.7';
+  if(spin) spin.style.display = 'inline-block';
+  if(lbl) lbl.textContent = 'Reading the room...';
+
+  try{
+    // Gather data — pull all non-trainer profiles + their recent activity
+    var allProfiles = await sbSelect('profiles','limit=500');
+    var clientProfiles = (allProfiles||[]).filter(function(p){
+      return p.client_code && !isTrainer(p.client_code);
+    });
+
+    if(clientProfiles.length === 0){
+      showToast('No clients to brief on yet');
+      btn.disabled = false; btn.style.opacity = '1';
+      if(spin) spin.style.display = 'none';
+      if(lbl) lbl.textContent = '✦ Generate tonight\'s briefing';
+      return;
+    }
+
+    // Build the time window — last 48 hours
+    var cutoff = new Date(Date.now() - 48*60*60*1000).toISOString();
+    var todayStr = new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+
+    // Pull all data in parallel for speed
+    var dataPromises = clientProfiles.map(async function(p){
+      try{
+        var foods = await sbSelect('food_logs','client_code=eq.'+p.client_code+'&order=logged_at.desc&limit=20');
+        var weights = await sbSelect('weight_logs','client_code=eq.'+p.client_code+'&order=created_at.desc&limit=2');
+        var checkins = await sbSelect('energy_checkins','client_code=eq.'+p.client_code+'&order=logged_at.desc&limit=10');
+        return {
+          name: p.name || p.client_code,
+          code: p.client_code,
+          foods: (foods||[]).filter(function(f){ return f.logged_at >= cutoff; }),
+          weights: weights||[],
+          checkins: (checkins||[]).filter(function(c){ return c.logged_at >= cutoff; })
+        };
+      }catch(e){
+        return { name: p.name || p.client_code, code: p.client_code, foods:[], weights:[], checkins:[], error: true };
+      }
+    });
+
+    var allData = await Promise.all(dataPromises);
+
+    // Build the data snapshot for the prompt
+    var lines = ['=== CLIENT ROSTER DATA — Last 48 hours ==='];
+    allData.forEach(function(d){
+      lines.push('\n--- '+d.name+' ('+d.code+') ---');
+      if(d.error){ lines.push('  (data fetch failed)'); return; }
+      // Food activity
+      if(d.foods.length === 0){
+        lines.push('  Food: NO LOGS in last 48h (ghosting)');
+      } else {
+        var totalCal = d.foods.reduce(function(s,f){return s+(f.calories||0);},0);
+        var totalP = d.foods.reduce(function(s,f){return s+(f.protein||0);},0);
+        var badCt = d.foods.filter(function(f){return f.rating==='bad';}).length;
+        var ndCt = d.foods.filter(function(f){return f.rating==='nutrient_dense';}).length;
+        lines.push('  Food: '+d.foods.length+' meals, ~'+totalCal+' cal, '+totalP+'g protein. '+ndCt+' nutrient-dense, '+badCt+' off-plan.');
+        // List the actual meals briefly
+        d.foods.slice(0,5).forEach(function(f){
+          lines.push('    - '+(f.name||'?')+' ('+f.calories+'cal, '+f.protein+'gP, '+(f.rating||'?')+')');
+        });
+      }
+      // Weight trajectory
+      if(d.weights.length >= 2){
+        var change = (d.weights[0].weight - d.weights[1].weight).toFixed(1);
+        var dir = change > 0 ? '+' : '';
+        lines.push('  Weight: '+d.weights[0].weight+' lbs (latest), '+dir+change+' lbs from previous');
+      } else if(d.weights.length === 1){
+        lines.push('  Weight: '+d.weights[0].weight+' lbs (only one entry)');
+      } else {
+        lines.push('  Weight: no logs');
+      }
+      // Check-ins
+      if(d.checkins.length > 0){
+        var latest = d.checkins[0];
+        lines.push('  Last check-in: energy='+latest.energy+', mood='+(latest.mood||'?')+(latest.note?', note: "'+latest.note+'"':''));
+      }
+    });
+
+    var dataBlock = lines.join('\n');
+
+    // The system prompt — Jim writing the briefing
+    var systemPrompt = 'You are JIM — Yusuf\'s coaching AI assistant. Yusuf is a fitness/nutrition coach with multiple clients. Tonight, you are texting Yusuf a private briefing on his client roster.\n\n'+
+      'TONE & FORMAT:\n'+
+      '- This is a TEXT MESSAGE to Yusuf — written like you just spent 30 min reviewing every client\'s data and now you\'re telling him what you noticed.\n'+
+      '- Conversational. Direct. Operator voice. No corporate dashboard language.\n'+
+      '- No bullet lists, no markdown headers, no emojis sprinkled everywhere. Just clean prose, like one coach to another over text.\n'+
+      '- 3-5 short paragraphs maximum. Brevity over completeness.\n'+
+      '- Lead with what matters most. If someone\'s killing it, say it. If someone\'s ghosting, flag it. If something\'s subtle but important (a pattern, a streak, a worrying sign), call it out.\n'+
+      '- Use first names, not codes. Real names.\n'+
+      '- End with one direct recommendation — "I\'d check in with X first" or "Send Mike a voice note about Y" — only if there\'s a clear move.\n\n'+
+      'WHAT TO LOOK FOR:\n'+
+      '- Wins to acknowledge (clean streaks, hit goals, smart choices)\n'+
+      '- Ghosting (zero logs in 48h)\n'+
+      '- Off-plan patterns (multiple bad meals)\n'+
+      '- Energy/mood signals (low energy, "stressed", "bad sleep")\n'+
+      '- Weight trajectory (significant change, plateau)\n'+
+      '- Anyone who needs personal outreach vs. anyone who\'s self-managing\n\n'+
+      'AVOID:\n'+
+      '- Generic SaaS phrases ("Here\'s your daily summary")\n'+
+      '- Listing every client robotically — only the ones worth mentioning\n'+
+      '- Bullet points or headers\n'+
+      '- Anything that sounds like a Trainerize report\n\n'+
+      '=== TODAY: '+todayStr+' ===\n\n'+
+      dataBlock+'\n\n'+
+      'Now write the briefing. Speak directly to Yusuf as Jim. No preamble, no "here\'s your briefing" — just start.';
+
+    var res = await fetch('/.netlify/functions/analyze', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({messages:[{role:'user',content:systemPrompt}]})
+    });
+    var data = await res.json();
+    var briefingText = '';
+    if(data && data.content){
+      data.content.forEach(function(b){ if(b.type==='text' && b.text) briefingText += b.text; });
+    }
+    briefingText = briefingText.trim();
+    if(!briefingText){ throw new Error('Empty response'); }
+
+    // Save to Supabase
+    var insertRes = await fetch(SB_URL+'/rest/v1/trainer_briefings', {
+      method:'POST',
+      headers:Object.assign({},sbHeaders(),{'Prefer':'return=representation'}),
+      body:JSON.stringify({
+        trainer_code: cl.code,
+        briefing_text: briefingText,
+        data_snapshot: { client_count: clientProfiles.length, window: '48h' }
+      })
+    });
+    var inserted = await insertRes.json();
+    var saved = Array.isArray(inserted) ? inserted[0] : inserted;
+    renderBriefing(saved);
+    showToast('✦ Briefing ready');
+  }catch(e){
+    console.error('Briefing failed', e);
+    showToast('Briefing failed — try again');
+  }finally{
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    if(spin) spin.style.display = 'none';
+    if(lbl && lbl.textContent === 'Reading the room...') lbl.textContent = '✦ Generate tonight\'s briefing';
+  }
+}
+
 async function sendBroadcast(){
   var textEl = document.getElementById('broadcastText');
   var btn = document.getElementById('broadcastSendBtn');
@@ -1429,6 +1639,8 @@ async function sendBroadcast(){
 
 async function loadTrainerDashboard(){
   var listEl = document.getElementById('clientList');
+  // Load briefing in parallel (non-blocking)
+  loadLatestBriefing();
   // Show subtle loading only on first load
   if(listEl.innerHTML.indexOf('client-card') === -1){
     listEl.innerHTML = '<div class="no-clients">Loading clients...</div>';
@@ -3231,7 +3443,7 @@ function buildEmpty(){
     else ctx="Closing out the day. Anything to work through?";
   }
 
-  d.innerHTML='<div class="chat-empty-ic">'+emoji+'</div><div class="chat-empty-title">'+greeting+escapeHtml(name)+' 👋</div><div>'+escapeHtml(ctx)+'</div>';
+  d.innerHTML='<div class="chat-empty-ic">'+emoji+'</div><div class="chat-empty-title">'+greeting+escapeHtml(name)+' 👋</div><div>'+escapeHtml(ctx)+'<br><span style="opacity:0.55;font-size:10px;letter-spacing:0.5px;margin-top:12px;display:inline-block;">👁️ Your coach sees this.</span></div>';
   return d;
 }
 
