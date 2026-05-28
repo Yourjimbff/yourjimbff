@@ -520,6 +520,19 @@ textarea.ifield{min-height:78px;}
       <div style="color:var(--muted);font-size:18px;flex-shrink:0;">›</div>
     </div>
 
+    <!-- TODAY'S WORKOUT CARD (visible when client has assigned program) -->
+    <div id="todayWorkoutCard" style="display:none;background:linear-gradient(135deg,#1a1a1a,#0a0a0a);border:1px solid rgba(245,197,24,0.5);border-radius:14px;padding:16px 18px;margin-bottom:16px;cursor:pointer;position:relative;overflow:hidden;" onclick="openTodayProgramWorkout()">
+      <div style="position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--gold),transparent);"></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-family:'Bebas Neue',sans-serif;font-size:11px;letter-spacing:2px;color:var(--gold);margin-bottom:6px;" id="todayWorkoutLabel">TODAY'S WORKOUT</div>
+          <div style="font-size:17px;font-weight:700;color:#fff;line-height:1.2;margin-bottom:4px;" id="todayWorkoutTitle">—</div>
+          <div style="font-size:12px;color:#aaa;" id="todayWorkoutMeta">—</div>
+        </div>
+        <div style="color:var(--gold);font-size:22px;flex-shrink:0;">›</div>
+      </div>
+    </div>
+
     <!-- FOOD -->
     <div class="tile" id="tileFood">
       <div class="thead" onclick="tog('Food')">
@@ -763,6 +776,20 @@ textarea.ifield{min-height:78px;}
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:13px 14px;margin-bottom:14px;font-size:12px;color:var(--m2);line-height:1.5;">
       <div style="font-weight:700;color:var(--text);margin-bottom:4px;">💪 You can use Jim to log a workout.</div>
       Describe what you did and Jim will log it for you — exercises, sets, reps, intensity. He'll confirm before saving.
+    </div>
+
+    <!-- TRAINER: MY PROGRAMS (template programs you author) -->
+    <div id="trainerProgramsSection" class="trainer-only" style="background:linear-gradient(135deg,#1a1a1a,#0a0a0a);border:1px solid rgba(245,197,24,0.3);border-radius:14px;padding:16px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:14px;letter-spacing:1.5px;color:var(--gold);">MY PROGRAMS</div>
+        <div style="font-size:10px;color:#888;letter-spacing:0.5px;">YOU AUTHOR · CLIENTS USE</div>
+      </div>
+      <div id="trainerProgramsList" style="display:flex;flex-direction:column;gap:8px;"></div>
+    </div>
+
+    <!-- CLIENT: YOUR ASSIGNED PROGRAM -->
+    <div id="clientAssignedProgramSection" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:14px;">
+      <div id="clientAssignedProgramContent"></div>
     </div>
 
     <!-- WEEK CALENDAR -->
@@ -1082,6 +1109,29 @@ textarea.ifield{min-height:78px;}
 </div>
 
 <!-- PROGRAM DAY EDIT MODAL -->
+<!-- TODAY'S WORKOUT PREVIEW MODAL (client) -->
+<div class="mbg" id="mTodayWorkout">
+  <div class="msh">
+    <div class="mhnd"></div>
+    <div class="mtitle" id="twTitle">Today's Workout</div>
+    <div class="msub" id="twSub">—</div>
+    <div id="twBody"></div>
+    <button class="sbtn" style="margin-top:14px;" onclick="logProgramWorkoutFromToday()">Log This Workout ✓</button>
+    <button class="obtn" onclick="closeM('mTodayWorkout')">Close</button>
+  </div>
+</div>
+
+<!-- ASSIGN PROGRAM TO CLIENT MODAL (trainer) -->
+<div class="mbg" id="mAssignProgram">
+  <div class="msh">
+    <div class="mhnd"></div>
+    <div class="mtitle">Assign Program</div>
+    <div class="msub" id="apSub">—</div>
+    <div id="apBody"></div>
+    <button class="obtn" onclick="closeM('mAssignProgram')">Cancel</button>
+  </div>
+</div>
+
 <div class="mbg" id="mEditProgramDay">
   <div class="msh">
     <div class="mhnd"></div>
@@ -1459,8 +1509,8 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.11.1';
-var APP_BUILD = 'May 28 — calendar back, small fixes (tip text, removed trim/restore buttons)';
+var APP_VERSION = 'v2.12.0';
+var APP_BUILD = 'May 28 — template program system: author once, assign clients, surface today';
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -1673,6 +1723,9 @@ async function launchApp(){
   loadTodayWorkouts();
   loadTodaySteps();
   loadTodaySleep();
+  // Template program system
+  loadTrainerPrograms();
+  loadClientAssignedProgram();
   // Refresh tile completion states based on what's actually been logged today
   setTimeout(refreshTileStates, 200);
   setTimeout(refreshTileStates, 1200); // second pass after async loads finish
@@ -2716,6 +2769,568 @@ async function deleteProgramDay(){
   }
 }
 
+// ===== TEMPLATE PROGRAM SYSTEM (coach-authored, client-assigned) =====
+// Two programs total: women's & men's, both authored by trainer.
+// Trainer assigns each client to one of them via profiles.assigned_program_id.
+var TRAINER_CODE = 'yusuf1'; // owner of template programs
+var templatePrograms = {women: null, men: null};
+var templateProgramWorkouts = {women: [], men: []};
+var clientAssignedProgram = null; // for current user: {program, workouts} if assigned
+var todayProgramWorkout = null; // today's workout from assigned program, if any
+
+// ---- Trainer-side: load + render the two template programs ----
+async function loadTrainerPrograms(){
+  if(!cl || !cl.isTrainer) return;
+  try{
+    var url = SB_URL+'/rest/v1/programs?client_code=eq.'+encodeURIComponent(TRAINER_CODE)+'&audience=in.(women,men)&order=audience.asc';
+    var res = await fetch(url, {headers: sbHeaders()});
+    if(!res.ok){
+      var t = ''; try{ t = await res.text(); }catch(e){}
+      if(/audience.*does not exist|relation.*programs.*does not exist/i.test(t)){
+        renderTrainerProgramsSchemaPrompt();
+        return;
+      }
+      throw new Error('load failed');
+    }
+    var rows = await res.json();
+    templatePrograms = {women: null, men: null};
+    templateProgramWorkouts = {women: [], men: []};
+    for(var i=0;i<rows.length;i++){
+      var p = rows[i];
+      if(p.audience === 'women' || p.audience === 'men'){
+        templatePrograms[p.audience] = p;
+        // Fetch workouts for this program
+        var pwUrl = SB_URL+'/rest/v1/program_workouts?program_id=eq.'+p.id+'&order=day_of_week.asc';
+        var pwRes = await fetch(pwUrl, {headers: sbHeaders()});
+        templateProgramWorkouts[p.audience] = pwRes.ok ? await pwRes.json() : [];
+      }
+    }
+    renderTrainerProgramsList();
+  }catch(e){
+    console.error('loadTrainerPrograms', e);
+    var holder = document.getElementById('trainerProgramsList');
+    if(holder) holder.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:8px;">Could not load. Run the SQL setup if you haven\'t.</div>';
+  }
+}
+
+function renderTrainerProgramsSchemaPrompt(){
+  var holder = document.getElementById('trainerProgramsList');
+  if(!holder) return;
+  holder.innerHTML = '<div style="font-size:11px;color:#ddd;line-height:1.6;background:rgba(245,197,24,0.08);border:1px solid rgba(245,197,24,0.25);border-radius:8px;padding:10px;">'+
+    '<div style="font-weight:700;margin-bottom:4px;color:var(--gold);">⚙️ Run this SQL in Supabase first:</div>'+
+    '<pre style="white-space:pre-wrap;font-family:Menlo,monospace;font-size:10px;color:#ccc;margin:6px 0 0;">ALTER TABLE programs ADD COLUMN IF NOT EXISTS audience TEXT;\nALTER TABLE profiles ADD COLUMN IF NOT EXISTS assigned_program_id BIGINT;</pre>'+
+  '</div>';
+}
+
+function renderTrainerProgramsList(){
+  var holder = document.getElementById('trainerProgramsList');
+  if(!holder) return;
+  var html = '';
+  ['women','men'].forEach(function(aud){
+    var prog = templatePrograms[aud];
+    var workouts = templateProgramWorkouts[aud] || [];
+    var label = aud === 'women' ? "Women's Program" : "Men's Program";
+    var hasContent = prog && workouts.length > 0;
+    var status = !prog
+      ? '<span style="color:#888;">Not created yet — tap to create</span>'
+      : (workouts.length === 0 ? '<span style="color:#888;">0 days planned</span>' : '<span style="color:#ccc;">'+workouts.length+' day'+(workouts.length===1?'':'s')+' planned</span>');
+    html += '<div onclick="openTrainerProgramEditor(\''+aud+'\')" style="background:rgba(255,255,255,0.04);border:1px solid rgba(245,197,24,0.2);border-radius:10px;padding:12px 14px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;">'+
+      '<div style="flex:1;min-width:0;">'+
+        '<div style="font-weight:700;font-size:14px;color:#fff;letter-spacing:0.3px;">'+label+'</div>'+
+        '<div style="font-size:11px;margin-top:3px;">'+status+'</div>'+
+      '</div>'+
+      '<div style="color:var(--gold);font-size:18px;">›</div>'+
+    '</div>';
+  });
+  holder.innerHTML = html;
+}
+
+// ---- Trainer-side: open the editor for a template program ----
+var currentTemplateProgram = {audience: null, programId: null};
+
+async function openTrainerProgramEditor(audience){
+  if(!cl || !cl.isTrainer) return;
+  var label = audience === 'women' ? "Women's Program" : "Men's Program";
+  // If program doesn't exist yet, create it now
+  if(!templatePrograms[audience]){
+    try{
+      var createRes = await fetch(SB_URL+'/rest/v1/programs', {
+        method:'POST',
+        headers: Object.assign({}, sbHeaders(), {'Prefer':'return=representation'}),
+        body: JSON.stringify({
+          client_code: TRAINER_CODE,
+          name: label,
+          audience: audience,
+          is_active: true
+        })
+      });
+      if(!createRes.ok){ showToast('Could not create program'); return; }
+      var created = await createRes.json();
+      templatePrograms[audience] = Array.isArray(created) ? created[0] : created;
+      templateProgramWorkouts[audience] = [];
+    }catch(e){
+      showToast('Create failed');
+      return;
+    }
+  }
+  // Open the 7-day editor view as a screen-takeover
+  currentTemplateProgram = {audience: audience, programId: templatePrograms[audience].id};
+  renderTemplateProgramEditorScreen();
+}
+
+function renderTemplateProgramEditorScreen(){
+  // Render a full-screen overlay that lists all 7 days and lets trainer tap each
+  // We reuse mEditProgramDay modal for individual day editing
+  var aud = currentTemplateProgram.audience;
+  if(!aud) return;
+  var label = aud === 'women' ? "Women's Program" : "Men's Program";
+  var workouts = templateProgramWorkouts[aud] || [];
+  var byDow = {};
+  workouts.forEach(function(w){ if(w.day_of_week != null) byDow[w.day_of_week] = w; });
+
+  // Build content as a fixed overlay
+  var ov = document.getElementById('templateEditorOverlay');
+  if(!ov){
+    ov = document.createElement('div');
+    ov.id = 'templateEditorOverlay';
+    ov.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:#fff;z-index:1000;overflow-y:auto;padding:20px 18px 80px;font-family:\'Plus Jakarta Sans\',sans-serif;';
+    document.body.appendChild(ov);
+  }
+  var displayOrder = [1,2,3,4,5,6,0];
+  var dayLabels = {0:'Sunday',1:'Monday',2:'Tuesday',3:'Wednesday',4:'Thursday',5:'Friday',6:'Saturday'};
+  var html =
+    '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">'+
+      '<button onclick="closeTemplateProgramEditor()" style="background:transparent;border:none;font-size:14px;color:var(--m2);cursor:pointer;padding:6px 0;font-weight:600;">‹ Back</button>'+
+      '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:18px;letter-spacing:1px;">'+label.toUpperCase()+'</div>'+
+      '<div style="width:50px;"></div>'+
+    '</div>'+
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:14px;line-height:1.5;">Tap any day to add or edit the workout. Leave blank for rest days.</div>';
+  displayOrder.forEach(function(dow){
+    var w = byDow[dow];
+    var hasWorkout = !!w;
+    var bg = hasWorkout ? 'var(--surface)' : 'transparent';
+    var exCount = 0;
+    if(hasWorkout && w.exercises){
+      try{
+        var ex = typeof w.exercises === 'string' ? JSON.parse(w.exercises) : w.exercises;
+        if(Array.isArray(ex)) exCount = ex.length;
+      }catch(e){}
+    }
+    var rightHtml = hasWorkout
+      ? '<div style="font-size:11px;color:var(--m2);">'+exCount+' exercise'+(exCount===1?'':'s')+'</div>'
+      : '<div style="font-size:11px;color:var(--gold);">+ Add workout</div>';
+    var titleHtml = hasWorkout
+      ? '<div style="font-weight:700;font-size:14px;color:var(--text);">'+((w.title||'Workout').replace(/</g,'&lt;'))+'</div>'
+      : '<div style="font-weight:700;font-size:13px;color:var(--muted);">Rest day</div>';
+    html +=
+      '<div onclick="openTemplateDayEditor('+dow+')" style="background:'+bg+';border:1px solid var(--border);border-radius:12px;padding:13px 14px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;">'+
+        '<div style="flex:1;min-width:0;">'+
+          '<div style="font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;font-weight:700;margin-bottom:4px;">'+dayLabels[dow]+'</div>'+
+          titleHtml+
+        '</div>'+
+        rightHtml+
+      '</div>';
+  });
+  ov.innerHTML = html;
+  ov.style.display = 'block';
+}
+
+function closeTemplateProgramEditor(){
+  var ov = document.getElementById('templateEditorOverlay');
+  if(ov) ov.style.display = 'none';
+  // Refresh the list with latest counts
+  loadTrainerPrograms();
+}
+
+function openTemplateDayEditor(dow){
+  // Reuse mEditProgramDay modal but point it at the template program
+  var aud = currentTemplateProgram.audience;
+  if(!aud) return;
+  var workouts = templateProgramWorkouts[aud] || [];
+  var existing = workouts.find(function(w){ return w.day_of_week === dow; }) || null;
+  // Override the modal's save target: we override saveProgramDay temporarily
+  currentProgramDayEdit = {
+    existing_id: existing ? existing.id : null,
+    day_of_week: dow,
+    _template_audience: aud,
+    _template_program_id: currentTemplateProgram.programId
+  };
+  // Patch the modal title
+  var titleEl = document.getElementById('pdModalTitle');
+  if(titleEl) titleEl.textContent = (existing ? 'Edit' : 'Add') + ' Workout';
+  // Hide the day chip selector for template programs (day is fixed by the caller)
+  var chipsHolder = document.getElementById('pdDayChips');
+  if(chipsHolder){
+    var dayLabels = {0:'Sunday',1:'Monday',2:'Tuesday',3:'Wednesday',4:'Thursday',5:'Friday',6:'Saturday'};
+    chipsHolder.innerHTML = '<div style="font-size:13px;color:var(--text);padding:8px 12px;background:var(--s2);border-radius:8px;font-weight:700;">'+dayLabels[dow]+'</div>';
+  }
+  document.getElementById('pdTitle').value = existing ? (existing.title || '') : '';
+  document.getElementById('pdNotes').value = existing ? (existing.notes || '') : '';
+  var list = document.getElementById('pdExercisesList');
+  list.innerHTML = '';
+  if(existing && existing.exercises){
+    try{
+      var arr = typeof existing.exercises === 'string' ? JSON.parse(existing.exercises) : existing.exercises;
+      if(Array.isArray(arr)){
+        arr.forEach(function(ex){
+          var w = document.createElement('div');
+          w.innerHTML = buildProgramExerciseRowHtml(ex);
+          list.appendChild(w.firstChild);
+        });
+      }
+    }catch(e){}
+  }
+  document.getElementById('pdDeleteBtn').style.display = existing ? 'block' : 'none';
+  openM('mEditProgramDay');
+}
+
+// Override saveProgramDay to route to template editor when in template mode
+var _originalSaveProgramDay = saveProgramDay;
+saveProgramDay = async function(){
+  if(currentProgramDayEdit && currentProgramDayEdit._template_program_id){
+    // Template program flow
+    var title = (document.getElementById('pdTitle').value || '').trim();
+    var notes = (document.getElementById('pdNotes').value || '').trim();
+    var exercises = collectProgramExerciseRows();
+    if(!title && exercises.length === 0){
+      showToast('Add a title or at least one exercise');
+      return;
+    }
+    var payload = {
+      program_id: currentProgramDayEdit._template_program_id,
+      day_of_week: currentProgramDayEdit.day_of_week,
+      title: title || null,
+      notes: notes || null,
+      exercises: exercises.length > 0 ? exercises : null
+    };
+    try{
+      if(currentProgramDayEdit.existing_id){
+        var res = await fetch(SB_URL+'/rest/v1/program_workouts?id=eq.'+currentProgramDayEdit.existing_id, {
+          method:'PATCH',
+          headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}),
+          body: JSON.stringify(payload)
+        });
+        if(!res.ok) throw new Error('patch failed');
+      } else {
+        var res = await fetch(SB_URL+'/rest/v1/program_workouts', {
+          method:'POST',
+          headers: sbHeaders(),
+          body: JSON.stringify(payload)
+        });
+        if(!res.ok) throw new Error('insert failed');
+      }
+      closeM('mEditProgramDay');
+      var aud = currentProgramDayEdit._template_audience;
+      currentProgramDayEdit = null;
+      showToast('✓ Saved');
+      // Reload template programs and refresh editor screen
+      await loadTrainerPrograms();
+      if(aud === currentTemplateProgram.audience){
+        renderTemplateProgramEditorScreen();
+      }
+    }catch(e){
+      console.error('saveProgramDay (template)', e);
+      showToast('Could not save');
+    }
+    return;
+  }
+  // Otherwise use the legacy per-client flow
+  return _originalSaveProgramDay();
+};
+
+// Override deleteProgramDay similarly
+var _originalDeleteProgramDay = deleteProgramDay;
+deleteProgramDay = async function(){
+  if(currentProgramDayEdit && currentProgramDayEdit._template_program_id){
+    if(!currentProgramDayEdit.existing_id) return;
+    if(!window.confirm('Remove this workout from the program?')) return;
+    try{
+      await fetch(SB_URL+'/rest/v1/program_workouts?id=eq.'+currentProgramDayEdit.existing_id, {
+        method:'DELETE',
+        headers: sbHeaders()
+      });
+      closeM('mEditProgramDay');
+      var aud = currentProgramDayEdit._template_audience;
+      currentProgramDayEdit = null;
+      showToast('Removed');
+      await loadTrainerPrograms();
+      if(aud === currentTemplateProgram.audience){
+        renderTemplateProgramEditorScreen();
+      }
+    }catch(e){ showToast('Could not remove'); }
+    return;
+  }
+  return _originalDeleteProgramDay();
+};
+
+// ---- Client-side: load assigned program ----
+async function loadClientAssignedProgram(){
+  if(!cl) return;
+  clientAssignedProgram = null;
+  todayProgramWorkout = null;
+  hideTodayWorkoutCard();
+  hideClientAssignedProgramSection();
+  try{
+    // Read profile to get assigned_program_id
+    var profRes = await fetch(SB_URL+'/rest/v1/profiles?client_code=eq.'+encodeURIComponent(cl.code)+'&limit=1', {headers: sbHeaders()});
+    if(!profRes.ok) return;
+    var profs = await profRes.json();
+    if(!profs || profs.length === 0) return;
+    var p = profs[0];
+    if(!p.assigned_program_id) return;
+    // Fetch the program + its workouts
+    var progRes = await fetch(SB_URL+'/rest/v1/programs?id=eq.'+p.assigned_program_id+'&limit=1', {headers: sbHeaders()});
+    if(!progRes.ok) return;
+    var progs = await progRes.json();
+    if(!progs || progs.length === 0) return;
+    var program = progs[0];
+    var wRes = await fetch(SB_URL+'/rest/v1/program_workouts?program_id=eq.'+program.id+'&order=day_of_week.asc', {headers: sbHeaders()});
+    var workouts = wRes.ok ? await wRes.json() : [];
+    clientAssignedProgram = {program: program, workouts: workouts};
+    // Find today's workout
+    var todayDow = new Date().getDay();
+    todayProgramWorkout = workouts.find(function(w){ return w.day_of_week === todayDow; }) || null;
+    renderTodayWorkoutCard();
+    renderClientAssignedProgramSection();
+  }catch(e){
+    console.error('loadClientAssignedProgram', e);
+  }
+}
+
+function renderTodayWorkoutCard(){
+  var card = document.getElementById('todayWorkoutCard');
+  if(!card) return;
+  if(!todayProgramWorkout){
+    // Today is a rest day or no workout assigned for today's DOW — keep hidden
+    if(clientAssignedProgram){
+      // Show a soft "rest day" card
+      card.style.display = 'block';
+      document.getElementById('todayWorkoutLabel').textContent = "TODAY'S PROGRAM";
+      document.getElementById('todayWorkoutTitle').textContent = 'Rest day';
+      document.getElementById('todayWorkoutMeta').textContent = clientAssignedProgram.program.name+' · no workout planned';
+    } else {
+      card.style.display = 'none';
+    }
+    return;
+  }
+  card.style.display = 'block';
+  var exCount = 0;
+  if(todayProgramWorkout.exercises){
+    try{
+      var ex = typeof todayProgramWorkout.exercises === 'string' ? JSON.parse(todayProgramWorkout.exercises) : todayProgramWorkout.exercises;
+      if(Array.isArray(ex)) exCount = ex.length;
+    }catch(e){}
+  }
+  var dayShort = {0:'Sun',1:'Mon',2:'Tue',3:'Wed',4:'Thu',5:'Fri',6:'Sat'};
+  document.getElementById('todayWorkoutLabel').textContent = "TODAY'S WORKOUT · "+dayShort[new Date().getDay()].toUpperCase();
+  document.getElementById('todayWorkoutTitle').textContent = todayProgramWorkout.title || 'Workout';
+  document.getElementById('todayWorkoutMeta').textContent = exCount+' exercise'+(exCount===1?'':'s')+' · tap to view & log';
+}
+
+function hideTodayWorkoutCard(){
+  var card = document.getElementById('todayWorkoutCard');
+  if(card) card.style.display = 'none';
+}
+
+function openTodayProgramWorkout(){
+  if(!todayProgramWorkout){
+    showToast('No workout planned for today');
+    return;
+  }
+  var w = todayProgramWorkout;
+  document.getElementById('twTitle').textContent = w.title || 'Workout';
+  var dayLabels = {0:'Sunday',1:'Monday',2:'Tuesday',3:'Wednesday',4:'Thursday',5:'Friday',6:'Saturday'};
+  document.getElementById('twSub').textContent = dayLabels[new Date().getDay()];
+  var body = document.getElementById('twBody');
+  var html = '';
+  if(w.exercises){
+    try{
+      var arr = typeof w.exercises === 'string' ? JSON.parse(w.exercises) : w.exercises;
+      if(Array.isArray(arr) && arr.length > 0){
+        html += '<div style="margin-top:6px;font-size:13px;color:var(--text);line-height:1.7;">';
+        arr.forEach(function(e){
+          var line = '<div style="padding:7px 0;border-bottom:1px solid var(--border);">';
+          line += '<strong>'+(e.name || e.exercise || 'Exercise').replace(/</g,'&lt;')+'</strong>';
+          var detail = '';
+          if(e.sets && e.reps) detail = e.sets + '×' + e.reps;
+          else if(e.sets) detail = e.sets + ' sets';
+          else if(e.reps) detail = e.reps + ' reps';
+          if(e.weight) detail += (detail ? ' @ ' : '') + e.weight;
+          if(detail) line += '<span style="color:var(--m2);margin-left:8px;font-size:12px;">'+detail+'</span>';
+          line += '</div>';
+          html += line;
+        });
+        html += '</div>';
+      }
+    }catch(e){}
+  }
+  if(w.notes){
+    html += '<div style="margin-top:12px;font-size:12px;color:var(--m2);font-style:italic;line-height:1.5;padding:10px;background:var(--s2);border-radius:8px;">'+(w.notes||'').replace(/</g,'&lt;')+'</div>';
+  }
+  body.innerHTML = html;
+  openM('mTodayWorkout');
+}
+
+function logProgramWorkoutFromToday(){
+  if(!todayProgramWorkout) return;
+  // Pre-fill the manual workout modal with this program workout
+  closeM('mTodayWorkout');
+  openManualWorkoutModal();
+  // After the modal opens, hydrate it
+  setTimeout(function(){
+    var titleField = document.getElementById('wTitle');
+    if(titleField) titleField.value = todayProgramWorkout.title || '';
+    // Hydrate exercises if there's an exercise editor in the manual modal
+    // Check if the manual modal has exercise rows like the edit modal
+    var exList = document.getElementById('wExercisesList') || document.getElementById('mwExercisesList');
+    if(exList && todayProgramWorkout.exercises){
+      try{
+        var arr = typeof todayProgramWorkout.exercises === 'string' ? JSON.parse(todayProgramWorkout.exercises) : todayProgramWorkout.exercises;
+        if(Array.isArray(arr)){
+          exList.innerHTML = '';
+          // We need to invoke whatever row-builder the manual modal uses — try a few
+          if(typeof addManualExerciseRow === 'function'){
+            arr.forEach(function(ex){ addManualExerciseRow(ex); });
+          }
+        }
+      }catch(e){}
+    }
+  }, 100);
+}
+
+function renderClientAssignedProgramSection(){
+  var section = document.getElementById('clientAssignedProgramSection');
+  var content = document.getElementById('clientAssignedProgramContent');
+  if(!section || !content) return;
+  if(!clientAssignedProgram){ section.style.display = 'none'; return; }
+  section.style.display = 'block';
+  var p = clientAssignedProgram.program;
+  var workouts = clientAssignedProgram.workouts;
+  var byDow = {};
+  workouts.forEach(function(w){ if(w.day_of_week != null) byDow[w.day_of_week] = w; });
+  var displayOrder = [1,2,3,4,5,6,0];
+  var dayShort = {0:'Sun',1:'Mon',2:'Tue',3:'Wed',4:'Thu',5:'Fri',6:'Sat'};
+  var todayDow = new Date().getDay();
+  var html =
+    '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">'+
+      '<div>'+
+        '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:14px;letter-spacing:1.5px;color:var(--gold);">YOUR PROGRAM</div>'+
+        '<div style="font-size:13px;font-weight:700;color:var(--text);margin-top:3px;">'+p.name.replace(/</g,'&lt;')+'</div>'+
+      '</div>'+
+    '</div>';
+  html += '<div style="display:flex;flex-direction:column;gap:6px;">';
+  displayOrder.forEach(function(dow){
+    var w = byDow[dow];
+    var isToday = (dow === todayDow);
+    var bg = isToday ? 'rgba(245,197,24,0.08)' : (w ? 'var(--s2)' : 'transparent');
+    var border = isToday ? '1.5px solid var(--gold)' : '1px solid var(--border)';
+    var titleHtml = w
+      ? '<div style="font-weight:700;font-size:13px;color:var(--text);">'+((w.title||'Workout').replace(/</g,'&lt;'))+'</div>'
+      : '<div style="font-size:12px;color:var(--muted);">Rest</div>';
+    var todayTag = isToday ? '<span style="font-size:9px;color:var(--gold);background:rgba(245,197,24,0.15);padding:2px 6px;border-radius:4px;letter-spacing:0.5px;font-weight:700;margin-left:6px;">TODAY</span>' : '';
+    var exCount = 0;
+    if(w && w.exercises){
+      try{
+        var ex = typeof w.exercises === 'string' ? JSON.parse(w.exercises) : w.exercises;
+        if(Array.isArray(ex)) exCount = ex.length;
+      }catch(e){}
+    }
+    var meta = w ? (exCount + ' exercise'+(exCount===1?'':'s')) : '';
+    html += '<div onclick="viewClientProgramDay('+dow+')" style="background:'+bg+';border:'+border+';border-radius:10px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:'+(w?'pointer':'default')+';">'+
+      '<div style="flex:1;min-width:0;">'+
+        '<div style="font-size:10px;color:var(--muted);letter-spacing:1px;font-weight:700;margin-bottom:2px;">'+dayShort[dow].toUpperCase()+todayTag+'</div>'+
+        titleHtml+
+      '</div>'+
+      (meta ? '<div style="font-size:10px;color:var(--m2);">'+meta+'</div>' : '')+
+    '</div>';
+  });
+  html += '</div>';
+  content.innerHTML = html;
+}
+
+function hideClientAssignedProgramSection(){
+  var section = document.getElementById('clientAssignedProgramSection');
+  if(section) section.style.display = 'none';
+}
+
+function viewClientProgramDay(dow){
+  if(!clientAssignedProgram) return;
+  var w = clientAssignedProgram.workouts.find(function(x){ return x.day_of_week === dow; });
+  if(!w){ showToast('Rest day'); return; }
+  // Show the modal for this day's workout (read-only-ish; log button reuses today flow if today)
+  todayProgramWorkout = w;
+  openTodayProgramWorkout();
+}
+
+// ---- Trainer-side: assign program to client ----
+function openAssignProgramModal(clientCode, clientName, currentAssignedProgramId){
+  var sub = document.getElementById('apSub');
+  var body = document.getElementById('apBody');
+  if(sub) sub.textContent = 'For '+(clientName || clientCode);
+  if(!body) return;
+  // Build option list
+  var options = [
+    {id: null, label: '— Not assigned', sub: 'No program', audience: null},
+    {id: templatePrograms.women ? templatePrograms.women.id : null, label: "Women's Program", sub: templatePrograms.women ? 'Active' : 'Not created yet', audience: 'women', disabled: !templatePrograms.women},
+    {id: templatePrograms.men ? templatePrograms.men.id : null, label: "Men's Program", sub: templatePrograms.men ? 'Active' : 'Not created yet', audience: 'men', disabled: !templatePrograms.men}
+  ];
+  var html = '';
+  options.forEach(function(opt){
+    var isCurrent = (opt.id === currentAssignedProgramId) || (opt.id == null && currentAssignedProgramId == null);
+    var border = isCurrent ? '2px solid var(--gold)' : '1px solid var(--border)';
+    var bg = isCurrent ? 'rgba(245,197,24,0.08)' : 'var(--surface)';
+    var op = opt.disabled ? '0.4' : '1';
+    var click = opt.disabled ? '' : 'onclick="assignProgramToClient(\''+clientCode+'\','+(opt.id == null ? 'null' : opt.id)+')"';
+    var currentTag = isCurrent ? '<div style="font-size:9px;color:var(--gold);letter-spacing:0.5px;font-weight:700;margin-top:2px;">CURRENT</div>' : '';
+    html += '<div '+click+' style="background:'+bg+';border:'+border+';border-radius:10px;padding:14px;margin-bottom:8px;cursor:'+(opt.disabled?'default':'pointer')+';opacity:'+op+';">'+
+      '<div style="font-weight:700;font-size:14px;color:var(--text);">'+opt.label+'</div>'+
+      '<div style="font-size:11px;color:var(--muted);margin-top:3px;">'+opt.sub+'</div>'+
+      currentTag+
+    '</div>';
+  });
+  body.innerHTML = html;
+  openM('mAssignProgram');
+}
+
+async function assignProgramToClient(clientCode, programId){
+  try{
+    // PATCH the profile row
+    var payload = {assigned_program_id: programId};
+    // Make sure profile row exists; PATCH won't create it
+    var checkRes = await fetch(SB_URL+'/rest/v1/profiles?client_code=eq.'+encodeURIComponent(clientCode)+'&limit=1', {headers: sbHeaders()});
+    var existing = checkRes.ok ? await checkRes.json() : [];
+    if(!existing || existing.length === 0){
+      // Create profile row
+      await fetch(SB_URL+'/rest/v1/profiles', {
+        method:'POST',
+        headers: sbHeaders(),
+        body: JSON.stringify(Object.assign({client_code: clientCode}, payload))
+      });
+    } else {
+      var res = await fetch(SB_URL+'/rest/v1/profiles?client_code=eq.'+encodeURIComponent(clientCode), {
+        method:'PATCH',
+        headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}),
+        body: JSON.stringify(payload)
+      });
+      if(!res.ok){
+        var t = ''; try{ t = await res.text(); }catch(e){}
+        if(/assigned_program_id.*does not exist/i.test(t)){
+          showToast('Run the SQL: ALTER TABLE profiles ADD COLUMN assigned_program_id BIGINT');
+          return;
+        }
+        throw new Error('patch failed');
+      }
+    }
+    closeM('mAssignProgram');
+    showToast('✓ Assignment saved');
+    if(typeof loadTrainerDashboard === 'function') loadTrainerDashboard();
+  }catch(e){
+    console.error('assignProgramToClient', e);
+    showToast('Could not assign');
+  }
+}
+
+
 function doLogout(){
   if(!confirm('Log out?'))return;
   clearTimeout(trainerRefreshTimer);
@@ -3148,6 +3763,15 @@ async function loadTrainerDashboard(){
     var recentCheckins = await sbSelect('energy_checkins', 'order=logged_at.desc&limit=200');
     var recentChats = await sbSelect('chat_messages', 'role=eq.user&order=logged_at.desc&limit=300');
     var recentSteps = await sbSelect('step_logs', 'order=updated_at.desc&limit=200');
+    // Per-client program assignment (defensive — if profile schema missing the column, just skip)
+    var assignedByClient = {};
+    try{
+      var profRes = await fetch(SB_URL+'/rest/v1/profiles?select=client_code,assigned_program_id', {headers: sbHeaders()});
+      if(profRes.ok){
+        var profRows = await profRes.json();
+        profRows.forEach(function(p){ if(p.client_code) assignedByClient[p.client_code] = p.assigned_program_id; });
+      }
+    }catch(e){ /* silent — column may not exist yet */ }
 
     // Group foods (today only) by client for the dashboard card data
     var foodsByClient = {};
@@ -3237,7 +3861,20 @@ async function loadTrainerDashboard(){
       var seenDot = seen.isHot ? '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#22c77a;margin-right:5px;vertical-align:1px;"></span>' : '';
       var seenLabel = '<div style="font-size:10px;color:'+seenColor+';margin-top:2px;letter-spacing:0.3px;">'+seenDot+seen.label+'</div>';
 
-      html += '<div class="client-card"><div class="cc-head"><div class="cc-avi">'+clientInfo.initials[0]+'</div><div class="cc-info"><div class="cc-name">'+clientInfo.name+'</div><div class="cc-last">'+foods.length+' meals · '+Math.round(totalCal)+' cal · '+Math.round(totalPro)+'g protein'+(latestWeight?' · '+latestWeight+'lbs':'')+'</div>'+seenLabel+'</div><div><div class="cc-score" style="color:'+scoreCol+'">'+(foods.length>0?Math.round(totalCal):'—')+'</div><div class="cc-score-lbl">'+(foods.length>0?'cal today':'no logs')+'</div></div></div><div class="cc-meals">'+mealItems+'</div>'+noteBtn+'</div>';
+      // Program assignment chip — W / M / blank
+      var assignedId = assignedByClient[code] || null;
+      var chipLabel = '—', chipColor = 'var(--muted)', chipBg = 'transparent', chipBorder = 'var(--border)';
+      if(assignedId){
+        if(templatePrograms.women && assignedId === templatePrograms.women.id){
+          chipLabel = 'W'; chipColor = '#000'; chipBg = 'var(--gold)'; chipBorder = 'var(--gold)';
+        } else if(templatePrograms.men && assignedId === templatePrograms.men.id){
+          chipLabel = 'M'; chipColor = '#000'; chipBg = 'var(--gold)'; chipBorder = 'var(--gold)';
+        }
+      }
+      var safeClientName = clientInfo.name.replace(/'/g,"\\'");
+      var assignChip = '<button onclick="event.stopPropagation();openAssignProgramModal(\''+code+'\',\''+safeClientName+'\','+(assignedId||'null')+')" style="background:'+chipBg+';border:1.5px solid '+chipBorder+';color:'+chipColor+';width:30px;height:30px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;padding:0;line-height:1;flex-shrink:0;" title="Assign program">'+chipLabel+'</button>';
+
+      html += '<div class="client-card"><div class="cc-head"><div class="cc-avi">'+clientInfo.initials[0]+'</div><div class="cc-info"><div class="cc-name">'+clientInfo.name+'</div><div class="cc-last">'+foods.length+' meals · '+Math.round(totalCal)+' cal · '+Math.round(totalPro)+'g protein'+(latestWeight?' · '+latestWeight+'lbs':'')+'</div>'+seenLabel+'</div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">'+assignChip+'<div style="text-align:right;"><div class="cc-score" style="color:'+scoreCol+';font-size:18px;">'+(foods.length>0?Math.round(totalCal):'—')+'</div><div class="cc-score-lbl">'+(foods.length>0?'cal':'no logs')+'</div></div></div></div><div class="cc-meals">'+mealItems+'</div>'+noteBtn+'</div>';
     });
 
     listEl.innerHTML = html || '<div class="no-clients">No client data yet.</div>';
