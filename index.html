@@ -763,20 +763,25 @@ textarea.ifield{min-height:78px;}
     <!-- JIM'S BRIEFING -->
     <div style="background:linear-gradient(135deg,#1a1a1a,#0a0a0a);border:1px solid rgba(245,197,24,0.35);border-radius:14px;padding:16px;margin-bottom:14px;position:relative;overflow:hidden;">
       <div style="position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--gold),transparent);"></div>
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;">
+      <div onclick="toggleBriefing()" style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;">
         <div style="display:flex;align-items:center;gap:8px;">
           <div style="width:26px;height:26px;border-radius:50%;background:var(--gold);display:flex;align-items:center;justify-content:center;font-family:'Bebas Neue',sans-serif;font-size:13px;color:#000;flex-shrink:0;">J</div>
           <div style="font-family:'Bebas Neue',sans-serif;font-size:16px;letter-spacing:1.5px;color:var(--gold);line-height:1;">JIM'S BRIEFING</div>
         </div>
-        <div style="font-size:10px;color:#666;" id="briefingStamp"></div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="font-size:10px;color:#666;" id="briefingStamp"></div>
+          <span id="briefingChevron" style="color:var(--gold);font-size:14px;transition:transform 0.2s;display:inline-block;">⌄</span>
+        </div>
       </div>
-      <div id="briefingBody" style="font-size:13px;color:#e8e8e8;line-height:1.65;min-height:60px;padding:6px 2px 2px;">
-        <div style="color:#888;font-style:italic;font-size:12px;line-height:1.55;">No briefing yet. Tap below and I'll read what your clients have been up to and send you the rundown.</div>
+      <div id="briefingCollapsible" style="margin-top:8px;">
+        <div id="briefingBody" style="font-size:13px;color:#e8e8e8;line-height:1.65;min-height:60px;padding:6px 2px 2px;">
+          <div style="color:#888;font-style:italic;font-size:12px;line-height:1.55;">No briefing yet. Tap below and I'll read what your clients have been up to and send you the rundown.</div>
+        </div>
+        <button id="briefingGenBtn" onclick="generateBriefing()" style="margin-top:12px;background:var(--gold);border:none;border-radius:10px;padding:10px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;color:#000;width:100%;display:flex;align-items:center;justify-content:center;gap:6px;">
+          <span id="briefingBtnLabel">✦ Generate tonight's briefing</span>
+          <span id="briefingSpin" style="display:none;width:14px;height:14px;border:2px solid rgba(0,0,0,0.3);border-top-color:#000;border-radius:50%;animation:sp 0.8s linear infinite;"></span>
+        </button>
       </div>
-      <button id="briefingGenBtn" onclick="generateBriefing()" style="margin-top:12px;background:var(--gold);border:none;border-radius:10px;padding:10px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;color:#000;width:100%;display:flex;align-items:center;justify-content:center;gap:6px;">
-        <span id="briefingBtnLabel">✦ Generate tonight's briefing</span>
-        <span id="briefingSpin" style="display:none;width:14px;height:14px;border:2px solid rgba(0,0,0,0.3);border-top-color:#000;border-radius:50%;animation:sp 0.8s linear infinite;"></span>
-      </button>
     </div>
 
     <!-- BROADCAST INTERCOM -->
@@ -1297,8 +1302,8 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.0.0';
-var APP_BUILD = 'May 28 — unified trainer + client (Clients tab)';
+var APP_VERSION = 'v2.1.0';
+var APP_BUILD = 'May 28 — collapsible briefing + Coach Jim (roster aware)';
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -1539,7 +1544,29 @@ function doLogout(){
 var trainerRefreshTimer = null;
 
 // ===== JIM'S BRIEFING =====
+function toggleBriefing(){
+  var body = document.getElementById('briefingCollapsible');
+  var chev = document.getElementById('briefingChevron');
+  if(!body) return;
+  var isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  if(chev) chev.style.transform = isOpen ? 'rotate(-90deg)' : 'rotate(0deg)';
+  // Remember preference
+  if(cl) localStorage.setItem('yjb_briefing_collapsed_'+cl.code, isOpen ? '1' : '0');
+}
+
+function initBriefingCollapsed(){
+  if(!cl) return;
+  var body = document.getElementById('briefingCollapsible');
+  var chev = document.getElementById('briefingChevron');
+  if(!body) return;
+  var collapsed = localStorage.getItem('yjb_briefing_collapsed_'+cl.code) === '1';
+  body.style.display = collapsed ? 'none' : 'block';
+  if(chev) chev.style.transform = collapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
+}
+
 async function loadLatestBriefing(){
+  initBriefingCollapsed();
   if(!cl || !isTrainer(cl.code)) return;
   try{
     var url = SB_URL+'/rest/v1/trainer_briefings?trainer_code=eq.'+cl.code+'&order=created_at.desc&limit=1';
@@ -4264,8 +4291,79 @@ async function buildDayContext(){
     }
   }catch(e){}
 
+  // TRAINER ROSTER CONTEXT — only if logged in as trainer
+  if(cl && isTrainer(cl.code)){
+    try{
+      var rosterCtx = await buildTrainerRosterContext();
+      if(rosterCtx) sections.push(rosterCtx);
+    }catch(e){}
+  }
+
   if(sections.length===0) return '';
   return sections.join('\n\n');
+}
+
+async function buildTrainerRosterContext(){
+  // Pull last 48 hours of activity per client across all metrics
+  var cutoff = new Date(Date.now() - 48*60*60*1000).toISOString();
+  var allClients = Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer; });
+  if(allClients.length === 0) return '';
+
+  try{
+    var allFoods = await sbSelect('food_logs','order=logged_at.desc&limit=500');
+    var allWorkouts = await sbSelect('workout_logs','order=logged_at.desc&limit=200');
+    var allCheckins = await sbSelect('energy_checkins','order=logged_at.desc&limit=200');
+    var allSteps = await sbSelect('step_logs','order=updated_at.desc&limit=200');
+    var allWeights = await sbSelect('weight_logs','order=created_at.desc&limit=200');
+
+    // Group by client
+    var byClient = {};
+    allClients.forEach(function(c){ byClient[c] = {foods:[],workouts:[],checkins:[],steps:null,weight:null}; });
+    allFoods.forEach(function(f){ if(byClient[f.client_code] && f.logged_at >= cutoff) byClient[f.client_code].foods.push(f); });
+    allWorkouts.forEach(function(w){ if(byClient[w.client_code] && w.logged_at >= cutoff) byClient[w.client_code].workouts.push(w); });
+    allCheckins.forEach(function(c){ if(byClient[c.client_code] && c.logged_at >= cutoff) byClient[c.client_code].checkins.push(c); });
+    allSteps.forEach(function(s){ if(byClient[s.client_code] && !byClient[s.client_code].steps) byClient[s.client_code].steps = s; });
+    allWeights.forEach(function(w){ if(byClient[w.client_code] && !byClient[w.client_code].weight) byClient[w.client_code].weight = w; });
+
+    // Build compact per-client summary (one short paragraph each)
+    var lines = ['=== TRAINER ROSTER CONTEXT (last 48h) ===',
+      'You are talking to Yusuf, the COACH. Below is fresh data on his clients. When he asks about a specific client by name (e.g. "did Naya log food today?", "how is Kelly doing?"), answer FROM THIS DATA. Be specific and cite actual numbers/meals. If a client has zero recent activity, say so directly. Never invent activity that isn\'t here.\n'];
+
+    allClients.forEach(function(code){
+      var info = CLIENTS[code];
+      var d = byClient[code];
+      var bits = [info.name + ':'];
+      if(d.foods.length === 0 && d.workouts.length === 0 && d.checkins.length === 0){
+        bits.push('  No food, workout, or check-in in last 48h');
+      } else {
+        if(d.foods.length > 0){
+          var cal = d.foods.reduce(function(s,f){return s+(f.calories||0);},0);
+          var p = d.foods.reduce(function(s,f){return s+(f.protein||0);},0);
+          var meals = d.foods.slice(0,4).map(function(f){return f.name;}).join(', ');
+          bits.push('  Food: '+d.foods.length+' meals, '+Math.round(cal)+' cal, '+Math.round(p)+'g protein ('+meals+')');
+        } else {
+          bits.push('  Food: none logged');
+        }
+        if(d.workouts.length > 0){
+          var w = d.workouts[0];
+          bits.push('  Workout: '+(w.description||'?').substring(0,60)+' · intensity '+(w.intensity||'?')+'/10');
+        } else {
+          bits.push('  Workout: none logged');
+        }
+        if(d.checkins.length > 0){
+          var ci = d.checkins[0];
+          bits.push('  Check-in: energy='+(ci.energy||'?')+', mood='+(ci.mood||'?')+(ci.note?' ("'+ci.note.substring(0,50)+'")':''));
+        }
+      }
+      if(d.steps && d.steps.steps > 0) bits.push('  Steps today: '+d.steps.steps);
+      if(d.weight) bits.push('  Latest weight: '+d.weight.weight+' lbs');
+      lines.push(bits.join('\n'));
+    });
+
+    return lines.join('\n\n');
+  }catch(e){
+    return '';
+  }
 }
 
 // Wrapper kept for backwards-compat with the chat code path
@@ -4277,7 +4375,24 @@ function buildCoachVoice(){
   var timeOfDay = hr < 5 ? 'late night' : hr < 11 ? 'morning' : hr < 14 ? 'midday' : hr < 17 ? 'afternoon' : hr < 21 ? 'evening' : 'night';
   var timeStr = new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
 
-  return 'YOU ARE: JIM — the client\'s personal performance coach. Think Alfred meets a great trainer. You are a brilliant, attentive, no-nonsense thinking partner who actually knows this person and reasons through their state before answering.\n\n'+
+  // Trainer mode injection — Jim becomes Yusuf's coaching assistant when he's logged in as the trainer
+  var trainerMode = (cl && isTrainer(cl.code)) ? (
+    '\n\nTRAINER MODE — IMPORTANT:\n'+
+    'You are currently talking to YUSUF, the head coach. He is the trainer, not a client. He can ask you two kinds of questions:\n'+
+    '1. PERSONAL questions about himself (his food, his workouts, his recovery) — answer using the PROFILE / TODAY\'S FOOD / TODAY\'S TRAINING sections below, just like a normal client.\n'+
+    '2. ROSTER questions about his clients ("did Naya log food today?", "how is Kelly doing?", "who hasn\'t trained this week?", "give me a read on Michael") — answer using the TRAINER ROSTER CONTEXT section below.\n\n'+
+    'How to tell which: if Yusuf names a person by first name who is NOT Yusuf, it is a roster question — use the roster data. If he asks about "I/me/my", it is a personal question — use his own data.\n\n'+
+    'When answering roster questions:\n'+
+    '- Be SPECIFIC and cite actual numbers/meals/workouts from the roster data.\n'+
+    '- If the client has zero activity in the last 48h, say so directly. Do not invent activity.\n'+
+    '- Match Yusuf\'s operator voice — short, direct, useful. No fluff.\n'+
+    '- Example: "Did Naya log food today?" → "No food logged for Naya in last 48h. Also no workout or check-in. She\'s gone quiet."\n'+
+    '- Example: "How is Kelly doing?" → "Kelly logged 3 clean meals yesterday, 1820 cal, 145g protein. Hit a 7/10 push workout this morning. Energy was \'Good\' on her last check-in. She\'s locked in."\n'+
+    '- Example: "Who hasn\'t trained this week?" → list the names with no workout in last 48h, briefly.\n'+
+    '- When he asks for a "read on X" or "insight on X", do the actual reading: pull what their data says, flag patterns (good or bad), suggest one move he could make.'
+  ) : '';
+
+  return 'YOU ARE: JIM — the client\'s personal performance coach. Think Alfred meets a great trainer. You are a brilliant, attentive, no-nonsense thinking partner who actually knows this person and reasons through their state before answering.'+trainerMode+'\n\n'+
 
     'CURRENT MOMENT:\n'+
     'It is '+timeStr+' ('+timeOfDay+') in the client\'s local time. Factor this into every recommendation — meal timing, sleep window, workout windows all depend on the hour.\n\n'+
