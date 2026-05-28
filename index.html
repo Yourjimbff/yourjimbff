@@ -782,7 +782,7 @@ textarea.ifield{min-height:78px;}
           <button onclick="navTrainingWeek(1)" aria-label="Next week" style="background:transparent;border:none;font-size:18px;color:var(--m2);cursor:pointer;padding:4px 10px;line-height:1;">›</button>
         </div>
         <div id="trainingWeekGrid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;"></div>
-        <div id="trainingWeekHint" style="text-align:center;font-size:10px;color:var(--muted);margin-top:10px;letter-spacing:0.5px;">Tap a day to filter · tap again to show all</div>
+        <div id="trainingWeekHint" style="text-align:center;font-size:10px;color:var(--muted);margin-top:10px;letter-spacing:0.3px;line-height:1.6;">Solid dot = logged · <span style="display:inline-block;width:7px;height:7px;border-radius:50%;border:1.5px solid var(--gold);box-sizing:border-box;vertical-align:middle;"></span> = planned · tap a day to view</div>
       </div>
 
       <div id="trainingHistory"></div>
@@ -1140,8 +1140,8 @@ textarea.ifield{min-height:78px;}
     <textarea class="ifield" id="ewNotes" placeholder="Anything to remember about this session..."></textarea>
     <button class="sbtn" style="margin-top:14px;" onclick="saveEditedWorkout()">Save Changes ✓</button>
     <button onclick="saveWorkoutToProgram()" style="margin-top:10px;width:100%;padding:11px;background:transparent;border:1.5px solid var(--gold);border-radius:10px;color:var(--gold);font-size:13px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">📋 Save to Program</button>
-    <button onclick="deleteEditedWorkout()" style="margin-top:10px;width:100%;padding:11px;background:transparent;border:1px solid #ff4455;border-radius:10px;color:#ff4455;font-size:13px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">Delete Workout</button>
     <button class="obtn" onclick="closeM('mEditWorkout')">Cancel</button>
+    <button onclick="deleteEditedWorkout()" style="margin-top:6px;width:100%;padding:7px;background:transparent;border:none;color:var(--muted);font-size:11px;font-weight:600;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;letter-spacing:0.3px;">× delete this workout</button>
   </div>
 </div>
 
@@ -1497,8 +1497,8 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.9.0';
-var APP_BUILD = 'May 28 — Save Workout to Program (templatize from history)';
+var APP_VERSION = 'v2.9.1';
+var APP_BUILD = 'May 28 — forward calendar + planned dots + modal stacking fix';
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -1784,9 +1784,6 @@ function navTrainingWeek(direction){
   if(!trainingViewWeekStart) trainingViewWeekStart = getMonday(new Date());
   var d = new Date(trainingViewWeekStart);
   d.setDate(d.getDate() + (direction * 7));
-  // Don't allow navigation into the future beyond current week
-  var thisWeekMonday = getMonday(new Date());
-  if(d.getTime() > thisWeekMonday.getTime()) return;
   trainingViewWeekStart = d;
   trainingSelectedDay = null; // reset day filter when changing weeks
   renderTrainingView();
@@ -1812,6 +1809,21 @@ async function loadTrainingHistory(){
     var rows = await sbSelect('workout_logs','client_code=eq.'+cl.code+'&order=logged_at.desc&limit=200');
     trainingAllRows = rows || [];
     if(sub) sub.textContent = trainingAllRows.length+' session'+(trainingAllRows.length===1?'':'s')+' · last 200';
+    // Also pull the active program + planned workouts so the calendar can show forward plans
+    try{
+      var progRes = await fetch(SB_URL+'/rest/v1/programs?client_code=eq.'+encodeURIComponent(cl.code)+'&is_active=eq.true&order=created_at.desc&limit=1', {headers: sbHeaders()});
+      if(progRes.ok){
+        var progs = await progRes.json();
+        if(progs && progs.length > 0){
+          activeProgram = progs[0];
+          var pwRes = await fetch(SB_URL+'/rest/v1/program_workouts?program_id=eq.'+activeProgram.id+'&order=day_of_week.asc', {headers: sbHeaders()});
+          activeProgramDays = pwRes.ok ? await pwRes.json() : [];
+        } else {
+          activeProgram = null;
+          activeProgramDays = [];
+        }
+      }
+    }catch(e){ /* silent — program features just don't show */ }
     if(!trainingViewWeekStart) trainingViewWeekStart = getMonday(new Date());
     renderTrainingView();
   }catch(e){
@@ -1856,6 +1868,10 @@ function renderTrainingCalendar(){
     if(ds && weekMap.hasOwnProperty(ds)) weekMap[ds].push(w);
   });
 
+  // Build a planned-workout map by day-of-week (from active program)
+  var plannedByDow = {};
+  (activeProgramDays || []).forEach(function(pw){ plannedByDow[pw.day_of_week] = pw; });
+
   // Render 7 day cells: Mon-Sun
   var todayStr = isoDateStr(new Date());
   var labels = ['M','T','W','T','F','S','S'];
@@ -1865,6 +1881,8 @@ function renderTrainingCalendar(){
     var ds = isoDateStr(d);
     var dayWorkouts = weekMap[ds] || [];
     var hasActivity = dayWorkouts.length > 0;
+    var dow = d.getDay();
+    var plannedToday = plannedByDow[dow] || null;
     var isToday = (ds === todayStr);
     var isSelected = (trainingSelectedDay === ds);
     var isFuture = d.getTime() > new Date().getTime() && !isToday;
@@ -1883,10 +1901,18 @@ function renderTrainingCalendar(){
 
     var borderStyle = isSelected ? '2px solid var(--gold)' : (isToday ? '1.5px dashed var(--gold)' : '1px solid var(--border)');
     var bgStyle = isSelected ? 'rgba(245,197,24,0.12)' : (hasActivity ? 'var(--s2)' : 'transparent');
-    var opacity = isFuture ? '0.35' : '1';
-    var dotHtml = hasActivity
-      ? '<div style="width:7px;height:7px;border-radius:50%;background:'+dotColor+';margin-top:3px;"></div>'
-      : '<div style="width:7px;height:7px;margin-top:3px;"></div>';
+    var opacity = (isFuture && !plannedToday) ? '0.45' : '1';
+
+    // Dot logic: actual filled dot wins; otherwise show planned outlined dot if plan exists; otherwise empty
+    var dotHtml;
+    if(hasActivity){
+      dotHtml = '<div style="width:7px;height:7px;border-radius:50%;background:'+dotColor+';margin-top:3px;"></div>';
+    } else if(plannedToday){
+      // Outlined gold dot = planned but not logged
+      dotHtml = '<div style="width:7px;height:7px;border-radius:50%;border:1.5px solid var(--gold);background:transparent;margin-top:3px;box-sizing:border-box;"></div>';
+    } else {
+      dotHtml = '<div style="width:7px;height:7px;margin-top:3px;"></div>';
+    }
 
     html += '<div onclick="selectTrainingDay(\''+ds+'\')" style="border:'+borderStyle+';background:'+bgStyle+';border-radius:10px;padding:8px 4px;text-align:center;cursor:pointer;opacity:'+opacity+';display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:54px;">'+
       '<div style="font-size:9px;color:var(--muted);letter-spacing:0.5px;font-weight:700;">'+labels[i]+'</div>'+
@@ -1914,11 +1940,90 @@ function renderTrainingList(){
     return ds >= weekStartStr && ds <= weekEndStr;
   });
 
-  if(filtered.length === 0){
+  // Build planned-workouts list for what's relevant in the current view
+  var plannedByDow = {};
+  (activeProgramDays || []).forEach(function(pw){ plannedByDow[pw.day_of_week] = pw; });
+
+  // Helper to build a "planned" card (visually distinct from logged cards)
+  function plannedCardHtml(pw, dateLabel){
+    var exCount = 0;
+    var exPreview = '';
+    if(pw.exercises){
+      try{
+        var arr = typeof pw.exercises === 'string' ? JSON.parse(pw.exercises) : pw.exercises;
+        if(Array.isArray(arr) && arr.length > 0){
+          exCount = arr.length;
+          exPreview = '<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);font-size:12px;color:var(--m2);line-height:1.6;">'+
+            arr.map(function(e){
+              var line = '• ' + (e.name || e.exercise || 'Exercise');
+              if(e.sets && e.reps) line += ' — ' + e.sets + '×' + e.reps;
+              else if(e.sets) line += ' — ' + e.sets + ' sets';
+              if(e.weight) line += ' @ ' + e.weight;
+              return '<div>'+line+'</div>';
+            }).join('')+
+          '</div>';
+        }
+      }catch(e){}
+    }
+    var notesHtml = pw.notes ? '<div style="font-size:12px;color:var(--m2);margin-top:8px;line-height:1.5;font-style:italic;">"'+pw.notes.replace(/"/g,'&quot;')+'"</div>' : '';
+    return '<div style="background:transparent;border:1.5px dashed var(--gold);border-radius:12px;padding:14px;margin-bottom:8px;">'+
+      '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">'+
+        '<div style="flex:1;min-width:0;">'+
+          '<div style="font-weight:700;font-size:14px;line-height:1.3;color:var(--text);">'+(pw.title||'Workout')+'</div>'+
+          '<div style="font-size:11px;color:var(--gold);margin-top:6px;letter-spacing:0.5px;font-weight:700;">PLANNED'+(dateLabel?' · '+dateLabel:'')+'</div>'+
+        '</div>'+
+      '</div>'+
+      exPreview + notesHtml +
+    '</div>';
+  }
+
+  // Decide what planned items to show
+  var dayShort = {0:'Sun',1:'Mon',2:'Tue',3:'Wed',4:'Thu',5:'Fri',6:'Sat'};
+  var plannedHtml = '';
+  if(trainingSelectedDay){
+    // Single selected day: only show plan if no logged workout for that day
+    var selectedDate = new Date(trainingSelectedDay+'T12:00:00');
+    if(!isNaN(selectedDate.getTime())){
+      var selectedDow = selectedDate.getDay();
+      var pw = plannedByDow[selectedDow];
+      if(pw && filtered.length === 0){
+        plannedHtml = plannedCardHtml(pw, '');
+      }
+    }
+  } else {
+    // Week view: for each day in the week that has a plan but NO logged workout, show a planned card
+    var loggedDates = {};
+    filtered.forEach(function(w){
+      var ds = w.logged_at ? isoDateStr(new Date(w.logged_at)) : null;
+      if(ds) loggedDates[ds] = true;
+    });
+    var today = new Date(); today.setHours(0,0,0,0);
+    for(var i=0;i<7;i++){
+      var d = new Date(weekStart); d.setDate(d.getDate()+i);
+      var ds = isoDateStr(d);
+      var dow = d.getDay();
+      var pw = plannedByDow[dow];
+      // Only show planned cards for FUTURE days (or today). Past unfulfilled plans = noise.
+      if(pw && !loggedDates[ds] && d.getTime() >= today.getTime()){
+        var label = d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+        plannedHtml += plannedCardHtml(pw, label);
+      }
+    }
+    if(plannedHtml){
+      plannedHtml = '<div style="font-size:11px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;font-weight:700;margin:6px 0 8px;">Planned This Week</div>'+plannedHtml;
+    }
+  }
+
+  if(filtered.length === 0 && !plannedHtml){
     var emptyMsg = trainingSelectedDay
       ? 'No workouts logged for this day.'
       : 'No workouts logged this week.';
     holder.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:22px 18px;text-align:center;"><div style="font-size:26px;margin-bottom:6px;">🏋️</div><div style="font-weight:700;margin-bottom:4px;font-size:14px;">'+emptyMsg+'</div><div style="font-size:11px;color:var(--muted);line-height:1.5;">Tell Jim about a workout you did and he\'ll log it for you.</div></div>';
+    return;
+  }
+
+  if(filtered.length === 0 && plannedHtml){
+    holder.innerHTML = plannedHtml;
     return;
   }
 
@@ -2009,7 +2114,8 @@ function renderTrainingList(){
       '</div>';
     });
   });
-  holder.innerHTML = html;
+  // Prepend planned-this-week section above logged workouts
+  holder.innerHTML = plannedHtml + html;
 }
 
 async function deleteWorkoutRow(id){
@@ -2279,6 +2385,7 @@ async function saveWorkoutToProgram(){
     }
     // Open the day picker
     renderSaveToProgramDayPicker();
+    closeM('mEditWorkout'); // hide edit modal so picker is visible (not stacked behind)
     openM('mSaveToProgram');
   }catch(e){
     console.error('saveWorkoutToProgram', e);
