@@ -634,11 +634,30 @@ textarea.ifield{min-height:78px;}
       </div>
       <div class="tbody" id="bodyWeight">
         <div style="font-size:13px;color:var(--muted);margin-bottom:10px;" id="lastWeightLabel"></div>
+
+        <!-- WEIGHT JOURNEY GRAPH (renders when 2+ entries exist) -->
+        <div id="weightJourney" style="display:none;background:var(--s2);border-radius:12px;padding:12px;margin-bottom:14px;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+            <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:1px;text-transform:uppercase;">Your Journey</div>
+            <div style="font-size:11px;font-weight:700;" id="journeyDelta"></div>
+          </div>
+          <div id="weightGraph"></div>
+          <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:10px;color:var(--muted);">
+            <span id="journeyStart"></span>
+            <span id="journeyEnd"></span>
+          </div>
+        </div>
+
         <input class="ifield" type="number" step="0.1" id="weightInput" placeholder="Enter today's weight in lbs" oninput="setW(this.value)">
         <div style="font-size:13px;font-weight:700;margin-top:8px;text-align:center;" id="wchg"></div>
         <div class="il">Notes (optional)</div>
         <input class="ifield" id="wnotes" type="text" placeholder="bloated, period week, felt light...">
         <button class="sbtn" onclick="logWeight()">Log Weight ✓</button>
+
+        <!-- IMPORT JOURNEY (only shows when client has 0 or 1 weights logged) -->
+        <div id="importJourneyBtn" style="display:none;margin-top:10px;">
+          <button onclick="openImportJourney()" style="width:100%;background:transparent;border:1.5px dashed var(--border);border-radius:11px;padding:11px;font-size:12px;font-weight:600;color:var(--m2);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">📊 Import your journey from another app</button>
+        </div>
       </div>
     </div>
 
@@ -972,6 +991,33 @@ textarea.ifield{min-height:78px;}
 
     <div style="background:#e8e8e8;border-radius:var(--rs);padding:11px 14px;font-size:12px;color:#888;text-align:center;margin-bottom:12px;">📸 Screenshot and share to your story</div>
     <button class="obtn" onclick="closeM('mShare')" style="margin-top:0;">Close</button>
+  </div>
+</div>
+
+<!-- IMPORT WEIGHT JOURNEY MODAL -->
+<div class="mbg" id="mImportJourney">
+  <div class="msh">
+    <div class="mhnd"></div>
+    <div class="mtitle">Import Your Journey</div>
+    <div class="msub">Already tracked your weight elsewhere? Bring it in.</div>
+
+    <div style="background:var(--s2);border-radius:11px;padding:14px;margin:14px 0;font-size:12px;line-height:1.55;color:var(--m2);">
+      Add your starting point and any past weigh-ins. They'll show up on your journey graph so you can see the full picture from day one.
+    </div>
+
+    <div class="il" style="margin-top:0;">Starting weight (lbs)</div>
+    <input class="ifield" type="number" step="0.1" id="impStartWeight" placeholder="e.g. 185">
+    <div class="il">Starting date</div>
+    <input class="ifield" type="date" id="impStartDate">
+
+    <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border);">
+      <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">Optional: Add Past Weigh-Ins</div>
+      <div id="impEntries"></div>
+      <button onclick="addImportRow()" style="width:100%;background:transparent;border:1.5px dashed var(--border);border-radius:10px;padding:10px;font-size:12px;font-weight:600;color:var(--m2);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;margin-top:6px;">+ Add another weigh-in</button>
+    </div>
+
+    <button class="sbtn" style="margin-top:18px;" onclick="saveImportJourney()">Import ✓</button>
+    <button class="obtn" onclick="closeM('mImportJourney')">Cancel</button>
   </div>
 </div>
 
@@ -1329,6 +1375,7 @@ async function launchApp(){
     document.getElementById('lastWeightLabel').textContent='Last logged: '+lastWeight+' lbs';
   }
   rendTodayFood(); updTots(); updHalo(); updStats();
+  renderWeightJourney();
   loadCoachNote();
   loadTodayCheckins();
 }
@@ -2532,42 +2579,13 @@ function openMenuShare(){
 }
 
 async function rendFdHist(){
+  // The old "Recently Logged" section was removed in favor of My Menu.
+  // This function now just refreshes the menu data + UI safely.
+  if(!cl) return;
   await loadMenuItems();
   await loadCoachMenu();
   rendCoachMenu();
   rendMenuItems();
-  var c=document.getElementById('fdHistList');
-  c.innerHTML='<div class="empty"><div class="empi">⏳</div>Loading...</div>';
-  var foods = await sbSelect('food_logs','client_code=eq.'+cl.code+'&limit=100');
-  document.getElementById('fdCt').textContent=foods.length+' meals total';
-  if(!foods.length){c.innerHTML='<div class="empty"><div class="empi">🍽️</div>No meals logged yet.</div>';return;}
-  var byDate={};
-  foods.forEach(function(e){var k=e.date_str||'Unknown';if(!byDate[k])byDate[k]=[];byDate[k].push(e);});
-  var bc={nutrient_dense:'bnd',good:'bc',unknown:'bun',bad:'bb',clean:'bc',okay:'bun'};
-  var bt={nutrient_dense:'🌟 Nutrient Dense',good:'✅ Good',unknown:'❓ Unknown',bad:'🚫 Off-plan',clean:'✅ Good',okay:'❓ Unknown'};
-  c.innerHTML=Object.entries(byDate).map(function(entry){
-    var date=entry[0],entries=entry[1];
-    var tCal=entries.reduce(function(s,e){return s+(e.calories||0);},0);
-    var tPro=entries.reduce(function(s,e){return s+(e.protein||0);},0);
-    var meals=entries.map(function(e){
-      var bcls=e.graced?'bgr':bc[e.rating]||'bo';var btxt=e.graced?'✨ Grace':bt[e.rating]||'⚠️ Okay';
-      // Check menu status for this meal
-      var key = makeMealKey(e.name);
-      var menuItem = menuItems.find(function(m){return m.meal_key === key;});
-      var menuBadge = '';
-      if(menuItem){
-        if(menuItem.in_menu){
-          menuBadge = '<button class="menu-add-btn in" disabled>⭐ In your menu</button>';
-        } else if(menuItem.log_count >= 3){
-          menuBadge = '<button class="menu-add-btn" onclick="addToMenu('+menuItem.id+')">⭐ Add to menu — logged '+menuItem.log_count+' times</button>';
-        } else if((e.rating === 'nutrient_dense' || e.rating === 'clean') && menuItem.log_count >= 1){
-          menuBadge = '<button class="menu-add-btn" onclick="addToMenu('+menuItem.id+')">+ Add to menu</button>';
-        }
-      }
-      return '<div class="fhcard"><div class="fhimg">'+(e.emoji||'🍽️')+'</div><div class="fhbdy"><div class="fhnm">'+e.name+'</div><div class="fhmac">'+e.calories+' cal · '+e.protein+'g protein · '+e.meal+' · '+(e.eat_time||'')+'</div><div class="fhin">'+e.insight+'</div><span class="fhbg '+bcls+'">'+btxt+'</span>'+menuBadge+'</div></div>';
-    }).join('');
-    return '<div class="fhday"><div class="fhdh">'+date+' · '+Math.round(tCal)+' cal · '+Math.round(tPro)+'g protein</div>'+meals+'</div>';
-  }).join('');
 }
 
 // ===== WORKOUT =====
@@ -2660,6 +2678,159 @@ async function logWeight(){
   document.getElementById('sswt').textContent=wVal+'lbs';
   markTileDone('Weight');
   showToast('⚖️ '+wVal+' lbs logged');
+  // Refresh journey graph
+  await renderWeightJourney();
+  document.getElementById('weightInput').value='';
+  document.getElementById('wnotes').value='';
+  wVal=null;
+}
+
+// ===== WEIGHT JOURNEY GRAPH =====
+async function renderWeightJourney(){
+  if(!cl) return;
+  var box = document.getElementById('weightJourney');
+  var importBtn = document.getElementById('importJourneyBtn');
+  if(!box) return;
+
+  try{
+    // Pull all weight logs sorted ascending by created_at (or fall back to id)
+    var weights = await sbSelect('weight_logs','client_code=eq.'+cl.code+'&order=created_at.asc&limit=500');
+    if(!weights || weights.length < 2){
+      box.style.display = 'none';
+      if(importBtn) importBtn.style.display = 'block'; // offer import when 0-1 entries
+      return;
+    }
+    if(importBtn) importBtn.style.display = 'none';
+
+    var first = weights[0];
+    var last = weights[weights.length-1];
+    var startWt = parseFloat(first.weight);
+    var endWt = parseFloat(last.weight);
+    var delta = Math.round((endWt - startWt) * 10) / 10;
+
+    // Delta label
+    var deltaEl = document.getElementById('journeyDelta');
+    if(deltaEl){
+      if(delta < 0){
+        deltaEl.innerHTML = '<span style="color:var(--green);">↓ '+Math.abs(delta)+' lbs</span>';
+      } else if(delta > 0){
+        deltaEl.innerHTML = '<span style="color:var(--red);">↑ '+delta+' lbs</span>';
+      } else {
+        deltaEl.innerHTML = '<span style="color:var(--muted);">No change</span>';
+      }
+    }
+
+    // Date labels
+    function fmtShort(d){
+      try{ var dt = new Date(d); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric'}); }
+      catch(e){ return ''; }
+    }
+    document.getElementById('journeyStart').textContent = startWt+' lbs · '+fmtShort(first.created_at);
+    document.getElementById('journeyEnd').textContent = endWt+' lbs · '+fmtShort(last.created_at);
+
+    // Build SVG sparkline
+    var w = 280, h = 70, pad = 6;
+    var nums = weights.map(function(x){return parseFloat(x.weight);});
+    var minV = Math.min.apply(null, nums);
+    var maxV = Math.max.apply(null, nums);
+    if(maxV - minV < 1) { maxV = minV + 1; } // avoid div-by-zero
+    var n = nums.length;
+    var pts = nums.map(function(v, i){
+      var x = pad + (i/(n-1))*(w - pad*2);
+      var y = h - pad - ((v - minV)/(maxV - minV))*(h - pad*2);
+      return {x:x, y:y};
+    });
+
+    // Area path
+    var d = 'M '+pts[0].x+' '+pts[0].y;
+    for(var i=1;i<pts.length;i++){ d += ' L '+pts[i].x+' '+pts[i].y; }
+    var dArea = d + ' L '+pts[pts.length-1].x+' '+h+' L '+pts[0].x+' '+h+' Z';
+
+    // Determine trend color
+    var trendColor = delta < 0 ? '#22c77a' : delta > 0 ? '#ff9500' : '#888';
+
+    var svg = '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" style="width:100%;height:70px;overflow:visible;">'+
+      '<defs><linearGradient id="wgrad" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="'+trendColor+'" stop-opacity="0.3"/><stop offset="100%" stop-color="'+trendColor+'" stop-opacity="0"/></linearGradient></defs>'+
+      '<path d="'+dArea+'" fill="url(#wgrad)" />'+
+      '<path d="'+d+'" fill="none" stroke="'+trendColor+'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />'+
+      '<circle cx="'+pts[0].x+'" cy="'+pts[0].y+'" r="3" fill="'+trendColor+'" />'+
+      '<circle cx="'+pts[pts.length-1].x+'" cy="'+pts[pts.length-1].y+'" r="4" fill="'+trendColor+'" stroke="var(--surface)" stroke-width="2" />'+
+    '</svg>';
+    document.getElementById('weightGraph').innerHTML = svg;
+    box.style.display = 'block';
+  } catch(e){
+    console.error('Journey render failed', e);
+    box.style.display = 'none';
+  }
+}
+
+// ===== IMPORT WEIGHT JOURNEY =====
+function openImportJourney(){
+  // Reset form
+  document.getElementById('impStartWeight').value = lastWeight || '';
+  // Default starting date to 90 days ago
+  var d = new Date(); d.setDate(d.getDate() - 90);
+  document.getElementById('impStartDate').value = d.toISOString().split('T')[0];
+  // Reset additional rows
+  document.getElementById('impEntries').innerHTML = '';
+  openM('mImportJourney');
+}
+
+function addImportRow(){
+  var wrap = document.getElementById('impEntries');
+  var rowId = 'imp_'+Date.now()+'_'+Math.floor(Math.random()*1000);
+  var row = document.createElement('div');
+  row.id = rowId;
+  row.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;align-items:center;';
+  row.innerHTML = '<input class="ifield imp-wt" type="number" step="0.1" placeholder="Weight" style="margin:0;flex:1;">'+
+    '<input class="ifield imp-dt" type="date" style="margin:0;flex:1.2;">'+
+    '<button onclick="document.getElementById(\''+rowId+'\').remove()" style="background:transparent;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:4px 8px;">×</button>';
+  wrap.appendChild(row);
+}
+
+async function saveImportJourney(){
+  if(!cl){ showToast('Not logged in'); return; }
+  var startWt = parseFloat(document.getElementById('impStartWeight').value);
+  var startDt = document.getElementById('impStartDate').value;
+  if(!startWt || !startDt){ showToast('Enter starting weight and date'); return; }
+
+  var inserts = [];
+  // Starting entry
+  inserts.push({
+    client_code: cl.code,
+    weight: startWt,
+    notes: 'Starting weight (imported)',
+    created_at: new Date(startDt+'T12:00:00').toISOString()
+  });
+  // Additional entries
+  var rows = document.querySelectorAll('#impEntries > div');
+  for(var i=0;i<rows.length;i++){
+    var wt = parseFloat(rows[i].querySelector('.imp-wt').value);
+    var dt = rows[i].querySelector('.imp-dt').value;
+    if(wt && dt){
+      inserts.push({
+        client_code: cl.code,
+        weight: wt,
+        notes: 'Imported',
+        created_at: new Date(dt+'T12:00:00').toISOString()
+      });
+    }
+  }
+
+  try{
+    var res = await fetch(SB_URL+'/rest/v1/weight_logs', {
+      method:'POST',
+      headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}),
+      body:JSON.stringify(inserts)
+    });
+    if(!res.ok) throw new Error('Insert failed');
+    showToast('✓ Imported '+inserts.length+' weigh-in'+(inserts.length===1?'':'s'));
+    closeM('mImportJourney');
+    await renderWeightJourney();
+  } catch(e){
+    console.error('Import failed', e);
+    showToast('Import failed — try again');
+  }
 }
 
 // ===== PERFECT =====
