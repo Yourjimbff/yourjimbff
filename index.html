@@ -1061,7 +1061,10 @@ textarea.ifield{min-height:78px;}
     <input class="ifield" id="ewIntensity" type="number" min="1" max="10" placeholder="e.g. 7">
     <div class="il">Duration</div>
     <input class="ifield" id="ewDuration" type="text" placeholder="e.g. 45 min">
-    <div class="il">Notes</div>
+    <div class="il">Exercises</div>
+    <div id="ewExercisesList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:6px;"></div>
+    <button onclick="addExerciseRow()" style="width:100%;padding:10px;background:transparent;border:1.5px dashed var(--border);border-radius:10px;color:var(--m2);font-size:12px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;letter-spacing:0.3px;margin-bottom:14px;">+ Add Exercise</button>
+    <div class="il" style="margin-top:0;">Notes</div>
     <textarea class="ifield" id="ewNotes" placeholder="Anything to remember about this session..."></textarea>
     <button class="sbtn" style="margin-top:14px;" onclick="saveEditedWorkout()">Save Changes ✓</button>
     <button onclick="deleteEditedWorkout()" style="margin-top:10px;width:100%;padding:11px;background:transparent;border:1px solid #ff4455;border-radius:10px;color:#ff4455;font-size:13px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">Delete Workout</button>
@@ -1398,8 +1401,8 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.5.1';
-var APP_BUILD = 'May 28 — edit workouts + clearer "last logged" labels';
+var APP_VERSION = 'v2.6.0';
+var APP_BUILD = 'May 28 — exercise editor + tile states + honest activity labels';
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -1611,6 +1614,26 @@ async function launchApp(){
   loadTodayCheckins();
   loadTodayWorkouts();
   loadTodaySteps();
+  // Refresh tile completion states based on what's actually been logged today
+  setTimeout(refreshTileStates, 200);
+  setTimeout(refreshTileStates, 1200); // second pass after async loads finish
+}
+
+function refreshTileStates(){
+  // Low-bar completion: any logging = done
+  try{
+    if(typeof todayFood !== 'undefined' && todayFood && todayFood.length > 0) markTileDone('Food');
+    if(typeof todayWo !== 'undefined' && todayWo && todayWo.length > 0) markTileDone('Workout');
+    if(typeof stepsVal !== 'undefined' && stepsVal && stepsVal > 0) markTileDone('Steps');
+    if(typeof sleepHours !== 'undefined' && sleepHours && sleepHours !== 7) markTileDone('Sleep');
+    if(typeof todayCheckins !== 'undefined' && todayCheckins && todayCheckins.length > 0) markTileDone('Energy');
+    // Weight tile — fetch today's weight log to check
+    if(cl){
+      sbSelect('weight_logs','client_code=eq.'+cl.code+'&date_str=eq.'+encodeURIComponent(todayDateStr)+'&limit=1').then(function(rows){
+        if(rows && rows.length > 0) markTileDone('Weight');
+      }).catch(function(){});
+    }
+  }catch(e){ console.error('refreshTileStates', e); }
 }
 
 async function loadTodayWorkouts(){
@@ -1717,12 +1740,21 @@ async function loadTrainingHistory(){
         }
         // Card-level tap = full edit; data attrs hold ALL workout fields so the modal can hydrate
         var attrEsc = function(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); };
+        // Encode exercises JSON for hydration (safely escape for HTML attribute)
+        var exForAttr = '';
+        if(w.exercises){
+          try{
+            var exObj = typeof w.exercises === 'string' ? JSON.parse(w.exercises) : w.exercises;
+            exForAttr = JSON.stringify(exObj);
+          }catch(e){ exForAttr = ''; }
+        }
         html += '<div onclick="openEditWorkoutModal('+w.id+')" '+
           'data-w-id="'+w.id+'" '+
           'data-w-title="'+attrEsc(w.title||title)+'" '+
           'data-w-intensity="'+(w.intensity||'')+'" '+
           'data-w-duration="'+attrEsc(w.duration||'')+'" '+
           'data-w-notes="'+attrEsc(w.notes||'')+'" '+
+          'data-w-exercises="'+attrEsc(exForAttr)+'" '+
           'data-w-date="'+attrEsc(ds)+'" '+
           'style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:8px;cursor:pointer;">'+
           '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">'+
@@ -1794,6 +1826,50 @@ async function pickRate(val){
 
 // ===== EDIT WORKOUT =====
 var currentEditWorkoutId = null;
+
+function buildExerciseRowHtml(ex){
+  ex = ex || {};
+  var name = (ex.name || '').replace(/"/g,'&quot;');
+  var sets = (ex.sets != null ? ex.sets : '');
+  var reps = (ex.reps != null ? ex.reps : '');
+  var weight = (ex.weight != null ? String(ex.weight).replace(/"/g,'&quot;') : '');
+  return '<div class="ex-row" style="display:flex;gap:6px;align-items:center;background:var(--s2);padding:8px;border-radius:10px;">'+
+    '<input type="text" class="ex-name" placeholder="Exercise name" value="'+name+'" style="flex:2;min-width:0;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-size:13px;font-family:inherit;color:var(--text);outline:none;">'+
+    '<input type="number" class="ex-sets" placeholder="sets" value="'+sets+'" style="width:48px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px 6px;font-size:12px;font-family:inherit;color:var(--text);outline:none;text-align:center;">'+
+    '<input type="text" class="ex-reps" placeholder="reps" value="'+reps+'" style="width:54px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px 6px;font-size:12px;font-family:inherit;color:var(--text);outline:none;text-align:center;">'+
+    '<input type="text" class="ex-weight" placeholder="wt" value="'+weight+'" style="width:54px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px 6px;font-size:12px;font-family:inherit;color:var(--text);outline:none;text-align:center;">'+
+    '<button onclick="this.parentNode.remove()" style="background:transparent;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:0 4px;line-height:1;" aria-label="Remove">×</button>'+
+  '</div>';
+}
+
+function addExerciseRow(){
+  var list = document.getElementById('ewExercisesList');
+  if(!list) return;
+  var wrap = document.createElement('div');
+  wrap.innerHTML = buildExerciseRowHtml({});
+  list.appendChild(wrap.firstChild);
+}
+
+function collectExerciseRows(){
+  var list = document.getElementById('ewExercisesList');
+  if(!list) return [];
+  var rows = list.querySelectorAll('.ex-row');
+  var out = [];
+  rows.forEach(function(r){
+    var name = (r.querySelector('.ex-name').value || '').trim();
+    if(!name) return; // drop empty rows
+    var sets = (r.querySelector('.ex-sets').value || '').trim();
+    var reps = (r.querySelector('.ex-reps').value || '').trim();
+    var weight = (r.querySelector('.ex-weight').value || '').trim();
+    var ex = {name: name};
+    if(sets) ex.sets = parseInt(sets, 10) || sets;
+    if(reps) ex.reps = isNaN(parseInt(reps,10)) ? reps : parseInt(reps,10);
+    if(weight) ex.weight = weight;
+    out.push(ex);
+  });
+  return out;
+}
+
 function openEditWorkoutModal(id){
   if(!id) return;
   currentEditWorkoutId = id;
@@ -1808,6 +1884,24 @@ function openEditWorkoutModal(id){
       var ds = card.getAttribute('data-w-date') || '';
       var dateLbl = document.getElementById('mEditWorkoutDate');
       if(dateLbl) dateLbl.textContent = ds ? ('Logged '+ds) : '';
+      // Hydrate exercise rows
+      var exList = document.getElementById('ewExercisesList');
+      if(exList){
+        exList.innerHTML = '';
+        var exRaw = card.getAttribute('data-w-exercises') || '';
+        if(exRaw){
+          try{
+            var arr = JSON.parse(exRaw);
+            if(Array.isArray(arr)){
+              arr.forEach(function(ex){
+                var wrap = document.createElement('div');
+                wrap.innerHTML = buildExerciseRowHtml(ex);
+                exList.appendChild(wrap.firstChild);
+              });
+            }
+          }catch(e){}
+        }
+      }
     }
   }catch(e){ console.error('hydrate edit modal', e); }
   openM('mEditWorkout');
@@ -1819,6 +1913,7 @@ async function saveEditedWorkout(){
   var intensityRaw = (document.getElementById('ewIntensity').value || '').trim();
   var duration = (document.getElementById('ewDuration').value || '').trim();
   var notes = (document.getElementById('ewNotes').value || '').trim();
+  var exercises = collectExerciseRows();
   var intensity = intensityRaw ? parseInt(intensityRaw, 10) : null;
   if(intensity !== null && (isNaN(intensity) || intensity < 1 || intensity > 10)){
     showToast('Intensity must be 1-10');
@@ -1829,28 +1924,33 @@ async function saveEditedWorkout(){
     title: title || null,
     intensity: intensity,
     duration: duration || null,
-    notes: notes || null
+    notes: notes || null,
+    exercises: exercises.length > 0 ? exercises : null
   };
-  try{
+  // Helper: PATCH with optional field dropouts on schema errors
+  async function tryPatch(body){
     var res = await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+currentEditWorkoutId, {
       method:'PATCH',
       headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}),
-      body: JSON.stringify(payload)
+      body: JSON.stringify(body)
     });
-    if(!res.ok){
-      // Fallback: schema may not have title — strip it
-      if(res.status === 400 || res.status === 404){
-        delete payload.title;
-        var res2 = await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+currentEditWorkoutId, {
-          method:'PATCH',
-          headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}),
-          body: JSON.stringify(payload)
-        });
-        if(!res2.ok){ showToast('Could not save'); return; }
-      } else {
-        showToast('Could not save');
-        return;
-      }
+    var bodyText = '';
+    if(!res.ok){ try{ bodyText = await res.text(); }catch(e){} }
+    return {ok: res.ok, status: res.status, body: bodyText};
+  }
+  try{
+    var attempt = await tryPatch(payload);
+    if(!attempt.ok && /column.*(title|exercises).*does not exist/i.test(attempt.body)){
+      // Drop the offending column(s) and retry
+      var stripped = Object.assign({}, payload);
+      if(/title/i.test(attempt.body)) delete stripped.title;
+      if(/exercises/i.test(attempt.body)) delete stripped.exercises;
+      attempt = await tryPatch(stripped);
+    }
+    if(!attempt.ok){
+      console.error('save workout failed', attempt);
+      showToast('Could not save');
+      return;
     }
     closeM('mEditWorkout');
     showToast('✓ Workout updated');
@@ -2345,18 +2445,27 @@ async function loadTrainerDashboard(){
     // Format "last seen" string
     function formatLastSeen(code){
       var info = lastActivity[code];
-      if(!info) return {label:'No activity yet', isStale:true};
+      if(!info) return {label:'No activity yet', isStale:true, isHot:false};
       var diffMs = Date.now() - info.ts;
       var diffMin = Math.floor(diffMs / 60000);
       var diffHr = Math.floor(diffMs / 3600000);
       var diffDay = Math.floor(diffMs / 86400000);
       var when;
-      if(diffMin < 1) when = 'just now';
+      // Past tense, no "just now" — be specific and honest
+      if(diffMin < 5) when = 'moments ago';
       else if(diffMin < 60) when = diffMin+'m ago';
       else if(diffHr < 24) when = diffHr+'h ago';
       else if(diffDay < 7) when = diffDay+'d ago';
       else when = diffDay+'d ago';
-      return {label:'Last '+info.kind+' logged · '+when, isStale: diffHr >= 24, isHot: diffMin < 60};
+      // Friendly verbs per activity kind
+      var verb = info.kind === 'food' ? 'logged food'
+               : info.kind === 'workout' ? 'logged a workout'
+               : info.kind === 'check-in' ? 'checked in'
+               : info.kind === 'chat' ? 'chatted with Jim'
+               : info.kind === 'steps' ? 'logged steps'
+               : info.kind === 'weight' ? 'logged weight'
+               : 'logged activity';
+      return {label: verb + ' · ' + when, isStale: diffHr >= 24, isHot: false};
     }
 
     var hiddenSet = getHiddenClientSet();
@@ -2911,6 +3020,7 @@ async function commitMeal(r,graced){
   scores.food=Math.max(-4,Math.min(4,scores.food+rScore));
   if(profile&&tots.cal>0){var pct=tots.cal/(profile.calTarget||profile.cal_target||2000);if(pct>=0.85&&pct<=1.15)scores.food=Math.min(4,scores.food+0.2);}
   updTots();rendTodayFood();updHalo();pulseH();updStats();
+  markTileDone('Food');
   closeM('mFood');clearFoodResult();
   showToast(graced?'✨ Logged with grace':'✓ '+r.name+' logged');
   if(r.heavy_day_flag&&!graced)setTimeout(showHeavy,1500);
