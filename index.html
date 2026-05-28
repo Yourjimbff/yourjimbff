@@ -876,7 +876,7 @@ textarea.ifield{min-height:78px;}
       <div class="chat-empty" id="chatEmpty">
         <div class="chat-empty-ic">🏋️</div>
         <div class="chat-empty-title">Jim's here.</div>
-        <div>Food, training, recovery, progress — ask anything.<br><span style="opacity:0.55;font-size:10px;letter-spacing:0.5px;margin-top:12px;display:inline-block;">👁️ Your coach sees this.</span></div>
+        <div>Food, training, recovery, progress — ask anything.<br><span style="opacity:0.55;font-size:10px;letter-spacing:0.5px;margin-top:12px;display:inline-block;">Yusuf can see summaries of your chat</span></div>
       </div>
     </div>
     <div class="chat-input-wrap">
@@ -1310,8 +1310,8 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v1.4.0';
-var APP_BUILD = 'May 28 — dismiss coach notes + edit meals';
+var APP_VERSION = 'v1.5.0';
+var APP_BUILD = 'May 28 — dashboard sorted by recent activity';
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -1845,30 +1845,70 @@ async function loadTrainerDashboard(){
     listEl.innerHTML = '<div class="no-clients">Loading clients...</div>';
   }
   try{
-    // Single request for ALL today's food logs
+    // Pull today's food logs + recent activity of every type for "last seen" sort
     var allTodayFoods = await sbSelect('food_logs', 'date_str=eq.'+encodeURIComponent(todayDateStr)+'&limit=500');
-    // Single request for ALL weight logs (latest per client)
     var allWeights = await sbSelect('weight_logs', 'limit=500');
+    // For activity sort: pull the most recent timestamp PER client across all activity types
+    // Limit each query to 200 rows — we only need recent stuff
+    var recentFoods = await sbSelect('food_logs', 'order=logged_at.desc&limit=500');
+    var recentWorkouts = await sbSelect('workout_logs', 'order=logged_at.desc&limit=200');
+    var recentCheckins = await sbSelect('energy_checkins', 'order=logged_at.desc&limit=200');
+    var recentChats = await sbSelect('chat_messages', 'role=eq.user&order=logged_at.desc&limit=300');
+    var recentSteps = await sbSelect('step_logs', 'order=updated_at.desc&limit=200');
 
-    // Group foods by client
+    // Group foods (today only) by client for the dashboard card data
     var foodsByClient = {};
     allTodayFoods.forEach(function(f){
       if(!foodsByClient[f.client_code]) foodsByClient[f.client_code] = [];
       foodsByClient[f.client_code].push(f);
     });
 
-    // Get latest weight per client
+    // Latest weight per client
     var weightByClient = {};
     allWeights.forEach(function(w){
       if(!weightByClient[w.client_code]) weightByClient[w.client_code] = w.weight;
     });
 
+    // Build a lastActivity map: for each client, the most recent timestamp across ALL log types
+    var lastActivity = {}; // {code: {ts: Date, kind: 'food'|'workout'|'checkin'|'chat'|'steps'|'weight'}}
+    function consider(code, tsRaw, kind){
+      if(!code || !tsRaw) return;
+      var t = new Date(tsRaw).getTime();
+      if(isNaN(t)) return;
+      if(!lastActivity[code] || t > lastActivity[code].ts){
+        lastActivity[code] = {ts:t, kind:kind};
+      }
+    }
+    recentFoods.forEach(function(r){ consider(r.client_code, r.logged_at, 'food'); });
+    recentWorkouts.forEach(function(r){ consider(r.client_code, r.logged_at, 'workout'); });
+    recentCheckins.forEach(function(r){ consider(r.client_code, r.logged_at, 'check-in'); });
+    recentChats.forEach(function(r){ consider(r.client_code, r.logged_at, 'chat'); });
+    recentSteps.forEach(function(r){ consider(r.client_code, r.updated_at, 'steps'); });
+    allWeights.forEach(function(r){ consider(r.client_code, r.created_at||r.logged_at, 'weight'); });
+
+    // Format "last seen" string
+    function formatLastSeen(code){
+      var info = lastActivity[code];
+      if(!info) return {label:'No activity yet', isStale:true};
+      var diffMs = Date.now() - info.ts;
+      var diffMin = Math.floor(diffMs / 60000);
+      var diffHr = Math.floor(diffMs / 3600000);
+      var diffDay = Math.floor(diffMs / 86400000);
+      var when;
+      if(diffMin < 1) when = 'just now';
+      else if(diffMin < 60) when = diffMin+'m ago';
+      else if(diffHr < 24) when = diffHr+'h ago';
+      else if(diffDay < 7) when = diffDay+'d ago';
+      else when = diffDay+'d ago';
+      return {label:'Last '+info.kind+' · '+when, isStale: diffHr >= 24, isHot: diffMin < 60};
+    }
+
     var clientCodes = Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer; });
-    // Sort: clients who logged today first
+    // Sort by most recent activity timestamp (newest first); clients with no activity sink to bottom
     clientCodes.sort(function(a,b){
-      var aHas = foodsByClient[a] ? foodsByClient[a].length : 0;
-      var bHas = foodsByClient[b] ? foodsByClient[b].length : 0;
-      return bHas - aHas;
+      var aT = lastActivity[a] ? lastActivity[a].ts : 0;
+      var bT = lastActivity[b] ? lastActivity[b].ts : 0;
+      return bT - aT;
     });
 
     var html = '';
@@ -1887,7 +1927,14 @@ async function loadTrainerDashboard(){
         return '<div class="cc-meal"><div class="cc-meal-em">'+(f.emoji||'🍽️')+'</div><div class="cc-meal-info"><div class="cc-meal-name">'+f.name+'</div><div class="cc-meal-mac">'+f.calories+' cal · '+f.protein+'g protein · '+(f.eat_time||'')+'</div></div><div class="cc-meal-badge '+(bc[f.rating]||'bun')+'">'+(bt2[f.rating]||'❓ Unknown')+'</div></div>';
       }).join('') : '<div style="padding:10px 0;font-size:13px;color:var(--muted);">Nothing logged today</div>';
       var noteBtn = foods.length>0 ? '<div style="padding:8px 12px;border-top:1px solid var(--border);"><button class="note-btn" data-c="'+code+'" data-n="'+clientInfo.name+'" style="width:100%;padding:9px;border-radius:9px;background:var(--black);color:var(--gold);font-size:12px;font-weight:700;border:none;cursor:pointer;">✍️ Leave a note for '+clientInfo.name+'</button></div>' : '';
-      html += '<div class="client-card"><div class="cc-head"><div class="cc-avi">'+clientInfo.initials[0]+'</div><div class="cc-info"><div class="cc-name">'+clientInfo.name+'</div><div class="cc-last">'+foods.length+' meals · '+Math.round(totalCal)+' cal · '+Math.round(totalPro)+'g protein'+(latestWeight?' · '+latestWeight+'lbs':'')+'</div></div><div><div class="cc-score" style="color:'+scoreCol+'">'+(foods.length>0?Math.round(totalCal):'—')+'</div><div class="cc-score-lbl">'+(foods.length>0?'cal today':'no logs')+'</div></div></div><div class="cc-meals">'+mealItems+'</div>'+noteBtn+'</div>';
+
+      // Last seen badge
+      var seen = formatLastSeen(code);
+      var seenColor = seen.isStale ? '#999' : (seen.isHot ? '#22c77a' : '#888');
+      var seenDot = seen.isHot ? '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#22c77a;margin-right:5px;vertical-align:1px;"></span>' : '';
+      var seenLabel = '<div style="font-size:10px;color:'+seenColor+';margin-top:2px;letter-spacing:0.3px;">'+seenDot+seen.label+'</div>';
+
+      html += '<div class="client-card"><div class="cc-head"><div class="cc-avi">'+clientInfo.initials[0]+'</div><div class="cc-info"><div class="cc-name">'+clientInfo.name+'</div><div class="cc-last">'+foods.length+' meals · '+Math.round(totalCal)+' cal · '+Math.round(totalPro)+'g protein'+(latestWeight?' · '+latestWeight+'lbs':'')+'</div>'+seenLabel+'</div><div><div class="cc-score" style="color:'+scoreCol+'">'+(foods.length>0?Math.round(totalCal):'—')+'</div><div class="cc-score-lbl">'+(foods.length>0?'cal today':'no logs')+'</div></div></div><div class="cc-meals">'+mealItems+'</div>'+noteBtn+'</div>';
     });
 
     listEl.innerHTML = html || '<div class="no-clients">No client data yet.</div>';
@@ -3985,7 +4032,7 @@ function buildEmpty(){
     else ctx="Closing out the day. Anything to work through?";
   }
 
-  d.innerHTML='<div class="chat-empty-ic">'+emoji+'</div><div class="chat-empty-title">'+greeting+escapeHtml(name)+' 👋</div><div>'+escapeHtml(ctx)+'<br><span style="opacity:0.55;font-size:10px;letter-spacing:0.5px;margin-top:12px;display:inline-block;">👁️ Your coach sees this.</span></div>';
+  d.innerHTML='<div class="chat-empty-ic">'+emoji+'</div><div class="chat-empty-title">'+greeting+escapeHtml(name)+' 👋</div><div>'+escapeHtml(ctx)+'<br><span style="opacity:0.55;font-size:10px;letter-spacing:0.5px;margin-top:12px;display:inline-block;">Yusuf can see summaries of your chat</span></div>';
   return d;
 }
 
