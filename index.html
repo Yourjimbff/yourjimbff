@@ -1147,7 +1147,7 @@ textarea.ifield{min-height:78px;}
     <div class="il" style="margin-top:0;">Notes (optional)</div>
     <textarea class="ifield" id="pdNotes" placeholder="Form cues, tempo, anything to keep in mind..."></textarea>
     <button class="sbtn" style="margin-top:14px;" onclick="saveProgramDay()">Save Workout ✓</button>
-    <button class="obtn" onclick="closeM('mEditProgramDay')">Cancel</button>
+    <button class="obtn" onclick="closeProgramDayModal()">Cancel</button>
     <button id="pdDeleteBtn" onclick="deleteProgramDay()" style="margin-top:6px;width:100%;padding:7px;background:transparent;border:none;color:var(--muted);font-size:11px;font-weight:600;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;letter-spacing:0.3px;display:none;">× remove from program</button>
   </div>
 </div>
@@ -1509,8 +1509,8 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.12.1';
-var APP_BUILD = "May 28 — seeded Men's Program · improved viewer (coaching intent + circuits)";
+var APP_VERSION = 'v2.12.2';
+var APP_BUILD = "May 28 — fixed trainer editor modal stacking + diagnostics + visible step/sleep errors";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -2942,6 +2942,16 @@ function closeTemplateProgramEditor(){
   loadTrainerPrograms();
 }
 
+// Closing the program-day modal: restore the template editor overlay if it was open
+function closeProgramDayModal(){
+  closeM('mEditProgramDay');
+  // If we came from the template editor, re-show it
+  if(currentProgramDayEdit && currentProgramDayEdit._template_program_id){
+    var ov = document.getElementById('templateEditorOverlay');
+    if(ov) ov.style.display = 'block';
+  }
+}
+
 function openTemplateDayEditor(dow){
   // Reuse mEditProgramDay modal but point it at the template program
   var aud = currentTemplateProgram.audience;
@@ -2981,6 +2991,9 @@ function openTemplateDayEditor(dow){
     }catch(e){}
   }
   document.getElementById('pdDeleteBtn').style.display = existing ? 'block' : 'none';
+  // Hide the fullscreen overlay so the modal isn't stacked behind it
+  var ov = document.getElementById('templateEditorOverlay');
+  if(ov) ov.style.display = 'none';
   openM('mEditProgramDay');
 }
 
@@ -3071,25 +3084,31 @@ async function loadClientAssignedProgram(){
   hideTodayWorkoutCard();
   hideClientAssignedProgramSection();
   try{
+    console.log('[program] Loading for client_code='+cl.code);
     // Read profile to get assigned_program_id
     var profRes = await fetch(SB_URL+'/rest/v1/profiles?client_code=eq.'+encodeURIComponent(cl.code)+'&limit=1', {headers: sbHeaders()});
-    if(!profRes.ok) return;
+    if(!profRes.ok){ console.log('[program] profile fetch failed status='+profRes.status); return; }
     var profs = await profRes.json();
-    if(!profs || profs.length === 0) return;
+    console.log('[program] profile rows:', profs);
+    if(!profs || profs.length === 0){ console.log('[program] NO PROFILE ROW for '+cl.code); return; }
     var p = profs[0];
-    if(!p.assigned_program_id) return;
+    if(!p.assigned_program_id){ console.log('[program] profile.assigned_program_id is null'); return; }
+    console.log('[program] assigned_program_id='+p.assigned_program_id);
     // Fetch the program + its workouts
     var progRes = await fetch(SB_URL+'/rest/v1/programs?id=eq.'+p.assigned_program_id+'&limit=1', {headers: sbHeaders()});
-    if(!progRes.ok) return;
+    if(!progRes.ok){ console.log('[program] program fetch failed status='+progRes.status); return; }
     var progs = await progRes.json();
-    if(!progs || progs.length === 0) return;
+    if(!progs || progs.length === 0){ console.log('[program] no program found for id='+p.assigned_program_id); return; }
     var program = progs[0];
+    console.log('[program] loaded program:', program.name, 'id='+program.id);
     var wRes = await fetch(SB_URL+'/rest/v1/program_workouts?program_id=eq.'+program.id+'&order=day_of_week.asc', {headers: sbHeaders()});
     var workouts = wRes.ok ? await wRes.json() : [];
+    console.log('[program] loaded '+workouts.length+' workouts');
     clientAssignedProgram = {program: program, workouts: workouts};
     // Find today's workout
     var todayDow = new Date().getDay();
-    todayProgramWorkout = workouts.find(function(w){ return w.day_of_week === todayDow; }) || null;
+    todayProgramWorkout = workouts.find(function(w){ return Number(w.day_of_week) === todayDow; }) || null;
+    console.log('[program] today dow='+todayDow+' workout:', todayProgramWorkout ? todayProgramWorkout.title : '(none/rest)');
     renderTodayWorkoutCard();
     renderClientAssignedProgramSection();
   }catch(e){
@@ -4112,7 +4131,7 @@ async function logSleep(){
   showToast('😴 '+hrs.toFixed(1)+' hours logged');
   // Persist to sleep_logs (one row per client per day, upsert)
   try{
-    await sbUpsert('sleep_logs', {
+    var ok = await sbUpsert('sleep_logs', {
       client_code: cl.code,
       date_str: todayDateStr,
       bed_time: bed,
@@ -4121,7 +4140,10 @@ async function logSleep(){
       quality: quality,
       updated_at: new Date().toISOString()
     }, 'client_code,date_str');
-  }catch(e){ console.error('sleep save', e); }
+    if(!ok){
+      showToast('⚠️ Sleep did NOT save — sleep_logs table missing?');
+    }
+  }catch(e){ console.error('sleep save', e); showToast('⚠️ Sleep save error'); }
 }
 
 async function loadTodaySleep(){
@@ -4176,8 +4198,15 @@ async function logSteps(){
   markTileDone('Steps'); updHalo(); pulseH();
   // Persist as a single per-day row (upsert on client_code+date_str)
   try{
-    await sbUpsert('step_logs', {client_code:cl.code, steps:stepsVal, date_str:todayDateStr, updated_at:new Date().toISOString()}, 'client_code,date_str');
-  }catch(e){}
+    var ok = await sbUpsert('step_logs', {client_code:cl.code, steps:stepsVal, date_str:todayDateStr, updated_at:new Date().toISOString()}, 'client_code,date_str');
+    if(!ok){
+      showToast('⚠️ Steps did NOT save — check Supabase');
+      return;
+    }
+  }catch(e){
+    showToast('⚠️ Steps save error');
+    return;
+  }
   showToast('👟 '+stepsVal.toLocaleString()+' steps');
 }
 
