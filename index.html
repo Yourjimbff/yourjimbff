@@ -2030,9 +2030,101 @@ async function loadMenuItems(){
   if(menuLoadedFor === cl.code) return;
   menuLoadedFor = cl.code;
   try{
-    var items = await sbSelect('menu_items','client_code=eq.'+cl.code+'&limit=200');
+    var items = await sbSelect('menu_items','client_code=eq.'+cl.code+'&limit=500');
     menuItems = items || [];
   }catch(e){ menuItems = []; }
+  // One-time backfill: any food_log meals NOT already in menu_items get added
+  await backfillMenuFromFoodLogs();
+}
+
+async function backfillMenuFromFoodLogs(){
+  if(!cl) return;
+  // Only run once per client per session
+  var backfillKey = 'yjb_menu_backfilled_'+cl.code;
+  if(localStorage.getItem(backfillKey)) return;
+  try{
+    var foods = await sbSelect('food_logs','client_code=eq.'+cl.code+'&limit=500');
+    if(!foods || foods.length === 0){
+      localStorage.setItem(backfillKey, '1');
+      return;
+    }
+    // Group by meal_key — count repeats, take latest data
+    var byKey = {};
+    foods.forEach(function(f){
+      if(!f.name || f.graced) return; // skip graced (grace popups)
+      var k = makeMealKey(f.name);
+      if(!k) return;
+      if(!byKey[k]){
+        byKey[k] = {
+          meal_name: f.name,
+          meal_key: k,
+          emoji: f.emoji || '🍽️',
+          calories: f.calories || 0,
+          protein: f.protein || 0,
+          carbs: f.carbs || 0,
+          fat: f.fat || 0,
+          meal_type: f.meal || null,
+          insight: f.insight || null,
+          rating: f.rating || null,
+          log_count: 1,
+          first_logged_at: f.logged_at || new Date().toISOString(),
+          last_logged_at: f.logged_at || new Date().toISOString()
+        };
+      } else {
+        byKey[k].log_count += 1;
+        // Keep latest timestamp
+        if(f.logged_at && f.logged_at > byKey[k].last_logged_at){
+          byKey[k].last_logged_at = f.logged_at;
+        }
+      }
+    });
+    // Insert any keys not already in menuItems
+    var existingKeys = {};
+    menuItems.forEach(function(m){ existingKeys[m.meal_key] = m; });
+    var toInsert = [];
+    Object.keys(byKey).forEach(function(k){
+      var existing = existingKeys[k];
+      if(!existing){
+        toInsert.push(Object.assign({}, byKey[k], {
+          client_code: cl.code,
+          in_menu: true,
+          is_shared: true,
+          added_to_menu_at: byKey[k].first_logged_at
+        }));
+      } else {
+        // Bump log_count if the food_logs count is higher than what's stored
+        // (e.g. if existing was created mid-run and missed prior logs)
+        var totalLogged = byKey[k].log_count;
+        if(totalLogged > (existing.log_count||1)){
+          existing.log_count = totalLogged;
+          fetch(SB_URL+'/rest/v1/menu_items?id=eq.'+existing.id, {
+            method:'PATCH',
+            headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}),
+            body:JSON.stringify({log_count: totalLogged})
+          }).catch(function(){});
+        }
+      }
+    });
+    if(toInsert.length > 0){
+      try{
+        var res = await fetch(SB_URL+'/rest/v1/menu_items', {
+          method:'POST',
+          headers:Object.assign({},sbHeaders(),{'Prefer':'return=representation'}),
+          body:JSON.stringify(toInsert)
+        });
+        var inserted = await res.json();
+        if(Array.isArray(inserted)){
+          inserted.forEach(function(it){ menuItems.push(it); });
+          console.log('Backfilled '+inserted.length+' meals into menu');
+        }
+      }catch(e){
+        console.error('Backfill insert failed', e);
+      }
+    }
+    localStorage.setItem(backfillKey, '1');
+  }catch(e){
+    console.error('Backfill failed', e);
+  }
 }
 
 async function loadCoachMenu(){
@@ -2078,7 +2170,7 @@ async function trackMealForMenu(meal){
       });
     }catch(e){}
   } else {
-    // Insert new — auto-add to menu so every logged meal is visible
+    // Insert new — auto-add to menu AND auto-share so every logged meal is visible + shareable by default
     var entry = {
       client_code: cl.code,
       meal_name: meal.name,
@@ -2093,6 +2185,7 @@ async function trackMealForMenu(meal){
       rating: meal.rating || null,
       log_count: 1,
       in_menu: true,
+      is_shared: true,
       added_to_menu_at: new Date().toISOString()
     };
     try{
@@ -2137,7 +2230,9 @@ async function addToMenu(menuItemId){
 async function toggleShareItem(menuItemId){
   var item = menuItems.find(function(m){ return m.id === menuItemId; });
   if(!item) return;
-  item.is_shared = !item.is_shared;
+  // Default to true if undefined (handles legacy rows)
+  var currentlyShared = (item.is_shared !== false);
+  item.is_shared = !currentlyShared;
   try{
     await fetch(SB_URL+'/rest/v1/menu_items?id=eq.'+menuItemId, {
       method:'PATCH',
@@ -2145,7 +2240,7 @@ async function toggleShareItem(menuItemId){
       body:JSON.stringify({is_shared: item.is_shared})
     });
   }catch(e){}
-  showToast(item.is_shared ? '📲 Added to share card' : 'Removed from share card');
+  showToast(item.is_shared ? '📲 Visible on share card' : '🔒 Hidden from share card');
   rendMenuItems();
 }
 
@@ -2165,7 +2260,7 @@ async function toggleCoachPublish(menuItemId){
 }
 
 async function removeFromMenu(menuItemId){
-  if(!confirm('Remove this from your menu?')) return;
+  if(!confirm('Hide this from your menu?\n(Your food log is unaffected — this only removes the meal from the menu view.)')) return;
   var item = menuItems.find(function(m){ return m.id === menuItemId; });
   if(!item) return;
   item.in_menu = false;
@@ -2177,6 +2272,7 @@ async function removeFromMenu(menuItemId){
       body:JSON.stringify({in_menu:false, is_coach_menu:false})
     });
   }catch(e){}
+  showToast('Hidden from menu — still in your food log');
   rendMenuItems();
   rendFdHist();
 }
@@ -2329,8 +2425,14 @@ function rendMenuItems(){
       subEl.textContent = 'Every meal you log lives here.';
     } else {
       var totalLogs = inMenu.reduce(function(s,m){return s+(m.log_count||0);},0);
-      var sharedCt = inMenu.filter(function(m){return m.is_shared || m.is_coach_menu;}).length;
-      subEl.textContent = inMenu.length+' meal'+(inMenu.length===1?'':'s')+' · '+totalLogs+' total logs' + (sharedCt>0?' · '+sharedCt+' shared':'');
+      // Trainers: count published. Clients: count shared (default-true).
+      var sharedCt;
+      if(isTrainer(cl.code)){
+        sharedCt = inMenu.filter(function(m){return m.is_coach_menu;}).length;
+      } else {
+        sharedCt = inMenu.filter(function(m){return m.is_shared !== false;}).length;
+      }
+      subEl.textContent = inMenu.length+' meal'+(inMenu.length===1?'':'s')+' · '+totalLogs+' total logs · '+sharedCt+' shared';
     }
   }
 
@@ -2354,9 +2456,11 @@ function rendMenuItems(){
       var pubTxt = m.is_coach_menu ? '📖 Published' : '📖 Publish';
       actionToggle = '<button class="'+pubCls+'" onclick="toggleCoachPublish('+m.id+')">'+pubTxt+'</button>';
     } else {
-      // Clients can mark a meal as "shared" — surfaces it on their public Share Menu card
-      var shrCls = m.is_shared ? 'trainer-pub-toggle published' : 'trainer-pub-toggle';
-      var shrTxt = m.is_shared ? '✓ On share card' : '+ Add to share card';
+      // Clients: every meal is shared by default. Toggle to hide from share card.
+      // Treat undefined/null as "shared" (the new default) to handle legacy rows
+      var isShared = (m.is_shared !== false);
+      var shrCls = isShared ? 'trainer-pub-toggle published' : 'trainer-pub-toggle';
+      var shrTxt = isShared ? '📲 On share card' : '🔒 Hidden';
       actionToggle = '<button class="'+shrCls+'" onclick="toggleShareItem('+m.id+')">'+shrTxt+'</button>';
     }
     return '<div class="menu-card">'+
@@ -2374,11 +2478,12 @@ function rendMenuItems(){
 
 function openMenuShare(){
   var trainerMode = isTrainer(cl.code);
-  // Trainers share their published (is_coach_menu) meals
-  // Clients share their is_shared meals
+  // Trainers share their published (is_coach_menu) meals.
+  // Clients share by default — meal must be explicitly is_shared=false to be hidden.
   var sharePool = menuItems.filter(function(m){
     if(!m.in_menu) return false;
-    return trainerMode ? m.is_coach_menu : m.is_shared;
+    if(trainerMode) return m.is_coach_menu;
+    return m.is_shared !== false; // default-true: undefined/null/true all = shared
   });
   sharePool.sort(function(a,b){ return (b.log_count||0) - (a.log_count||0); });
   var top = sharePool.slice(0, 7);
@@ -2390,8 +2495,8 @@ function openMenuShare(){
   if(top.length === 0){
     var promptTxt = trainerMode ?
       'Tap "📖 Publish" on meals in your menu to feature them here.' :
-      'Tap "+ Add to share card" on meals in your menu to feature them here.';
-    listEl.innerHTML = '<div style="padding:30px 12px;text-align:center;color:#999;font-size:13px;line-height:1.6;">No meals selected yet.<br><br><span style="font-size:12px;">'+promptTxt+'</span></div>';
+      'You\'ve hidden all your meals. Tap "🔒 Hidden" on any meal to put it back on the share card.';
+    listEl.innerHTML = '<div style="padding:30px 12px;text-align:center;color:#999;font-size:13px;line-height:1.6;">No meals to share yet.<br><br><span style="font-size:12px;">'+promptTxt+'</span></div>';
     document.getElementById('menuShareStats').textContent = menuItems.filter(function(m){return m.in_menu;}).length + ' meals in your menu · 0 shared';
     openM('mMenuShare');
     return;
