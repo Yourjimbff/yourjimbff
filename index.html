@@ -691,24 +691,18 @@ textarea.ifield{min-height:78px;}
     <div id="trainerMenuBanner" style="display:none;">
       <div class="trainer-banner">
         <span>📖</span>
-        <span>Your menu is public to your clients. Tap "📖 Publish" on any meal to feature it for them.</span>
+        <span>Tap <b>Publish</b> on any meal to feature it for your clients.</span>
       </div>
     </div>
 
     <!-- MY MENU SECTION -->
-    <div style="margin-bottom:22px;">
+    <div style="margin-bottom:8px;">
       <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;">
         <div style="font-family:'Bebas Neue',sans-serif;font-size:28px;letter-spacing:1.5px;line-height:1;" id="menuHeadline">YOUR MENU</div>
-        <button onclick="openMenuShare()" id="menuShareBtn" style="background:var(--gold);border:none;border-radius:10px;padding:7px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;color:#000;display:none;">📲 Share</button>
+        <button onclick="openMenuShare()" id="menuShareBtn" style="background:var(--gold);border:none;border-radius:10px;padding:7px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;color:#000;display:none;">📲 Share Menu</button>
       </div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.5;">Built from what you actually eat.</div>
-      <div id="menuItemsList"></div>
-    </div>
-
-    <!-- RECENTLY LOGGED -->
-    <div>
-      <div class="hhdr" style="margin-bottom:10px;"><div class="hhtitle" style="font-size:16px;">🥗 Recently Logged</div><div class="hhct" id="fdCt">0 meals</div></div>
-      <div id="fdHistList"><div class="empty"><div class="empi">🍽️</div>No meals logged yet.</div></div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.5;" id="menuSub">Every meal you log lives here. Tap to share the ones you're proud of.</div>
+      <div id="menuItemsList"><div class="hhct" id="fdCt" style="display:none;">0 meals</div></div>
     </div>
   </div>
 
@@ -2083,12 +2077,8 @@ async function trackMealForMenu(meal){
         })
       });
     }catch(e){}
-    // Trigger auto-suggest if log_count just hit 3 and not already in menu
-    if(existing.log_count === 3 && !existing.in_menu){
-      showToast('⭐ You\'ve had this 3 times — check My Menu');
-    }
   } else {
-    // Insert new
+    // Insert new — auto-add to menu so every logged meal is visible
     var entry = {
       client_code: cl.code,
       meal_name: meal.name,
@@ -2102,7 +2092,8 @@ async function trackMealForMenu(meal){
       insight: meal.insight || null,
       rating: meal.rating || null,
       log_count: 1,
-      in_menu: false
+      in_menu: true,
+      added_to_menu_at: new Date().toISOString()
     };
     try{
       var res = await fetch(SB_URL+'/rest/v1/menu_items', {
@@ -2140,6 +2131,22 @@ async function addToMenu(menuItemId){
   showToast(isTrainer(cl.code) ? '⭐ Added — visible to your clients' : '⭐ Added to your menu');
   rendMenuItems();
   rendFdHist();
+}
+
+// Client-side toggle: marks a meal as "shared" so it appears on the share card
+async function toggleShareItem(menuItemId){
+  var item = menuItems.find(function(m){ return m.id === menuItemId; });
+  if(!item) return;
+  item.is_shared = !item.is_shared;
+  try{
+    await fetch(SB_URL+'/rest/v1/menu_items?id=eq.'+menuItemId, {
+      method:'PATCH',
+      headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}),
+      body:JSON.stringify({is_shared: item.is_shared})
+    });
+  }catch(e){}
+  showToast(item.is_shared ? '📲 Added to share card' : 'Removed from share card');
+  rendMenuItems();
 }
 
 async function toggleCoachPublish(menuItemId){
@@ -2301,39 +2308,56 @@ function rendMenuItems(){
   var box = document.getElementById('menuItemsList');
   var headline = document.getElementById('menuHeadline');
   var shareBtn = document.getElementById('menuShareBtn');
+  var subEl = document.getElementById('menuSub');
   if(!box) return;
   // Set personalized headline
   var firstName = cl ? cl.name.split(' ')[0].toUpperCase() : 'YOUR';
   if(headline) headline.textContent = firstName + "'S MENU";
 
   var inMenu = menuItems.filter(function(m){return m.in_menu;});
-  // Sort by log_count desc, then by added_to_menu_at desc
+  // Sort by log_count desc, then by added_to_menu_at desc (newest first)
   inMenu.sort(function(a,b){
     if((b.log_count||0) !== (a.log_count||0)) return (b.log_count||0) - (a.log_count||0);
-    return new Date(b.added_to_menu_at||0) - new Date(a.added_to_menu_at||0);
+    return new Date(b.added_to_menu_at||b.last_logged_at||0) - new Date(a.added_to_menu_at||a.last_logged_at||0);
   });
 
   if(shareBtn) shareBtn.style.display = inMenu.length>0 ? 'inline-block' : 'none';
 
+  // Update sub copy based on whether they have meals
+  if(subEl){
+    if(inMenu.length === 0){
+      subEl.textContent = 'Every meal you log lives here.';
+    } else {
+      var totalLogs = inMenu.reduce(function(s,m){return s+(m.log_count||0);},0);
+      var sharedCt = inMenu.filter(function(m){return m.is_shared || m.is_coach_menu;}).length;
+      subEl.textContent = inMenu.length+' meal'+(inMenu.length===1?'':'s')+' · '+totalLogs+' total logs' + (sharedCt>0?' · '+sharedCt+' shared':'');
+    }
+  }
+
   if(inMenu.length === 0){
-    box.innerHTML = '<div class="menu-empty"><div class="menu-empty-ic">🍽️</div><div class="menu-empty-t">Your menu starts here</div><div class="menu-empty-s">When you log a meal 3 times, you can add it to your menu.<br>Nutrient-dense meals can be added after 1 log.'+(coachMenu && coachMenu.length>0?'<br><br>Or borrow from your coach\'s menu above 👆':'')+'</div></div>';
+    box.innerHTML = '<div class="menu-empty"><div class="menu-empty-ic">🍽️</div><div class="menu-empty-t">Log your first meal</div><div class="menu-empty-s">Every meal you log shows up here automatically.<br>This is your eating history. Own it.'+(coachMenu && coachMenu.length>0?'<br><br>Or borrow from your coach\'s menu above 👆':'')+'</div></div>';
     return;
   }
 
   var trainerMode = isTrainer(cl.code);
 
   box.innerHTML = inMenu.map(function(m, idx){
-    var rankLabel = idx===0?'🔥 #1 STAPLE':idx<3?'⭐ TOP MEAL':'';
+    var rankLabel = idx===0 && (m.log_count||0)>=2 ? '🔥 #1 STAPLE' : idx<3 && (m.log_count||0)>=2 ? '⭐ TOP MEAL' : '';
     var ct = m.log_count||0;
     var ctTxt = ct === 0 ? 'Borrowed' : 'Logged '+ct+' time'+(ct===1?'':'s');
     // FROM pill if borrowed
     var fromPill = m.borrowed_from_name ? '<span class="from-pill">⭐ FROM '+escapeHtml((m.borrowed_from_name||'').toUpperCase())+'</span>' : '';
-    // Trainer publish toggle
-    var pubToggle = '';
+    // Share toggle — trainers see Publish, clients see Share
+    var actionToggle = '';
     if(trainerMode){
       var pubCls = m.is_coach_menu ? 'trainer-pub-toggle published' : 'trainer-pub-toggle';
       var pubTxt = m.is_coach_menu ? '📖 Published' : '📖 Publish';
-      pubToggle = '<button class="'+pubCls+'" onclick="toggleCoachPublish('+m.id+')">'+pubTxt+'</button>';
+      actionToggle = '<button class="'+pubCls+'" onclick="toggleCoachPublish('+m.id+')">'+pubTxt+'</button>';
+    } else {
+      // Clients can mark a meal as "shared" — surfaces it on their public Share Menu card
+      var shrCls = m.is_shared ? 'trainer-pub-toggle published' : 'trainer-pub-toggle';
+      var shrTxt = m.is_shared ? '✓ On share card' : '+ Add to share card';
+      actionToggle = '<button class="'+shrCls+'" onclick="toggleShareItem('+m.id+')">'+shrTxt+'</button>';
     }
     return '<div class="menu-card">'+
       '<div class="menu-card-em">'+(m.emoji||'🍽️')+'</div>'+
@@ -2341,7 +2365,7 @@ function rendMenuItems(){
         '<div class="menu-card-top"><span class="menu-card-nm">'+escapeHtml(m.meal_name)+'</span>'+(rankLabel?'<span class="menu-card-rank">'+rankLabel+'</span>':'')+fromPill+'</div>'+
         '<div class="menu-card-mac">'+(m.calories||0)+' cal · '+(m.protein||0)+'g protein · '+(m.carbs||0)+'g carbs · '+(m.fat||0)+'g fat</div>'+
         '<div class="menu-card-ct">'+ctTxt+'</div>'+
-        pubToggle+
+        actionToggle+
       '</div>'+
       '<button class="menu-card-rm" onclick="removeFromMenu('+m.id+')" title="Remove">×</button>'+
     '</div>';
@@ -2349,13 +2373,30 @@ function rendMenuItems(){
 }
 
 function openMenuShare(){
-  var inMenu = menuItems.filter(function(m){return m.in_menu;});
-  inMenu.sort(function(a,b){ return (b.log_count||0) - (a.log_count||0); });
-  var top = inMenu.slice(0, 7);
+  var trainerMode = isTrainer(cl.code);
+  // Trainers share their published (is_coach_menu) meals
+  // Clients share their is_shared meals
+  var sharePool = menuItems.filter(function(m){
+    if(!m.in_menu) return false;
+    return trainerMode ? m.is_coach_menu : m.is_shared;
+  });
+  sharePool.sort(function(a,b){ return (b.log_count||0) - (a.log_count||0); });
+  var top = sharePool.slice(0, 7);
   var firstName = cl ? cl.name.split(' ')[0].toUpperCase() : 'YOUR';
   document.getElementById('menuShareHero').textContent = firstName + "'S MENU";
 
   var listEl = document.getElementById('menuShareList');
+
+  if(top.length === 0){
+    var promptTxt = trainerMode ?
+      'Tap "📖 Publish" on meals in your menu to feature them here.' :
+      'Tap "+ Add to share card" on meals in your menu to feature them here.';
+    listEl.innerHTML = '<div style="padding:30px 12px;text-align:center;color:#999;font-size:13px;line-height:1.6;">No meals selected yet.<br><br><span style="font-size:12px;">'+promptTxt+'</span></div>';
+    document.getElementById('menuShareStats').textContent = menuItems.filter(function(m){return m.in_menu;}).length + ' meals in your menu · 0 shared';
+    openM('mMenuShare');
+    return;
+  }
+
   listEl.innerHTML = top.map(function(m, idx){
     var divider = idx > 0 ? 'border-top:1px solid #eee;' : '';
     var fromTag = m.borrowed_from_name ? '<span style="display:inline-block;background:#fbf3d2;color:#8a6d00;font-size:9px;font-weight:800;letter-spacing:0.5px;padding:2px 6px;border-radius:4px;margin-left:6px;vertical-align:middle;">⭐ FROM '+escapeHtml((m.borrowed_from_name||'').toUpperCase())+'</span>' : '';
@@ -2370,7 +2411,7 @@ function openMenuShare(){
   }).join('');
 
   var totalMeals = menuItems.reduce(function(s,m){return s+(m.log_count||0);},0);
-  document.getElementById('menuShareStats').textContent = totalMeals + ' meals tracked · ' + inMenu.length + ' on the menu';
+  document.getElementById('menuShareStats').textContent = totalMeals + ' meals tracked · ' + top.length + ' shared';
 
   openM('mMenuShare');
 }
