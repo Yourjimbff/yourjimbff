@@ -96,7 +96,7 @@ body{background:#f0f0f0;color:var(--text);font-family:'Plus Jakarta Sans',sans-s
 .ssl{font-size:9px;color:rgba(255,255,255,0.22);letter-spacing:1px;text-transform:uppercase;margin-top:2px;}
 .bnav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:430px;background:var(--surface);border-top:1px solid var(--border);display:none;grid-template-columns:repeat(3,1fr);padding:8px 0 20px;z-index:100;}
 .bnav.v{display:grid;}
-.bnav.trainer-mode{grid-template-columns:repeat(4,1fr);}
+.bnav.trainer-mode{grid-template-columns:repeat(5,1fr);}
 .bni.trainer-only{display:none;}
 .bnav.trainer-mode .bni.trainer-only{display:flex;}
 .bni{display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;padding:6px 4px;}
@@ -747,6 +747,25 @@ textarea.ifield{min-height:78px;}
     <div id="versionStamp" style="text-align:center;font-size:10px;color:var(--muted);margin-top:18px;letter-spacing:0.5px;opacity:0.6;"></div>
   </div>
 
+  <!-- TRAINING TAB (trainer only for now) -->
+  <div class="tab" id="tTraining">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      <div>
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:22px;letter-spacing:1px;line-height:1;">Your Training</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px;" id="trainingSubtitle">Loading…</div>
+      </div>
+      <button onclick="openManualWorkoutModal()" style="background:var(--gold);border:none;border-radius:10px;padding:9px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">+ Log Workout</button>
+    </div>
+
+    <!-- TIP CARD -->
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:13px 14px;margin-bottom:14px;font-size:12px;color:var(--m2);line-height:1.5;">
+      <div style="font-weight:700;color:var(--text);margin-bottom:4px;">💪 Just tell Jim about your workout.</div>
+      Describe what you did and Jim will log it for you — exercises, sets, reps, intensity. He'll confirm before saving.
+    </div>
+
+    <div id="trainingHistory"></div>
+  </div>
+
   <!-- CLIENTS TAB (trainer only) -->
   <div class="tab" id="tClients">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
@@ -1159,6 +1178,7 @@ textarea.ifield{min-height:78px;}
 <div class="bnav" id="bnav">
   <div class="bni active" id="bnToday" onclick="switchTab('Today')"><div class="bni-ic">📋</div><div class="bni-lb">Today</div></div>
   <div class="bni" id="bnAsk" onclick="switchTab('Ask')"><div class="bni-ic">💪</div><div class="bni-lb">Jim</div></div>
+  <div class="bni trainer-only" id="bnTraining" onclick="switchTab('Training')"><div class="bni-ic">🏋️</div><div class="bni-lb">Training</div></div>
   <div class="bni trainer-only" id="bnClients" onclick="switchTab('Clients')"><div class="bni-ic">👥</div><div class="bni-lb">Clients</div></div>
   <div class="bni" id="bnProfile" onclick="switchTab('Profile')"><div class="bni-ic">👤</div><div class="bni-lb">Profile</div></div>
 </div>
@@ -1327,8 +1347,8 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.3.0';
-var APP_BUILD = 'May 28 — stats row + trim inactive';
+var APP_VERSION = 'v2.4.0';
+var APP_BUILD = 'May 28 — training module: Jim logs workouts + Training tab';
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -1561,6 +1581,114 @@ async function loadTodayWorkouts(){
       markTileDone('Workout');
     }
   } catch(e){}
+}
+
+// ===== TRAINING TAB =====
+function openManualWorkoutModal(){
+  openM('mWorkout');
+}
+
+async function loadTrainingHistory(){
+  if(!cl) return;
+  var holder = document.getElementById('trainingHistory');
+  var sub = document.getElementById('trainingSubtitle');
+  if(!holder) return;
+  holder.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted);font-size:13px;">Loading…</div>';
+  try{
+    // Pull last 60 days of workouts for current user
+    var rows = await sbSelect('workout_logs','client_code=eq.'+cl.code+'&order=logged_at.desc&limit=100');
+    if(!rows || rows.length === 0){
+      holder.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:30px 18px;text-align:center;"><div style="font-size:32px;margin-bottom:8px;">🏋️</div><div style="font-weight:700;margin-bottom:4px;">No workouts logged yet</div><div style="font-size:12px;color:var(--muted);line-height:1.5;">Tell Jim about a workout you did and he\'ll log it for you. Or tap "+ Log Workout" above.</div></div>';
+      if(sub) sub.textContent = '0 sessions';
+      return;
+    }
+    if(sub) sub.textContent = rows.length+' session'+(rows.length===1?'':'s')+' · last 100';
+
+    // Group by date_str
+    var byDate = {};
+    rows.forEach(function(r){
+      var d = r.date_str || (r.logged_at ? new Date(r.logged_at).toISOString().slice(0,10) : 'unknown');
+      if(!byDate[d]) byDate[d] = [];
+      byDate[d].push(r);
+    });
+    var sortedDates = Object.keys(byDate).sort().reverse();
+
+    function fmtDateLabel(ds){
+      if(!ds || ds === 'unknown') return 'Unknown date';
+      var d = new Date(ds+'T12:00:00');
+      if(isNaN(d.getTime())) return ds;
+      var today = new Date(); today.setHours(0,0,0,0);
+      var yest = new Date(today.getTime()-86400000);
+      var dstr = d.toISOString().slice(0,10);
+      if(dstr === today.toISOString().slice(0,10)) return 'Today · '+d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+      if(dstr === yest.toISOString().slice(0,10)) return 'Yesterday · '+d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+      return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+    }
+
+    var html = '';
+    sortedDates.forEach(function(ds){
+      html += '<div style="font-size:11px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;font-weight:700;margin:18px 0 8px;">'+fmtDateLabel(ds)+'</div>';
+      byDate[ds].forEach(function(w){
+        var title = w.title || (w.description ? (w.description.length>60 ? w.description.slice(0,60)+'…' : w.description) : 'Workout');
+        var intensity = w.intensity ? w.intensity+'/10' : '—';
+        var dur = w.duration || '';
+        var when = w.logged_at ? new Date(w.logged_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : '';
+        var notes = w.notes ? '<div style="font-size:12px;color:var(--m2);margin-top:8px;line-height:1.5;font-style:italic;">"'+w.notes.replace(/"/g,'&quot;')+'"</div>' : '';
+        // Exercise breakdown if structured
+        var exHtml = '';
+        if(w.exercises){
+          try{
+            var ex = typeof w.exercises === 'string' ? JSON.parse(w.exercises) : w.exercises;
+            if(Array.isArray(ex) && ex.length > 0){
+              exHtml = '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:12px;color:var(--m2);line-height:1.6;">';
+              ex.forEach(function(e){
+                var line = '• ' + (e.name || e.exercise || 'Exercise');
+                if(e.sets && e.reps) line += ' — ' + e.sets + '×' + e.reps;
+                else if(e.sets) line += ' — ' + e.sets + ' sets';
+                if(e.weight) line += ' @ ' + e.weight;
+                exHtml += '<div>'+line+'</div>';
+              });
+              exHtml += '</div>';
+            }
+          }catch(e){}
+        }
+        // Intensity badge color
+        var intColor = '#888';
+        if(w.intensity >= 9) intColor = '#ff4455';
+        else if(w.intensity >= 7) intColor = 'var(--gold)';
+        else if(w.intensity >= 5) intColor = '#22c77a';
+        html += '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:8px;">'+
+          '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">'+
+            '<div style="flex:1;min-width:0;">'+
+              '<div style="font-weight:700;font-size:14px;line-height:1.3;color:var(--text);">'+title+'</div>'+
+              '<div style="font-size:11px;color:var(--muted);margin-top:3px;">'+(when?when+' · ':'')+(dur?dur+' · ':'')+'intensity <span style="color:'+intColor+';font-weight:700;">'+intensity+'</span></div>'+
+            '</div>'+
+            '<button onclick="deleteWorkoutRow('+w.id+')" style="background:transparent;border:none;color:var(--muted);font-size:14px;cursor:pointer;padding:2px 6px;line-height:1;" aria-label="Delete">✕</button>'+
+          '</div>'+
+          exHtml + notes +
+        '</div>';
+      });
+    });
+    holder.innerHTML = html;
+  }catch(e){
+    console.error('loadTrainingHistory', e);
+    holder.innerHTML = '<div style="padding:20px;color:var(--muted);font-size:13px;text-align:center;">Could not load history. Try again.</div>';
+  }
+}
+
+async function deleteWorkoutRow(id){
+  if(!id) return;
+  if(!window.confirm('Delete this workout?')) return;
+  try{
+    await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+id, {
+      method:'DELETE',
+      headers:sbHeaders()
+    });
+    showToast('Deleted');
+    loadTrainingHistory();
+  }catch(e){
+    showToast('Could not delete');
+  }
 }
 
 function doLogout(){
@@ -2144,6 +2272,7 @@ function switchTab(t){
   if(t==='Plan')loadPlanTab();
   if(t==='Today')rotateJimInvite();
   if(t==='Clients' && typeof loadTrainerDashboard === 'function') loadTrainerDashboard();
+  if(t==='Training' && typeof loadTrainingHistory === 'function') loadTrainingHistory();
   window.scrollTo(0,0);
 }
 
@@ -4641,6 +4770,30 @@ function buildCoachVoice(){
     '- "Should I have a snack?" → If goal unclear from profile: ask about current hunger / when next meal is.\n'+
     'But don\'t over-ask. ONE follow-up max. If you have enough context, just answer.\n\n'+
 
+    'WORKOUT LOGGING — YOU CAN NOW LOG WORKOUTS:\n'+
+    'When the user describes a workout they just did (e.g. "did a push day", "ran 5k", "leg day at the gym", "30 min yoga"), you can save it to their Training log.\n\n'+
+    'Procedure:\n'+
+    '1. Acknowledge the workout briefly and warmly — like a coach who actually heard them.\n'+
+    '2. If you don\'t already know the intensity (1-10) AND duration, ask ONE focused follow-up to fill in what\'s missing. Example: "What intensity was that — scale of 1-10? And roughly how long?"\n'+
+    '3. Once you have a reasonable picture (workout type + intensity + duration), offer to log it. Phrase it naturally: "Want me to log this? Push day, 7/10 intensity, 60 min — sound right?"\n'+
+    '4. At the END of that offer message, emit a hidden machine-readable marker (the user will not see this — the app strips it before display) in this EXACT format:\n\n'+
+    '[WORKOUT_OFFER]{"title":"Push Day","description":"machine press, shoulder press, push-ups + lateral raise circuit","intensity":7,"duration":"60 min","exercises":[{"name":"Machine press"},{"name":"Machine shoulder press"},{"name":"Push-ups + lateral raise circuit"}],"notes":"felt strong"}[/WORKOUT_OFFER]\n\n'+
+    'Marker rules:\n'+
+    '- Use valid JSON only — escape quotes inside strings, no trailing commas.\n'+
+    '- title: 2-4 word session name ("Push Day", "Leg Day", "Cardio", "Yoga", "Conditioning").\n'+
+    '- description: a clean one-line summary of what was done.\n'+
+    '- intensity: integer 1-10. Only include if you actually have it. If user has not given intensity, do NOT emit the marker yet — ask for intensity first.\n'+
+    '- duration: short string like "45 min" or "1 hr". Only include if you have it. If missing, ask for it before emitting.\n'+
+    '- exercises: array of objects {name, sets?, reps?, weight?}. Only include exercises the user actually mentioned. Skip this field entirely if the user just gave a high-level description (e.g. "went for a run") without naming exercises.\n'+
+    '- notes: optional, capture meaningful detail user mentioned ("shoulder a bit tight", "felt great", etc).\n\n'+
+    'After emitting the marker, STOP. The user will respond yes/no. The app handles the actual save — you don\'t need to mention saving again. On their next turn, continue the conversation naturally (refuel advice, recovery, what\'s next).\n\n'+
+    'WHEN NOT TO EMIT THE MARKER:\n'+
+    '- User is asking a QUESTION about training ("should I do legs tomorrow?", "what\'s a good push routine?") — answer normally, no marker.\n'+
+    '- User is venting or processing feelings about a workout — listen, no marker.\n'+
+    '- User is describing a PLAN ("thinking about doing push later") — that hasn\'t happened yet, no marker.\n'+
+    '- User already confirmed a previous log this turn — don\'t re-offer.\n'+
+    '- The data is too thin to log (no clear workout type) — ask for more first.\n\n'+
+
     'TRAINING-INTENSITY → REFUEL RULES:\n'+
     'When training intensity is logged today, factor it heavily:\n'+
     '- INTENSITY 9-10 (PR day): They earned the carbs. Recommend 40-60g carbs + 30-40g protein post-workout. Sweet potato + chicken thigh + greens. Berries + Greek yogurt + honey. Real fuel.\n'+
@@ -4698,6 +4851,79 @@ function buildCoachVoice(){
     '- This is a PERSISTENT coaching journal — past conversations are visible to you across days/weeks. Reference patterns and themes from earlier messages when relevant ("you mentioned this same pattern last week", "we talked about X — how\'s that going?"). Show you remember without being creepy about it. Memory is the difference between an assistant and a coach.';
 }
 
+// ===== WORKOUT LOGGING FROM CHAT =====
+// When Jim offers to log a workout, his message includes a hidden marker.
+// We extract it, hold the offer, and on user confirmation we save it.
+var pendingWorkoutOffer = null; // {title, description, intensity, duration, exercises, notes}
+
+function extractWorkoutOffer(text){
+  // Matches [WORKOUT_OFFER]{...json...}[/WORKOUT_OFFER]
+  var m = text.match(/\[WORKOUT_OFFER\]([\s\S]*?)\[\/WORKOUT_OFFER\]/);
+  if(!m) return {cleanText: text, offer: null};
+  var jsonStr = m[1].trim();
+  var offer = null;
+  try{
+    offer = JSON.parse(jsonStr);
+  }catch(e){
+    console.error('workout offer parse failed', e, jsonStr);
+  }
+  var cleanText = text.replace(m[0], '').trim();
+  return {cleanText: cleanText, offer: offer};
+}
+
+function looksLikeConfirm(text){
+  if(!text) return false;
+  var t = text.trim().toLowerCase().replace(/[.!?]/g,'');
+  // Strong confirms
+  var yesPhrases = ['yes','yep','yeah','y','log it','log this','do it','save it','save','confirm','confirmed','sounds right','sounds good','that\'s right','thats right','correct','right','go for it','go ahead','yes please','please','perfect','exactly','100','yup'];
+  if(yesPhrases.indexOf(t) !== -1) return true;
+  // Short patterns starting with yes-like
+  if(/^(yes|yep|yeah|yup|y)\b/.test(t)) return true;
+  if(/^(log|save)\s+(it|this|that|the workout|the session)/.test(t)) return true;
+  return false;
+}
+
+function looksLikeReject(text){
+  if(!text) return false;
+  var t = text.trim().toLowerCase().replace(/[.!?]/g,'');
+  var noPhrases = ['no','nope','nah','n','don\'t','dont','not yet','wait','hold on','skip','cancel'];
+  if(noPhrases.indexOf(t) !== -1) return true;
+  if(/^(no|nope|nah)\b/.test(t)) return true;
+  return false;
+}
+
+async function savePendingWorkout(){
+  if(!pendingWorkoutOffer || !cl) return false;
+  var w = pendingWorkoutOffer;
+  try{
+    var row = {
+      client_code: cl.code,
+      date_str: todayDateStr,
+      description: w.description || w.title || 'Workout',
+      title: w.title || (w.description ? w.description.slice(0,80) : 'Workout'),
+      duration: w.duration || null,
+      intensity: w.intensity || null,
+      notes: w.notes || null,
+      logged_at: new Date().toISOString()
+    };
+    if(w.exercises && Array.isArray(w.exercises) && w.exercises.length > 0){
+      row.exercises = w.exercises; // JSONB column
+    }
+    await sbInsert('workout_logs', row);
+    // Update today state so Today tab reflects it
+    if(typeof todayWo !== 'undefined'){
+      todayWo.push({desc: row.description, dur: row.duration, intensity: row.intensity, notes: row.notes, logged_at: row.logged_at});
+      if(typeof rendTodayWo === 'function') rendTodayWo();
+      if(typeof markTileDone === 'function') markTileDone('Workout');
+    }
+    pendingWorkoutOffer = null;
+    return true;
+  }catch(e){
+    console.error('save workout from chat failed', e);
+    return false;
+  }
+}
+
 async function sendChatMessage(){
   if(chatBusy) return;
   var input=document.getElementById('chatInput');
@@ -4710,6 +4936,19 @@ async function sendChatMessage(){
   var sendBtn=document.getElementById('chatSendBtn');
   sendBtn.classList.add('loading');
   sendBtn.disabled=true;
+
+  // If Jim has a pending workout offer and the user is confirming it, save the workout
+  // BEFORE sending the message to Jim. We still send the message so Jim can respond conversationally.
+  var workoutWasJustLogged = false;
+  if(pendingWorkoutOffer && !hasPhoto && looksLikeConfirm(text)){
+    var saved = await savePendingWorkout();
+    if(saved){
+      workoutWasJustLogged = true;
+      showToast('✓ Workout logged');
+    }
+  } else if(pendingWorkoutOffer && !hasPhoto && looksLikeReject(text)){
+    pendingWorkoutOffer = null;
+  }
 
   // Add user message to UI immediately
   var userMsg={role:'user',content:text||'(photo)',logged_at:new Date().toISOString()};
@@ -4777,6 +5016,18 @@ async function sendChatMessage(){
     }
     reply=(reply||'').trim();
     if(!reply){ throw new Error('Empty reply'); }
+
+    // Extract a workout-log offer marker if present
+    var extracted = extractWorkoutOffer(reply);
+    reply = extracted.cleanText;
+    if(extracted.offer){
+      pendingWorkoutOffer = extracted.offer;
+    }
+
+    // If we just logged a workout from the prior turn, inject a small confirmation note
+    if(workoutWasJustLogged){
+      reply = '✅ Logged to your Training tab.\n\n' + reply;
+    }
 
     // Remove typing, append assistant message
     var tr=document.getElementById('chatTypingRow');
