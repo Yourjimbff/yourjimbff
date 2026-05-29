@@ -1199,6 +1199,8 @@ textarea.ifield{min-height:78px;}
     <div class="mtitle">Log Workout</div>
     <div class="msub">Tell me what you did</div>
     <div class="il" style="margin-top:0;">What did you do?</div>
+    <button id="woVoiceBtn" onclick="toggleWorkoutVoice()" style="width:100%;background:linear-gradient(135deg,#1a1a1a,#0a0a0a);border:1px solid rgba(245,197,24,0.4);border-radius:11px;padding:12px;font-size:13px;font-weight:700;color:var(--gold);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;margin-bottom:6px;display:flex;align-items:center;justify-content:center;gap:8px;">🎙️ Speak your workout</button>
+    <div id="woVoiceStatus" style="display:none;font-size:11px;color:var(--m2);text-align:center;margin-bottom:8px;line-height:1.4;"></div>
     <div id="woRows" style="display:flex;flex-direction:column;gap:8px;"></div>
     <button onclick="addWoRow()" style="margin-top:8px;width:100%;background:var(--s2);border:1px dashed var(--border);border-radius:10px;padding:11px;font-size:12.5px;font-weight:700;color:var(--m2);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">+ Add exercise</button>
     <textarea class="ifield" id="woDesc" style="display:none;"></textarea>
@@ -1536,7 +1538,7 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.45.0';
+var APP_VERSION = 'v2.46.0';
 var APP_BUILD = "May 28 — Jim card matches black/gold Push Day card (unified hero zone)";
 
 var cl=null, profile=null;
@@ -4929,6 +4931,86 @@ function toggleEnergyMic(){
     };
   }
   try{ energyRecognition.start(); }catch(e){}
+}
+
+// ===== SPEAK YOUR WORKOUT — voice → structured rows =====
+var woRecognition=null, woListening=false, woTranscript='';
+function toggleWorkoutVoice(){
+  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){ showToast('Voice not supported on this browser'); return; }
+  var btn=document.getElementById('woVoiceBtn');
+  var status=document.getElementById('woVoiceStatus');
+  if(woListening){ try{ woRecognition.stop(); }catch(e){} return; }
+  woTranscript='';
+  if(!woRecognition){
+    woRecognition=new SR();
+    woRecognition.continuous=true;
+    woRecognition.interimResults=true;
+    woRecognition.lang='en-US';
+    woRecognition.onstart=function(){
+      woListening=true;
+      btn.innerHTML='⏹ Stop &amp; fill it in';
+      btn.style.background='#ff4455'; btn.style.color='#fff'; btn.style.borderColor='#ff4455';
+      if(status){ status.style.display='block'; status.textContent='Listening… say your exercises, sets, reps, and weights.'; }
+    };
+    woRecognition.onresult=function(event){
+      var finalText='', interimText='';
+      for(var i=event.resultIndex;i<event.results.length;i++){
+        var t=event.results[i][0].transcript;
+        if(event.results[i].isFinal) finalText+=t+' ';
+        else interimText+=t;
+      }
+      if(finalText) woTranscript+=finalText;
+      if(status) status.textContent='“'+(woTranscript+interimText).trim()+'”';
+    };
+    woRecognition.onerror=function(e){
+      woListening=false;
+      btn.innerHTML='🎙️ Speak your workout';
+      btn.style.background='linear-gradient(135deg,#1a1a1a,#0a0a0a)'; btn.style.color='var(--gold)'; btn.style.borderColor='rgba(245,197,24,0.4)';
+      if(e.error==='not-allowed'||e.error==='service-not-allowed'){ if(status){status.textContent='Mic access denied.';} }
+      else if(e.error!=='no-speech' && e.error!=='aborted'){ if(status){status.textContent='Voice error — try again.';} }
+    };
+    woRecognition.onend=function(){
+      woListening=false;
+      btn.innerHTML='🎙️ Speak your workout';
+      btn.style.background='linear-gradient(135deg,#1a1a1a,#0a0a0a)'; btn.style.color='var(--gold)'; btn.style.borderColor='rgba(245,197,24,0.4)';
+      var said=woTranscript.trim();
+      if(said.length>3){ parseSpokenWorkout(said); }
+      else if(status){ status.style.display='none'; }
+    };
+  }
+  try{ woRecognition.start(); }catch(e){}
+}
+
+// Send the spoken transcript to Jim to structure it into exercise rows.
+async function parseSpokenWorkout(text){
+  var btn=document.getElementById('woVoiceBtn');
+  var status=document.getElementById('woVoiceStatus');
+  if(status){ status.style.display='block'; status.innerHTML='<span style="display:inline-flex;align-items:center;gap:6px;"><span style="width:12px;height:12px;border:2px solid rgba(245,197,24,0.35);border-top-color:var(--gold);border-radius:50%;display:inline-block;animation:sp 0.8s linear infinite;"></span>Sorting it into your log…</span>'; }
+  if(btn) btn.style.opacity='0.5';
+  var sys='You convert a spoken gym workout into structured JSON. Return ONLY valid JSON, no prose, no markdown. Shape: {"title":"short workout name like Leg Day or empty string","exercises":[{"name":"Exercise name","did":"what they did, e.g. 3x8 @ 155lbs"}]}. Use the user\'s actual numbers. Keep exercise names clean and capitalized. If they mention duration say nothing about it. Do not invent exercises. If you cannot parse it, return {"title":"","exercises":[]}.';
+  try{
+    var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:sys+'\n\nSPOKEN WORKOUT:\n'+text+'\n\nReturn the JSON now.'}]})});
+    var data=await res.json();
+    var raw=''; if(data&&data.content){ data.content.forEach(function(b){ if(b.type==='text'&&b.text) raw+=b.text; }); }
+    raw=raw.replace(/```json/gi,'').replace(/```/g,'').trim();
+    var parsed=JSON.parse(raw);
+    if(parsed&&Array.isArray(parsed.exercises)&&parsed.exercises.length){
+      clearWoRows();
+      parsed.exercises.forEach(function(ex){ if(ex&&ex.name) addWoRow(ex.name, ex.did||'', ex.did||''); });
+      if(parsed.title){ window._woLoggedTitle=parsed.title; var titleEl=document.querySelector('#mWorkout .mtitle'); if(titleEl) titleEl.textContent=parsed.title; }
+      if(status){ status.style.display='none'; }
+      showToast('✓ Filled in '+parsed.exercises.length+' exercise'+(parsed.exercises.length===1?'':'s')+' — check it over');
+    } else {
+      throw new Error('no exercises parsed');
+    }
+  }catch(e){
+    console.error('parseSpokenWorkout', e);
+    // Fallback: drop the raw transcript into a single row so nothing's lost
+    if(status){ status.textContent='Couldn\'t auto-sort that — added it as a note, edit as needed.'; }
+    addWoRow('', '', text);
+  }
+  if(btn) btn.style.opacity='1';
 }
 
 // ===== FOOD =====
