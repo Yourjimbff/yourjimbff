@@ -1586,7 +1586,7 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.60.0';
+var APP_VERSION = 'v2.61.0';
 var APP_BUILD = "May 28 — Jim card matches black/gold Push Day card (unified hero zone)";
 
 var cl=null, profile=null;
@@ -7585,14 +7585,24 @@ function buildCoachVoice(){
     '- "Should I have a snack?" → If goal unclear from profile: ask about current hunger / when next meal is.\n'+
     'But don\'t over-ask. ONE follow-up max. If you have enough context, just answer.\n\n'+
 
-    'WORKOUT LOGGING — INSTANT LOG, NO CONFIRMATION:\n'+
-    'When the user describes a workout they just did, you LOG IT IMMEDIATELY. The description is consent. Do not ask "want me to log this?" — just acknowledge warmly and emit the marker.\n\n'+
+    'WORKOUT LOGGING — LOG, THEN ITEMIZE & CONFIRM:\n'+
+    'When the user describes a workout they just did, log it (the description is consent — never ask "want me to log this?"), but your REPLY must mirror it back as a clean itemized list so they can verify and fix it before it\'s final. This is their training record — accuracy matters more than speed here.\n\n'+
     'BUT FIRST — check the RECENT WORKOUTS (last 7 days) section in the data. The rules:\n\n'+
     'CASE A — NEW WORKOUT (most common):\n'+
     'If the user describes a workout that is NOT already in today\'s logs, emit a [WORKOUT_LOG] marker. Format:\n'+
-    '[WORKOUT_LOG]{"title":"Push Day","description":"chest fly, machine shoulder press, lateral raises, push-ups + tricep circuit","exercises":[{"name":"Chest fly","sets":3},{"name":"Machine shoulder press","sets":4},{"name":"Lateral raises","sets":4},{"name":"Push-ups + tricep circuit","sets":3}]}[/WORKOUT_LOG]\n\n'+
-    'After emitting the marker, ask ONE question only: intensity. Keep it casual. Examples: "What intensity, 1-10?" or "How hard did it hit, 1-10?" — DO NOT ask about duration or anything else. Just intensity.\n'+
-    'CARDIO / WALKS: if they mention a walk, run, or cardio, include a "duration" field in the marker when they state how long (e.g. "duration":"30 min"). For a simple walk, duration (and steps if given) is the only stat that matters — don\'t write a coaching note about it, just log it and confirm in one line. Only add a note if THEY shared something worth remembering (a realization, a pain, a win), not for a plain "logged a walk."\n\n'+
+    '[WORKOUT_LOG]{"title":"Pull Day","description":"itemized list","exercises":[{"name":"Machine rows","sets":2},{"name":"Barbell bent-over rows","sets":4,"detail":"135 lbs"}]}[/WORKOUT_LOG]\n\n'+
+    'Then your VISIBLE reply must:\n'+
+    '1. Itemize what you logged, one exercise per line, with sets and any weight they gave — exactly as you understood it. Format like:\n'+
+    '   "Logged your Pull Day:\\n• Machine rows — 2 sets\\n• Barbell bent-over rows — 4 sets @ 135 lbs\\n• Lat pulldown — 4 sets\\n• Hanging leg raises — 2 sets\\n• Rear delt flys — 4 sets\\n• Shrugs — 4 sets"\n'+
+    '2. Then ask plainly: "Did I get that right, or want me to change anything?" — invite corrections.\n'+
+    '3. THEN ask intensity in the same message: "And how hard did it hit, 1-10?"\n'+
+    'If anything they said was ambiguous (a weight that might apply to one or all sets, an exercise name you had to guess), briefly note your assumption so they can correct it.\n'+
+    'You may lightly note an exercise\'s actual muscle group ONLY if it helps accuracy or they seem to have it categorized wrong — e.g. hanging leg raises are an AB/core exercise, not legs; face pulls and rear delt flys are rear delts/shoulders. Keep it a brief aside, never a lecture.\n\n'+
+    'CASE A-FOLLOWUP — CORRECTIONS IN CHAT:\n'+
+    'If the user replies with a fix ("rear delt flys were only 3 sets", "add calf raises", "the 135 was just the last set", "hanging leg raises are abs not legs"), emit a [WORKOUT_EDIT] marker referencing today\'s workout id from RECENT WORKOUTS, with the corrected fields, then confirm warmly in one line. Format:\n'+
+    '[WORKOUT_EDIT]{"id":123,"description":"updated itemized list","exercises":[...corrected array...]}[/WORKOUT_EDIT]\n'+
+    'Keep refining as many times as they need — they can fill in blanks continuously through chat. Never act annoyed by corrections; getting their log right IS the job.\n\n'+
+    'CARDIO / WALKS: if they mention a walk, run, or cardio, include a "duration" field when stated. For a simple walk, duration (and steps if given) is the only stat that matters — itemizing isn\'t needed, just log it and confirm in one line, then skip the intensity question unless it was a hard effort.\n\n'+
     'CASE B — DUPLICATE DETECTION (skip the log):\n'+
     'If the user is talking about a workout that is ALREADY logged today (same workout type — e.g. they say "the push day" and there\'s already a Push Day from earlier today in RECENT WORKOUTS), do NOT log again. Just respond conversationally. Examples:\n'+
     '- User: "my chest is sore from the push day" → Do not log. Respond: "Yeah, three sets of fly + four of shoulder press will do that — chest is firing. How\'s the recovery feeling otherwise?"\n'+
@@ -7779,6 +7789,15 @@ function extractWorkoutNote(text){
   return {cleanText: cleanText, note: note};
 }
 
+function extractWorkoutEdit(text){
+  // [WORKOUT_EDIT]{"id":123,"description":"...","exercises":[...]}[/WORKOUT_EDIT]
+  var m = text.match(/\[WORKOUT_EDIT\]([\s\S]*?)\[\/WORKOUT_EDIT\]/);
+  if(!m) return {cleanText: text, edit: null};
+  var edit = null;
+  try{ edit = JSON.parse(m[1].trim()); }catch(e){ console.error('workout edit parse failed', e, m[1]); }
+  return {cleanText: text.replace(m[0], '').trim(), edit: edit};
+}
+
 function extractFoodLog(text){
   // [FOOD_LOG]{json}[/FOOD_LOG] — Jim emits this when the user describes a meal they ate
   var m = text.match(/\[FOOD_LOG\]([\s\S]*?)\[\/FOOD_LOG\]/);
@@ -7886,6 +7905,40 @@ async function applyFoodDelete(id){
   if(idx>-1){ var removed=todayFood[idx]; todayFood.splice(idx,1); var ai=allFood.indexOf(removed); if(ai>-1) allFood.splice(ai,1); recomputeTodayFoodTotals(); }
   else { for(var j=0;j<allFood.length;j++){ if(allFood[j].id==id){ allFood.splice(j,1); break; } } }
   return true;
+}
+
+// Apply an in-chat correction to a logged workout (description/title/exercises).
+async function applyWorkoutEdit(edit){
+  if(!edit || !edit.id) return false;
+  try{
+    var fields = {};
+    // Rebuild a clean itemized description from exercises if provided, else use given description.
+    if(Array.isArray(edit.exercises) && edit.exercises.length){
+      fields.description = edit.exercises.map(function(ex){
+        if(!ex || !ex.name) return null;
+        var bits = [];
+        if(ex.sets) bits.push(ex.sets + (ex.reps ? 'x'+ex.reps : ' sets'));
+        if(ex.detail) bits.push(ex.detail);
+        return '• ' + ex.name + (bits.length ? ' — ' + bits.join(' · ') : '');
+      }).filter(Boolean).join('\n');
+    } else if(edit.description){
+      fields.description = edit.description;
+    }
+    if(edit.title) fields.title = edit.title;
+    if(!Object.keys(fields).length) return false;
+    var patchRes = await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+edit.id, {
+      method:'PATCH',
+      headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}),
+      body: JSON.stringify(fields)
+    });
+    if(patchRes.ok && typeof todayWo !== 'undefined' && Array.isArray(todayWo)){
+      todayWo.forEach(function(w){ if(w && (w.id === edit.id || w.id === String(edit.id))){ if(fields.description!=null) w.desc = fields.description; if(fields.title) w.title = fields.title; } });
+    }
+    return patchRes.ok;
+  }catch(e){
+    console.error('workout edit failed', e);
+    return false;
+  }
 }
 
 async function appendWorkoutNote(workoutId, addText){
@@ -8117,6 +8170,8 @@ async function sendChatMessage(){
     reply = extractedLog.cleanText;
     var extractedNote = extractWorkoutNote(reply);
     reply = extractedNote.cleanText;
+    var extractedEdit = extractWorkoutEdit(reply);
+    reply = extractedEdit.cleanText;
     var foodAdds = extractAllMarkers(reply, 'FOOD_LOG'); reply = foodAdds.cleanText;
     var foodEdits = extractAllMarkers(reply, 'FOOD_EDIT'); reply = foodEdits.cleanText;
     var foodDeletes = extractAllMarkers(reply, 'FOOD_DELETE'); reply = foodDeletes.cleanText;
@@ -8150,6 +8205,12 @@ async function sendChatMessage(){
         var ok = await appendWorkoutNote(extractedNote.note.id, noteText);
         if(ok) showToast('✓ Note added to workout');
       }
+    }
+
+    // Handle WORKOUT_EDIT: apply an in-chat correction to today's logged workout
+    if(extractedEdit.edit && extractedEdit.edit.id){
+      var editOk = await applyWorkoutEdit(extractedEdit.edit);
+      if(editOk){ showToast('✓ Workout updated'); if(typeof rendTodayWo==='function') rendTodayWo(); }
     }
 
     // Handle food reconciliation: deletes first, then edits, then adds (so totals settle cleanly).
