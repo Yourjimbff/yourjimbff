@@ -1535,7 +1535,7 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.40.0';
+var APP_VERSION = 'v2.41.0';
 var APP_BUILD = "May 28 — Jim card matches black/gold Push Day card (unified hero zone)";
 
 var cl=null, profile=null;
@@ -3712,12 +3712,20 @@ async function assignProgramToClient(clientCode, programId){
     var checkRes = await fetch(SB_URL+'/rest/v1/profiles?client_code=eq.'+encodeURIComponent(clientCode)+'&limit=1', {headers: sbHeaders()});
     var existing = checkRes.ok ? await checkRes.json() : [];
     if(!existing || existing.length === 0){
-      // Create profile row
-      await fetch(SB_URL+'/rest/v1/profiles', {
+      // Create profile row (must send JSON content-type or the body won't parse and the column stays null)
+      var postRes = await fetch(SB_URL+'/rest/v1/profiles', {
         method:'POST',
-        headers: sbHeaders(),
+        headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=representation'}),
         body: JSON.stringify(Object.assign({client_code: clientCode}, payload))
       });
+      if(!postRes.ok){
+        var pt = ''; try{ pt = await postRes.text(); }catch(e){}
+        if(/assigned_program_id.*does not exist/i.test(pt)){
+          showToast('Run the SQL: ALTER TABLE profiles ADD COLUMN assigned_program_id BIGINT');
+          return;
+        }
+        throw new Error('profile create failed');
+      }
     } else {
       var res = await fetch(SB_URL+'/rest/v1/profiles?client_code=eq.'+encodeURIComponent(clientCode), {
         method:'PATCH',
@@ -3733,8 +3741,17 @@ async function assignProgramToClient(clientCode, programId){
         throw new Error('patch failed');
       }
     }
+    // Verify it actually persisted (PATCH/POST can return success-ish yet not write under RLS/column issues)
+    var verifyRes = await fetch(SB_URL+'/rest/v1/profiles?client_code=eq.'+encodeURIComponent(clientCode)+'&select=assigned_program_id&limit=1', {headers: sbHeaders()});
+    var verify = verifyRes.ok ? await verifyRes.json() : [];
+    var savedId = (verify && verify[0]) ? verify[0].assigned_program_id : undefined;
     closeM('mAssignProgram');
-    showToast('✓ Assignment saved');
+    if(String(savedId) === String(programId)){
+      showToast('✓ Assignment saved');
+    } else {
+      console.error('assign verify mismatch', {wanted: programId, got: savedId});
+      showToast('Saved, but it did\'t stick — check the assigned_program_id column');
+    }
     if(typeof loadTrainerDashboard === 'function') loadTrainerDashboard();
   }catch(e){
     console.error('assignProgramToClient', e);
