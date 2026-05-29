@@ -1199,7 +1199,9 @@ textarea.ifield{min-height:78px;}
     <div class="mtitle">Log Workout</div>
     <div class="msub">Tell me what you did</div>
     <div class="il" style="margin-top:0;">What did you do?</div>
-    <textarea class="ifield" id="woDesc" placeholder="e.g. Push day — bench press 4x8 at 135lbs, incline press, lateral raises&#10;&#10;Or: 45 min walk, yoga, home workout"></textarea>
+    <div id="woRows" style="display:flex;flex-direction:column;gap:8px;"></div>
+    <button onclick="addWoRow()" style="margin-top:8px;width:100%;background:var(--s2);border:1px dashed var(--border);border-radius:10px;padding:11px;font-size:12.5px;font-weight:700;color:var(--m2);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">+ Add exercise</button>
+    <textarea class="ifield" id="woDesc" style="display:none;"></textarea>
     <div class="il">How long?</div>
     <input class="ifield" id="woDur" type="text" placeholder="e.g. 60 minutes">
     <div class="il">How hard? <span id="woIntLbl" style="float:right;font-size:11px;font-weight:600;color:var(--gold);">Tap to rate</span></div>
@@ -1534,7 +1536,7 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.43.0';
+var APP_VERSION = 'v2.44.0';
 var APP_BUILD = "May 28 — Jim card matches black/gold Push Day card (unified hero zone)";
 
 var cl=null, profile=null;
@@ -3520,6 +3522,51 @@ function formatExerciseDetail(e){
   return parts.join(' · ');
 }
 
+// ===== STRUCTURED WORKOUT ROWS =====
+// Each row: exercise name + an editable "what you did" field. The planned prescription shows as a subtle hint.
+function woRowHtml(name, hint, done){
+  name = (name||'').replace(/"/g,'&quot;');
+  hint = (hint||'').replace(/"/g,'&quot;');
+  return '<div class="wo-row" style="background:var(--s2);border-radius:10px;padding:10px 11px;">'+
+    '<div style="display:flex;align-items:center;gap:8px;">'+
+      '<input class="wo-name" type="text" value="'+name+'" placeholder="Exercise" style="flex:1;background:transparent;border:none;font-size:13px;font-weight:700;color:var(--text);font-family:\'Plus Jakarta Sans\',sans-serif;outline:none;padding:2px 0;">'+
+      '<button onclick="this.closest(\'.wo-row\').remove()" style="background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;line-height:1;padding:0 2px;flex-shrink:0;" title="Remove">×</button>'+
+    '</div>'+
+    '<input class="wo-did" type="text" value="'+(done||'').replace(/"/g,'&quot;')+'" placeholder="'+(hint||'sets × reps · weight')+'" style="width:100%;background:transparent;border:none;border-top:1px solid var(--border);margin-top:6px;padding-top:7px;font-size:12.5px;color:var(--text);font-family:\'Plus Jakarta Sans\',sans-serif;outline:none;">'+
+  '</div>';
+}
+function addWoRow(name, hint, done){
+  var c = document.getElementById('woRows'); if(!c) return;
+  c.insertAdjacentHTML('beforeend', woRowHtml(name, hint, done));
+}
+function clearWoRows(){ var c = document.getElementById('woRows'); if(c) c.innerHTML=''; }
+// Fill rows from a planned workout — exercise name + its prescription as the hint placeholder.
+function hydrateWoRowsFromPlan(w){
+  clearWoRows();
+  try{
+    var arr = typeof w.exercises === 'string' ? JSON.parse(w.exercises) : w.exercises;
+    if(Array.isArray(arr) && arr.length){
+      arr.forEach(function(ex){ if(ex && ex.name) addWoRow(ex.name, formatExerciseDetail(ex), ''); });
+      return;
+    }
+  }catch(e){}
+  addWoRow('', '', '');
+}
+// Roll the rows up into the description text the rest of the app already logs.
+function woRowsToText(title){
+  var rows = document.querySelectorAll('#woRows .wo-row');
+  var lines = [];
+  if(title) lines.push(title);
+  rows.forEach(function(r){
+    var n = (r.querySelector('.wo-name')||{}).value || '';
+    var d = (r.querySelector('.wo-did')||{}).value || '';
+    n = n.trim(); d = d.trim();
+    if(!n && !d) return;
+    lines.push('• ' + n + (d ? ' — ' + d : ''));
+  });
+  return lines.join('\n');
+}
+
 // Turn a planned workout's exercises into a clean, editable text block for the description field.
 function planToText(w){
   if(!w) return '';
@@ -3561,12 +3608,12 @@ function logProgramWorkoutModified(){
   resetFreestyleForm();
   openM('mWorkout');
   setTimeout(function(){
-    var descField = document.getElementById('woDesc');
-    if(descField) descField.value = planToText(w);
+    hydrateWoRowsFromPlan(w);
     var titleEl = document.querySelector('#mWorkout .mtitle');
     var subEl = document.querySelector('#mWorkout .msub');
     if(titleEl) titleEl.textContent = (w.title || 'Workout');
-    if(subEl) subEl.textContent = 'Adjust anything you changed, then log it';
+    if(subEl) subEl.textContent = 'Fill in what you did — adjust, add, or remove anything';
+    window._woLoggedTitle = w.title || 'Workout';
   }, 60);
 }
 
@@ -3581,7 +3628,9 @@ function openFreestyleWorkout(){
 }
 
 function resetFreestyleForm(){
-  ['woDesc','woDur','woNotes'].forEach(function(id){ var el = document.getElementById(id); if(el) el.value=''; });
+  ['woDur','woNotes','woDesc'].forEach(function(id){ var el = document.getElementById(id); if(el) el.value=''; });
+  clearWoRows(); addWoRow('', '', '');
+  window._woLoggedTitle = '';
   var sl = document.getElementById('woIntSlider'); if(sl) sl.value = 0;
   if(typeof updateWoIntensity === 'function') updateWoIntensity(0);
   woIntensity = 0;
@@ -4307,7 +4356,7 @@ async function loadTrainerDashboard(){
     recentWorkouts.forEach(function(w){
       if(!w.client_code) return;
       var t = w.logged_at ? new Date(w.logged_at).getTime() : 0;
-      if(t >= _todayTs && !woTodayByClient[w.client_code]) woTodayByClient[w.client_code] = {title: w.title || 'Workout'};
+      if(t >= _todayTs && !woTodayByClient[w.client_code]) woTodayByClient[w.client_code] = {title: w.title || w.description || 'Workout', description: w.description||'', intensity: w.intensity, feel: w.feel, duration: w.duration, notes: w.notes||''};
     });
 
     // Build a lastActivity map: for each client, the most recent timestamp across ALL log types
@@ -4417,8 +4466,9 @@ async function loadTrainerDashboard(){
       // Stat strip — did they train today + their step count (the at-a-glance read)
       var trainedToday = woTodayByClient[code];
       var stepsToday = stepsByClient[code] || 0;
+      var _woId = 'wodet_'+code;
       var woPill = trainedToday
-        ? '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:var(--green);background:rgba(34,199,94,0.10);padding:4px 9px;border-radius:7px;">💪 Trained · '+trainedToday.title+'</span>'
+        ? '<span onclick="event.stopPropagation();var d=document.getElementById(\''+_woId+'\');if(d)d.style.display=d.style.display===\'none\'?\'block\':\'none\';" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:var(--green);background:rgba(34,199,94,0.10);padding:4px 9px;border-radius:7px;cursor:pointer;">💪 Trained · '+(trainedToday.title||'Workout').replace(/</g,'&lt;')+' ⌄</span>'
         : '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:var(--muted);background:var(--s2);padding:4px 9px;border-radius:7px;">💪 No workout yet</span>';
       var stepCol = stepsToday>=10000 ? 'var(--green)' : 'var(--m2)';
       var stepPill = stepsToday>0
@@ -4427,13 +4477,26 @@ async function loadTrainerDashboard(){
       var qualityPill = foods.length>0 ? '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:'+qColor+';background:'+qBg+';padding:4px 9px;border-radius:7px;">'+qLabel+'</span>' : '';
       var statStrip = '<div style="display:flex;flex-wrap:wrap;gap:6px;padding:0 16px 10px;">'+qualityPill+woPill+stepPill+'</div>';
 
+      // Expandable detail of the workout they actually logged today
+      var woDetailPanel = '';
+      if(trainedToday){
+        var _wd = trainedToday;
+        var _feelBits = [];
+        if(_wd.duration) _feelBits.push('⏱ '+String(_wd.duration).replace(/</g,'&lt;'));
+        if(_wd.intensity) _feelBits.push('🔥 '+_wd.intensity+'/10'+(_wd.feel?' · '+_wd.feel:''));
+        var _meta = _feelBits.length ? '<div style="font-size:11px;color:var(--m2);margin-bottom:8px;">'+_feelBits.join('  ·  ')+'</div>' : '';
+        var _body = (_wd.description||'').replace(/</g,'&lt;').replace(/\n/g,'<br>');
+        var _notes = _wd.notes ? '<div style="font-size:12px;color:var(--text);margin-top:8px;padding-top:8px;border-top:1px solid var(--border);"><span style="color:var(--muted);font-weight:700;">Their note: </span><span style="font-style:italic;">'+_wd.notes.replace(/</g,'&lt;')+'</span></div>' : '';
+        woDetailPanel = '<div id="'+_woId+'" style="display:none;margin:0 16px 10px;padding:12px 14px;background:var(--s2);border-radius:10px;">'+_meta+'<div style="font-size:13px;color:var(--text);line-height:1.6;">'+(_body||'(no exercise detail)')+'</div>'+_notes+'</div>';
+      }
+
       // Food photo row — thumbnails of today's logged meal photos (tap to enlarge)
       var photoFoods = foods.filter(function(f){ return f.photo; });
       var photoRow = photoFoods.length>0
         ? '<div style="display:flex;gap:6px;padding:0 16px 10px;flex-wrap:wrap;">'+photoFoods.slice(0,6).map(function(f){ return '<img src="'+f.photo+'" onclick="event.stopPropagation();openPhotoLightbox(this.src)" style="width:54px;height:54px;border-radius:8px;object-fit:cover;cursor:pointer;border:1px solid var(--border);">'; }).join('')+'</div>'
         : '';
 
-      html += '<div class="client-card"><div class="cc-head"><div class="cc-avi">'+clientInfo.initials[0]+'</div><div class="cc-info"><div class="cc-name">'+clientInfo.name+'</div><div class="cc-last">'+(foods.length>0? qShort : 'Nothing logged today')+' · '+Math.round(totalCal)+' cal · '+Math.round(totalPro)+'g protein'+(latestWeight?' · '+latestWeight+'lbs':'')+'</div>'+seenLabel+'</div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">'+assignChip+'<div style="text-align:right;"><div class="cc-score" style="color:'+scoreCol+';font-size:18px;">'+(foods.length>0?Math.round(totalCal):'—')+'</div><div class="cc-score-lbl">'+(foods.length>0?'cal':'no logs')+'</div></div></div></div>'+statStrip+photoRow+'<div class="cc-meals">'+mealItems+'</div>'+noteBtn+'</div>';
+      html += '<div class="client-card"><div class="cc-head"><div class="cc-avi">'+clientInfo.initials[0]+'</div><div class="cc-info"><div class="cc-name">'+clientInfo.name+'</div><div class="cc-last">'+(foods.length>0? qShort : 'Nothing logged today')+' · '+Math.round(totalCal)+' cal · '+Math.round(totalPro)+'g protein'+(latestWeight?' · '+latestWeight+'lbs':'')+'</div>'+seenLabel+'</div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">'+assignChip+'<div style="text-align:right;"><div class="cc-score" style="color:'+scoreCol+';font-size:18px;">'+(foods.length>0?Math.round(totalCal):'—')+'</div><div class="cc-score-lbl">'+(foods.length>0?'cal':'no logs')+'</div></div></div></div>'+statStrip+woDetailPanel+photoRow+'<div class="cc-meals">'+mealItems+'</div>'+noteBtn+'</div>';
     });
 
     listEl.innerHTML = html || '<div class="no-clients">No client data yet.</div>';
@@ -5793,8 +5856,9 @@ function updateWoIntensity(val){
 }
 
 async function logWorkout(){
-  var desc=document.getElementById('woDesc').value.trim();
-  if(!desc){showToast('Describe your workout first');return;}
+  var desc = woRowsToText(window._woLoggedTitle || '').trim();
+  if(!desc){ var dEl = document.getElementById('woDesc'); if(dEl) desc = dEl.value.trim(); }
+  if(!desc){showToast('Add at least one exercise');return;}
   if(!woIntensity){showToast('Rate the intensity first');return;}
   var dur=document.getElementById('woDur').value.trim();
   var notes=document.getElementById('woNotes').value.trim();
@@ -5831,12 +5895,7 @@ async function logWorkout(){
   markTileDone('Workout');
 
   // Reset form
-  document.getElementById('woDesc').value='';
-  document.getElementById('woDur').value='';
-  document.getElementById('woNotes').value='';
-  document.getElementById('woIntSlider').value=0;
-  updateWoIntensity(0);
-  woIntensity = 0;
+  resetFreestyleForm();
 }
 function rendTodayWo(){
   var c=document.getElementById('todayWoList');
