@@ -580,7 +580,7 @@ textarea.ifield{min-height:78px;}
       </div>
       <div class="tbody" id="bodyWorkout">
         <div id="todayWoList"><div class="empty" style="padding:16px 0;"><div class="empi">💪</div>No workout logged yet.</div></div>
-        <button class="sbtn" onclick="openM('mWorkout')">+ Log Workout</button>
+        <button class="sbtn" onclick="openManualWorkoutModal()">+ Log Workout</button>
       </div>
     </div>
 
@@ -1122,8 +1122,7 @@ textarea.ifield{min-height:78px;}
     <div class="mtitle" id="twTitle">Today's Workout</div>
     <div class="msub" id="twSub">—</div>
     <div id="twBody"></div>
-    <button class="sbtn" id="todayWoLogBtn" style="margin-top:14px;" onclick="logProgramWorkoutFromToday()">Log This Workout ✓</button>
-    <button class="obtn" id="todayWoFreestyleBtn" onclick="closeM('mTodayWorkout');openM('mWorkout');">Log Something Different (Freestyle)</button>
+    <button class="sbtn" id="todayWoLogBtn" style="margin-top:14px;" onclick="logProgramWorkoutModified()">Do this workout ✓</button>
     <button class="obtn" onclick="closeM('mTodayWorkout')">Close</button>
   </div>
 </div>
@@ -1535,7 +1534,7 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.41.0';
+var APP_VERSION = 'v2.43.0';
 var APP_BUILD = "May 28 — Jim card matches black/gold Push Day card (unified hero zone)";
 
 var cl=null, profile=null;
@@ -1891,7 +1890,7 @@ async function loadTodayWorkouts(){
 
 // ===== TRAINING TAB =====
 function openManualWorkoutModal(){
-  openM('mWorkout');
+  openFreestyleWorkout();
 }
 
 // ===== TRAINING TAB =====
@@ -3503,11 +3502,9 @@ function openTodayProgramWorkout(explicitWorkout, viewOnly){
   }
 
   body.innerHTML = html;
-  // View-only mode (opened from the Training program browser, not the Today logging flow): hide the log actions.
+  // View-only mode (opened from the Training program browser, not the Today logging flow): hide the log action.
   var _logBtn = document.getElementById('todayWoLogBtn');
-  var _fsBtn = document.getElementById('todayWoFreestyleBtn');
   if(_logBtn) _logBtn.style.display = viewOnly ? 'none' : '';
-  if(_fsBtn) _fsBtn.style.display = viewOnly ? 'none' : '';
   openM('mTodayWorkout');
 }
 
@@ -3523,31 +3520,71 @@ function formatExerciseDetail(e){
   return parts.join(' · ');
 }
 
+// Turn a planned workout's exercises into a clean, editable text block for the description field.
+function planToText(w){
+  if(!w) return '';
+  var lines = [];
+  if(w.title) lines.push(w.title);
+  try{
+    var arr = typeof w.exercises === 'string' ? JSON.parse(w.exercises) : w.exercises;
+    if(Array.isArray(arr)){
+      arr.forEach(function(ex){
+        if(!ex || !ex.name) return;
+        var detail = formatExerciseDetail(ex);
+        lines.push('• ' + ex.name + (detail ? ' — ' + detail : ''));
+      });
+    }
+  }catch(e){}
+  return lines.join('\n');
+}
+
+// "Did it as planned" — one tap, log the template workout exactly, then ask intensity in-feed.
 function logProgramWorkoutFromToday(){
   if(!viewerWorkout) return;
-  // Pre-fill the manual workout modal with this program workout
+  var w = viewerWorkout;
+  var desc = planToText(w) || (w.title || 'Workout');
   closeM('mTodayWorkout');
-  openManualWorkoutModal();
-  // After the modal opens, hydrate it
+  // Log immediately as planned; intensity gets rated from the feed card afterward
+  var entry = { desc: desc, dur: '', intensity: 0, notes: '', feel: '', logged_at: new Date().toISOString() };
+  todayWo.unshift(entry);
+  sbInsert('workout_logs', { client_code: cl.code, description: desc, duration: '', intensity: null, notes: '', feel: '', date_str: todayDateStr });
+  scores.workout = Math.min(2, scores.workout + 1.0);
+  rendTodayWo(); updHalo(); pulseH(); updStats(); markTileDone('Workout');
+  showToast('✓ '+(w.title||'Workout')+' logged — tap to rate it');
+}
+
+// Open today's planned workout pre-filled and editable, framed as already done — adjust anything, then log.
+function logProgramWorkoutModified(){
+  if(!viewerWorkout) return;
+  var w = viewerWorkout;
+  closeM('mTodayWorkout');
+  resetFreestyleForm();
+  openM('mWorkout');
   setTimeout(function(){
-    var titleField = document.getElementById('wTitle');
-    if(titleField) titleField.value = viewerWorkout.title || '';
-    // Hydrate exercises if there's an exercise editor in the manual modal
-    // Check if the manual modal has exercise rows like the edit modal
-    var exList = document.getElementById('wExercisesList') || document.getElementById('mwExercisesList');
-    if(exList && viewerWorkout.exercises){
-      try{
-        var arr = typeof viewerWorkout.exercises === 'string' ? JSON.parse(viewerWorkout.exercises) : viewerWorkout.exercises;
-        if(Array.isArray(arr)){
-          exList.innerHTML = '';
-          // We need to invoke whatever row-builder the manual modal uses — try a few
-          if(typeof addManualExerciseRow === 'function'){
-            arr.forEach(function(ex){ addManualExerciseRow(ex); });
-          }
-        }
-      }catch(e){}
-    }
-  }, 100);
+    var descField = document.getElementById('woDesc');
+    if(descField) descField.value = planToText(w);
+    var titleEl = document.querySelector('#mWorkout .mtitle');
+    var subEl = document.querySelector('#mWorkout .msub');
+    if(titleEl) titleEl.textContent = (w.title || 'Workout');
+    if(subEl) subEl.textContent = 'Adjust anything you changed, then log it';
+  }, 60);
+}
+
+// Fully blank freestyle entry.
+function openFreestyleWorkout(){
+  resetFreestyleForm();
+  var titleEl = document.querySelector('#mWorkout .mtitle');
+  var subEl = document.querySelector('#mWorkout .msub');
+  if(titleEl) titleEl.textContent = 'Log Workout';
+  if(subEl) subEl.textContent = 'Tell me what you did';
+  openM('mWorkout');
+}
+
+function resetFreestyleForm(){
+  ['woDesc','woDur','woNotes'].forEach(function(id){ var el = document.getElementById(id); if(el) el.value=''; });
+  var sl = document.getElementById('woIntSlider'); if(sl) sl.value = 0;
+  if(typeof updateWoIntensity === 'function') updateWoIntensity(0);
+  woIntensity = 0;
 }
 
 function renderClientAssignedProgramSection(){
