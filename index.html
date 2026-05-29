@@ -1521,7 +1521,7 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.20.0';
+var APP_VERSION = 'v2.21.0';
 var APP_BUILD = "May 28 — Jim card matches black/gold Push Day card (unified hero zone)";
 
 var cl=null, profile=null;
@@ -4124,6 +4124,20 @@ async function loadTrainerDashboard(){
       if(!weightByClient[w.client_code]) weightByClient[w.client_code] = w.weight;
     });
 
+    // Today's steps per client (step_logs is one upserted row per client per day)
+    var allTodaySteps = await sbSelect('step_logs', 'date_str=eq.'+encodeURIComponent(todayDateStr)+'&limit=500');
+    var stepsByClient = {};
+    (allTodaySteps||[]).forEach(function(s){ if(s.client_code && (s.steps||0) > (stepsByClient[s.client_code]||0)) stepsByClient[s.client_code] = s.steps; });
+
+    // Did each client train today? recentWorkouts is desc by logged_at, so first seen per client = most recent.
+    var _startToday = new Date(); _startToday.setHours(0,0,0,0); var _todayTs = _startToday.getTime();
+    var woTodayByClient = {};
+    recentWorkouts.forEach(function(w){
+      if(!w.client_code) return;
+      var t = w.logged_at ? new Date(w.logged_at).getTime() : 0;
+      if(t >= _todayTs && !woTodayByClient[w.client_code]) woTodayByClient[w.client_code] = {title: w.title || 'Workout'};
+    });
+
     // Build a lastActivity map: for each client, the most recent timestamp across ALL log types
     var lastActivity = {}; // {code: {ts: Date, kind: 'food'|'workout'|'checkin'|'chat'|'steps'|'weight'}}
     function consider(code, tsRaw, kind){
@@ -4212,7 +4226,25 @@ async function loadTrainerDashboard(){
       var safeClientName = clientInfo.name.replace(/'/g,"\\'");
       var assignChip = '<button onclick="event.stopPropagation();openAssignProgramModal(\''+code+'\',\''+safeClientName+'\','+(assignedId||'null')+')" style="background:'+chipBg+';border:1.5px solid '+chipBorder+';color:'+chipColor+';width:30px;height:30px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;padding:0;line-height:1;flex-shrink:0;" title="Assign program">'+chipLabel+'</button>';
 
-      html += '<div class="client-card"><div class="cc-head"><div class="cc-avi">'+clientInfo.initials[0]+'</div><div class="cc-info"><div class="cc-name">'+clientInfo.name+'</div><div class="cc-last">'+foods.length+' meals · '+Math.round(totalCal)+' cal · '+Math.round(totalPro)+'g protein'+(latestWeight?' · '+latestWeight+'lbs':'')+'</div>'+seenLabel+'</div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">'+assignChip+'<div style="text-align:right;"><div class="cc-score" style="color:'+scoreCol+';font-size:18px;">'+(foods.length>0?Math.round(totalCal):'—')+'</div><div class="cc-score-lbl">'+(foods.length>0?'cal':'no logs')+'</div></div></div></div><div class="cc-meals">'+mealItems+'</div>'+noteBtn+'</div>';
+      // Stat strip — did they train today + their step count (the at-a-glance read)
+      var trainedToday = woTodayByClient[code];
+      var stepsToday = stepsByClient[code] || 0;
+      var woPill = trainedToday
+        ? '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:var(--green);background:rgba(34,199,94,0.10);padding:4px 9px;border-radius:7px;">💪 Trained · '+trainedToday.title+'</span>'
+        : '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:var(--muted);background:var(--s2);padding:4px 9px;border-radius:7px;">💪 No workout yet</span>';
+      var stepCol = stepsToday>=10000 ? 'var(--green)' : 'var(--m2)';
+      var stepPill = stepsToday>0
+        ? '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:'+stepCol+';background:var(--s2);padding:4px 9px;border-radius:7px;">👟 '+stepsToday.toLocaleString()+' steps</span>'
+        : '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:var(--muted);background:var(--s2);padding:4px 9px;border-radius:7px;">👟 No steps</span>';
+      var statStrip = '<div style="display:flex;flex-wrap:wrap;gap:6px;padding:0 16px 10px;">'+woPill+stepPill+'</div>';
+
+      // Food photo row — thumbnails of today's logged meal photos (tap to enlarge)
+      var photoFoods = foods.filter(function(f){ return f.photo; });
+      var photoRow = photoFoods.length>0
+        ? '<div style="display:flex;gap:6px;padding:0 16px 10px;flex-wrap:wrap;">'+photoFoods.slice(0,6).map(function(f){ return '<img src="'+f.photo+'" onclick="event.stopPropagation();openPhotoLightbox(this.src)" style="width:54px;height:54px;border-radius:8px;object-fit:cover;cursor:pointer;border:1px solid var(--border);">'; }).join('')+'</div>'
+        : '';
+
+      html += '<div class="client-card"><div class="cc-head"><div class="cc-avi">'+clientInfo.initials[0]+'</div><div class="cc-info"><div class="cc-name">'+clientInfo.name+'</div><div class="cc-last">'+foods.length+' meals · '+Math.round(totalCal)+' cal · '+Math.round(totalPro)+'g protein'+(latestWeight?' · '+latestWeight+'lbs':'')+'</div>'+seenLabel+'</div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">'+assignChip+'<div style="text-align:right;"><div class="cc-score" style="color:'+scoreCol+';font-size:18px;">'+(foods.length>0?Math.round(totalCal):'—')+'</div><div class="cc-score-lbl">'+(foods.length>0?'cal':'no logs')+'</div></div></div></div>'+statStrip+photoRow+'<div class="cc-meals">'+mealItems+'</div>'+noteBtn+'</div>';
     });
 
     listEl.innerHTML = html || '<div class="no-clients">No client data yet.</div>';
