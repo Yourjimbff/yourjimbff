@@ -1522,7 +1522,7 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.14.0';
+var APP_VERSION = 'v2.15.0';
 var APP_BUILD = "May 28 — Jim card matches black/gold Push Day card (unified hero zone)";
 
 var cl=null, profile=null;
@@ -1752,10 +1752,15 @@ function refreshTileStates(){
     if(typeof stepsVal !== 'undefined' && stepsVal && stepsVal > 0) markTileDone('Steps');
     if(typeof sleepHours !== 'undefined' && sleepHours && sleepHours !== 7) markTileDone('Sleep');
     if(typeof todayCheckins !== 'undefined' && todayCheckins && todayCheckins.length > 0) markTileDone('Energy');
-    // Weight tile — fetch today's weight log to check
+    // Weight tile — check the latest weight log's date (robust: not dependent on date_str)
     if(cl){
-      sbSelect('weight_logs','client_code=eq.'+cl.code+'&date_str=eq.'+encodeURIComponent(todayDateStr)+'&limit=1').then(function(rows){
-        if(rows && rows.length > 0) markTileDone('Weight');
+      var _todayIso = isoDateStr(new Date());
+      sbSelect('weight_logs','client_code=eq.'+cl.code+'&order=created_at.desc&limit=1').then(function(rows){
+        if(rows && rows.length > 0){
+          var r = rows[0];
+          var ts = r.logged_at || r.created_at;
+          if(ts && isoDateStr(new Date(ts)) === _todayIso) markTileDone('Weight');
+        }
       }).catch(function(){});
     }
   }catch(e){ console.error('refreshTileStates', e); }
@@ -1895,7 +1900,7 @@ function renderTrainingCalendar(){
   });
 
   var todayStr = isoDateStr(new Date());
-  var nowMs = Date.now();
+  var todayMidnight = new Date(); todayMidnight.setHours(0,0,0,0); todayMidnight = todayMidnight.getTime();
   var dayShort = {0:'Sun',1:'Mon',2:'Tue',3:'Wed',4:'Thu',5:'Fri',6:'Sat'};
   var esc = function(s){ return String(s==null?'':s).replace(/</g,'&lt;'); };
   var html = '';
@@ -1909,7 +1914,8 @@ function renderTrainingCalendar(){
     var logged = dayWorkouts.length > 0;
     var isToday = (ds === todayStr);
     var isSelected = (trainingSelectedDay === ds);
-    var isFuture = (d.getTime() > nowMs) && !isToday;
+    var isPast = (d.getTime() < todayMidnight) && !isToday;
+    var isFuture = (d.getTime() > todayMidnight) && !isToday;
 
     // Planned exercise count
     var exCount = 0;
@@ -1948,7 +1954,7 @@ function renderTrainingCalendar(){
     var todayTag = isToday ? '<span style="font-size:8.5px;color:var(--gold);background:rgba(245,197,24,0.15);padding:1px 5px;border-radius:4px;letter-spacing:0.5px;font-weight:700;margin-left:6px;vertical-align:middle;">TODAY</span>' : '';
     var border = isSelected ? '2px solid var(--gold)' : (isToday ? '1.5px dashed rgba(245,197,24,0.6)' : '1px solid var(--border)');
     var bg = isSelected ? 'rgba(245,197,24,0.10)' : (logged ? 'var(--s2)' : 'transparent');
-    var opacity = isFuture ? '0.5' : '1';
+    var opacity = (isPast && !logged) ? '0.5' : '1';
 
     html += '<div onclick="selectTrainingDay(\''+ds+'\')" style="border:'+border+';background:'+bg+';border-radius:11px;padding:10px 12px;display:flex;align-items:center;gap:12px;cursor:pointer;opacity:'+opacity+';">'+
       '<div style="flex-shrink:0;width:34px;text-align:center;">'+
@@ -1994,11 +2000,26 @@ function renderTrainingList(){
           if(_pex.length>6) _exLines += '<div style="color:var(--muted);">+ '+(_pex.length-6)+' more</div>';
         }
       }catch(e){}
+      var _todayIso = isoDateStr(new Date());
+      var _isFutureSel = trainingSelectedDay > _todayIso;
+      var _alreadyLogged = !!trainingAllRows.find(function(w){
+        var ds = w.logged_at ? isoDateStr(new Date(w.logged_at)) : null;
+        return ds === trainingSelectedDay && (w.title||'') === (_plan.title||'');
+      });
+      var _viewBtn = '<button onclick="viewClientProgramDay('+_selDow+')" style="margin-top:8px;width:100%;background:transparent;border:1px solid var(--border);border-radius:9px;padding:10px;font-size:12px;font-weight:700;color:var(--text);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">View full workout ›</button>';
+      var _btnHtml;
+      if(_isFutureSel){
+        _btnHtml = '<button onclick="viewClientProgramDay('+_selDow+')" style="margin-top:12px;width:100%;background:var(--gold);border:none;border-radius:9px;padding:11px;font-size:12px;font-weight:700;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">View full workout ›</button>';
+      } else if(_alreadyLogged){
+        _btnHtml = '<div style="margin-top:12px;display:flex;align-items:center;justify-content:center;gap:8px;background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.45);border-radius:9px;padding:11px;color:#22c55e;font-size:12.5px;font-weight:800;">✓ Logged — nice work</div>' + _viewBtn;
+      } else {
+        _btnHtml = '<button onclick="logPlannedWorkout(\''+trainingSelectedDay+'\','+_selDow+')" style="margin-top:12px;width:100%;background:#22c55e;border:none;border-radius:9px;padding:12px;font-size:13px;font-weight:800;color:#fff;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">✓ I did this</button>' + _viewBtn;
+      }
       planCardHtml = '<div style="background:linear-gradient(135deg,#1a1a1a,#000);border:1.5px solid rgba(245,197,24,0.4);border-radius:12px;padding:14px;margin:16px 0 10px;">'+
         '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:11px;letter-spacing:2px;color:var(--gold);margin-bottom:5px;">PLANNED · '+_dayShort[_selDow].toUpperCase()+'</div>'+
         '<div style="font-size:16px;font-weight:800;color:#fff;margin-bottom:'+(_exLines?'8px':'10px')+';">'+(_plan.title||'Workout').replace(/</g,'&lt;')+'</div>'+
         (_exLines?'<div style="font-size:12px;color:#bbb;line-height:1.65;">'+_exLines+'</div>':'')+
-        '<button onclick="viewClientProgramDay('+_selDow+')" style="margin-top:12px;width:100%;background:var(--gold);border:none;border-radius:9px;padding:11px;font-size:12px;font-weight:700;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">View full workout ›</button>'+
+        _btnHtml+
       '</div>';
     }
   }
@@ -3463,6 +3484,61 @@ function viewClientProgramDay(dow){
   if(!w){ showToast('Rest day'); return; }
   // Open the viewer for THIS day without overwriting today's workout (Jim relies on it)
   openTodayProgramWorkout(w);
+}
+
+// 1-tap "I did this" — log a planned workout as completed for a given date (today OR a past day)
+async function logPlannedWorkout(dateStr, dow){
+  if(!cl || !clientAssignedProgram){ showToast('No program loaded'); return; }
+  var plan = clientAssignedProgram.workouts.find(function(x){ return Number(x.day_of_week) === Number(dow); });
+  if(!plan){ showToast('No planned workout that day'); return; }
+
+  // Idempotent: don't double-log the same plan on the same date
+  var dupe = trainingAllRows.find(function(w){
+    var ds = w.logged_at ? isoDateStr(new Date(w.logged_at)) : null;
+    return ds === dateStr && (w.title || '') === (plan.title || '');
+  });
+  if(dupe){ showToast('Already logged ✓'); return; }
+
+  // Planned exercises → array + a clean description line
+  var exArr = [];
+  try{ var pe = typeof plan.exercises === 'string' ? JSON.parse(plan.exercises) : plan.exercises; if(Array.isArray(pe)) exArr = pe; }catch(e){}
+  var desc = exArr.map(function(e){ return e && e.name; }).filter(Boolean).join(', ') || (plan.title || 'Workout');
+
+  // Anchor logged_at to noon of the chosen date so it maps to the right calendar day (past-safe)
+  var when = new Date(dateStr + 'T12:00:00');
+  var baseRow = {
+    client_code: cl.code,
+    date_str: dateStr,
+    description: desc,
+    logged_at: (isNaN(when.getTime()) ? new Date() : when).toISOString()
+  };
+  var fullRow = Object.assign({}, baseRow, { title: (plan.title || 'Workout') });
+  if(exArr.length > 0) fullRow.exercises = exArr;
+
+  async function tryInsert(payload){
+    try{
+      var res = await fetch(SB_URL+'/rest/v1/workout_logs', {
+        method:'POST',
+        headers: Object.assign({}, sbHeaders(), {'Prefer':'return=minimal'}),
+        body: JSON.stringify(payload)
+      });
+      if(!res.ok){ var b=''; try{ b = await res.text(); }catch(e){} return {ok:false, body:b}; }
+      return {ok:true};
+    }catch(e){ return {ok:false}; }
+  }
+
+  var attempt = await tryInsert(fullRow);
+  if(!attempt.ok && /column.*(title|exercises).*does not exist/i.test(attempt.body || '')){
+    attempt = await tryInsert(baseRow); // fall back if title/exercises columns are absent
+  }
+  if(!attempt.ok){ showToast('Could not log — try again'); return; }
+
+  showToast('✓ ' + (plan.title || 'Workout') + ' logged');
+  await loadTrainingHistory(); // refreshes the board (green ✓) + the list
+  // If it was today, refresh the Today tab too
+  if(dateStr === isoDateStr(new Date()) && typeof loadTodayWorkouts === 'function'){
+    loadTodayWorkouts();
+  }
 }
 
 // ---- Trainer-side: assign program to client ----
