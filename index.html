@@ -797,6 +797,19 @@ textarea.ifield{min-height:78px;}
       <div id="clientAssignedProgramContent"></div>
     </div>
 
+    <!-- PROGRAM DISPLAY TOGGLE -->
+    <div id="programToggleSection" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 16px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+        <div style="flex:1;">
+          <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:2px;">Show my program on Today</div>
+          <div style="font-size:12px;color:var(--m2);line-height:1.4;">Off = log freestyle, no prescribed workout on your home screen.</div>
+        </div>
+        <div id="programToggle" onclick="toggleProgramDisplay()" style="flex-shrink:0;width:52px;height:30px;border-radius:15px;background:var(--gold);position:relative;cursor:pointer;transition:background 0.2s;">
+          <div id="programToggleKnob" style="position:absolute;top:3px;left:25px;width:24px;height:24px;border-radius:50%;background:#fff;transition:left 0.2s;box-shadow:0 1px 3px rgba(0,0,0,0.2);"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- THIS WEEK — unified board: plan + dates + logged status -->
     <div id="trainingWeekCal" style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:14px;">
       <div id="trainingBoardProgram" style="margin-bottom:10px;display:none;"></div>
@@ -1593,7 +1606,7 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.76.0';
+var APP_VERSION = 'v2.77.0';
 var APP_BUILD = "May 28 — Jim card matches black/gold Push Day card (unified hero zone)";
 
 var cl=null, profile=null;
@@ -3372,6 +3385,44 @@ deleteProgramDay = async function(){
 };
 
 // ---- Client-side: load assigned program ----
+// Per-person "show program on Today" preference. Stored per client code; defaults ON.
+function _programPrefKey(){ return 'showProgram_' + (cl && cl.code ? cl.code : 'anon'); }
+function programDisplayEnabled(){
+  try{ var v = localStorage.getItem(_programPrefKey()); return v === null ? true : v === '1'; }
+  catch(e){ return true; }
+}
+function refreshProgramToggleUI(){
+  var sec = document.getElementById('programToggleSection');
+  var tog = document.getElementById('programToggle');
+  var knob = document.getElementById('programToggleKnob');
+  if(!sec) return;
+  // Only show the toggle when there's actually a program to toggle.
+  if(clientAssignedProgram && clientAssignedProgram.program){
+    sec.style.display = 'block';
+    var on = programDisplayEnabled();
+    if(tog) tog.style.background = on ? 'var(--gold)' : 'var(--border)';
+    if(knob) knob.style.left = on ? '25px' : '3px';
+  } else {
+    sec.style.display = 'none';
+  }
+}
+function toggleProgramDisplay(){
+  var now = programDisplayEnabled();
+  try{ localStorage.setItem(_programPrefKey(), now ? '0' : '1'); }catch(e){}
+  // Re-apply immediately: recompute today's program workout + redraw Today card.
+  if(clientAssignedProgram && clientAssignedProgram.workouts){
+    if(!now){ // turning ON
+      var todayDow = new Date().getDay();
+      todayProgramWorkout = clientAssignedProgram.workouts.find(function(w){ return Number(w.day_of_week) === todayDow; }) || null;
+    } else { // turning OFF
+      todayProgramWorkout = null;
+    }
+  }
+  renderTodayWorkoutCard();
+  refreshProgramToggleUI();
+  showToast(now ? 'Program hidden — freestyle mode' : 'Program back on Today');
+}
+
 async function loadClientAssignedProgram(){
   if(!cl) return;
   clientAssignedProgram = null;
@@ -3404,9 +3455,16 @@ async function loadClientAssignedProgram(){
     var workouts = wRes.ok ? await wRes.json() : [];
     clientAssignedProgram = {program: program, workouts: workouts};
     var todayDow = new Date().getDay();
-    todayProgramWorkout = workouts.find(function(w){ return Number(w.day_of_week) === todayDow; }) || null;
+    // Respect the per-person "show program on Today" preference. When off, the program still
+    // exists (for Training-tab reference) but does not drive the Today card — pure freestyle home.
+    if(programDisplayEnabled()){
+      todayProgramWorkout = workouts.find(function(w){ return Number(w.day_of_week) === todayDow; }) || null;
+    } else {
+      todayProgramWorkout = null;
+    }
     renderTodayWorkoutCard();
     renderClientAssignedProgramSection();
+    refreshProgramToggleUI();
   }catch(e){
     console.error('loadClientAssignedProgram', e);
   }
@@ -6576,6 +6634,7 @@ async function changeAccessCode(){
 
 function loadProfileTab(){
   if(!profile)return;
+  try{ refreshProgramToggleUI(); }catch(e){}
   // Trainer: show how many clients are currently hidden
   try{
     var hc = document.getElementById('hiddenClientsCount');
