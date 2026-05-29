@@ -523,14 +523,13 @@ textarea.ifield{min-height:78px;}
     </div>
 
     <!-- TODAY'S WORKOUT CARD (visible when client has assigned program) -->
-    <div id="todayWorkoutCard" style="display:none;background:var(--surface);border:1.5px solid rgba(245,197,24,0.55);border-radius:var(--r);padding:14px 16px;margin-bottom:10px;cursor:pointer;position:relative;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.15);" onclick="openTodayProgramWorkout()">
-      <div style="position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--gold),transparent);"></div>
+    <div id="todayWorkoutCard" style="display:none;background:var(--surface);border:2px solid rgba(245,197,24,0.55);border-radius:var(--r);padding:14px 16px;margin-bottom:10px;cursor:pointer;position:relative;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.07);" onclick="openTodayProgramWorkout()">
       <div style="display:flex;align-items:center;gap:12px;">
         <div style="width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,rgba(245,197,24,0.25),rgba(245,197,24,0.08));border:1px solid rgba(245,197,24,0.4);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;">💪</div>
         <div style="flex:1;min-width:0;">
           <div style="font-size:9.5px;letter-spacing:1.5px;color:var(--gold);margin-bottom:3px;font-weight:700;text-transform:uppercase;" id="todayWorkoutLabel">Today · Thu</div>
-          <div style="font-size:17px;font-weight:800;color:var(--text);line-height:1.15;margin-bottom:2px;letter-spacing:-0.2px;" id="todayWorkoutTitle">—</div>
-          <div style="font-size:11.5px;color:var(--muted);" id="todayWorkoutMeta">—</div>
+          <div style="font-size:15px;font-weight:700;color:var(--text);line-height:1.2;margin-bottom:2px;" id="todayWorkoutTitle">—</div>
+          <div style="font-size:12px;color:var(--muted);" id="todayWorkoutMeta">—</div>
         </div>
         <div id="todayWorkoutIndicator" style="flex-shrink:0;color:var(--gold);font-size:20px;">›</div>
       </div>
@@ -1522,7 +1521,7 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.19.0';
+var APP_VERSION = 'v2.20.0';
 var APP_BUILD = "May 28 — Jim card matches black/gold Push Day card (unified hero zone)";
 
 var cl=null, profile=null;
@@ -1534,22 +1533,61 @@ function rendVersion(){
 }
 
 // ===== JIM INVITE CARD (top of Today) =====
-var JIM_INVITE_PROMPTS = [
-  "Update me on how you're feeling — I'll track it and tell you what I'm seeing.",
-  "Tell me what you ate today — I'll keep tabs and flag the patterns.",
-  "Walk me through your training — I'll log it and watch the trend.",
-  "How's the body? I'll track recovery and flag anything worth knowing.",
-  "Quick check-in — log how you're doing and I'll connect the dots.",
-  "Sore, tired, recovered? Tell me — I track everything you share.",
-  "What's going on today? Update me and I'll keep tracking your progress.",
-  "Tell me about your day — I'll watch for patterns and call out what matters."
-];
+// Time-of-day check-in prompts. Held steady for 30 min so it doesn't churn on every visit.
+var JIM_INVITE_BUCKETS = {
+  morning: [
+    "Morning. How'd you sleep? Tell me and I'll factor it into today.",
+    "Morning check-in — what's the plan for food and training today?",
+    "Up and at it. Log how you're feeling and I'll read the day with you."
+  ],
+  afternoon: [
+    "Midday check — what have you eaten so far? I'll flag the gaps.",
+    "How's the day going? Update me and I'll keep you on track.",
+    "Afternoon — trained yet, or is that still coming? Tell me."
+  ],
+  evening: [
+    "Evening. Walk me through the day — I'll tell you what I'm seeing.",
+    "How'd today land? Log it and I'll connect the dots.",
+    "Winding down — how's the body feeling? I track everything you share."
+  ],
+  late: [
+    "Still up? Quick check-in before bed — how'd the day go?",
+    "Late one. Tell me how you're feeling and I'll log it.",
+    "Before you crash — anything worth logging from today?"
+  ]
+};
+
+function jimInviteBucket(){
+  var hr = new Date().getHours();
+  if(hr < 5) return 'late';
+  if(hr < 12) return 'morning';
+  if(hr < 17) return 'afternoon';
+  if(hr < 21) return 'evening';
+  return 'late';
+}
 
 function rotateJimInvite(){
   var el = document.getElementById('jimInvitePrompt');
   if(!el) return;
-  var prompt = JIM_INVITE_PROMPTS[Math.floor(Math.random() * JIM_INVITE_PROMPTS.length)];
-  el.textContent = prompt;
+  var bucket = jimInviteBucket();
+  var key = 'yjb_jiminvite_' + (cl ? cl.code : 'anon');
+  var THIRTY_MIN = 30 * 60 * 1000;
+  // Reuse the cached prompt if it's the same time-of-day bucket and less than 30 min old
+  try{
+    var raw = localStorage.getItem(key);
+    if(raw){
+      var c = JSON.parse(raw);
+      if(c && c.bucket === bucket && c.text && (Date.now() - c.ts) < THIRTY_MIN){
+        el.textContent = c.text;
+        return;
+      }
+    }
+  }catch(e){}
+  // Otherwise pick a fresh one for this bucket and cache it
+  var pool = JIM_INVITE_BUCKETS[bucket] || JIM_INVITE_BUCKETS.morning;
+  var text = pool[Math.floor(Math.random() * pool.length)];
+  el.textContent = text;
+  try{ localStorage.setItem(key, JSON.stringify({text:text, bucket:bucket, ts:Date.now()})); }catch(e){}
 }
 
 function openJimFromInvite(){
@@ -1758,6 +1796,8 @@ function refreshTileStates(){
     // Weight tile — check the latest weight log's date (robust: not dependent on date_str)
     if(cl){
       var _todayIso = isoDateStr(new Date());
+      // Sticky local flag set at log time — survives any DB/timezone date edge
+      try{ if(localStorage.getItem('yjb_weighed_'+cl.code+'_'+_todayIso)) markTileDone('Weight'); }catch(e){}
       sbSelect('weight_logs','client_code=eq.'+cl.code+'&order=created_at.desc&limit=1').then(function(rows){
         if(rows && rows.length > 0){
           var r = rows[0];
@@ -5593,6 +5633,7 @@ async function logWeight(){
   document.getElementById('weightSub').textContent='Last: '+wVal+' lbs';
   document.getElementById('sswt').textContent=wVal+'lbs';
   markTileDone('Weight');
+  try{ localStorage.setItem('yjb_weighed_'+cl.code+'_'+isoDateStr(new Date()), '1'); }catch(e){}
   showToast('⚖️ '+wVal+' lbs logged');
   // Refresh journey graph
   await renderWeightJourney();
