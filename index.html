@@ -1521,7 +1521,7 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.22.0';
+var APP_VERSION = 'v2.23.0';
 var APP_BUILD = "May 28 — Jim card matches black/gold Push Day card (unified hero zone)";
 
 var cl=null, profile=null;
@@ -7021,21 +7021,27 @@ function buildCoachVoice(){
     '- DO NOT include intensity, duration, or notes in the marker. Intensity comes from the user\'s next reply (the app handles patching). Duration we skip — user can backfill later. Notes get auto-captured from your commentary.\n\n'+
     'After the rating comes in OR user skips/moves on, transition naturally to refuel/recovery coaching. Never re-emit the marker for the same workout.\n\n'+
 
-    'FOOD LOGGING — INSTANT LOG FROM CHAT:\n'+
-    'When the user tells you they ATE something (or sends a photo of a meal they\'re eating or just ate), you LOG IT IMMEDIATELY — the description is consent, exactly like workouts. Do NOT ask "want me to log this?" Just acknowledge warmly and emit the marker.\n'+
-    'Emit a [FOOD_LOG] marker with your best estimate of the meal. Format:\n'+
-    '[FOOD_LOG]{"name":"Chicken & rice bowl","emoji":"🍗","calories":520,"protein":45,"carbs":40,"fat":15,"rating":"good","insight":"Solid protein-forward meal — right idea.","meal":"Lunch"}[/FOOD_LOG]\n'+
+    'FOOD LOGGING — LOG SILENTLY, SAY ALMOST NOTHING:\n'+
+    'When the user tells you they ATE something (or sends a photo of a meal they just ate / are eating), log it. The description is consent — never ask "want me to log this?"\n'+
+    'Emit the marker on its OWN LINE with nothing else on that line. Exact format:\n'+
+    '[FOOD_LOG]{"name":"Chicken & rice bowl","emoji":"🍗","calories":520,"protein":45,"carbs":40,"fat":15,"rating":"good","insight":"","meal":"Lunch"}[/FOOD_LOG]\n'+
     'FIELD RULES:\n'+
     '- name: short meal name. emoji: one fitting food emoji.\n'+
-    '- calories/protein/carbs/fat: your best estimate (calories in kcal, macros in grams) for the portion described or shown. Estimate confidently from the description or photo and round to whole numbers — do not refuse to estimate.\n'+
-    '- rating: one of "nutrient_dense" (whole-food, protein + veg forward), "good" (solid, mostly whole foods), "okay" (fine but not ideal), "unknown" (genuinely can\'t tell), "bad" (processed / off-plan). Use Yusuf\'s whole-food lens.\n'+
-    '- insight: one short coaching line about the meal.\n'+
+    '- calories/protein/carbs/fat: your best estimate (calories in kcal, macros in grams) for the portion. Estimate confidently and round — do not refuse to estimate.\n'+
+    '- rating: one of "nutrient_dense", "good", "okay", "unknown", "bad". Use Yusuf\'s whole-food lens.\n'+
+    '- insight: leave as an empty string "" unless the user asked for feedback.\n'+
     '- meal: Breakfast / Lunch / Dinner / Snack based on the current time shown above.\n'+
+    'YOUR VISIBLE REPLY WHEN LOGGING — KEEP IT TO ONE SHORT LINE:\n'+
+    'Just confirm what you logged and STOP. Examples: "Got it — donut logged. 210 cal, 21g protein." / "Logged the chicken salad — 480 cal, 42g." \n'+
+    'Do NOT do any of the following when simply logging a meal: recap the whole day, total up their macros, do calorie math, suggest what to eat next, comment on whether they "earned" it, or ask a follow-up question. No paragraphs. One line, then done.\n'+
+    'NEVER ask follow-up questions about food (no "deliberate cardio or just steps?", no "another meal or snacks tonight?", no "what else have you eaten?"). If a detail is ambiguous, just log your best estimate and move on.\n'+
     'WHEN TO LOG vs NOT:\n'+
-    '- LOG: "just had 3 eggs and oatmeal", "ate a chicken salad for lunch", "having a ribeye and potatoes right now", or a photo of a plate they\'re eating.\n'+
-    '- DO NOT LOG: they\'re asking what to eat, planning a future meal, asking whether they can afford a treat, or the meal is already in today\'s food logs (check the data — never double-log). In those cases just respond conversationally.\n'+
-    'JSON must be valid — escape quotes, no trailing commas. Use valid JSON only.\n'+
-    'After emitting the marker, keep your reply short and natural: acknowledge the meal and give one useful coaching beat (e.g. how it moves their protein for the day). The app saves it to their Today screen and totals; the user never sees the marker.\n\n'+
+    '- LOG: "just had 3 eggs and oatmeal", "ate a chicken salad", "having a ribeye right now", or a photo of a plate they ate.\n'+
+    '- DO NOT LOG: they\'re asking what to eat, planning a future meal, asking whether they can afford a treat, or the meal is already in today\'s logs (check the data — never double-log). Then respond conversationally, still briefly.\n'+
+    'JSON must be valid — escape quotes, no trailing commas.\n\n'+
+
+    'COACHING IS OPT-IN — DO NOT COACH UNLESS ASKED:\n'+
+    'Default behavior is to log and acknowledge, nothing more. Only give advice, meal suggestions, macro breakdowns, "how it fits your day," or motivational commentary when the user ASKS a question or explicitly asks for your read. A statement ("I ate X", "did Y") gets a brief log/acknowledgement. A question ("what should I eat?", "am I on track?", "should I have this?") gets real coaching. When unsure, say less. Most people just want their stats logged — respect that.\n\n'+
 
     'TRAINING-INTENSITY → REFUEL RULES:\n'+
     'When training intensity is logged today, factor it heavily:\n'+
@@ -7475,6 +7481,23 @@ async function sendChatMessage(){
     if(intensityWasJustPatched){
       reply = '✓ Got it — rated.\n\n' + reply;
     }
+
+    // SAFETY NET: if a FOOD_LOG marker survived strict extraction (model formatting drift), salvage it so the meal still logs.
+    if(!extractedFood.log){
+      var _salvage = reply.match(/\[FOOD_LOG\]([\s\S]*?)\[\/FOOD_LOG\]/);
+      if(_salvage){
+        try{ var _sObj = JSON.parse(_salvage[1].trim()); if(_sObj && _sObj.name){ var _sOk = await logFoodFromChat(_sObj, photoSnapshot); if(_sOk) showToast('✓ '+(_sObj.name||'Meal')+' logged'); } }catch(e){ console.error('food salvage parse failed', e); }
+      }
+    }
+    // Scrub any leftover or partial marker text so raw JSON / tags never reach the screen.
+    reply = reply
+      .replace(/\[FOOD_LOG\][\s\S]*?\[\/FOOD_LOG\]/g,'')
+      .replace(/\[WORKOUT_LOG\][\s\S]*?\[\/WORKOUT_LOG\]/g,'')
+      .replace(/\[WORKOUT_NOTE\][\s\S]*?\[\/WORKOUT_NOTE\]/g,'')
+      .replace(/\[\/?(FOOD_LOG|WORKOUT_LOG|WORKOUT_NOTE)\]/g,'')
+      .replace(/\n{3,}/g,'\n\n')
+      .trim();
+    if(!reply) reply = 'Logged. ✓';
 
     // Remove typing, append assistant message
     var tr=document.getElementById('chatTypingRow');
