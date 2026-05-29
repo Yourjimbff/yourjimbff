@@ -797,7 +797,7 @@ textarea.ifield{min-height:78px;}
 
     <!-- THIS WEEK — unified board: plan + dates + logged status -->
     <div id="trainingWeekCal" style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:14px;">
-      <div id="trainingBoardProgram" style="font-family:'Bebas Neue',sans-serif;font-size:13px;letter-spacing:1.5px;color:var(--gold);margin-bottom:10px;display:none;">—</div>
+      <div id="trainingBoardProgram" style="margin-bottom:10px;display:none;"></div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
         <button onclick="navTrainingWeek(-1)" aria-label="Previous week" style="background:transparent;border:none;font-size:18px;color:var(--m2);cursor:pointer;padding:4px 10px;line-height:1;">‹</button>
         <div id="trainingWeekRange" style="font-family:'Bebas Neue',sans-serif;font-size:15px;letter-spacing:1px;color:var(--text);">—</div>
@@ -1522,7 +1522,7 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.16.1';
+var APP_VERSION = 'v2.17.0';
 var APP_BUILD = "May 28 — Jim card matches black/gold Push Day card (unified hero zone)";
 
 var cl=null, profile=null;
@@ -1719,6 +1719,9 @@ async function launchApp(){
   } else {
     bnavEl.classList.remove('trainer-mode');
   }
+  // MY PROGRAMS authoring box is trainer-only (no general CSS rule hides it, so enforce here)
+  var _tps = document.getElementById('trainerProgramsSection');
+  if(_tps) _tps.style.display = isTrainer(cl.code) ? 'block' : 'none';
   document.getElementById('uname').textContent=cl.name;
   document.getElementById('avi').textContent=cl.initials[0];
   document.getElementById('todayLbl').textContent=todayStr;
@@ -1799,6 +1802,7 @@ function openManualWorkoutModal(){
 var trainingViewWeekStart = null; // Monday 00:00 of currently-viewed week
 var trainingSelectedDay = null; // ISO date string ('YYYY-MM-DD') or null = show whole week
 var trainingAllRows = []; // cache of fetched workout rows
+var trainingStepsAvg = 0; // average daily steps (recent), for the cardio line on the board
 
 function getMonday(d){
   var dt = new Date(d);
@@ -1842,6 +1846,12 @@ async function loadTrainingHistory(){
     trainingAllRows = rows || [];
     if(sub) sub.textContent = trainingAllRows.length+' session'+(trainingAllRows.length===1?'':'s');
     if(!trainingViewWeekStart) trainingViewWeekStart = getMonday(new Date());
+    // Average daily steps (last 14 logged days, days with steps only) for the cardio line
+    try{
+      var stepRows = await sbSelect('step_logs','client_code=eq.'+cl.code+'&order=updated_at.desc&limit=14');
+      var vals = (stepRows||[]).map(function(s){ return Number(s.steps)||0; }).filter(function(n){ return n>0; });
+      trainingStepsAvg = vals.length ? Math.round(vals.reduce(function(a,b){return a+b;},0)/vals.length) : 0;
+    }catch(e){ trainingStepsAvg = 0; }
     renderTrainingView();
   }catch(e){
     console.error('loadTrainingHistory', e);
@@ -1874,8 +1884,17 @@ function renderTrainingCalendar(){
   // Program name label (top of board)
   var progLabel = document.getElementById('trainingBoardProgram');
   if(progLabel){
-    if(clientAssignedProgram && clientAssignedProgram.program && clientAssignedProgram.program.name){
-      progLabel.textContent = clientAssignedProgram.program.name.toUpperCase();
+    if(clientAssignedProgram && clientAssignedProgram.program){
+      var _prog = clientAssignedProgram.program;
+      var _desc = _prog.description ? String(_prog.description) : '';
+      var _avg = (trainingStepsAvg > 0) ? trainingStepsAvg.toLocaleString() : '0';
+      var _h = '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:13px;letter-spacing:1.5px;color:var(--gold);">YOUR PROGRAM</div>';
+      if(_desc) _h += '<div style="font-size:12px;color:var(--m2);margin-top:5px;line-height:1.5;">'+_desc.replace(/</g,'&lt;')+'</div>';
+      _h += '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px;">'+
+        '<div style="font-size:11px;color:var(--muted);letter-spacing:0.3px;"><span style="color:var(--text);font-weight:700;">Cardio</span> · aim 10–12k steps/day</div>'+
+        '<div style="font-size:12px;color:var(--text);font-weight:700;white-space:nowrap;">avg '+_avg+'</div>'+
+      '</div>';
+      progLabel.innerHTML = _h;
       progLabel.style.display = 'block';
     } else {
       progLabel.style.display = 'none';
@@ -4579,15 +4598,39 @@ function toggleEnergyMic(){
 }
 
 // ===== FOOD =====
+// Downscale a data-URL image to a compact JPEG so it persists without bloating the DB row
+function downscaleImage(dataUrl, maxDim, quality){
+  return new Promise(function(resolve){
+    try{
+      var img = new Image();
+      img.onload = function(){
+        var w = img.width, h = img.height;
+        if(w >= h){ if(w > maxDim){ h = Math.round(h * maxDim / w); w = maxDim; } }
+        else { if(h > maxDim){ w = Math.round(w * maxDim / h); h = maxDim; } }
+        try{
+          var canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL('image/jpeg', quality || 0.7));
+        }catch(e){ resolve(dataUrl); }
+      };
+      img.onerror = function(){ resolve(dataUrl); };
+      img.src = dataUrl;
+    }catch(e){ resolve(dataUrl); }
+  });
+}
+
 function hdlFoodPhoto(input){
   if(!input.files||!input.files[0])return;
   var reader=new FileReader();
   reader.onload=function(e){
-    photoData=e.target.result;
-    var slot=document.getElementById('foodPhotoSlot');
-    slot.classList.add('hi');
-    slot.innerHTML='<img src="'+photoData+'" alt="meal"><div class="pchg">Change</div><input type="file" accept="image/*" capture="environment" onchange="hdlFoodPhotoNew(this)" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;">';
-    showToast('📷 Photo ready');
+    downscaleImage(e.target.result, 900, 0.7).then(function(compact){
+      photoData=compact;
+      var slot=document.getElementById('foodPhotoSlot');
+      slot.classList.add('hi');
+      slot.innerHTML='<img src="'+photoData+'" alt="meal"><div class="pchg">Change</div><input type="file" accept="image/*" capture="environment" onchange="hdlFoodPhotoNew(this)" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;">';
+      showToast('📷 Photo ready');
+    });
   };
   reader.readAsDataURL(input.files[0]);
 }
@@ -4707,12 +4750,51 @@ function confirmMeal(){
   commitMeal(r,false);
 }
 
+// Insert a food log; include the photo if the column exists, fall back gracefully if not
+async function insertFoodLog(row, photo){
+  async function tryInsert(payload){
+    try{
+      var res = await fetch(SB_URL+'/rest/v1/food_logs', {
+        method:'POST',
+        headers: Object.assign({}, sbHeaders(), {'Prefer':'return=minimal'}),
+        body: JSON.stringify(payload)
+      });
+      if(!res.ok){ var b=''; try{ b=await res.text(); }catch(e){} return {ok:false, body:b}; }
+      return {ok:true};
+    }catch(e){ return {ok:false}; }
+  }
+  var withPhoto = Object.assign({}, row);
+  if(photo) withPhoto.photo = photo;
+  var attempt = await tryInsert(withPhoto);
+  if(!attempt.ok && /column.*photo.*does not exist/i.test(attempt.body||'')){
+    attempt = await tryInsert(row); // photo column not added yet — save the meal anyway
+  }
+  return attempt.ok;
+}
+
+// Full-screen view of a meal photo (tap a thumbnail to re-access it)
+function openPhotoLightbox(src){
+  if(!src) return;
+  var ov=document.getElementById('photoLightbox');
+  if(!ov){
+    ov=document.createElement('div');
+    ov.id='photoLightbox';
+    ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+    ov.onclick=function(){ ov.style.display='none'; };
+    ov.innerHTML='<img id="photoLightboxImg" alt="meal photo" style="max-width:100%;max-height:100%;border-radius:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);">';
+    document.body.appendChild(ov);
+  }
+  document.getElementById('photoLightboxImg').src=src;
+  ov.style.display='flex';
+}
+
 async function commitMeal(r,graced){
   var meal=document.querySelector('#mFood .rrow .rb.sel .rbl');meal=meal?meal.textContent:'Meal';
   var eatTime=document.getElementById('foodTime').value.trim()||new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
   var entry=Object.assign({},r,{meal:meal,eat_time:eatTime,eatTime:eatTime,graced:graced,photo:photoData,date_str:todayDateStr});
-  // Save to Supabase (no photo - too large)
-  await sbInsert('food_logs',{client_code:cl.code,name:r.name,emoji:r.emoji,calories:r.calories,protein:r.protein,carbs:r.carbs,fat:r.fat,rating:r.rating,insight:r.insight,meal:meal,eat_time:eatTime,graced:graced,date_str:todayDateStr});
+  // Save to Supabase. Photo is downscaled (~900px JPEG) and persisted so it can be re-viewed later.
+  var foodRow={client_code:cl.code,name:r.name,emoji:r.emoji,calories:r.calories,protein:r.protein,carbs:r.carbs,fat:r.fat,rating:r.rating,insight:r.insight,meal:meal,eat_time:eatTime,graced:graced,date_str:todayDateStr};
+  await insertFoodLog(foodRow, photoData);
   // Track for My Menu (don't await — fire and forget, runs in background)
   if(!graced) trackMealForMenu({name:r.name, emoji:r.emoji, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, meal:meal, insight:r.insight, rating:r.rating});
   allFood.push(entry);todayFood.push(entry);
@@ -4781,7 +4863,7 @@ function rendTodayFood(){
   });
   c.innerHTML=orderedFood.map(function(e,i){
     var bcls=e.graced?'bgr':bc[e.rating]||'bun';var btxt=e.graced?'✨ Grace':bt[e.rating]||'❓ Unknown';
-    var ph=e.photo?'<div class="feimg"><img src="'+e.photo+'" alt=""></div>':'<div class="feimg">'+(e.emoji||'🍽️')+'</div>';
+    var ph=e.photo?'<div class="feimg"><img src="'+e.photo+'" alt="" onclick="event.stopPropagation();openPhotoLightbox(this.src)" style="cursor:pointer;"></div>':'<div class="feimg">'+(e.emoji||'🍽️')+'</div>';
     return '<div class="fe">'+ph+'<div class="febdy"><div class="fetop"><div class="fenm">'+e.name+'</div><div class="febg '+bcls+'">'+btxt+'</div><div class="ferm" onclick="editFoodEntry('+i+')" style="margin-right:4px;font-size:14px;" title="Edit">✏️</div><div class="ferm" onclick="rmMeal('+i+')">×</div></div><div class="femta">'+e.calories+' cal · '+e.protein+'g protein · '+e.meal+' · '+(e.eatTime||e.eat_time||'')+'</div><div class="fein">'+e.insight+'</div></div></div>';
   }).join('');
 }
