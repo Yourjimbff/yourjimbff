@@ -795,15 +795,16 @@ textarea.ifield{min-height:78px;}
       <div id="clientAssignedProgramContent"></div>
     </div>
 
-    <!-- WEEK CALENDAR -->
+    <!-- THIS WEEK — unified board: plan + dates + logged status -->
     <div id="trainingWeekCal" style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:14px;">
+      <div id="trainingBoardProgram" style="font-family:'Bebas Neue',sans-serif;font-size:13px;letter-spacing:1.5px;color:var(--gold);margin-bottom:10px;display:none;">—</div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
         <button onclick="navTrainingWeek(-1)" aria-label="Previous week" style="background:transparent;border:none;font-size:18px;color:var(--m2);cursor:pointer;padding:4px 10px;line-height:1;">‹</button>
         <div id="trainingWeekRange" style="font-family:'Bebas Neue',sans-serif;font-size:15px;letter-spacing:1px;color:var(--text);">—</div>
         <button onclick="navTrainingWeek(1)" aria-label="Next week" style="background:transparent;border:none;font-size:18px;color:var(--m2);cursor:pointer;padding:4px 10px;line-height:1;">›</button>
       </div>
-      <div id="trainingWeekGrid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;"></div>
-      <div style="text-align:center;font-size:10px;color:var(--muted);margin-top:10px;letter-spacing:0.5px;">Tap a day to filter · tap again to show all</div>
+      <div id="trainingWeekGrid" style="display:flex;flex-direction:column;gap:6px;"></div>
+      <div style="text-align:center;font-size:10px;color:var(--muted);margin-top:10px;letter-spacing:0.5px;">Tap a day to see the plan + what you logged</div>
     </div>
 
     <div id="trainingHistory"></div>
@@ -1521,7 +1522,7 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.13.0';
+var APP_VERSION = 'v2.14.0';
 var APP_BUILD = "May 28 — Jim card matches black/gold Push Day card (unified hero zone)";
 
 var cl=null, profile=null;
@@ -1865,11 +1866,28 @@ function renderTrainingCalendar(){
   }
   range.textContent = rangeLabel;
 
-  // Build per-day workout map (always from logged_at — date_str is display-only)
+  // Program name label (top of board)
+  var progLabel = document.getElementById('trainingBoardProgram');
+  if(progLabel){
+    if(clientAssignedProgram && clientAssignedProgram.program && clientAssignedProgram.program.name){
+      progLabel.textContent = clientAssignedProgram.program.name.toUpperCase();
+      progLabel.style.display = 'block';
+    } else {
+      progLabel.style.display = 'none';
+    }
+  }
+
+  // Planned workouts by day-of-week (from the assigned program, if any)
+  var byDow = {};
+  if(clientAssignedProgram && clientAssignedProgram.workouts){
+    clientAssignedProgram.workouts.forEach(function(w){ if(w.day_of_week != null) byDow[Number(w.day_of_week)] = w; });
+  }
+
+  // Logged workouts by date (always from logged_at — date_str is display-only)
   var weekMap = {};
   for(var i=0;i<7;i++){
-    var d = new Date(weekStart); d.setDate(d.getDate()+i);
-    weekMap[isoDateStr(d)] = [];
+    var dd = new Date(weekStart); dd.setDate(dd.getDate()+i);
+    weekMap[isoDateStr(dd)] = [];
   }
   trainingAllRows.forEach(function(w){
     var ds = w.logged_at ? isoDateStr(new Date(w.logged_at)) : null;
@@ -1877,36 +1895,71 @@ function renderTrainingCalendar(){
   });
 
   var todayStr = isoDateStr(new Date());
-  var labels = ['M','T','W','T','F','S','S'];
+  var nowMs = Date.now();
+  var dayShort = {0:'Sun',1:'Mon',2:'Tue',3:'Wed',4:'Thu',5:'Fri',6:'Sat'};
+  var esc = function(s){ return String(s==null?'':s).replace(/</g,'&lt;'); };
   var html = '';
+
   for(var i=0;i<7;i++){
     var d = new Date(weekStart); d.setDate(d.getDate()+i);
     var ds = isoDateStr(d);
+    var dow = d.getDay();
+    var plan = byDow[dow] || null;
     var dayWorkouts = weekMap[ds] || [];
-    var hasActivity = dayWorkouts.length > 0;
+    var logged = dayWorkouts.length > 0;
     var isToday = (ds === todayStr);
     var isSelected = (trainingSelectedDay === ds);
-    var isFuture = d.getTime() > new Date().getTime() && !isToday;
-    var maxIntensity = 0;
-    dayWorkouts.forEach(function(w){ if(w.intensity && w.intensity > maxIntensity) maxIntensity = w.intensity; });
-    var dotColor = '';
-    if(hasActivity){
-      if(maxIntensity >= 9) dotColor = '#ff4455';
-      else if(maxIntensity >= 7) dotColor = 'var(--gold)';
-      else if(maxIntensity >= 5) dotColor = '#22c77a';
-      else if(maxIntensity > 0) dotColor = '#888';
-      else dotColor = 'var(--m2)';
+    var isFuture = (d.getTime() > nowMs) && !isToday;
+
+    // Planned exercise count
+    var exCount = 0;
+    if(plan && plan.exercises){
+      try{ var ex = typeof plan.exercises === 'string' ? JSON.parse(plan.exercises) : plan.exercises; if(Array.isArray(ex)) exCount = ex.length; }catch(e){}
     }
-    var borderStyle = isSelected ? '2px solid var(--gold)' : (isToday ? '1.5px dashed var(--gold)' : '1px solid var(--border)');
-    var bgStyle = isSelected ? 'rgba(245,197,24,0.12)' : (hasActivity ? 'var(--s2)' : 'transparent');
-    var opacity = isFuture ? '0.45' : '1';
-    var dotHtml = hasActivity
-      ? '<div style="width:7px;height:7px;border-radius:50%;background:'+dotColor+';margin-top:3px;"></div>'
-      : '<div style="width:7px;height:7px;margin-top:3px;"></div>';
-    html += '<div onclick="selectTrainingDay(\''+ds+'\')" style="border:'+borderStyle+';background:'+bgStyle+';border-radius:10px;padding:8px 4px;text-align:center;cursor:pointer;opacity:'+opacity+';display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:54px;">'+
-      '<div style="font-size:9px;color:var(--muted);letter-spacing:0.5px;font-weight:700;">'+labels[i]+'</div>'+
-      '<div style="font-size:14px;font-weight:700;color:var(--text);margin-top:1px;">'+d.getDate()+'</div>'+
-      dotHtml+
+
+    // Middle column: title + meta
+    var titleText, metaText, titleColor;
+    if(plan){
+      titleText = plan.title || 'Workout';
+      metaText = exCount + ' exercise' + (exCount===1?'':'s');
+      titleColor = 'var(--text)';
+    } else if(logged){
+      titleText = dayWorkouts[0].title || (dayWorkouts[0].description ? dayWorkouts[0].description.slice(0,40) : 'Workout');
+      metaText = dayWorkouts.length > 1 ? (dayWorkouts.length + ' logged') : '';
+      titleColor = 'var(--text)';
+    } else {
+      titleText = clientAssignedProgram ? 'Rest day' : '—';
+      metaText = '';
+      titleColor = 'var(--muted)';
+    }
+
+    // Right column: status
+    var statusHtml;
+    if(logged){
+      statusHtml = '<div style="width:26px;height:26px;border-radius:50%;background:#22c55e;display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:700;flex-shrink:0;">✓</div>';
+    } else if(plan && !isFuture){
+      statusHtml = '<div style="width:24px;height:24px;border-radius:50%;border:1.5px solid var(--border);flex-shrink:0;"></div>';
+    } else {
+      statusHtml = '<div style="width:24px;flex-shrink:0;"></div>';
+    }
+
+    var chipLabelColor = isToday ? 'var(--gold)' : 'var(--m2)';
+    var chipNumColor = isToday ? 'var(--gold)' : 'var(--text)';
+    var todayTag = isToday ? '<span style="font-size:8.5px;color:var(--gold);background:rgba(245,197,24,0.15);padding:1px 5px;border-radius:4px;letter-spacing:0.5px;font-weight:700;margin-left:6px;vertical-align:middle;">TODAY</span>' : '';
+    var border = isSelected ? '2px solid var(--gold)' : (isToday ? '1.5px dashed rgba(245,197,24,0.6)' : '1px solid var(--border)');
+    var bg = isSelected ? 'rgba(245,197,24,0.10)' : (logged ? 'var(--s2)' : 'transparent');
+    var opacity = isFuture ? '0.5' : '1';
+
+    html += '<div onclick="selectTrainingDay(\''+ds+'\')" style="border:'+border+';background:'+bg+';border-radius:11px;padding:10px 12px;display:flex;align-items:center;gap:12px;cursor:pointer;opacity:'+opacity+';">'+
+      '<div style="flex-shrink:0;width:34px;text-align:center;">'+
+        '<div style="font-size:9px;letter-spacing:0.5px;font-weight:700;color:'+chipLabelColor+';">'+dayShort[dow].toUpperCase()+'</div>'+
+        '<div style="font-size:17px;font-weight:800;line-height:1.15;color:'+chipNumColor+';">'+d.getDate()+'</div>'+
+      '</div>'+
+      '<div style="flex:1;min-width:0;">'+
+        '<div style="font-weight:700;font-size:13.5px;color:'+titleColor+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(titleText)+todayTag+'</div>'+
+        (metaText ? '<div style="font-size:10.5px;color:var(--m2);margin-top:1px;">'+esc(metaText)+'</div>' : '')+
+      '</div>'+
+      statusHtml+
     '</div>';
   }
   grid.innerHTML = html;
@@ -1920,6 +1973,36 @@ function renderTrainingList(){
   var weekStartStr = isoDateStr(weekStart);
   var weekEndStr = isoDateStr(weekEnd);
 
+  // Selected-day PLAN card — what the program calls for that day, shown above the logged list
+  var planCardHtml = '';
+  if(trainingSelectedDay && clientAssignedProgram && clientAssignedProgram.workouts){
+    var _sel = new Date(trainingSelectedDay+'T12:00:00');
+    var _selDow = isNaN(_sel.getTime()) ? null : _sel.getDay();
+    var _plan = (_selDow!=null) ? clientAssignedProgram.workouts.find(function(w){ return Number(w.day_of_week)===_selDow; }) : null;
+    if(_plan){
+      var _dayShort = {0:'Sun',1:'Mon',2:'Tue',3:'Wed',4:'Thu',5:'Fri',6:'Sat'};
+      var _exLines = '';
+      try{
+        var _pex = typeof _plan.exercises==='string' ? JSON.parse(_plan.exercises) : _plan.exercises;
+        if(Array.isArray(_pex)){
+          _pex.slice(0,6).forEach(function(e){
+            var ln = '• '+(e.name||'Exercise');
+            if(e.sets && e.reps) ln += ' — '+e.sets+'×'+e.reps;
+            else if(e.sets) ln += ' — '+e.sets+' sets';
+            _exLines += '<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+ln.replace(/</g,'&lt;')+'</div>';
+          });
+          if(_pex.length>6) _exLines += '<div style="color:var(--muted);">+ '+(_pex.length-6)+' more</div>';
+        }
+      }catch(e){}
+      planCardHtml = '<div style="background:linear-gradient(135deg,#1a1a1a,#000);border:1.5px solid rgba(245,197,24,0.4);border-radius:12px;padding:14px;margin:16px 0 10px;">'+
+        '<div style="font-family:\'Bebas Neue\',sans-serif;font-size:11px;letter-spacing:2px;color:var(--gold);margin-bottom:5px;">PLANNED · '+_dayShort[_selDow].toUpperCase()+'</div>'+
+        '<div style="font-size:16px;font-weight:800;color:#fff;margin-bottom:'+(_exLines?'8px':'10px')+';">'+(_plan.title||'Workout').replace(/</g,'&lt;')+'</div>'+
+        (_exLines?'<div style="font-size:12px;color:#bbb;line-height:1.65;">'+_exLines+'</div>':'')+
+        '<button onclick="viewClientProgramDay('+_selDow+')" style="margin-top:12px;width:100%;background:var(--gold);border:none;border-radius:9px;padding:11px;font-size:12px;font-weight:700;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">View full workout ›</button>'+
+      '</div>';
+    }
+  }
+
   var filtered = trainingAllRows.filter(function(w){
     var ds = w.logged_at ? isoDateStr(new Date(w.logged_at)) : null;
     if(!ds) return false;
@@ -1931,7 +2014,8 @@ function renderTrainingList(){
     var emptyMsg = trainingSelectedDay
       ? 'No workouts logged for this day.'
       : 'No workouts logged this week.';
-    holder.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:22px 18px;text-align:center;"><div style="font-size:26px;margin-bottom:6px;">🏋️</div><div style="font-weight:700;margin-bottom:4px;font-size:14px;">'+emptyMsg+'</div><div style="font-size:11px;color:var(--muted);line-height:1.5;">Tell Jim about a workout you did and he\'ll log it for you.</div></div>';
+    var emptyHtml = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:22px 18px;text-align:center;"><div style="font-size:26px;margin-bottom:6px;">🏋️</div><div style="font-weight:700;margin-bottom:4px;font-size:14px;">'+emptyMsg+'</div><div style="font-size:11px;color:var(--muted);line-height:1.5;">Tell Jim about a workout you did and he\'ll log it for you.</div></div>';
+    holder.innerHTML = planCardHtml + emptyHtml;
     return;
   }
 
@@ -2018,7 +2102,7 @@ function renderTrainingList(){
       '</div>';
     });
   });
-  holder.innerHTML = html;
+  holder.innerHTML = planCardHtml + html;
 }
 
 
@@ -2791,6 +2875,7 @@ var templatePrograms = {women: null, men: null};
 var templateProgramWorkouts = {women: [], men: []};
 var clientAssignedProgram = null; // for current user: {program, workouts} if assigned
 var todayProgramWorkout = null; // today's workout from assigned program, if any
+var viewerWorkout = null; // workout currently shown in the viewer modal (may be any day, not just today)
 
 // ---- Trainer-side: load + render the two template programs ----
 async function loadTrainerPrograms(){
@@ -3199,12 +3284,13 @@ function hideTodayWorkoutCard(){
   if(ts) ts.textContent = "Log today's training";
 }
 
-function openTodayProgramWorkout(){
-  if(!todayProgramWorkout){
+function openTodayProgramWorkout(explicitWorkout){
+  viewerWorkout = explicitWorkout || todayProgramWorkout;
+  if(!viewerWorkout){
     showToast('No workout planned for today');
     return;
   }
-  var w = todayProgramWorkout;
+  var w = viewerWorkout;
   document.getElementById('twTitle').textContent = w.title || 'Workout';
   var dayLabels = {0:'Sunday',1:'Monday',2:'Tuesday',3:'Wednesday',4:'Thursday',5:'Friday',6:'Saturday'};
   // If viewing today, show today's day name. Otherwise (tapped from week view) show the workout's day.
@@ -3284,20 +3370,20 @@ function formatExerciseDetail(e){
 }
 
 function logProgramWorkoutFromToday(){
-  if(!todayProgramWorkout) return;
+  if(!viewerWorkout) return;
   // Pre-fill the manual workout modal with this program workout
   closeM('mTodayWorkout');
   openManualWorkoutModal();
   // After the modal opens, hydrate it
   setTimeout(function(){
     var titleField = document.getElementById('wTitle');
-    if(titleField) titleField.value = todayProgramWorkout.title || '';
+    if(titleField) titleField.value = viewerWorkout.title || '';
     // Hydrate exercises if there's an exercise editor in the manual modal
     // Check if the manual modal has exercise rows like the edit modal
     var exList = document.getElementById('wExercisesList') || document.getElementById('mwExercisesList');
-    if(exList && todayProgramWorkout.exercises){
+    if(exList && viewerWorkout.exercises){
       try{
-        var arr = typeof todayProgramWorkout.exercises === 'string' ? JSON.parse(todayProgramWorkout.exercises) : todayProgramWorkout.exercises;
+        var arr = typeof viewerWorkout.exercises === 'string' ? JSON.parse(viewerWorkout.exercises) : viewerWorkout.exercises;
         if(Array.isArray(arr)){
           exList.innerHTML = '';
           // We need to invoke whatever row-builder the manual modal uses — try a few
@@ -3311,6 +3397,12 @@ function logProgramWorkoutFromToday(){
 }
 
 function renderClientAssignedProgramSection(){
+  // Merged into the unified week board (renderTrainingCalendar). Keep this section hidden.
+  var section = document.getElementById('clientAssignedProgramSection');
+  if(section) section.style.display = 'none';
+}
+
+function _legacy_renderClientAssignedProgramSection(){
   var section = document.getElementById('clientAssignedProgramSection');
   var content = document.getElementById('clientAssignedProgramContent');
   if(!section || !content) return;
@@ -3367,11 +3459,10 @@ function hideClientAssignedProgramSection(){
 
 function viewClientProgramDay(dow){
   if(!clientAssignedProgram) return;
-  var w = clientAssignedProgram.workouts.find(function(x){ return x.day_of_week === dow; });
+  var w = clientAssignedProgram.workouts.find(function(x){ return Number(x.day_of_week) === dow; });
   if(!w){ showToast('Rest day'); return; }
-  // Show the modal for this day's workout (read-only-ish; log button reuses today flow if today)
-  todayProgramWorkout = w;
-  openTodayProgramWorkout();
+  // Open the viewer for THIS day without overwriting today's workout (Jim relies on it)
+  openTodayProgramWorkout(w);
 }
 
 // ---- Trainer-side: assign program to client ----
