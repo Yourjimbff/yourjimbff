@@ -952,7 +952,7 @@ textarea.ifield{min-height:78px;}
       <div class="chat-empty" id="chatEmpty">
         <div class="chat-empty-ic">🏋️</div>
         <div class="chat-empty-title">Jim's here.</div>
-        <div>Food, training, recovery, progress — ask anything.<br><span style="opacity:0.55;font-size:10px;letter-spacing:0.5px;margin-top:12px;display:inline-block;">Yusuf can see summaries of your chat</span></div>
+        <div>Food, training, recovery, progress — ask anything.<br><span style="opacity:0.55;font-size:10px;letter-spacing:0.5px;margin-top:12px;display:inline-block;">I log your workouts, read your meals, and remember everything you share</span></div>
       </div>
     </div>
     <div class="chat-input-wrap">
@@ -1521,7 +1521,7 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.21.1';
+var APP_VERSION = 'v2.22.0';
 var APP_BUILD = "May 28 — Jim card matches black/gold Push Day card (unified hero zone)";
 
 var cl=null, profile=null;
@@ -6557,7 +6557,7 @@ function buildEmpty(){
     else ctx="Closing out the day. Anything to work through?";
   }
 
-  d.innerHTML='<div class="chat-empty-ic">'+emoji+'</div><div class="chat-empty-title">'+greeting+escapeHtml(name)+' 👋</div><div>'+escapeHtml(ctx)+'<br><span style="opacity:0.55;font-size:10px;letter-spacing:0.5px;margin-top:12px;display:inline-block;">Yusuf can see summaries of your chat</span></div>';
+  d.innerHTML='<div class="chat-empty-ic">'+emoji+'</div><div class="chat-empty-title">'+greeting+escapeHtml(name)+' 👋</div><div>'+escapeHtml(ctx)+'<br><span style="opacity:0.55;font-size:10px;letter-spacing:0.5px;margin-top:12px;display:inline-block;">I log your workouts, read your meals, and remember everything you share</span></div>';
   return d;
 }
 
@@ -7021,6 +7021,22 @@ function buildCoachVoice(){
     '- DO NOT include intensity, duration, or notes in the marker. Intensity comes from the user\'s next reply (the app handles patching). Duration we skip — user can backfill later. Notes get auto-captured from your commentary.\n\n'+
     'After the rating comes in OR user skips/moves on, transition naturally to refuel/recovery coaching. Never re-emit the marker for the same workout.\n\n'+
 
+    'FOOD LOGGING — INSTANT LOG FROM CHAT:\n'+
+    'When the user tells you they ATE something (or sends a photo of a meal they\'re eating or just ate), you LOG IT IMMEDIATELY — the description is consent, exactly like workouts. Do NOT ask "want me to log this?" Just acknowledge warmly and emit the marker.\n'+
+    'Emit a [FOOD_LOG] marker with your best estimate of the meal. Format:\n'+
+    '[FOOD_LOG]{"name":"Chicken & rice bowl","emoji":"🍗","calories":520,"protein":45,"carbs":40,"fat":15,"rating":"good","insight":"Solid protein-forward meal — right idea.","meal":"Lunch"}[/FOOD_LOG]\n'+
+    'FIELD RULES:\n'+
+    '- name: short meal name. emoji: one fitting food emoji.\n'+
+    '- calories/protein/carbs/fat: your best estimate (calories in kcal, macros in grams) for the portion described or shown. Estimate confidently from the description or photo and round to whole numbers — do not refuse to estimate.\n'+
+    '- rating: one of "nutrient_dense" (whole-food, protein + veg forward), "good" (solid, mostly whole foods), "okay" (fine but not ideal), "unknown" (genuinely can\'t tell), "bad" (processed / off-plan). Use Yusuf\'s whole-food lens.\n'+
+    '- insight: one short coaching line about the meal.\n'+
+    '- meal: Breakfast / Lunch / Dinner / Snack based on the current time shown above.\n'+
+    'WHEN TO LOG vs NOT:\n'+
+    '- LOG: "just had 3 eggs and oatmeal", "ate a chicken salad for lunch", "having a ribeye and potatoes right now", or a photo of a plate they\'re eating.\n'+
+    '- DO NOT LOG: they\'re asking what to eat, planning a future meal, asking whether they can afford a treat, or the meal is already in today\'s food logs (check the data — never double-log). In those cases just respond conversationally.\n'+
+    'JSON must be valid — escape quotes, no trailing commas. Use valid JSON only.\n'+
+    'After emitting the marker, keep your reply short and natural: acknowledge the meal and give one useful coaching beat (e.g. how it moves their protein for the day). The app saves it to their Today screen and totals; the user never sees the marker.\n\n'+
+
     'TRAINING-INTENSITY → REFUEL RULES:\n'+
     'When training intensity is logged today, factor it heavily:\n'+
     '- INTENSITY 9-10 (PR day): They earned the carbs. Recommend 40-60g carbs + 30-40g protein post-workout. Sweet potato + chicken thigh + greens. Berries + Greek yogurt + honey. Real fuel.\n'+
@@ -7130,6 +7146,61 @@ function extractWorkoutNote(text){
   try{ note = JSON.parse(jsonStr); }catch(e){ console.error('workout note parse failed', e, jsonStr); }
   var cleanText = text.replace(m[0], '').trim();
   return {cleanText: cleanText, note: note};
+}
+
+function extractFoodLog(text){
+  // [FOOD_LOG]{json}[/FOOD_LOG] — Jim emits this when the user describes a meal they ate
+  var m = text.match(/\[FOOD_LOG\]([\s\S]*?)\[\/FOOD_LOG\]/);
+  if(!m) return {cleanText: text, log: null};
+  var jsonStr = m[1].trim();
+  var log = null;
+  try{ log = JSON.parse(jsonStr); }catch(e){ console.error('food log parse failed', e, jsonStr); }
+  var cleanText = text.replace(m[0], '').trim();
+  return {cleanText: cleanText, log: log};
+}
+
+function guessMealByTime(){
+  var h = new Date().getHours();
+  if(h < 11) return 'Breakfast';
+  if(h < 15) return 'Lunch';
+  if(h < 18) return 'Snack';
+  return 'Dinner';
+}
+
+// Log a meal Jim recognized from chat — instant, mirrors commitMeal's in-memory + UI updates.
+// If a photo was attached to the chat message, downscale and save it onto the entry.
+async function logFoodFromChat(offer, photo){
+  if(!offer || !offer.name || !cl) return false;
+  var meal = offer.meal || guessMealByTime();
+  var eatTime = new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+  var r = {
+    name: offer.name,
+    emoji: offer.emoji || '🍽️',
+    calories: Math.round(offer.calories||0),
+    protein: Math.round(offer.protein||0),
+    carbs: Math.round(offer.carbs||0),
+    fat: Math.round(offer.fat||0),
+    rating: offer.rating || 'unknown',
+    insight: offer.insight || ''
+  };
+  // Downscale the chat photo (~900px) before persisting so it matches the tile flow and stays light
+  var savedPhoto = null;
+  if(photo){
+    try{ savedPhoto = await downscaleImage(photo, 900, 0.7); }catch(e){ savedPhoto = photo; }
+  }
+  var foodRow = {client_code:cl.code, name:r.name, emoji:r.emoji, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, rating:r.rating, insight:r.insight, meal:meal, eat_time:eatTime, graced:false, date_str:todayDateStr};
+  var ok = await insertFoodLog(foodRow, savedPhoto);
+  if(!ok) return false;
+  // Mirror commitMeal: in-memory entry, totals, food score, UI refresh, tile check
+  var entry = Object.assign({}, r, {meal:meal, eat_time:eatTime, eatTime:eatTime, graced:false, photo:savedPhoto, date_str:todayDateStr});
+  allFood.push(entry); todayFood.push(entry);
+  tots.cal+=r.calories||0; tots.protein+=r.protein||0; tots.carbs+=r.carbs||0; tots.fat+=r.fat||0;
+  var rScore = r.rating==='nutrient_dense'?1.5:r.rating==='good'?1.0:r.rating==='unknown'?0.2:r.rating==='clean'?1.0:r.rating==='okay'?0.3:-1.0;
+  scores.food = Math.max(-4, Math.min(4, scores.food + rScore));
+  if(profile && tots.cal>0){ var pct=tots.cal/(profile.calTarget||profile.cal_target||2000); if(pct>=0.85&&pct<=1.15) scores.food=Math.min(4, scores.food+0.2); }
+  try{ trackMealForMenu({name:r.name, emoji:r.emoji, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, meal:meal, insight:r.insight, rating:r.rating}); }catch(e){}
+  try{ updTots(); rendTodayFood(); updHalo(); pulseH(); updStats(); markTileDone('Food'); }catch(e){ console.error('food UI refresh', e); }
+  return true;
 }
 
 async function appendWorkoutNote(workoutId, addText){
@@ -7361,6 +7432,8 @@ async function sendChatMessage(){
     reply = extractedLog.cleanText;
     var extractedNote = extractWorkoutNote(reply);
     reply = extractedNote.cleanText;
+    var extractedFood = extractFoodLog(reply);
+    reply = extractedFood.cleanText;
 
     // Handle WORKOUT_LOG: log a fresh workout. Use Jim's commentary (the visible reply) as the notes.
     if(extractedLog.log){
@@ -7389,6 +7462,13 @@ async function sendChatMessage(){
         var ok = await appendWorkoutNote(extractedNote.note.id, noteText);
         if(ok) showToast('✓ Note added to workout');
       }
+    }
+
+    // Handle FOOD_LOG: log the meal instantly (mirror the workout logger). Save the chat photo if one was attached.
+    if(extractedFood.log){
+      var foodOk = await logFoodFromChat(extractedFood.log, photoSnapshot);
+      if(foodOk) showToast('✓ '+(extractedFood.log.name||'Meal')+' logged');
+      else { console.error('food save failed for offer', extractedFood.log); showToast('Could not save meal — try the Food Log tile'); }
     }
 
     // If we just patched intensity from the prior turn, add a small confirmation prefix
