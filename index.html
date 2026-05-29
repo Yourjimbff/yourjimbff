@@ -1521,7 +1521,7 @@ var CLIENTS = {
   'maya1':{name:'Maya',initials:'MA'}
 };
 
-var APP_VERSION = 'v2.25.0';
+var APP_VERSION = 'v2.26.0';
 var APP_BUILD = "May 28 — Jim card matches black/gold Push Day card (unified hero zone)";
 
 var cl=null, profile=null;
@@ -4828,11 +4828,12 @@ async function insertFoodLog(row, photo){
     try{
       var res = await fetch(SB_URL+'/rest/v1/food_logs', {
         method:'POST',
-        headers: Object.assign({}, sbHeaders(), {'Prefer':'return=minimal'}),
+        headers: Object.assign({}, sbHeaders(), {'Prefer':'return=representation'}),
         body: JSON.stringify(payload)
       });
       if(!res.ok){ var b=''; try{ b=await res.text(); }catch(e){} return {ok:false, body:b}; }
-      return {ok:true};
+      var id=null; try{ var arr=await res.json(); if(arr && arr[0] && arr[0].id!=null) id=arr[0].id; }catch(e){}
+      return {ok:true, id:id};
     }catch(e){ return {ok:false}; }
   }
   var withPhoto = Object.assign({}, row);
@@ -4841,7 +4842,7 @@ async function insertFoodLog(row, photo){
   if(!attempt.ok && /column.*photo.*does not exist/i.test(attempt.body||'')){
     attempt = await tryInsert(row); // photo column not added yet — save the meal anyway
   }
-  return attempt.ok;
+  return {ok: attempt.ok, id: (attempt.id!=null?attempt.id:null)};
 }
 
 // Full-screen view of a meal photo (tap a thumbnail to re-access it)
@@ -4866,7 +4867,8 @@ async function commitMeal(r,graced){
   var entry=Object.assign({},r,{meal:meal,eat_time:eatTime,eatTime:eatTime,graced:graced,photo:photoData,date_str:todayDateStr});
   // Save to Supabase. Photo is downscaled (~900px JPEG) and persisted so it can be re-viewed later.
   var foodRow={client_code:cl.code,name:r.name,emoji:r.emoji,calories:r.calories,protein:r.protein,carbs:r.carbs,fat:r.fat,rating:r.rating,insight:r.insight,meal:meal,eat_time:eatTime,graced:graced,date_str:todayDateStr};
-  await insertFoodLog(foodRow, photoData);
+  var _ins=await insertFoodLog(foodRow, photoData);
+  if(_ins && _ins.id!=null) entry.id=_ins.id;
   // Track for My Menu (don't await — fire and forget, runs in background)
   if(!graced) trackMealForMenu({name:r.name, emoji:r.emoji, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, meal:meal, insight:r.insight, rating:r.rating});
   allFood.push(entry);todayFood.push(entry);
@@ -6672,11 +6674,35 @@ async function buildDayContext(){
     tBits.push('Running totals: '+Math.round(tots.cal)+' cal · '+Math.round(tots.protein)+'g P · '+Math.round(tots.carbs)+'g C · '+Math.round(tots.fat)+'g F');
     tBits.push('Meals:');
     todayFood.forEach(function(e){
-      var t=e.logged_at?new Date(e.logged_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}):'';
-      tBits.push('  - '+(t?'['+t+'] ':'')+e.name+' ('+(e.rating||'—')+', '+(e.calories||0)+' cal, '+(e.protein||0)+'g P)');
+      var t=e.logged_at?new Date(e.logged_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}):(e.eat_time||e.eatTime||'');
+      tBits.push('  - '+(e.id!=null?'(id:'+e.id+') ':'')+(t?'['+t+'] ':'')+e.name+' ('+(e.rating||'—')+', '+(e.calories||0)+' cal, '+(e.protein||0)+'g P)');
     });
     sections.push(tBits.join('\n'));
   }
+
+  // RECENT FOOD (last 7 days, excluding today) — gives Jim the ids so he can correct older logs when asked
+  try{
+    var _recentFood = await sbSelect('food_logs','client_code=eq.'+cl.code+'&order=logged_at.desc&limit=80');
+    if(_recentFood && _recentFood.length){
+      var _byDay={};
+      _recentFood.forEach(function(f){
+        var ds=f.date_str || (f.logged_at?isoDateStr(new Date(f.logged_at)):null);
+        if(!ds || ds===todayDateStr) return; // today is already listed above
+        (_byDay[ds]=_byDay[ds]||[]).push(f);
+      });
+      var _days=Object.keys(_byDay).sort().reverse().slice(0,7);
+      if(_days.length){
+        var rfBits=['=== RECENT FOOD (last 7 days — reference for corrections only, do not recap unprompted) ==='];
+        _days.forEach(function(ds){
+          rfBits.push(ds+':');
+          _byDay[ds].forEach(function(f){
+            rfBits.push('  - (id:'+f.id+') '+f.name+' ('+(f.rating||'—')+', '+(f.calories||0)+' cal, '+(f.protein||0)+'g P, '+(f.meal||'')+')');
+          });
+        });
+        sections.push(rfBits.join('\n'));
+      }
+    }
+  }catch(e){ console.error('recent food context', e); }
 
   // TODAY — ENERGY/MOOD CHECK-INS
   if(todayCheckins && todayCheckins.length>0){
@@ -7040,6 +7066,21 @@ function buildCoachVoice(){
     '- DO NOT LOG: they\'re asking what to eat, planning a future meal, asking whether they can afford a treat, or the meal is already in today\'s logs (check the data — never double-log). Then respond conversationally, still briefly.\n'+
     'JSON must be valid — escape quotes, no trailing commas.\n\n'+
 
+    'CORRECTING & RECONCILING FOOD LOGS (edit / delete existing entries):\n'+
+    'You can now fix existing food logs, not just add new ones. The context gives you each logged meal with its id — TODAY\'S FOOD and RECENT FOOD (last 7 days) both show "(id:NN)". Use that id to target a correction.\n'+
+    'This shines on an END-OF-DAY RECAP: when someone lists what they actually ate, quietly compare it to what\'s logged and reconcile the gaps — ADD what\'s missing, FIX what\'s wrong, REMOVE duplicates. Do it silently, like adds. No confirmation needed.\n'+
+    'To EDIT an existing entry, emit (id required, plus only the fields that change):\n'+
+    '[FOOD_EDIT]{"id":482,"calories":450,"protein":38}[/FOOD_EDIT]\n'+
+    'To DELETE an entry (wrong or duplicate):\n'+
+    '[FOOD_DELETE]{"id":482}[/FOOD_DELETE]\n'+
+    'You may emit MULTIPLE markers in one reply to reconcile several meals at once (mix of [FOOD_LOG], [FOOD_EDIT], [FOOD_DELETE]). Each on its own line.\n'+
+    'RULES:\n'+
+    '- Only correct when there is a CLEAR mismatch between what they told you and what is logged. If it already matches, do nothing — just say it\'s already right.\n'+
+    '- Never invent or guess an id. Only use ids present in the context. If you cannot find the entry they mean, ask one short clarifying question instead of guessing.\n'+
+    '- Never fabricate meals they didn\'t mention. Reconcile to what they actually said.\n'+
+    '- Keep the visible reply short and clean: tell them what you fixed in one or two lines (e.g. "Added the second donut and bumped the chicken to 450 — you\'re set."). Do not recite the whole day.\n'+
+    '- A slight totals/score mismatch after corrections is fine — prioritize being clean and helpful over perfect math.\n\n'+
+
     'COACHING IS OPT-IN — DO NOT COACH UNLESS ASKED:\n'+
     'Default behavior is to log and acknowledge, nothing more. Only give advice, meal suggestions, macro breakdowns, "how it fits your day," or motivational commentary when the user ASKS a question or explicitly asks for your read. A statement ("I ate X", "did Y") gets a brief log/acknowledgement. A question ("what should I eat?", "am I on track?", "should I have this?") gets real coaching. When unsure, say less. Most people just want their stats logged — respect that.\n\n'+
 
@@ -7208,10 +7249,11 @@ async function logFoodFromChat(offer, photo){
     try{ savedPhoto = await downscaleImage(photo, 900, 0.7); }catch(e){ savedPhoto = photo; }
   }
   var foodRow = {client_code:cl.code, name:r.name, emoji:r.emoji, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, rating:r.rating, insight:r.insight, meal:meal, eat_time:eatTime, graced:false, date_str:todayDateStr};
-  var ok = await insertFoodLog(foodRow, savedPhoto);
-  if(!ok) return false;
+  var _ins = await insertFoodLog(foodRow, savedPhoto);
+  if(!_ins || !_ins.ok) return false;
   // Mirror commitMeal: in-memory entry, totals, food score, UI refresh, tile check
   var entry = Object.assign({}, r, {meal:meal, eat_time:eatTime, eatTime:eatTime, graced:false, photo:savedPhoto, date_str:todayDateStr});
+  if(_ins.id!=null) entry.id=_ins.id;
   allFood.push(entry); todayFood.push(entry);
   tots.cal+=r.calories||0; tots.protein+=r.protein||0; tots.carbs+=r.carbs||0; tots.fat+=r.fat||0;
   var rScore = r.rating==='nutrient_dense'?1.5:r.rating==='good'?1.0:r.rating==='unknown'?0.2:r.rating==='clean'?1.0:r.rating==='okay'?0.3:-1.0;
@@ -7219,6 +7261,59 @@ async function logFoodFromChat(offer, photo){
   if(profile && tots.cal>0){ var pct=tots.cal/(profile.calTarget||profile.cal_target||2000); if(pct>=0.85&&pct<=1.15) scores.food=Math.min(4, scores.food+0.2); }
   try{ trackMealForMenu({name:r.name, emoji:r.emoji, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, meal:meal, insight:r.insight, rating:r.rating}); }catch(e){}
   try{ updTots(); rendTodayFood(); updHalo(); pulseH(); updStats(); markTileDone('Food'); }catch(e){ console.error('food UI refresh', e); }
+  return true;
+}
+
+// Find ALL [TAG]{json}[/TAG] blocks (a recap can reconcile several meals in one reply).
+function extractAllMarkers(text, tag){
+  var pattern='\\['+tag+'\\]([\\s\\S]*?)\\[\\/'+tag+'\\]';
+  var re=new RegExp(pattern,'g'); var items=[]; var m;
+  while((m=re.exec(text))!==null){
+    try{ var o=JSON.parse(m[1].trim()); if(o) items.push(o); }catch(e){ console.error(tag+' parse failed', e, m[1]); }
+  }
+  var cleanText=text.replace(new RegExp(pattern,'g'),'').trim();
+  return {cleanText:cleanText, items:items};
+}
+
+// Recompute today's running totals from the in-memory list and refresh the UI (used after an edit/delete).
+function recomputeTodayFoodTotals(){
+  tots.cal=0; tots.protein=0; tots.carbs=0; tots.fat=0;
+  todayFood.forEach(function(e){ tots.cal+=e.calories||0; tots.protein+=e.protein||0; tots.carbs+=e.carbs||0; tots.fat+=e.fat||0; });
+  try{ updTots(); rendTodayFood(); updHalo(); updStats(); }catch(e){ console.error('recompute food totals', e); }
+}
+
+// Edit an existing food log by id (PATCH). Updates in-memory + UI when it's a today entry.
+async function applyFoodEdit(id, fields){
+  if(id==null || !fields) return false;
+  var allowed=['name','emoji','calories','protein','carbs','fat','rating','insight','meal','eat_time','date_str'];
+  var patch={};
+  allowed.forEach(function(k){ if(fields[k]!==undefined && fields[k]!==null && fields[k]!=='') patch[k]=fields[k]; });
+  ['calories','protein','carbs','fat'].forEach(function(k){ if(patch[k]!==undefined) patch[k]=Math.round(Number(patch[k])||0); });
+  if(Object.keys(patch).length===0) return false;
+  try{
+    var res=await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id),{
+      method:'PATCH', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal','Content-Type':'application/json'}), body:JSON.stringify(patch)
+    });
+    if(!res.ok){ console.error('food edit failed', res.status); return false; }
+  }catch(e){ console.error('food edit error', e); return false; }
+  var te=todayFood.filter(function(x){ return x.id==id; })[0];
+  if(te){ Object.keys(patch).forEach(function(k){ te[k]=patch[k]; }); recomputeTodayFoodTotals(); }
+  else { var ae=allFood.filter(function(x){ return x.id==id; })[0]; if(ae) Object.keys(patch).forEach(function(k){ ae[k]=patch[k]; }); }
+  return true;
+}
+
+// Delete an existing food log by id (DELETE). Updates in-memory + UI when it's a today entry.
+async function applyFoodDelete(id){
+  if(id==null) return false;
+  try{
+    var res=await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id),{
+      method:'DELETE', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'})
+    });
+    if(!res.ok){ console.error('food delete failed', res.status); return false; }
+  }catch(e){ console.error('food delete error', e); return false; }
+  var idx=-1; for(var i=0;i<todayFood.length;i++){ if(todayFood[i].id==id){ idx=i; break; } }
+  if(idx>-1){ var removed=todayFood[idx]; todayFood.splice(idx,1); var ai=allFood.indexOf(removed); if(ai>-1) allFood.splice(ai,1); recomputeTodayFoodTotals(); }
+  else { for(var j=0;j<allFood.length;j++){ if(allFood[j].id==id){ allFood.splice(j,1); break; } } }
   return true;
 }
 
@@ -7451,8 +7546,9 @@ async function sendChatMessage(){
     reply = extractedLog.cleanText;
     var extractedNote = extractWorkoutNote(reply);
     reply = extractedNote.cleanText;
-    var extractedFood = extractFoodLog(reply);
-    reply = extractedFood.cleanText;
+    var foodAdds = extractAllMarkers(reply, 'FOOD_LOG'); reply = foodAdds.cleanText;
+    var foodEdits = extractAllMarkers(reply, 'FOOD_EDIT'); reply = foodEdits.cleanText;
+    var foodDeletes = extractAllMarkers(reply, 'FOOD_DELETE'); reply = foodDeletes.cleanText;
 
     // Handle WORKOUT_LOG: log a fresh workout. Use Jim's commentary (the visible reply) as the notes.
     if(extractedLog.log){
@@ -7483,20 +7579,37 @@ async function sendChatMessage(){
       }
     }
 
-    // Handle FOOD_LOG: log the meal instantly (mirror the workout logger). Save the chat photo if one was attached.
-    if(extractedFood.log){
-      var foodOk = await logFoodFromChat(extractedFood.log, photoSnapshot);
-      if(foodOk) showToast('✓ '+(extractedFood.log.name||'Meal')+' logged');
-      else { console.error('food save failed for offer', extractedFood.log); showToast('Could not save meal — try the Food Log tile'); }
+    // Handle food reconciliation: deletes first, then edits, then adds (so totals settle cleanly).
+    var _foodToasts = 0;
+    if(foodDeletes.items.length){
+      for(var fd=0; fd<foodDeletes.items.length; fd++){
+        var delId = foodDeletes.items[fd].id;
+        if(delId!=null){ var dOk = await applyFoodDelete(delId); if(dOk) _foodToasts++; }
+      }
     }
+    if(foodEdits.items.length){
+      for(var fe=0; fe<foodEdits.items.length; fe++){
+        var ed = foodEdits.items[fe];
+        if(ed && ed.id!=null){ var eOk = await applyFoodEdit(ed.id, ed); if(eOk) _foodToasts++; }
+      }
+    }
+    if(foodAdds.items.length){
+      // Attach the chat photo only when there's exactly one add (a single meal being logged with a pic).
+      for(var fa=0; fa<foodAdds.items.length; fa++){
+        var addOffer = foodAdds.items[fa];
+        var addPhoto = (foodAdds.items.length===1) ? photoSnapshot : null;
+        if(addOffer && addOffer.name){ var aOk = await logFoodFromChat(addOffer, addPhoto); if(aOk) _foodToasts++; }
+      }
+    }
+    if(_foodToasts>0) showToast('✓ Food log updated');
 
     // If we just patched intensity from the prior turn, add a small confirmation prefix
     if(intensityWasJustPatched){
       reply = '✓ Got it — rated.\n\n' + reply;
     }
 
-    // SAFETY NET: if a FOOD_LOG marker survived strict extraction (model formatting drift), salvage it so the meal still logs.
-    if(!extractedFood.log){
+    // SAFETY NET: if a FOOD_LOG marker survived strict extraction (model drift), salvage a single add so the meal still logs.
+    if(!foodAdds.items.length && !foodEdits.items.length && !foodDeletes.items.length){
       var _salvage = reply.match(/\[FOOD_LOG\]([\s\S]*?)\[\/FOOD_LOG\]/);
       if(_salvage){
         try{ var _sObj = JSON.parse(_salvage[1].trim()); if(_sObj && _sObj.name){ var _sOk = await logFoodFromChat(_sObj, photoSnapshot); if(_sOk) showToast('✓ '+(_sObj.name||'Meal')+' logged'); } }catch(e){ console.error('food salvage parse failed', e); }
@@ -7505,12 +7618,14 @@ async function sendChatMessage(){
     // Scrub any leftover or partial marker text so raw JSON / tags never reach the screen.
     reply = reply
       .replace(/\[FOOD_LOG\][\s\S]*?\[\/FOOD_LOG\]/g,'')
+      .replace(/\[FOOD_EDIT\][\s\S]*?\[\/FOOD_EDIT\]/g,'')
+      .replace(/\[FOOD_DELETE\][\s\S]*?\[\/FOOD_DELETE\]/g,'')
       .replace(/\[WORKOUT_LOG\][\s\S]*?\[\/WORKOUT_LOG\]/g,'')
       .replace(/\[WORKOUT_NOTE\][\s\S]*?\[\/WORKOUT_NOTE\]/g,'')
-      .replace(/\[\/?(FOOD_LOG|WORKOUT_LOG|WORKOUT_NOTE)\]/g,'')
+      .replace(/\[\/?(FOOD_LOG|FOOD_EDIT|FOOD_DELETE|WORKOUT_LOG|WORKOUT_NOTE)\]/g,'')
       .replace(/\n{3,}/g,'\n\n')
       .trim();
-    if(!reply) reply = 'Logged. ✓';
+    if(!reply) reply = 'Done. ✓';
 
     // Remove typing, append assistant message
     var tr=document.getElementById('chatTypingRow');
