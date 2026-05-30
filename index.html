@@ -1674,8 +1674,8 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v3.23.0';
-var APP_BUILD = "May 30 — Jim can now log steps from chat (tell it your total); Jim title Log something; fixed 1 day grammar; tighter tile spacing";
+var APP_VERSION = 'v3.25.0';
+var APP_BUILD = "May 30 — Scrapped the vibe feature entirely (redundant with food/workout data; the read on how a client is doing comes from us, not self-reported)";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -4685,6 +4685,8 @@ async function loadTrainerDashboard(){
       var latestWeight = weightByClient[code] || null;
       var totalCal = foods.reduce(function(s,e){return s+(e.calories||0);},0);
       var totalPro = foods.reduce(function(s,e){return s+(e.protein||0);},0);
+      var totalCarb = foods.reduce(function(s,e){return s+(e.carbs||0);},0);
+      var totalFat = foods.reduce(function(s,e){return s+(e.fat||0);},0);
       if(foods.length > 0) activeCount++;
       // Food QUALITY read — whole foods vs processed (the at-a-glance "how well are they eating")
       var qWhole=0, qProc=0;
@@ -4763,7 +4765,7 @@ async function loadTrainerDashboard(){
         : '';
 
       var _st = clientStatus(code);
-      html += '<div class="client-card" style="border-left:4px solid '+_st.color+';"><div class="cc-head"><div class="cc-avi" style="position:relative;">'+clientInfo.initials[0]+'<span style="position:absolute;bottom:-1px;right:-1px;width:11px;height:11px;border-radius:50%;background:'+_st.color+';border:2px solid var(--surface);"></span></div><div class="cc-info"><div class="cc-name">'+clientInfo.name+' <span style="font-size:10px;font-weight:600;color:var(--muted);font-family:ui-monospace,Menlo,monospace;background:var(--s2);padding:1px 6px;border-radius:5px;vertical-align:1px;">'+code+'</span></div><div class="cc-last">'+(foods.length>0? qShort : 'Nothing logged today')+' · '+Math.round(totalCal)+' cal · '+Math.round(totalPro)+'g protein'+(latestWeight?' · '+latestWeight+'lbs':'')+'</div>'+seenLabel+'</div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">'+assignChip+'<div style="text-align:right;"><div class="cc-score" style="color:'+scoreCol+';font-size:18px;">'+(foods.length>0?Math.round(totalCal):'—')+'</div><div class="cc-score-lbl">'+(foods.length>0?'cal':'no logs')+'</div></div></div></div>'+statStrip+woDetailPanel+photoRow+'<div class="cc-meals">'+mealItems+'</div>'+noteBtn+'</div>';
+      html += '<div class="client-card" style="border-left:4px solid '+_st.color+';"><div class="cc-head"><div class="cc-avi" style="position:relative;">'+clientInfo.initials[0]+'<span style="position:absolute;bottom:-1px;right:-1px;width:11px;height:11px;border-radius:50%;background:'+_st.color+';border:2px solid var(--surface);"></span></div><div class="cc-info"><div class="cc-name">'+clientInfo.name+' <span style="font-size:10px;font-weight:600;color:var(--muted);font-family:ui-monospace,Menlo,monospace;background:var(--s2);padding:1px 6px;border-radius:5px;vertical-align:1px;">'+code+'</span></div><div class="cc-last">'+(foods.length>0? qShort : 'Nothing logged today')+'</div><div class="cc-last" style="margin-top:2px;">'+(foods.length>0?(Math.round(totalCal)+' cal · '+Math.round(totalPro)+'g P · '+Math.round(totalCarb)+'g C · '+Math.round(totalFat)+'g F'):'No food logged')+(latestWeight?' · '+latestWeight+'lbs':'')+'</div>'+seenLabel+'</div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">'+assignChip+'<div style="text-align:right;"><div class="cc-score" style="color:'+scoreCol+';font-size:18px;">'+(foods.length>0?Math.round(totalCal):'—')+'</div><div class="cc-score-lbl">'+(foods.length>0?'cal':'no logs')+'</div></div></div></div>'+statStrip+woDetailPanel+photoRow+'<div class="cc-meals">'+mealItems+'</div>'+noteBtn+'</div>';
     });
 
     // Toggle footer for the not-yet-started imports.
@@ -5738,8 +5740,6 @@ async function loadFollowDay(){
     var fat = foods.reduce(function(s,f){return s+(f.fat||0);},0);
 
     var html = '';
-    // Daily Vibe Check (coach's status) — shows at the very top if set
-    html += '<div id="followVibeSlot"></div>';
     // Full macro strip — Cal / Protein / Carbs / Fat
     html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-bottom:8px;">'
       + '<div style="text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:11px 3px;"><div style="font-family:\'Bebas Neue\',sans-serif;font-size:21px;line-height:1;color:var(--text);">'+(foods.length?Math.round(cal).toLocaleString():'—')+'</div><div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-top:3px;">Cal</div></div>'
@@ -5785,53 +5785,10 @@ async function loadFollowDay(){
     });
 
     body.innerHTML = html;
-    if(typeof renderFollowVibe==='function') renderFollowVibe();
   }catch(e){
     console.error('follow day load', e);
     body.innerHTML = '<div style="text-align:center;padding:40px 0;color:var(--muted);font-size:13px;">Couldn\u2019t load — try again.</div>';
   }
-}
-
-// ===== DAILY VIBE CHECK — one status string per person (coach broadcasts; clients can set their own) =====
-// Stored in `client_status` table: { client_code, status, updated_at }. Upsert on client_code.
-async function renderFollowVibe(){
-  var slot = document.getElementById('followVibeSlot');
-  if(!slot) return;
-  var viewerIsCoach = cl && cl.isTrainer;
-  // Pull the coach's current status (any trainer code)
-  var status = '';
-  try{
-    var rows = await sbSelect('client_status','client_code=in.(yusuf1,thegoat)&limit=5') || [];
-    if(rows.length){ rows.sort(function(a,b){return new Date(b.updated_at||0)-new Date(a.updated_at||0);}); status = (rows[0].status||'').trim(); }
-  }catch(e){}
-
-  var html = '';
-  if(status){
-    html += '<div style="background:linear-gradient(135deg,#1a1a1a,#0a0a0a);border:1px solid rgba(245,197,24,0.35);border-radius:14px;padding:14px 16px;margin-bottom:12px;">'
-      + '<div style="font-size:9px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:var(--gold);margin-bottom:5px;">🎯 Today\u2019s Vibe</div>'
-      + '<div style="font-size:14px;color:#fff;line-height:1.5;font-weight:600;">'+status.replace(/</g,'&lt;')+'</div>'
-      + '</div>';
-  }
-  if(viewerIsCoach){
-    // Composer so the coach can set/update their vibe right from the feed
-    html += '<div style="background:var(--surface);border:1px dashed var(--border);border-radius:14px;padding:12px;margin-bottom:14px;">'
-      + '<div style="font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:7px;">Set your vibe check</div>'
-      + '<textarea id="vibeInput" placeholder="What\u2019s your vibe today?" style="width:100%;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:13px;font-family:\'Plus Jakarta Sans\',sans-serif;resize:none;min-height:54px;box-sizing:border-box;">'+(status?status.replace(/</g,'&lt;'):'')+'</textarea>'
-      + '<button onclick="saveVibe()" style="width:100%;margin-top:8px;background:var(--gold);border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:700;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">'+(status?'Update vibe':'Post vibe')+'</button>'
-      + '</div>';
-  }
-  slot.innerHTML = html;
-}
-
-async function saveVibe(){
-  var inp = document.getElementById('vibeInput');
-  if(!inp || !cl) return;
-  var txt = (inp.value||'').trim();
-  try{
-    var ok = await sbUpsert('client_status', {client_code:cl.code, status:txt, updated_at:new Date().toISOString()}, 'client_code');
-    if(ok){ showToast('🎯 Vibe updated'); renderFollowVibe(); }
-    else { showToast('⚠️ Couldn\u2019t save — check the client_status table'); }
-  }catch(e){ showToast('⚠️ Vibe save error'); }
 }
 
 async function renderYesterdayCard(){
@@ -7905,6 +7862,25 @@ function buildEmpty(){
     + '<div style="display:flex;align-items:flex-start;gap:11px;"><div style="font-size:18px;line-height:1.2;flex-shrink:0;">🏋️</div><div style="font-size:13.5px;color:var(--text);line-height:1.4;"><b>Tell me about your workout</b> \u2014 I\u2019ll log it for you.</div></div>'
     + '<div style="display:flex;align-items:flex-start;gap:11px;"><div style="font-size:18px;line-height:1.2;flex-shrink:0;">👟</div><div style="font-size:13.5px;color:var(--text);line-height:1.4;"><b>Tell me your steps</b> \u2014 just the total, I\u2019ll save it.</div></div>'
     + '</div>';
+
+  // First-time users get a warmer, inviting intro that teaches the core move: just talk to me.
+  var jimSeen = false;
+  try{ jimSeen = localStorage.getItem('yjb_jim_intro_seen')==='1'; }catch(e){}
+
+  if(!jimSeen){
+    var introCap = '<div style="margin-top:18px;text-align:left;max-width:310px;margin-left:auto;margin-right:auto;display:flex;flex-direction:column;gap:11px;">'
+      + '<div style="display:flex;align-items:flex-start;gap:11px;"><div style="font-size:18px;line-height:1.2;flex-shrink:0;">🍽️</div><div style="font-size:13.5px;color:var(--text);line-height:1.4;">"<i>Just had chicken, rice and broccoli</i>" \u2014 I\u2019ll log the macros.</div></div>'
+      + '<div style="display:flex;align-items:flex-start;gap:11px;"><div style="font-size:18px;line-height:1.2;flex-shrink:0;">🏋️</div><div style="font-size:13.5px;color:var(--text);line-height:1.4;">"<i>Just did pull day</i>" \u2014 I\u2019ll write down your workout.</div></div>'
+      + '<div style="display:flex;align-items:flex-start;gap:11px;"><div style="font-size:18px;line-height:1.2;flex-shrink:0;">👟</div><div style="font-size:13.5px;color:var(--text);line-height:1.4;">"<i>Hit 11k steps</i>" \u2014 I\u2019ll save it.</div></div>'
+      + '</div>';
+    d.innerHTML = '<div class="chat-empty-ic">👋</div>'
+      + '<div class="chat-empty-title">Hey, I\u2019m Jim</div>'
+      + '<div style="font-size:14px;color:var(--m2);max-width:300px;margin:0 auto;line-height:1.5;">The easiest way to log your day. Don\u2019t overthink it \u2014 just tell me what you did, like you\u2019d text a friend, and I\u2019ll handle the tracking.</div>'
+      + introCap
+      + '<div style="margin-top:16px;font-size:12px;color:var(--muted);">Talk or type \u2014 try it now. 👇</div>';
+    try{ localStorage.setItem('yjb_jim_intro_seen','1'); }catch(e){}
+    return d;
+  }
 
   d.innerHTML='<div class="chat-empty-ic">📋</div><div class="chat-empty-title">Log something</div><div style="font-size:14px;color:var(--m2);max-width:300px;margin:0 auto;">'+escapeHtml(ctx)+'</div>'+capBlock+'<div style="margin-top:16px;font-size:12px;color:var(--muted);">Talk or type \u2014 whatever\u2019s easiest.</div>';
   return d;
