@@ -1673,8 +1673,8 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v3.07.0';
-var APP_BUILD = "May 30 — Yesterday recap card is now collapsible (tap header), remembers collapsed state";
+var APP_VERSION = 'v3.08.0';
+var APP_BUILD = "May 30 — Ask Jim about them now generates a data READ (not their chats); yesterday card tightened to concrete tags";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -4449,32 +4449,87 @@ async function sendBroadcast(){
 async function openClientJimChat(code, name){
   var titleEl = document.getElementById('ccChatTitle');
   var body = document.getElementById('ccChatBody');
-  if(titleEl) titleEl.textContent = (name || 'Client') + ' · Jim Chat';
-  if(body) body.innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted);font-size:13px;">Loading…</div>';
+  if(titleEl) titleEl.textContent = (name || 'Client') + ' \u00b7 The Read';
+  if(body) body.innerHTML = '<div style="text-align:center;padding:28px;color:var(--muted);font-size:13px;">Reading their logs\u2026</div>';
   openM('mClientChat');
   try{
-    var rows = await sbSelect('chat_messages','client_code=eq.'+encodeURIComponent(code)+'&limit=60');
-    rows = (rows || []).slice().reverse(); // oldest-first so it reads like a conversation
-    if(!rows.length){ if(body) body.innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted);font-size:13px;">No Jim chats yet.</div>'; return; }
-    var html = '';
-    var lastDay = '';
-    rows.forEach(function(m){
-      var when = m.logged_at ? new Date(m.logged_at) : null;
-      var dayLbl = when ? when.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) : '';
-      if(dayLbl && dayLbl !== lastDay){ html += '<div style="text-align:center;font-size:10px;color:var(--muted);letter-spacing:0.5px;margin:12px 0 6px;">'+dayLbl+'</div>'; lastDay = dayLbl; }
-      var t = when ? when.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}) : '';
-      var txt = (m.content || '').replace(/</g,'&lt;');
-      var img = m.has_image ? ' 📷' : '';
-      if(m.role === 'user'){
-        html += '<div style="display:flex;justify-content:flex-end;margin:4px 0;"><div style="max-width:82%;background:#111;color:#fff;border-radius:13px 13px 4px 13px;padding:8px 11px;font-size:13px;line-height:1.45;">'+txt+img+'<div style="font-size:9px;color:rgba(255,255,255,0.4);margin-top:3px;text-align:right;">'+t+'</div></div></div>';
-      } else {
-        html += '<div style="display:flex;justify-content:flex-start;margin:4px 0;"><div style="max-width:82%;background:var(--s2);color:var(--text);border-radius:13px 13px 13px 4px;padding:8px 11px;font-size:13px;line-height:1.45;"><span style="font-size:9px;font-weight:700;color:#caa200;display:block;margin-bottom:2px;letter-spacing:0.5px;">JIM</span>'+txt+'<div style="font-size:9px;color:var(--muted);margin-top:3px;">'+t+'</div></div></div>';
-      }
+    var cutoff = new Date(Date.now() - 72*60*60*1000).toISOString();
+    var foods = await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=30') || [];
+    var workouts = await sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=10') || [];
+    var checkins = await sbSelect('energy_checkins','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=8') || [];
+    var weights = await sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(code)+'&order=created_at.desc&limit=2') || [];
+    var steps = await sbSelect('step_logs','client_code=eq.'+encodeURIComponent(code)+'&order=updated_at.desc&limit=4') || [];
+
+    var recentFoods = foods.filter(function(f){ return f.logged_at >= cutoff; });
+    var recentWo = workouts.filter(function(w){ return w.logged_at >= cutoff; });
+    var recentCk = checkins.filter(function(c){ return c.logged_at >= cutoff; });
+
+    var allTs = [];
+    foods.forEach(function(f){ if(f.logged_at) allTs.push(new Date(f.logged_at).getTime()); });
+    workouts.forEach(function(w){ if(w.logged_at) allTs.push(new Date(w.logged_at).getTime()); });
+    checkins.forEach(function(c){ if(c.logged_at) allTs.push(new Date(c.logged_at).getTime()); });
+    steps.forEach(function(s){ if(s.updated_at) allTs.push(new Date(s.updated_at).getTime()); });
+    var lastSeen = allTs.length ? Math.max.apply(null, allTs) : null;
+    var lastSeenStr = 'No activity on record';
+    if(lastSeen){
+      var h = Math.floor((Date.now()-lastSeen)/3600000);
+      lastSeenStr = h < 1 ? 'Active in the last hour' : h < 24 ? 'Last seen '+h+'h ago' : 'Last seen '+Math.floor(h/24)+'d ago';
+    }
+
+    if(!allTs.length){
+      if(body) body.innerHTML = '<div style="text-align:center;padding:28px;color:var(--muted);font-size:13px;line-height:1.6;">'+(name||'This client')+' hasn\u2019t logged anything yet.<br>Nothing to read until they start using the app.</div>';
+      return;
+    }
+
+    var L = [];
+    L.push('CLIENT: '+(name||code));
+    L.push(lastSeenStr);
+    if(recentFoods.length){
+      var cal = recentFoods.reduce(function(s,f){return s+(f.calories||0);},0);
+      var pro = recentFoods.reduce(function(s,f){return s+(f.protein||0);},0);
+      var nd = recentFoods.filter(function(f){return f.rating==='nutrient_dense';}).length;
+      var good = recentFoods.filter(function(f){return f.rating==='good'||f.rating==='clean';}).length;
+      var bad = recentFoods.filter(function(f){return f.rating==='bad';}).length;
+      L.push('FOOD (72h): '+recentFoods.length+' meals \u00b7 ~'+cal+' cal \u00b7 '+pro+'g protein \u00b7 '+nd+' nutrient-dense, '+good+' good, '+bad+' off-plan');
+      recentFoods.slice(0,8).forEach(function(f){ L.push('  - '+(f.name||'?')+' ('+(f.calories||0)+'cal, '+(f.protein||0)+'gP, '+(f.rating||'?')+')'); });
+    } else { L.push('FOOD (72h): nothing logged'); }
+    if(recentWo.length){
+      L.push('WORKOUTS (72h): '+recentWo.length);
+      recentWo.forEach(function(w){ L.push('  - '+(w.description||w.title||'?').substring(0,90)+(w.intensity?' | '+w.intensity+'/10':'')+(w.feel?' ('+w.feel+')':'')); });
+    } else { L.push('WORKOUTS (72h): none logged'); }
+    if(steps.length){ L.push('STEPS: latest day '+(steps[0].steps||0).toLocaleString()); } else { L.push('STEPS: none logged'); }
+    if(weights.length>=2){ var chg=(weights[0].weight-weights[1].weight).toFixed(1); L.push('WEIGHT: '+weights[0].weight+'lbs ('+(chg>0?'+':'')+chg+')'); }
+    else if(weights.length===1){ L.push('WEIGHT: '+weights[0].weight+'lbs'); }
+    else { L.push('WEIGHT: none logged'); }
+    if(recentCk.length){ var lc=recentCk[0]; L.push('CHECK-IN: energy='+(lc.energy||'?')+(lc.mood?', mood='+lc.mood:'')+(lc.note?', note="'+lc.note.substring(0,80)+'"':'')); }
+    else { L.push('CHECK-IN: none'); }
+
+    var sys = 'You are JIM, giving Yusuf (the coach) a quick read on ONE client from their actual logged data. This is an operational read, not a vibe check - facts first.\n\nFORMAT: 2-4 short sentences, conversational, one coach to another. Lead with how they are eating (food quality, protein), then training, then movement/steps, then flag anything notable (gone quiet, weight trend, a rough check-in). End with ONE specific action Yusuf could take if warranted. No markdown, no headers, no emojis, no bullet lists. Direct operator voice.\n\nIf data is thin, say so plainly and do not invent.\n\n=== DATA ===\n'+L.join('\n')+'\n\nWrite the read. Start directly.';
+
+    var res = await fetch('/.netlify/functions/analyze', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({messages:[{role:'user',content:sys}]})
     });
-    if(body){ body.innerHTML = html; body.scrollTop = body.scrollHeight; }
+    var data = await res.json();
+    var read = '';
+    if(data && data.content){ data.content.forEach(function(b){ if(b.type==='text'&&b.text) read += b.text; }); }
+    read = read.trim() || 'Couldn\u2019t generate a read - try again.';
+
+    var chips = '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;">'
+      + '<span style="font-size:11px;font-weight:700;padding:4px 9px;border-radius:7px;background:var(--s2);color:var(--m2);">'+lastSeenStr+'</span>'
+      + (recentFoods.length?'<span style="font-size:11px;font-weight:700;padding:4px 9px;border-radius:7px;background:rgba(34,199,94,0.10);color:var(--green);">\ud83c\udf7d\ufe0f '+recentFoods.length+' meals (72h)</span>':'<span style="font-size:11px;font-weight:700;padding:4px 9px;border-radius:7px;background:var(--s2);color:var(--m2);">\ud83c\udf7d\ufe0f No food</span>')
+      + (recentWo.length?'<span style="font-size:11px;font-weight:700;padding:4px 9px;border-radius:7px;background:rgba(34,199,94,0.10);color:var(--green);">\ud83d\udcaa '+recentWo.length+' workout'+(recentWo.length>1?'s':'')+'</span>':'<span style="font-size:11px;font-weight:700;padding:4px 9px;border-radius:7px;background:var(--s2);color:var(--m2);">\ud83d\udcaa No workouts</span>')
+      + '</div>';
+
+    if(body) body.innerHTML = chips
+      + '<div style="background:var(--s2);border-radius:13px;padding:14px;font-size:13.5px;line-height:1.6;color:var(--text);">'
+      + '<span style="font-size:9px;font-weight:800;color:#caa200;display:block;margin-bottom:6px;letter-spacing:1px;">JIM\u2019S READ</span>'
+      + read.replace(/</g,'&lt;').replace(/\n/g,'<br>')
+      + '</div>'
+      + '<button onclick="openClientJimChat(\''+code+'\',\''+(name||'').replace(/\x27/g,"\\x27")+'\')" style="margin-top:12px;width:100%;background:transparent;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:12px;font-weight:700;color:var(--m2);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\u21bb Re-read</button>';
   }catch(e){
-    console.error('client jim chat load', e);
-    if(body) body.innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted);font-size:13px;">Couldn\'t load the chat — try again.</div>';
+    console.error('client read', e);
+    if(body) body.innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted);font-size:13px;">Couldn\'t generate the read - try again.</div>';
   }
 }
 
@@ -5657,34 +5712,35 @@ async function renderYesterdayCard(){
     // Rule-based headline — friendly, honest, never shaming.
     var head;
     if(!anyData){
-      head = "Quiet day on the log — today's a fresh start.";
+      head = "Quiet day — fresh start today.";
     } else if(trained && cleanPct!==null && cleanPct>=0.7 && steps>=7000){
-      head = "Solid day — you trained, ate clean, and moved well.";
+      head = "Solid all around.";
     } else if(trained && cleanPct!==null && cleanPct>=0.7){
-      head = "Strong day — trained and kept the food dialed.";
+      head = "Trained and ate clean.";
     } else if(trained){
-      head = "Got your training in. Today, lock in the food too.";
+      head = "Got the training in.";
     } else if(cleanPct!==null && cleanPct>=0.7){
-      head = "Food was dialed. No training logged — easy to pick back up today.";
+      head = "Food was dialed.";
     } else if(nMeals>0){
-      head = "You logged your day — that's the habit that matters.";
+      head = "Logged your day.";
     } else {
-      head = "A little movement yesterday. Build on it today.";
+      head = "A little movement in.";
     }
     document.getElementById('yCardHead').textContent = head;
 
-    // Pills — green for wins, neutral gray for gaps (never red/shaming)
+    // Pills — concrete + "yesterday" framed. Green for wins, neutral gray for gaps (never shaming).
     var pills = [];
     if(trained){
       var wTitle = (workouts[0].title && workouts[0].title.trim()) ? workouts[0].title.trim() : 'Trained';
       if(wTitle.length>22) wTitle = wTitle.slice(0,22)+'…';
       pills.push({txt:'💪 '+wTitle, good:true});
     } else if(anyData){
-      pills.push({txt:'💪 No workout', good:false});
+      pills.push({txt:'💪 Rest day', good:false});
     }
     if(cleanPct!==null && cleanPct>=0.8) pills.push({txt:'🥦 Mostly whole foods', good:true});
     else if(cleanPct!==null && cleanPct>=0.5) pills.push({txt:'🥦 '+Math.round(cleanPct*100)+'% whole', good:true});
     else if(nMeals>0) pills.push({txt:'🍽️ '+nMeals+' meal'+(nMeals>1?'s':''), good:false});
+    if(steps>=7000) pills.push({txt:'👟 '+steps.toLocaleString()+' steps', good:true});
     document.getElementById('yCardPills').innerHTML = pills.map(function(p){
       var c = p.good ? 'color:var(--green);background:rgba(34,199,94,0.10);' : 'color:var(--m2);background:var(--s2);';
       return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;padding:4px 9px;border-radius:7px;'+c+'">'+p.txt+'</span>';
