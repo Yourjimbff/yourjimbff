@@ -1651,8 +1651,8 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v3.01.0';
-var APP_BUILD = "May 29 — Morning open: Your Yesterday card (your own day, replayed) + From Yusuf card (coach's real logged day) at top of Today";
+var APP_VERSION = 'v3.02.0';
+var APP_BUILD = "May 30 — Yesterday card sharpened: cleaner stats, session titles, meal timestamps + eating window, plus yesterday's check-in";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -1711,7 +1711,7 @@ function openJimFromInvite(){
   }, 80);
 }
 
-var WHATSNEW_VERSION = '2026-05-29b';
+var WHATSNEW_VERSION = '2026-05-30';
 function toggleWhatsNew(){
   var body = document.getElementById('whatsNewBody');
   var chev = document.getElementById('whatsNewChevron');
@@ -5570,7 +5570,7 @@ function _mcTitle(str){
 
 // Pull one day's logs for any client_code + date_str. Self-contained — never touches today globals.
 async function fetchDaySnapshot(code, dateStr){
-  var snap = { foods:[], workouts:[], steps:0, dateStr:dateStr };
+  var snap = { foods:[], workouts:[], steps:0, checkins:[], dateStr:dateStr };
   try{ snap.foods = (await sbSelect('food_logs','client_code=eq.'+code+'&date_str=eq.'+encodeURIComponent(dateStr))) || []; }catch(e){}
   try{
     var w = (await sbSelect('workout_logs','client_code=eq.'+code+'&date_str=eq.'+encodeURIComponent(dateStr)+'&limit=20')) || [];
@@ -5580,6 +5580,9 @@ async function fetchDaySnapshot(code, dateStr){
     var s = (await sbSelect('step_logs','client_code=eq.'+code+'&date_str=eq.'+encodeURIComponent(dateStr)+'&limit=1')) || [];
     if(s.length) snap.steps = s[0].steps || 0;
   }catch(e){}
+  try{
+    snap.checkins = (await sbSelect('energy_checkins','client_code=eq.'+code+'&date_str=eq.'+encodeURIComponent(dateStr)+'&limit=10')) || [];
+  }catch(e){ snap.checkins = []; }
   return snap;
 }
 
@@ -5600,7 +5603,12 @@ function _snapPhotos(snap, max){
   return ph.slice(0, max||3);
 }
 
-// Shared compact body for both cards: photos, stat chips, training bullets, food items.
+// Shared compact body for both cards: photos, stats, training, food (timestamped + eating window), optional check-in.
+function _minsToClock(mins){
+  if(mins==null || mins>=99999) return '';
+  var h=Math.floor(mins/60), m=mins%60, ap=h>=12?'pm':'am', hh=h%12; if(hh===0) hh=12;
+  return hh + (m? ':'+String(m).padStart(2,'0') : '') + ap;
+}
 function _morningCardInner(snap, opts){
   opts = opts || {};
   var cal=0, pro=0;
@@ -5608,40 +5616,68 @@ function _morningCardInner(snap, opts){
   var photos = _snapPhotos(snap, opts.maxPhotos||3);
   var hasFood = snap.foods && snap.foods.length;
   var hasWo = snap.workouts && snap.workouts.length;
+  var checkins = (opts.showCheckin && snap.checkins && snap.checkins.length) ? snap.checkins : null;
   var html = '';
 
   if(photos.length){
     var cols = photos.length===1 ? '1fr' : (photos.length===2 ? 'repeat(2,1fr)' : 'repeat(3,1fr)');
-    html += '<div style="display:grid;grid-template-columns:'+cols+';gap:3px;border-radius:12px;overflow:hidden;margin-bottom:11px;">'
+    html += '<div style="display:grid;grid-template-columns:'+cols+';gap:3px;border-radius:12px;overflow:hidden;margin-bottom:12px;">'
       + photos.map(function(src){ return '<div style="aspect-ratio:1/1;overflow:hidden;background:#111;"><img src="'+src+'" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block;"></div>'; }).join('')
       + '</div>';
   }
 
+  // Core numbers only — Cal · Protein · Steps. Workout count moved into the Training header.
   var chips = [];
   if(hasFood){ chips.push({n:Math.round(cal), l:'Cal', c:'#fff'}); chips.push({n:Math.round(pro)+'g', l:'Protein', c:'var(--green)'}); }
   if(snap.steps >= 1000) chips.push({n:snap.steps.toLocaleString(), l:'Steps', c:'var(--gold)'});
-  if(hasWo) chips.push({n:snap.workouts.length, l:snap.workouts.length>1?'Workouts':'Workout', c:'var(--gold)'});
   if(chips.length){
-    html += '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:'+((hasWo||hasFood)?'12px':'0')+';">'
-      + chips.map(function(s){ return '<div><div style="font-family:\'Bebas Neue\',sans-serif;font-size:23px;line-height:1;color:'+s.c+';">'+s.n+'</div><div style="font-size:8.5px;color:#888;letter-spacing:1px;text-transform:uppercase;margin-top:2px;">'+s.l+'</div></div>'; }).join('')
+    html += '<div style="display:flex;gap:22px;flex-wrap:wrap;padding-bottom:13px;margin-bottom:13px;border-bottom:1px solid rgba(255,255,255,0.08);">'
+      + chips.map(function(s){ return '<div><div style="font-family:\'Bebas Neue\',sans-serif;font-size:25px;line-height:1;color:'+s.c+';">'+s.n+'</div><div style="font-size:8.5px;color:#888;letter-spacing:1px;text-transform:uppercase;margin-top:3px;">'+s.l+'</div></div>'; }).join('')
       + '</div>';
   }
 
+  // TRAINING — count in header, session title as a clear label, then the bullets.
   if(hasWo){
-    var lines = (snap.workouts[0].desc||'').split('\n').map(function(s){ return s.replace(/^[•\-\s]+/,'').trim(); }).filter(Boolean).slice(0,4);
-    if(lines.length){
-      html += '<div style="margin-bottom:'+(hasFood?'12px':'0')+';"><div style="font-size:9px;color:var(--gold);font-weight:700;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px;">Training</div>'
-        + lines.map(function(ln){ return '<div style="display:flex;gap:8px;padding:2px 0;font-size:12px;color:#e8e8e8;font-weight:600;"><span style="color:var(--gold);">&#9656;</span><span>'+ln+'</span></div>'; }).join('')
-        + '</div>';
-    }
+    var w0 = snap.workouts[0];
+    var sessTitle = (w0.title||'').trim();
+    var lines = (w0.desc||'').split('\n').map(function(s){ return s.replace(/^[•\-\s]+/,'').trim(); }).filter(Boolean).slice(0,5);
+    var hdr = 'Training' + (snap.workouts.length>1 ? ' · '+snap.workouts.length+' sessions' : '');
+    html += '<div style="margin-bottom:'+(hasFood||checkins?'13px':'0')+';">'
+      + '<div style="font-size:9px;color:var(--gold);font-weight:700;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:6px;">'+hdr+'</div>';
+    if(sessTitle) html += '<div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:5px;">'+sessTitle+'</div>';
+    html += lines.map(function(ln){ return '<div style="display:flex;gap:8px;padding:2px 0;font-size:12px;color:#dcdcdc;font-weight:600;"><span style="color:var(--gold);">&#9656;</span><span>'+ln+'</span></div>'; }).join('');
+    if(snap.workouts.length>1) html += '<div style="font-size:10.5px;color:var(--m2);margin-top:5px;">+'+(snap.workouts.length-1)+' more session'+(snap.workouts.length-1>1?'s':'')+'</div>';
+    html += '</div>';
   }
 
+  // FOOD — eating window up top, each meal stamped with its time.
   if(hasFood){
-    html += '<div><div style="font-size:9px;color:var(--gold);font-weight:700;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px;">Food</div>'
-      + snap.foods.slice(0,3).map(function(f){
-          return '<div style="display:flex;align-items:center;gap:9px;padding:3px 0;"><span style="font-size:14px;flex-shrink:0;">'+(f.emoji||'🍽️')+'</span><div style="flex:1;min-width:0;"><div style="font-size:12px;font-weight:600;color:#fff;line-height:1.15;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+_mcTitle(f.name)+'</div></div><div style="font-size:10px;color:#888;flex-shrink:0;">'+(f.calories||0)+' cal</div></div>';
+    var times = snap.foods.map(function(f){ return (typeof _foodMins==='function') ? _foodMins(f.eatTime||f.eat_time) : 99999; }).filter(function(x){ return x<99999; });
+    var windowTxt = '';
+    if(times.length>=2){ var lo=Math.min.apply(null,times), hi=Math.max.apply(null,times); if(hi>lo) windowTxt = _minsToClock(lo)+' → '+_minsToClock(hi); }
+    html += '<div><div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;">'
+      + '<div style="font-size:9px;color:var(--gold);font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Food</div>'
+      + (windowTxt ? '<div style="font-size:10px;color:var(--m2);">⌛ '+windowTxt+'</div>' : '') + '</div>'
+      + snap.foods.slice(0,4).map(function(f){
+          var t = _minsToClock((typeof _foodMins==='function') ? _foodMins(f.eatTime||f.eat_time) : 99999);
+          return '<div style="display:flex;align-items:center;gap:9px;padding:4px 0;"><span style="font-size:14px;flex-shrink:0;">'+(f.emoji||'🍽️')+'</span>'
+            + '<div style="flex:1;min-width:0;"><div style="font-size:12px;font-weight:600;color:#fff;line-height:1.15;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+_mcTitle(f.name)+'</div></div>'
+            + '<div style="text-align:right;flex-shrink:0;"><div style="font-size:10.5px;color:#aaa;line-height:1.2;">'+(f.calories||0)+' cal</div>'+(t?'<div style="font-size:9.5px;color:#777;">'+t+'</div>':'')+'</div></div>';
         }).join('')
-      + (snap.foods.length>3 ? '<div style="font-size:10.5px;color:var(--m2);margin-top:5px;">+'+(snap.foods.length-3)+' more</div>' : '')
+      + (snap.foods.length>4 ? '<div style="font-size:10.5px;color:var(--m2);margin-top:5px;">+'+(snap.foods.length-4)+' more</div>' : '')
+      + '</div>';
+  }
+
+  // CHECK-IN — yesterday's energy/mood/note. The first thread of the Pulse.
+  if(checkins){
+    var c0 = checkins[0];
+    var bits = [];
+    if(c0.energy) bits.push('⚡ '+c0.energy);
+    if(c0.mood) bits.push(c0.mood);
+    html += '<div style="margin-top:13px;padding-top:13px;border-top:1px solid rgba(255,255,255,0.08);">'
+      + '<div style="font-size:9px;color:var(--gold);font-weight:700;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:6px;">Check-in</div>'
+      + (bits.length ? '<div style="font-size:12.5px;font-weight:700;color:#fff;">'+bits.join(' · ')+'</div>' : '')
+      + (c0.note ? '<div style="font-size:12px;color:#bbb;font-style:italic;margin-top:4px;line-height:1.4;">“'+c0.note+'”</div>' : '')
       + '</div>';
   }
 
@@ -5657,15 +5693,13 @@ async function renderMorningCards(){
   try{
     var yStr = _dayStrOffset(-1);
     var ySnap = await fetchDaySnapshot(cl.code, yStr);
-    if(ySnap.foods.length || ySnap.workouts.length || ySnap.steps>=1000){
-      var firstName = (cl.name||'').trim().split(' ')[0];
+    if(ySnap.foods.length || ySnap.workouts.length || ySnap.steps>=1000 || (ySnap.checkins&&ySnap.checkins.length)){
       var card = document.createElement('div');
       card.style.cssText = 'background:linear-gradient(155deg,#141414,#000);border:1.5px solid rgba(245,197,24,0.30);border-radius:18px;padding:15px 16px;margin-bottom:10px;box-shadow:0 3px 14px rgba(0,0,0,0.22);';
-      card.innerHTML = '<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:11px;">'
+      card.innerHTML = '<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:13px;">'
         + '<div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--gold);font-weight:700;">Yesterday</div>'
         + '<div style="font-size:10px;color:var(--m2);letter-spacing:0.5px;">'+_prettyDay(yStr)+'</div></div>'
-        + '<div style="font-size:15px;font-weight:800;color:#fff;line-height:1.2;margin-bottom:12px;">'+(firstName? firstName+", here's your day 👏" : "Here's your day 👏")+'</div>'
-        + _morningCardInner(ySnap, {maxPhotos:2});
+        + _morningCardInner(ySnap, {maxPhotos:2, showCheckin:true});
       strip.appendChild(card);
     }
   }catch(e){ console.error('yesterday card failed', e); }
