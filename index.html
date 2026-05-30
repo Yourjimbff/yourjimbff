@@ -1777,8 +1777,8 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v3.31.0';
-var APP_BUILD = "May 30 — Removed seed-weight test buttons. Added one-time Weight History import (bulk-load past weigh-ins as dated points so the Journey shows the full line). Paste history to Claude → load the file here.";
+var APP_VERSION = 'v3.32.0';
+var APP_BUILD = "May 30 — Trainer can now see a client's Weight Journey graph: it shows at the top of 'Ask Jim about them' (The Read) per client, with full curve + lbs lost + dates.";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -4550,6 +4550,48 @@ async function sendBroadcast(){
 }
 
 // Trainer: read a client's recent conversation with Jim — what they've been telling him.
+async function buildTrainerJourneyHtml(code){
+  try{
+    var weights = await sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(code)+'&limit=500') || [];
+    weights = weights.slice().sort(function(a,b){ return new Date(a.logged_at) - new Date(b.logged_at); });
+    if(weights.length < 2) return '';
+
+    var first = weights[0], last = weights[weights.length-1];
+    var startWt = parseFloat(first.weight), endWt = parseFloat(last.weight);
+    var delta = Math.round((endWt - startWt) * 10) / 10;
+    var trendColor = delta < 0 ? '#22c77a' : delta > 0 ? '#ff9500' : '#888';
+    var deltaLabel = delta < 0 ? '↓ '+Math.abs(delta)+' lbs' : delta > 0 ? '↑ '+delta+' lbs' : 'No change';
+
+    function fmtShort(d){ try{ return new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'}); }catch(e){ return ''; } }
+
+    var w = 280, h = 64, pad = 6;
+    var nums = weights.map(function(x){ return parseFloat(x.weight); });
+    var minV = Math.min.apply(null, nums), maxV = Math.max.apply(null, nums);
+    if(maxV - minV < 1) maxV = minV + 1;
+    var n = nums.length;
+    var P = nums.map(function(v,i){ return { x: pad + (i/(n-1))*(w-pad*2), y: h - pad - ((v-minV)/(maxV-minV))*(h-pad*2) }; });
+    var dLine = 'M '+P[0].x+' '+P[0].y;
+    for(var i=1;i<P.length;i++){ dLine += ' L '+P[i].x+' '+P[i].y; }
+    var dArea = dLine + ' L '+P[P.length-1].x+' '+h+' L '+P[0].x+' '+h+' Z';
+    var gid = 'tjg'+code.replace(/[^a-z0-9]/gi,'');
+
+    return '<div style="background:var(--s2);border-radius:12px;padding:12px;margin-bottom:12px;">'
+      + '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">'
+      + '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:1px;text-transform:uppercase;">Weight Journey</div>'
+      + '<div style="font-size:13px;font-weight:800;color:'+trendColor+';">'+deltaLabel+'</div></div>'
+      + '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" style="width:100%;height:64px;overflow:visible;">'
+      + '<defs><linearGradient id="'+gid+'" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="'+trendColor+'" stop-opacity="0.3"/><stop offset="100%" stop-color="'+trendColor+'" stop-opacity="0"/></linearGradient></defs>'
+      + '<path d="'+dArea+'" fill="url(#'+gid+')" />'
+      + '<path d="'+dLine+'" fill="none" stroke="'+trendColor+'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />'
+      + '<circle cx="'+P[0].x+'" cy="'+P[0].y+'" r="3" fill="'+trendColor+'" />'
+      + '<circle cx="'+P[P.length-1].x+'" cy="'+P[P.length-1].y+'" r="4" fill="'+trendColor+'" stroke="var(--surface)" stroke-width="2" />'
+      + '</svg>'
+      + '<div style="display:flex;justify-content:space-between;margin-top:4px;font-size:10px;color:var(--muted);">'
+      + '<span>'+startWt+' lbs · '+fmtShort(first.logged_at)+'</span>'
+      + '<span>'+endWt+' lbs · '+fmtShort(last.logged_at)+'</span></div></div>';
+  }catch(e){ console.error('trainer journey failed', e); return ''; }
+}
+
 async function openClientJimChat(code, name){
   var titleEl = document.getElementById('ccChatTitle');
   var body = document.getElementById('ccChatBody');
@@ -4674,7 +4716,8 @@ async function openClientJimChat(code, name){
 
     // Render structure now, with a placeholder for the verdict (streams in after)
     var lastSeenChip = '<div style="font-size:11px;color:var(--muted);font-weight:600;margin-bottom:4px;">'+lastSeenStr+'</div>';
-    if(body) body.innerHTML = lastSeenChip + trainHtml + foodHtml + actHtml
+    var journeyHtml = await buildTrainerJourneyHtml(code);
+    if(body) body.innerHTML = lastSeenChip + journeyHtml + trainHtml + foodHtml + actHtml
       + sectionLabel('⚡ Jim\u2019s Verdict')
       + '<div id="clientVerdictBox" style="background:#0a0a0a;border:1px solid rgba(245,197,24,0.3);border-radius:13px;padding:14px;font-size:13.5px;line-height:1.6;color:#fff;">'
       + '<div style="color:rgba(255,255,255,0.5);font-size:12px;">Thinking\u2026</div></div>'
