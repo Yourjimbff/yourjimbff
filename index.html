@@ -522,6 +522,26 @@ textarea.ifield{min-height:78px;}
       </div>
     </div>
 
+    <!-- ========================================================== -->
+    <!-- YESTERDAY RECAP CARD — self-contained. To remove entirely: -->
+    <!-- set SHOW_YESTERDAY_CARD = false (below in JS), or delete    -->
+    <!-- this block + the renderYesterdayCard() function.            -->
+    <!-- ========================================================== -->
+    <div id="yesterdayCard" style="display:none;background:#fff;border:1px solid var(--border);border-left:4px solid var(--gold);border-radius:16px;padding:16px;margin-bottom:10px;box-shadow:0 1px 4px rgba(0,0,0,0.06);">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <div style="font-size:10px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);">Yesterday</div>
+        <div id="yCardDate" style="font-size:11px;color:var(--muted);font-weight:600;"></div>
+      </div>
+      <div id="yCardHead" style="font-size:15.5px;font-weight:800;color:var(--text);line-height:1.35;margin-bottom:13px;"></div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+        <div style="text-align:center;background:var(--s2);border-radius:10px;padding:10px 4px;"><div id="yCardCal" style="font-family:'Bebas Neue',sans-serif;font-size:22px;line-height:1;color:var(--text);">—</div><div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-top:3px;">Cal</div></div>
+        <div style="text-align:center;background:var(--s2);border-radius:10px;padding:10px 4px;"><div id="yCardPro" style="font-family:'Bebas Neue',sans-serif;font-size:22px;line-height:1;color:var(--text);">—</div><div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-top:3px;">Protein</div></div>
+        <div style="text-align:center;background:var(--s2);border-radius:10px;padding:10px 4px;"><div id="yCardSteps" style="font-family:'Bebas Neue',sans-serif;font-size:22px;line-height:1;color:var(--text);">—</div><div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-top:3px;">Steps</div></div>
+      </div>
+      <div id="yCardPills" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:11px;"></div>
+    </div>
+    <!-- ===== END YESTERDAY RECAP CARD ===== -->
+
     <!-- TODAY'S WORKOUT CARD (visible when client has assigned program) -->
     <div id="todayWorkoutCard" style="display:none;background:var(--surface);border:2px solid rgba(245,197,24,0.55);border-radius:var(--r);padding:14px 16px;margin-bottom:10px;cursor:pointer;position:relative;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.07);" onclick="onWorkoutTileClick()">
       <div style="display:flex;align-items:center;gap:12px;">
@@ -1648,8 +1668,8 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v3.01.0';
-var APP_BUILD = "May 29 — Jim is now a logger (capabilities held back); client cards get red/yellow/green status by last-seen, sorted who-needs-you-first";
+var APP_VERSION = 'v3.03.0';
+var APP_BUILD = "May 30 — Yesterday recap card (friendly headline + cal/protein/steps + pills); self-contained, kill switch SHOW_YESTERDAY_CARD";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -1915,6 +1935,7 @@ async function launchApp(){
   loadTodayWorkouts();
   loadTodaySteps();
   loadTodaySleep();
+  if(typeof renderYesterdayCard==='function') renderYesterdayCard();
   // Template program system
   loadTrainerPrograms();
   loadClientAssignedProgram();
@@ -4452,6 +4473,11 @@ async function openClientJimChat(code, name){
   }
 }
 
+function toggleInactiveClients(){
+  window._showInactiveClients = !window._showInactiveClients;
+  if(typeof loadTrainerDashboard === 'function') loadTrainerDashboard();
+}
+
 async function loadTrainerDashboard(){
   var listEl = document.getElementById('clientList');
   // Load briefing in parallel (non-blocking)
@@ -4558,19 +4584,23 @@ async function loadTrainerDashboard(){
 
     var hiddenSet = getHiddenClientSet();
     var clientCodes = Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer && !hiddenSet[k]; });
-    // Status per client from last-activity recency: green = active <24h, yellow = 1-2 days, red = 3+ days / never.
+    // Status per client. rank: 3=green active, 2=yellow slipping, 1=red quiet (was active, now 3d+), 0=never logged (dead import).
     function clientStatus(code){
       var info = lastActivity[code];
-      if(!info) return {rank:0, color:'#e5484d', label:'No activity'};      // red
+      if(!info) return {rank:0, color:'#bbb', label:'Not started'};          // never used it — an import
       var days = (Date.now() - info.ts) / 86400000;
-      if(days < 1) return {rank:2, color:'var(--green)', label:'Active'};    // green
-      if(days < 3) return {rank:1, color:'#e0a800', label:'Slipping'};       // yellow
-      return {rank:0, color:'#e5484d', label:'Quiet'};                       // red
+      if(days < 1) return {rank:3, color:'var(--green)', label:'Active'};     // green
+      if(days < 3) return {rank:2, color:'#e0a800', label:'Slipping'};        // yellow
+      return {rank:1, color:'#e5484d', label:'Quiet'};                        // red — real client gone quiet
     }
-    // Sort red (needs you) first → yellow → green; within a band, most-recent first.
+    // By default, hide people who have NEVER logged anything (fresh imports) so the board shows real users.
+    var showInactive = window._showInactiveClients === true;
+    var inactiveCount = clientCodes.filter(function(c){ return clientStatus(c).rank === 0; }).length;
+    if(!showInactive){ clientCodes = clientCodes.filter(function(c){ return clientStatus(c).rank > 0; }); }
+    // Sort GREEN first → yellow → red → (not-started if shown). Within a band, most-recent first.
     clientCodes.sort(function(a,b){
       var sa=clientStatus(a), sb=clientStatus(b);
-      if(sa.rank !== sb.rank) return sa.rank - sb.rank; // lower rank (red) first
+      if(sa.rank !== sb.rank) return sb.rank - sa.rank; // higher rank (green) first
       var aT = lastActivity[a] ? lastActivity[a].ts : 0;
       var bT = lastActivity[b] ? lastActivity[b].ts : 0;
       return bT - aT;
@@ -4665,7 +4695,17 @@ async function loadTrainerDashboard(){
       html += '<div class="client-card" style="border-left:4px solid '+_st.color+';"><div class="cc-head"><div class="cc-avi" style="position:relative;">'+clientInfo.initials[0]+'<span style="position:absolute;bottom:-1px;right:-1px;width:11px;height:11px;border-radius:50%;background:'+_st.color+';border:2px solid var(--surface);"></span></div><div class="cc-info"><div class="cc-name">'+clientInfo.name+'</div><div class="cc-last">'+(foods.length>0? qShort : 'Nothing logged today')+' · '+Math.round(totalCal)+' cal · '+Math.round(totalPro)+'g protein'+(latestWeight?' · '+latestWeight+'lbs':'')+'</div>'+seenLabel+'</div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">'+assignChip+'<div style="text-align:right;"><div class="cc-score" style="color:'+scoreCol+';font-size:18px;">'+(foods.length>0?Math.round(totalCal):'—')+'</div><div class="cc-score-lbl">'+(foods.length>0?'cal':'no logs')+'</div></div></div></div>'+statStrip+woDetailPanel+photoRow+'<div class="cc-meals">'+mealItems+'</div>'+noteBtn+'</div>';
     });
 
-    listEl.innerHTML = html || '<div class="no-clients">No client data yet.</div>';
+    // Toggle footer for the not-yet-started imports.
+    var toggleHtml = '';
+    if(inactiveCount > 0){
+      toggleHtml = '<div onclick="toggleInactiveClients()" style="margin-top:10px;text-align:center;padding:11px;border-radius:12px;border:1px dashed var(--border);background:var(--s2);cursor:pointer;font-size:12.5px;font-weight:700;color:var(--m2);">'
+        + (showInactive ? '↑ Hide '+inactiveCount+' not-yet-started' : '↓ Show '+inactiveCount+' not-yet-started')
+        + '</div>';
+    }
+    if(!html && !showInactive){
+      html = '<div class="no-clients" style="padding:20px;text-align:center;color:var(--m2);font-size:13px;line-height:1.5;">No active clients yet.<br>Your imported roster appears once they start logging.</div>';
+    }
+    listEl.innerHTML = (html || '') + toggleHtml;
     // Add note button event listeners
     listEl.querySelectorAll('.note-btn').forEach(function(btn){
       btn.addEventListener('click', function(){
@@ -4696,7 +4736,8 @@ async function loadTrainerDashboard(){
     Object.keys(foodsByClient).forEach(function(k){ if(clientSet[k]) totalMealsToday += foodsByClient[k].length; });
     var totalWorkoutsToday = 0;
     Object.keys(workoutsTodayByClient).forEach(function(k){ totalWorkoutsToday += workoutsTodayByClient[k]; });
-    var silentCount = clientCodes.filter(function(c){ return !lastActivity[c]; }).length;
+    var _allRealCodes = Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer && !hiddenSet[k]; });
+    var silentCount = _allRealCodes.filter(function(c){ return clientStatus(c).rank === 1; }).length; // red = was active, now quiet
     var setStat = function(id, val){ var el = document.getElementById(id); if(el) el.textContent = String(val); };
     setStat('statActive', activeCount);
     setStat('statMeals', totalMealsToday);
@@ -5558,6 +5599,86 @@ function rendTodayFood(){
 
 // Share a single meal as a clean card — photo, stats, rating, and a fun tidbit.
 // ===== WHAT I DID TODAY — unified day card (always open, builds as you log) =====
+// ============================================================
+// YESTERDAY RECAP CARD — self-contained.
+// KILL SWITCH: set this to false to turn the card off entirely.
+var SHOW_YESTERDAY_CARD = true;
+// ============================================================
+async function renderYesterdayCard(){
+  var card = document.getElementById('yesterdayCard');
+  if(!card) return;
+  if(!SHOW_YESTERDAY_CARD || !cl){ card.style.display='none'; return; }
+  try{
+    var yest = new Date(); yest.setDate(yest.getDate()-1);
+    var yStr = isoDateStr(yest);
+    // Pull yesterday's data
+    var foods = await sbSelect('food_logs','client_code=eq.'+cl.code+'&date_str=eq.'+encodeURIComponent(yStr)+'&limit=50') || [];
+    var workouts = await sbSelect('workout_logs','client_code=eq.'+cl.code+'&date_str=eq.'+encodeURIComponent(yStr)+'&limit=20') || [];
+    var stepRows = await sbSelect('step_logs','client_code=eq.'+cl.code+'&date_str=eq.'+encodeURIComponent(yStr)+'&limit=5') || [];
+
+    var cal = foods.reduce(function(s,f){return s+(f.calories||0);},0);
+    var pro = foods.reduce(function(s,f){return s+(f.protein||0);},0);
+    var steps = 0; stepRows.forEach(function(s){ if((s.steps||0)>steps) steps=s.steps; });
+    var trained = workouts.length>0;
+    var nMeals = foods.length;
+
+    // Food quality read
+    var qWhole=0,qRated=0;
+    foods.forEach(function(f){ if(f.rating==='nutrient_dense'||f.rating==='good'||f.rating==='clean'){qWhole++;qRated++;} else if(f.rating==='bad'){qRated++;} });
+    var cleanPct = qRated>0 ? qWhole/qRated : null;
+    var anyData = nMeals>0 || trained || steps>0;
+
+    // Date label
+    document.getElementById('yCardDate').textContent = yest.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+
+    // Stat cells
+    document.getElementById('yCardCal').textContent = nMeals>0 ? Math.round(cal).toLocaleString() : '—';
+    document.getElementById('yCardPro').innerHTML = nMeals>0 ? (Math.round(pro)+'<span style="font-size:12px;color:#999;">g</span>') : '—';
+    document.getElementById('yCardSteps').textContent = steps>0 ? steps.toLocaleString() : '—';
+
+    // Rule-based headline — friendly, honest, never shaming.
+    var head;
+    if(!anyData){
+      head = "Quiet day on the log — today's a fresh start.";
+    } else if(trained && cleanPct!==null && cleanPct>=0.7 && steps>=7000){
+      head = "Solid day — you trained, ate clean, and moved well.";
+    } else if(trained && cleanPct!==null && cleanPct>=0.7){
+      head = "Strong day — trained and kept the food dialed.";
+    } else if(trained){
+      head = "Got your training in. Today, lock in the food too.";
+    } else if(cleanPct!==null && cleanPct>=0.7){
+      head = "Food was dialed. No training logged — easy to pick back up today.";
+    } else if(nMeals>0){
+      head = "You logged your day — that's the habit that matters.";
+    } else {
+      head = "A little movement yesterday. Build on it today.";
+    }
+    document.getElementById('yCardHead').textContent = head;
+
+    // Pills — green for wins, neutral gray for gaps (never red/shaming)
+    var pills = [];
+    if(trained){
+      var wTitle = (workouts[0].title && workouts[0].title.trim()) ? workouts[0].title.trim() : 'Trained';
+      if(wTitle.length>22) wTitle = wTitle.slice(0,22)+'…';
+      pills.push({txt:'💪 '+wTitle, good:true});
+    } else if(anyData){
+      pills.push({txt:'💪 No workout', good:false});
+    }
+    if(cleanPct!==null && cleanPct>=0.8) pills.push({txt:'🥦 Mostly whole foods', good:true});
+    else if(cleanPct!==null && cleanPct>=0.5) pills.push({txt:'🥦 '+Math.round(cleanPct*100)+'% whole', good:true});
+    else if(nMeals>0) pills.push({txt:'🍽️ '+nMeals+' meal'+(nMeals>1?'s':''), good:false});
+    document.getElementById('yCardPills').innerHTML = pills.map(function(p){
+      var c = p.good ? 'color:var(--green);background:rgba(34,199,94,0.10);' : 'color:var(--m2);background:var(--s2);';
+      return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;padding:4px 9px;border-radius:7px;'+c+'">'+p.txt+'</span>';
+    }).join('');
+
+    card.style.display = 'block';
+  }catch(e){
+    console.warn('yesterday card failed', e);
+    card.style.display = 'none'; // fail silent — never block the page
+  }
+}
+
 function refreshDayCard(){
   var tile = document.getElementById('dayCardTile');
   if(!tile) return;
