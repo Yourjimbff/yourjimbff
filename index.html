@@ -1764,8 +1764,8 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v3.29.2';
-var APP_BUILD = "May 30 — Seed weight: added 'show date column' diagnostic + 'undo seed for this client' (removes only seeded rows). To pinpoint the real date column and clean Kelly's test rows.";
+var APP_VERSION = 'v3.30.0';
+var APP_BUILD = "May 30 — Weight fix: seeding + Weight Journey now use logged_at (real column). Back-dated start weights save correctly AND the Journey graph (lbs lost since start) now displays for the first time.";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -2053,7 +2053,7 @@ function refreshTileStates(){
       var _todayIso = isoDateStr(new Date());
       // Sticky local flag set at log time — survives any DB/timezone date edge
       try{ if(localStorage.getItem('yjb_weighed_'+cl.code+'_'+_todayIso)) markTileDone('Weight'); }catch(e){}
-      sbSelect('weight_logs','client_code=eq.'+cl.code+'&order=created_at.desc&limit=1').then(function(rows){
+      sbSelect('weight_logs','client_code=eq.'+cl.code+'&limit=1').then(function(rows){
         if(rows && rows.length > 0){
           var r = rows[0];
           var ts = r.logged_at || r.created_at;
@@ -4332,7 +4332,7 @@ async function generateBriefing(){
     var dataPromises = clientProfiles.map(async function(p){
       try{
         var foods = await sbSelect('food_logs','client_code=eq.'+p.client_code+'&order=logged_at.desc&limit=20');
-        var weights = await sbSelect('weight_logs','client_code=eq.'+p.client_code+'&order=created_at.desc&limit=2');
+        var weights = await sbSelect('weight_logs','client_code=eq.'+p.client_code+'&limit=2');
         var checkins = await sbSelect('energy_checkins','client_code=eq.'+p.client_code+'&order=logged_at.desc&limit=10');
         var workouts = await sbSelect('workout_logs','client_code=eq.'+p.client_code+'&order=logged_at.desc&limit=10');
         return {
@@ -4549,7 +4549,7 @@ async function openClientJimChat(code, name){
     var foods = await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=40') || [];
     var workouts = await sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=12') || [];
     var checkins = await sbSelect('energy_checkins','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=8') || [];
-    var weights = await sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(code)+'&order=created_at.desc&limit=2') || [];
+    var weights = await sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(code)+'&limit=2') || [];
     var steps = await sbSelect('step_logs','client_code=eq.'+encodeURIComponent(code)+'&order=updated_at.desc&limit=6') || [];
 
     // 2-day window for food (so the coach sees the full rolling history, not just 3)
@@ -4935,15 +4935,7 @@ async function runSeedWeight(){
 
   function isoAtNoon(d){ return new Date(d + 'T12:00:00').toISOString(); }
 
-  // First try WITH back-dated created_at
-  var r1 = await seedWeightInsert({ client_code: code, weight: startWt, notes: 'start (seeded)', created_at: isoAtNoon(startDate) });
-
-  // If that specific insert was rejected, retry WITHOUT created_at to isolate whether the date column is the problem
-  var usedFallback = false;
-  if(!r1.ok && /created_at/.test(r1.err||'')){
-    usedFallback = true;
-    r1 = await seedWeightInsert({ client_code: code, weight: startWt, notes: 'start (seeded)' });
-  }
+  var r1 = await seedWeightInsert({ client_code: code, weight: startWt, notes: 'start (seeded)', logged_at: isoAtNoon(startDate) });
 
   if(!r1.ok){
     statusEl.innerHTML = '⚠️ Save failed.<br><span style="color:#c0392b;font-size:11px;word-break:break-word;">' + (r1.err||'unknown') + '</span>';
@@ -4953,8 +4945,7 @@ async function runSeedWeight(){
 
   var r2 = {ok:true};
   if(curWt && curDate){
-    r2 = await seedWeightInsert({ client_code: code, weight: curWt, notes: '(seeded)', created_at: isoAtNoon(curDate) });
-    if(!r2.ok && /created_at/.test(r2.err||'')){ r2 = await seedWeightInsert({ client_code: code, weight: curWt, notes: '(seeded)' }); }
+    r2 = await seedWeightInsert({ client_code: code, weight: curWt, notes: '(seeded)', logged_at: isoAtNoon(curDate) });
   }
 
   if(r2.ok){
@@ -4964,8 +4955,7 @@ async function runSeedWeight(){
       var lost = Math.round((startWt - curWt) * 10) / 10;
       msg += (lost > 0 ? ' \u2192 now ' + curWt + ' lbs (\u2193 ' + lost + ' lbs)' : ' \u2192 now ' + curWt + ' lbs');
     }
-    if(usedFallback) msg += '<br><span style="color:#b8860b;font-size:11px;">Note: dates couldn\'t be saved \u2014 logged with today\'s date instead. Tell Claude.</span>';
-    statusEl.innerHTML = msg + (usedFallback ? '' : '. Their Weight Journey will show it on login.');
+    statusEl.innerHTML = msg + '. Their Weight Journey will show it on login.';
     document.getElementById('seedStartWt').value = '';
     document.getElementById('seedCurrentWt').value = '';
     document.getElementById('seedClientSelect').value = '';
@@ -7356,7 +7346,8 @@ async function renderWeightJourney(){
 
   try{
     // Pull all weight logs sorted ascending by created_at (or fall back to id)
-    var weights = await sbSelect('weight_logs','client_code=eq.'+cl.code+'&order=created_at.asc&limit=500');
+    var weights = await sbSelect('weight_logs','client_code=eq.'+cl.code+'&limit=500');
+    weights = (weights||[]).slice().sort(function(a,b){ return new Date(a.logged_at) - new Date(b.logged_at); });
     if(!weights || weights.length < 2){
       box.style.display = 'none';
       return;
@@ -7385,8 +7376,8 @@ async function renderWeightJourney(){
       try{ var dt = new Date(d); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric'}); }
       catch(e){ return ''; }
     }
-    document.getElementById('journeyStart').textContent = startWt+' lbs · '+fmtShort(first.created_at);
-    document.getElementById('journeyEnd').textContent = endWt+' lbs · '+fmtShort(last.created_at);
+    document.getElementById('journeyStart').textContent = startWt+' lbs · '+fmtShort(first.logged_at);
+    document.getElementById('journeyEnd').textContent = endWt+' lbs · '+fmtShort(last.logged_at);
 
     // Build SVG sparkline
     var w = 280, h = 70, pad = 6;
@@ -7548,7 +7539,8 @@ async function renderWeightTrend(){
   var emptyEl = document.getElementById('trendEmpty');
   var graphArea = document.getElementById('trendGraphArea');
 
-  var rows = await sbSelect('weight_logs','client_code=eq.'+cl.code+'&order=created_at.asc&limit=500');
+  var rows = await sbSelect('weight_logs','client_code=eq.'+cl.code+'&limit=500');
+  rows = (rows||[]).slice().sort(function(a,b){ return new Date(a.logged_at) - new Date(b.logged_at); });
   if(!rows || rows.length < 2){
     graphArea.style.display = 'none';
     emptyEl.style.display = 'block';
@@ -8705,7 +8697,7 @@ async function buildTrainerRosterContext(){
     var allWorkouts = await sbSelect('workout_logs','order=logged_at.desc&limit=200');
     var allCheckins = await sbSelect('energy_checkins','order=logged_at.desc&limit=200');
     var allSteps = await sbSelect('step_logs','order=updated_at.desc&limit=200');
-    var allWeights = await sbSelect('weight_logs','order=created_at.desc&limit=200');
+    var allWeights = await sbSelect('weight_logs','limit=200');
 
     // Group by client
     var byClient = {};
