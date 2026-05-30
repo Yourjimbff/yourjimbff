@@ -111,7 +111,7 @@ body{background:#f0f0f0;color:var(--text);font-family:'Plus Jakarta Sans',sans-s
 .dayrow{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
 .daylbl{font-size:11px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;font-weight:600;}
 .spill{background:linear-gradient(135deg,#ff6b00,#ff9500);color:#fff;font-size:11px;font-weight:700;padding:4px 12px;border-radius:10px;}
-.tile{background:var(--surface);border-radius:var(--r);margin-bottom:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.07);border:2px solid transparent;transition:border-color 0.2s;}
+.tile{background:var(--surface);border-radius:var(--r);margin-bottom:12px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.07);border:2px solid transparent;transition:border-color 0.2s;}
 .tile.done{border-color:var(--gold);}
 .tile.ot{border-color:var(--gold);}
 .thead{padding:14px 16px;display:flex;align-items:center;gap:12px;cursor:pointer;}
@@ -1674,8 +1674,8 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v3.22.0';
-var APP_BUILD = "May 30 — Your Day card hidden by default (truly invisible until earned); renamed check-in banner to Log an update";
+var APP_VERSION = 'v3.23.0';
+var APP_BUILD = "May 30 — Jim can now log steps from chat (tell it your total); Jim title Log something; fixed 1 day grammar; tighter tile spacing";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -4890,7 +4890,7 @@ function updStats(){
   document.getElementById('sscal').textContent=tots.cal>0?Math.round(tots.cal):'—';
   var streak=todayFood.length>0?1:0;
   document.getElementById('ssstr').textContent='🔥'+streak;
-  document.getElementById('streakPill').textContent='🔥 '+streak+' days';
+  document.getElementById('streakPill').textContent='🔥 '+streak+' day'+(streak===1?'':'s');
   if(lastWeight) document.getElementById('sswt').textContent=lastWeight+'lbs';
 }
 
@@ -7903,9 +7903,10 @@ function buildEmpty(){
   var capBlock = '<div style="margin-top:20px;text-align:left;max-width:300px;margin-left:auto;margin-right:auto;display:flex;flex-direction:column;gap:11px;">'
     + '<div style="display:flex;align-items:flex-start;gap:11px;"><div style="font-size:18px;line-height:1.2;flex-shrink:0;">🍽️</div><div style="font-size:13.5px;color:var(--text);line-height:1.4;"><b>Tell me what you ate</b> \u2014 I\u2019ll take notes and log it.</div></div>'
     + '<div style="display:flex;align-items:flex-start;gap:11px;"><div style="font-size:18px;line-height:1.2;flex-shrink:0;">🏋️</div><div style="font-size:13.5px;color:var(--text);line-height:1.4;"><b>Tell me about your workout</b> \u2014 I\u2019ll log it for you.</div></div>'
+    + '<div style="display:flex;align-items:flex-start;gap:11px;"><div style="font-size:18px;line-height:1.2;flex-shrink:0;">👟</div><div style="font-size:13.5px;color:var(--text);line-height:1.4;"><b>Tell me your steps</b> \u2014 just the total, I\u2019ll save it.</div></div>'
     + '</div>';
 
-  d.innerHTML='<div class="chat-empty-ic">📋</div><div class="chat-empty-title">Recap your day</div><div style="font-size:14px;color:var(--m2);max-width:300px;margin:0 auto;">'+escapeHtml(ctx)+'</div>'+capBlock+'<div style="margin-top:16px;font-size:12px;color:var(--muted);">Talk or type \u2014 whatever\u2019s easiest.</div>';
+  d.innerHTML='<div class="chat-empty-ic">📋</div><div class="chat-empty-title">Log something</div><div style="font-size:14px;color:var(--m2);max-width:300px;margin:0 auto;">'+escapeHtml(ctx)+'</div>'+capBlock+'<div style="margin-top:16px;font-size:12px;color:var(--muted);">Talk or type \u2014 whatever\u2019s easiest.</div>';
   return d;
 }
 
@@ -8429,6 +8430,10 @@ function buildCoachVoice(){
     '[WORKOUT_PHOTO]{"id":123}[/WORKOUT_PHOTO]   (id = today\'s workout id, when one exists)\n'+
     'or, when no workout is logged yet and they describe one: emit a [WORKOUT_LOG] as usual AND note the photo should attach — say "Added that to today\'s session" in one short line.\n'+
     'When unsure if a photo is food or gym, look at what they SAID with it. If they say nothing and it is ambiguous, ask one short question: "Is this a meal or your training today?"\n\n'+
+
+    'STEPS LOGGING — when the user tells you a step count for today ("I hit 12k steps", "got 8,432 steps", "walked 10000 today"), log it silently and confirm in ONE short line. Treat the number as their TOTAL for the day (not an addition). Emit on its own line:\n'+
+    '[STEPS_LOG]{"steps":12000}[/STEPS_LOG]\n'+
+    'Rules: steps is an integer (strip commas). Only emit when they give an actual number. If they just say "I walked a lot" with no number, ask "Nice — roughly how many steps?" instead of guessing. Never emit a step count they did not give.\n\n'+
 
     'FOOD LOGGING — LOG SILENTLY, SAY ALMOST NOTHING:\n'+
     'When the user tells you they ATE something (or sends a photo of a meal they just ate / are eating), log it. The description is consent — never ask "want me to log this?"\n'+
@@ -9040,6 +9045,23 @@ async function sendChatMessage(){
     var foodEdits = extractAllMarkers(reply, 'FOOD_EDIT'); reply = foodEdits.cleanText;
     var foodDeletes = extractAllMarkers(reply, 'FOOD_DELETE'); reply = foodDeletes.cleanText;
     var workoutPhotos = extractAllMarkers(reply, 'WORKOUT_PHOTO'); reply = workoutPhotos.cleanText;
+    var stepsLogs = extractAllMarkers(reply, 'STEPS_LOG'); reply = stepsLogs.cleanText;
+
+    // Handle STEPS_LOG: client told Jim their step total — save it (upsert per day, same as the tile).
+    if(stepsLogs.items.length){
+      var stepVal = parseInt(stepsLogs.items[stepsLogs.items.length-1].steps, 10);
+      if(!isNaN(stepVal) && stepVal>=0){
+        try{
+          var sOk = await sbUpsert('step_logs', {client_code:cl.code, steps:stepVal, date_str:todayDateStr, updated_at:new Date().toISOString()}, 'client_code,date_str');
+          if(sOk){
+            if(typeof updSteps==='function') updSteps(stepVal);
+            var _se=document.getElementById('stepsExact'); if(_se) _se.value=stepVal;
+            if(typeof markTileDone==='function') markTileDone('Steps');
+            showToast('👟 '+stepVal.toLocaleString()+' steps logged');
+          }
+        }catch(e){ console.error('steps log from chat failed', e); }
+      }
+    }
 
     // Handle WORKOUT_LOG: log a fresh workout. Use Jim's commentary (the visible reply) as the notes.
     if(extractedLog.log){
