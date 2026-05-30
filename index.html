@@ -522,6 +522,9 @@ textarea.ifield{min-height:78px;}
       </div>
     </div>
 
+    <!-- MORNING CARDS — Your Yesterday + Yusuf's Day (the morning open) -->
+    <div id="morningStrip"></div>
+
     <!-- TODAY'S WORKOUT CARD (visible when client has assigned program) -->
     <div id="todayWorkoutCard" style="display:none;background:var(--surface);border:2px solid rgba(245,197,24,0.55);border-radius:var(--r);padding:14px 16px;margin-bottom:10px;cursor:pointer;position:relative;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.07);" onclick="onWorkoutTileClick()">
       <div style="display:flex;align-items:center;gap:12px;">
@@ -1648,8 +1651,8 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v3.00.0';
-var APP_BUILD = "May 29 — Cohesive black/gold (no green); workouts log as bullets; Add Food; equal photo grid in day card; unified sharing";
+var APP_VERSION = 'v3.01.0';
+var APP_BUILD = "May 29 — Morning open: Your Yesterday card (your own day, replayed) + From Yusuf card (coach's real logged day) at top of Today";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -1708,7 +1711,7 @@ function openJimFromInvite(){
   }, 80);
 }
 
-var WHATSNEW_VERSION = '2026-05-29';
+var WHATSNEW_VERSION = '2026-05-29b';
 function toggleWhatsNew(){
   var body = document.getElementById('whatsNewBody');
   var chev = document.getElementById('whatsNewChevron');
@@ -1915,6 +1918,7 @@ async function launchApp(){
   loadTodayWorkouts();
   loadTodaySteps();
   loadTodaySleep();
+  renderMorningCards();
   // Template program system
   loadTrainerPrograms();
   loadClientAssignedProgram();
@@ -5545,6 +5549,148 @@ function rendTodayFood(){
 }
 
 // Share a single meal as a clean card — photo, stats, rating, and a fun tidbit.
+// ===== MORNING CARDS — Your Yesterday + Yusuf's Day (the morning open) =====
+var COACH_CODE = 'yusuf1';
+var COACH_NAME = 'Yusuf';
+
+function _dayStrOffset(offset){
+  var d = coachNow();
+  d.setDate(d.getDate() + offset);
+  return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+}
+function _prettyDay(dateStr){
+  var d = new Date(dateStr);
+  if(isNaN(d.getTime())) return dateStr;
+  return d.toLocaleDateString('en-US',{weekday:'short'}) + ' · ' + d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+}
+function _mcTitle(str){
+  if(!str) return str || '';
+  return String(str).toLowerCase().replace(/\b\w/g, function(c){ return c.toUpperCase(); });
+}
+
+// Pull one day's logs for any client_code + date_str. Self-contained — never touches today globals.
+async function fetchDaySnapshot(code, dateStr){
+  var snap = { foods:[], workouts:[], steps:0, dateStr:dateStr };
+  try{ snap.foods = (await sbSelect('food_logs','client_code=eq.'+code+'&date_str=eq.'+encodeURIComponent(dateStr))) || []; }catch(e){}
+  try{
+    var w = (await sbSelect('workout_logs','client_code=eq.'+code+'&date_str=eq.'+encodeURIComponent(dateStr)+'&limit=20')) || [];
+    snap.workouts = w.map(function(r){ return {desc:r.description, dur:r.duration, feel:r.feel, photo:r.photo||null, title:r.title}; });
+  }catch(e){}
+  try{
+    var s = (await sbSelect('step_logs','client_code=eq.'+code+'&date_str=eq.'+encodeURIComponent(dateStr)+'&limit=1')) || [];
+    if(s.length) snap.steps = s[0].steps || 0;
+  }catch(e){}
+  return snap;
+}
+
+// Find the coach's most recent day that actually has data, then snapshot it.
+async function fetchCoachLatestDay(){
+  var latest = null;
+  function consider(ds){ if(ds && (!latest || new Date(ds).getTime() > new Date(latest).getTime())) latest = ds; }
+  try{ ((await sbSelect('food_logs','client_code=eq.'+COACH_CODE+'&limit=30'))||[]).forEach(function(r){ consider(r.date_str); }); }catch(e){}
+  try{ ((await sbSelect('workout_logs','client_code=eq.'+COACH_CODE+'&limit=30'))||[]).forEach(function(r){ consider(r.date_str); }); }catch(e){}
+  if(!latest) return null;
+  return await fetchDaySnapshot(COACH_CODE, latest);
+}
+
+function _snapPhotos(snap, max){
+  var ph = [];
+  (snap.workouts||[]).forEach(function(w){ if(w.photo) ph.push(w.photo); });
+  (snap.foods||[]).forEach(function(f){ if(f.photo) ph.push(f.photo); });
+  return ph.slice(0, max||3);
+}
+
+// Shared compact body for both cards: photos, stat chips, training bullets, food items.
+function _morningCardInner(snap, opts){
+  opts = opts || {};
+  var cal=0, pro=0;
+  (snap.foods||[]).forEach(function(f){ cal += (+f.calories||0); pro += (+f.protein||0); });
+  var photos = _snapPhotos(snap, opts.maxPhotos||3);
+  var hasFood = snap.foods && snap.foods.length;
+  var hasWo = snap.workouts && snap.workouts.length;
+  var html = '';
+
+  if(photos.length){
+    var cols = photos.length===1 ? '1fr' : (photos.length===2 ? 'repeat(2,1fr)' : 'repeat(3,1fr)');
+    html += '<div style="display:grid;grid-template-columns:'+cols+';gap:3px;border-radius:12px;overflow:hidden;margin-bottom:11px;">'
+      + photos.map(function(src){ return '<div style="aspect-ratio:1/1;overflow:hidden;background:#111;"><img src="'+src+'" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block;"></div>'; }).join('')
+      + '</div>';
+  }
+
+  var chips = [];
+  if(hasFood){ chips.push({n:Math.round(cal), l:'Cal', c:'#fff'}); chips.push({n:Math.round(pro)+'g', l:'Protein', c:'var(--green)'}); }
+  if(snap.steps >= 1000) chips.push({n:snap.steps.toLocaleString(), l:'Steps', c:'var(--gold)'});
+  if(hasWo) chips.push({n:snap.workouts.length, l:snap.workouts.length>1?'Workouts':'Workout', c:'var(--gold)'});
+  if(chips.length){
+    html += '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:'+((hasWo||hasFood)?'12px':'0')+';">'
+      + chips.map(function(s){ return '<div><div style="font-family:\'Bebas Neue\',sans-serif;font-size:23px;line-height:1;color:'+s.c+';">'+s.n+'</div><div style="font-size:8.5px;color:#888;letter-spacing:1px;text-transform:uppercase;margin-top:2px;">'+s.l+'</div></div>'; }).join('')
+      + '</div>';
+  }
+
+  if(hasWo){
+    var lines = (snap.workouts[0].desc||'').split('\n').map(function(s){ return s.replace(/^[•\-\s]+/,'').trim(); }).filter(Boolean).slice(0,4);
+    if(lines.length){
+      html += '<div style="margin-bottom:'+(hasFood?'12px':'0')+';"><div style="font-size:9px;color:var(--gold);font-weight:700;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px;">Training</div>'
+        + lines.map(function(ln){ return '<div style="display:flex;gap:8px;padding:2px 0;font-size:12px;color:#e8e8e8;font-weight:600;"><span style="color:var(--gold);">&#9656;</span><span>'+ln+'</span></div>'; }).join('')
+        + '</div>';
+    }
+  }
+
+  if(hasFood){
+    html += '<div><div style="font-size:9px;color:var(--gold);font-weight:700;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px;">Food</div>'
+      + snap.foods.slice(0,3).map(function(f){
+          return '<div style="display:flex;align-items:center;gap:9px;padding:3px 0;"><span style="font-size:14px;flex-shrink:0;">'+(f.emoji||'🍽️')+'</span><div style="flex:1;min-width:0;"><div style="font-size:12px;font-weight:600;color:#fff;line-height:1.15;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+_mcTitle(f.name)+'</div></div><div style="font-size:10px;color:#888;flex-shrink:0;">'+(f.calories||0)+' cal</div></div>';
+        }).join('')
+      + (snap.foods.length>3 ? '<div style="font-size:10.5px;color:var(--m2);margin-top:5px;">+'+(snap.foods.length-3)+' more</div>' : '')
+      + '</div>';
+  }
+
+  return html;
+}
+
+async function renderMorningCards(){
+  var strip = document.getElementById('morningStrip');
+  if(!strip || !cl) return;
+  strip.innerHTML = '';
+
+  // 1) YOUR YESTERDAY — the mirror. Your own day, replayed. No comparison, pure affirmation.
+  try{
+    var yStr = _dayStrOffset(-1);
+    var ySnap = await fetchDaySnapshot(cl.code, yStr);
+    if(ySnap.foods.length || ySnap.workouts.length || ySnap.steps>=1000){
+      var firstName = (cl.name||'').trim().split(' ')[0];
+      var card = document.createElement('div');
+      card.style.cssText = 'background:linear-gradient(155deg,#141414,#000);border:1.5px solid rgba(245,197,24,0.30);border-radius:18px;padding:15px 16px;margin-bottom:10px;box-shadow:0 3px 14px rgba(0,0,0,0.22);';
+      card.innerHTML = '<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:11px;">'
+        + '<div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--gold);font-weight:700;">Yesterday</div>'
+        + '<div style="font-size:10px;color:var(--m2);letter-spacing:0.5px;">'+_prettyDay(yStr)+'</div></div>'
+        + '<div style="font-size:15px;font-weight:800;color:#fff;line-height:1.2;margin-bottom:12px;">'+(firstName? firstName+", here's your day 👏" : "Here's your day 👏")+'</div>'
+        + _morningCardInner(ySnap, {maxPhotos:2});
+      strip.appendChild(card);
+    }
+  }catch(e){ console.error('yesterday card failed', e); }
+
+  // 2) FROM YUSUF — his real, logged day. Intimacy + modeling, never comparison. Hidden from the coach himself.
+  if(cl.code !== COACH_CODE){
+    try{
+      var cSnap = await fetchCoachLatestDay();
+      if(cSnap && (cSnap.foods.length || cSnap.workouts.length || cSnap.steps>=1000)){
+        var whenTxt = cSnap.dateStr===_dayStrOffset(0) ? 'today'
+                    : cSnap.dateStr===_dayStrOffset(-1) ? 'yesterday'
+                    : 'on '+_prettyDay(cSnap.dateStr);
+        var card2 = document.createElement('div');
+        card2.style.cssText = 'background:linear-gradient(155deg,#1c1808,#0a0a0a);border:1.5px solid rgba(245,197,24,0.45);border-radius:18px;padding:15px 16px;margin-bottom:10px;box-shadow:0 3px 16px rgba(0,0,0,0.30);';
+        card2.innerHTML = '<div style="display:flex;align-items:center;gap:11px;margin-bottom:12px;">'
+          + '<div style="width:38px;height:38px;border-radius:50%;background:#0a0a0a;border:2px solid var(--gold);display:flex;align-items:center;justify-content:center;font-family:\'Bebas Neue\',sans-serif;font-size:17px;color:var(--gold);flex-shrink:0;box-shadow:0 2px 8px rgba(245,197,24,0.2);">Y</div>'
+          + '<div style="flex:1;min-width:0;"><div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--gold);font-weight:700;">From '+COACH_NAME+'</div>'
+          + '<div style="font-size:15px;font-weight:800;color:#fff;line-height:1.2;">What I ate &amp; trained '+whenTxt+'</div></div></div>'
+          + _morningCardInner(cSnap, {maxPhotos:3});
+        strip.appendChild(card2);
+      }
+    }catch(e){ console.error('coach card failed', e); }
+  }
+}
+
 // ===== WHAT I DID TODAY — unified day card (always open, builds as you log) =====
 function refreshDayCard(){
   var tile = document.getElementById('dayCardTile');
