@@ -1760,8 +1760,8 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v3.29.0';
-var APP_BUILD = "May 30 — Seed Starting Weight: trainer can set a client's program-start weight (back-dated), so their existing Weight Journey shows lbs-lost from day one. Built for VIP onboarding.";
+var APP_VERSION = 'v3.29.1';
+var APP_BUILD = "May 30 — Seed weight now shows the exact error on failure + auto-retries without the date if that's the blocker, so we can pinpoint the fix.";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -4869,6 +4869,16 @@ function populateSeedClients(){
     entries.map(function(e){ return '<option value="'+e.code+'">'+e.name+'</option>'; }).join('');
 }
 
+async function seedWeightInsert(payload){
+  try{
+    var headers = Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'});
+    var res = await fetch(SB_URL+'/rest/v1/weight_logs', {method:'POST', headers:headers, body:JSON.stringify(payload)});
+    if(res.ok) return {ok:true};
+    var b=''; try{ b = await res.text(); }catch(e){}
+    return {ok:false, err: res.status + ': ' + b};
+  }catch(e){ return {ok:false, err: e.message}; }
+}
+
 async function runSeedWeight(){
   var statusEl = document.getElementById('seedWeightStatus');
   var btn = document.getElementById('seedWeightBtn');
@@ -4886,30 +4896,42 @@ async function runSeedWeight(){
 
   function isoAtNoon(d){ return new Date(d + 'T12:00:00').toISOString(); }
 
-  var ok1 = await sbInsert('weight_logs', {
-    client_code: code, weight: startWt, notes: 'start (seeded)', created_at: isoAtNoon(startDate)
-  });
+  // First try WITH back-dated created_at
+  var r1 = await seedWeightInsert({ client_code: code, weight: startWt, notes: 'start (seeded)', created_at: isoAtNoon(startDate) });
 
-  var ok2 = true;
-  if(curWt && curDate){
-    ok2 = await sbInsert('weight_logs', {
-      client_code: code, weight: curWt, notes: '(seeded)', created_at: isoAtNoon(curDate)
-    });
+  // If that specific insert was rejected, retry WITHOUT created_at to isolate whether the date column is the problem
+  var usedFallback = false;
+  if(!r1.ok && /created_at/.test(r1.err||'')){
+    usedFallback = true;
+    r1 = await seedWeightInsert({ client_code: code, weight: startWt, notes: 'start (seeded)' });
   }
 
-  if(ok1 && ok2){
+  if(!r1.ok){
+    statusEl.innerHTML = '⚠️ Save failed.<br><span style="color:#c0392b;font-size:11px;word-break:break-word;">' + (r1.err||'unknown') + '</span>';
+    btn.disabled = false; btn.style.opacity = '1';
+    return;
+  }
+
+  var r2 = {ok:true};
+  if(curWt && curDate){
+    r2 = await seedWeightInsert({ client_code: code, weight: curWt, notes: '(seeded)', created_at: isoAtNoon(curDate) });
+    if(!r2.ok && /created_at/.test(r2.err||'')){ r2 = await seedWeightInsert({ client_code: code, weight: curWt, notes: '(seeded)' }); }
+  }
+
+  if(r2.ok){
     var name = (CLIENTS[code] && CLIENTS[code].name) || 'Client';
-    var msg = '✅ Seeded ' + name + ': start ' + startWt + ' lbs';
+    var msg = '\u2705 Seeded ' + name + ': start ' + startWt + ' lbs';
     if(curWt && curDate){
       var lost = Math.round((startWt - curWt) * 10) / 10;
-      msg += (lost > 0 ? ' → now ' + curWt + ' lbs (↓ ' + lost + ' lbs)' : ' → now ' + curWt + ' lbs');
+      msg += (lost > 0 ? ' \u2192 now ' + curWt + ' lbs (\u2193 ' + lost + ' lbs)' : ' \u2192 now ' + curWt + ' lbs');
     }
-    statusEl.innerHTML = msg + '. Their Weight Journey will show it on login.';
+    if(usedFallback) msg += '<br><span style="color:#b8860b;font-size:11px;">Note: dates couldn\'t be saved \u2014 logged with today\'s date instead. Tell Claude.</span>';
+    statusEl.innerHTML = msg + (usedFallback ? '' : '. Their Weight Journey will show it on login.');
     document.getElementById('seedStartWt').value = '';
     document.getElementById('seedCurrentWt').value = '';
     document.getElementById('seedClientSelect').value = '';
   } else {
-    statusEl.textContent = '⚠️ Save failed — check connection and try again.';
+    statusEl.innerHTML = '\u26a0\ufe0f Start saved, but current-weight save failed.<br><span style="color:#c0392b;font-size:11px;word-break:break-word;">' + (r2.err||'unknown') + '</span>';
   }
   btn.disabled = false; btn.style.opacity = '1';
 }
