@@ -885,6 +885,23 @@ textarea.ifield{min-height:78px;}
       </div>
     </div>
 
+    <!-- INTAKE IMPORT (trainer only — one-time bulk load of intake forms) -->
+    <div id="intakeImportCard" style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:14px;">
+      <div onclick="toggleIntakeImport()" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;">
+        <div>
+          <div style="font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:1px;line-height:1;color:var(--gold);">📋 Import Intake Forms</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:3px;">One-time: load your clients' intake answers into their profiles</div>
+        </div>
+        <span id="intakeImportChevron" style="font-size:14px;color:var(--muted);">⌄</span>
+      </div>
+      <div id="intakeImportBody" style="display:none;margin-top:14px;">
+        <div style="font-size:12px;color:var(--m2);line-height:1.5;margin-bottom:10px;">Pick the <b>intake_import_ready.json</b> file. It matches each form to a client by name, fills in their struggle + tags, and <b>skips anyone not in the app yet</b>. Won't overwrite weights or targets.</div>
+        <input type="file" id="intakeImportFile" accept="application/json,.json" style="font-size:12px;margin-bottom:10px;width:100%;color:var(--m2);">
+        <button onclick="runIntakeImport()" id="intakeImportBtn" style="background:var(--gold);border:none;border-radius:10px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;color:#000;width:100%;">Import forms</button>
+        <div id="intakeImportStatus" style="font-size:12px;color:var(--m2);margin-top:10px;min-height:16px;"></div>
+      </div>
+    </div>
+
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
       <div>
         <div style="font-family:'Bebas Neue',sans-serif;font-size:22px;letter-spacing:1px;line-height:1;">Your Clients</div>
@@ -1716,8 +1733,8 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v3.27.0';
-var APP_BUILD = "May 30 — Ask Jim about them rebuilt: sectioned read (Training/Food/Activity) + collapsible full 2-day food list + Jim verdict at the end + play-it-aloud button; accurate last-active";
+var APP_VERSION = 'v3.28.0';
+var APP_BUILD = "May 30 — Intake import: bulk-load intake forms into client profiles (matches by name, skips non-clients, merges without overwriting). Knowledge base step 1 of 3.";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -4741,6 +4758,79 @@ function filterClientCards(q){
     var txt = nameEl ? nameEl.textContent.toLowerCase() : '';
     card.style.display = (!q || txt.indexOf(q)!==-1) ? '' : 'none';
   });
+}
+
+function toggleIntakeImport(){
+  var b = document.getElementById('intakeImportBody');
+  var c = document.getElementById('intakeImportChevron');
+  if(!b) return;
+  var open = b.style.display === 'none';
+  b.style.display = open ? 'block' : 'none';
+  if(c) c.textContent = open ? '⌃' : '⌄';
+}
+
+async function runIntakeImport(){
+  var statusEl = document.getElementById('intakeImportStatus');
+  var fileEl = document.getElementById('intakeImportFile');
+  var btn = document.getElementById('intakeImportBtn');
+  if(!fileEl || !fileEl.files || !fileEl.files[0]){
+    statusEl.textContent = 'Pick your intake_import_ready.json file first.';
+    return;
+  }
+  btn.disabled = true; btn.style.opacity = '0.6';
+  statusEl.textContent = 'Reading file…';
+
+  var records;
+  try{
+    var text = await fileEl.files[0].text();
+    records = JSON.parse(text);
+    if(!Array.isArray(records)) throw new Error('not an array');
+  }catch(e){
+    statusEl.innerHTML = '⚠️ That file isn\'t the right format. Use the <b>intake_import_ready.json</b> file.';
+    btn.disabled = false; btn.style.opacity = '1';
+    return;
+  }
+
+  statusEl.textContent = 'Loading your client roster…';
+  var profs = [];
+  try{
+    var res = await fetch(SB_URL+'/rest/v1/profiles?select=client_code,name&limit=1000', {headers: sbHeaders()});
+    if(res.ok) profs = await res.json();
+  }catch(e){ /* handled below */ }
+
+  if(!profs.length){
+    statusEl.textContent = '⚠️ Couldn\'t load your client roster. Check connection and try again.';
+    btn.disabled = false; btn.style.opacity = '1';
+    return;
+  }
+
+  var byName = {};
+  profs.forEach(function(p){ if(p && p.name) byName[p.name.trim().toLowerCase()] = p.client_code; });
+
+  var matched = 0, skipped = 0, failed = 0;
+  for(var i = 0; i < records.length; i++){
+    var r = records[i] || {};
+    var key = (r.match_name || '').trim().toLowerCase();
+    var code = key ? byName[key] : null;
+    if(!code){ skipped++; continue; }
+    var ok = await sbUpsert('profiles', {
+      client_code: code,
+      main_struggle: r.main_struggle || null,
+      tags: Array.isArray(r.tags) ? r.tags : [],
+      content_consent: !!r.content_consent,
+      signed_waiver: !!r.signed_waiver,
+      intake_date: r.intake_date || null,
+      intake_json: r.intake_json || {}
+    }, 'client_code');
+    if(ok){ matched++; } else { failed++; }
+    statusEl.textContent = 'Filing… ' + matched + ' done';
+  }
+
+  statusEl.innerHTML = '✅ Filed <b>' + matched + '</b> client' + (matched===1?'':'s') +
+    '. Skipped <b>' + skipped + '</b> (not in app yet).' +
+    (failed ? ' ⚠️ <b>' + failed + '</b> failed — check console.' : '');
+  btn.disabled = false; btn.style.opacity = '1';
+  if(typeof loadTrainerDashboard === 'function') loadTrainerDashboard();
 }
 
 async function loadTrainerDashboard(){
