@@ -1725,8 +1725,8 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v3.37.0';
-var APP_BUILD = "May 30 — Import History now handles step data too (upserts per day). Per-client Read shows a Steps progress chart (14-day bars, daily avg, days-over-10k) under the Weight Journey.";
+var APP_VERSION = 'v3.38.0';
+var APP_BUILD = "May 30 — Import History now also handles workout history (one back-dated entry per training day; re-import replaces that day). Lets you backfill a client's training for the consistency picture.";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -4869,8 +4869,9 @@ async function runWeightHistImport(){
   var headers = Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'});
   var weightRows = rows.filter(function(r){ return r && r.client_code && r.weight != null && r.logged_at; });
   var stepRows   = rows.filter(function(r){ return r && r.client_code && r.steps != null && r.date_str; });
+  var woRows     = rows.filter(function(r){ return r && r.client_code && r.date_str && (r.kind==='workout' || ((r.title || r.description) && r.steps==null && r.weight==null)); });
 
-  var doneW = 0, doneS = 0, failed = 0, firstError = '';
+  var doneW = 0, doneS = 0, doneWo = 0, failed = 0, firstError = '';
 
   // ---- WEIGHT rows: self-clean seeded points per client, then bulk insert ----
   if(weightRows.length){
@@ -4903,9 +4904,33 @@ async function runWeightHistImport(){
     }
   }
 
+  // ---- WORKOUT rows: replace per (client_code, date_str) for the imported dates, then insert ----
+  if(woRows.length){
+    var pairs = {}; woRows.forEach(function(r){ pairs[r.client_code+'|||'+r.date_str]=true; });
+    var plist = Object.keys(pairs);
+    statusEl.textContent = 'Clearing old workout days…';
+    for(var p=0;p<plist.length;p++){
+      var pr = plist[p].split('|||');
+      try{ await fetch(SB_URL+'/rest/v1/workout_logs?client_code=eq.'+encodeURIComponent(pr[0])+'&date_str=eq.'+encodeURIComponent(pr[1]), {method:'DELETE', headers: sbHeaders()}); }catch(e){}
+    }
+    for(var k=0;k<woRows.length;k+=40){
+      var wchunk = woRows.slice(k,k+40).map(function(r){ return {
+        client_code:r.client_code, title:(r.title||null), description:(r.description||''),
+        notes:(r.notes||''), intensity:(r.intensity!=null?r.intensity:null), duration:'', feel:'',
+        date_str:r.date_str, logged_at:(r.logged_at||new Date().toISOString())
+      }; });
+      try{
+        var wres = await fetch(SB_URL+'/rest/v1/workout_logs', {method:'POST', headers:headers, body:JSON.stringify(wchunk)});
+        if(wres.ok){ doneWo += wchunk.length; } else { failed += wchunk.length; if(!firstError){ try{ firstError = wres.status+': '+(await wres.text()); }catch(e){ firstError=String(wres.status); } } }
+      }catch(e){ failed += wchunk.length; if(!firstError) firstError = e.message; }
+      statusEl.textContent = 'Loading workouts… ' + doneWo + ' done';
+    }
+  }
+
   var parts = [];
   if(doneW) parts.push('<b>'+doneW+'</b> weigh-in'+(doneW===1?'':'s'));
   if(doneS) parts.push('<b>'+doneS+'</b> step day'+(doneS===1?'':'s'));
+  if(doneWo) parts.push('<b>'+doneWo+'</b> workout'+(doneWo===1?'':'s'));
   var summary = parts.length ? parts.join(' + ') : '<b>0</b> rows';
   statusEl.innerHTML = '\u2705 Loaded ' + summary +
     (failed ? '. \u26a0\ufe0f <b>'+failed+'</b> failed.<br><span style="color:#c0392b;font-size:11px;">'+(firstError||'')+'</span>' : '. (Re-importing replaces — never stacks.)');
