@@ -889,15 +889,15 @@ textarea.ifield{min-height:78px;}
     <div id="weightHistCard" style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:14px;">
       <div onclick="toggleWeightHist()" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;">
         <div>
-          <div style="font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:1px;line-height:1;color:var(--gold);">📈 Import Weight History</div>
-          <div style="font-size:11px;color:var(--muted);margin-top:3px;">One-time: bulk-load past weigh-ins so the Journey shows the full line</div>
+          <div style="font-family:'Bebas Neue',sans-serif;font-size:18px;letter-spacing:1px;line-height:1;color:var(--gold);">📈 Import History</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:3px;">One-time: bulk-load past weigh-ins or step history from Claude</div>
         </div>
         <span id="weightHistChevron" style="font-size:14px;color:var(--muted);">⌄</span>
       </div>
       <div id="weightHistBody" style="display:none;margin-top:14px;">
         <div style="font-size:12px;color:var(--m2);line-height:1.5;margin-bottom:10px;">Paste a client's weight history to Claude — he turns it into a file. Then pick it here and load. Each weigh-in lands as a dot on their Journey.</div>
         <input type="file" id="weightHistFile" accept="application/json,.json" style="font-size:12px;margin-bottom:10px;width:100%;color:var(--m2);">
-        <button onclick="runWeightHistImport()" id="weightHistBtn" style="background:var(--gold);border:none;border-radius:10px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;color:#000;width:100%;">Load weight history</button>
+        <button onclick="runWeightHistImport()" id="weightHistBtn" style="background:var(--gold);border:none;border-radius:10px;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;color:#000;width:100%;">Load history</button>
         <div id="weightHistStatus" style="font-size:12px;color:var(--m2);margin-top:10px;min-height:16px;white-space:pre-wrap;word-break:break-word;"></div>
       </div>
     </div>
@@ -1725,8 +1725,8 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v3.36.0';
-var APP_BUILD = "May 30 — 🐐 Yusuf tab reworked into a journal: soft chronological page (quiet timestamps, hairline dividers, photos, totals tucked into a footnote) instead of a dashboard. Removed Seed Weight + Intake Import cards.";
+var APP_VERSION = 'v3.37.0';
+var APP_BUILD = "May 30 — Import History now handles step data too (upserts per day). Per-client Read shows a Steps progress chart (14-day bars, daily avg, days-over-10k) under the Weight Journey.";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -4472,6 +4472,33 @@ async function buildTrainerJourneyHtml(code){
   }catch(e){ console.error('trainer journey failed', e); return ''; }
 }
 
+async function buildTrainerStepsHtml(code){
+  try{
+    var rows = await sbSelect('step_logs','client_code=eq.'+encodeURIComponent(code)+'&limit=90') || [];
+    rows = rows.filter(function(r){ return r && r.date_str && (Number(r.steps)||0) > 0; })
+               .sort(function(a,b){ return new Date(a.date_str) - new Date(b.date_str); });
+    if(rows.length < 3) return '';
+    var recent = rows.slice(-14);
+    var vals = recent.map(function(r){ return Number(r.steps)||0; });
+    var maxV = Math.max.apply(null, vals.concat([10000]));
+    var avgAll = Math.round(rows.reduce(function(s,r){ return s+(Number(r.steps)||0); },0)/rows.length);
+    var daysHit = rows.filter(function(r){ return (Number(r.steps)||0) >= 10000; }).length;
+    var bars = recent.map(function(r){
+      var v = Number(r.steps)||0;
+      var h = Math.max(4, Math.round((v/maxV)*52));
+      var col = v>=10000 ? '#22c77a' : (v>=7000 ? '#f0a020' : '#e5484d');
+      return '<div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:56px;"><div style="width:72%;height:'+h+'px;background:'+col+';border-radius:3px 3px 0 0;"></div></div>';
+    }).join('');
+    return '<div style="background:var(--s2);border-radius:12px;padding:12px;margin-bottom:12px;">'
+      + '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">'
+      + '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:1px;text-transform:uppercase;">Steps</div>'
+      + '<div style="font-size:13px;font-weight:800;color:var(--text);">'+avgAll.toLocaleString()+' <span style="font-size:10px;color:var(--muted);font-weight:600;">avg/day</span></div></div>'
+      + '<div style="display:flex;gap:2px;align-items:flex-end;">'+bars+'</div>'
+      + '<div style="font-size:10px;color:var(--muted);margin-top:7px;">'+daysHit+' of '+rows.length+' days over 10k \u00b7 last '+recent.length+' shown</div>'
+      + '</div>';
+  }catch(e){ console.error('trainer steps failed', e); return ''; }
+}
+
 async function openClientJimChat(code, name){
   var titleEl = document.getElementById('ccChatTitle');
   var body = document.getElementById('ccChatBody');
@@ -4507,7 +4534,8 @@ async function openClientJimChat(code, name){
 
     if(!allTs.length){
       var emptyJourney = await buildTrainerJourneyHtml(code);
-      if(body) body.innerHTML = emptyJourney + '<div style="text-align:center;padding:28px;color:var(--muted);font-size:13px;line-height:1.6;">'+(name||'This client')+' hasn\u2019t logged daily activity yet.<br>'+(emptyJourney?'Their weight journey is shown above.':'Nothing to read until they start using the app.')+'</div>';
+      var emptySteps = await buildTrainerStepsHtml(code);
+      if(body) body.innerHTML = emptyJourney + emptySteps + '<div style="text-align:center;padding:28px;color:var(--muted);font-size:13px;line-height:1.6;">'+(name||'This client')+' hasn\u2019t logged daily activity yet.<br>'+((emptyJourney||emptySteps)?'Their progress is shown above.':'Nothing to read until they start using the app.')+'</div>';
       return;
     }
 
@@ -4598,7 +4626,8 @@ async function openClientJimChat(code, name){
     // Render structure now, with a placeholder for the verdict (streams in after)
     var lastSeenChip = '<div style="font-size:11px;color:var(--muted);font-weight:600;margin-bottom:4px;">'+lastSeenStr+'</div>';
     var journeyHtml = await buildTrainerJourneyHtml(code);
-    if(body) body.innerHTML = lastSeenChip + journeyHtml + trainHtml + foodHtml + actHtml
+    var stepsHtml = await buildTrainerStepsHtml(code);
+    if(body) body.innerHTML = lastSeenChip + journeyHtml + stepsHtml + trainHtml + foodHtml + actHtml
       + sectionLabel('⚡ Jim\u2019s Verdict')
       + '<div id="clientVerdictBox" style="background:#0a0a0a;border:1px solid rgba(245,197,24,0.3);border-radius:13px;padding:14px;font-size:13.5px;line-height:1.6;color:#fff;">'
       + '<div style="color:rgba(255,255,255,0.5);font-size:12px;">Thinking\u2026</div></div>'
@@ -4823,7 +4852,7 @@ async function runWeightHistImport(){
   var statusEl = document.getElementById('weightHistStatus');
   var fileEl = document.getElementById('weightHistFile');
   var btn = document.getElementById('weightHistBtn');
-  if(!fileEl || !fileEl.files || !fileEl.files[0]){ statusEl.textContent = 'Pick the weight-history file Claude gave you first.'; return; }
+  if(!fileEl || !fileEl.files || !fileEl.files[0]){ statusEl.textContent = 'Pick the history file Claude gave you first.'; return; }
   btn.disabled = true; btn.style.opacity = '0.6';
   statusEl.textContent = 'Reading file…';
 
@@ -4832,45 +4861,56 @@ async function runWeightHistImport(){
     rows = JSON.parse(await fileEl.files[0].text());
     if(!Array.isArray(rows)) throw new Error('not an array');
   }catch(e){
-    statusEl.textContent = '⚠️ That file isn\'t the right format.';
+    statusEl.textContent = '\u26a0\ufe0f That file isn\'t the right format.';
     btn.disabled = false; btn.style.opacity = '1';
     return;
   }
 
   var headers = Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'});
+  var weightRows = rows.filter(function(r){ return r && r.client_code && r.weight != null && r.logged_at; });
+  var stepRows   = rows.filter(function(r){ return r && r.client_code && r.steps != null && r.date_str; });
 
-  // Self-clean: remove any EXISTING seeded points for each client in this file first,
-  // so re-importing replaces instead of stacking. Real client-logged weigh-ins are untouched.
-  var codes = {};
-  rows.forEach(function(r){ if(r && r.client_code) codes[r.client_code] = true; });
-  var codeList = Object.keys(codes);
-  statusEl.textContent = 'Clearing old seeded points…';
-  for(var c = 0; c < codeList.length; c++){
-    try{
-      await fetch(SB_URL+'/rest/v1/weight_logs?client_code=eq.'+encodeURIComponent(codeList[c])+'&notes=ilike.*seeded*',
-        {method:'DELETE', headers: sbHeaders()});
-    }catch(e){ /* non-fatal — continue to insert */ }
+  var doneW = 0, doneS = 0, failed = 0, firstError = '';
+
+  // ---- WEIGHT rows: self-clean seeded points per client, then bulk insert ----
+  if(weightRows.length){
+    var wcodes = {}; weightRows.forEach(function(r){ wcodes[r.client_code]=true; });
+    statusEl.textContent = 'Clearing old seeded weights…';
+    var wlist = Object.keys(wcodes);
+    for(var c=0;c<wlist.length;c++){
+      try{ await fetch(SB_URL+'/rest/v1/weight_logs?client_code=eq.'+encodeURIComponent(wlist[c])+'&notes=ilike.*seeded*', {method:'DELETE', headers: sbHeaders()}); }catch(e){}
+    }
+    for(var i=0;i<weightRows.length;i+=50){
+      var chunk = weightRows.slice(i,i+50).map(function(r){ return { client_code:r.client_code, weight:r.weight, notes:(r.notes||'history (seeded)'), logged_at:r.logged_at }; });
+      try{
+        var res = await fetch(SB_URL+'/rest/v1/weight_logs', {method:'POST', headers:headers, body:JSON.stringify(chunk)});
+        if(res.ok){ doneW += chunk.length; } else { failed += chunk.length; if(!firstError){ try{ firstError = res.status+': '+(await res.text()); }catch(e){ firstError=String(res.status); } } }
+      }catch(e){ failed += chunk.length; if(!firstError) firstError = e.message; }
+      statusEl.textContent = 'Loading weights… ' + doneW + ' done';
+    }
   }
 
-  var done = 0, failed = 0, firstError = '';
-  // batch in chunks of 50 for speed
-  for(var i = 0; i < rows.length; i += 50){
-    var chunk = rows.slice(i, i+50).filter(function(r){ return r && r.client_code && r.weight != null && r.logged_at; })
-      .map(function(r){ return { client_code:r.client_code, weight:r.weight, notes:(r.notes||'history (seeded)'), logged_at:r.logged_at }; });
-    if(!chunk.length) continue;
-    try{
-      var res = await fetch(SB_URL+'/rest/v1/weight_logs', {method:'POST', headers:headers, body:JSON.stringify(chunk)});
-      if(res.ok){ done += chunk.length; }
-      else { failed += chunk.length; if(!firstError){ try{ firstError = res.status+': '+(await res.text()); }catch(e){ firstError=String(res.status); } } }
-    }catch(e){ failed += chunk.length; if(!firstError) firstError = e.message; }
-    statusEl.textContent = 'Loading… ' + done + ' done';
+  // ---- STEP rows: upsert per (client_code, date_str) so re-import overwrites that day ----
+  if(stepRows.length){
+    var supsert = Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'});
+    for(var j=0;j<stepRows.length;j+=50){
+      var schunk = stepRows.slice(j,j+50).map(function(r){ return { client_code:r.client_code, steps:r.steps, date_str:r.date_str, updated_at:(r.updated_at||new Date().toISOString()) }; });
+      try{
+        var sres = await fetch(SB_URL+'/rest/v1/step_logs?on_conflict=client_code,date_str', {method:'POST', headers:supsert, body:JSON.stringify(schunk)});
+        if(sres.ok){ doneS += schunk.length; } else { failed += schunk.length; if(!firstError){ try{ firstError = sres.status+': '+(await sres.text()); }catch(e){ firstError=String(sres.status); } } }
+      }catch(e){ failed += schunk.length; if(!firstError) firstError = e.message; }
+      statusEl.textContent = 'Loading steps… ' + doneS + ' done';
+    }
   }
 
-  statusEl.innerHTML = '✅ Loaded <b>' + done + '</b> weigh-in' + (done===1?'':'s') +
-    (failed ? '. ⚠️ <b>'+failed+'</b> failed.<br><span style="color:#c0392b;font-size:11px;">'+(firstError||'')+'</span>' : '. Their Journey now shows the full line. (Re-importing replaces — never stacks.)');
+  var parts = [];
+  if(doneW) parts.push('<b>'+doneW+'</b> weigh-in'+(doneW===1?'':'s'));
+  if(doneS) parts.push('<b>'+doneS+'</b> step day'+(doneS===1?'':'s'));
+  var summary = parts.length ? parts.join(' + ') : '<b>0</b> rows';
+  statusEl.innerHTML = '\u2705 Loaded ' + summary +
+    (failed ? '. \u26a0\ufe0f <b>'+failed+'</b> failed.<br><span style="color:#c0392b;font-size:11px;">'+(firstError||'')+'</span>' : '. (Re-importing replaces — never stacks.)');
   btn.disabled = false; btn.style.opacity = '1';
 }
-
 async function seedWeightInsert(payload){
   try{
     var headers = Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'});
