@@ -1315,9 +1315,9 @@ textarea.ifield{min-height:78px;}
     <div class="il" style="margin-top:0;">What did you do?</div>
     <button id="woVoiceBtn" onclick="toggleWorkoutVoice()" style="width:100%;background:linear-gradient(135deg,#1a1a1a,#0a0a0a);border:1px solid rgba(245,197,24,0.4);border-radius:11px;padding:12px;font-size:13px;font-weight:700;color:var(--gold);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;margin-bottom:6px;display:flex;align-items:center;justify-content:center;gap:8px;">🎙️ Speak your workout</button>
     <div id="woVoiceStatus" style="display:none;font-size:11px;color:var(--m2);text-align:center;margin-bottom:8px;line-height:1.4;"></div>
-    <div id="woRows" style="display:flex;flex-direction:column;gap:8px;"></div>
-    <button onclick="addWoRow()" style="margin-top:8px;width:100%;background:var(--s2);border:1px dashed var(--border);border-radius:10px;padding:11px;font-size:12.5px;font-weight:700;color:var(--m2);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">+ Add exercise</button>
-    <textarea class="ifield" id="woDesc" style="display:none;"></textarea>
+    <textarea class="ifield" id="woDesc" placeholder="Just tell me what you trained — e.g. &quot;Push day: bench, incline DB press, a few cable flys, pushups to finish. Felt strong.&quot; I'll sort it into your log." style="min-height:104px;line-height:1.5;"></textarea>
+    <button onclick="addWoRow()" style="margin-top:8px;width:100%;background:var(--s2);border:1px dashed var(--border);border-radius:10px;padding:11px;font-size:12.5px;font-weight:700;color:var(--m2);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">+ Add exercises manually (optional)</button>
+    <div id="woRows" style="display:flex;flex-direction:column;gap:8px;margin-top:8px;"></div>
     <div class="il">How long?</div>
     <input class="ifield" id="woDur" type="text" placeholder="e.g. 60 minutes">
     <div class="il">How hard? <span style="color:var(--muted);font-weight:400;">(optional)</span> <span id="woIntLbl" style="float:right;font-size:11px;font-weight:600;color:var(--gold);">Tap to rate</span></div>
@@ -1725,8 +1725,8 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v3.47.0';
-var APP_BUILD = "May 30 — 'Log An Update With Jim' card icon → 💬 (was 🤝).";
+var APP_VERSION = 'v3.48.0';
+var APP_BUILD = "May 30 — Log Workout reworked: a full free-text field (type or voice-dictate how the session went) is now primary; Jim loosely auto-formats it into a clean log on save. Manual exercise rows are optional. Saves a title too.";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -3853,7 +3853,7 @@ function openFreestyleWorkout(){
 
 function resetFreestyleForm(){
   ['woDur','woNotes','woDesc'].forEach(function(id){ var el = document.getElementById(id); if(el) el.value=''; });
-  clearWoRows(); addWoRow('', '', '');
+  clearWoRows();
   window._woLoggedTitle = '';
   var sl = document.getElementById('woIntSlider'); if(sl) sl.value = 0;
   if(typeof updateWoIntensity === 'function') updateWoIntensity(0);
@@ -5764,7 +5764,7 @@ function toggleWorkoutVoice(){
       woListening=true;
       btn.innerHTML='⏹ Stop &amp; fill it in';
       btn.style.background='#ff4455'; btn.style.color='#fff'; btn.style.borderColor='#ff4455';
-      if(status){ status.style.display='block'; status.textContent='Listening… say your exercises, sets, reps, and weights.'; }
+      if(status){ status.style.display='block'; status.textContent='Listening… just talk through your session — what you did, how it felt.'; }
     };
     woRecognition.onresult=function(event){
       var finalText='', interimText='';
@@ -5788,8 +5788,12 @@ function toggleWorkoutVoice(){
       btn.innerHTML='🎙️ Speak your workout';
       btn.style.background='linear-gradient(135deg,#1a1a1a,#0a0a0a)'; btn.style.color='var(--gold)'; btn.style.borderColor='rgba(245,197,24,0.4)';
       var said=woTranscript.trim();
-      if(said.length>3){ parseSpokenWorkout(said); }
-      else if(status){ status.style.display='none'; }
+      if(said.length>1){
+        var dEl=document.getElementById('woDesc');
+        if(dEl){ dEl.value = (dEl.value ? dEl.value.trim()+' ' : '') + said; }
+        if(status){ status.style.display='none'; }
+        showToast('✓ Added — edit if you like, then log');
+      } else if(status){ status.style.display='none'; }
     };
   }
   try{ woRecognition.start(); }catch(e){}
@@ -7363,20 +7367,57 @@ function updateWoIntensity(val){
   document.getElementById('woIntLbl').textContent = woIntensity + '/10';
 }
 
+// Loosely format a typed/dictated workout into a clean log via Jim. Returns {title, desc} or null.
+async function looseFormatWorkout(text){
+  try{
+    var sys='You convert a workout someone describes (typed or spoken) into a loose, clean structured log. Return ONLY valid JSON, no prose, no markdown. Shape: {"title":"short workout name like Push Day, Leg Day, Run, Basketball, or empty string","exercises":[{"name":"Exercise or activity","did":"what they did IF they said it, e.g. 3x8 @155lb or 3 miles — else empty string"}]}. Capture the 80% that matters. Do NOT invent sets, reps, weights, or distances they did not say. Keep names clean and capitalized. Cardio or a sport can be a single entry (e.g. {"name":"Run","did":"3 miles"}). If you truly cannot parse it, return {"title":"","exercises":[]}.';
+    var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:sys+'\n\nWORKOUT:\n'+text+'\n\nReturn the JSON now.'}]})});
+    var data=await res.json();
+    var raw=''; if(data&&data.content){ data.content.forEach(function(b){ if(b.type==='text'&&b.text) raw+=b.text; }); }
+    raw=raw.replace(/```json/gi,'').replace(/```/g,'').trim();
+    var parsed=JSON.parse(raw);
+    if(parsed&&Array.isArray(parsed.exercises)&&parsed.exercises.length){
+      var lines=parsed.exercises.map(function(ex){ var n=(ex&&ex.name||'').trim(); var d=(ex&&ex.did||'').trim(); return n ? (d? (n+' — '+d):n) : ''; }).filter(Boolean);
+      if(lines.length) return {title:(parsed.title||'').trim(), desc:lines.join('\n')};
+    }
+  }catch(e){ console.error('looseFormatWorkout', e); }
+  return null;
+}
+
 async function logWorkout(){
-  var desc = woRowsToText(window._woLoggedTitle || '').trim();
-  if(!desc){ var dEl = document.getElementById('woDesc'); if(dEl) desc = dEl.value.trim(); }
-  if(!desc){showToast('Add at least one exercise');return;}
+  var manualDesc = woRowsToText(window._woLoggedTitle || '').trim();
+  var freeEl = document.getElementById('woDesc');
+  var freeText = freeEl ? freeEl.value.trim() : '';
+  if(!manualDesc && !freeText){ showToast('Tell me what you did'); return; }
+
+  var desc = manualDesc;
+  var woTitle = window._woLoggedTitle || '';
+  var notes = document.getElementById('woNotes').value.trim();
+
+  // Free-text path: let Jim loosely format what they typed/dictated.
+  if(!manualDesc && freeText){
+    var _btn = document.querySelector('#mWorkout .sbtn');
+    var _oldTxt = _btn ? _btn.textContent : '';
+    if(_btn){ _btn.disabled=true; _btn.style.opacity='0.6'; _btn.textContent='Sorting it out…'; }
+    var parsed = await looseFormatWorkout(freeText);
+    if(_btn){ _btn.disabled=false; _btn.style.opacity='1'; _btn.textContent=_oldTxt||'Log Workout ✓'; }
+    if(parsed && parsed.desc){ desc = parsed.desc; if(parsed.title && !woTitle) woTitle = parsed.title; }
+    else { desc = freeText; } // fallback — never lose what they wrote
+  } else if(manualDesc && freeText && !notes){
+    notes = freeText; // keep their words if they also added rows
+  }
+  if(!desc){ showToast('Tell me what you did'); return; }
+
   // Intensity is optional — no friction. Default to a neutral feel if not rated.
   var _hasInt = !!woIntensity;
   var dur=document.getElementById('woDur').value.trim();
-  var notes=document.getElementById('woNotes').value.trim();
 
   // Score: higher intensity = bigger contribution; neutral if not rated.
   var fp = !_hasInt ? 1.3 : woIntensity >= 8 ? 2 : woIntensity >= 6 ? 1.7 : woIntensity >= 4 ? 1.3 : 0.8;
 
   var entry = {
     desc: desc,
+    title: woTitle || '',
     dur: dur,
     intensity: _hasInt ? woIntensity : null,
     notes: notes,
@@ -7390,6 +7431,7 @@ async function logWorkout(){
   (async function(){
     var row = {
       client_code: cl.code,
+      title: woTitle || null,
       description: desc,
       duration: dur,
       intensity: _hasInt ? woIntensity : null,
