@@ -1467,6 +1467,9 @@ textarea.ifield{min-height:78px;}
           <div style="text-align:center;"><div style="font-family:'Bebas Neue',sans-serif;font-size:26px;color:#fff;line-height:1;" id="smFat"></div><div style="font-size:9px;color:#888;letter-spacing:1px;text-transform:uppercase;margin-top:2px;">Fat</div></div>
         </div>
       </div>
+      <div id="smSugarWrap" style="padding:0 22px 14px;display:none;">
+        <div style="font-size:10px;color:#6f6f6f;letter-spacing:0.4px;" id="smSugar"></div>
+      </div>
       <div id="smNoteWrap" style="padding:14px 22px;border-top:1px solid #1f1f1f;display:none;">
         <div style="font-size:10px;font-weight:700;color:#F5C518;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px;" id="smNoteLabel">Note</div>
         <div style="font-size:13px;color:#ddd;line-height:1.6;" id="smNote"></div>
@@ -1728,7 +1731,7 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v3.58.0';
+var APP_VERSION = 'v3.59.0';
 var APP_BUILD = "May 30 — Unified the Today golds: Jim card now uses the same flat surface black + solid gold border as the completed tiles (was a gradient + washed gold). Meal-expand card (tap a meal to open it) is now all-black with gold/white text instead of the white card.";
 
 var cl=null, profile=null;
@@ -5989,7 +5992,13 @@ Swap formula examples: Greek yogurt + berries + oats / eggs + fruit + rice cake 
 Keep responses 1-3 sentences max. Direct, no fluff, no corporate wellness language.`;
     var prompt=hasPhoto&&hasText?'Analyze this meal. Photo AND description: "'+text+'".':hasPhoto?'Analyze this meal photo.':'Analyze this meal: "'+text+'"';
     var contextBlock = dayContext ? '\n\n=== FULL DAY CONTEXT ===\n'+dayContext : '\n\n(No prior context for this client yet.)';
-    content.push({type:'text',text:prompt+contextBlock+'\n\n'+coachVoice+'\n\nReturn ONLY valid JSON:\n{"name":"whole-food name, max 55 chars","emoji":"single emoji","calories":number,"protein":number,"carbs":number,"fat":number,"rating":"nutrient_dense" or "good" or "unknown" or "bad","insight":"1-2 sentence coaching response","is_alcohol":false,"bad_food":false,"heavy_day_flag":false}\n\nRating: clean=whole foods. okay=mostly fine. bad=junk/highly processed/alcohol. Consider full day context.\n\nNAME RULE: Name the meal by its whole foods — the protein/meat + the vegetable + the carb (e.g. \"Chicken, Broccoli & Rice\"; \"Eggs, Potatoes & Peppers\"). Do NOT use brand names or product/menu titles. A single packaged item → name it plainly (\"Protein Bar\", \"Greek Yogurt\"). No protein → just name what it is (\"Banana\", \"Apple & Peanut Butter\").\nReturn ONLY the JSON.'});
+    var photoReadRule = `READING THE PHOTO — READ BEFORE YOU ESTIMATE (this is the most important rule):
+1. First decide what is in the image. If it is food, or anything that hints at food (a plate, a meal-prep container, a wrapper, a label, a menu, or a screen showing a meal), treat it as a meal to log.
+2. SCAN FOR PRINTED NUMBERS FIRST. Meal-prep brands (for example Nutrition Solutions), packaged foods, menus, and apps often print the exact stats — Calories, Protein, Carbs, Fat, Sugar — right on the label or screen. If ANY of those numbers are visible and legible, READ THEM AND USE THEM VERBATIM. Do not estimate over a printed number, do not round it away, do not average it with your own guess. The printed number always wins.
+3. Match the serving the label states (per container vs per serving) and the quantity actually shown — two containers means double it.
+4. ONLY estimate a value when it is genuinely not printed anywhere in the image. When you do estimate, estimate confidently and round.
+5. Capture sugar in grams whenever it is shown or clearly known; if it is not knowable, use 0. Sugar is tracked quietly in the background — never scold or call attention to it.`;
+    content.push({type:'text',text:prompt+contextBlock+'\n\n'+coachVoice+'\n\n'+photoReadRule+'\n\nReturn ONLY valid JSON:\n{"name":"whole-food name, max 55 chars","emoji":"single emoji","calories":number,"protein":number,"carbs":number,"fat":number,"sugar":number,"rating":"nutrient_dense" or "good" or "unknown" or "bad","insight":"1-2 sentence coaching response","is_alcohol":false,"bad_food":false,"heavy_day_flag":false}\n\nRating: clean=whole foods. okay=mostly fine. bad=junk/highly processed/alcohol. Consider full day context.\n\nNAME RULE: Name the meal by its whole foods — the protein/meat + the vegetable + the carb (e.g. \"Chicken, Broccoli & Rice\"; \"Eggs, Potatoes & Peppers\"). Do NOT use brand names or product/menu titles. A single packaged item → name it plainly (\"Protein Bar\", \"Greek Yogurt\"). No protein → just name what it is (\"Banana\", \"Apple & Peanut Butter\").\nReturn ONLY the JSON.'});
     var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:content}]})});
     var data=await res.json();
     var raw=(data.content&&data.content[0]?data.content[0].text||'':'').replace(/```json|```/g,'').trim();
@@ -6074,11 +6083,19 @@ async function insertFoodLog(row, photo){
       return {ok:true, id:id};
     }catch(e){ return {ok:false}; }
   }
-  var withPhoto = Object.assign({}, row);
-  if(photo) withPhoto.photo = photo;
-  var attempt = await tryInsert(withPhoto);
-  if(!attempt.ok && /column.*photo.*does not exist/i.test(attempt.body||'')){
-    attempt = await tryInsert(row); // photo column not added yet — save the meal anyway
+  var payload = Object.assign({}, row);
+  if(photo) payload.photo = photo;
+  var attempt = await tryInsert(payload);
+  // Gracefully drop any column the DB doesn't have yet (e.g. photo or sugar not migrated) and retry,
+  // so a meal always saves even if an optional column is missing.
+  var guard = 0;
+  while(!attempt.ok && guard < 4){
+    var body = attempt.body || '';
+    var mcol = /column\s+"?([a-z_]+)"?[\s\S]*?does not exist/i.exec(body) || /could not find the '([a-z_]+)' column/i.exec(body);
+    if(!mcol || !(mcol[1] in payload)) break;
+    delete payload[mcol[1]];
+    attempt = await tryInsert(payload);
+    guard++;
   }
   return {ok: attempt.ok, id: (attempt.id!=null?attempt.id:null)};
 }
@@ -6176,7 +6193,7 @@ async function commitMeal(r,graced){
   var eatTime=document.getElementById('foodTime').value.trim()||new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
   var entry=Object.assign({},r,{meal:meal,eat_time:eatTime,eatTime:eatTime,graced:graced,photo:photoData,date_str:todayDateStr});
   // Save to Supabase. Photo is downscaled (~900px JPEG) and persisted so it can be re-viewed later.
-  var foodRow={client_code:cl.code,name:r.name,emoji:r.emoji,calories:r.calories,protein:r.protein,carbs:r.carbs,fat:r.fat,rating:r.rating,insight:r.insight,meal:meal,eat_time:eatTime,graced:graced,date_str:todayDateStr};
+  var foodRow={client_code:cl.code,name:r.name,emoji:r.emoji,calories:r.calories,protein:r.protein,carbs:r.carbs,fat:r.fat,sugar:Math.round(r.sugar||0),rating:r.rating,insight:r.insight,meal:meal,eat_time:eatTime,graced:graced,date_str:todayDateStr};
   var _ins=await insertFoodLog(foodRow, photoData);
   if(_ins && _ins.id!=null) entry.id=_ins.id;
   // Track for My Menu (don't await — fire and forget, runs in background)
@@ -6700,6 +6717,7 @@ function shareFollowMeal(idx){
   document.getElementById('smPro').textContent=Math.round(e.protein||0)+'g';
   document.getElementById('smCarb').textContent=Math.round(e.carbs||0)+'g';
   document.getElementById('smFat').textContent=Math.round(e.fat||0)+'g';
+  (function(){var sw=document.getElementById('smSugarWrap'),se=document.getElementById('smSugar');var sg=Math.round(e.sugar||0);if(sw&&se){if(sg>0){se.textContent='Sugar '+sg+'g';sw.style.display='';}else{sw.style.display='none';}}})();
   // Show Yusuf's note (the meal insight) instead of an AI tidbit.
   var noteWrap=document.getElementById('smNoteWrap');
   var noteEl=document.getElementById('smNote');
@@ -6732,6 +6750,7 @@ function shareMeal(i){
   document.getElementById('smPro').textContent=Math.round(e.protein||0)+'g';
   document.getElementById('smCarb').textContent=Math.round(e.carbs||0)+'g';
   document.getElementById('smFat').textContent=Math.round(e.fat||0)+'g';
+  (function(){var sw=document.getElementById('smSugarWrap'),se=document.getElementById('smSugar');var sg=Math.round(e.sugar||0);if(sw&&se){if(sg>0){se.textContent='Sugar '+sg+'g';sw.style.display='';}else{sw.style.display='none';}}})();
   // Tidbit: reuse the meal's insight if present, else fetch a quick fun fact
   var wrap=document.getElementById('smTidbitWrap');
   var tb=document.getElementById('smTidbit');
@@ -9115,10 +9134,12 @@ function buildCoachVoice(){
     '- Each meal SLOT gets its own entry, in chronological order across the day: Breakfast, then Lunch, then Dinner, then Snacks build up separately. But within a single slot/sitting, everything is ONE combined entry.\n'+
     '- Only log SEPARATE entries when the foods were genuinely eaten at different TIMES (a real breakfast vs a real lunch), not when they were eaten together.\n'+
     'Emit the marker on its OWN LINE with nothing else on that line. Exact format:\n'+
-    '[FOOD_LOG]{"name":"Chicken, rice & broccoli","emoji":"🍗","calories":1029,"protein":103,"carbs":54,"fat":25,"rating":"good","insight":"","meal":"Lunch"}[/FOOD_LOG]\n'+
+    '[FOOD_LOG]{"name":"Chicken, rice & broccoli","emoji":"🍗","calories":1029,"protein":103,"carbs":54,"fat":25,"sugar":6,"rating":"good","insight":"","meal":"Lunch"}[/FOOD_LOG]\n'+
     'FIELD RULES:\n'+
     '- name: short meal name in Title Case (capitalize the main words), so it sits cleanly next to other meals. e.g. "Chicken, Rice, Broccoli, Peppers & Onions" — not all-lowercase, not ALL CAPS. emoji: one fitting food emoji.\n'+
-    '- calories/protein/carbs/fat: your best estimate (calories in kcal, macros in grams) for the portion. Estimate confidently and round — do not refuse to estimate.\n'+
+    'PHOTO — READ THE LABEL BEFORE YOU ESTIMATE (most important): When the user sends a photo, first decide if it shows food or hints at food (a plate, a meal-prep container, a wrapper, a menu, a screen showing a meal). Then SCAN FOR PRINTED NUMBERS FIRST. Meal-prep brands (e.g. Nutrition Solutions), packaged foods, menus, and apps print the exact Calories, Protein, Carbs, Fat and Sugar right on the label or screen. If those numbers are visible and legible, READ THEM AND USE THEM VERBATIM — do not estimate over them, do not round them away, do not average them with a guess. The printed number always wins. Match the serving stated and the quantity shown (two containers = double it). ONLY estimate when a value is genuinely not printed anywhere in the image.\n'+
+    '- calories/protein/carbs/fat: read them off the label/screen when printed; otherwise your best estimate (calories in kcal, macros in grams) for the portion. Estimate confidently and round — do not refuse to estimate.\n'+
+    '- sugar: grams of sugar, read off the label when shown, otherwise your best estimate (use 0 if not knowable). Sugar is tracked quietly in the background — capture it, but NEVER scold, flag, or call attention to it in your reply.\n'+
     '- rating: one of "nutrient_dense", "good", "okay", "unknown", "bad". Use Yusuf\'s whole-food lens.\n'+
     '- insight: usually leave as an empty string "". BUT fill it with ONE short, useful sentence when there is genuinely relevant CONTEXT worth noting on the meal card — most importantly POST-WORKOUT timing. Check RECENT WORKOUTS: if they trained earlier today and this meal came after, note it ("Solid post-pull refuel — 103g protein to rebuild after heavy rows."). Other valid reasons: a standout macro, or how it anchors the day. Do NOT fill it with filler, praise, or a lecture — only a real, specific observation. If there is nothing genuine to say, leave it "". This insight shows on the meal card; it is SEPARATE from your chat reply (which stays short regardless — do not paste the insight into your visible message).\n'+
     '- meal: Breakfast / Lunch / Dinner / Snack based on the current time shown above.\n'+
@@ -9339,6 +9360,7 @@ async function logFoodFromChat(offer, photo){
     protein: Math.round(offer.protein||0),
     carbs: Math.round(offer.carbs||0),
     fat: Math.round(offer.fat||0),
+    sugar: Math.round(offer.sugar||0),
     rating: offer.rating || 'unknown',
     insight: offer.insight || ''
   };
@@ -9347,7 +9369,7 @@ async function logFoodFromChat(offer, photo){
   if(photo){
     try{ savedPhoto = await downscaleImage(photo, 900, 0.7); }catch(e){ savedPhoto = photo; }
   }
-  var foodRow = {client_code:cl.code, name:r.name, emoji:r.emoji, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, rating:r.rating, insight:r.insight, meal:meal, eat_time:eatTime, graced:false, date_str:todayDateStr};
+  var foodRow = {client_code:cl.code, name:r.name, emoji:r.emoji, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, sugar:r.sugar, rating:r.rating, insight:r.insight, meal:meal, eat_time:eatTime, graced:false, date_str:todayDateStr};
   var _ins = await insertFoodLog(foodRow, savedPhoto);
   if(!_ins || !_ins.ok) return false;
   // Mirror commitMeal: in-memory entry, totals, food score, UI refresh, tile check
@@ -9384,16 +9406,27 @@ function recomputeTodayFoodTotals(){
 // Edit an existing food log by id (PATCH). Updates in-memory + UI when it's a today entry.
 async function applyFoodEdit(id, fields){
   if(id==null || !fields) return false;
-  var allowed=['name','emoji','calories','protein','carbs','fat','rating','insight','meal','eat_time','date_str','felt'];
+  var allowed=['name','emoji','calories','protein','carbs','fat','sugar','rating','insight','meal','eat_time','date_str','felt'];
   var patch={};
   allowed.forEach(function(k){ if(fields[k]!==undefined && fields[k]!==null && fields[k]!=='') patch[k]=fields[k]; });
-  ['calories','protein','carbs','fat'].forEach(function(k){ if(patch[k]!==undefined) patch[k]=Math.round(Number(patch[k])||0); });
+  ['calories','protein','carbs','fat','sugar'].forEach(function(k){ if(patch[k]!==undefined) patch[k]=Math.round(Number(patch[k])||0); });
   if(Object.keys(patch).length===0) return false;
   try{
     var res=await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id),{
       method:'PATCH', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal','Content-Type':'application/json'}), body:JSON.stringify(patch)
     });
-    if(!res.ok){ console.error('food edit failed', res.status); return false; }
+    if(!res.ok){
+      var eb=''; try{ eb=await res.text(); }catch(e){}
+      // If the sugar column isn't migrated yet, drop it and retry so the rest of the correction still applies.
+      if(patch.sugar!==undefined && (/sugar/i.test(eb) && (/does not exist/i.test(eb)||/could not find/i.test(eb)))){
+        delete patch.sugar;
+        if(Object.keys(patch).length===0) return false;
+        res=await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id),{
+          method:'PATCH', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal','Content-Type':'application/json'}), body:JSON.stringify(patch)
+        });
+      }
+      if(!res.ok){ console.error('food edit failed', res.status); return false; }
+    }
   }catch(e){ console.error('food edit error', e); return false; }
   var te=todayFood.filter(function(x){ return x.id==id; })[0];
   if(te){ Object.keys(patch).forEach(function(k){ te[k]=patch[k]; }); recomputeTodayFoodTotals(); }
