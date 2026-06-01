@@ -527,6 +527,16 @@ textarea.ifield{min-height:78px;}
       <div class="spill" id="streakPill">🔥 0 days</div>
     </div>
 
+    <!-- DAILY ENGINE (trainer-only) -->
+    <div id="dailyEngine" style="display:none;background:#1c1c1c;border:1px solid #2c2c2c;border-radius:18px;padding:16px 16px 18px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+        <div style="font-size:12px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:var(--gold);">Daily Engine</div>
+        <div id="engineCount" style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:15px;color:var(--text);">0<span style="color:var(--muted);font-weight:700;font-size:12px;"> / 15</span></div>
+      </div>
+      <div id="engineSub" style="font-size:11.5px;color:var(--muted);margin-bottom:14px;line-height:1.4;">Tap a client \u2014 right side = good moment, left side = needs attention.</div>
+      <div id="engineBoard" style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px 8px;"></div>
+    </div>
+
     <!-- JIM CHECK-IN CARD (hero) -->
     <div onclick="openJimFromInvite()" id="jimInviteCard" style="position:relative;overflow:hidden;background:linear-gradient(var(--surface),var(--surface)) padding-box,linear-gradient(135deg,rgba(245,197,24,0.9),rgba(245,197,24,0.16)) border-box;border:1px solid transparent;border-radius:22px;padding:26px 22px 22px;margin-bottom:22px;cursor:pointer;box-shadow:0 8px 30px rgba(0,0,0,0.4);">
       <div style="position:absolute;left:50%;bottom:0;transform:translateX(-50%);width:92%;height:130px;background:radial-gradient(ellipse at bottom center,rgba(245,197,24,0.24),rgba(245,168,44,0.06) 52%,transparent 74%);pointer-events:none;animation:jimglow 4.5s ease-in-out infinite;"></div>
@@ -1764,7 +1774,7 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v5.70.0';
+var APP_VERSION = 'v5.71.0';
 var APP_BUILD = "May 30 — Unified the Today golds: Jim card now uses the same flat surface black + solid gold border as the completed tiles (was a gradient + washed gold). Meal-expand card (tap a meal to open it) is now all-black with gold/white text instead of the white card.";
 
 var cl=null, profile=null;
@@ -2032,14 +2042,129 @@ async function launchApp(){
       loadTodayCheckins(),
       loadTodayWorkouts(),
       loadTodaySteps(),
-      loadTodaySleep()
+      loadTodaySleep(),
+      (isTrainer(cl.code) ? loadEngineMoments() : Promise.resolve())
     ]);
   }catch(e){ console.error('today loaders', e); }
   refreshTileStates();
+  renderEngineBoard();
   showLoading(false); // hide only once tiles are populated \u2014 no more staggered pop-in
   // Trainer/program extras can finish in the background (not on the home screen)
   loadTrainerPrograms();
   loadClientAssignedProgram();
+}
+
+// ===== DAILY ENGINE BOARD (trainer-only coaching-moments tracker) =====
+var _engineState = {}; // { code: 'good' | 'attn' }  for today
+function _engineDateKey(){ return todayDateStr; }
+function engineFloor(){ return 15; }
+
+async function loadEngineMoments(){
+  // best-effort load today's moments from Supabase; silent if table absent
+  try{
+    var rows = await sbSelect('engine_moments','coach_code=eq.'+encodeURIComponent(cl.code)+'&date_str=eq.'+encodeURIComponent(_engineDateKey())+'&limit=200');
+    _engineState = {};
+    (rows||[]).forEach(function(r){ if(r.client_code) _engineState[r.client_code]=r.state||'good'; });
+  }catch(e){ /* table may not exist yet; keep in-memory */ }
+}
+
+function renderEngineBoard(){
+  var wrap=document.getElementById('dailyEngine');
+  var board=document.getElementById('engineBoard');
+  if(!wrap||!board) return;
+  if(!isTrainer(cl.code)){ wrap.style.display='none'; return; }
+  wrap.style.display='block';
+  var codes=Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer && !(typeof hiddenSet!=='undefined'&&hiddenSet[k]); });
+  var html='';
+  codes.forEach(function(code){
+    var c=CLIENTS[code]; var st=_engineState[code]||'';
+    var ring = st==='good' ? '#22c77a' : (st==='attn' ? '#e5a14b' : '#3a3a3a');
+    var fill = st==='good' ? '#22c77a' : (st==='attn' ? '#e5a14b' : 'transparent');
+    var txtcol = st? '#000' : '#cfcfcf';
+    // half-fill visual for attn via conic-gradient; full for good
+    var bg = st==='good' ? 'background:'+fill+';' : (st==='attn' ? 'background:linear-gradient(90deg,'+fill+' 0 50%,#1a1a1a 50% 100%);' : 'background:#161616;');
+    html += '<div style="display:flex;flex-direction:column;align-items:center;gap:5px;">'
+      + '<div data-code="'+code+'" class="engine-dot" style="width:52px;height:52px;border-radius:50%;border:2px solid '+ring+';'+bg+'display:flex;align-items:center;justify-content:center;font-family:\'Plus Jakarta Sans\',sans-serif;font-weight:800;font-size:16px;color:'+txtcol+';cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;transition:all .18s ease;">'+(c.initials||code.slice(0,2).toUpperCase())+'</div>'
+      + '<div style="font-size:9.5px;color:var(--muted);max-width:58px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(c.name||code)+'</div>'
+      + '</div>';
+  });
+  board.innerHTML=html;
+  // wire tap zones: right half = good, left half = attn
+  board.querySelectorAll('.engine-dot').forEach(function(dot){
+    dot.addEventListener('click', function(e){
+      var code=this.getAttribute('data-code');
+      var rect=this.getBoundingClientRect();
+      var x=(e.clientX||((e.touches&&e.touches[0])?e.touches[0].clientX:rect.left+rect.width/2))-rect.left;
+      var zone = x >= rect.width/2 ? 'good' : 'attn';
+      openEngineCapture(code, zone);
+    });
+  });
+  updateEngineCount();
+}
+
+function updateEngineCount(){
+  var el=document.getElementById('engineCount'); if(!el) return;
+  var n=Object.keys(_engineState).length;
+  var floor=engineFloor();
+  var col = n>=20 ? 'var(--gold)' : (n>=floor ? 'var(--green)' : 'var(--text)');
+  el.innerHTML='<span style="color:'+col+';">'+n+'</span><span style="color:var(--muted);font-weight:700;font-size:12px;"> / '+floor+'</span>';
+  var sub=document.getElementById('engineSub');
+  if(sub && n>=20){ sub.textContent='\ud83d\udd25 20+ moments \u2014 great day. Cup full.'; }
+  else if(sub && n>=floor){ sub.textContent='\u2705 Floor hit ('+floor+'). Keep stacking toward 20.'; }
+}
+
+function openEngineCapture(code, zone){
+  var c=CLIENTS[code]||{}; 
+  var existing=_engineState[code]||'';
+  var ov=document.getElementById('engineCaptureOverlay');
+  if(!ov){
+    ov=document.createElement('div'); ov.id='engineCaptureOverlay';
+    ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:9999;display:flex;align-items:flex-end;justify-content:center;';
+    ov.onclick=function(e){ if(e.target===ov) ov.style.display='none'; };
+    ov.innerHTML='<div id="engineCaptureInner" style="width:100%;max-width:440px;background:#161616;border:1px solid #2a2a2a;border-radius:22px 22px 0 0;padding:22px 20px 26px;"></div>';
+    document.body.appendChild(ov);
+  }
+  ov.style.display='flex';
+  var zoneLabel = zone==='good' ? 'Good moment' : 'Needs attention';
+  var zoneColor = zone==='good' ? '#22c77a' : '#e5a14b';
+  document.getElementById('engineCaptureInner').innerHTML =
+    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">'
+      + '<div style="width:34px;height:34px;border-radius:50%;background:'+zoneColor+';display:flex;align-items:center;justify-content:center;font-weight:800;color:#000;font-size:13px;">'+(c.initials||'')+'</div>'
+      + '<div><div style="font-weight:800;font-size:17px;color:#fff;">'+(c.name||code)+'</div><div style="font-size:11px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:'+zoneColor+';">'+zoneLabel+'</div></div>'
+    + '</div>'
+    + '<textarea id="engineNoteBox" placeholder="What happened with them? (optional) \u2014 Jim will log it." style="width:100%;box-sizing:border-box;margin-top:14px;background:#0f0f0f;border:1px solid #2e2e2e;border-radius:12px;color:#f4f4f4;font-family:\'Plus Jakarta Sans\',sans-serif;font-size:14px;line-height:1.5;padding:12px;resize:vertical;min-height:80px;"></textarea>'
+    + '<div style="display:flex;gap:10px;margin-top:14px;">'
+      + (existing? '<button onclick="clearEngineMoment(\''+code+'\')" style="flex:0 0 auto;background:#242424;color:#e5746b;border:none;border-radius:11px;font-weight:700;font-size:13px;padding:13px 16px;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Clear</button>' : '')
+      + '<button onclick="saveEngineMoment(\''+code+'\',\''+zone+'\')" style="flex:1;background:'+zoneColor+';color:#000;border:none;border-radius:11px;font-weight:800;font-size:14px;padding:13px;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Capture moment \u2713</button>'
+    + '</div>';
+  setTimeout(function(){ var b=document.getElementById('engineNoteBox'); if(b) b.focus(); }, 120);
+}
+
+async function saveEngineMoment(code, zone){
+  var box=document.getElementById('engineNoteBox');
+  var note=box?box.value.trim():'';
+  _engineState[code]=zone;
+  renderEngineBoard();
+  var ov=document.getElementById('engineCaptureOverlay'); if(ov) ov.style.display='none';
+  // best-effort persist + let Jim log it against the client
+  try{
+    await fetch(SB_URL+'/rest/v1/engine_moments',{
+      method:'POST',
+      headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'}),
+      body: JSON.stringify({coach_code:cl.code, client_code:code, date_str:_engineDateKey(), state:zone, note:note||null, logged_at:new Date().toISOString()})
+    });
+  }catch(e){ /* table may not exist yet; state stays in-memory for today */ }
+}
+
+async function clearEngineMoment(code){
+  delete _engineState[code];
+  renderEngineBoard();
+  var ov=document.getElementById('engineCaptureOverlay'); if(ov) ov.style.display='none';
+  try{
+    await fetch(SB_URL+'/rest/v1/engine_moments?coach_code=eq.'+encodeURIComponent(cl.code)+'&client_code=eq.'+encodeURIComponent(code)+'&date_str=eq.'+encodeURIComponent(_engineDateKey()),{
+      method:'DELETE', headers: Object.assign({}, sbHeaders(), {'Prefer':'return=minimal'})
+    });
+  }catch(e){}
 }
 
 function refreshTileStates(){
