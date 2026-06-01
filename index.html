@@ -531,10 +531,14 @@ textarea.ifield{min-height:78px;}
     <div id="dailyEngine" style="display:none;background:#1c1c1c;border:1px solid #2c2c2c;border-radius:18px;padding:16px 16px 18px;margin-bottom:14px;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
         <div style="font-size:12px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:var(--gold);">Daily Engine</div>
-        <div id="engineCount" style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:15px;color:var(--text);">0<span style="color:var(--muted);font-weight:700;font-size:12px;"> / 15</span></div>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <button id="engineManageBtn" onclick="toggleEngineManage()" style="background:transparent;border:1px solid #333;color:var(--m2);font-size:10.5px;font-weight:700;padding:4px 10px;border-radius:8px;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;">Manage</button>
+          <div id="engineCount" style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:15px;color:var(--text);">0<span style="color:var(--muted);font-weight:700;font-size:12px;"> / 15</span></div>
+        </div>
       </div>
       <div id="engineSub" style="font-size:11.5px;color:var(--muted);margin-bottom:14px;line-height:1.4;">Tap a client \u2014 right side = good moment, left side = needs attention.</div>
       <div id="engineBoard" style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px 8px;"></div>
+      <div id="engineReactivate" data-open="0"></div>
     </div>
 
     <!-- JIM CHECK-IN CARD (hero) -->
@@ -1774,7 +1778,7 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v5.72.0';
+var APP_VERSION = 'v5.74.0';
 var APP_BUILD = "May 30 — Unified the Today golds: Jim card now uses the same flat surface black + solid gold border as the completed tiles (was a gradient + washed gold). Meal-expand card (tap a meal to open it) is now all-black with gold/white text instead of the white card.";
 
 var cl=null, profile=null;
@@ -2056,6 +2060,15 @@ async function launchApp(){
 
 // ===== DAILY ENGINE BOARD (trainer-only coaching-moments tracker) =====
 var _engineState = {}; // { code: 'good' | 'attn' }  for today
+var _engineActiveDefault = {'kellyg1':1,'tony1':1,'ellieh1':1,'leandram1':1,'micaela1':1,'anthonyp1':1,'adisa1':1};
+var _engineActive = null; // { code: true } \u2014 who shows on the daily board
+function _loadEngineActive(){
+  if(_engineActive) return _engineActive;
+  try{ var raw=window.name && window.name.indexOf('ENG_ACTIVE=')===0 ? '' : ''; }catch(e){}
+  // start from default set (persisted to supabase best-effort via engine_active rows)
+  _engineActive = Object.assign({}, _engineActiveDefault);
+  return _engineActive;
+}
 function _engineDateKey(){ return todayDateStr; }
 function engineFloor(){ return 15; }
 
@@ -2068,38 +2081,89 @@ async function loadEngineMoments(){
   }catch(e){ /* table may not exist yet; keep in-memory */ }
 }
 
+var _engineManage = false; // manage mode = show toggles instead of capturing
+function _engineDot(code){
+  var c=CLIENTS[code]||{}; var st=_engineState[code]||'';
+  var ring = st==='good' ? '#22c77a' : (st==='attn' ? '#e5a14b' : '#3a3a3a');
+  var fill = st==='good' ? '#22c77a' : (st==='attn' ? '#e5a14b' : 'transparent');
+  var txtcol = st? '#000' : '#cfcfcf';
+  var bg = st==='good' ? 'background:'+fill+';' : (st==='attn' ? 'background:linear-gradient(90deg,'+fill+' 0 50%,#1a1a1a 50% 100%);' : 'background:#161616;');
+  return '<div style="display:flex;flex-direction:column;align-items:center;gap:5px;position:relative;">'
+    + (_engineManage? '<div data-tog="'+code+'" class="engine-tog" style="position:absolute;top:-6px;right:6px;width:20px;height:20px;border-radius:50%;background:'+(_loadEngineActive()[code]?'#22c77a':'#333')+';color:'+(_loadEngineActive()[code]?'#000':'#999')+';font-size:13px;font-weight:800;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:2;border:1px solid #000;">'+(_loadEngineActive()[code]?'\u2212':'+')+'</div>' : '')
+    + '<div data-code="'+code+'" class="engine-dot" style="width:52px;height:52px;border-radius:50%;border:2px solid '+ring+';'+bg+'display:flex;align-items:center;justify-content:center;font-family:\'Plus Jakarta Sans\',sans-serif;font-weight:800;font-size:16px;color:'+txtcol+';cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;transition:all .18s ease;">'+(c.initials||code.slice(0,2).toUpperCase())+'</div>'
+    + '<div style="font-size:9.5px;color:var(--muted);max-width:58px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(c.name||code)+'</div>'
+    + '</div>';
+}
 function renderEngineBoard(){
   var wrap=document.getElementById('dailyEngine');
   var board=document.getElementById('engineBoard');
   if(!wrap||!board) return;
   if(!isTrainer(cl.code)){ wrap.style.display='none'; return; }
   wrap.style.display='block';
-  var codes=Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer && !(typeof hiddenSet!=='undefined'&&hiddenSet[k]); });
-  var html='';
-  codes.forEach(function(code){
-    var c=CLIENTS[code]; var st=_engineState[code]||'';
-    var ring = st==='good' ? '#22c77a' : (st==='attn' ? '#e5a14b' : '#3a3a3a');
-    var fill = st==='good' ? '#22c77a' : (st==='attn' ? '#e5a14b' : 'transparent');
-    var txtcol = st? '#000' : '#cfcfcf';
-    // half-fill visual for attn via conic-gradient; full for good
-    var bg = st==='good' ? 'background:'+fill+';' : (st==='attn' ? 'background:linear-gradient(90deg,'+fill+' 0 50%,#1a1a1a 50% 100%);' : 'background:#161616;');
-    html += '<div style="display:flex;flex-direction:column;align-items:center;gap:5px;">'
-      + '<div data-code="'+code+'" class="engine-dot" style="width:52px;height:52px;border-radius:50%;border:2px solid '+ring+';'+bg+'display:flex;align-items:center;justify-content:center;font-family:\'Plus Jakarta Sans\',sans-serif;font-weight:800;font-size:16px;color:'+txtcol+';cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;transition:all .18s ease;">'+(c.initials||code.slice(0,2).toUpperCase())+'</div>'
-      + '<div style="font-size:9.5px;color:var(--muted);max-width:58px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(c.name||code)+'</div>'
-      + '</div>';
-  });
+  var active=_loadEngineActive();
+  var all=Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer && !(typeof hiddenSet!=='undefined'&&hiddenSet[k]); });
+  var activeCodes=all.filter(function(k){ return active[k]; });
+  var dormantCodes=all.filter(function(k){ return !active[k]; });
+
+  var html = activeCodes.map(_engineDot).join('') || '<div style="grid-column:1/-1;font-size:12px;color:var(--muted);padding:6px 0;">No active clients yet \u2014 tap Manage to add some.</div>';
   board.innerHTML=html;
-  // wire tap zones: right half = good, left half = attn
-  board.querySelectorAll('.engine-dot').forEach(function(dot){
-    dot.addEventListener('click', function(e){
-      var code=this.getAttribute('data-code');
-      var rect=this.getBoundingClientRect();
-      var x=(e.clientX||((e.touches&&e.touches[0])?e.touches[0].clientX:rect.left+rect.width/2))-rect.left;
-      var zone = x >= rect.width/2 ? 'good' : 'attn';
-      openEngineCapture(code, zone);
-    });
+
+  // reactivate zone
+  var rz=document.getElementById('engineReactivate');
+  if(rz){
+    var open = rz.getAttribute('data-open')==='1';
+    rz.innerHTML = '<div onclick="toggleReactivate()" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:12px 2px 2px;border-top:1px solid #262626;margin-top:14px;">'
+      + '<div style="font-size:11px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);">\u2295 Reactivate \u00b7 '+dormantCodes.length+'</div>'
+      + '<div style="font-size:13px;color:var(--muted);">'+(open?'\u2303':'\u2304')+'</div></div>'
+      + (open? '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px 8px;margin-top:12px;opacity:0.85;">'+dormantCodes.map(_engineDot).join('')+'</div>' : '');
+  }
+
+  // wire
+  board.querySelectorAll('.engine-dot').forEach(_wireEngineDot);
+  if(rz) rz.querySelectorAll('.engine-dot').forEach(_wireEngineDot);
+  document.querySelectorAll('.engine-tog').forEach(function(t){
+    t.addEventListener('click', function(ev){ ev.stopPropagation(); toggleEngineActive(this.getAttribute('data-tog')); });
   });
   updateEngineCount();
+}
+function _wireEngineDot(dot){
+  dot.addEventListener('click', function(e){
+    if(_engineManage) return; // in manage mode the dots aren't capture targets
+    var code=this.getAttribute('data-code');
+    var rect=this.getBoundingClientRect();
+    var x=(e.clientX||((e.touches&&e.touches[0])?e.touches[0].clientX:rect.left+rect.width/2))-rect.left;
+    var zone = x >= rect.width/2 ? 'good' : 'attn';
+    openEngineCapture(code, zone);
+  });
+}
+function toggleReactivate(){
+  var rz=document.getElementById('engineReactivate'); if(!rz) return;
+  rz.setAttribute('data-open', rz.getAttribute('data-open')==='1'?'0':'1');
+  renderEngineBoard();
+}
+function toggleEngineActive(code){
+  var a=_loadEngineActive();
+  if(a[code]) delete a[code]; else a[code]=true;
+  _persistEngineActive();
+  renderEngineBoard();
+}
+function toggleEngineManage(){
+  _engineManage=!_engineManage;
+  var b=document.getElementById('engineManageBtn');
+  if(b) b.textContent=_engineManage?'Done':'Manage';
+  // auto-open reactivate while managing so you can promote people
+  var rz=document.getElementById('engineReactivate'); if(rz && _engineManage) rz.setAttribute('data-open','1');
+  renderEngineBoard();
+}
+function _persistEngineActive(){
+  // best-effort: store active set as a single row per coach (table optional)
+  try{
+    fetch(SB_URL+'/rest/v1/engine_active',{
+      method:'POST',
+      headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'}),
+      body: JSON.stringify({coach_code:cl.code, active_codes:Object.keys(_engineActive)})
+    });
+  }catch(e){}
 }
 
 function updateEngineCount(){
