@@ -1764,7 +1764,7 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v5.62.0';
+var APP_VERSION = 'v5.65.0';
 var APP_BUILD = "May 30 — Unified the Today golds: Jim card now uses the same flat surface black + solid gold border as the completed tiles (was a gradient + washed gold). Meal-expand card (tap a meal to open it) is now all-black with gold/white text instead of the white card.";
 
 var cl=null, profile=null;
@@ -4560,178 +4560,91 @@ async function buildTrainerStepsHtml(code){
 
 async function openClientJimChat(code, name){
   var titleEl = document.getElementById('ccChatTitle');
+  var subEl = document.getElementById('ccChatSub');
   var body = document.getElementById('ccChatBody');
   if(titleEl) titleEl.textContent = (name || 'Client') + ' \u00b7 The Read';
+  if(subEl) subEl.textContent = 'Their week at a glance';
   if(body) body.innerHTML = '<div style="text-align:center;padding:28px;color:var(--muted);font-size:13px;">Reading their logs\u2026</div>';
   openM('mClientChat');
   try{
-    var cutoff48 = new Date(Date.now() - 48*60*60*1000).toISOString();
-    var cutoff72 = new Date(Date.now() - 72*60*60*1000).toISOString();
-    var foods = await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=40') || [];
-    var workouts = await sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=200') || [];
-    var checkins = await sbSelect('energy_checkins','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=8') || [];
-    var weights = await sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(code)+'&limit=2') || [];
-    var steps = await sbSelect('step_logs','client_code=eq.'+encodeURIComponent(code)+'&order=updated_at.desc&limit=6') || [];
+    var foods = await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=120') || [];
+    var workouts = await sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=60') || [];
 
-    // 2-day window for food (so the coach sees the full rolling history, not just 3)
-    var foods2d = foods.filter(function(f){ return f.logged_at >= cutoff48; });
-    var recentWo = workouts.filter(function(w){ return w.logged_at >= cutoff72; });
-    var recentCk = checkins.filter(function(c){ return c.logged_at >= cutoff72; });
+    // ----- group everything by local day -----
+    function dayKey(d){ var x=new Date(d); x.setHours(0,0,0,0); return x.getTime(); }
+    function tOf(r){ return r.logged_at ? new Date(r.logged_at).getTime() : 0; }
 
-    var allTs = [];
-    foods.forEach(function(f){ if(f.logged_at) allTs.push(new Date(f.logged_at).getTime()); });
-    workouts.forEach(function(w){ if(w.logged_at) allTs.push(new Date(w.logged_at).getTime()); });
-    checkins.forEach(function(c){ if(c.logged_at) allTs.push(new Date(c.logged_at).getTime()); });
-    steps.forEach(function(s){ if(s.updated_at) allTs.push(new Date(s.updated_at).getTime()); });
-    var lastSeen = allTs.length ? Math.max.apply(null, allTs) : null;
-    var lastSeenStr = 'No activity on record';
-    if(lastSeen){
-      var mins = Math.floor((Date.now()-lastSeen)/60000);
-      if(mins < 60) lastSeenStr = mins<=1 ? 'Active just now' : 'Active '+mins+'m ago';
-      else { var h=Math.floor(mins/60); lastSeenStr = h < 24 ? 'Last active '+h+'h ago' : 'Last active '+Math.floor(h/24)+'d ago'; }
+    // Build the current week's day list (Mon -> Sun)
+    var now=new Date(); now.setHours(0,0,0,0);
+    var dow=(now.getDay()+6)%7; // 0=Mon
+    var monday=new Date(now); monday.setDate(now.getDate()-dow);
+    var weekDays=[];
+    for(var i=0;i<7;i++){ var d=new Date(monday); d.setDate(monday.getDate()+i); weekDays.push(d); }
+    var DOW=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+
+    // index foods + workouts by dayKey
+    var foodByDay={}, woByDay={};
+    foods.forEach(function(f){ var k=dayKey(tOf(f)); (foodByDay[k]=foodByDay[k]||[]).push(f); });
+    workouts.forEach(function(w){ var k=dayKey(tOf(w)); (woByDay[k]=woByDay[k]||[]).push(w); });
+
+    var rating={nutrient_dense:['Nutrient Dense','#22c77a'],good:['Good','#22c77a'],clean:['Good','#22c77a'],okay:['Okay','#8f8f8f'],unknown:['',''],bad:['Off-plan','#e5746b']};
+    function esc2(t){ return (t||'').replace(/</g,'&lt;'); }
+    function timeStr(r){ return r.logged_at ? new Date(r.logged_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}).toLowerCase().replace(' ','') : ''; }
+
+    var html='';
+    // iterate week most-recent day first (Sun..Mon) but label by name; skip empty days
+    for(var di=weekDays.length-1; di>=0; di--){
+      var d=weekDays[di]; var k=dayKey(d);
+      var df=(foodByDay[k]||[]).slice().sort(function(a,b){return tOf(a)-tOf(b);}); // chronological
+      var dw=(woByDay[k]||[]).slice().sort(function(a,b){return tOf(a)-tOf(b);});
+      if(df.length===0 && dw.length===0) continue;
+
+      var isToday = k===now.getTime();
+      html += '<div style="margin-bottom:22px;">';
+      html += '<div style="font-size:12px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:var(--gold);margin-bottom:11px;">'+(isToday?'Today':DOW[di])+'</div>';
+
+      // workouts first (bullet list) if any
+      if(dw.length){
+        dw.forEach(function(w){
+          var title=w.title||'Workout';
+          var det=w.description||'';
+          var lines=[];
+          if(w.exercises && w.exercises.length){ lines=w.exercises.map(function(ex){ return (ex.name||'')+(ex.detail?(' \u2014 '+ex.detail):''); }); }
+          else if(det){ lines=det.split('\n').map(function(x){return x.replace(/^[\u2022\-\s]+/,'').trim();}).filter(Boolean); }
+          html += '<div style="background:#1d1d1d;border:1px solid #2c2c2c;border-radius:13px;padding:13px 15px;margin-bottom:8px;">'
+            + '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:'+(lines.length?'8px':'0')+';">'
+              + '<div style="font-weight:700;font-size:14px;color:var(--text);">\ud83c\udfcb\ufe0f '+esc2(title)+'</div>'
+              + (w.intensity?'<div style="font-size:11px;color:'+(w.intensity>=9?'#F5C518':'var(--muted)')+';font-weight:700;flex-shrink:0;">'+w.intensity+'/10</div>':'')
+            + '</div>'
+            + (lines.length?'<div style="font-size:12.5px;color:var(--m2);line-height:1.7;">'+lines.map(function(l){return '\u2022 '+esc2(l);}).join('<br>')+'</div>':'')
+            + '</div>';
+        });
+      }
+
+      // meals (chronological)
+      if(df.length){
+        var _read=encodeURIComponent(JSON.stringify(df.map(function(f){return {id:f.id,name:f.name,emoji:f.emoji,calories:f.calories,protein:f.protein,carbs:f.carbs,fat:f.fat,rating:f.rating,eat_time:f.eat_time,photo:f.photo||null,coach_comment:f.coach_comment||'',client_code:code,_t:tOf(f)};})));
+        df.forEach(function(f,fi){
+          var rt=rating[f.rating]||['',''];
+          html += '<div style="display:flex;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid #1f1f1f;">'
+            + '<div onclick="event.stopPropagation();openClientMealSwipe(\''+_read+'\','+fi+')" style="width:40px;height:40px;border-radius:9px;background:#1a1a1a;border:1px solid #333;display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0;cursor:pointer;overflow:hidden;">'+(f.photo?'<img src="'+f.photo+'" style="width:100%;height:100%;object-fit:cover;">':(f.emoji||'\ud83c\udf7d\ufe0f'))+'</div>'
+            + '<div style="flex:1;min-width:0;">'
+              + '<div style="font-size:13.5px;color:var(--text);font-weight:600;line-height:1.3;">'+esc2(f.name)+'</div>'
+              + '<div style="font-size:11px;color:var(--muted);margin-top:2px;">'+timeStr(f)+' \u00b7 '+Math.round(f.calories||0)+' cal \u00b7 '+Math.round(f.protein||0)+'g protein</div>'
+            + '</div>'
+            + (rt[0]?'<div style="font-size:9px;font-weight:800;letter-spacing:0.5px;text-transform:uppercase;color:'+rt[1]+';flex-shrink:0;white-space:nowrap;">'+rt[0]+'</div>':'')
+            + '</div>';
+        });
+      }
+      html += '</div>';
     }
 
-    if(!allTs.length){
-      var emptyJourney = await buildTrainerJourneyHtml(code);
-      var emptySteps = await buildTrainerStepsHtml(code);
-      if(body) body.innerHTML = emptyJourney + emptySteps + '<div style="text-align:center;padding:28px;color:var(--muted);font-size:13px;line-height:1.6;">'+(name||'This client')+' hasn\u2019t logged daily activity yet.<br>'+((emptyJourney||emptySteps)?'Their progress is shown above.':'Nothing to read until they start using the app.')+'</div>';
-      return;
-    }
+    if(!html){ html='<div style="text-align:center;padding:28px;color:var(--muted);font-size:13px;line-height:1.6;">'+(name||'This client')+' hasn\u2019t logged anything this week yet.</div>'; }
 
-    // ---- Numbers ----
-    var cal = foods2d.reduce(function(s,f){return s+(f.calories||0);},0);
-    var pro = foods2d.reduce(function(s,f){return s+(f.protein||0);},0);
-    var carb = foods2d.reduce(function(s,f){return s+(f.carbs||0);},0);
-    var fat = foods2d.reduce(function(s,f){return s+(f.fat||0);},0);
-    var nd = foods2d.filter(function(f){return f.rating==='nutrient_dense';}).length;
-    var good = foods2d.filter(function(f){return f.rating==='good'||f.rating==='clean';}).length;
-    var bad = foods2d.filter(function(f){return f.rating==='bad';}).length;
-    var latestSteps = steps.length ? (steps[0].steps||0) : 0;
-
-    // ---- Build the data snapshot for Jim's verdict ----
-    var L = [];
-    L.push('CLIENT: '+(name||code));
-    L.push(lastSeenStr);
-    if(foods2d.length){
-      L.push('FOOD (48h): '+foods2d.length+' meals, ~'+cal+' cal, '+pro+'g protein, '+carb+'g carbs, '+fat+'g fat. Quality: '+nd+' nutrient-dense, '+good+' good, '+bad+' off-plan.');
-      foods2d.slice(0,12).forEach(function(f){ L.push('  - '+(f.meal||'meal')+': '+(f.name||'?')+' ('+(f.calories||0)+'cal '+(f.protein||0)+'gP, '+(f.rating||'?')+')'); });
-    } else { L.push('FOOD (48h): nothing logged'); }
-    if(recentWo.length){
-      L.push('WORKOUTS (72h): '+recentWo.length);
-      recentWo.forEach(function(w){ L.push('  - '+(w.title?w.title+': ':'')+(w.description||'?').substring(0,80)+(w.intensity?' | '+w.intensity+'/10':'')+(w.feel?' ('+w.feel+')':'')); });
-    } else { L.push('WORKOUTS (72h): none logged'); }
-    L.push('STEPS: '+(latestSteps?latestSteps.toLocaleString()+' most recent day':'none logged'));
-    if(weights.length>=2){ var chg=(weights[0].weight-weights[1].weight).toFixed(1); L.push('WEIGHT: '+weights[0].weight+'lbs ('+(chg>0?'+':'')+chg+')'); }
-    else if(weights.length===1){ L.push('WEIGHT: '+weights[0].weight+'lbs'); }
-    else { L.push('WEIGHT: none logged'); }
-    if(recentCk.length){ var lc=recentCk[0]; L.push('CHECK-IN: energy='+(lc.energy||'?')+(lc.mood?', mood='+lc.mood:'')+(lc.note?', note="'+lc.note.substring(0,80)+'"':'')); }
-    else { L.push('CHECK-IN: none'); }
-
-    var sys = 'You are JIM, giving Yusuf (the coach) a VERDICT on one client. The structured data is already shown above your verdict, so do NOT re-list numbers. Give a 2-3 sentence bottom-line read: are they on track, what stands out, and ONE specific action Yusuf should take. Direct coach-to-coach voice, no markdown, no headers, no emojis, no bullet points. If data is thin, say so plainly.\n\n=== DATA ===\n'+L.join('\n')+'\n\nWrite the verdict. Start directly.';
-
-    // ---- Helpers ----
-    var esc=function(s){return (s||'').replace(/</g,'&lt;');};
-    var sectionLabel=function(t){return '<div style="font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:var(--gold);margin:16px 0 8px;">'+t+'</div>';};
-
-    // ---- TRAINING section ----
-    var trainHtml = sectionLabel('🏋️ Training · last 72h');
-    if(recentWo.length){
-      trainHtml += recentWo.map(function(w){
-        var meta = [];
-        if(w.intensity) meta.push(w.intensity+'/10');
-        if(w.feel) meta.push(w.feel);
-        var when = w.logged_at ? new Date(w.logged_at).toLocaleDateString('en-US',{weekday:'short'}) : '';
-        return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:10px 12px;margin-bottom:6px;">'
-          + '<div style="display:flex;justify-content:space-between;gap:8px;"><div style="font-size:13px;font-weight:700;color:var(--text);">'+esc(w.title||'Workout')+'</div><div style="font-size:11px;color:var(--muted);flex-shrink:0;">'+when+(meta.length?' · '+meta.join(' · '):'')+'</div></div>'
-          + (w.description?'<div style="font-size:12px;color:var(--m2);margin-top:3px;line-height:1.4;">'+esc(w.description).substring(0,160)+'</div>':'')
-          + '</div>';
-      }).join('');
-    } else {
-      trainHtml += '<div style="font-size:12.5px;color:var(--muted);padding:4px 0;">No training logged in 72h.</div>';
-    }
-
-    // ---- FULL TRAINING HISTORY (collapsible, all sessions back to the start) ----
-    var trainHistHtml = '';
-    if(workouts.length){
-      trainHistHtml = sectionLabel('📋 Full training history · '+workouts.length+' session'+(workouts.length===1?'':'s'));
-      trainHistHtml += '<div id="clientTrainList" style="display:none;">';
-      trainHistHtml += workouts.map(function(w){
-        var d = w.logged_at ? new Date(w.logged_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : (w.date_str||'');
-        var meta = w.intensity ? ' <span style="font-size:10.5px;color:var(--muted);font-weight:600;">· '+w.intensity+'/10</span>' : '';
-        return '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);">'
-          + '<div style="width:50px;flex-shrink:0;font-size:11px;font-weight:700;color:var(--muted);padding-top:1px;">'+esc(d)+'</div>'
-          + '<div style="flex:1;min-width:0;">'
-            + '<div style="font-size:12.5px;font-weight:700;color:var(--text);">'+esc(w.title||'Workout')+meta+'</div>'
-            + (w.description?'<div style="font-size:11px;color:var(--m2);margin-top:2px;line-height:1.4;white-space:pre-line;">'+esc(w.description).substring(0,200)+'</div>':'')
-            + (w.notes?'<div style="font-size:10.5px;color:var(--gold);margin-top:2px;">'+esc(w.notes).substring(0,120)+'</div>':'')
-          + '</div></div>';
-      }).join('');
-      trainHistHtml += '</div>';
-      trainHistHtml += '<button id="clientTrainToggle" onclick="toggleClientTrain()" style="width:100%;margin-top:6px;background:transparent;border:1px solid var(--border);border-radius:9px;padding:8px;font-size:12px;font-weight:700;color:var(--m2);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">See all '+workouts.length+' sessions ↓</button>';
-    }
-
-    // ---- FOOD section (collapsible, full 2-day) ----
-    var foodHtml = sectionLabel('🍽️ Food · last 48h');
-    if(foods2d.length){
-      foodHtml += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">'
-        + '<span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;background:var(--s2);color:var(--m2);">'+foods2d.length+' meals</span>'
-        + '<span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;background:rgba(34,199,94,0.1);color:var(--green);">'+pro+'g protein</span>'
-        + '<span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;background:var(--s2);color:var(--m2);">'+cal.toLocaleString()+' cal</span>'
-        + (bad>0?'<span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;background:rgba(255,68,85,0.1);color:#e5484d;">'+bad+' off-plan</span>':'<span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;background:rgba(34,199,94,0.1);color:var(--green);">all on plan</span>')
-        + '</div>';
-      foodHtml += '<div id="clientFoodList" style="display:none;">';
-      foodHtml += foods2d.map(function(f){
-        var d = f.logged_at ? new Date(f.logged_at).toLocaleDateString('en-US',{weekday:'short'}) : '';
-        return '<div style="display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid var(--border);">'
-          + '<div style="width:30px;height:30px;border-radius:7px;background:var(--s2);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;">'+(f.emoji||'🍽️')+'</div>'
-          + '<div style="flex:1;min-width:0;"><div style="font-size:12.5px;font-weight:600;color:var(--text);">'+esc(f.name||'')+'</div>'
-          + '<div style="font-size:10.5px;color:var(--muted);">'+d+' · '+(f.meal||'')+' · '+(f.calories||0)+'cal · '+(f.protein||0)+'gP</div></div>'
-          + '</div>';
-      }).join('');
-      foodHtml += '</div>';
-      foodHtml += '<button id="clientFoodToggle" onclick="toggleClientFood()" style="width:100%;margin-top:6px;background:transparent;border:1px solid var(--border);border-radius:9px;padding:8px;font-size:12px;font-weight:700;color:var(--m2);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">See all '+foods2d.length+' meals ↓</button>';
-    } else {
-      foodHtml += '<div style="font-size:12.5px;color:var(--muted);padding:4px 0;">No food logged in 48h.</div>';
-    }
-
-    // ---- ACTIVITY section ----
-    var actHtml = sectionLabel('📊 Activity');
-    actHtml += '<div style="display:flex;gap:8px;">'
-      + '<div style="flex:1;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:9px 4px;"><div style="font-family:\'Plus Jakarta Sans\',sans-serif;font-size:18px;color:var(--text);">'+(latestSteps?latestSteps.toLocaleString():'—')+'</div><div style="font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-top:2px;">Steps</div></div>'
-      + '<div style="flex:1;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:9px 4px;"><div style="font-family:\'Plus Jakarta Sans\',sans-serif;font-size:18px;color:var(--text);">'+(weights.length?weights[0].weight:'—')+'</div><div style="font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-top:2px;">Weight</div></div>'
-      + '<div style="flex:1;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:9px 4px;"><div style="font-family:\'Plus Jakarta Sans\',sans-serif;font-size:18px;color:var(--text);">'+(recentCk.length?(recentCk[0].energy||'—'):'—')+'</div><div style="font-size:8.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-top:2px;">Energy</div></div>'
-      + '</div>';
-
-    // Render structure now, with a placeholder for the verdict (streams in after)
-    var lastSeenChip = '<div style="font-size:11px;color:var(--muted);font-weight:600;margin-bottom:4px;">'+lastSeenStr+'</div>';
-    var journeyHtml = await buildTrainerJourneyHtml(code);
-    var stepsHtml = await buildTrainerStepsHtml(code);
-    if(body) body.innerHTML = lastSeenChip + journeyHtml + stepsHtml + trainHtml + trainHistHtml + foodHtml + actHtml
-      + sectionLabel('⚡ Jim\u2019s Verdict')
-      + '<div id="clientVerdictBox" style="background:#0a0a0a;border:1px solid rgba(245,197,24,0.3);border-radius:13px;padding:14px;font-size:13.5px;line-height:1.6;color:#fff;">'
-      + '<div style="color:rgba(255,255,255,0.5);font-size:12px;">Thinking\u2026</div></div>'
-      + '<button onclick="openClientJimChat(\''+code+'\',\''+(name||'').replace(/\x27/g,"\\x27")+'\')" style="margin-top:10px;width:100%;background:transparent;border:1px solid var(--border);border-radius:10px;padding:9px;font-size:12px;font-weight:700;color:var(--m2);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\u21bb Re-read</button>';
-
-    // Fetch the verdict
-    var res = await fetch('/.netlify/functions/analyze', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({messages:[{role:'user',content:sys}]})
-    });
-    var data = await res.json();
-    var read = '';
-    if(data && data.content){ data.content.forEach(function(b){ if(b.type==='text'&&b.text) read += b.text; }); }
-    read = read.trim() || 'Couldn\u2019t generate a verdict - try again.';
-    window._lastClientRead = read; // for the play button
-    var vbox = document.getElementById('clientVerdictBox');
-    if(vbox){
-      vbox.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">'
-        + '<div style="flex:1;">'+esc(read).replace(/\n/g,'<br>')+'</div>'
-        + '<button onclick="speakClientRead()" title="Play" style="flex-shrink:0;width:34px;height:34px;border-radius:50%;background:var(--gold);border:none;font-size:15px;cursor:pointer;color:#000;">\u25b6</button>'
-        + '</div>';
-    }
+    if(body) body.innerHTML = html;
   }catch(e){
     console.error('client read', e);
-    if(body) body.innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted);font-size:13px;">Couldn\'t generate the read - try again.</div>';
+    if(body) body.innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted);font-size:13px;">Couldn\'t load the read \u2014 try again.</div>';
   }
 }
 
@@ -5299,13 +5212,12 @@ async function loadTrainerDashboard(){
       var scoreCol = foods.length>0?'var(--green)':'var(--muted)';
       var bc={nutrient_dense:'bnd',good:'bc',unknown:'bun',bad:'bb',clean:'bc',okay:'bun'};
       var bt2={nutrient_dense:'🌟 Nutrient Dense',good:'✅ Good',unknown:'❓ Unknown',bad:'🚫 Off-plan',clean:'✅ Good',okay:'❓ Unknown'};
-      var _dayFoods = encodeURIComponent(JSON.stringify(foods.map(function(f){return {id:f.id,name:f.name,emoji:f.emoji,calories:f.calories,protein:f.protein,carbs:f.carbs,fat:f.fat,rating:f.rating,eat_time:f.eat_time,photo:f.photo||null,coach_comment:f.coach_comment||'',client_code:code,_t:(f.logged_at?new Date(f.logged_at).getTime():0)};})));
-      var mealItems = foods.length>0 ? foods.slice(0,3).map(function(f,fi){
+      var _dayFoods = encodeURIComponent(JSON.stringify(foods.slice().sort(function(a,b){var ta=a.logged_at?new Date(a.logged_at).getTime():0,tb=b.logged_at?new Date(b.logged_at).getTime():0;return ta-tb;}).slice(-3).map(function(f){return {id:f.id,name:f.name,emoji:f.emoji,calories:f.calories,protein:f.protein,carbs:f.carbs,fat:f.fat,rating:f.rating,eat_time:f.eat_time,photo:f.photo||null,coach_comment:f.coach_comment||'',client_code:code,_t:(f.logged_at?new Date(f.logged_at).getTime():0)};})));
+      var _foodsChrono = foods.slice().sort(function(a,b){ var ta=a.logged_at?new Date(a.logged_at).getTime():0, tb=b.logged_at?new Date(b.logged_at).getTime():0; return ta-tb; });
+      var mealItems = _foodsChrono.length>0 ? _foodsChrono.slice(-3).map(function(f,fi){
         return '<div class="cc-meal"><div class="cc-meal-em" onclick="event.stopPropagation();openClientMealSwipe(\''+_dayFoods+'\','+fi+')" style="cursor:pointer;">'+(f.emoji||'🍽️')+'</div><div class="cc-meal-info"><div class="cc-meal-name">'+f.name+'</div><div class="cc-meal-mac">'+f.calories+' cal · '+f.protein+'g protein · '+(f.eat_time||'')+'</div></div><div class="cc-meal-badge '+(bc[f.rating]||'bun')+'">'+(bt2[f.rating]||'❓ Unknown')+'</div></div>';
       }).join('') : '<div style="padding:10px 0;font-size:13px;color:var(--muted);">Nothing logged today</div>';
-      var jimChatBtn = '<button class="jimchat-btn" data-c="'+code+'" data-n="'+clientInfo.name.replace(/"/g,'&quot;')+'" style="flex:1;padding:9px;border-radius:9px;background:var(--s2);color:var(--text);font-size:12px;font-weight:700;border:none;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">💬 Ask Jim about them</button>';
-      var noteInner = foods.length>0 ? '<button class="note-btn" data-c="'+code+'" data-n="'+clientInfo.name.replace(/"/g,'&quot;')+'" style="flex:1;padding:9px;border-radius:9px;background:var(--black);color:var(--gold);font-size:12px;font-weight:700;border:none;cursor:pointer;">✍️ Note</button>' : '';
-      var noteBtn = '<div style="display:flex;gap:8px;padding:8px 12px;border-top:1px solid var(--border);">'+jimChatBtn+noteInner+'</div>';
+      var noteBtn = "";
 
       // Last seen badge
       var seen = formatLastSeen(code);
@@ -5363,8 +5275,8 @@ async function loadTrainerDashboard(){
       var _st = clientStatus(code);
       html += '<div class="client-card" style="border-left:4px solid '+_st.color+';">'
         // HEADER: name + username + weight badge only
-        + '<div class="cc-head"><div class="cc-avi" style="position:relative;">'+clientInfo.initials[0]+'<span style="position:absolute;bottom:-1px;right:-1px;width:11px;height:11px;border-radius:50%;background:'+_st.color+';border:2px solid var(--surface);"></span></div>'
-        + '<div class="cc-info"><div class="cc-name">'+(rankMedal?'<span style="margin-right:5px;font-weight:800;color:var(--gold);">'+rankMedal+'</span>':'')+clientInfo.name+' <span style="font-size:10px;font-weight:600;color:var(--muted);font-family:ui-monospace,Menlo,monospace;background:var(--s2);padding:1px 6px;border-radius:5px;vertical-align:1px;">'+code+'</span> '+lostChip+'</div>'+seenLabel+'</div>'
+        + '<div class="cc-head"><div class="cc-avi" onclick="event.stopPropagation();openClientJimChat(\''+code+'\',\''+safeClientName+'\')" style="position:relative;cursor:pointer;">'+clientInfo.initials[0]+'<span style="position:absolute;bottom:-1px;right:-1px;width:11px;height:11px;border-radius:50%;background:'+_st.color+';border:2px solid var(--surface);"></span></div>'
+        + '<div class="cc-info"><div class="cc-name" onclick="event.stopPropagation();openClientJimChat(\''+code+'\',\''+safeClientName+'\')" style="cursor:pointer;">'+(rankMedal?'<span style="margin-right:5px;font-weight:800;color:var(--gold);">'+rankMedal+'</span>':'')+clientInfo.name+' <span style="font-size:10px;font-weight:600;color:var(--muted);font-family:ui-monospace,Menlo,monospace;background:var(--s2);padding:1px 6px;border-radius:5px;vertical-align:1px;">'+code+'</span> '+lostChip+'</div>'+seenLabel+'</div>'
         + '<div style="flex-shrink:0;">'+assignChip+'</div>'
         + '</div>'
         + '<div id="cctoday_'+code+'">'
@@ -6310,7 +6222,7 @@ function openMealCard(data){
   var photo = data.photo ? '<div style="aspect-ratio:1/1;overflow:hidden;background:#0d0d0d;"><img src="'+data.photo+'" style="width:100%;height:100%;object-fit:cover;display:block;"></div>' : '';
   var nm = (typeof _titleCase==='function') ? _titleCase(data.name||'') : (data.name||'');
   var when = data.eat_time ? ('<div style="font-size:10px;color:#777;letter-spacing:1.5px;text-transform:uppercase;margin-top:6px;">'+data.eat_time+'</div>') : '';
-  var sub = data.rating ? ('<div style="font-size:10px;color:#8f8f8f;letter-spacing:2px;text-transform:uppercase;font-weight:700;margin-bottom:6px;">'+(rated[data.rating]||'')+'</div>') : '';
+  var sub = '';
   // Comment section. Coach-edit mode when client_code present; otherwise read-only note for the client.
   var commentBlock='';
   if(!(data.id && data.client_code) && (data.coach_comment||'').trim()){
@@ -6326,7 +6238,7 @@ function openMealCard(data){
     commentBlock =
       '<div style="border-top:1px solid #232323;padding:16px 18px 18px;">'
       + '<div style="font-size:10px;font-weight:800;color:#F5C518;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:9px;">Your Comment</div>'
-      + '<textarea id="mealCommentBox" placeholder="Leave a note on this meal\u2026 your client will see it." style="width:100%;box-sizing:border-box;background:#0f0f0f;border:1px solid #2e2e2e;border-radius:11px;color:#f4f4f4;font-family:\'Plus Jakarta Sans\',sans-serif;font-size:13.5px;line-height:1.5;padding:11px 12px;resize:vertical;min-height:62px;">'+safeC+'</textarea>'
+      + '<textarea id="mealCommentBox" style="width:100%;box-sizing:border-box;background:#0f0f0f;border:1px solid #2e2e2e;border-radius:11px;color:#f4f4f4;font-family:\'Plus Jakarta Sans\',sans-serif;font-size:13.5px;line-height:1.5;padding:11px 12px;resize:vertical;min-height:62px;">'+safeC+'</textarea>'
       + '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;">'
         + '<div id="mealCommentMsg" style="font-size:11px;color:#8f8f8f;">'+(existing?'\u2713 Client can see this':'')+'</div>'
         + '<button onclick="saveCoachComment(\''+data.id+'\',\''+data.client_code+'\')" style="background:#F5C518;color:#000;border:none;border-radius:9px;font-family:\'Plus Jakarta Sans\',sans-serif;font-weight:800;font-size:12.5px;padding:9px 18px;cursor:pointer;letter-spacing:0.3px;">Save</button>'
@@ -6354,9 +6266,11 @@ async function saveCoachComment(foodId, clientCode){
       body: JSON.stringify({coach_comment: txt||null})
     });
     if(res.ok){
-      if(msg){ msg.textContent=txt?'\u2713 Client can see this':'Comment cleared'; msg.style.color='#22c77a'; }
-      // keep local copy fresh on the swipe object so re-opening shows it
+      // keep local copy fresh so re-opening shows it
       try{ var sw=window._mealSwipe; if(sw&&sw.foods){ sw.foods.forEach(function(f){ if(String(f.id)===String(foodId)) f.coach_comment=txt; }); } }catch(e){}
+      // success = just close the card
+      var ov=document.getElementById('mealCardOverlay'); if(ov) ov.style.display='none';
+      return;
     } else {
       var t=''; try{ t=await res.text(); }catch(e){}
       if(/coach_comment/.test(t) && /column/.test(t)){
