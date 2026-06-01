@@ -1764,7 +1764,7 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v5.65.0';
+var APP_VERSION = 'v5.68.0';
 var APP_BUILD = "May 30 — Unified the Today golds: Jim card now uses the same flat surface black + solid gold border as the completed tiles (was a gradient + washed gold). Meal-expand card (tap a meal to open it) is now all-black with gold/white text instead of the white card.";
 
 var cl=null, profile=null;
@@ -4567,8 +4567,12 @@ async function openClientJimChat(code, name){
   if(body) body.innerHTML = '<div style="text-align:center;padding:28px;color:var(--muted);font-size:13px;">Reading their logs\u2026</div>';
   openM('mClientChat');
   try{
-    var foods = await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=120') || [];
-    var workouts = await sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=60') || [];
+    var _rd = await Promise.all([
+      sbSelect('food_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=120'),
+      sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=60')
+    ]);
+    var foods = _rd[0] || [];
+    var workouts = _rd[1] || [];
 
     // ----- group everything by local day -----
     function dayKey(d){ var x=new Date(d); x.setHours(0,0,0,0); return x.getTime(); }
@@ -5045,15 +5049,17 @@ async function loadTrainerDashboard(){
   }
   try{
     // Pull today's food logs + recent activity of every type for "last seen" sort
-    var allTodayFoods = await sbSelect('food_logs', 'date_str=eq.'+encodeURIComponent(todayDateStr)+'&limit=500');
-    var allWeights = await sbSelect('weight_logs', 'limit=500');
-    // For activity sort: pull the most recent timestamp PER client across all activity types
-    // Limit each query to 200 rows — we only need recent stuff
-    var recentFoods = await sbSelect('food_logs', 'order=logged_at.desc&limit=500');
-    var recentWorkouts = await sbSelect('workout_logs', 'order=logged_at.desc&limit=200');
-    var recentCheckins = await sbSelect('energy_checkins', 'order=logged_at.desc&limit=200');
-    var recentChats = await sbSelect('chat_messages', 'role=eq.user&limit=300');
-    var recentSteps = await sbSelect('step_logs', 'order=updated_at.desc&limit=200');
+    // Parallelize all dashboard fetches — was 7 sequential awaits (~7-8s), now runs together (~slowest one).
+    var _dashRes = await Promise.all([
+      sbSelect('food_logs', 'date_str=eq.'+encodeURIComponent(todayDateStr)+'&limit=500'),
+      sbSelect('weight_logs', 'limit=500'),
+      sbSelect('food_logs', 'order=logged_at.desc&limit=500'),
+      sbSelect('workout_logs', 'order=logged_at.desc&limit=200'),
+      sbSelect('energy_checkins', 'order=logged_at.desc&limit=200'),
+      sbSelect('chat_messages', 'role=eq.user&limit=300'),
+      sbSelect('step_logs', 'order=updated_at.desc&limit=200')
+    ]);
+    var allTodayFoods=_dashRes[0], allWeights=_dashRes[1], recentFoods=_dashRes[2], recentWorkouts=_dashRes[3], recentCheckins=_dashRes[4], recentChats=_dashRes[5], recentSteps=_dashRes[6];
     // Per-client program assignment (defensive — if profile schema missing the column, just skip)
     var assignedByClient = {};
     try{
@@ -5273,7 +5279,7 @@ async function loadTrainerDashboard(){
         : '';
 
       var _st = clientStatus(code);
-      html += '<div class="client-card" style="border-left:4px solid '+_st.color+';">'
+      html += '<div class="client-card">'
         // HEADER: name + username + weight badge only
         + '<div class="cc-head"><div class="cc-avi" onclick="event.stopPropagation();openClientJimChat(\''+code+'\',\''+safeClientName+'\')" style="position:relative;cursor:pointer;">'+clientInfo.initials[0]+'<span style="position:absolute;bottom:-1px;right:-1px;width:11px;height:11px;border-radius:50%;background:'+_st.color+';border:2px solid var(--surface);"></span></div>'
         + '<div class="cc-info"><div class="cc-name" onclick="event.stopPropagation();openClientJimChat(\''+code+'\',\''+safeClientName+'\')" style="cursor:pointer;">'+(rankMedal?'<span style="margin-right:5px;font-weight:800;color:var(--gold);">'+rankMedal+'</span>':'')+clientInfo.name+' <span style="font-size:10px;font-weight:600;color:var(--muted);font-family:ui-monospace,Menlo,monospace;background:var(--s2);padding:1px 6px;border-radius:5px;vertical-align:1px;">'+code+'</span> '+lostChip+'</div>'+seenLabel+'</div>'
