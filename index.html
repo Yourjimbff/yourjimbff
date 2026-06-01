@@ -1764,7 +1764,7 @@ var CLIENTS = {
   'ellieh1':{name:'Ellie H',initials:'EH'}
 };
 
-var APP_VERSION = 'v5.68.0';
+var APP_VERSION = 'v5.70.0';
 var APP_BUILD = "May 30 — Unified the Today golds: Jim card now uses the same flat surface black + solid gold border as the completed tiles (was a gradient + washed gold). Meal-expand card (tap a meal to open it) is now all-black with gold/white text instead of the white card.";
 
 var cl=null, profile=null;
@@ -1992,30 +1992,24 @@ async function saveSetup(){
 
 async function launchApp(){
   showLoading(true);
-  // Load today's food from Supabase
-  var todayFoods = await sbSelect('food_logs', 'client_code=eq.'+cl.code+'&date_str=eq.'+encodeURIComponent(todayDateStr));
+  // Load today's food + latest weight in parallel (was two sequential awaits)
+  var _launch = await Promise.all([
+    sbSelect('food_logs', 'client_code=eq.'+cl.code+'&date_str=eq.'+encodeURIComponent(todayDateStr)),
+    sbSelect('weight_logs', 'client_code=eq.'+cl.code+'&limit=1')
+  ]);
+  var todayFoods = _launch[0];
   allFood = todayFoods || [];
   todayFood = allFood.slice();
-  // Recalculate totals
   todayFood.forEach(function(e){ tots.cal+=e.calories||0; tots.protein+=e.protein||0; tots.carbs+=e.carbs||0; tots.fat+=e.fat||0; });
-  // Load latest weight
-  var weights = await sbSelect('weight_logs', 'client_code=eq.'+cl.code+'&limit=1');
+  var weights = _launch[1];
   if(weights && weights.length > 0){ lastWeight = weights[0].weight; }
-  showLoading(false);
-
+  // Build the app shell while still under the loading screen
   document.getElementById('sApp').style.display='flex';
   document.getElementById('bnav').style.display='grid';
-  // Show trainer-only nav items (My Menu + Plan) only when logged in as a trainer
   var bnavEl = document.getElementById('bnav');
-  if(isTrainer(cl.code)){
-    bnavEl.classList.add('trainer-mode');
-  } else {
-    bnavEl.classList.remove('trainer-mode');
-  }
-  // MY PROGRAMS authoring box — hidden for now (programs off).
+  if(isTrainer(cl.code)){ bnavEl.classList.add('trainer-mode'); } else { bnavEl.classList.remove('trainer-mode'); }
   var _tps = document.getElementById('trainerProgramsSection');
   if(_tps) _tps.style.display = 'none';
-  // Manage Clients is a trainer-only tool — never show it in a client's profile.
   var _mcb = document.getElementById('manageClientsBox');
   if(_mcb) _mcb.style.display = isTrainer(cl.code) ? 'block' : 'none';
   document.getElementById('uname').textContent=cl.name;
@@ -2031,18 +2025,21 @@ async function launchApp(){
   initWhatsNew();
   rendVersion();
   rotateJimInvite();
-  loadCoachNote();
-  loadTodayCheckins();
-  loadTodayWorkouts();
-  loadTodaySteps();
-  loadTodaySleep();
-  // (top-slot card tabled)
-  // Template program system
+  // Load all the "today" tiles in PARALLEL, then reveal a fully-populated screen at once.
+  try{
+    await Promise.all([
+      loadCoachNote(),
+      loadTodayCheckins(),
+      loadTodayWorkouts(),
+      loadTodaySteps(),
+      loadTodaySleep()
+    ]);
+  }catch(e){ console.error('today loaders', e); }
+  refreshTileStates();
+  showLoading(false); // hide only once tiles are populated \u2014 no more staggered pop-in
+  // Trainer/program extras can finish in the background (not on the home screen)
   loadTrainerPrograms();
   loadClientAssignedProgram();
-  // Refresh tile completion states based on what's actually been logged today
-  setTimeout(refreshTileStates, 200);
-  setTimeout(refreshTileStates, 1200); // second pass after async loads finish
 }
 
 function refreshTileStates(){
