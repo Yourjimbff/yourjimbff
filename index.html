@@ -631,6 +631,15 @@ textarea.ifield{min-height:78px;}
       <div class="tbody" id="bodyWorkout">
         <div id="todayWoList"></div>
         <button class="sbtn" onclick="openManualWorkoutModal()">Log a workout</button>
+        <!-- PROGRESS PHOTOS -->
+        <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--border);">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <div style="font-size:13px;font-weight:800;letter-spacing:0.3px;color:var(--text);">\ud83d\udcf8 Progress Photos</div>
+            <button onclick="openProgressCompare()" id="ppCompareBtn" style="background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:6px 11px;font-size:11.5px;font-weight:700;color:var(--text);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;display:none;">\u21c4 Compare</button>
+          </div>
+          <div id="progressPhotoGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:12px;"></div>
+          <button class="sbtn" onclick="openProgressPhotoModal()" style="background:var(--s2);color:var(--text);">+ Add progress photo</button>
+        </div>
       </div>
     </div>
 
@@ -1794,7 +1803,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA'}
 };
 
-var APP_VERSION = 'v5.114.0';
+var APP_VERSION = 'v5.115.0';
 var APP_BUILD = "May 30 — Unified the Today golds: Jim card now uses the same flat surface black + solid gold border as the completed tiles (was a gradient + washed gold). Meal-expand card (tap a meal to open it) is now all-black with gold/white text instead of the white card.";
 
 var cl=null, profile=null;
@@ -2072,6 +2081,7 @@ async function launchApp(){
   }
   rendTodayFood(); updTots(); updHalo(); updStats();
   renderWeightJourney();
+  if(typeof loadProgressPhotos==="function") loadProgressPhotos();
   initGuide();
   maybeShowApology();
   initWhatsNew();
@@ -8337,6 +8347,175 @@ async function deleteTodayWorkout(id){
     showToast('Deleted');
   }catch(e){ showToast('Could not delete'); }
 }
+// ============================================================
+// PROGRESS PHOTOS — persistent album inside the Fitness tile.
+// Saves photo + date + weight to the `progress_photos` table.
+// Back-dating supported; side-by-side compare supported.
+// ============================================================
+var progressPhotos = [];      // loaded rows for the active client
+var _ppNewPhotoData = null;    // staged photo (base64) in the add modal
+var _ppCompareSel = [];        // selected photo ids for compare
+
+async function loadProgressPhotos(){
+  if(!cl) return;
+  try{
+    var rows = await sbSelect('progress_photos','client_code=eq.'+encodeURIComponent(cl.code)+'&order=date_str.desc&limit=200');
+    progressPhotos = rows || [];
+  }catch(e){ progressPhotos = []; }
+  rendProgressPhotos();
+}
+
+function rendProgressPhotos(){
+  var grid = document.getElementById('progressPhotoGrid');
+  if(!grid) return;
+  if(!progressPhotos.length){
+    grid.innerHTML = '<div style="grid-column:1/-1;font-size:12px;color:var(--muted);text-align:center;padding:14px 0;">No progress photos yet. Add your first one below.</div>';
+    var cb=document.getElementById('ppCompareBtn'); if(cb) cb.style.display='none';
+    return;
+  }
+  var cb=document.getElementById('ppCompareBtn'); if(cb) cb.style.display=(progressPhotos.length>=2?'inline-block':'none');
+  grid.innerHTML = progressPhotos.map(function(ph,i){
+    var dlabel = ph.date_str || '';
+    var wlabel = (ph.weight!=null && ph.weight!=='') ? (' \u00b7 '+ph.weight) : '';
+    return '<div onclick="openProgressPhotoViewer('+i+')" style="position:relative;aspect-ratio:3/4;border-radius:10px;overflow:hidden;background:#111;cursor:pointer;">'
+      + '<img src="'+ph.photo+'" style="width:100%;height:100%;object-fit:cover;display:block;">'
+      + '<div style="position:absolute;left:0;right:0;bottom:0;background:linear-gradient(transparent,rgba(0,0,0,0.8));padding:14px 6px 5px;font-size:9px;font-weight:700;color:#fff;letter-spacing:0.2px;">'+dlabel+wlabel+'</div>'
+      + '</div>';
+  }).join('');
+}
+
+function openProgressPhotoModal(){
+  _ppNewPhotoData = null;
+  var today = new Date().toISOString().slice(0,10);
+  var prefillW = (typeof lastWeight!=='undefined' && lastWeight) ? lastWeight : '';
+  var ov = document.getElementById('ppAddModal');
+  if(!ov){
+    ov = document.createElement('div');
+    ov.id = 'ppAddModal';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:99998;display:flex;align-items:center;justify-content:center;padding:20px;';
+    document.body.appendChild(ov);
+  }
+  ov.innerHTML = '<div style="background:#161616;border:1px solid #2a2a2a;border-radius:20px;max-width:360px;width:100%;padding:22px;font-family:\'Plus Jakarta Sans\',sans-serif;">'
+    + '<div style="font-size:17px;font-weight:800;color:var(--text);margin-bottom:16px;">Add Progress Photo</div>'
+    + '<div id="ppPreview" onclick="document.getElementById(\'ppFileInput\').click()" style="aspect-ratio:3/4;max-height:260px;border-radius:12px;background:#0d0d0d;border:1px dashed #333;display:flex;align-items:center;justify-content:center;color:#666;font-size:13px;cursor:pointer;margin-bottom:14px;overflow:hidden;">Tap to choose photo</div>'
+    + '<input type="file" id="ppFileInput" accept="image/*" style="display:none;" onchange="stageProgressPhoto(this)">'
+    + '<label style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700;">Date</label>'
+    + '<input type="date" id="ppDate" value="'+today+'" style="width:100%;box-sizing:border-box;margin:6px 0 14px;padding:11px;border-radius:10px;border:1px solid var(--border);background:var(--s2);color:var(--text);font-size:14px;font-family:inherit;">'
+    + '<label style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:700;">Weight (optional)</label>'
+    + '<input type="number" id="ppWeight" inputmode="decimal" value="'+prefillW+'" placeholder="e.g. 165" style="width:100%;box-sizing:border-box;margin:6px 0 18px;padding:11px;border-radius:10px;border:1px solid var(--border);background:var(--s2);color:var(--text);font-size:14px;font-family:inherit;">'
+    + '<div style="display:flex;gap:9px;">'
+    + '<button onclick="closeProgressPhotoModal()" style="flex:1;padding:12px;border-radius:11px;border:1px solid var(--border);background:transparent;color:var(--m2);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;">Cancel</button>'
+    + '<button id="ppSaveBtn" onclick="saveProgressPhoto()" style="flex:2;padding:12px;border-radius:11px;border:none;background:var(--gold);color:#000;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;">Save</button>'
+    + '</div></div>';
+  ov.style.display = 'flex';
+}
+function closeProgressPhotoModal(){ var ov=document.getElementById('ppAddModal'); if(ov) ov.style.display='none'; _ppNewPhotoData=null; }
+
+function stageProgressPhoto(input){
+  var f = input.files && input.files[0]; if(!f) return;
+  var reader = new FileReader();
+  reader.onload = function(ev){
+    // Downscale to keep payload reasonable (progress photos can be large).
+    var img = new Image();
+    img.onload = function(){
+      var max = 1000, w = img.width, h = img.height;
+      if(w>max || h>max){ if(w>h){ h=Math.round(h*max/w); w=max; } else { w=Math.round(w*max/h); h=max; } }
+      var c = document.createElement('canvas'); c.width=w; c.height=h;
+      c.getContext('2d').drawImage(img,0,0,w,h);
+      _ppNewPhotoData = c.toDataURL('image/jpeg',0.82);
+      var pv = document.getElementById('ppPreview');
+      if(pv){ pv.innerHTML = '<img src="'+_ppNewPhotoData+'" style="width:100%;height:100%;object-fit:cover;">'; }
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(f);
+}
+
+async function saveProgressPhoto(){
+  if(!_ppNewPhotoData){ showToast('Choose a photo first'); return; }
+  if(!cl){ showToast('Not logged in'); return; }
+  var dInput = document.getElementById('ppDate').value;
+  var wInput = document.getElementById('ppWeight').value;
+  // Convert YYYY-MM-DD to the app's display date format used elsewhere.
+  var dateStr;
+  try{ var d=new Date(dInput+'T12:00:00'); dateStr=d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
+  catch(e){ dateStr = dInput; }
+  var btn=document.getElementById('ppSaveBtn'); if(btn){ btn.textContent='Saving...'; btn.disabled=true; }
+  var row = { client_code: cl.code, photo: _ppNewPhotoData, date_str: dateStr, weight: (wInput!==''? wInput : null), logged_at: new Date().toISOString() };
+  var saved = await sbInsertReturning('progress_photos', row);
+  if(saved){
+    progressPhotos.unshift(saved);
+    progressPhotos.sort(function(a,b){ return (b.date_str||'').localeCompare(a.date_str||''); });
+    rendProgressPhotos();
+    closeProgressPhotoModal();
+    showToast('\u2713 Progress photo saved');
+  } else {
+    if(btn){ btn.textContent='Save'; btn.disabled=false; }
+    showToast('\u26a0\ufe0f Could not save \u2014 the progress_photos table may need to be created');
+  }
+}
+
+function openProgressPhotoViewer(i){
+  var ph = progressPhotos[i]; if(!ph) return;
+  var ov = document.getElementById('ppViewer');
+  if(!ov){ ov=document.createElement('div'); ov.id='ppViewer'; ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;'; ov.onclick=function(e){ if(e.target===ov) ov.style.display='none'; }; document.body.appendChild(ov); }
+  var w = (ph.weight!=null && ph.weight!=='') ? (' \u00b7 '+ph.weight+' lbs') : '';
+  var canDelete = isTrainer(cl.code) || true;
+  ov.innerHTML = '<div style="max-width:380px;width:100%;background:#161616;border:1px solid #2a2a2a;border-radius:20px;overflow:hidden;">'
+    + '<img src="'+ph.photo+'" style="width:100%;display:block;">'
+    + '<div style="padding:14px 16px;display:flex;align-items:center;justify-content:space-between;">'
+    + '<div style="font-size:14px;font-weight:800;color:#fff;">'+(ph.date_str||'')+'<span style="color:#8f8f8f;font-weight:600;">'+w+'</span></div>'
+    + '<button onclick="deleteProgressPhoto(\''+ph.id+'\')" style="background:transparent;border:1px solid #3a2020;border-radius:8px;padding:6px 11px;font-size:12px;font-weight:700;color:#e5746b;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Delete</button>'
+    + '</div></div>';
+  ov.style.display='flex';
+}
+
+async function deleteProgressPhoto(id){
+  if(!confirm('Delete this progress photo?')) return;
+  try{
+    await fetch(SB_URL+'/rest/v1/progress_photos?id=eq.'+encodeURIComponent(id), {method:'DELETE', headers:sbHeaders()});
+  }catch(e){}
+  progressPhotos = progressPhotos.filter(function(p){ return String(p.id)!==String(id); });
+  rendProgressPhotos();
+  var ov=document.getElementById('ppViewer'); if(ov) ov.style.display='none';
+}
+
+// ---- Side-by-side compare ----
+function openProgressCompare(){
+  _ppCompareSel = [];
+  var ov = document.getElementById('ppCompare');
+  if(!ov){ ov=document.createElement('div'); ov.id='ppCompare'; ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:99999;display:flex;flex-direction:column;padding:20px;overflow:auto;'; document.body.appendChild(ov); }
+  _ppRenderCompare();
+  ov.style.display='flex';
+}
+function _ppToggleCompare(id){
+  var idx=_ppCompareSel.indexOf(id);
+  if(idx>-1){ _ppCompareSel.splice(idx,1); }
+  else { if(_ppCompareSel.length>=2) _ppCompareSel.shift(); _ppCompareSel.push(id); }
+  _ppRenderCompare();
+}
+function _ppRenderCompare(){
+  var ov=document.getElementById('ppCompare'); if(!ov) return;
+  var byId={}; progressPhotos.forEach(function(p){ byId[String(p.id)]=p; });
+  var sel=_ppCompareSel.map(function(id){ return byId[String(id)]; }).filter(Boolean);
+  var pane='';
+  if(sel.length){
+    pane = '<div style="display:flex;gap:8px;margin-bottom:16px;">'+sel.map(function(p){
+      var w=(p.weight!=null&&p.weight!=='')?(' \u00b7 '+p.weight):'';
+      return '<div style="flex:1;"><img src="'+p.photo+'" style="width:100%;border-radius:12px;display:block;"><div style="text-align:center;font-size:11px;font-weight:700;color:#fff;margin-top:6px;">'+(p.date_str||'')+w+'</div></div>';
+    }).join('')+'</div>';
+  }
+  var thumbs = progressPhotos.map(function(p){
+    var on=_ppCompareSel.indexOf(p.id)>-1 || _ppCompareSel.indexOf(String(p.id))>-1;
+    return '<div onclick="_ppToggleCompare(\''+p.id+'\')" style="position:relative;aspect-ratio:3/4;border-radius:9px;overflow:hidden;cursor:pointer;border:2px solid '+(on?'var(--gold)':'transparent')+';"><img src="'+p.photo+'" style="width:100%;height:100%;object-fit:cover;display:block;'+(on?'':'opacity:0.6;')+'"></div>';
+  }).join('');
+  ov.innerHTML = '<div style="max-width:440px;width:100%;margin:0 auto;">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;"><div style="font-size:16px;font-weight:800;color:#fff;">Compare \u2014 pick 2</div><button onclick="document.getElementById(\'ppCompare\').style.display=\'none\'" style="background:transparent;border:1px solid #333;border-radius:8px;padding:6px 12px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Done</button></div>'
+    + pane
+    + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:7px;">'+thumbs+'</div>'
+    + '</div>';
+}
+
 function rendTodayWo(){
   var c=document.getElementById('todayWoList');
   if(!todayWo.length){c.innerHTML='<div class="empty" style="padding:16px 0;"><div class="empi">💪</div>No workout yet.</div>';if(typeof refreshDayCard==='function')refreshDayCard();return;}
