@@ -1944,7 +1944,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.137.0';
+var APP_VERSION = 'v5.139.0';
 var APP_BUILD = "May 30 — Unified the Today golds: Jim card now uses the same flat surface black + solid gold border as the completed tiles (was a gradient + washed gold). Meal-expand card (tap a meal to open it) is now all-black with gold/white text instead of the white card.";
 
 var cl=null, profile=null;
@@ -9089,16 +9089,26 @@ function openProgressCompare(){
   _ppRenderCompare();
   ov.style.display='flex';
 }
-async function _ppWeightSparkline(){
+async function _ppWeightSparkline(sel){
   if(!cl) return '';
   try{
     var weights = await sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(cl.code)+'&limit=500');
     weights = (weights||[]).slice().sort(function(a,b){ return new Date(a.logged_at) - new Date(b.logged_at); });
-    if(weights.length<2) return '';
     var nums = weights.map(function(x){return parseFloat(x.weight);});
-    var first=nums[0], last=nums[nums.length-1];
-    var delta=Math.round((last-first)*10)/10;
+    // Headline delta = change between the TWO COMPARED PHOTOS' weights (chronological).
+    var delta=null, labelNote='';
+    if(sel && sel.length===2){
+      var chrono = sel.slice().sort(function(a,b){ return _ppDateVal(a)-_ppDateVal(b); });
+      var w0=parseFloat(chrono[0].weight), w1=parseFloat(chrono[1].weight);
+      if(!isNaN(w0) && !isNaN(w1)){ delta=Math.round((w1-w0)*10)/10; labelNote=' between these photos'; }
+    }
+    // Fall back to the full-history delta only if photos lack weights.
+    if(delta===null){
+      if(nums.length<2) return '';
+      delta=Math.round((nums[nums.length-1]-nums[0])*10)/10;
+    }
     var trendColor = (typeof weightTrendColor==='function') ? weightTrendColor(delta) : '#22c77a';
+    if(nums.length<2){ nums=[0,0]; } // keep the sparkline from breaking when few logs
     var w=300,h=80,pad=8;
     var minV=Math.min.apply(null,nums), maxV=Math.max.apply(null,nums);
     if(maxV-minV<1) maxV=minV+1;
@@ -9108,7 +9118,7 @@ async function _ppWeightSparkline(){
     var dArea=d+' L '+pts[pts.length-1].x+' '+h+' L '+pts[0].x+' '+h+' Z';
     var deltaLabel = delta<0 ? '<span style="color:#22c77a;">\u2193 '+Math.abs(delta)+' lbs</span>' : (delta>0 ? '<span style="color:#e5746b;">\u2191 '+delta+' lbs</span>' : '<span style="color:#8f8f8f;">No change</span>');
     return '<div style="background:#161616;border:1px solid #2a2a2a;border-radius:14px;padding:14px 14px 10px;margin-top:14px;">'
-      + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;"><div style="font-size:11px;color:#8f8f8f;letter-spacing:1px;text-transform:uppercase;font-weight:700;">Weight</div><div style="font-size:14px;font-weight:800;">'+deltaLabel+'</div></div>'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;"><div style="font-size:11px;color:#8f8f8f;letter-spacing:1px;text-transform:uppercase;font-weight:700;">Weight'+(labelNote?'<span style="text-transform:none;letter-spacing:0;color:#666;font-weight:600;"> '+labelNote+'</span>':'')+'</div><div style="font-size:14px;font-weight:800;">'+deltaLabel+'</div></div>'
       + '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" style="width:100%;height:80px;overflow:visible;"><defs><linearGradient id="ppwgrad" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="'+trendColor+'" stop-opacity="0.3"/><stop offset="100%" stop-color="'+trendColor+'" stop-opacity="0"/></linearGradient></defs>'
       + '<path d="'+dArea+'" fill="url(#ppwgrad)"/><path d="'+d+'" fill="none" stroke="'+trendColor+'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
       + '<circle cx="'+pts[0].x+'" cy="'+pts[0].y+'" r="3" fill="'+trendColor+'"/><circle cx="'+pts[pts.length-1].x+'" cy="'+pts[pts.length-1].y+'" r="4" fill="'+trendColor+'"/></svg>'
@@ -9125,32 +9135,46 @@ function openPhotoZoom(id){
   var ph = progressPhotos.filter(function(p){return String(p.id)===String(id);})[0];
   if(!ph) return;
   var ov=document.getElementById('ppZoom');
-  if(!ov){ ov=document.createElement('div'); ov.id='ppZoom'; ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.95);z-index:100000;display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:none;'; document.body.appendChild(ov); }
+  if(!ov){ ov=document.createElement('div'); ov.id='ppZoom'; ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.96);z-index:100000;display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:none;'; document.body.appendChild(ov); }
   var w=(ph.weight!=null&&ph.weight!=='')?(' \u00b7 '+ph.weight+' lbs'):'';
-  ov.innerHTML='<div id="ppZoomImgWrap" style="position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center;">'
-    + '<img id="ppZoomImg" src="'+ph.photo+'" style="max-width:100%;max-height:100%;transform-origin:center;transition:transform 0.05s;will-change:transform;user-select:none;-webkit-user-drag:none;">'
+  ov.innerHTML='<div id="ppZoomViewport" style="position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;">'
+    + '<img id="ppZoomImg" src="'+ph.photo+'" draggable="false" style="max-width:100%;max-height:100%;transform-origin:center center;will-change:transform;user-select:none;-webkit-user-drag:none;touch-action:none;cursor:grab;">'
     + '</div>'
     + '<div style="position:absolute;top:18px;left:0;right:0;text-align:center;color:#fff;font-size:13px;font-weight:700;font-family:\'Plus Jakarta Sans\',sans-serif;pointer-events:none;">'+(ph.date_str||'')+w+'</div>'
-    + '<button onclick="document.getElementById(\'ppZoom\').style.display=\'none\'" style="position:absolute;top:14px;right:16px;background:rgba(0,0,0,0.5);border:1px solid #444;color:#fff;border-radius:50%;width:38px;height:38px;font-size:18px;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\u00d7</button>'
-    + '<div style="position:absolute;bottom:18px;left:0;right:0;text-align:center;color:#888;font-size:11px;letter-spacing:0.5px;pointer-events:none;">Pinch or scroll to zoom \u00b7 drag to pan</div>';
+    + '<div style="position:absolute;top:14px;right:16px;display:flex;gap:8px;">'
+      + '<button onclick="_ppZoomRotate()" id="ppRotateBtn" style="background:rgba(0,0,0,0.5);border:1px solid #444;color:#fff;border-radius:10px;height:38px;padding:0 13px;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\u21bb Landscape</button>'
+      + '<button onclick="document.getElementById(\'ppZoom\').style.display=\'none\'" style="background:rgba(0,0,0,0.5);border:1px solid #444;color:#fff;border-radius:50%;width:38px;height:38px;font-size:18px;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\u00d7</button>'
+    + '</div>'
+    + '<div style="position:absolute;bottom:18px;left:0;right:0;text-align:center;color:#888;font-size:11px;letter-spacing:0.5px;pointer-events:none;">Scroll / pinch to zoom \u00b7 drag to pan \u00b7 rotate for landscape</div>';
   ov.style.display='flex';
+  _ppZoom = { scale:1, tx:0, ty:0, rot:0 };
   _ppZoomBind();
+}
+var _ppZoom = { scale:1, tx:0, ty:0, rot:0 };
+function _ppZoomApply(){
+  var img=document.getElementById('ppZoomImg'); if(!img) return;
+  img.style.transform='translate('+_ppZoom.tx+'px,'+_ppZoom.ty+'px) rotate('+_ppZoom.rot+'deg) scale('+_ppZoom.scale+')';
+}
+function _ppZoomRotate(){
+  _ppZoom.rot = (_ppZoom.rot + 90) % 360;
+  var btn=document.getElementById('ppRotateBtn'); if(btn) btn.textContent = (_ppZoom.rot%180===0) ? '\u21bb Landscape' : '\u21bb Portrait';
+  _ppZoomApply();
 }
 function _ppZoomBind(){
   var img=document.getElementById('ppZoomImg'); if(!img) return;
-  var scale=1, tx=0, ty=0, lastX=0, lastY=0, dragging=false, lastDist=0;
-  function apply(){ img.style.transform='translate('+tx+'px,'+ty+'px) scale('+scale+')'; }
-  img.onwheel=function(e){ e.preventDefault(); scale=Math.min(5,Math.max(1, scale + (e.deltaY<0?0.18:-0.18))); if(scale===1){tx=0;ty=0;} apply(); };
-  img.onmousedown=function(e){ if(scale<=1) return; dragging=true; lastX=e.clientX; lastY=e.clientY; e.preventDefault(); };
-  window.addEventListener('mousemove', function(e){ if(!dragging) return; tx+=e.clientX-lastX; ty+=e.clientY-lastY; lastX=e.clientX; lastY=e.clientY; apply(); });
-  window.addEventListener('mouseup', function(){ dragging=false; });
-  // touch: pinch zoom + drag pan
-  img.ontouchstart=function(e){ if(e.touches.length===2){ lastDist=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY); } else if(e.touches.length===1 && scale>1){ dragging=true; lastX=e.touches[0].clientX; lastY=e.touches[0].clientY; } };
-  img.ontouchmove=function(e){ e.preventDefault();
-    if(e.touches.length===2){ var d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY); if(lastDist){ scale=Math.min(5,Math.max(1, scale*(d/lastDist))); if(scale===1){tx=0;ty=0;} apply(); } lastDist=d; }
-    else if(e.touches.length===1 && dragging){ tx+=e.touches[0].clientX-lastX; ty+=e.touches[0].clientY-lastY; lastX=e.touches[0].clientX; lastY=e.touches[0].clientY; apply(); }
-  };
-  img.ontouchend=function(e){ if(e.touches.length<2) lastDist=0; if(e.touches.length===0) dragging=false; };
+  var dragging=false, lastX=0, lastY=0, lastDist=0;
+  img.onwheel=function(e){ e.preventDefault(); _ppZoom.scale=Math.min(6,Math.max(1, _ppZoom.scale + (e.deltaY<0?0.2:-0.2))); if(_ppZoom.scale<=1){_ppZoom.tx=0;_ppZoom.ty=0;} _ppZoomApply(); };
+  // pointer events handle mouse + touch uniformly and hold the drag reliably
+  img.onpointerdown=function(e){ if(_ppZoom.scale<=1) return; dragging=true; lastX=e.clientX; lastY=e.clientY; img.style.cursor='grabbing'; try{img.setPointerCapture(e.pointerId);}catch(_){} e.preventDefault(); };
+  img.onpointermove=function(e){ if(!dragging) return; _ppZoom.tx+=e.clientX-lastX; _ppZoom.ty+=e.clientY-lastY; lastX=e.clientX; lastY=e.clientY; _ppZoomApply(); e.preventDefault(); };
+  img.onpointerup=function(e){ dragging=false; img.style.cursor='grab'; try{img.releasePointerCapture(e.pointerId);}catch(_){} };
+  img.onpointercancel=function(){ dragging=false; };
+  // pinch zoom (two-finger) still via touch events
+  img.ontouchstart=function(e){ if(e.touches.length===2){ lastDist=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY); } };
+  img.ontouchmove=function(e){ if(e.touches.length===2){ e.preventDefault(); var d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY); if(lastDist){ _ppZoom.scale=Math.min(6,Math.max(1, _ppZoom.scale*(d/lastDist))); if(_ppZoom.scale<=1){_ppZoom.tx=0;_ppZoom.ty=0;} _ppZoomApply(); } lastDist=d; } };
+  img.ontouchend=function(e){ if(e.touches.length<2) lastDist=0; };
+  // double-tap / double-click to reset
+  img.ondblclick=function(){ _ppZoom.scale=1; _ppZoom.tx=0; _ppZoom.ty=0; _ppZoomApply(); };
 }
 function _ppDateVal(p){
   // Parse "Jun 3, 2026" style strings into a real timestamp; fall back to logged_at.
@@ -9175,7 +9199,7 @@ async function _ppRenderCompare(){
       return '<div style="flex:1;">'+(tag?'<div style="text-align:center;font-size:9px;font-weight:800;letter-spacing:1.5px;color:var(--gold);margin-bottom:5px;">'+tag+'</div>':'')+'<div class="ppZoomWrap" onclick="openPhotoZoom(\''+p.id+'\')" style="position:relative;width:100%;aspect-ratio:3/4;border-radius:12px;overflow:hidden;background:#111;cursor:zoom-in;"><img src="'+p.photo+'" style="width:100%;height:100%;object-fit:cover;display:block;"></div><div style="text-align:center;font-size:11px;font-weight:700;color:#fff;margin-top:6px;">'+(p.date_str||'')+w+'</div></div>';
     }).join('')+'</div>';
   }
-  var graph = await _ppWeightSparkline();
+  var graph = await _ppWeightSparkline(sel);
   var thumbs = progressPhotos.map(function(p){
     var on=_ppCompareSel.indexOf(p.id)>-1 || _ppCompareSel.indexOf(String(p.id))>-1;
     return '<div onclick="_ppToggleCompare(\''+p.id+'\')" style="position:relative;aspect-ratio:3/4;border-radius:9px;overflow:hidden;cursor:pointer;border:2px solid '+(on?'var(--gold)':'transparent')+';"><img src="'+p.photo+'" style="width:100%;height:100%;object-fit:cover;display:block;'+(on?'':'opacity:0.6;')+'"></div>';
