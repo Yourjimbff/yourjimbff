@@ -1803,7 +1803,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA'}
 };
 
-var APP_VERSION = 'v5.115.0';
+var APP_VERSION = 'v5.116.0';
 var APP_BUILD = "May 30 — Unified the Today golds: Jim card now uses the same flat surface black + solid gold border as the completed tiles (was a gradient + washed gold). Meal-expand card (tap a meal to open it) is now all-black with gold/white text instead of the white card.";
 
 var cl=null, profile=null;
@@ -8483,10 +8483,40 @@ async function deleteProgressPhoto(id){
 // ---- Side-by-side compare ----
 function openProgressCompare(){
   _ppCompareSel = [];
+  if(progressPhotos.length>=2){
+    var byDate = progressPhotos.slice().sort(function(a,b){ return (a.date_str||'').localeCompare(b.date_str||''); });
+    _ppCompareSel = [ byDate[0].id, byDate[byDate.length-1].id ]; // oldest LEFT, newest RIGHT
+  }
   var ov = document.getElementById('ppCompare');
   if(!ov){ ov=document.createElement('div'); ov.id='ppCompare'; ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:99999;display:flex;flex-direction:column;padding:20px;overflow:auto;'; document.body.appendChild(ov); }
   _ppRenderCompare();
   ov.style.display='flex';
+}
+async function _ppWeightSparkline(){
+  if(!cl) return '';
+  try{
+    var weights = await sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(cl.code)+'&limit=500');
+    weights = (weights||[]).slice().sort(function(a,b){ return new Date(a.logged_at) - new Date(b.logged_at); });
+    if(weights.length<2) return '';
+    var nums = weights.map(function(x){return parseFloat(x.weight);});
+    var first=nums[0], last=nums[nums.length-1];
+    var delta=Math.round((last-first)*10)/10;
+    var trendColor = (typeof weightTrendColor==='function') ? weightTrendColor(delta) : '#22c77a';
+    var w=300,h=80,pad=8;
+    var minV=Math.min.apply(null,nums), maxV=Math.max.apply(null,nums);
+    if(maxV-minV<1) maxV=minV+1;
+    var n=nums.length;
+    var pts=nums.map(function(v,i){ return { x: pad+(i/(n-1))*(w-pad*2), y: h-pad-((v-minV)/(maxV-minV))*(h-pad*2) }; });
+    var d='M '+pts[0].x+' '+pts[0].y; for(var i=1;i<pts.length;i++){ d+=' L '+pts[i].x+' '+pts[i].y; }
+    var dArea=d+' L '+pts[pts.length-1].x+' '+h+' L '+pts[0].x+' '+h+' Z';
+    var deltaLabel = delta<0 ? '<span style="color:#22c77a;">\u2193 '+Math.abs(delta)+' lbs</span>' : (delta>0 ? '<span style="color:#e5746b;">\u2191 '+delta+' lbs</span>' : '<span style="color:#8f8f8f;">No change</span>');
+    return '<div style="background:#161616;border:1px solid #2a2a2a;border-radius:14px;padding:14px 14px 10px;margin-top:14px;">'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;"><div style="font-size:11px;color:#8f8f8f;letter-spacing:1px;text-transform:uppercase;font-weight:700;">Weight</div><div style="font-size:14px;font-weight:800;">'+deltaLabel+'</div></div>'
+      + '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" style="width:100%;height:80px;overflow:visible;"><defs><linearGradient id="ppwgrad" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="'+trendColor+'" stop-opacity="0.3"/><stop offset="100%" stop-color="'+trendColor+'" stop-opacity="0"/></linearGradient></defs>'
+      + '<path d="'+dArea+'" fill="url(#ppwgrad)"/><path d="'+d+'" fill="none" stroke="'+trendColor+'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+      + '<circle cx="'+pts[0].x+'" cy="'+pts[0].y+'" r="3" fill="'+trendColor+'"/><circle cx="'+pts[pts.length-1].x+'" cy="'+pts[pts.length-1].y+'" r="4" fill="'+trendColor+'"/></svg>'
+      + '</div>';
+  }catch(e){ return ''; }
 }
 function _ppToggleCompare(id){
   var idx=_ppCompareSel.indexOf(id);
@@ -8494,24 +8524,29 @@ function _ppToggleCompare(id){
   else { if(_ppCompareSel.length>=2) _ppCompareSel.shift(); _ppCompareSel.push(id); }
   _ppRenderCompare();
 }
-function _ppRenderCompare(){
+async function _ppRenderCompare(){
   var ov=document.getElementById('ppCompare'); if(!ov) return;
   var byId={}; progressPhotos.forEach(function(p){ byId[String(p.id)]=p; });
   var sel=_ppCompareSel.map(function(id){ return byId[String(id)]; }).filter(Boolean);
+  sel.sort(function(a,b){ return (a.date_str||'').localeCompare(b.date_str||''); }); // left=older, right=newer
   var pane='';
   if(sel.length){
-    pane = '<div style="display:flex;gap:8px;margin-bottom:16px;">'+sel.map(function(p){
-      var w=(p.weight!=null&&p.weight!=='')?(' \u00b7 '+p.weight):'';
-      return '<div style="flex:1;"><img src="'+p.photo+'" style="width:100%;border-radius:12px;display:block;"><div style="text-align:center;font-size:11px;font-weight:700;color:#fff;margin-top:6px;">'+(p.date_str||'')+w+'</div></div>';
+    pane = '<div style="display:flex;gap:8px;margin-bottom:6px;">'+sel.map(function(p,idx){
+      var w=(p.weight!=null&&p.weight!=='')?(' \u00b7 '+p.weight+' lbs'):'';
+      var tag=sel.length===2?(idx===0?'BEFORE':'NOW'):'';
+      return '<div style="flex:1;">'+(tag?'<div style="text-align:center;font-size:9px;font-weight:800;letter-spacing:1.5px;color:var(--gold);margin-bottom:5px;">'+tag+'</div>':'')+'<img src="'+p.photo+'" style="width:100%;border-radius:12px;display:block;"><div style="text-align:center;font-size:11px;font-weight:700;color:#fff;margin-top:6px;">'+(p.date_str||'')+w+'</div></div>';
     }).join('')+'</div>';
   }
+  var graph = await _ppWeightSparkline();
   var thumbs = progressPhotos.map(function(p){
     var on=_ppCompareSel.indexOf(p.id)>-1 || _ppCompareSel.indexOf(String(p.id))>-1;
     return '<div onclick="_ppToggleCompare(\''+p.id+'\')" style="position:relative;aspect-ratio:3/4;border-radius:9px;overflow:hidden;cursor:pointer;border:2px solid '+(on?'var(--gold)':'transparent')+';"><img src="'+p.photo+'" style="width:100%;height:100%;object-fit:cover;display:block;'+(on?'':'opacity:0.6;')+'"></div>';
   }).join('');
   ov.innerHTML = '<div style="max-width:440px;width:100%;margin:0 auto;">'
-    + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;"><div style="font-size:16px;font-weight:800;color:#fff;">Compare \u2014 pick 2</div><button onclick="document.getElementById(\'ppCompare\').style.display=\'none\'" style="background:transparent;border:1px solid #333;border-radius:8px;padding:6px 12px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Done</button></div>'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;"><div style="font-size:16px;font-weight:800;color:#fff;">Compare</div><button onclick="document.getElementById(\'ppCompare\').style.display=\'none\'" style="background:transparent;border:1px solid #333;border-radius:8px;padding:6px 12px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Done</button></div>'
     + pane
+    + graph
+    + '<div style="font-size:10px;color:#8f8f8f;letter-spacing:1px;text-transform:uppercase;font-weight:700;margin:18px 0 8px;">Tap to change selection</div>'
     + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:7px;">'+thumbs+'</div>'
     + '</div>';
 }
