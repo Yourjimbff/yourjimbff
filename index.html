@@ -330,6 +330,9 @@ textarea.ifield{min-height:78px;}
 .jvDayTab.jvActive{background:var(--gold);color:#000;border-color:var(--gold);}
 #jvRefresh{margin-left:auto;background:#161616;border:1px solid #2a2a2a;color:#ddd;font-size:12.5px;font-weight:700;padding:8px 16px;border-radius:9px;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;}
 #jvRefresh{margin-left:10px;}
+#jvSearch{margin-left:16px;background:#161616;border:1px solid #2a2a2a;color:#eee;font-size:13px;font-weight:600;padding:8px 14px;border-radius:9px;width:200px;font-family:'Plus Jakarta Sans',sans-serif;outline:none;transition:border-color .15s,width .15s;}
+#jvSearch:focus{border-color:rgba(245,197,24,0.5);width:240px;}
+#jvSearch::placeholder{color:#6a6a6a;}
 #jvSignout{background:transparent;border:1px solid #3a2020;color:#e5746b;font-size:12.5px;font-weight:700;padding:8px 16px;border-radius:9px;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;margin-left:10px;}
 #jvBroadcast{margin-left:auto;background:rgba(245,197,24,0.12);border:1px solid rgba(245,197,24,0.4);color:var(--gold);font-size:12.5px;font-weight:700;padding:8px 16px;border-radius:9px;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;}
 #jvBody{display:grid;grid-template-columns:380px 1fr;height:calc(100vh - 65px);}
@@ -569,8 +572,9 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
       <button class="jvDayTab" onclick="jvSetDay(0)">Today</button>
       <button class="jvDayTab" onclick="jvSetDay(2)">2 days ago</button>
     </div>
+    <input id="jvSearch" type="text" placeholder="Search clients…" oninput="jvFilter(this.value)" autocomplete="off" spellcheck="false">
     <button id="jvBroadcast" onclick="openBroadcastCompose()">📣 Broadcast</button>
-    <button id="jvRefresh" onclick="jvLoad()">↻ Refresh</button>
+    <button id="jvRefresh" onclick="jvRefresh()">↻ Refresh</button>
     <button id="jvSignout" onclick="jvSignOut()">Sign out</button>
   </div>
 
@@ -2007,7 +2011,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.151.0';
+var APP_VERSION = 'v5.152.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -5077,34 +5081,49 @@ function jvSetMode(m){
   if(m==='cockpit'){ wall.classList.add('jvTriageMode'); jvLoadTriage(); }
   else { wall.classList.remove('jvTriageMode'); jvLoad(); }
 }
+function jvRefresh(){ if(jvMode==='cockpit') jvLoadTriage(); else jvLoad(); }
+function jvFilter(q){
+  q=(q||'').trim().toLowerCase();
+  var wall=document.getElementById('jvWall'); if(!wall) return;
+  wall.querySelectorAll('[data-name]').forEach(function(el){
+    var n=el.getAttribute('data-name')||'';
+    el.style.display = (!q || n.indexOf(q)>-1) ? '' : 'none';
+  });
+  // hide a band's header when a search empties it
+  wall.querySelectorAll('.jvBand').forEach(function(b){
+    var any=Array.prototype.some.call(b.querySelectorAll('[data-name]'), function(e){ return e.style.display!=='none'; });
+    b.style.display = (q && !any) ? 'none' : '';
+  });
+}
+function _jvReFilter(){ var s=document.getElementById('jvSearch'); if(s && s.value) jvFilter(s.value); }
 async function jvLoadTriage(){
   var wall=document.getElementById('jvWall'); if(!wall) return;
   wall.innerHTML='<div class="jvLoading">Reading the room\u2026</div>';
   document.getElementById('jvWallHead').textContent='State of everyone';
   var days=[], dayIndex={};
   for(var i=0;i<7;i++){ var d=new Date(); d.setDate(d.getDate()-i); var k=_jvDayKey(d); days.push(k); dayIndex[k]=i; }
-  var cutoffISO=new Date(Date.now()-8*864e5).toISOString();
-  // Bucket by the real save TIMESTAMP, not date_str. date_str can be corrupted by the stale-date
-  // bug (logs saved under a frozen day), but logged_at is the true moment the row was written.
-  function idxFromTs(ts){ if(!ts) return null; var k; try{ k=_jvDayKey(new Date(ts)); }catch(e){ return null; } return (k in dayIndex)?dayIndex[k]:null; }
+  // Count exactly the way the (trusted) Feed does: per-day by date_str. One eq query per day is
+  // bulletproof — the in.() list query silently returned nothing, which is what broke this before.
+  var calls=[];
+  for(var di=0; di<7; di++){ calls.push({type:'food', day:di, p:sbSelect('food_logs','date_str=eq.'+encodeURIComponent(days[di])+'&limit=1500')}); }
+  for(var dj=0; dj<7; dj++){ calls.push({type:'step', day:dj, p:sbSelect('step_logs','date_str=eq.'+encodeURIComponent(days[dj])+'&limit=800')}); }
+  calls.push({type:'wo', p:sbSelect('workout_logs','order=logged_at.desc&limit=2000')});
+  calls.push({type:'wt', p:sbSelect('weight_logs','order=logged_at.desc&limit=2000')});
   try{
-    var res=await Promise.all([
-      sbSelect('food_logs','logged_at=gte.'+encodeURIComponent(cutoffISO)+'&order=logged_at.desc&limit=5000'),
-      sbSelect('workout_logs','logged_at=gte.'+encodeURIComponent(cutoffISO)+'&order=logged_at.desc&limit=2000'),
-      sbSelect('weight_logs','logged_at=gte.'+encodeURIComponent(cutoffISO)+'&order=logged_at.desc&limit=2000'),
-      sbSelect('step_logs','updated_at=gte.'+encodeURIComponent(cutoffISO)+'&order=updated_at.desc&limit=3000')
-    ]);
-    var foods=res[0]||[], wos=res[1]||[], weights=res[2]||[], steps=res[3]||[];
-    var per={};
+    var results=await Promise.all(calls.map(function(c){return c.p;}));
+    var per={}, todayFoods=[], todayWos=[];
     function ensure(c){ if(!per[c]) per[c]={cnt:[0,0,0,0,0,0,0],weighed:{},stepped:{}}; return per[c]; }
-    foods.forEach(function(f){ var i=idxFromTs(f.logged_at); if(i==null && (f.date_str in dayIndex)) i=dayIndex[f.date_str]; if(i==null) return; ensure(f.client_code).cnt[i]+=1; });
-    wos.forEach(function(w){ var i=idxFromTs(w.logged_at); if(i==null && (w.date_str in dayIndex)) i=dayIndex[w.date_str]; if(i==null) return; ensure(w.client_code).cnt[i]+=1; });
-    weights.forEach(function(w){ var i=idxFromTs(w.logged_at); if(i==null) return; var p=ensure(w.client_code); if(!p.weighed[i]){ p.weighed[i]=1; p.cnt[i]+=1; } });
-    steps.forEach(function(s){ if((Number(s.steps)||0)<=0) return; var i=(s.date_str in dayIndex)?dayIndex[s.date_str]:idxFromTs(s.updated_at); if(i==null) return; var p=ensure(s.client_code); if(!p.stepped[i]){ p.stepped[i]=1; p.cnt[i]+=1; } });
-    // keep TODAY's food/workouts in jvData so the deep dive + Jarvis chat keep working
+    function dayOf(ts){ if(!ts) return null; var k; try{k=_jvDayKey(new Date(ts));}catch(e){return null;} return (k in dayIndex)?dayIndex[k]:null; }
+    results.forEach(function(rows, idx){
+      var c=calls[idx]; rows=rows||[];
+      if(c.type==='food'){ rows.forEach(function(f){ ensure(f.client_code).cnt[c.day]+=1; if(c.day===0) todayFoods.push(f); }); }
+      else if(c.type==='step'){ rows.forEach(function(s){ if((Number(s.steps)||0)<=0) return; var p=ensure(s.client_code); if(!p.stepped[c.day]){ p.stepped[c.day]=1; p.cnt[c.day]+=1; } }); }
+      else if(c.type==='wo'){ rows.forEach(function(w){ var di=(w.date_str in dayIndex)?dayIndex[w.date_str]:dayOf(w.logged_at); if(di==null) return; ensure(w.client_code).cnt[di]+=1; if(di===0) todayWos.push(w); }); }
+      else if(c.type==='wt'){ rows.forEach(function(w){ var di=dayOf(w.logged_at); if(di==null) return; var p=ensure(w.client_code); if(!p.weighed[di]){ p.weighed[di]=1; p.cnt[di]+=1; } }); }
+    });
     var foodsByClient={}, woByClient={};
-    foods.forEach(function(f){ if(idxFromTs(f.logged_at)===0 || f.date_str===days[0]) (foodsByClient[f.client_code]=foodsByClient[f.client_code]||[]).push(f); });
-    wos.forEach(function(w){ if(idxFromTs(w.logged_at)===0 || w.date_str===days[0]) (woByClient[w.client_code]=woByClient[w.client_code]||[]).push(w); });
+    todayFoods.forEach(function(f){ (foodsByClient[f.client_code]=foodsByClient[f.client_code]||[]).push(f); });
+    todayWos.forEach(function(w){ (woByClient[w.client_code]=woByClient[w.client_code]||[]).push(w); });
     jvData={foodsByClient:foodsByClient, woByClient:woByClient};
     jvTriage={per:per, days:days};
     jvRenderTriage();
@@ -5119,8 +5138,10 @@ function _jvClassify(cnt){
   var thin=recent.filter(function(x){return x>=1 && x<=3;}).length;
   var strong=recent.filter(function(x){return x>=4;}).length;
   if(thin>=2 && strong===0) return {band:'red', reason:'thin '+thin+' days running', urg:2};
-  if(cnt[0]>=4 || strong>=2) return {band:'green', reason:(cnt[0]>0?cnt[0]+' logged today':'on track')};
-  return {band:'yellow', reason:(cnt[0]>0?cnt[0]+' logged today':(dq===2?'2 days quiet':'light lately'))};
+  // A full day logged in the last 3 days = cruising, even if today's still filling in.
+  if(cnt[0]>=4) return {band:'green', reason:cnt[0]+' logged today'};
+  if(strong>=1) return {band:'green', reason:(cnt[0]>0?cnt[0]+' today \u00b7 strong week':'logged '+dq+'d ago \u00b7 strong week')};
+  return {band:'yellow', reason:(cnt[0]>0?cnt[0]+' logged today':(dq+' day'+(dq===1?'':'s')+' quiet'))};
 }
 function jvRenderTriage(){
   var wall=document.getElementById('jvWall'); if(!wall||!jvTriage) return;
@@ -5146,7 +5167,7 @@ function jvRenderTriage(){
   function card(o,band){
     var info=CLIENTS[o.code]; var nm=(info.name||'').replace(/</g,'&lt;');
     var dot={red:'#ff5d4d',yellow:'#e7b552',green:'#3fcf83'}[band];
-    var s='<div class="jvTCard '+band+'" onclick="jvOpenDeep(\''+o.code+'\')">'
+    var s='<div class="jvTCard '+band+'" data-name="'+(info.name||'').toLowerCase().replace(/"/g,'')+'" onclick="jvOpenDeep(\''+o.code+'\')">'
       +'<div class="jvTName"><span class="jvDot" style="background:'+dot+';color:'+dot+';"></span>'+nm+'</div>'
       +'<div class="jvTState">'+o.cls.reason+'</div>';
     if(band==='red'){
@@ -5176,10 +5197,11 @@ function jvRenderTriage(){
   if(bands.dormant.length){
     html+='<div class="jvBand"><div class="jvDormToggle" onclick="jvToggleDorm()">\ud83d\udca4 Quiet a week or more \u00b7 '+bands.dormant.length+' <span id="jvDormCaret">\u25be</span></div>'
       +'<div id="jvDormList" style="display:none;"><div class="jvDormGrid">'
-      +bands.dormant.map(function(o){ return '<div class="jvDormChip" onclick="jvOpenDeep(\''+o.code+'\')">'+(CLIENTS[o.code].name||'').replace(/</g,'&lt;')+'</div>'; }).join('')
+      +bands.dormant.map(function(o){ return '<div class="jvDormChip" data-name="'+(CLIENTS[o.code].name||'').toLowerCase().replace(/"/g,'')+'" onclick="jvOpenDeep(\''+o.code+'\')">'+(CLIENTS[o.code].name||'').replace(/</g,'&lt;')+'</div>'; }).join('')
       +'</div></div></div>';
   }
   wall.innerHTML=html;
+  _jvReFilter();
 }
 function jvToggleDorm(){ var l=document.getElementById('jvDormList'),c=document.getElementById('jvDormCaret'); if(!l)return; var open=l.style.display==='none'; l.style.display=open?'block':'none'; if(c)c.textContent=open?'\u25b4':'\u25be'; }
 async function jvLoad(){
@@ -5254,7 +5276,7 @@ function jvRenderWall(){
         + '</div>'
       + '</div>';
     }).join('');
-    html+='<div class="jvCard" onclick="jvOpenDeep(\''+code+'\')">'
+    html+='<div class="jvCard" data-name="'+(info.name||'').toLowerCase().replace(/"/g,'')+'" onclick="jvOpenDeep(\''+code+'\')">'
       + '<div class="jvCardTop"><div class="jvCardName"><span class="jvDot" style="background:#22c77a;"></span>'+info.name+'</div>'
       + (fds.length?'<div class="jvTot">'+Math.round(tc).toLocaleString()+' cal \u00b7 '+Math.round(tp)+'g P</div>':'')+'</div>'
       + woHtml
@@ -5263,6 +5285,7 @@ function jvRenderWall(){
   });
   document.getElementById('jvWallHead').textContent = 'The Feed \u00b7 '+active.length+' logged';
   wall.innerHTML = html || '<div class="jvLoading">Nobody logged on this day yet.</div>';
+  _jvReFilter();
 }
 function jvOpenDeep(code){
   var info=CLIENTS[code]; if(!info) return;
