@@ -1945,7 +1945,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.144.0';
+var APP_VERSION = 'v5.145.0';
 var APP_BUILD = "May 30 — Unified the Today golds: Jim card now uses the same flat surface black + solid gold border as the completed tiles (was a gradient + washed gold). Meal-expand card (tap a meal to open it) is now all-black with gold/white text instead of the white card.";
 
 var cl=null, profile=null;
@@ -9173,37 +9173,45 @@ function _ppToggleCompare(id){
   else { if(_ppCompareSel.length>=2) _ppCompareSel.shift(); _ppCompareSel.push(id); }
   _ppRenderCompare();
 }
-var _ppFrames = {}; // id -> {tx,ty,cx,cy,maxX,maxY}
-function _ppFrameState(id){ if(!_ppFrames[id]) _ppFrames[id]={tx:0,ty:0,cx:0,cy:0,maxX:0,maxY:0}; return _ppFrames[id]; }
-function _ppFrameApply(id){
-  var img=document.getElementById('ppFrameImg_'+id); if(!img) return;
-  var st=_ppFrameState(id);
-  // clamp so the photo can never slide past its own edges (no background reveal)
-  if(st.tx<-st.maxX) st.tx=-st.maxX; if(st.tx>st.maxX) st.tx=st.maxX;
-  if(st.ty<-st.maxY) st.ty=-st.maxY; if(st.ty>st.maxY) st.ty=st.maxY;
-  img.style.transform='translate('+(st.cx+st.tx)+'px,'+(st.cy+st.ty)+'px)';
-}
+var _ppFrames = {}; // id -> {scale,tx,ty,w0,h0,Wf,Hf}
+function _ppFrameState(id){ if(!_ppFrames[id]) _ppFrames[id]={scale:1,tx:0,ty:0,w0:0,h0:0,Wf:0,Hf:0}; return _ppFrames[id]; }
 function _ppBindFrame(id){
   var frame=document.getElementById('ppFrame_'+id), img=document.getElementById('ppFrameImg_'+id);
   if(!frame||!img) return;
+  var st=_ppFrameState(id);
+  function apply(){
+    if(!st.w0) return;
+    // pan room grows with zoom; clamp so the photo always covers the frame (never reveals background)
+    var maxX=Math.max(0,(st.w0*st.scale - st.Wf)/2), maxY=Math.max(0,(st.h0*st.scale - st.Hf)/2);
+    if(st.tx<-maxX)st.tx=-maxX; if(st.tx>maxX)st.tx=maxX;
+    if(st.ty<-maxY)st.ty=-maxY; if(st.ty>maxY)st.ty=maxY;
+    img.style.transform='translate(-50%,-50%) translate('+st.tx+'px,'+st.ty+'px) scale('+st.scale+')';
+  }
   function layout(){
     var Wf=frame.clientWidth, Hf=frame.clientHeight;
     if(!Wf||!Hf){ setTimeout(layout,60); return; }
     var nw=img.naturalWidth||3, nh=img.naturalHeight||4;
-    var cover=Math.max(Wf/nw, Hf/nh);     // smallest scale that fully covers the frame
-    var w=nw*cover, h=nh*cover;
-    img.style.width=w+'px'; img.style.height=h+'px';
-    var st=_ppFrameState(id);
-    st.cx=(Wf-w)/2; st.cy=(Hf-h)/2;       // center the covered image
-    st.maxX=Math.max(0,(w-Wf)/2); st.maxY=Math.max(0,(h-Hf)/2); // pan room = the overflow
-    _ppFrameApply(id);
+    var cover=Math.max(Wf/nw, Hf/nh);     // scale=1 means "fills the frame"
+    st.w0=nw*cover; st.h0=nh*cover; st.Wf=Wf; st.Hf=Hf;
+    img.style.width=st.w0+'px'; img.style.height=st.h0+'px';
+    img.style.left='50%'; img.style.top='50%';
+    apply();
   }
   if(img.complete && img.naturalWidth) layout(); else img.onload=layout;
-  var dragging=false, lastX=0, lastY=0;
-  frame.onpointerdown=function(e){ dragging=true; lastX=e.clientX; lastY=e.clientY; frame.style.cursor='grabbing'; try{frame.setPointerCapture(e.pointerId);}catch(_){} e.preventDefault(); };
-  frame.onpointermove=function(e){ if(!dragging) return; var st=_ppFrameState(id); st.tx+=e.clientX-lastX; st.ty+=e.clientY-lastY; lastX=e.clientX; lastY=e.clientY; _ppFrameApply(id); e.preventDefault(); };
+  // one-finger / mouse drag to pan
+  var dragging=false, lastX=0, lastY=0, lastDist=0, pinching=false;
+  frame.onpointerdown=function(e){ if(pinching) return; dragging=true; lastX=e.clientX; lastY=e.clientY; frame.style.cursor='grabbing'; try{frame.setPointerCapture(e.pointerId);}catch(_){} e.preventDefault(); };
+  frame.onpointermove=function(e){ if(!dragging||pinching) return; st.tx+=e.clientX-lastX; st.ty+=e.clientY-lastY; lastX=e.clientX; lastY=e.clientY; apply(); e.preventDefault(); };
   frame.onpointerup=function(e){ dragging=false; frame.style.cursor='grab'; try{frame.releasePointerCapture(e.pointerId);}catch(_){} };
-  frame.onpointercancel=function(){ dragging=false; frame.style.cursor='grab'; };
+  frame.onpointercancel=function(){ dragging=false; };
+  // wheel to zoom (desktop)
+  frame.onwheel=function(e){ e.preventDefault(); st.scale=Math.min(4,Math.max(1, st.scale + (e.deltaY<0?0.18:-0.18))); if(st.scale<=1){st.tx=0;st.ty=0;} apply(); };
+  // pinch to zoom (touch)
+  frame.ontouchstart=function(e){ if(e.touches.length===2){ pinching=true; dragging=false; lastDist=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY); } };
+  frame.ontouchmove=function(e){ if(e.touches.length===2){ e.preventDefault(); var d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY); if(lastDist){ st.scale=Math.min(4,Math.max(1, st.scale*(d/lastDist))); if(st.scale<=1){st.tx=0;st.ty=0;} apply(); } lastDist=d; } };
+  frame.ontouchend=function(e){ if(e.touches.length<2){ pinching=false; lastDist=0; } };
+  // double-tap / double-click toggles a 2x zoom
+  frame.ondblclick=function(){ st.scale = st.scale>1 ? 1 : 2; if(st.scale<=1){st.tx=0;st.ty=0;} apply(); };
 }
 function openPhotoZoom(id){
   var ph = progressPhotos.filter(function(p){return String(p.id)===String(id);})[0];
@@ -9256,6 +9264,8 @@ function _ppDateVal(p){
   if(p && p.logged_at){ var t2=Date.parse(p.logged_at); if(!isNaN(t2)) return t2; }
   return 0;
 }
+var _ppPickerOpen=false;
+function _ppTogglePicker(){ _ppPickerOpen=!_ppPickerOpen; _ppRenderCompare(); }
 async function _ppRenderCompare(){
   var ov=document.getElementById('ppCompare'); if(!ov) return;
   var byId={}; progressPhotos.forEach(function(p){ byId[String(p.id)]=p; });
@@ -9263,7 +9273,7 @@ async function _ppRenderCompare(){
   sel.sort(function(a,b){ return _ppDateVal(a) - _ppDateVal(b); }); // always chronological — old left, new right. not negotiable.
   var pane='';
   if(sel.length){
-    var hint = sel.length===2 ? '<div style="text-align:center;font-size:10px;color:#666;letter-spacing:0.3px;margin-bottom:9px;">Drag a photo to nudge the framing</div>' : '';
+    var hint = sel.length===2 ? '<div style="text-align:center;font-size:10px;color:#666;letter-spacing:0.3px;margin-bottom:9px;">Drag to move \u00b7 pinch or double-tap to zoom</div>' : '';
     pane = hint + '<div style="display:flex;gap:9px;margin-bottom:6px;">'+sel.map(function(p,idx){
       var w=(p.weight!=null&&p.weight!=='')?(' \u00b7 '+p.weight+' lbs'):'';
       var tag=sel.length===2?(idx===0?'BEFORE':'NOW'):'';
@@ -9277,16 +9287,22 @@ async function _ppRenderCompare(){
     }).join('')+'</div>';
   }
   var graph = await _ppWeightSparkline(sel);
-  var thumbs = progressPhotos.map(function(p){
-    var on=_ppCompareSel.indexOf(p.id)>-1 || _ppCompareSel.indexOf(String(p.id))>-1;
-    return '<div onclick="_ppToggleCompare(\''+p.id+'\')" style="position:relative;aspect-ratio:3/4;border-radius:9px;overflow:hidden;cursor:pointer;border:2px solid '+(on?'var(--gold)':'transparent')+';"><img src="'+p.photo+'" style="width:100%;height:100%;object-fit:cover;display:block;'+(on?'':'opacity:0.6;')+'"></div>';
-  }).join('');
-  ov.innerHTML = '<div style="max-width:440px;width:100%;margin:0 auto;">'
-    + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;"><div style="font-size:17px;font-weight:800;color:#fff;letter-spacing:0.2px;">How Far You\'ve Come</div><button onclick="document.getElementById(\'ppCompare\').style.display=\'none\'" style="background:transparent;border:1px solid #333;border-radius:8px;padding:6px 12px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Done</button></div>'
+  var picker='';
+  if(progressPhotos.length>2){
+    var thumbs = progressPhotos.map(function(p){
+      var on=_ppCompareSel.indexOf(p.id)>-1 || _ppCompareSel.indexOf(String(p.id))>-1;
+      return '<div onclick="_ppToggleCompare(\''+p.id+'\')" style="position:relative;aspect-ratio:3/4;border-radius:9px;overflow:hidden;cursor:pointer;border:2px solid '+(on?'var(--gold)':'transparent')+';"><img src="'+p.photo+'" style="width:100%;height:100%;object-fit:cover;display:block;'+(on?'':'opacity:0.55;')+'"></div>';
+    }).join('');
+    picker = '<div style="margin-top:22px;">'
+      + '<button onclick="_ppTogglePicker()" style="width:100%;background:var(--s2);border:1px solid var(--border);border-radius:11px;padding:11px 14px;display:flex;align-items:center;justify-content:space-between;color:var(--m2);font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Compare other photos <span style="display:inline-block;transition:transform .2s;transform:rotate('+(_ppPickerOpen?'180deg':'0deg')+');font-size:13px;">\u25be</span></button>'
+      + (_ppPickerOpen ? '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:10px;">'+thumbs+'</div>' : '')
+      + '</div>';
+  }
+  ov.innerHTML = '<div style="max-width:440px;width:100%;margin:auto;">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;"><div style="font-size:17px;font-weight:800;color:#fff;letter-spacing:0.2px;">How Far You\'ve Come</div><button onclick="document.getElementById(\'ppCompare\').style.display=\'none\'" style="background:transparent;border:1px solid #333;border-radius:8px;padding:6px 12px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Done</button></div>'
     + pane
     + graph
-    + '<div style="font-size:10px;color:#8f8f8f;letter-spacing:1px;text-transform:uppercase;font-weight:700;margin:18px 0 8px;">Tap any two to compare</div>'
-    + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:7px;">'+thumbs+'</div>'
+    + picker
     + '</div>';
 
   if(sel && sel.length){ setTimeout(function(){ sel.forEach(function(p){ _ppBindFrame(String(p.id)); }); }, 30); }
