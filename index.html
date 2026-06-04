@@ -1945,7 +1945,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.142.0';
+var APP_VERSION = 'v5.144.0';
 var APP_BUILD = "May 30 — Unified the Today golds: Jim card now uses the same flat surface black + solid gold border as the completed tiles (was a gradient + washed gold). Meal-expand card (tap a meal to open it) is now all-black with gold/white text instead of the white card.";
 
 var cl=null, profile=null;
@@ -8959,6 +8959,7 @@ async function loadProgressPhotos(){
   try{
     var rows = await sbSelect('progress_photos','client_code=eq.'+encodeURIComponent(cl.code)+'&order=date_str.desc&limit=200');
     progressPhotos = rows || [];
+    progressPhotos.sort(function(a,b){ return _ppDateVal(b) - _ppDateVal(a); }); // newest first — DB date_str sort is alphabetical and breaks across month names
   }catch(e){ progressPhotos = []; }
   rendProgressPhotos();
 }
@@ -9126,7 +9127,7 @@ function openProgressCompare(){
     _ppCompareSel = [ byDate[0].id, byDate[byDate.length-1].id ]; // oldest LEFT, newest RIGHT, same angle
   }
   var ov = document.getElementById('ppCompare');
-  if(!ov){ ov=document.createElement('div'); ov.id='ppCompare'; ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:99999;display:flex;flex-direction:column;padding:20px;overflow:auto;'; document.body.appendChild(ov); }
+  if(!ov){ ov=document.createElement('div'); ov.id='ppCompare'; ov.style.cssText='position:fixed;inset:0;background:var(--black);z-index:99999;display:flex;flex-direction:column;padding:20px;overflow:auto;'; document.body.appendChild(ov); }
   _ppRenderCompare();
   ov.style.display='flex';
 }
@@ -9148,7 +9149,7 @@ async function _ppWeightSparkline(sel){
       if(nums.length<2) return '';
       delta=Math.round((nums[nums.length-1]-nums[0])*10)/10;
     }
-    var trendColor = (typeof weightTrendColor==='function') ? weightTrendColor(delta) : '#22c77a';
+    var trendColor = weightLineColor(delta);
     if(nums.length<2){ nums=[0,0]; } // keep the sparkline from breaking when few logs
     var w=300,h=80,pad=8;
     var minV=Math.min.apply(null,nums), maxV=Math.max.apply(null,nums);
@@ -9172,22 +9173,37 @@ function _ppToggleCompare(id){
   else { if(_ppCompareSel.length>=2) _ppCompareSel.shift(); _ppCompareSel.push(id); }
   _ppRenderCompare();
 }
-var _ppFrames = {}; // id -> {scale, tx, ty}
-function _ppFrameState(id){ if(!_ppFrames[id]) _ppFrames[id]={scale:1,tx:0,ty:0}; return _ppFrames[id]; }
+var _ppFrames = {}; // id -> {tx,ty,cx,cy,maxX,maxY}
+function _ppFrameState(id){ if(!_ppFrames[id]) _ppFrames[id]={tx:0,ty:0,cx:0,cy:0,maxX:0,maxY:0}; return _ppFrames[id]; }
 function _ppFrameApply(id){
   var img=document.getElementById('ppFrameImg_'+id); if(!img) return;
   var st=_ppFrameState(id);
-  img.style.transform='translate(calc(-50% + '+st.tx+'px), calc(-50% + '+st.ty+'px)) scale('+st.scale+')';
+  // clamp so the photo can never slide past its own edges (no background reveal)
+  if(st.tx<-st.maxX) st.tx=-st.maxX; if(st.tx>st.maxX) st.tx=st.maxX;
+  if(st.ty<-st.maxY) st.ty=-st.maxY; if(st.ty>st.maxY) st.ty=st.maxY;
+  img.style.transform='translate('+(st.cx+st.tx)+'px,'+(st.cy+st.ty)+'px)';
 }
-function _ppFrameZoom(id,val){ var st=_ppFrameState(id); st.scale=parseInt(val,10)/100; _ppFrameApply(id); }
 function _ppBindFrame(id){
-  var frame=document.getElementById('ppFrame_'+id); var img=document.getElementById('ppFrameImg_'+id);
+  var frame=document.getElementById('ppFrame_'+id), img=document.getElementById('ppFrameImg_'+id);
   if(!frame||!img) return;
+  function layout(){
+    var Wf=frame.clientWidth, Hf=frame.clientHeight;
+    if(!Wf||!Hf){ setTimeout(layout,60); return; }
+    var nw=img.naturalWidth||3, nh=img.naturalHeight||4;
+    var cover=Math.max(Wf/nw, Hf/nh);     // smallest scale that fully covers the frame
+    var w=nw*cover, h=nh*cover;
+    img.style.width=w+'px'; img.style.height=h+'px';
+    var st=_ppFrameState(id);
+    st.cx=(Wf-w)/2; st.cy=(Hf-h)/2;       // center the covered image
+    st.maxX=Math.max(0,(w-Wf)/2); st.maxY=Math.max(0,(h-Hf)/2); // pan room = the overflow
+    _ppFrameApply(id);
+  }
+  if(img.complete && img.naturalWidth) layout(); else img.onload=layout;
   var dragging=false, lastX=0, lastY=0;
-  frame.onpointerdown=function(e){ if(e.target.tagName==='BUTTON') return; dragging=true; lastX=e.clientX; lastY=e.clientY; frame.style.cursor='grabbing'; try{frame.setPointerCapture(e.pointerId);}catch(_){} e.preventDefault(); };
+  frame.onpointerdown=function(e){ dragging=true; lastX=e.clientX; lastY=e.clientY; frame.style.cursor='grabbing'; try{frame.setPointerCapture(e.pointerId);}catch(_){} e.preventDefault(); };
   frame.onpointermove=function(e){ if(!dragging) return; var st=_ppFrameState(id); st.tx+=e.clientX-lastX; st.ty+=e.clientY-lastY; lastX=e.clientX; lastY=e.clientY; _ppFrameApply(id); e.preventDefault(); };
   frame.onpointerup=function(e){ dragging=false; frame.style.cursor='grab'; try{frame.releasePointerCapture(e.pointerId);}catch(_){} };
-  frame.onpointercancel=function(){ dragging=false; };
+  frame.onpointercancel=function(){ dragging=false; frame.style.cursor='grab'; };
 }
 function openPhotoZoom(id){
   var ph = progressPhotos.filter(function(p){return String(p.id)===String(id);})[0];
@@ -9240,30 +9256,24 @@ function _ppDateVal(p){
   if(p && p.logged_at){ var t2=Date.parse(p.logged_at); if(!isNaN(t2)) return t2; }
   return 0;
 }
-var _ppSwap = false; // user can flip which side is BEFORE/NOW
-function _ppToggleSwap(){ _ppSwap = !_ppSwap; _ppRenderCompare(); }
 async function _ppRenderCompare(){
   var ov=document.getElementById('ppCompare'); if(!ov) return;
   var byId={}; progressPhotos.forEach(function(p){ byId[String(p.id)]=p; });
   var sel=_ppCompareSel.map(function(id){ return byId[String(id)]; }).filter(Boolean);
-  sel.sort(function(a,b){ return _ppDateVal(a) - _ppDateVal(b); }); // chronological: older first
-  if(_ppSwap) sel.reverse();
+  sel.sort(function(a,b){ return _ppDateVal(a) - _ppDateVal(b); }); // always chronological — old left, new right. not negotiable.
   var pane='';
   if(sel.length){
-    var swapBtn = sel.length===2 ? '<div style="text-align:center;margin-bottom:10px;"><button onclick="_ppToggleSwap()" style="background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:6px 14px;font-size:11.5px;font-weight:700;color:var(--text);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\u21c4 Swap sides</button></div>' : '';
-    var hint = sel.length===2 ? '<div style="text-align:center;font-size:10px;color:#777;margin-bottom:8px;">Drag a photo to reframe \u00b7 slider to zoom \u00b7 \u2922 for fullscreen</div>' : '';
-    pane = swapBtn + hint + '<div style="display:flex;gap:8px;margin-bottom:6px;">'+sel.map(function(p,idx){
+    var hint = sel.length===2 ? '<div style="text-align:center;font-size:10px;color:#666;letter-spacing:0.3px;margin-bottom:9px;">Drag a photo to nudge the framing</div>' : '';
+    pane = hint + '<div style="display:flex;gap:9px;margin-bottom:6px;">'+sel.map(function(p,idx){
       var w=(p.weight!=null&&p.weight!=='')?(' \u00b7 '+p.weight+' lbs'):'';
       var tag=sel.length===2?(idx===0?'BEFORE':'NOW'):'';
       var pid=String(p.id);
       return '<div style="flex:1;">'
-        + (tag?'<div style="text-align:center;font-size:9px;font-weight:800;letter-spacing:1.5px;color:var(--gold);margin-bottom:5px;">'+tag+'</div>':'')
-        + '<div class="ppFrame" id="ppFrame_'+pid+'" style="position:relative;width:100%;aspect-ratio:3/4;border-radius:12px;overflow:hidden;background:#111;touch-action:none;cursor:grab;">'
-          + '<img id="ppFrameImg_'+pid+'" src="'+p.photo+'" draggable="false" style="position:absolute;left:50%;top:50%;width:100%;min-height:100%;object-fit:cover;transform:translate(-50%,-50%);transform-origin:center;user-select:none;-webkit-user-drag:none;">'
-          + '<button onclick="event.stopPropagation();openPhotoZoom(\''+pid+'\')" style="position:absolute;top:7px;right:7px;background:rgba(0,0,0,0.55);border:1px solid #555;color:#fff;border-radius:8px;width:30px;height:30px;font-size:14px;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;z-index:2;">\u2922</button>'
+        + (tag?'<div style="text-align:center;font-size:9px;font-weight:800;letter-spacing:1.5px;color:var(--gold);margin-bottom:6px;">'+tag+'</div>':'')
+        + '<div class="ppFrame" id="ppFrame_'+pid+'" style="position:relative;width:100%;aspect-ratio:3/4;border-radius:14px;overflow:hidden;background:#0d0d0d;touch-action:none;cursor:grab;">'
+          + '<img id="ppFrameImg_'+pid+'" src="'+p.photo+'" draggable="false" style="position:absolute;left:0;top:0;will-change:transform;user-select:none;-webkit-user-drag:none;-webkit-touch-callout:none;">'
         + '</div>'
-        + '<input type="range" min="100" max="260" value="100" oninput="_ppFrameZoom(\''+pid+'\',this.value)" style="width:100%;margin-top:7px;accent-color:var(--gold);cursor:pointer;">'
-        + '<div style="text-align:center;font-size:11px;font-weight:700;color:#fff;margin-top:2px;">'+(p.date_str||'')+w+'</div></div>';
+        + '<div style="text-align:center;font-size:11px;font-weight:700;color:#fff;margin-top:7px;">'+(p.date_str||'')+w+'</div></div>';
     }).join('')+'</div>';
   }
   var graph = await _ppWeightSparkline(sel);
@@ -9272,10 +9282,10 @@ async function _ppRenderCompare(){
     return '<div onclick="_ppToggleCompare(\''+p.id+'\')" style="position:relative;aspect-ratio:3/4;border-radius:9px;overflow:hidden;cursor:pointer;border:2px solid '+(on?'var(--gold)':'transparent')+';"><img src="'+p.photo+'" style="width:100%;height:100%;object-fit:cover;display:block;'+(on?'':'opacity:0.6;')+'"></div>';
   }).join('');
   ov.innerHTML = '<div style="max-width:440px;width:100%;margin:0 auto;">'
-    + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;"><div style="font-size:16px;font-weight:800;color:#fff;">Compare</div><button onclick="document.getElementById(\'ppCompare\').style.display=\'none\'" style="background:transparent;border:1px solid #333;border-radius:8px;padding:6px 12px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Done</button></div>'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;"><div style="font-size:17px;font-weight:800;color:#fff;letter-spacing:0.2px;">How Far You\'ve Come</div><button onclick="document.getElementById(\'ppCompare\').style.display=\'none\'" style="background:transparent;border:1px solid #333;border-radius:8px;padding:6px 12px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Done</button></div>'
     + pane
     + graph
-    + '<div style="font-size:10px;color:#8f8f8f;letter-spacing:1px;text-transform:uppercase;font-weight:700;margin:18px 0 8px;">Tap to change selection</div>'
+    + '<div style="font-size:10px;color:#8f8f8f;letter-spacing:1px;text-transform:uppercase;font-weight:700;margin:18px 0 8px;">Tap any two to compare</div>'
     + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:7px;">'+thumbs+'</div>'
     + '</div>';
 
@@ -9317,6 +9327,13 @@ function weightTrendColor(delta){
   if(g.indexOf('los')>-1||g.indexOf('cut')>-1||g.indexOf('lean')>-1) return delta<-0.05?GREEN:NEUTRAL;
   if(g.indexOf('gain')>-1||g.indexOf('bulk')>-1||g.indexOf('build')>-1||g.indexOf('muscle')>-1) return delta>0.05?GREEN:NEUTRAL;
   return Math.abs(delta)<=0.7?GREEN:NEUTRAL;
+}
+// Graph line/area color follows the DIRECTION of the trend so it always matches the big delta label
+// (down=green, up=red, flat=muted). The goal-aware version lives in weightTrendColor above.
+function weightLineColor(delta){
+  if(delta < -0.05) return '#22c77a'; // loss → green
+  if(delta >  0.05) return '#ff4455'; // gain → red
+  return '#8f8f8f';                   // flat → muted
 }
 function updWchg(){
   var el=document.getElementById('wchg');
@@ -9401,7 +9418,7 @@ async function renderWeightJourney(){
     var dArea = d + ' L '+pts[pts.length-1].x+' '+h+' L '+pts[0].x+' '+h+' Z';
 
     // Determine trend color
-    var trendColor = weightTrendColor(delta);
+    var trendColor = weightLineColor(delta);
 
     var svg = '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" style="width:100%;height:70px;overflow:visible;">'+
       '<defs><linearGradient id="wgrad" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="'+trendColor+'" stop-opacity="0.3"/><stop offset="100%" stop-color="'+trendColor+'" stop-opacity="0"/></linearGradient></defs>'+
