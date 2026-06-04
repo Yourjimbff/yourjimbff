@@ -2007,7 +2007,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.150.0';
+var APP_VERSION = 'v5.151.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -5083,27 +5083,28 @@ async function jvLoadTriage(){
   document.getElementById('jvWallHead').textContent='State of everyone';
   var days=[], dayIndex={};
   for(var i=0;i<7;i++){ var d=new Date(); d.setDate(d.getDate()-i); var k=_jvDayKey(d); days.push(k); dayIndex[k]=i; }
-  var inVals=days.map(function(s){return '"'+s+'"';}).join(',');
-  var inList='in.('+encodeURIComponent(inVals)+')';
-  var cutoffISO=new Date(Date.now()-7*864e5).toISOString();
+  var cutoffISO=new Date(Date.now()-8*864e5).toISOString();
+  // Bucket by the real save TIMESTAMP, not date_str. date_str can be corrupted by the stale-date
+  // bug (logs saved under a frozen day), but logged_at is the true moment the row was written.
+  function idxFromTs(ts){ if(!ts) return null; var k; try{ k=_jvDayKey(new Date(ts)); }catch(e){ return null; } return (k in dayIndex)?dayIndex[k]:null; }
   try{
     var res=await Promise.all([
-      sbSelect('food_logs','date_str='+inList+'&order=logged_at.desc&limit=5000'),
+      sbSelect('food_logs','logged_at=gte.'+encodeURIComponent(cutoffISO)+'&order=logged_at.desc&limit=5000'),
       sbSelect('workout_logs','logged_at=gte.'+encodeURIComponent(cutoffISO)+'&order=logged_at.desc&limit=2000'),
-      sbSelect('step_logs','date_str='+inList+'&limit=3000'),
-      sbSelect('weight_logs','logged_at=gte.'+encodeURIComponent(cutoffISO)+'&order=logged_at.desc&limit=2000')
+      sbSelect('weight_logs','logged_at=gte.'+encodeURIComponent(cutoffISO)+'&order=logged_at.desc&limit=2000'),
+      sbSelect('step_logs','updated_at=gte.'+encodeURIComponent(cutoffISO)+'&order=updated_at.desc&limit=3000')
     ]);
-    var foods=res[0]||[], wos=res[1]||[], steps=res[2]||[], weights=res[3]||[];
+    var foods=res[0]||[], wos=res[1]||[], weights=res[2]||[], steps=res[3]||[];
     var per={};
     function ensure(c){ if(!per[c]) per[c]={cnt:[0,0,0,0,0,0,0],weighed:{},stepped:{}}; return per[c]; }
-    foods.forEach(function(f){ var i=dayIndex[f.date_str]; if(i==null && f.logged_at){ i=dayIndex[_jvDayKey(new Date(f.logged_at))]; } if(i==null) return; ensure(f.client_code).cnt[i]+=1; });
-    steps.forEach(function(s){ var i=dayIndex[s.date_str]; if(i==null) return; if((Number(s.steps)||0)<=0) return; var p=ensure(s.client_code); if(!p.stepped[i]){ p.stepped[i]=1; p.cnt[i]+=1; } });
-    wos.forEach(function(w){ var k=w.date_str; if(!k && w.logged_at){ try{k=_jvDayKey(new Date(w.logged_at));}catch(e){} } var i=dayIndex[k]; if(i==null) return; ensure(w.client_code).cnt[i]+=1; });
-    weights.forEach(function(w){ if(!w.logged_at) return; var k; try{k=_jvDayKey(new Date(w.logged_at));}catch(e){return;} var i=dayIndex[k]; if(i==null) return; var p=ensure(w.client_code); if(!p.weighed[i]){ p.weighed[i]=1; p.cnt[i]+=1; } });
+    foods.forEach(function(f){ var i=idxFromTs(f.logged_at); if(i==null && (f.date_str in dayIndex)) i=dayIndex[f.date_str]; if(i==null) return; ensure(f.client_code).cnt[i]+=1; });
+    wos.forEach(function(w){ var i=idxFromTs(w.logged_at); if(i==null && (w.date_str in dayIndex)) i=dayIndex[w.date_str]; if(i==null) return; ensure(w.client_code).cnt[i]+=1; });
+    weights.forEach(function(w){ var i=idxFromTs(w.logged_at); if(i==null) return; var p=ensure(w.client_code); if(!p.weighed[i]){ p.weighed[i]=1; p.cnt[i]+=1; } });
+    steps.forEach(function(s){ if((Number(s.steps)||0)<=0) return; var i=(s.date_str in dayIndex)?dayIndex[s.date_str]:idxFromTs(s.updated_at); if(i==null) return; var p=ensure(s.client_code); if(!p.stepped[i]){ p.stepped[i]=1; p.cnt[i]+=1; } });
     // keep TODAY's food/workouts in jvData so the deep dive + Jarvis chat keep working
-    var today=days[0], foodsByClient={}, woByClient={};
-    foods.forEach(function(f){ if(f.date_str===today)(foodsByClient[f.client_code]=foodsByClient[f.client_code]||[]).push(f); });
-    wos.forEach(function(w){ var k=w.date_str||(w.logged_at?_jvDayKey(new Date(w.logged_at)):''); if(k===today)(woByClient[w.client_code]=woByClient[w.client_code]||[]).push(w); });
+    var foodsByClient={}, woByClient={};
+    foods.forEach(function(f){ if(idxFromTs(f.logged_at)===0 || f.date_str===days[0]) (foodsByClient[f.client_code]=foodsByClient[f.client_code]||[]).push(f); });
+    wos.forEach(function(w){ if(idxFromTs(w.logged_at)===0 || w.date_str===days[0]) (woByClient[w.client_code]=woByClient[w.client_code]||[]).push(w); });
     jvData={foodsByClient:foodsByClient, woByClient:woByClient};
     jvTriage={per:per, days:days};
     jvRenderTriage();
