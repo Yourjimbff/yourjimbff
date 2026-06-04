@@ -427,7 +427,7 @@ body.jv-cockpit #jvDayTabs{display:none;}
 .jvBandHead{display:flex;align-items:baseline;gap:11px;margin-bottom:13px;}
 .jvBandTitle{font-size:12.5px;font-weight:800;letter-spacing:1.4px;text-transform:uppercase;}
 .jvBandCount{font-size:12px;font-weight:800;color:#5e5e5e;}
-.jvBandSay{font-size:12px;color:#6f6f6f;font-weight:600;margin-left:auto;letter-spacing:0.2px;}
+.jvBandSay{font-size:12px;color:#6f6f6f;font-weight:600;letter-spacing:0.2px;}
 .jvBandGrid{display:grid;gap:12px;align-items:start;}
 .jvBandRed .jvBandGrid{grid-template-columns:repeat(auto-fill,minmax(320px,1fr));}
 .jvBandYellow .jvBandGrid{grid-template-columns:repeat(auto-fill,minmax(248px,1fr));}
@@ -582,7 +582,7 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
   <div id="jvTopbar">
     <div id="jvBrand">YOURJIMBFF <span style="color:var(--gold);">JARVIS</span></div>
     <div id="jvModeToggle">
-      <button class="jvModeBtn on" id="jvModeCockpit" onclick="jvSetMode('cockpit')">Cockpit</button>
+      <button class="jvModeBtn on" id="jvModeCockpit" onclick="jvSetMode('cockpit')">Front Desk</button>
       <button class="jvModeBtn" id="jvModeFeed" onclick="jvSetMode('feed')">Feed</button>
     </div>
     <div id="jvDayTabs">
@@ -2030,7 +2030,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.162.0';
+var APP_VERSION = 'v5.163.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -5202,20 +5202,17 @@ async function jvLoadTriage(){
 function _jvClassify(p, nowMs){
   if(!p || !p.ever) return null;          // never logged in this app → hidden from the board
   var cnt=p.cnt;
-  var dq=0; while(dq<7 && cnt[dq]===0) dq++;                 // days quiet within the 7-day window
+  var dq=0; while(dq<7 && cnt[dq]===0) dq++;                 // consecutive empty days from today
   var lastAgo = (dq<7) ? dq : (p.last ? Math.max(7, Math.floor((nowMs-p.last)/864e5)) : 99);
+  var activeDays = cnt.filter(function(x){return x>0;}).length; // days logged in the last 7
   var todays=cnt[0];
-  var strongRecent = cnt[0]>=4 || cnt[1]>=4 || cnt[2]>=4;
-  // Logged today = they checked in. Never red.
-  if(todays>=3) return {band:'green', reason:'\u2713 '+todays+' logged today'};
-  if(todays>=1) return {band:(strongRecent?'green':'yellow'), reason:todays+' logged today'};
-  // Nothing logged today:
+  // Logged today = they showed up. Never a problem.
+  if(todays>=1) return {band:'green', reason:(todays>=4?'\u2713 ':'')+todays+' logged today'};
+  // Truly gone dark is the only thing that "needs you".
   if(lastAgo>=8) return {band:'dormant', reason:lastAgo+'+ days quiet'};
   if(lastAgo>=3) return {band:'red', reason:lastAgo+' days quiet', urg:lastAgo};
-  if(strongRecent) return {band:'green', reason:'logged '+lastAgo+'d ago \u00b7 strong week'};
-  var recent=[cnt[0],cnt[1],cnt[2]];
-  var thin=recent.filter(function(x){return x>=1 && x<=3;}).length;
-  if(thin>=2) return {band:'red', reason:'thin '+thin+' days running', urg:2};
+  // 1\u20132 days since last log. Consistent loggers are just early in a fresh day \u2014 leave them green.
+  if(activeDays>=4) return {band:'green', reason:'logged '+lastAgo+'d ago \u00b7 steady week'};
   return {band:'yellow', reason:lastAgo+' day'+(lastAgo===1?'':'s')+' quiet'};
 }
 function _jvTodayKey(){ return _jvDayKey(new Date()); }
@@ -5391,6 +5388,10 @@ function jvRenderWall(){
       + woHtml
       + '<div class="jvSecHead">\ud83c\udf73\ufe0f The Kitchen</div>'
       + (mealHtml || '<div class="jvMini">No meals logged this day.</div>')
+      + '<div style="display:flex;gap:7px;margin-top:13px;" onclick="event.stopPropagation()">'
+      +   '<button onclick="event.stopPropagation();textClient(\''+code+'\')" style="flex:1;background:var(--gold);border:none;border-radius:10px;padding:9px;font-weight:800;font-size:13px;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\ud83d\udcac Text '+((info.name||'').split(' ')[0].replace(/</g,'&lt;'))+'</button>'
+      +   '<button title="Notes" onclick="event.stopPropagation();openClientNotes(\''+code+'\',\''+(info.name||'').replace(/'/g,"\\'")+'\')" style="background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:9px 12px;font-weight:800;font-size:13px;color:#fff;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\ud83d\udcdd</button>'
+      + '</div>'
       + '</div>';
   });
   document.getElementById('jvWallHead').textContent = 'The Feed \u00b7 '+active.length+' logged';
@@ -5399,36 +5400,73 @@ function jvRenderWall(){
 }
 function jvOpenDeep(code){
   var info=CLIENTS[code]; if(!info) return;
-  var fds=(jvData&&jvData.foodsByClient[code])||[]; var wos=(jvData&&jvData.woByClient[code])||[];
   var dossier = (typeof _dossierBlock==='function') ? _dossierBlock(code) : '';
-  var fchrono=fds.slice().sort(function(a,b){return (a.logged_at?new Date(a.logged_at):0)-(b.logged_at?new Date(b.logged_at):0);});
-  var meals=fchrono.map(function(f){
-    return '<div style="background:#141414;border:1px solid #242424;border-radius:12px;padding:12px;margin-bottom:9px;">'
-      + (f.photo?'<img src="'+f.photo+'" style="width:100%;border-radius:9px;margin-bottom:8px;display:block;">':'')
-      + '<div style="font-weight:700;font-size:14px;color:#fff;">'+(f.emoji?f.emoji+' ':'')+(f.name||'').replace(/</g,'&lt;')+'</div>'
-      + '<div style="font-size:11px;color:#888;margin-top:4px;">'+Math.round(f.calories||0)+' cal \u00b7 '+Math.round(f.protein||0)+'g P \u00b7 '+Math.round(f.carbs||0)+'g C \u00b7 '+Math.round(f.fat||0)+'g F</div>'
-      + (f.coach_comment?'<div style="margin-top:8px;background:rgba(245,197,24,0.08);border-left:2px solid var(--gold);border-radius:6px;padding:7px 9px;font-size:12px;color:#eee;">'+f.coach_comment.replace(/</g,'&lt;')+'</div>':'')
-      + '</div>';
-  }).join('') || '<div style="color:#777;font-size:12px;">No meals this day.</div>';
-  var woHtml=wos.map(function(w){
-    return '<div style="background:#141414;border:1px solid #242424;border-radius:12px;padding:12px;margin-bottom:9px;font-size:13px;color:#eee;"><b>\ud83c\udfcb '+(w.title||'Workout').replace(/</g,'&lt;')+'</b><div style="margin-top:5px;font-size:12px;color:#aaa;white-space:pre-wrap;">'+((w.description||'').replace(/</g,'&lt;'))+'</div></div>';
-  }).join('');
   var safeName=(info.name||'').replace(/'/g,"\\'");
   document.getElementById('jvDeepInner').innerHTML=
     '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">'
     + '<div style="font-size:22px;font-weight:800;color:#fff;">'+info.name+'</div>'
     + '<button onclick="jvCloseDeep()" style="background:#161616;border:1px solid #2a2a2a;color:#fff;border-radius:8px;padding:6px 13px;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Close</button>'
     + '</div>'
-    + '<div style="display:flex;gap:8px;margin-bottom:18px;">'
+    + '<div style="display:flex;gap:8px;margin-bottom:10px;">'
     + '<button onclick="textClient(\''+code+'\')" style="flex:1;background:var(--gold);border:none;border-radius:10px;padding:11px;font-weight:800;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\ud83d\udcac Text '+safeName.split(' ')[0]+'</button>'
     + '<button onclick="openClientNotes(\''+code+'\',\''+safeName+'\')" style="flex:1;background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:11px;font-weight:800;color:#fff;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\ud83d\udcdd Notes</button>'
     + '</div>'
     + '<button onclick="jvAssignProgram(\''+code+'\')" style="width:100%;background:#12100a;border:1px solid rgba(245,197,24,0.32);border-radius:10px;padding:11px;font-weight:800;color:var(--gold);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;margin-bottom:18px;">\ud83d\uddc2\ufe0f Assign program</button>'
     + dossier
-    + (woHtml?'<div style="font-size:11px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:#777;margin:6px 0 10px;">🏋️ Gym floor</div>'+woHtml:'')
-    + '<div style="font-size:11px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:#777;margin:14px 0 10px;">🍳 The Kitchen</div>'
-    + meals;
+    + '<div id="jvDeepDays"><div style="color:#777;font-size:13px;padding:10px 0;">Loading recent history\u2026</div></div>';
   document.body.classList.add('jv-deep-open');
+  _jvDeepHistory(code);
+}
+async function _jvDeepHistory(code){
+  var el=document.getElementById('jvDeepDays'); if(!el) return;
+  var rmap={nutrient_dense:['Nutrient Dense','#22c77a'],good:['Good','#22c77a'],clean:['Good','#22c77a'],okay:['Okay','#d9a93a'],bad:['Off-plan','#e5746b']};
+  function keyOf(ds,ts){ if(ds) return ds; if(ts){ try{return _jvDayKey(new Date(ts));}catch(e){} } return '?'; }
+  function tsOf(ds,ts){ if(ts){ var d=new Date(ts); if(!isNaN(d.getTime())) return d.getTime(); } if(ds){ var d2=new Date(ds); if(!isNaN(d2.getTime())) return d2.getTime(); } return 0; }
+  try{
+    var res=await Promise.all([
+      sbSelect('food_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=90'),
+      sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=40')
+    ]);
+    var foods=res[0]||[], wos=res[1]||[];
+    var groups={};
+    function g(k,ts){ if(!groups[k]) groups[k]={ts:ts,meals:[],wos:[]}; if(ts>groups[k].ts) groups[k].ts=ts; return groups[k]; }
+    foods.forEach(function(f){ var k=keyOf(f.date_str,f.logged_at); g(k,tsOf(f.date_str,f.logged_at)).meals.push(f); });
+    wos.forEach(function(w){ var k=keyOf(w.date_str,w.logged_at); g(k,tsOf(w.date_str,w.logged_at)).wos.push(w); });
+    var keys=Object.keys(groups).sort(function(a,b){return groups[b].ts-groups[a].ts;}).slice(0,6);
+    if(!keys.length){ el.innerHTML='<div style="color:#888;font-size:13px;padding:14px 0;line-height:1.5;">No logs in the last week \u2014 they haven\u2019t put anything in yet. That\u2019s the reason they\u2019re flagged.</div>'; return; }
+    var todayMs=new Date(_jvDayKey(new Date())).getTime();
+    function woCard(w){
+      var lines=[];
+      if(w.exercises&&w.exercises.length){ lines=w.exercises.map(function(ex){return (ex.name||'')+(ex.detail?(' \u2014 '+ex.detail):'');}); }
+      else if(w.description){ lines=w.description.split('\n').map(function(x){return x.replace(/^[\u2022\-\s]+/,'').trim();}).filter(Boolean); }
+      var body=lines.length?'<div style="margin-top:6px;font-size:12px;color:#aaa;line-height:1.6;">'+lines.map(function(l){return l.replace(/</g,'&lt;');}).join('<br>')+'</div>':'';
+      return '<div style="background:#141414;border:1px solid #242424;border-radius:12px;padding:12px;margin-bottom:9px;"><b style="font-size:13px;color:#fff;">\ud83c\udfcb '+(w.title||'Workout').replace(/</g,'&lt;')+(w.intensity?' \u00b7 '+w.intensity+'/10':'')+'</b>'+body+'</div>';
+    }
+    function mealCard(f){
+      var rt=rmap[f.rating]||['',''];
+      return '<div style="background:#141414;border:1px solid #242424;border-radius:12px;padding:12px;margin-bottom:9px;">'
+        + (f.photo?'<img src="'+f.photo+'" style="width:100%;border-radius:9px;margin-bottom:8px;display:block;">':'')
+        + '<div style="font-weight:700;font-size:14px;color:#fff;">'+(f.emoji?f.emoji+' ':'')+(f.name||'').replace(/</g,'&lt;')+'</div>'
+        + '<div style="font-size:11px;color:#888;margin-top:4px;">'+Math.round(f.calories||0)+' cal \u00b7 '+Math.round(f.protein||0)+'P \u00b7 '+Math.round(f.carbs||0)+'C \u00b7 '+Math.round(f.fat||0)+'F'+(rt[0]?' \u00b7 <span style="color:'+rt[1]+';">'+rt[0]+'</span>':'')+(f.eat_time?' \u00b7 '+f.eat_time:'')+'</div>'
+        + (f.coach_comment?'<div style="margin-top:8px;background:rgba(245,197,24,0.08);border-left:2px solid var(--gold);border-radius:6px;padding:7px 9px;font-size:12px;color:#eee;">'+f.coach_comment.replace(/</g,'&lt;')+'</div>':'')
+        + '</div>';
+    }
+    var html='';
+    keys.forEach(function(k){
+      var gp=groups[k];
+      var diff=Math.round((todayMs-new Date(k).getTime())/864e5);
+      var rel = diff===0?'Today' : diff===1?'Yesterday' : (diff>1?diff+' days ago':'');
+      var meals=gp.meals.slice().sort(function(a,b){return (a.logged_at?new Date(a.logged_at):0)-(b.logged_at?new Date(b.logged_at):0);});
+      var woBlock=gp.wos.map(woCard).join('');
+      var mealBlock=meals.map(mealCard).join('');
+      html+='<div style="margin-bottom:22px;">'
+        + '<div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:11px;border-bottom:1px solid #1d1d1d;padding-bottom:7px;">'+(rel?rel+' \u00b7 ':'')+'<span style="color:#888;font-weight:600;">'+k+'</span></div>'
+        + (woBlock?'<div style="font-size:10px;font-weight:800;letter-spacing:1.4px;text-transform:uppercase;color:#777;margin:2px 0 9px;">\ud83c\udfcb\ufe0f Gym floor</div>'+woBlock:'')
+        + (mealBlock?'<div style="font-size:10px;font-weight:800;letter-spacing:1.4px;text-transform:uppercase;color:#777;margin:12px 0 9px;">\ud83c\udf73\ufe0f The Kitchen</div>'+mealBlock:'')
+        + '</div>';
+    });
+    el.innerHTML=html;
+  }catch(e){ el.innerHTML='<div style="color:#888;font-size:13px;padding:10px 0;">Couldn\u2019t load history \u2014 try Refresh.</div>'; }
 }
 function jvCloseDeep(){ document.body.classList.remove('jv-deep-open'); }
 async function jvAssignProgram(code){
