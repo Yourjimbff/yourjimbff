@@ -1726,6 +1726,21 @@ function sbHeaders(){
     'Prefer':'return=minimal'
   };
 }
+var SB_BUCKET = 'progress-photos';
+// Upload a full-res image blob to Supabase Storage; returns the public URL, or null if the bucket isn't reachable.
+async function uploadProgressImage(blob, clientCode){
+  if(!blob) return null;
+  try{
+    var path = (clientCode||'client') + '/' + Date.now() + '-' + Math.random().toString(36).slice(2,8) + '.jpg';
+    var res = await fetch(SB_URL+'/storage/v1/object/'+SB_BUCKET+'/'+encodeURI(path), {
+      method:'POST',
+      headers:{ 'apikey':SB_KEY, 'Authorization':'Bearer '+SB_KEY, 'Content-Type':'image/jpeg', 'x-upsert':'true' },
+      body: blob
+    });
+    if(!res.ok){ try{ console.warn('Storage upload failed', res.status, await res.text()); }catch(_){ } return null; }
+    return SB_URL+'/storage/v1/object/public/'+SB_BUCKET+'/'+encodeURI(path);
+  }catch(e){ console.error('uploadProgressImage error', e); return null; }
+}
 
 async function sbInsert(table, data){
   try{
@@ -1945,7 +1960,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.146.0';
+var APP_VERSION = 'v5.147.0';
 var APP_BUILD = "May 30 — Unified the Today golds: Jim card now uses the same flat surface black + solid gold border as the completed tiles (was a gradient + washed gold). Meal-expand card (tap a meal to open it) is now all-black with gold/white text instead of the white card.";
 
 var cl=null, profile=null;
@@ -8952,6 +8967,7 @@ async function deleteTodayWorkout(id){
 // ============================================================
 var progressPhotos = [];      // loaded rows for the active client
 var _ppNewPhotoData = null;    // staged photo (base64) in the add modal
+var _ppNewPhotoBlob = null;    // staged full-res blob for Supabase Storage upload
 var _ppCompareSel = [];        // selected photo ids for compare
 
 async function loadProgressPhotos(){
@@ -9006,6 +9022,7 @@ function rendProgressPhotos(){
 
 function openProgressPhotoModal(){
   _ppNewPhotoData = null;
+  _ppNewPhotoBlob = null;
   _ppNewAngle = "Front";
   var today = new Date().toISOString().slice(0,10);
   var prefillW = (typeof lastWeight!=='undefined' && lastWeight) ? lastWeight : '';
@@ -9034,7 +9051,7 @@ function openProgressPhotoModal(){
     + '</div></div>';
   ov.style.display = 'flex';
 }
-function closeProgressPhotoModal(){ var ov=document.getElementById('ppAddModal'); if(ov) ov.style.display='none'; _ppNewPhotoData=null; }
+function closeProgressPhotoModal(){ var ov=document.getElementById('ppAddModal'); if(ov) ov.style.display='none'; _ppNewPhotoData=null; _ppNewPhotoBlob=null; }
 
 var _ppNewAngle='Front';
 function _ppPickAngle(a){
@@ -9053,11 +9070,12 @@ function stageProgressPhoto(input){
     // Downscale to keep payload reasonable (progress photos can be large).
     var img = new Image();
     img.onload = function(){
-      var max = 1600, w = img.width, h = img.height;
+      var max = 2000, w = img.width, h = img.height;
       if(w>max || h>max){ if(w>h){ h=Math.round(h*max/w); w=max; } else { w=Math.round(w*max/h); h=max; } }
       var c = document.createElement('canvas'); c.width=w; c.height=h;
       var ctx=c.getContext('2d'); ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high'; ctx.drawImage(img,0,0,w,h);
-      _ppNewPhotoData = c.toDataURL('image/jpeg',0.92);
+      _ppNewPhotoData = c.toDataURL('image/jpeg',0.9);
+      c.toBlob(function(b){ _ppNewPhotoBlob = b; }, 'image/jpeg', 0.9);
       var pv = document.getElementById('ppPreview');
       if(pv){ pv.innerHTML = '<img src="'+_ppNewPhotoData+'" style="width:100%;height:100%;object-fit:cover;">'; }
     };
@@ -9076,7 +9094,9 @@ async function saveProgressPhoto(){
   try{ var d=new Date(dInput+'T12:00:00'); dateStr=d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
   catch(e){ dateStr = dInput; }
   var btn=document.getElementById('ppSaveBtn'); if(btn){ btn.textContent='Saving...'; btn.disabled=true; }
-  var row = { client_code: cl.code, photo: _ppNewPhotoData, date_str: dateStr, weight: (wInput!==''? wInput : null), angle: _ppNewAngle||'Front', logged_at: new Date().toISOString() };
+  // Upload full-res to Supabase Storage and keep only the URL in the DB. Falls back to inline base64 if the bucket isn't set up yet.
+  var photoUrl = await uploadProgressImage(_ppNewPhotoBlob, cl.code);
+  var row = { client_code: cl.code, photo: (photoUrl || _ppNewPhotoData), date_str: dateStr, weight: (wInput!==''? wInput : null), angle: _ppNewAngle||'Front', logged_at: new Date().toISOString() };
   var saved = await sbInsertReturning('progress_photos', row);
   if(saved){
     progressPhotos.unshift(saved);
