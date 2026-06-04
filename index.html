@@ -436,6 +436,10 @@ body.jv-cockpit #jvDayTabs{display:none;}
 .jvTBtns{display:flex;gap:7px;margin-top:12px;}
 .jvTBtn{flex:1;border-radius:9px;padding:8px;font-size:12px;font-weight:800;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;border:1px solid #2a2a2a;background:#181818;color:#fff;}
 .jvTBtn.gold{background:var(--gold);color:#000;border-color:var(--gold);}
+.jvTBtn.done{flex:0 0 auto;background:transparent;border-color:#2f6f4a;color:#3fcf83;padding:8px 12px;}
+.jvTBtn.done:hover{background:rgba(63,207,131,0.12);}
+.jvBandHandled{opacity:0.72;}
+.jvTCard.handled{background:rgba(63,207,131,0.04);border-color:rgba(63,207,131,0.22);}
 .jvTBtn:hover{filter:brightness(1.1);}
 .jvDormToggle{font-size:12.5px;color:#8a8a8a;font-weight:700;cursor:pointer;background:#0c0c0c;border:1px solid #1a1a1a;border-radius:11px;padding:11px 15px;display:inline-flex;gap:9px;align-items:center;}
 .jvDormToggle:hover{border-color:#2a2a2a;}
@@ -2017,7 +2021,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.155.0';
+var APP_VERSION = 'v5.156.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -5166,6 +5170,11 @@ function _jvClassify(p, nowMs){
   if(thin>=2) return {band:'red', reason:'thin '+thin+' days running', urg:2};
   return {band:'yellow', reason:lastAgo+' day'+(lastAgo===1?'':'s')+' quiet'};
 }
+function _jvTodayKey(){ return _jvDayKey(new Date()); }
+function jvHandledMap(){ try{ return JSON.parse(localStorage.getItem('yjb_jv_handled')||'{}'); }catch(e){ return {}; } }
+function jvIsHandled(code){ return jvHandledMap()[code]===_jvTodayKey(); }
+function jvMarkHandled(code){ var m=jvHandledMap(); m[code]=_jvTodayKey(); try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} jvRenderTriage(); }
+function jvUnhandle(code){ var m=jvHandledMap(); delete m[code]; try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} jvRenderTriage(); }
 function jvRenderTriage(){
   var wall=document.getElementById('jvWall'); if(!wall||!jvTriage) return;
   var per=jvTriage.per;
@@ -5182,9 +5191,15 @@ function jvRenderTriage(){
   bands.green.sort(function(a,b){ return b.cnt[0]-a.cnt[0]; });
   bands.yellow.sort(function(a,b){ return b.cnt[0]-a.cnt[0]; });
   var shown=bands.red.length+bands.yellow.length+bands.green.length+bands.dormant.length;
+  // Split the red band: clients you've already reached out to today drop onto a "Reached out" shelf,
+  // so Needs You stays a live worklist you can clear down to zero.
+  var redHandled=bands.red.filter(function(o){ return jvIsHandled(o.code); });
+  var redActive =bands.red.filter(function(o){ return !jvIsHandled(o.code); });
   var html='';
-  if(bands.red.length){
-    html+='<div class="jvFocus">\ud83c\udfaf <b>'+bands.red.length+'</b> '+(bands.red.length===1?'client needs':'clients need')+' you. Start with <b>'+(CLIENTS[bands.red[0].code].name||'').replace(/</g,'&lt;')+'</b> \u2014 '+bands.red[0].cls.reason+'.</div>';
+  if(redActive.length){
+    html+='<div class="jvFocus">\ud83c\udfaf <b>'+redActive.length+'</b> '+(redActive.length===1?'client needs':'clients need')+' you. Start with <b>'+(CLIENTS[redActive[0].code].name||'').replace(/</g,'&lt;')+'</b> \u2014 '+redActive[0].cls.reason+'.</div>';
+  } else if(redHandled.length){
+    html+='<div class="jvFocus">\u2705 You\u2019ve reached out to everyone in the red today. Ball\u2019s in their court now.</div>';
   } else if(bands.yellow.length){
     html+='<div class="jvFocus">\u2705 Nobody\u2019s in the red. <b>'+bands.yellow.length+'</b> on the bubble \u2014 a quick nudge keeps them there.</div>';
   } else {
@@ -5204,23 +5219,41 @@ function jvRenderTriage(){
       s+='<div class="jvTBtns" onclick="event.stopPropagation();">'
         +'<button class="jvTBtn gold" onclick="textClient(\''+o.code+'\')">\ud83d\udcac Text '+first+'</button>'
         +'<button class="jvTBtn" onclick="openClientNotes(\''+o.code+'\',\''+safe+'\')">Notes</button>'
+        +(band==='red'?'<button class="jvTBtn done" onclick="jvMarkHandled(\''+o.code+'\')">\u2713 Done</button>':'')
         +'</div>';
     }
     return s+'</div>';
   }
+  function grid(arr,band){ return '<div class="jvBandGrid">'+arr.map(function(o){return card(o,band);}).join('')+'</div>'; }
+  if(redActive.length){
+    html+='<div class="jvBand jvBandRed"><div class="jvBandHead">'
+      +'<span class="jvBandTitle" style="color:#ff5d4d;">Needs you</span>'
+      +'<span class="jvBandCount">'+redActive.length+'</span>'
+      +'<span class="jvBandSay">reach out today</span></div>'+grid(redActive,'red')+'</div>';
+  }
   function section(band,title,say){
     var arr=bands[band]; if(!arr.length) return '';
-    var dot={red:'#ff5d4d',yellow:'#e7b552',green:'#3fcf83'}[band];
+    var dot={yellow:'#e7b552',green:'#3fcf83'}[band];
     var cap=band.charAt(0).toUpperCase()+band.slice(1);
     return '<div class="jvBand jvBand'+cap+'"><div class="jvBandHead">'
       +'<span class="jvBandTitle" style="color:'+dot+';">'+title+'</span>'
       +'<span class="jvBandCount">'+arr.length+'</span>'
-      +'<span class="jvBandSay">'+say+'</span></div>'
-      +'<div class="jvBandGrid">'+arr.map(function(o){return card(o,band);}).join('')+'</div></div>';
+      +'<span class="jvBandSay">'+say+'</span></div>'+grid(arr,band)+'</div>';
   }
-  html+=section('red','Needs you','reach out today');
   html+=section('yellow','On the bubble','a nudge keeps them');
   html+=section('green','Cruising','let them cook');
+  if(redHandled.length){
+    html+='<div class="jvBand jvBandHandled"><div class="jvBandHead">'
+      +'<span class="jvBandTitle" style="color:#3fcf83;">\u2713 Reached out today</span>'
+      +'<span class="jvBandCount">'+redHandled.length+'</span>'
+      +'<span class="jvBandSay">waiting on them to log</span></div><div class="jvBandGrid">'
+      +redHandled.map(function(o){ var info=CLIENTS[o.code]; var nm=(info.name||'').replace(/</g,'&lt;');
+        return '<div class="jvTCard handled" data-name="'+(info.name||'').toLowerCase().replace(/"/g,'')+'" onclick="jvOpenDeep(\''+o.code+'\')">'
+          +'<div class="jvTName"><span class="jvDot" style="background:#3fcf83;color:#3fcf83;"></span>'+nm+'</div>'
+          +'<div class="jvTState" style="color:#7bbf97;">reached out \u00b7 '+o.cls.reason+'</div>'
+          +'<div class="jvTBtns" onclick="event.stopPropagation();"><button class="jvTBtn" onclick="jvUnhandle(\''+o.code+'\')">Undo</button></div></div>';
+      }).join('')+'</div></div>';
+  }
   if(bands.dormant.length){
     html+='<div class="jvBand"><div class="jvDormToggle" onclick="jvToggleDorm()">\ud83d\udca4 Quiet a week or more \u00b7 '+bands.dormant.length+' <span id="jvDormCaret">\u25be</span></div>'
       +'<div id="jvDormList" style="display:none;"><div class="jvDormGrid">'
