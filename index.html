@@ -2041,7 +2041,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.185.0';
+var APP_VERSION = 'v5.186.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -5070,9 +5070,8 @@ function jvRenderGym(){
   _jvReFilter();
 }
 // Workout coach-comment (mirrors the meal comment; writes to workout_logs.coach_comment)
-function _woCommentBlock(w){
-  var wid=w.id; if(!wid) return '';
-  var existing=(w.coach_comment||'').replace(/</g,'&lt;');
+function _woCmtInner(wid, raw){
+  var existing=(raw||'').replace(/</g,'&lt;');
   var shown = existing ? '<div class="jvMealCmt" style="margin-top:8px;">\ud83d\udcac '+existing+'</div>' : '';
   var label = existing ? '\u270e Edit comment' : '\ud83d\udcac Comment';
   return shown
@@ -5085,17 +5084,22 @@ function _woCommentBlock(w){
     + '<button type="button" onclick="_saveWoCmt(event,\''+wid+'\')" style="flex:2;background:var(--gold);border:none;border-radius:8px;padding:8px;font-size:12px;font-weight:800;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Save comment</button>'
     + '</div></div>';
 }
+function _woCommentBlock(w){
+  var wid=w.id; if(!wid) return '';
+  return '<div id="woCmtWrap'+wid+'">'+_woCmtInner(wid, w.coach_comment||'')+'</div>';
+}
 function _openWoCmt(ev,wid){ if(ev&&ev.stopPropagation)ev.stopPropagation(); var b=document.getElementById('woCmtBox'+wid),r=document.getElementById('woCmtRow'+wid); if(b)b.style.display='block'; if(r)r.style.display='none'; var ta=document.getElementById('woCmtInput'+wid); if(ta){try{ta.focus();}catch(e){}} }
 function _cancelWoCmt(ev,wid){ if(ev&&ev.stopPropagation)ev.stopPropagation(); var b=document.getElementById('woCmtBox'+wid),r=document.getElementById('woCmtRow'+wid); if(b)b.style.display='none'; if(r)r.style.display='block'; }
 async function _saveWoCmt(ev,wid){
   if(ev&&ev.stopPropagation)ev.stopPropagation();
-  var ta=document.getElementById('woCmtInput'+wid); if(!ta) return;
+  var ta=document.getElementById('woCmtInput'+wid); if(!ta){ showToast('Comment box not found \u2014 try refreshing'); return; }
   var txt=ta.value.trim();
   try{
     var res=await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+encodeURIComponent(wid), { method:'PATCH', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}), body:JSON.stringify({coach_comment:txt}) });
-    if(res.ok){ showToast('\u2713 Comment saved'); if(jvMode==='gym') jvLoadGym(); }
-    else { showToast('Save failed ('+res.status+') \u2014 add a coach_comment column to workout_logs'); }
-  }catch(e){ showToast('Could not save comment'); }
+    if(res.ok){ showToast('\u2713 Comment saved'); var wrap=document.getElementById('woCmtWrap'+wid); if(wrap) wrap.innerHTML=_woCmtInner(wid, txt); }
+    else if(res.status===400||res.status===404||res.status===204){ var body=''; try{ body=await res.text(); }catch(e){} showToast(/column|coach_comment/i.test(body)? 'workout_logs needs a coach_comment column \u2014 see the SQL' : 'Save failed ('+res.status+')'); }
+    else { showToast('Save failed ('+res.status+')'); }
+  }catch(e){ showToast('Could not save \u2014 network/connection issue'); }
 }
 function jvOpenDeep(code){
   var info=CLIENTS[code]; if(!info) return;
@@ -6040,10 +6044,8 @@ async function jvDelDeepNote(id, code){
 
 // Build the coach-comment block shown under each meal on the trainer dashboard.
 // Shows an existing comment (the client sees this too) + a tap-to-add/edit box.
-function _mealCommentBlock(f, code){
-  var mid = f.id;
-  if(!mid) return ''; // can't attach a comment without a row id
-  var existing = (f.coach_comment||'').replace(/</g,'&lt;');
+function _cmtInner(mid, raw){
+  var existing = (raw||'').replace(/</g,'&lt;');
   var shown = existing
     ? '<div style="background:rgba(245,197,24,0.08);border-left:2px solid var(--gold);border-radius:6px;padding:8px 10px;margin-top:10px;font-size:12.5px;color:var(--text);line-height:1.45;">'+existing+'</div>'
     : '';
@@ -6059,6 +6061,11 @@ function _mealCommentBlock(f, code){
     + '<button type="button" onclick="_saveCmt(event,\''+mid+'\')" style="flex:2;background:var(--gold);border:none;border-radius:8px;padding:8px;font-size:12px;font-weight:800;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Save comment</button>'
     + '</div></div>';
 }
+function _mealCommentBlock(f, code){
+  var mid = f.id;
+  if(!mid) return ''; // can't attach a comment without a row id
+  return '<div id="cmtWrap'+mid+'">'+_cmtInner(mid, f.coach_comment||'')+'</div>';
+}
 function _openCmt(ev, mid){
   if(ev && ev.stopPropagation) ev.stopPropagation();
   var box=document.getElementById('cmtBox'+mid); var row=document.getElementById('cmtRow'+mid);
@@ -6072,16 +6079,16 @@ function _cancelCmt(ev, mid){
 }
 async function _saveCmt(ev, mid){
   if(ev && ev.stopPropagation) ev.stopPropagation();
-  var ta=document.getElementById('cmtInput'+mid); if(!ta){ showToast('Comment box not found'); return; }
+  var ta=document.getElementById('cmtInput'+mid); if(!ta){ showToast('Comment box not found \u2014 try refreshing'); return; }
   var txt=ta.value.trim();
   try{
     var res = await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(mid), {
       method:'PATCH', headers:Object.assign({}, sbHeaders(), {'Prefer':'return=minimal'}),
       body:JSON.stringify({coach_comment: txt})
     });
-    if(res.ok){ showToast('\u2713 Comment saved'); loadTrainerDashboard(); }
+    if(res.ok){ showToast('\u2713 Comment saved'); var wrap=document.getElementById('cmtWrap'+mid); if(wrap) wrap.innerHTML=_cmtInner(mid, txt); }
     else { showToast('Save failed ('+res.status+') \u2014 check the coach_comment column'); }
-  }catch(e){ showToast('Could not save comment'); }
+  }catch(e){ showToast('Could not save \u2014 network/connection issue'); }
 }
 
 function _dashDateStr(offset){
