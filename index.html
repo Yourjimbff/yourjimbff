@@ -2043,7 +2043,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.189.0';
+var APP_VERSION = 'v5.190.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -4854,9 +4854,17 @@ function jvUnhandle(code){ var m=jvHandledMap(); delete m[code]; try{ localStora
 async function jvSyncHandledFromServer(){
   try{
     if(!cl) return;
-    var rows=await sbSelect('jv_handled','coach_code=eq.'+encodeURIComponent(cl.code)+'&date_str=eq.'+encodeURIComponent(_jvTodayKey())+'&limit=600');
+    var res=await fetch(SB_URL+'/rest/v1/jv_handled?coach_code=eq.'+encodeURIComponent(cl.code)+'&date_str=eq.'+encodeURIComponent(_jvTodayKey())+'&limit=600', {headers:sbHeaders()});
+    if(res.status===404 || res.status===400){ window._jvHandledSrv='missing'; return; }
+    window._jvHandledSrv='ok';
+    var rows=await res.json();
     if(rows&&rows.length){ var m=jvHandledMap(); rows.forEach(function(r){ if(r.client_code) m[r.client_code]=_jvTodayKey(); }); try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} }
   }catch(e){}
+}
+function jvCopyHandledSQL(){
+  var sql="CREATE TABLE IF NOT EXISTS jv_handled (coach_code TEXT NOT NULL, client_code TEXT NOT NULL, date_str TEXT NOT NULL, PRIMARY KEY (coach_code, client_code, date_str));\nALTER TABLE jv_handled ENABLE ROW LEVEL SECURITY;\nCREATE POLICY open_all ON jv_handled FOR ALL USING (true) WITH CHECK (true);";
+  try{ navigator.clipboard.writeText(sql); showToast('SQL copied \u2014 Supabase \u2192 SQL Editor \u2192 paste \u2192 Run'); }
+  catch(e){ showToast('Copy failed \u2014 open Supabase SQL editor and create the jv_handled table'); }
 }
 function jvTextAndHandle(code){ try{ textClient(code); }catch(e){} jvMarkHandled(code); }
 function jvToggleHandled(){ var l=document.getElementById('jvHandledList'),c=document.getElementById('jvHandledCaret'); if(!l)return; var open=l.style.display==='none'; l.style.display=open?'block':'none'; if(c)c.textContent=open?'\u25b4':'\u25be'; }
@@ -4883,6 +4891,9 @@ function jvRenderTriage(){
   });
   var shown=bands.red.length+bands.yellow.length+bands.green.length+bands.dormant.length;
   var html='';
+  if(window._jvHandledSrv==='missing'){
+    html+='<div style="background:rgba(231,181,82,0.10);border:1px solid rgba(231,181,82,0.40);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:12.5px;color:#e7b552;line-height:1.5;">Your \u2713 clears are saving on this device only \u2014 they won\u2019t survive incognito or sync to your phone until the <b>jv_handled</b> table exists. Create it once and this goes away. <button onclick="jvCopyHandledSQL()" style="margin-left:4px;background:#e7b552;border:none;border-radius:7px;padding:5px 10px;font-size:11.5px;font-weight:800;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Copy the SQL</button></div>';
+  }
   if(bands.red.length){
     html+='<div class="jvFocus">\ud83c\udfaf <b>'+bands.red.length+'</b> '+(bands.red.length===1?'client needs':'clients need')+' you. Start with <b>'+(CLIENTS[bands.red[0].code].name||'').replace(/</g,'&lt;')+'</b> \u2014 '+bands.red[0].cls.reason+'.</div>';
   } else if(bands.yellow.length){
@@ -5262,6 +5273,10 @@ async function jvChatSend(){
   paint(true);
   var orb=document.getElementById('jvOrb'); if(orb) orb.classList.add('jvThinking');
   var sys='You are Jarvis \u2014 Yusuf\'s running mate inside YOURJIMBFF. Not a copilot that nods along: a co-coach who knows how he operates and works to offset him. When he\'s flat, lift him. When he\'s spun up or scattered, ground him and narrow it to the one thing that matters. Keep him honest and keep him steady. You can see his clients\' logged data for the selected day. Talk like a sharp, loyal friend who\'s in it with him \u2014 direct, specific, real. Use real names and numbers. Never a yes-man: if he\'s avoiding something or about to overdo it, say so plainly and kindly. No corporate or AI-sounding language, no fluff, no hype padding. Push him toward real action and real conversations with his clients and the people in his life \u2014 you point him at the work, you don\'t replace it. Current day context:\n'+_jvBuildContext();
+  if(/\b(program|programme|workout|routine|split|assign|schedule|plan (her|him|them)|build (her|him|them|a|out)|give (her|him|them|leandra))\b/i.test(msg)){
+    var _roster=Object.keys(CLIENTS).filter(function(k){return !CLIENTS[k].isTrainer;}).map(function(k){ return k+' = '+(CLIENTS[k].name||k); }).join('\n');
+    sys += '\n\n=== BUILDING A WORKOUT PROGRAM ===\nYou can build and assign a full workout program straight into a client\u2019s app. When Yusuf asks you to create / assign / schedule / build a program or workouts for a specific client, actually do it. Speak to him normally first \u2014 a short, plain confirmation of what you built (the split, the days, and any constraint you honored like equipment or moves to avoid) \u2014 then end your reply with a hidden marker on its own final line, exactly this shape:\n[PROGRAM client=CLIENT_CODE]{"name":"Short program name","description":"one-line summary","workouts":[{"day":1,"title":"Push","exercises":[{"name":"Dumbbell bench press","sets":4,"detail":"8-10 reps"},{"name":"Incline DB press","sets":3,"detail":"10-12"}],"notes":"optional cue"}]}[/PROGRAM]\nRules:\n- client MUST be the exact code from the roster below, never the display name.\n- day: 1=Mon, 2=Tue ... 7=Sun. One object per training day; skip rest days.\n- Honor every constraint Yusuf gives \u2014 equipment on hand, moves to avoid, days per week, the split he wants.\n- Each exercise needs name + sets (a number); detail (reps/weight/tempo) is optional.\n- NEVER describe or mention the marker to Yusuf. Talk like a coach, then place the marker last.\n- Only emit a marker when he actually wants it built/assigned. If he\u2019s just asking or thinking out loud, talk it through with no marker.\n\nCLIENT ROSTER (code = name):\n'+_roster;
+  }
   var msgs=[{role:'user',content:sys}];
   jvChatHistory.slice(-6).forEach(function(m){ msgs.push(m); });
   try{
@@ -5269,11 +5284,47 @@ async function jvChatSend(){
     var data=await res.json();
     var txt = data && data.content ? (Array.isArray(data.content)?data.content.map(function(b){return b.text||'';}).join(''):data.content) : (data.text||data.completion||'');
     if(!txt) txt='(no response)';
+    var _pg = await _jvApplyPrograms(txt);
+    txt = (_pg.clean && _pg.clean.trim()) ? _pg.clean : txt;
     jvChatHistory.push({role:'assistant',content:txt});
+    if(_pg.results && _pg.results.length){
+      var _oks=_pg.results.filter(function(r){return r.ok;});
+      var _bad=_pg.results.filter(function(r){return !r.ok;});
+      if(_oks.length){ jvChatHistory.push({role:'assistant',content:'\u2705 Live in their app now: '+_oks.map(function(r){ return (CLIENTS[r.code]&&CLIENTS[r.code].name||r.code)+' \u2014 '+r.count+' day'+(r.count===1?'':'s'); }).join(', ')+'.'}); }
+      if(_bad.length){ jvChatHistory.push({role:'assistant',content:'\u26a0\ufe0f Couldn\u2019t save the program for '+_bad.map(function(r){return (CLIENTS[r.code]&&CLIENTS[r.code].name||r.code);}).join(', ')+'. The programs / program_workouts tables may need a look.'}); }
+    }
     paint(false);
   }catch(e){ jvChatHistory.push({role:'assistant',content:'Could not reach Jarvis. Check connection.'}); paint(false); }
   if(orb) orb.classList.remove('jvThinking');
   out.scrollTop = out.scrollHeight;
+}
+
+// Jarvis can author a program straight into a client's app.
+// Parse any [PROGRAM client=CODE]{...}[/PROGRAM] markers, write programs + program_workouts, return cleaned text.
+async function _jvApplyPrograms(txt){
+  var re=/\[PROGRAM\s+client=([^\]\s]+)\]\s*([\s\S]*?)\[\/PROGRAM\]/gi;
+  var jobs=[], m;
+  while((m=re.exec(txt))){ jobs.push({code:m[1], json:m[2]}); }
+  var clean=txt.replace(re,'').replace(/\n{3,}/g,'\n\n').trim();
+  var results=[];
+  for(var i=0;i<jobs.length;i++){
+    var code=jobs[i].code;
+    try{
+      var spec=JSON.parse(jobs[i].json);
+      // one active program per client — retire the old ones first so the new one is what shows
+      try{ await fetch(SB_URL+'/rest/v1/programs?client_code=eq.'+encodeURIComponent(code), {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal','Content-Type':'application/json'}), body:JSON.stringify({is_active:false})}); }catch(e){}
+      var prog=await sbInsertReturning('programs', {client_code:code, name:(spec.name||'New program'), description:(spec.description||''), is_active:true});
+      var pid=prog && prog.id;
+      if(!pid){ results.push({code:code, ok:false, count:0}); continue; }
+      var wos=(spec.workouts||[]).filter(Boolean).map(function(w){
+        return {program_id:pid, day_of_week:Number(w.day||w.day_of_week||1), title:(w.title||'Workout'), exercises:(w.exercises||[]), notes:(w.notes||'')};
+      });
+      var ok=true;
+      if(wos.length){ ok=await sbInsert('program_workouts', wos); }
+      results.push({code:code, ok:(ok!==false), count:wos.length});
+    }catch(e){ results.push({code:code, ok:false, count:0}); }
+  }
+  return {clean:clean, results:results};
 }
 
 // ===== THE ORB — summon an AI read of the day =====
