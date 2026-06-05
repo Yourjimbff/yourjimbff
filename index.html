@@ -2050,7 +2050,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.204.0';
+var APP_VERSION = 'v5.205.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -5164,6 +5164,7 @@ function jvOpenDeep(code){
     + '</div>'
     + '<div id="jvDeepNotes" style="display:none;margin-bottom:18px;"></div>'
     + '<button onclick="jvAssignProgram(\''+code+'\')" style="width:100%;background:#12100a;border:1px solid rgba(245,197,24,0.32);border-radius:10px;padding:11px;font-weight:800;color:var(--gold);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;margin-bottom:18px;">\ud83d\uddc2\ufe0f Assign program</button>'
+    + '<div id="jvDeepWeight"></div>'
     + '<div id="jvDeepProgram"></div>'
     + dossier
     + '<div id="jvDeepDays"><div style="color:#777;font-size:13px;padding:10px 0;">Loading recent history\u2026</div></div>';
@@ -5171,6 +5172,51 @@ function jvOpenDeep(code){
   window._jvDeepCode=code; window._jvDeepOpenAt=Date.now(); window._jvDeepMode=jvMode;
   _jvDeepHistory(code);
   _jvLoadDeepProgram(code);
+  _jvLoadDeepWeight(code);
+}
+// Weight trend chart for the Jarvis client view — one point per day, charted over time.
+async function _jvLoadDeepWeight(code){
+  var el=document.getElementById('jvDeepWeight'); if(!el) return;
+  try{
+    var rows=await sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=200');
+    rows=(rows||[]).filter(function(r){ return r && r.weight!=null && !isNaN(parseFloat(r.weight)); });
+    function tsOf(r){ var t=r.logged_at||r.created_at||r.date_str; var d=new Date(t); return isNaN(d.getTime())?0:d.getTime(); }
+    var byDay={};
+    rows.forEach(function(r){ var t=tsOf(r); if(!t) return; var d=new Date(t); var k=d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); if(!byDay[k] || t>byDay[k].t) byDay[k]={t:t, w:parseFloat(r.weight)}; });
+    var pts=Object.keys(byDay).map(function(k){return byDay[k];}).sort(function(a,b){return a.t-b.t;});
+    if(pts.length<2){
+      el.innerHTML='<div style="background:#0e0e0e;border:1px solid #1d1d1d;border-radius:14px;padding:13px 15px;margin-bottom:18px;color:#888;font-size:12.5px;">'+(pts.length===1?('Last weigh-in: '+pts[0].w.toFixed(1)+' lb. Need at least two to chart a trend.'):'No weigh-ins logged yet.')+'</div>';
+      return;
+    }
+    var ws=pts.map(function(p){return p.w;});
+    var mn=Math.min.apply(null,ws), mx=Math.max.apply(null,ws);
+    var pad=((mx-mn)*0.18)||1, lo=mn-pad, hi=mx+pad;
+    var W=600,H=150,L=10,Rt=10,T=14,B=16,n=pts.length;
+    function X(i){ return L+(i/(n-1))*(W-L-Rt); }
+    function Y(w){ return T+(1-((w-lo)/(hi-lo)))*(H-T-B); }
+    var line=''; pts.forEach(function(p,i){ line+=(i?'L':'M')+X(i).toFixed(1)+' '+Y(p.w).toFixed(1)+' '; });
+    var area=line+'L'+X(n-1).toFixed(1)+' '+(H-B)+' L'+X(0).toFixed(1)+' '+(H-B)+' Z';
+    var first=ws[0], last=ws[n-1], delta=last-first;
+    var deltaStr=(delta>0?'+':'')+delta.toFixed(1)+' lb';
+    var rangeDays=Math.max(1,Math.round((pts[n-1].t-pts[0].t)/86400000));
+    var fmt=function(t){ return new Date(t).toLocaleDateString('en-US',{month:'short',day:'numeric'}); };
+    el.innerHTML='<div style="background:#0e0e0e;border:1px solid #1d1d1d;border-radius:14px;padding:14px 16px;margin-bottom:18px;">'
+      +'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">'
+        +'<div style="font-size:10px;font-weight:800;letter-spacing:1.4px;text-transform:uppercase;color:#777;">\u2696\ufe0f Weight trend</div>'
+        +'<div style="font-size:11px;color:#888;">'+n+' weigh-ins \u00b7 '+rangeDays+'d</div>'
+      +'</div>'
+      +'<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px;">'
+        +'<div style="font-size:25px;font-weight:800;color:#fff;line-height:1;">'+last.toFixed(1)+' <span style="font-size:13px;color:#888;font-weight:700;">lb</span></div>'
+        +'<div style="font-size:13px;font-weight:800;color:'+(Math.abs(delta)<0.1?'#888':'var(--gold)')+';">'+deltaStr+' <span style="color:#777;font-weight:600;font-size:11px;">over '+rangeDays+'d</span></div>'
+      +'</div>'
+      +'<svg viewBox="0 0 '+W+' '+H+'" width="100%" style="display:block;height:auto;">'
+        +'<path d="'+area+'" fill="rgba(245,197,24,0.07)"/>'
+        +'<path d="'+line+'" fill="none" stroke="var(--gold)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>'
+        +'<circle cx="'+X(n-1).toFixed(1)+'" cy="'+Y(last).toFixed(1)+'" r="4" fill="var(--gold)"/>'
+      +'</svg>'
+      +'<div style="display:flex;justify-content:space-between;font-size:10px;color:#666;margin-top:2px;"><span>'+fmt(pts[0].t)+'</span><span>'+fmt(pts[n-1].t)+'</span></div>'
+    +'</div>';
+  }catch(e){ el.innerHTML=''; }
 }
 // Show the client's scheduled program (their week) right in the deep dive — no need to log in as them.
 async function _jvLoadDeepProgram(code){
