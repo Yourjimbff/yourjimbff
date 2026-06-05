@@ -2041,7 +2041,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.184.0';
+var APP_VERSION = 'v5.185.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -4817,6 +4817,7 @@ async function jvLoadTriage(silent){
     wos.forEach(function(w){ if(dayOf(w.date_str,w.logged_at)===0)(woByClient[w.client_code]=woByClient[w.client_code]||[]).push(w); });
     jvData={foodsByClient:foodsByClient, woByClient:woByClient};
     jvTriage={per:per, days:days, now:nowMs};
+    await jvSyncHandledFromServer();
     jvRenderTriage();
   }catch(e){ wall.innerHTML='<div class="jvLoading">Could not load. Try Refresh.</div>'; }
 }
@@ -4839,8 +4840,15 @@ function _jvClassify(p, nowMs){
 function _jvTodayKey(){ return _jvDayKey(new Date()); }
 function jvHandledMap(){ try{ return JSON.parse(localStorage.getItem('yjb_jv_handled')||'{}'); }catch(e){ return {}; } }
 function jvIsHandled(code){ return jvHandledMap()[code]===_jvTodayKey(); }
-function jvMarkHandled(code){ var m=jvHandledMap(); m[code]=_jvTodayKey(); try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} jvRenderTriage(); }
-function jvUnhandle(code){ var m=jvHandledMap(); delete m[code]; try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} jvRenderTriage(); }
+function jvMarkHandled(code){ var m=jvHandledMap(); m[code]=_jvTodayKey(); try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} try{ if(cl) fetch(SB_URL+'/rest/v1/jv_handled?on_conflict=coach_code,client_code,date_str', {method:'POST', headers:Object.assign({},sbHeaders(),{'Prefer':'resolution=merge-duplicates,return=minimal','Content-Type':'application/json'}), body:JSON.stringify({coach_code:cl.code, client_code:code, date_str:_jvTodayKey()})}); }catch(e){} jvRenderTriage(); }
+function jvUnhandle(code){ var m=jvHandledMap(); delete m[code]; try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} try{ if(cl) fetch(SB_URL+'/rest/v1/jv_handled?coach_code=eq.'+encodeURIComponent(cl.code)+'&client_code=eq.'+encodeURIComponent(code)+'&date_str=eq.'+encodeURIComponent(_jvTodayKey()), {method:'DELETE', headers:sbHeaders()}); }catch(e){} jvRenderTriage(); }
+async function jvSyncHandledFromServer(){
+  try{
+    if(!cl) return;
+    var rows=await sbSelect('jv_handled','coach_code=eq.'+encodeURIComponent(cl.code)+'&date_str=eq.'+encodeURIComponent(_jvTodayKey())+'&limit=600');
+    if(rows&&rows.length){ var m=jvHandledMap(); rows.forEach(function(r){ if(r.client_code) m[r.client_code]=_jvTodayKey(); }); try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} }
+  }catch(e){}
+}
 function jvTextAndHandle(code){ try{ textClient(code); }catch(e){} jvMarkHandled(code); }
 function jvToggleHandled(){ var l=document.getElementById('jvHandledList'),c=document.getElementById('jvHandledCaret'); if(!l)return; var open=l.style.display==='none'; l.style.display=open?'block':'none'; if(c)c.textContent=open?'\u25b4':'\u25be'; }
 function jvRenderTriage(){
@@ -5119,11 +5127,13 @@ async function _jvDeepHistory(code){
     var res=await Promise.all([
       sbSelect('food_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=90'),
       sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=40'),
-      sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=60')
+      sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=60'),
+      sbSelect('step_logs','client_code=eq.'+encodeURIComponent(code)+'&order=updated_at.desc&limit=60')
     ]);
-    var foods=res[0]||[], wos=res[1]||[], weights=res[2]||[];
-    var wtByDay={};
+    var foods=res[0]||[], wos=res[1]||[], weights=res[2]||[], steps=res[3]||[];
+    var wtByDay={}, stepsByDay={};
     weights.forEach(function(r){ var k=keyOf(r.date_str,r.logged_at||r.created_at); if(k && !(k in wtByDay) && r.weight!=null) wtByDay[k]=r.weight; });
+    steps.forEach(function(r){ var k=keyOf(r.date_str,r.updated_at); var v=Number(r.steps)||0; if(k && v>0 && (!(k in stepsByDay) || v>stepsByDay[k])) stepsByDay[k]=v; });
     var groups={};
     function g(k,ts){ if(!groups[k]) groups[k]={ts:ts,meals:[],wos:[]}; if(ts>groups[k].ts) groups[k].ts=ts; return groups[k]; }
     foods.forEach(function(f){ var k=keyOf(f.date_str,f.logged_at); g(k,tsOf(f.date_str,f.logged_at)).meals.push(f); });
@@ -5156,6 +5166,7 @@ async function _jvDeepHistory(code){
       var tot=meals.reduce(function(a,f){a.c+=f.calories||0;a.p+=f.protein||0;a.cb+=f.carbs||0;a.ft+=f.fat||0;return a;},{c:0,p:0,cb:0,ft:0});
       var tline = meals.length ? (Math.round(tot.c).toLocaleString()+' cal \u00b7 '+Math.round(tot.p)+'g P \u00b7 '+Math.round(tot.cb)+'g C \u00b7 '+Math.round(tot.ft)+'g F') : '';
       var wt = (k in wtByDay) ? ('\u2696\ufe0f '+(Math.round(wtByDay[k]*10)/10)+' lbs') : '';
+      var st = (k in stepsByDay) ? ('\ud83d\udc5f '+stepsByDay[k].toLocaleString()+' steps') : '';
       var woBlock=gp.wos.map(woCard).join('');
       var bySlot={};
       meals.forEach(function(f){
@@ -5175,7 +5186,7 @@ async function _jvDeepHistory(code){
         + '<div style="margin-bottom:12px;border-bottom:1px solid #1d1d1d;padding-bottom:8px;">'
         +   '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;">'
         +     '<span style="font-size:13px;font-weight:800;color:#fff;">'+(rel?rel+' \u00b7 ':'')+'<span style="color:#888;font-weight:600;">'+k+'</span></span>'
-        +     (wt?'<span style="font-size:12px;font-weight:700;color:#9fd0ff;white-space:nowrap;">'+wt+'</span>':'')
+        +     ((wt||st)?'<span style="font-size:12px;font-weight:700;white-space:nowrap;">'+(wt?'<span style="color:#9fd0ff;">'+wt+'</span>':'')+(wt&&st?' <span style="color:#444;">\u00b7</span> ':'')+(st?'<span style="color:#9fe3b0;">'+st+'</span>':'')+'</span>':'')
         +   '</div>'
         +   (tline?'<div style="font-size:12px;font-weight:800;color:var(--gold);margin-top:5px;">'+tline+'</div>':'')
         + '</div>'
