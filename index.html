@@ -589,6 +589,7 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
     <div id="jvModeToggle">
       <button class="jvModeBtn on" id="jvModeCockpit" onclick="jvSetMode('cockpit')">Front Desk</button>
       <button class="jvModeBtn" id="jvModeFeed" onclick="jvSetMode('feed')">Feed</button>
+      <button class="jvModeBtn" id="jvModeGym" onclick="jvSetMode('gym')">Gym</button>
     </div>
     <div id="jvDayTabs">
       <button class="jvDayTab jvActive" onclick="jvSetDay(1)">Yesterday</button>
@@ -2040,7 +2041,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.183.0';
+var APP_VERSION = 'v5.184.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -4735,15 +4736,17 @@ var jvTriage=null;
 function _jvDayKey(d){ return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
 function jvSetMode(m){
   jvMode=m;
-  var mc=document.getElementById('jvModeCockpit'), mf=document.getElementById('jvModeFeed');
+  var mc=document.getElementById('jvModeCockpit'), mf=document.getElementById('jvModeFeed'), mg=document.getElementById('jvModeGym');
   if(mc) mc.classList.toggle('on', m==='cockpit');
   if(mf) mf.classList.toggle('on', m==='feed');
+  if(mg) mg.classList.toggle('on', m==='gym');
   document.body.classList.toggle('jv-cockpit', m==='cockpit');
   var wall=document.getElementById('jvWall'); if(!wall) return;
   if(m==='cockpit'){ wall.classList.add('jvTriageMode'); jvLoadTriage(); }
+  else if(m==='gym'){ wall.classList.remove('jvTriageMode'); jvLoadGym(); }
   else { wall.classList.remove('jvTriageMode'); jvLoad(); }
 }
-function jvRefresh(){ if(jvMode==='cockpit') jvLoadTriage(); else jvLoad(); }
+function jvRefresh(){ if(jvMode==='cockpit') jvLoadTriage(); else if(jvMode==='gym') jvLoadGym(); else jvLoad(); }
 // Keep the Front Desk live: silently re-pull when the tab regains focus and on a gentle timer,
 // so a client logging mid-session doesn't leave you staring at a stale board.
 (function(){
@@ -4971,27 +4974,14 @@ function jvRenderWall(){
     return (w.length?40:0) + f.length*10 + photos*8 + Math.min(20, f.reduce(function(t,x){return t+(x.protein||0);},0)/10);
   }
   codes.sort(function(a,b){ var ha=has(a)?1:0, hb=has(b)?1:0; if(ha!==hb) return hb-ha; return score(b)-score(a); });
-  var active=codes.filter(has);
+  var active=codes.filter(function(c){ return fdsOf(c).length; });
   var rmap={nutrient_dense:['Nutrient Dense','#22c77a'],good:['Good','#22c77a'],clean:['Good','#22c77a'],okay:['Okay','#d9a93a'],bad:['Off-plan','#e5746b']};
   var html='';
   active.forEach(function(code){
-    var info=CLIENTS[code]; var wos=wosOf(code);
+    var info=CLIENTS[code];
     var fds=fdsOf(code).slice().sort(function(a,b){return (a.logged_at?new Date(a.logged_at):0)-(b.logged_at?new Date(b.logged_at):0);});
     var tc=fds.reduce(function(t,f){return t+(f.calories||0);},0);
     var tp=fds.reduce(function(t,f){return t+(f.protein||0);},0);
-    // WORKOUTS — expanded to bullets, or explicit "no workout"
-    var woHtml='';
-    if(wos.length){
-      woHtml = wos.map(function(w){
-        var lines=[];
-        if(w.exercises&&w.exercises.length){ lines=w.exercises.map(function(ex){return (ex.name||'')+(ex.detail?(' \u2014 '+ex.detail):'');}); }
-        else if(w.description){ lines=w.description.split('\n').map(function(x){return x.replace(/^[\u2022\-\s]+/,'').trim();}).filter(Boolean); }
-        var bullets = lines.length ? '<div class="jvWoBullets">'+lines.map(function(l){return '<div class="jvWoLi">'+l.replace(/</g,'&lt;')+'</div>';}).join('')+'</div>' : '';
-        return '<div class="jvWoCard"><div class="jvWoTitle">\ud83c\udfcb '+(w.title||'Workout').replace(/</g,'&lt;')+(w.intensity?'<span class="jvWoInt"> \u00b7 '+w.intensity+'/10</span>':'')+'</div>'+bullets+'</div>';
-      }).join('');
-    } else {
-      woHtml = '<div class="jvNoWo">No workout logged</div>';
-    }
     // MEALS — photo-forward, big
     var mealHtml=fds.map(function(f){
       var rt=rmap[f.rating]||['',''];
@@ -5011,9 +5001,6 @@ function jvRenderWall(){
     html+='<div class="jvCard" data-name="'+(info.name||'').toLowerCase().replace(/"/g,'')+'" onclick="jvOpenDeep(\''+code+'\')">'
       + '<div class="jvCardTop"><div class="jvCardName"><span class="jvDot" style="background:#22c77a;"></span>'+info.name+'</div>'
       + (fds.length?'<div class="jvTot">'+Math.round(tc).toLocaleString()+' cal \u00b7 '+Math.round(tp)+'g P</div>':'')+'</div>'
-      + '<div class="jvSecHead">\ud83c\udfcb\ufe0f Gym floor</div>'
-      + woHtml
-      + '<div class="jvSecHead">\ud83c\udf73\ufe0f The Kitchen</div>'
       + (mealHtml || '<div class="jvMini">No meals logged this day.</div>')
       + '<div style="display:flex;gap:7px;margin-top:13px;" onclick="event.stopPropagation()">'
       +   '<button onclick="event.stopPropagation();textClient(\''+code+'\')" style="flex:1;background:var(--gold);border:none;border-radius:10px;padding:9px;font-weight:800;font-size:13px;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\ud83d\udcac Text '+((info.name||'').split(' ')[0].replace(/</g,'&lt;'))+'</button>'
@@ -5021,9 +5008,86 @@ function jvRenderWall(){
       + '</div>'
       + '</div>';
   });
-  document.getElementById('jvWallHead').textContent = 'The Feed \u00b7 '+active.length+' logged';
-  wall.innerHTML = html || '<div class="jvLoading">Nobody logged on this day yet.</div>';
+  document.getElementById('jvWallHead').textContent = 'The Kitchen \u00b7 '+active.length+' logged';
+  wall.innerHTML = html || '<div class="jvLoading">Nobody logged food on this day yet.</div>';
   _jvReFilter();
+}
+// ===== GYM FLOOR — all workouts, mirrors the Kitchen feed but for training =====
+var jvGymData=null;
+async function jvLoadGym(){
+  var wall=document.getElementById('jvWall'); if(!wall) return;
+  wall.innerHTML='<div class="jvLoading">Loading workouts\u2026</div>';
+  var ds=jvDateStr(jvDay);
+  try{
+    var wos=await sbSelect('workout_logs','order=logged_at.desc&limit=400')||[];
+    var dObj=new Date(); dObj.setDate(dObj.getDate()-jvDay);
+    var byClient={};
+    wos.forEach(function(w){
+      if(w.date_str){ if(w.date_str!==ds) return; }
+      else { try{ if(new Date(w.logged_at).toDateString()!==dObj.toDateString()) return; }catch(e){ return; } }
+      if(!CLIENTS[w.client_code]||CLIENTS[w.client_code].isTrainer) return;
+      (byClient[w.client_code]=byClient[w.client_code]||[]).push(w);
+    });
+    jvGymData=byClient;
+    jvRenderGym();
+  }catch(e){ wall.innerHTML='<div class="jvLoading">Could not load. Try Refresh.</div>'; }
+}
+function _jvWoCard(w){
+  var lines=[];
+  if(w.exercises&&w.exercises.length){ lines=w.exercises.map(function(ex){return (ex.name||'')+(ex.detail?(' \u2014 '+ex.detail):'');}); }
+  else if(w.description){ lines=w.description.split('\n').map(function(x){return x.replace(/^[\u2022\-\s]+/,'').trim();}).filter(Boolean); }
+  var bullets = lines.length ? '<div class="jvWoBullets">'+lines.map(function(l){return '<div class="jvWoLi">'+l.replace(/</g,'&lt;')+'</div>';}).join('')+'</div>' : '';
+  return '<div class="jvWoCard"><div class="jvWoTitle">\ud83c\udfcb '+(w.title||'Workout').replace(/</g,'&lt;')+(w.intensity?'<span class="jvWoInt"> \u00b7 '+w.intensity+'/10</span>':'')+'</div>'+bullets+_woCommentBlock(w)+'</div>';
+}
+function jvRenderGym(){
+  var wall=document.getElementById('jvWall'); if(!wall||!jvGymData) return;
+  var codes=Object.keys(jvGymData).filter(function(c){ return jvGymData[c]&&jvGymData[c].length; });
+  codes.sort(function(a,b){ return jvGymData[b].length-jvGymData[a].length; });
+  var html='';
+  codes.forEach(function(code){
+    var info=CLIENTS[code]; var wos=jvGymData[code];
+    var first=((info.name||'').split(' ')[0]).replace(/</g,'&lt;');
+    html+='<div class="jvCard" data-name="'+(info.name||'').toLowerCase().replace(/"/g,'')+'" onclick="jvOpenDeep(\''+code+'\')">'
+      + '<div class="jvCardTop"><div class="jvCardName"><span class="jvDot" style="background:#9fd0ff;"></span>'+info.name+'</div>'
+      + '<div class="jvTot">'+wos.length+' workout'+(wos.length>1?'s':'')+'</div></div>'
+      + wos.map(_jvWoCard).join('')
+      + '<div style="display:flex;gap:7px;margin-top:13px;" onclick="event.stopPropagation()">'
+      +   '<button onclick="event.stopPropagation();textClient(\''+code+'\')" style="flex:1;background:var(--gold);border:none;border-radius:10px;padding:9px;font-weight:800;font-size:13px;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\ud83d\udcac Text '+first+'</button>'
+      +   '<button title="Notes" onclick="event.stopPropagation();openClientNotes(\''+code+'\',\''+(info.name||'').replace(/'/g,"\\'")+'\')" style="background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:9px 12px;font-weight:800;font-size:13px;color:#fff;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\ud83d\udcdd</button>'
+      + '</div>'
+      + '</div>';
+  });
+  var head=document.getElementById('jvWallHead'); if(head) head.textContent='The Gym Floor \u00b7 '+codes.length+' logged';
+  wall.innerHTML = html || '<div class="jvLoading">No workouts logged on this day yet.</div>';
+  _jvReFilter();
+}
+// Workout coach-comment (mirrors the meal comment; writes to workout_logs.coach_comment)
+function _woCommentBlock(w){
+  var wid=w.id; if(!wid) return '';
+  var existing=(w.coach_comment||'').replace(/</g,'&lt;');
+  var shown = existing ? '<div class="jvMealCmt" style="margin-top:8px;">\ud83d\udcac '+existing+'</div>' : '';
+  var label = existing ? '\u270e Edit comment' : '\ud83d\udcac Comment';
+  return shown
+    + '<div id="woCmtRow'+wid+'" style="margin-top:8px;" onclick="event.stopPropagation();">'
+    + '<button type="button" onclick="_openWoCmt(event,\''+wid+'\')" style="background:#161616;border:1px solid #2a2a2a;border-radius:8px;padding:6px 11px;font-size:11.5px;font-weight:700;color:#fff;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">'+label+'</button></div>'
+    + '<div id="woCmtBox'+wid+'" style="display:none;margin-top:8px;" onclick="event.stopPropagation();">'
+    + '<textarea id="woCmtInput'+wid+'" placeholder="Leave a comment on this workout\u2026" style="width:100%;box-sizing:border-box;min-height:58px;background:#0f0f0f;border:1px solid #2a2a2a;border-radius:9px;padding:9px;font-size:13px;color:#fff;font-family:\'Plus Jakarta Sans\',sans-serif;resize:vertical;">'+existing.replace(/&lt;/g,'<')+'</textarea>'
+    + '<div style="display:flex;gap:7px;margin-top:7px;">'
+    + '<button type="button" onclick="_cancelWoCmt(event,\''+wid+'\')" style="flex:1;background:transparent;border:1px solid #2a2a2a;border-radius:8px;padding:8px;font-size:12px;font-weight:700;color:#9a9a9a;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Cancel</button>'
+    + '<button type="button" onclick="_saveWoCmt(event,\''+wid+'\')" style="flex:2;background:var(--gold);border:none;border-radius:8px;padding:8px;font-size:12px;font-weight:800;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Save comment</button>'
+    + '</div></div>';
+}
+function _openWoCmt(ev,wid){ if(ev&&ev.stopPropagation)ev.stopPropagation(); var b=document.getElementById('woCmtBox'+wid),r=document.getElementById('woCmtRow'+wid); if(b)b.style.display='block'; if(r)r.style.display='none'; var ta=document.getElementById('woCmtInput'+wid); if(ta){try{ta.focus();}catch(e){}} }
+function _cancelWoCmt(ev,wid){ if(ev&&ev.stopPropagation)ev.stopPropagation(); var b=document.getElementById('woCmtBox'+wid),r=document.getElementById('woCmtRow'+wid); if(b)b.style.display='none'; if(r)r.style.display='block'; }
+async function _saveWoCmt(ev,wid){
+  if(ev&&ev.stopPropagation)ev.stopPropagation();
+  var ta=document.getElementById('woCmtInput'+wid); if(!ta) return;
+  var txt=ta.value.trim();
+  try{
+    var res=await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+encodeURIComponent(wid), { method:'PATCH', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}), body:JSON.stringify({coach_comment:txt}) });
+    if(res.ok){ showToast('\u2713 Comment saved'); if(jvMode==='gym') jvLoadGym(); }
+    else { showToast('Save failed ('+res.status+') \u2014 add a coach_comment column to workout_logs'); }
+  }catch(e){ showToast('Could not save comment'); }
 }
 function jvOpenDeep(code){
   var info=CLIENTS[code]; if(!info) return;
@@ -5043,7 +5107,7 @@ function jvOpenDeep(code){
     + dossier
     + '<div id="jvDeepDays"><div style="color:#777;font-size:13px;padding:10px 0;">Loading recent history\u2026</div></div>';
   document.body.classList.add('jv-deep-open');
-  window._jvDeepCode=code; window._jvDeepOpenAt=Date.now();
+  window._jvDeepCode=code; window._jvDeepOpenAt=Date.now(); window._jvDeepMode=jvMode;
   _jvDeepHistory(code);
 }
 async function _jvDeepHistory(code){
@@ -5125,7 +5189,7 @@ async function _jvDeepHistory(code){
 function jvCloseDeep(){
   document.body.classList.remove('jv-deep-open');
   try{
-    if(window._jvDeepCode && (Date.now()-(window._jvDeepOpenAt||0))>3000){ jvMarkHandled(window._jvDeepCode); }
+    if(window._jvDeepMode==='cockpit' && window._jvDeepCode && (Date.now()-(window._jvDeepOpenAt||0))>3000){ jvMarkHandled(window._jvDeepCode); }
   }catch(e){}
   window._jvDeepCode=null;
 }
