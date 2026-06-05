@@ -1278,11 +1278,10 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
     </div>
     <div class="chat-input-wrap">
       <div class="chat-photo-prev" id="chatPhotoPrev">
-        <img id="chatPhotoImg" src="" alt="">
-        <button class="chat-photo-x" onclick="clearChatPhoto()">×</button>
+        <div id="chatPhotoStrip" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
       </div>
       <div class="chat-input-row">
-        <label class="chat-pbtn" id="chatPbtn">📷<input type="file" id="chatPhotoInput" accept="image/*" onchange="hdlChatPhoto(this)"></label>
+        <label class="chat-pbtn" id="chatPbtn">📷<input type="file" id="chatPhotoInput" accept="image/*" multiple onchange="hdlChatPhoto(this)"></label>
         <button class="chat-mic" id="chatMicBtn" onclick="toggleChatMic()" title="Tap to dictate">🎙️</button>
         <textarea class="chat-ti" id="chatInput" placeholder="Ask anything or share an update" rows="1" onkeydown="chatKeydown(event)" oninput="chatAutogrow(this)"></textarea>
         <button class="chat-send" id="chatSendBtn" onclick="sendChatMessage()"><span class="chat-send-arrow">↑</span><div class="chat-send-spin"></div></button>
@@ -2041,7 +2040,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.187.0';
+var APP_VERSION = 'v5.188.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -10246,7 +10245,8 @@ document.querySelectorAll('.mbg .msh, .gbg .msh').forEach(function(sheet){
 // ===== ASK YUSUF CHAT =====
 var chatHistory=[];           // [{role:'user'|'assistant', content:string, logged_at:string, has_image:bool}]
 var chatLoadedFor=null;       // tracks which client we've loaded for, so we don't reload every tab open
-var chatPhotoData=null;       // base64 data URL for pending photo
+var chatPhotoData=null;       // base64 data URL for the FIRST pending photo (kept for single-photo logic)
+var chatPhotos=[];            // all pending photos for this message (multi-image upload)
 var chatBusy=false;
 
 var chatShowingFullHistory = false;
@@ -10493,21 +10493,42 @@ function chatKeydown(e){
 }
 
 function hdlChatPhoto(input){
-  var file=input.files && input.files[0];
-  if(!file)return;
-  var reader=new FileReader();
-  reader.onload=function(ev){
-    chatPhotoData=ev.target.result;
-    document.getElementById('chatPhotoImg').src=chatPhotoData;
-    document.getElementById('chatPhotoPrev').classList.add('show');
-    document.getElementById('chatPbtn').classList.add('has');
-  };
-  reader.readAsDataURL(file);
+  var files=input.files; if(!files||!files.length)return;
+  var MAX=4;
+  Array.prototype.slice.call(files).forEach(function(file){
+    var reader=new FileReader();
+    reader.onload=function(ev){
+      if(chatPhotos.length>=MAX){ showToast('Up to '+MAX+' photos at once'); return; }
+      chatPhotos.push(ev.target.result);
+      chatPhotoData=chatPhotos[0];
+      renderChatPhotos();
+    };
+    reader.readAsDataURL(file);
+  });
+  input.value=''; // let them add more in a second tap, or re-add the same file
+}
+function renderChatPhotos(){
+  var prev=document.getElementById('chatPhotoPrev'), strip=document.getElementById('chatPhotoStrip'), pbtn=document.getElementById('chatPbtn');
+  if(!prev||!strip) return;
+  if(!chatPhotos.length){ prev.classList.remove('show'); strip.innerHTML=''; if(pbtn) pbtn.classList.remove('has'); return; }
+  strip.innerHTML=chatPhotos.map(function(src,i){
+    return '<div style="position:relative;width:54px;height:54px;border-radius:9px;overflow:hidden;border:1px solid var(--border);flex:0 0 auto;">'
+      +'<img src="'+src+'" style="width:100%;height:100%;object-fit:cover;display:block;">'
+      +'<button type="button" onclick="removeChatPhoto('+i+')" style="position:absolute;top:1px;right:1px;width:18px;height:18px;border:none;border-radius:50%;background:rgba(0,0,0,0.72);color:#fff;font-size:13px;line-height:18px;text-align:center;cursor:pointer;padding:0;">\u00d7</button>'
+      +'</div>';
+  }).join('');
+  prev.classList.add('show'); if(pbtn) pbtn.classList.add('has');
+}
+function removeChatPhoto(i){
+  chatPhotos.splice(i,1);
+  chatPhotoData=chatPhotos[0]||null;
+  renderChatPhotos();
 }
 
 function clearChatPhoto(){
+  chatPhotos=[];
   chatPhotoData=null;
-  document.getElementById('chatPhotoPrev').classList.remove('show');
+  renderChatPhotos();
   document.getElementById('chatPbtn').classList.remove('has');
   var inp=document.getElementById('chatPhotoInput');
   if(inp) inp.value='';
@@ -10975,7 +10996,8 @@ function buildCoachVoice(){
     '- A GYM / TRAINING / BODY photo — someone at the gym, mid-workout, post-workout selfie, leaving the gym, a sauna, a progress/physique shot, equipment, a finish-line or class photo → this is WORKOUT PROOF, NOT food. Do NOT log it as a meal. Attach it to today\'s workout. If there is a workout already logged today (check RECENT WORKOUTS for TODAY), attach the photo to it. If none, log a light workout entry from any context they gave and attach the photo. Emit:\n'+
     '[WORKOUT_PHOTO]{"id":123}[/WORKOUT_PHOTO]   (id = today\'s workout id, when one exists)\n'+
     'or, when no workout is logged yet and they describe one: emit a [WORKOUT_LOG] as usual AND note the photo should attach — say "Added that to today\'s session" in one short line.\n'+
-    'When unsure if a photo is food or gym, look at what they SAID with it. If they say nothing and it is ambiguous, ask one short question: "Is this a meal or your training today?"\n\n'+
+    'When unsure if a photo is food or gym, look at what they SAID with it. If they say nothing and it is ambiguous, ask one short question: "Is this a meal or your training today?"\n'+
+    'MULTIPLE PHOTOS AT ONCE: if several images come in together (e.g. a FitBod or app summary that ran past one screen, or a lift screenshot plus a separate cardio/bike-ride screenshot), read ALL of them before deciding. If they are the same session split across screenshots, combine everything into ONE [WORKOUT_LOG] with all the exercises merged in order — do not log two half-workouts. If they are clearly different activities (e.g. a strength workout AND a separate bike ride), it is fine to log them as separate entries. Use the totals/summary the app already calculated when present.\n\n'+
 
     'STEPS LOGGING — when the user tells you a step count for today ("I hit 12k steps", "got 8,432 steps", "walked 10000 today"), log it silently and confirm in ONE short line. Treat the number as their TOTAL for the day (not an addition). Emit on its own line:\n'+
     '[STEPS_LOG]{"steps":12000}[/STEPS_LOG]\n'+
@@ -11585,6 +11607,7 @@ async function sendChatMessage(){
   // Clear input
     input.style.height='auto';
   var photoSnapshot=chatPhotoData;
+  var photoSnapshots=chatPhotos.slice();
   clearChatPhoto();
 
   // Persist user message to Supabase (text only, no image bytes)
@@ -11617,14 +11640,19 @@ async function sendChatMessage(){
     historic.forEach(function(m){
       msgs.push({role:m.role, content:m.content});
     });
-    // Add the new user turn (with image if present)
+    // Add the new user turn (with image(s) if present)
     var newContent=[];
-    if(photoSnapshot){
-      var b64=photoSnapshot.split(',')[1];
-      var mt=(photoSnapshot.split(';')[0].split(':')[1])||'image/jpeg';
+    var _imgs = (photoSnapshots && photoSnapshots.length) ? photoSnapshots : (photoSnapshot?[photoSnapshot]:[]);
+    _imgs.forEach(function(snap){
+      if(!snap) return;
+      var b64=snap.split(',')[1];
+      var mt=(snap.split(';')[0].split(':')[1])||'image/jpeg';
       newContent.push({type:'image',source:{type:'base64',media_type:mt,data:b64}});
-    }
-    newContent.push({type:'text',text:(text||'(I sent a photo — read it and respond)')});
+    });
+    var _imgNote = _imgs.length>1
+      ? '(I sent '+_imgs.length+' photos \u2014 they may be one workout split across screenshots, or a workout plus a separate cardio/activity. Read them all and combine into one log where it makes sense.)'
+      : '(I sent a photo \u2014 read it and respond)';
+    newContent.push({type:'text',text:(text||_imgNote)});
     msgs.push({role:'user',content:newContent});
 
     // Prepend the system context as a synthetic first user turn so we don't need to change the Netlify function signature
