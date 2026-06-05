@@ -2040,7 +2040,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.182.0';
+var APP_VERSION = 'v5.183.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -4838,6 +4838,8 @@ function jvHandledMap(){ try{ return JSON.parse(localStorage.getItem('yjb_jv_han
 function jvIsHandled(code){ return jvHandledMap()[code]===_jvTodayKey(); }
 function jvMarkHandled(code){ var m=jvHandledMap(); m[code]=_jvTodayKey(); try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} jvRenderTriage(); }
 function jvUnhandle(code){ var m=jvHandledMap(); delete m[code]; try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} jvRenderTriage(); }
+function jvTextAndHandle(code){ try{ textClient(code); }catch(e){} jvMarkHandled(code); }
+function jvToggleHandled(){ var l=document.getElementById('jvHandledList'),c=document.getElementById('jvHandledCaret'); if(!l)return; var open=l.style.display==='none'; l.style.display=open?'block':'none'; if(c)c.textContent=open?'\u25b4':'\u25be'; }
 function jvRenderTriage(){
   var wall=document.getElementById('jvWall'); if(!wall||!jvTriage) return;
   var per=jvTriage.per;
@@ -4853,18 +4855,20 @@ function jvRenderTriage(){
   bands.red.sort(function(a,b){ return (b.cls.urg||0)-(a.cls.urg||0); });
   bands.green.sort(function(a,b){ return b.cnt[0]-a.cnt[0]; });
   bands.yellow.sort(function(a,b){ return b.cnt[0]-a.cnt[0]; });
+  // Anyone handled today drops out of every band entirely and collapses into one shelf at the bottom —
+  // so the board clears down as you work and stays cleared (persisted per day, survives auto-refresh).
+  var handled=[];
+  ['red','yellow','green'].forEach(function(b){
+    var keep=[]; bands[b].forEach(function(o){ if(jvIsHandled(o.code)) handled.push(o); else keep.push(o); }); bands[b]=keep;
+  });
   var shown=bands.red.length+bands.yellow.length+bands.green.length+bands.dormant.length;
-  // Split the red band: clients you've already reached out to today drop onto a "Reached out" shelf,
-  // so Needs You stays a live worklist you can clear down to zero.
-  var redHandled=bands.red.filter(function(o){ return jvIsHandled(o.code); });
-  var redActive =bands.red.filter(function(o){ return !jvIsHandled(o.code); });
   var html='';
-  if(redActive.length){
-    html+='<div class="jvFocus">\ud83c\udfaf <b>'+redActive.length+'</b> '+(redActive.length===1?'client needs':'clients need')+' you. Start with <b>'+(CLIENTS[redActive[0].code].name||'').replace(/</g,'&lt;')+'</b> \u2014 '+redActive[0].cls.reason+'.</div>';
-  } else if(redHandled.length){
-    html+='<div class="jvFocus">\u2705 You\u2019ve reached out to everyone in the red today. Ball\u2019s in their court now.</div>';
+  if(bands.red.length){
+    html+='<div class="jvFocus">\ud83c\udfaf <b>'+bands.red.length+'</b> '+(bands.red.length===1?'client needs':'clients need')+' you. Start with <b>'+(CLIENTS[bands.red[0].code].name||'').replace(/</g,'&lt;')+'</b> \u2014 '+bands.red[0].cls.reason+'.</div>';
   } else if(bands.yellow.length){
     html+='<div class="jvFocus">\u2705 Nobody\u2019s in the red. <b>'+bands.yellow.length+'</b> on the bubble \u2014 a quick nudge keeps them there.</div>';
+  } else if(handled.length){
+    html+='<div class="jvFocus">\u2705 You\u2019ve cleared everyone who needed you today. Ball\u2019s in their court.</div>';
   } else {
     html+='<div class="jvFocus">\ud83d\udd25 Everyone active is cruising. Great day to pull content from the wins.</div>';
   }
@@ -4872,26 +4876,29 @@ function jvRenderTriage(){
   function card(o,band){
     var info=CLIENTS[o.code]; var nm=(info.name||'').replace(/</g,'&lt;');
     var dot={red:'#ff5d4d',yellow:'#e7b552',green:'#3fcf83',dormant:'#6a6a6a'}[band]||'#6a6a6a';
-    var first=nm.split(' ')[0].replace(/'/g,"\\'");
     var safe=(info.name||'').replace(/'/g,"\\'");
     var s='<div class="jvTCard '+band+'" data-name="'+(info.name||'').toLowerCase().replace(/"/g,'')+'" onclick="jvOpenDeep(\''+o.code+'\')">'
       +'<div class="jvTName"><span class="jvDot" style="background:'+dot+';color:'+dot+';"></span>'+nm+'</div>'
       +'<div class="jvTState">'+o.cls.reason+'</div>';
     if(band==='red'||band==='yellow'){
       s+='<div class="jvTBtns" onclick="event.stopPropagation();">'
-        +'<button class="jvTBtn gold" title="Text '+(info.name||'').replace(/"/g,'')+'" onclick="textClient(\''+o.code+'\')">\ud83d\udcac Text</button>'
+        +'<button class="jvTBtn gold" title="Text '+(info.name||'').replace(/"/g,'')+'" onclick="jvTextAndHandle(\''+o.code+'\')">\ud83d\udcac Text</button>'
         +'<button class="jvTBtn icon" title="Notes" onclick="openClientNotes(\''+o.code+'\',\''+safe+'\')">\ud83d\udcdd</button>'
-        +(band==='red'?'<button class="jvTBtn icon done" title="Mark reached out today" onclick="jvMarkHandled(\''+o.code+'\')">\u2713</button>':'')
+        +'<button class="jvTBtn icon done" title="Clear \u2014 handled today" onclick="jvMarkHandled(\''+o.code+'\')">\u2713</button>'
+        +'</div>';
+    } else if(band==='green'){
+      s+='<div class="jvTBtns" onclick="event.stopPropagation();">'
+        +'<button class="jvTBtn icon done" title="Clear \u2014 handled today" onclick="jvMarkHandled(\''+o.code+'\')">\u2713</button>'
         +'</div>';
     }
     return s+'</div>';
   }
   function grid(arr,band){ return '<div class="jvBandGrid">'+arr.map(function(o){return card(o,band);}).join('')+'</div>'; }
-  if(redActive.length){
+  if(bands.red.length){
     html+='<div class="jvBand jvBandRed"><div class="jvBandHead">'
       +'<span class="jvBandTitle" style="color:#ff5d4d;">Needs you</span>'
-      +'<span class="jvBandCount">'+redActive.length+'</span>'
-      +'<span class="jvBandSay">reach out today</span></div>'+grid(redActive,'red')+'</div>';
+      +'<span class="jvBandCount">'+bands.red.length+'</span>'
+      +'<span class="jvBandSay">reach out today</span></div>'+grid(bands.red,'red')+'</div>';
   }
   function section(band,title,say){
     var arr=bands[band]; if(!arr.length) return '';
@@ -4904,17 +4911,12 @@ function jvRenderTriage(){
   }
   html+=section('yellow','On the bubble','a nudge keeps them');
   html+=section('green','Cruising','let them cook');
-  if(redHandled.length){
-    html+='<div class="jvBand jvBandHandled"><div class="jvBandHead">'
-      +'<span class="jvBandTitle" style="color:#3fcf83;">\u2713 Reached out today</span>'
-      +'<span class="jvBandCount">'+redHandled.length+'</span>'
-      +'<span class="jvBandSay">waiting on them to log</span></div><div class="jvBandGrid">'
-      +redHandled.map(function(o){ var info=CLIENTS[o.code]; var nm=(info.name||'').replace(/</g,'&lt;');
-        return '<div class="jvTCard handled" data-name="'+(info.name||'').toLowerCase().replace(/"/g,'')+'" onclick="jvOpenDeep(\''+o.code+'\')">'
-          +'<div class="jvTName"><span class="jvDot" style="background:#3fcf83;color:#3fcf83;"></span>'+nm+'</div>'
-          +'<div class="jvTState" style="color:#7bbf97;">reached out \u00b7 '+o.cls.reason+'</div>'
-          +'<div class="jvTBtns" onclick="event.stopPropagation();"><button class="jvTBtn" onclick="jvUnhandle(\''+o.code+'\')">Undo</button></div></div>';
-      }).join('')+'</div></div>';
+  if(handled.length){
+    handled.sort(function(a,b){ return (CLIENTS[a.code].name||'').localeCompare(CLIENTS[b.code].name||''); });
+    html+='<div class="jvBand"><div class="jvDormToggle" onclick="jvToggleHandled()">\u2713 '+handled.length+' handled today \u2014 tap to undo <span id="jvHandledCaret">\u25be</span></div>'
+      +'<div id="jvHandledList" style="display:none;"><div class="jvDormGrid">'
+      +handled.map(function(o){ var nm=(CLIENTS[o.code].name||'').replace(/</g,'&lt;'); return '<div class="jvDormChip" title="Undo" onclick="jvUnhandle(\''+o.code+'\')">'+nm+' \u2715</div>'; }).join('')
+      +'</div></div></div>';
   }
   if(bands.dormant.length){
     html+='<div class="jvBand"><div class="jvDormToggle" onclick="jvToggleDorm()">\ud83d\udca4 Quiet a week or more \u00b7 '+bands.dormant.length+' <span id="jvDormCaret">\u25be</span></div>'
@@ -5041,6 +5043,7 @@ function jvOpenDeep(code){
     + dossier
     + '<div id="jvDeepDays"><div style="color:#777;font-size:13px;padding:10px 0;">Loading recent history\u2026</div></div>';
   document.body.classList.add('jv-deep-open');
+  window._jvDeepCode=code; window._jvDeepOpenAt=Date.now();
   _jvDeepHistory(code);
 }
 async function _jvDeepHistory(code){
@@ -5119,7 +5122,13 @@ async function _jvDeepHistory(code){
     el.innerHTML=html;
   }catch(e){ el.innerHTML='<div style="color:#888;font-size:13px;padding:10px 0;">Couldn\u2019t load history \u2014 try Refresh.</div>'; }
 }
-function jvCloseDeep(){ document.body.classList.remove('jv-deep-open'); }
+function jvCloseDeep(){
+  document.body.classList.remove('jv-deep-open');
+  try{
+    if(window._jvDeepCode && (Date.now()-(window._jvDeepOpenAt||0))>3000){ jvMarkHandled(window._jvDeepCode); }
+  }catch(e){}
+  window._jvDeepCode=null;
+}
 async function jvAssignProgram(code){
   var name=(CLIENTS[code]&&CLIENTS[code].name)||code;
   if((!templatePrograms||(!templatePrograms.women&&!templatePrograms.men)) && typeof loadTrainerPrograms==='function'){
