@@ -2050,7 +2050,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.202.0';
+var APP_VERSION = 'v5.204.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -2282,11 +2282,14 @@ async function launchApp(){
   if(typeof jvInit==="function") jvInit();
   if(typeof loadBroadcasts==="function") loadBroadcasts();
   // Load today's food + latest weight in parallel (was two sequential awaits)
+  var _ftoday=new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
   var _launch = await Promise.all([
-    sbSelect('food_logs', 'client_code=eq.'+cl.code+'&date_str=eq.'+encodeURIComponent(todayDateStr)),
+    sbSelect('food_logs', 'client_code=eq.'+cl.code+'&order=id.desc&limit=80'),
     sbSelect('weight_logs', 'client_code=eq.'+cl.code+'&limit=1')
   ]);
-  var todayFoods = _launch[0];
+  // A meal counts as today if its date_str is today OR it was logged today (covers a blank/mismatched date_str).
+  function _foodIsToday(f){ if(f.date_str && String(f.date_str).trim()===_ftoday) return true; var ts=f.logged_at||f.created_at; if(ts){ var d=new Date(ts); return !isNaN(d.getTime()) && d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})===_ftoday; } return false; }
+  var todayFoods = (_launch[0]||[]).filter(_foodIsToday);
   allFood = todayFoods || [];
   todayFood = allFood.slice();
   todayFood.forEach(function(e){ tots.cal+=e.calories||0; tots.protein+=e.protein||0; tots.carbs+=e.carbs||0; tots.fat+=e.fat||0; });
@@ -2531,8 +2534,17 @@ function refreshTileStates(){
 async function loadTodayWorkouts(){
   if(!cl) return;
   try{
-    var workouts = await sbSelect('workout_logs','client_code=eq.'+cl.code+'&date_str=eq.'+encodeURIComponent(todayDateStr)+'&order=logged_at.desc&limit=20');
-    if(workouts && workouts.length > 0){
+    // Compute "today" fresh (the page may have been open since before midnight) and pull recent workouts
+    // by timestamp — then keep anything whose date_str is today OR whose logged_at lands on today's date.
+    // This matches how the full history reads (logged_at), so a workout can't show in history yet vanish here.
+    var t=new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+    function _sameDay(ts){ if(!ts) return false; var d=new Date(ts); return !isNaN(d.getTime()) && d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})===t; }
+    var workouts = await sbSelect('workout_logs','client_code=eq.'+cl.code+'&order=logged_at.desc&limit=60');
+    workouts = (workouts||[]).filter(function(w){
+      if(w.date_str && String(w.date_str).trim()===t) return true;      // filed as today
+      return _sameDay(w.logged_at||w.created_at);                        // or actually logged today (covers a bad/blank date_str)
+    });
+    if(workouts.length > 0){
       todayWo = workouts.map(function(w){
         return {
           id: w.id,
@@ -2550,6 +2562,9 @@ async function loadTodayWorkouts(){
       markTileDone('Workout');
       // Refresh gold workout card so completion indicator updates
       if(typeof renderTodayWorkoutCard === 'function') renderTodayWorkoutCard();
+    } else {
+      todayWo = [];
+      if(typeof rendTodayWo === 'function') rendTodayWo();
     }
   } catch(e){}
 }
@@ -5343,6 +5358,36 @@ function _jvBuildContext(){
   var head=active+' clients on the board who have ever logged. '+loggedToday+' have logged something today so far.';
   return head+'\n'+lines.join('\n');
 }
+// When Yusuf asks about a specific client's calendar/schedule/program, resolve who he means and pull
+// their real scheduled week so Jarvis can answer with exact days instead of "send me the plan."
+async function _jvClientScheduleBlock(msg){
+  try{
+    var low=' '+String(msg).toLowerCase()+' ';
+    if(!/\b(calendar|schedule|what days|which days|see workout|sees workout|seeing workout|her workouts|his workouts|their workouts|program|the plan|training days|workout days|days will|days does|days she|days he|days they)\b/.test(low)) return '';
+    var best=null;
+    Object.keys(CLIENTS).forEach(function(k){
+      if(CLIENTS[k].isTrainer) return;
+      var nm=(CLIENTS[k].name||'').toLowerCase().trim(); if(!nm) return;
+      var first=nm.split(/\s+/)[0]; if(first.length<3) return;
+      var re=new RegExp('\\b'+first.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b');
+      if(re.test(low)){ if(!best || first.length>best.first.length) best={code:k, name:CLIENTS[k].name, first:first}; }
+    });
+    if(!best) return '';
+    var pr=await fetch(SB_URL+'/rest/v1/programs?client_code=eq.'+encodeURIComponent(best.code)+'&is_active=eq.true&order=created_at.desc&limit=1',{headers:sbHeaders()});
+    var rows=pr.ok?await pr.json():[];
+    if(!rows.length){
+      return '\n\n=== '+best.name+'\u2019S SCHEDULE ===\n'+best.name+' has NO active program assigned right now \u2014 so they are not seeing any scheduled workouts on their calendar. If Yusuf believes he just assigned one, it did not save cleanly; tell him to check and re-assign.';
+    }
+    var prog=rows[0];
+    var wr=await fetch(SB_URL+'/rest/v1/program_workouts?program_id=eq.'+prog.id+'&order=day_of_week.asc',{headers:sbHeaders()});
+    var wos=wr.ok?await wr.json():[];
+    var dn={1:'Monday',2:'Tuesday',3:'Wednesday',4:'Thursday',5:'Friday',6:'Saturday',7:'Sunday'};
+    var byDay={}; wos.forEach(function(w){ var d=(w.day_of_week==null)?7:Number(w.day_of_week); byDay[d]=w; });
+    var lines=[]; var trainingDays=[];
+    [1,2,3,4,5,6,7].forEach(function(d){ var w=byDay[d]; lines.push(dn[d]+': '+(w?(w.title||'Workout'):'Rest')); if(w) trainingDays.push(dn[d]); });
+    return '\n\n=== '+best.name+'\u2019S SCHEDULE (program: '+(prog.name||'Program')+') ===\nThis is exactly what '+best.name+' sees on their calendar. Workout days: '+(trainingDays.join(', ')||'none scheduled')+'.\n'+lines.join('\n')+'\nWhen he asks what days they see workouts, answer straight from THIS \u2014 name the exact days, nothing vague.';
+  }catch(e){ return ''; }
+}
 async function jvChatSend(){
   var inp=document.getElementById('jvChatInput'); if(!inp) return;
   var msg=inp.value.trim(); if(!msg) return;
@@ -5357,7 +5402,8 @@ async function jvChatSend(){
   }
   paint(true);
   var orb=document.getElementById('jvOrb'); if(orb) orb.classList.add('jvThinking');
-  var sys='You are Jarvis \u2014 Yusuf\'s running mate inside YOURJIMBFF. Not a copilot that nods along: a co-coach who knows how he operates and works to offset him. When he\'s flat, lift him. When he\'s spun up or scattered, ground him and narrow it to the one thing that matters. Keep him honest and keep him steady. You can see a live snapshot of his client board below: who is active, who has gone quiet and for how long, and what each person logged today. Use it directly \u2014 real names, real numbers. If it is early and few have logged today yet, say that plainly, but you still know who has been consistent and who is slipping, so coach from that. Never tell him you cannot see his data \u2014 the snapshot is right here. Talk like a sharp, loyal friend who\'s in it with him \u2014 direct, specific, real. Use real names and numbers. Never a yes-man: if he\'s avoiding something or about to overdo it, say so plainly and kindly. No corporate or AI-sounding language, no fluff, no hype padding. Push him toward real action and real conversations with his clients and the people in his life \u2014 you point him at the work, you don\'t replace it. Current day context:\n'+_jvBuildContext();
+  var sys='You are Jarvis \u2014 Yusuf\'s running mate inside YOURJIMBFF. Not a copilot that nods along: a co-coach who knows how he operates and works to offset him. When he\'s flat, lift him. When he\'s spun up or scattered, ground him and narrow it to the one thing that matters. Keep him honest and keep him steady. You can see a live snapshot of his client board below: who is active, who has gone quiet and for how long, and what each person logged today. Use it directly \u2014 real names, real numbers. If it is early and few have logged today yet, say that plainly, but you still know who has been consistent and who is slipping, so coach from that. Never tell him you cannot see his data \u2014 the snapshot is right here. ANSWER WHAT HE ASKS, FIRST AND DIRECTLY: if he asks a specific question \u2014 a client\\u2019s schedule, a number, a yes/no, one person \u2014 answer THAT precisely before anything else. Do NOT open with the who-needs-you roster rundown unless he actually asks for it (\\u201cwho needs me\\u201d, \\u201cdebrief\\u201d, \\u201crun the board\\u201d, \\u201cwhat should I do today\\u201d). Leading with an unrequested briefing when he asked one narrow thing is exactly what frustrates him. Talk like a sharp, loyal friend who\'s in it with him \u2014 direct, specific, real. Use real names and numbers. Never a yes-man: if he\'s avoiding something or about to overdo it, say so plainly and kindly. No corporate or AI-sounding language, no fluff, no hype padding. Push him toward real action and real conversations with his clients and the people in his life \u2014 you point him at the work, you don\'t replace it. Current day context:\n'+_jvBuildContext();
+  try{ var _sched = await _jvClientScheduleBlock(msg); if(_sched) sys += _sched; }catch(e){}
   if(/\b(program|programme|workout|routine|split|assign|schedule|plan (her|him|them)|build (her|him|them|a|out)|give (her|him|them|leandra)|add (a|an|her|him|them|in|leg|rest|push|pull|another)|swap|leg day|rest day|push day|pull day|extra day|change (her|his|their|the)|remove (her|his|the|a|their)|edit (her|his|their|the))\b/i.test(msg)){
     var _roster=Object.keys(CLIENTS).filter(function(k){return !CLIENTS[k].isTrainer;}).map(function(k){ return k+' = '+(CLIENTS[k].name||k); }).join('\n');
     sys += '\n\n=== BUILDING A WORKOUT PROGRAM ===\nYou can build and assign a full workout program straight into a client\u2019s app. When Yusuf asks you to create / assign / schedule / build a program or workouts for a specific client, actually do it. Speak to him normally first \u2014 a short, plain confirmation of what you built (the split, the days, and any constraint you honored like equipment or moves to avoid) \u2014 then end your reply with a hidden marker on its own final line, exactly this shape:\n[PROGRAM client=CLIENT_CODE]{"name":"Short program name","description":"one-line summary","workouts":[{"day":1,"title":"Push","exercises":[{"name":"Dumbbell bench press","sets":4,"detail":"8-10 reps"},{"name":"Incline DB press","sets":3,"detail":"10-12"}],"notes":"optional cue"}]}[/PROGRAM]\nRules:\n- client MUST be the exact code from the roster below, never the display name.\n- day: 1=Mon, 2=Tue ... 7=Sun. One object per training day; skip rest days.\n- Honor every constraint Yusuf gives \u2014 equipment on hand, moves to avoid, days per week, the split he wants.\n- Each exercise needs name + sets (a number); detail (reps/weight/tempo) is optional.\n- NEVER describe or mention the marker to Yusuf. Talk like a coach, then place the marker last.\n- Only emit a marker when he actually wants it built/assigned. If he\u2019s just asking or thinking out loud, talk it through with no marker.\n\n=== EDITING AN EXISTING PROGRAM ===\nWhen Yusuf wants to CHANGE a client\u2019s current program rather than replace the whole thing \u2014 \u201cadd a leg day\u201d, \u201cswap her Wednesday\u201d, \u201cgive him an extra day\u201d, \u201cmake Friday rest\u201d \u2014 do NOT rebuild from scratch. Use this marker instead, which surgically edits just the days you name and leaves everything else intact:\n[PROGRAM_EDIT client=CLIENT_CODE]{\"changes\":[{\"day\":3,\"title\":\"Legs\",\"exercises\":[{\"name\":\"Goblet squat\",\"sets\":4,\"detail\":\"10-12\"},{\"name\":\"RDL\",\"sets\":3,\"detail\":\"10\"}],\"notes\":\"optional cue\"},{\"day\":5,\"remove\":true}]}[/PROGRAM_EDIT]\nRules:\n- Each change targets ONE weekday (1=Mon ... 7=Sun). title+exercises adds or replaces that day; \"remove\":true clears that day to rest.\n- Same exercise shape as above (name + sets, optional detail).\n- Use [PROGRAM_EDIT] for tweaks to an existing plan; use [PROGRAM] only for a brand-new full program. Never describe the marker to him \u2014 confirm in plain coach language, then place it last.\n\nCLIENT ROSTER (code = name):\n'+_roster;
