@@ -2032,7 +2032,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.175.0';
+var APP_VERSION = 'v5.177.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -2270,10 +2270,10 @@ async function saveSetup(){
   var goalEl=document.querySelector('.gt-btn.sel');
   var goal=goalEl?goalEl.textContent.replace(/\n.*/,'').toLowerCase():'maintain';
   if(!weight||!goalWeight||!age){showToast('Fill in all fields first');return;}
-  // Targets anchor to GOAL weight x 14 (Yusuf's TDEE formula) — NOT current weight.
-  // Goal weight encodes the direction (lose/maintain/build), so the deficit/surplus is built in.
+  // Targets anchor to GOAL weight (Yusuf's rule), centered on x14 maintenance; cut/build shift it.
   var basis=goalWeight||weight;
-  var calTarget=Math.round(basis*14);
+  var mult = goal==='cut'?13:goal==='build'?15:14;
+  var calTarget=Math.round(basis*mult);
   var proteinTarget=Math.round(basis);
   profile={client_code:cl.code, name:cl.name, weight:weight, goal_weight:goalWeight, goalWeight:goalWeight, age:age, height:height, gender:gender, goal:goal, cal_target:calTarget, calTarget:calTarget, protein_target:proteinTarget, proteinTarget:proteinTarget};
   // Save to localStorage immediately
@@ -5143,6 +5143,20 @@ function jvSetMode(m){
   else { wall.classList.remove('jvTriageMode'); jvLoad(); }
 }
 function jvRefresh(){ if(jvMode==='cockpit') jvLoadTriage(); else jvLoad(); }
+// Keep the Front Desk live: silently re-pull when the tab regains focus and on a gentle timer,
+// so a client logging mid-session doesn't leave you staring at a stale board.
+(function(){
+  if(window._jvLiveSet) return; window._jvLiveSet=true;
+  function jvLive(){
+    if(document.hidden) return;
+    try{
+      var w=document.getElementById('jvWall');
+      if(w && w.offsetParent!==null && typeof jvMode!=='undefined' && jvMode==='cockpit' && typeof jvLoadTriage==='function'){ jvLoadTriage(true); }
+    }catch(e){}
+  }
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) jvLive(); });
+  setInterval(jvLive, 90000);
+})();
 function jvFilter(q){
   q=(q||'').trim().toLowerCase();
   var wall=document.getElementById('jvWall'); if(!wall) return;
@@ -5157,9 +5171,9 @@ function jvFilter(q){
   });
 }
 function _jvReFilter(){ var s=document.getElementById('jvSearch'); if(s && s.value) jvFilter(s.value); }
-async function jvLoadTriage(){
+async function jvLoadTriage(silent){
   var wall=document.getElementById('jvWall'); if(!wall) return;
-  wall.innerHTML='<div class="jvLoading">Loading\u2026</div>';
+  if(!silent) wall.innerHTML='<div class="jvLoading">Loading\u2026</div>';
   document.getElementById('jvWallHead').textContent=new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
   var days=[], dayIndex={};
   for(var i=0;i<7;i++){ var d=new Date(); d.setDate(d.getDate()-i); var k=_jvDayKey(d); days.push(k); dayIndex[k]=i; }
@@ -10197,13 +10211,13 @@ function loadProfileTab(){
   if(profile.height && document.getElementById('pHeight')) document.getElementById('pHeight').value = profile.height;
   // Gender
   var gender = profile.gender;
-  document.querySelectorAll('#pGenderRow .gr-btn').forEach(function(b){
+  document.querySelectorAll('#pGenderRow .rb').forEach(function(b){
     if(b.textContent.toLowerCase()===gender) b.classList.add('sel');
     else b.classList.remove('sel');
   });
   // Goal
   var goal = profile.goal||'maintain';
-  document.querySelectorAll('#pGoalRow .gt-btn').forEach(function(b){
+  document.querySelectorAll('#pGoalRow .rb').forEach(function(b){
     var bGoal = b.textContent.replace(/\n.*/,'').toLowerCase();
     if(bGoal===goal) b.classList.add('sel');
     else b.classList.remove('sel');
@@ -10224,13 +10238,13 @@ function loadProfileTab(){
 }
 
 function selPGender(el,val){
-  document.querySelectorAll('#pGenderRow .gr-btn').forEach(function(b){b.classList.remove('sel');});
+  document.querySelectorAll('#pGenderRow .rb').forEach(function(b){b.classList.remove('sel');});
   el.classList.add('sel');
   profileChanged();
 }
 
 function selPGoal(el,val){
-  document.querySelectorAll('#pGoalRow .gt-btn').forEach(function(b){b.classList.remove('sel');});
+  document.querySelectorAll('#pGoalRow .rb').forEach(function(b){b.classList.remove('sel');});
   el.classList.add('sel');
   profileChanged();
 }
@@ -10239,16 +10253,15 @@ function profileChanged(){ updCalDisplay(); }
 
 function updCalDisplay(){
   var w = parseFloat(document.getElementById('pWeight').value);
-  var goalEl = document.querySelector('#pGoalRow .gt-btn.sel');
+  var gw = parseFloat(document.getElementById('pGoalWeight').value);
+  var goalEl = document.querySelector('#pGoalRow .rb.sel');
   var goal = goalEl?goalEl.textContent.replace(/\n.*/,'').toLowerCase():'maintain';
-  var genderEl = document.querySelector('#pGenderRow .gr-btn.sel');
-  var gender = genderEl?genderEl.textContent.toLowerCase():'male';
-  if(!w){ document.getElementById('pCalDisplay').textContent='Set your stats above to see your calorie target.'; return; }
-  var mult = goal==='cut'?12.5:goal==='build'?16.5:14.5;
-  if(gender==='female') mult-=1;
-  var cal = Math.round(w*mult);
-  var pro = Math.round(w);
-  document.getElementById('pCalDisplay').textContent='Daily target: '+cal+' calories · '+pro+'g protein ('+goal+')';
+  var basis = gw||w;
+  if(!basis){ document.getElementById('pCalDisplay').textContent='Set your stats above to see your calorie target.'; return; }
+  var mult = goal==='cut'?13:goal==='build'?15:14;
+  var cal = Math.round(basis*mult);
+  var pro = Math.round(basis);
+  document.getElementById('pCalDisplay').textContent='Daily target: '+cal+' calories \u00b7 '+pro+'g protein ('+goal+')';
 }
 
 async function saveProfileTab(){
@@ -10257,13 +10270,14 @@ async function saveProfileTab(){
   var age = parseInt(document.getElementById('pAge').value)||profile.age;
   var heightEl = document.getElementById('pHeight');
   var height = (heightEl && heightEl.value.trim()) ? heightEl.value.trim() : (profile.height||'');
-  var genderEl = document.querySelector('#pGenderRow .gr-btn.sel');
+  var genderEl = document.querySelector('#pGenderRow .rb.sel');
   var gender = genderEl?genderEl.textContent.toLowerCase():profile.gender||'male';
-  var goalEl = document.querySelector('#pGoalRow .gt-btn.sel');
+  var goalEl = document.querySelector('#pGoalRow .rb.sel');
   var goal = goalEl?goalEl.textContent.replace(/\n.*/,'').toLowerCase():profile.goal||'maintain';
-  // Anchor to GOAL weight x 14 (Yusuf's formula) — not current weight.
+  // Anchor to GOAL weight (Yusuf's rule), centered on x14 maintenance; cut/build shift it.
   var basis = gw||w||150;
-  var cal = Math.round(basis*14);
+  var mult = goal==='cut'?13:goal==='build'?15:14;
+  var cal = Math.round(basis*mult);
   var pro = Math.round(basis);
   // Merge — never wipe existing stats with blanks
   profile = Object.assign(profile,{weight:w,goal_weight:gw,goalWeight:gw,age:age,height:height,gender:gender,goal:goal,cal_target:cal,calTarget:cal,protein_target:pro,proteinTarget:pro});
