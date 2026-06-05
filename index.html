@@ -605,7 +605,6 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
     <!-- LEFT: the orb + read -->
     <div id="jvOrbCol">
       <div id="jvDeck">
-        <div id="jvEq" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
         <div id="jvHelloMain">Hey</div>
         <div id="jvHelloSub"></div>
         <div id="jvMantra"></div>
@@ -2041,7 +2040,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.181.0';
+var APP_VERSION = 'v5.182.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -4702,9 +4701,12 @@ function _jvNextMantra(){
   },420);
 }
 function jvStartMantras(){
-  if(_jvMantraTimer) clearInterval(_jvMantraTimer);
-  _jvNextMantra();
-  _jvMantraTimer=setInterval(_jvNextMantra, 5400);
+  if(_jvMantraTimer){ clearInterval(_jvMantraTimer); _jvMantraTimer=null; }
+  var el=document.getElementById('jvMantra'); if(!el) return;
+  // One quote per load, held steady — no rotation (the changing felt distracting).
+  _jvMantraI=Math.floor(Math.random()*_jvMantras.length);
+  el.textContent='\u201c'+_jvMantras[_jvMantraI]+'\u201d';
+  el.classList.add('show');
 }
 function jvRenderHello(){
   var m=document.getElementById('jvHelloMain'), s=document.getElementById('jvHelloSub');
@@ -5032,8 +5034,9 @@ function jvOpenDeep(code){
     + '</div>'
     + '<div style="display:flex;gap:8px;margin-bottom:10px;">'
     + '<button onclick="textClient(\''+code+'\')" style="flex:1;background:var(--gold);border:none;border-radius:10px;padding:11px;font-weight:800;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\ud83d\udcac Text '+safeName.split(' ')[0]+'</button>'
-    + '<button onclick="openClientNotes(\''+code+'\',\''+safeName+'\')" style="flex:1;background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:11px;font-weight:800;color:#fff;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\ud83d\udcdd Notes</button>'
+    + '<button onclick="jvToggleDeepNotes(\''+code+'\',\''+safeName+'\')" style="flex:1;background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:11px;font-weight:800;color:#fff;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\ud83d\udcdd Notes</button>'
     + '</div>'
+    + '<div id="jvDeepNotes" style="display:none;margin-bottom:18px;"></div>'
     + '<button onclick="jvAssignProgram(\''+code+'\')" style="width:100%;background:#12100a;border:1px solid rgba(245,197,24,0.32);border-radius:10px;padding:11px;font-weight:800;color:var(--gold);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;margin-bottom:18px;">\ud83d\uddc2\ufe0f Assign program</button>'
     + dossier
     + '<div id="jvDeepDays"><div style="color:#777;font-size:13px;padding:10px 0;">Loading recent history\u2026</div></div>';
@@ -5908,6 +5911,47 @@ async function deleteClientNote(id){
   if(!confirm('Delete this note?')) return;
   try{ await fetch(SB_URL+'/rest/v1/client_notes?id=eq.'+encodeURIComponent(id), {method:'DELETE', headers:sbHeaders()}); }catch(e){}
   if(_notesClientCode) loadClientNotes(_notesClientCode);
+}
+// Inline notes for the Front Desk deep-dive — expands under the buttons instead of a bottom sheet.
+function jvToggleDeepNotes(code, name){
+  var box=document.getElementById('jvDeepNotes'); if(!box) return;
+  var open = box.style.display!=='none' && box.style.display!=='';
+  if(open){ box.style.display='none'; return; }
+  box.style.display='block';
+  box.innerHTML='<div style="background:#161616;border:1px solid #2a2a2a;border-radius:12px;padding:13px;">'
+    + '<div id="jvNotesList" style="max-height:260px;overflow-y:auto;margin-bottom:10px;"><div style="color:#777;font-size:12px;padding:6px 0;">Loading\u2026</div></div>'
+    + '<textarea id="jvNewNoteInput" placeholder="Type a note about '+(name||'this client').replace(/</g,"&lt;").replace(/"/g,'&quot;')+'\u2026" style="width:100%;box-sizing:border-box;min-height:64px;background:#0f0f0f;border:1px solid #2a2a2a;border-radius:10px;padding:10px;font-size:14px;color:#fff;font-family:\'Plus Jakarta Sans\',sans-serif;resize:vertical;"></textarea>'
+    + '<button onclick="jvSaveDeepNote(\''+code+'\')" style="width:100%;margin-top:8px;background:var(--gold);border:none;border-radius:10px;padding:11px;font-size:13px;font-weight:800;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Save note</button>'
+    + '</div>';
+  jvLoadDeepNotes(code);
+  try{ box.scrollIntoView({behavior:'smooth',block:'nearest'}); }catch(e){}
+}
+async function jvLoadDeepNotes(code){
+  var list=document.getElementById('jvNotesList'); if(!list) return;
+  try{
+    var rows=await sbSelect('client_notes','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=200');
+    if(!rows||!rows.length){ list.innerHTML='<div style="color:#777;font-size:12px;padding:6px 0;">No notes yet. Add your first below.</div>'; return; }
+    list.innerHTML=rows.map(function(n){
+      var when=''; try{ when=new Date(n.logged_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})+' \u00b7 '+new Date(n.logged_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }catch(e){}
+      return '<div style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:11px;padding:11px 12px;margin-bottom:8px;">'
+        +'<div style="font-size:10px;color:#777;letter-spacing:0.4px;margin-bottom:5px;">'+when+'</div>'
+        +'<div style="font-size:13.5px;color:#fff;line-height:1.5;white-space:pre-wrap;">'+(n.note||'').replace(/</g,'&lt;')+'</div>'
+        +'<button onclick="jvDelDeepNote(\''+n.id+'\',\''+code+'\')" style="margin-top:7px;background:transparent;border:none;color:#e5746b;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;padding:0;">Delete</button>'
+        +'</div>';
+    }).join('');
+  }catch(e){ list.innerHTML='<div style="color:#777;font-size:12px;padding:6px 0;">Could not load notes.</div>'; }
+}
+async function jvSaveDeepNote(code){
+  var ta=document.getElementById('jvNewNoteInput'); if(!ta) return;
+  var txt=ta.value.trim(); if(!txt){ showToast('Type a note first'); return; }
+  var saved=await sbInsertReturning('client_notes',{client_code:code,note:txt,logged_at:new Date().toISOString()});
+  if(saved){ ta.value=''; jvLoadDeepNotes(code); showToast('\u2713 Note saved'); }
+  else { showToast('\u26a0\ufe0f Could not save note'); }
+}
+async function jvDelDeepNote(id, code){
+  if(!confirm('Delete this note?')) return;
+  try{ await fetch(SB_URL+'/rest/v1/client_notes?id=eq.'+encodeURIComponent(id), {method:'DELETE', headers:sbHeaders()}); }catch(e){}
+  jvLoadDeepNotes(code);
 }
 
 // Build the coach-comment block shown under each meal on the trainer dashboard.
