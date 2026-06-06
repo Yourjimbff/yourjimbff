@@ -429,7 +429,7 @@ body.jv-cockpit #jvDayTabs{display:none;}
 .jvHidden{margin-top:-14px;margin-bottom:22px;font-size:12px;color:#6f6f6f;letter-spacing:0.2px;}
 .jvHidden b{color:#9a9a9a;}
 .jvFocus b{color:var(--gold);font-weight:800;}
-.jvStats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;}
+.jvStats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;}
 .jvStat{background:#0e0e0e;border:1px solid #1c1c1c;border-radius:14px;padding:14px 16px;}
 .jvStatN{font-size:30px;font-weight:800;line-height:1;letter-spacing:-0.5px;}
 .jvStatL{font-size:11px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:#7a7a7a;margin-top:8px;}
@@ -2050,7 +2050,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.205.0';
+var APP_VERSION = 'v5.207.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -2287,8 +2287,11 @@ async function launchApp(){
     sbSelect('food_logs', 'client_code=eq.'+cl.code+'&order=id.desc&limit=80'),
     sbSelect('weight_logs', 'client_code=eq.'+cl.code+'&limit=1')
   ]);
-  // A meal counts as today if its date_str is today OR it was logged today (covers a blank/mismatched date_str).
-  function _foodIsToday(f){ if(f.date_str && String(f.date_str).trim()===_ftoday) return true; var ts=f.logged_at||f.created_at; if(ts){ var d=new Date(ts); return !isNaN(d.getTime()) && d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})===_ftoday; } return false; }
+  // A meal belongs to today only if its date_str resolves to today. date_str is AUTHORITATIVE — a meal
+  // explicitly dated to another day must NOT leak into today even if its timestamp is today-ish (late-night logs).
+  // Only fall back to the timestamp when there is no usable date_str. Parsing (not string-equality) makes it format-proof.
+  function _dayKeyOf(s){ if(!s) return null; var d=new Date(s); return isNaN(d.getTime())?null:d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
+  function _foodIsToday(f){ var k=_dayKeyOf(f.date_str); if(k) return k===_ftoday; var k2=_dayKeyOf(f.logged_at||f.created_at); return k2 ? (k2===_ftoday) : false; }
   var todayFoods = (_launch[0]||[]).filter(_foodIsToday);
   allFood = todayFoods || [];
   todayFood = allFood.slice();
@@ -2538,11 +2541,12 @@ async function loadTodayWorkouts(){
     // by timestamp — then keep anything whose date_str is today OR whose logged_at lands on today's date.
     // This matches how the full history reads (logged_at), so a workout can't show in history yet vanish here.
     var t=new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
-    function _sameDay(ts){ if(!ts) return false; var d=new Date(ts); return !isNaN(d.getTime()) && d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})===t; }
+    function _dkey(s){ if(!s) return null; var d=new Date(s); return isNaN(d.getTime())?null:d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
     var workouts = await sbSelect('workout_logs','client_code=eq.'+cl.code+'&order=logged_at.desc&limit=60');
     workouts = (workouts||[]).filter(function(w){
-      if(w.date_str && String(w.date_str).trim()===t) return true;      // filed as today
-      return _sameDay(w.logged_at||w.created_at);                        // or actually logged today (covers a bad/blank date_str)
+      // date_str is authoritative — a workout dated to another day must not leak into today; fall back to timestamp only when there's no usable date_str.
+      var k=_dkey(w.date_str); if(k) return k===t;
+      var k2=_dkey(w.logged_at||w.created_at); return k2 ? (k2===t) : false;
     });
     if(workouts.length > 0){
       todayWo = workouts.map(function(w){
@@ -4922,7 +4926,9 @@ function jvRenderTriage(){
   var _logT=0; codes.forEach(function(c){ if(per[c]&&per[c].cnt[0]>=1) _logT++; });
   var _woT=0; Object.keys((jvData&&jvData.woByClient)||{}).forEach(function(c){ if(!_hidden[c]&&CLIENTS[c]&&!CLIENTS[c].isTrainer&&((jvData.woByClient[c]||[]).length>=1)) _woT++; });
   var _mlT=0; Object.keys((jvData&&jvData.foodsByClient)||{}).forEach(function(c){ if(!_hidden[c]&&CLIENTS[c]&&!CLIENTS[c].isTrainer&&((jvData.foodsByClient[c]||[]).length>=2)) _mlT++; });
+  var _hmap=jvHandledMap(); var _tk=_jvTodayKey(); var _clrT=0; Object.keys(_hmap).forEach(function(c){ if(_hmap[c]===_tk) _clrT++; });
   html+='<div class="jvStats">'
+    +'<div class="jvStat"><div class="jvStatN" style="color:#fff;">'+_clrT+'</div><div class="jvStatL">cleared today</div></div>'
     +'<div class="jvStat"><div class="jvStatN" style="color:#3fcf83;">'+_logT+'</div><div class="jvStatL">checked in today</div></div>'
     +'<div class="jvStat"><div class="jvStatN" style="color:#9fd0ff;">'+_woT+'</div><div class="jvStatL">logged a workout</div></div>'
     +'<div class="jvStat"><div class="jvStatN" style="color:var(--gold);">'+_mlT+'</div><div class="jvStatL">2+ meals logged</div></div>'
@@ -7725,20 +7731,26 @@ async function renderFoodRecents(){
   try{ await mergeFoodHistoryIntoMenu(); }catch(e){}
   var sEl=document.getElementById('foodRecentsSearch');
   var q=((sEl&&sEl.value)||'').trim().toLowerCase();
-  var items=(menuItems||[]).filter(function(m){ return m && (m.meal_name||m.name); });
-  if(q) items=items.filter(function(m){ return (m.meal_name||m.name||'').toLowerCase().indexOf(q)>=0; });
+  var all=(menuItems||[]).filter(function(m){ return m && (m.meal_name||m.name); });
+  // Nothing logged ever → no search to offer.
+  if(all.length===0){ wrap.style.display='none'; list.innerHTML=''; return; }
+  // There's history → keep the search box visible, but don't dump meals until they type.
+  wrap.style.display='';
+  if(!q){
+    list.innerHTML='<div style="text-align:center;color:var(--muted);font-size:12px;padding:12px 6px;line-height:1.5;">Type to find a meal you\u2019ve logged before \u2014 e.g. <b>chicken</b>, <b>oats</b>, <b>steak</b>, <b>McDonald\u2019s</b>.</div>';
+    return;
+  }
+  var items=all.filter(function(m){ return (m.meal_name||m.name||'').toLowerCase().indexOf(q)>=0; });
   items.sort(function(a,b){
     var lc=(b.log_count||0)-(a.log_count||0);
     if(lc!==0) return lc;
     return (b.last_logged_at||b.added_to_menu_at||'').localeCompare(a.last_logged_at||a.added_to_menu_at||'');
   });
-  items=q?items.slice(0,20):items.slice(0,8);
+  items=items.slice(0,25);
   if(items.length===0){
-    if(q){ wrap.style.display=''; list.innerHTML='<div style="text-align:center;color:var(--muted);font-size:12px;padding:14px 0;">No saved meal matches that. Log it new below.</div>'; }
-    else { wrap.style.display='none'; list.innerHTML=''; }
+    list.innerHTML='<div style="text-align:center;color:var(--muted);font-size:12px;padding:14px 0;">No meal matches \u201c'+_escHtml(q)+'\u201d. Log it new below.</div>';
     return;
   }
-  wrap.style.display='';
   list.innerHTML=items.map(function(m){
     var nm=(m.meal_name||m.name||'Meal'), em=m.emoji||'🍽️';
     var cal=Math.round(m.calories||0), pr=Math.round(m.protein||0), times=(m.log_count||1);
