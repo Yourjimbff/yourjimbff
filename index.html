@@ -1144,6 +1144,7 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
 
   <!-- CLIENTS TAB (trainer only) -->
   <div class="tab" id="tClients">
+    <div id="mobFrontDesk" style="margin-bottom:14px;"></div>
     <!-- SALES TRACKER (trainer only — your private revenue view) -->
     <div id="salesCard" style="background:linear-gradient(135deg,#1a1a1a,#0a0a0a);border:1px solid rgba(245,197,24,0.3);border-radius:14px;padding:16px;margin-bottom:14px;">
       <div onclick="toggleSalesBody()" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;">
@@ -2059,7 +2060,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.220.0';
+var APP_VERSION = 'v5.221.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -4846,6 +4847,15 @@ function jvRefresh(){ if(jvMode==='cockpit') jvLoadTriage(); else if(jvMode==='g
 // Front Desk no longer auto-refreshes — it was reloading the board out from under you
 // (closing an open roster, etc.). Use the Refresh button, or switch tabs, to re-pull.
 (function(){ /* auto-refresh intentionally disabled */ })();
+// The reactivation push — these show in a "Get them started" row (desktop + mobile) until they log.
+var JV_RECENT_BATCH={celestec123:1,cynthias1:1,devantew:1,quintenp1:1,dakotaa1:1,joegrady1:1,colet1:1,sofiat1:1,kristiank1:1,hunterc1:1,claytonb1:1,jasonm1:1,georginat1:1};
+// Open a client the right way for the surface we're on: desktop cockpit deep-dive, or the mobile client view.
+function _jvOpenClient(code){
+  if(typeof jvIsTrainerDesktop==='function' && jvIsTrainerDesktop()){ jvOpenDeep(code); return; }
+  var nm=(CLIENTS[code]&&CLIENTS[code].name||'').replace(/'/g,"\\'");
+  if(typeof openClientJimChat==='function') openClientJimChat(code, nm);
+  else if(typeof jvOpenDeep==='function') jvOpenDeep(code);
+}
 // Tap a Front Desk stat → see exactly which clients make up that number.
 function _jvStatusLine(code){
   var p=(jvTriage&&jvTriage.per||{})[code];
@@ -4866,7 +4876,7 @@ function jvStatList(kind){
   var rows = list.length ? list.map(function(code){
     var nm=(CLIENTS[code].name||code).replace(/</g,'&lt;');
     var sub=_jvStatusLine(code);
-    return '<div onclick="jvCloseStatList();jvOpenDeep(\''+code+'\')" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-bottom:1px solid #1b1b1b;cursor:pointer;">'
+    return '<div onclick="jvCloseStatList();_jvOpenClient(\''+code+'\')" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-bottom:1px solid #1b1b1b;cursor:pointer;">'
       +'<span style="font-size:14px;font-weight:700;color:#fff;">'+nm+'</span>'
       +'<span style="font-size:11.5px;color:#8a8a8a;text-align:right;">'+sub+'</span></div>';
   }).join('') : '<div style="padding:28px;text-align:center;color:#777;font-size:13px;">Nobody here yet.</div>';
@@ -5084,7 +5094,7 @@ function jvRenderTriage(){
       +'</div></div></div>';
   }
   if(notStarted.length){
-    var RECENT_BATCH={celestec123:1,cynthias1:1,devantew:1,quintenp1:1,dakotaa1:1,joegrady1:1,colet1:1,sofiat1:1,kristiank1:1,hunterc1:1,claytonb1:1,jasonm1:1,georginat1:1};
+    var RECENT_BATCH=JV_RECENT_BATCH;
     var _alpha=function(a,b){ return (CLIENTS[a].name||a).localeCompare(CLIENTS[b].name||b); };
     var _chip=function(code){ return '<div class="jvDormChip" data-name="'+(CLIENTS[code].name||'').toLowerCase().replace(/"/g,'')+'" onclick="jvOpenDeep(\''+code+'\')">'+(CLIENTS[code].name||'').replace(/</g,'&lt;')+'</div>'; };
     var batch=notStarted.filter(function(c){return RECENT_BATCH[c];}).sort(_alpha);
@@ -6537,8 +6547,46 @@ function setDashDay(n){
   }
   loadTrainerDashboard();
 }
+// Mobile Front Desk: the same at-a-glance stats (tappable) + "get them started" batch, above the client list.
+async function renderMobFrontDesk(){
+  var el=document.getElementById('mobFrontDesk'); if(!el) return;
+  var _stale = !jvTriage || !jvTriage.now || (Date.now()-jvTriage.now > 120000);
+  if(_stale){ try{ await jvLoadTriage(true); }catch(e){} }
+  if(!jvTriage){ el.innerHTML=''; return; }
+  var per=jvTriage.per||{}; var _hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
+  var codes=Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer && !_hidden[k]; });
+  var _total=codes.length;
+  var _logT=codes.filter(function(c){ return per[c]&&per[c].cnt[0]>=1; }).length;
+  var wb=(jvData&&jvData.woByClient)||{};
+  var _woT=Object.keys(wb).filter(function(c){ return !_hidden[c]&&CLIENTS[c]&&!CLIENTS[c].isTrainer&&(wb[c]||[]).length>=1; }).length;
+  var hmap=jvHandledMap(), tk=_jvTodayKey();
+  var _clrT=Object.keys(hmap).filter(function(c){ return hmap[c]===tk && CLIENTS[c] && !CLIENTS[c].isTrainer && !_hidden[c]; }).length;
+  function statCard(n,label,color,kind){
+    return '<div onclick="jvStatList(\''+kind+'\')" style="background:#101010;border:1px solid #232323;border-radius:14px;padding:13px 12px;cursor:pointer;">'
+      +'<div style="font-family:\'Plus Jakarta Sans\',sans-serif;font-size:24px;font-weight:800;line-height:1;color:'+color+';">'+n+'</div>'
+      +'<div style="font-size:9.5px;color:#888;letter-spacing:0.8px;text-transform:uppercase;margin-top:5px;font-weight:700;">'+label+'</div></div>';
+  }
+  var html='<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;">'
+    +statCard(_total,'total clients','var(--gold)','total')
+    +statCard(_logT,'checked in today','#3fcf83','checkedin')
+    +statCard(_clrT,'caught up today','#fff','caughtup')
+    +statCard(_woT,'worked out','#9fd0ff','workedout')
+    +'</div>';
+  // Get-them-started batch (just-added clients who haven't logged yet)
+  var batch=codes.filter(function(c){ return JV_RECENT_BATCH[c] && (!per[c] || !per[c].ever); })
+    .sort(function(a,b){ return (CLIENTS[a].name||a).localeCompare(CLIENTS[b].name||b); });
+  if(batch.length){
+    html+='<div style="background:#100e07;border:1px solid rgba(245,197,24,0.30);border-radius:14px;padding:12px 14px;margin-top:12px;">'
+      +'<div style="font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--gold);margin-bottom:9px;">\ud83c\udd95 Get them started \u00b7 '+batch.length+'</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:7px;">'
+      +batch.map(function(code){ return '<div onclick="_jvOpenClient(\''+code+'\')" style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:999px;padding:7px 13px;font-size:12.5px;font-weight:700;color:#eee;cursor:pointer;">'+(CLIENTS[code].name||code).replace(/</g,'&lt;')+'</div>'; }).join('')
+      +'</div></div>';
+  }
+  el.innerHTML=html;
+}
 async function loadTrainerDashboard(){
   var listEl = document.getElementById('clientList');
+  renderMobFrontDesk();
   // Load briefing in parallel (non-blocking)
   loadLatestBriefing();
   if(typeof loadSales==='function') loadSales(); // refresh the sales headline total
