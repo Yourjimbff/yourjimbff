@@ -2070,7 +2070,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.228.0';
+var APP_VERSION = 'v5.231.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -2191,6 +2191,19 @@ var todayKey=new Date().toDateString();
 // between midnight and 3am to the wrong date and made two devices disagree.)
 var todayDateStr=new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
 var todayStr=new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+// A saved-to-home-screen PWA can stay open for days; these were computed once at load and went stale,
+// making "today" wrong (Jim thought it was the day the app first opened). Recompute on reopen/focus.
+function refreshTodayDate(){
+  try{
+    var d=new Date();
+    todayDateStr=d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+    todayStr=d.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+  }catch(e){}
+}
+try{
+  document.addEventListener('visibilitychange', function(){ if(!document.hidden) refreshTodayDate(); });
+  window.addEventListener('focus', refreshTodayDate);
+}catch(e){}
 
 function showLoading(show){ document.getElementById('loadingOverlay').className = 'loading-overlay'+(show?' show':''); }
 
@@ -6609,22 +6622,23 @@ async function renderMobFrontDesk(){
     .sort(function(a,b){ return (CLIENTS[a].name||a).localeCompare(CLIENTS[b].name||b); });
   if(batch.length){
     html+='<div style="background:#100e07;border:1px solid rgba(245,197,24,0.30);border-radius:14px;padding:12px 14px;margin-top:12px;">'
-      +'<div style="font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--gold);margin-bottom:9px;">\ud83c\udd95 Get them started \u00b7 '+batch.length+'</div>'
-      +'<div style="display:flex;flex-wrap:wrap;gap:7px;">'
+      +'<div onclick="var g=document.getElementById(\'mobBatchGrid\');var c=document.getElementById(\'mobBatchCaret\');if(g){var open=g.style.display!==\'none\';g.style.display=open?\'none\':\'flex\';if(c)c.textContent=open?\'\\u25be\':\'\\u25b4\';}" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;">'
+      +'<div style="font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--gold);">\ud83c\udd95 Get them started \u00b7 '+batch.length+'</div>'
+      +'<div style="font-size:13px;color:var(--gold);" id="mobBatchCaret">\u25be</div>'
+      +'</div>'
+      +'<div id="mobBatchGrid" style="display:none;flex-wrap:wrap;gap:7px;margin-top:10px;">'
       +batch.map(function(code){ return '<div onclick="_jvOpenClient(\''+code+'\')" style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:999px;padding:7px 13px;font-size:12.5px;font-weight:700;color:#eee;cursor:pointer;">'+(CLIENTS[code].name||code).replace(/</g,'&lt;')+'</div>'; }).join('')
       +'</div></div>';
   }
   el.innerHTML=html;
 }
 var dashView = 'clients';
-// Put the working stuff on top (header → day/view buttons → search → list), reference cards below.
+// Put the working stuff on top (stats glance → header → day/view buttons → search → list), bulky cards below.
 function _reorderClientsTab(){
   try{
-    if(window._clientsTabReordered) return;
     var tc=document.getElementById('tClients'); if(!tc) return;
-    var order=['dashHeader','dashDayTabs','dashViewTabs','clientSearch','clientSearchResults','clientList','mobFrontDesk','salesCard','weightHistCard'];
+    var order=['mobFrontDesk','dashHeader','dashDayTabs','dashViewTabs','clientSearch','clientSearchResults','clientList','salesCard','weightHistCard'];
     order.forEach(function(id){ var el=document.getElementById(id); if(el) tc.appendChild(el); });
-    window._clientsTabReordered=true;
   }catch(e){}
 }
 function setDashView(v){
@@ -11239,7 +11253,13 @@ function logWorkoutFromPhoto(){
 // Used by both the Performance Assistant AND the food analyzer.
 // Silent on missing data — sections only appear if there's something to say.
 async function buildDayContext(){
+  if(typeof refreshTodayDate==='function') refreshTodayDate();
   var sections=[];
+  // Anchor Jim to the real current date/time so it can never claim the wrong day (a long-open PWA used to go stale).
+  try{
+    var _now=new Date();
+    sections.push('=== CURRENT DATE & TIME ===\nRight now it is '+_now.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})+' at '+_now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})+', the client\'s local time. Treat THIS as today. Never state or guess a different date — if a log is from an earlier day, name that day relative to this one. "Today" always means '+todayDateStr+'.');
+  }catch(e){}
 
   // GHOST TRIGGER — past 2pm with 0 food logs AND 0 check-ins = ghosting
   var hourNow = new Date().getHours();
@@ -11913,6 +11933,8 @@ function buildCoachVoice(){
     'YUSUF\'S NUTRITION MODEL — THE STANDARD TO MEASURE FOOD AGAINST (reference it to sharpen your take; do not recite it):\n'+ YOURJIMBFF_NUTRITION_FORMULA + '\n\n'+
 
     'BOUNDARIES:\n'+
+    '- You are a logging companion, NOT tech support. If they say something is missing or not showing in the app, NEVER diagnose it as a bug, sync issue, backend glitch, or display problem, and NEVER tell them to screenshot it or message Yusuf about a technical issue. Their log is saved on your end — reassure them warmly ("it\'s logged on my end, you did the work"), suggest they fully close and reopen the app to refresh, and leave it there. Speculating about glitches to a client is alarming and not your job.\n'+
+    '- Never state a date, time, or day of the week you are not certain of. Use the CURRENT DATE & TIME given to you above — do not guess.\n'+
     '- Not a doctor. Real symptoms (pain, injury, dizziness) → "go see someone in person on this." Don\'t freelance medical advice.\n'+
     '- Use the data below. If a section is missing, don\'t pretend to know it.\n'+
     '- THE PROGRAM IS YUSUF\'S, NOT YOURS: when a TODAY\'S PLANNED WORKOUT section is present, that is the plan the coach set. Keep them on it — motivate, explain the intent, scale effort/load guidance, and tailor fuel and recovery around it. You may point them to the substitutes already listed in the plan. But you do NOT redesign it, swap days, or add/remove exercises. Any request to change the program goes back to Yusuf: "That\'s a Yusuf call — I just keep you on the path he set. Message him and he\'ll adjust it."\n'+
