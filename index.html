@@ -2071,7 +2071,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.242.0';
+var APP_VERSION = 'v5.243.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -2332,6 +2332,7 @@ async function launchApp(){
   todayFood.forEach(function(e){ tots.cal+=e.calories||0; tots.protein+=e.protein||0; tots.carbs+=e.carbs||0; tots.fat+=e.fat||0; });
   var weights = _launch[1];
   if(weights && weights.length > 0){ lastWeight = weights[0].weight; }
+  if(typeof refreshFoodStreak==='function') refreshFoodStreak(true);
   // Build the app shell while still under the loading screen
   document.getElementById('sApp').style.display='flex';
   document.getElementById('bnav').style.display='grid';
@@ -7402,12 +7403,34 @@ async function saveScores(){
   await sbUpsert('daily_scores',{client_code:cl.code,date_key:todayKey,food_score:scores.food,workout_score:scores.workout,sleep_score:scores.sleep,steps_score:scores.steps,energy_score:scores.energy,weight_score:scores.weight,total_score:calcTotal()});
 }
 
+function _streakDayKey(d){ return d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate(); }
+// Real streak: consecutive days (ending today, or yesterday if today isn't logged yet) with at least one food log.
+async function refreshFoodStreak(force){
+  try{
+    if(!cl || !cl.code){ window._foodStreakVal=0; _renderStreak(); return 0; }
+    var nowMs=Date.now();
+    if(!force && window._foodStreakAt && (nowMs-window._foodStreakAt)<25000){ _renderStreak(); return window._foodStreakVal||0; }
+    var rows=await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(cl.code)+'&select=date_str&order=id.desc&limit=400')||[];
+    var set={};
+    rows.forEach(function(r){ if(r && r.date_str){ var d=new Date(r.date_str); if(!isNaN(d.getTime())) set[_streakDayKey(d)]=1; } });
+    var streak=0, cur=new Date(); cur.setHours(12,0,0,0);
+    if(!set[_streakDayKey(cur)]){ cur.setDate(cur.getDate()-1); } // today not logged yet — don't break the streak, count from yesterday
+    while(set[_streakDayKey(cur)]){ streak++; cur.setDate(cur.getDate()-1); }
+    window._foodStreakVal=streak; window._foodStreakAt=nowMs;
+    _renderStreak();
+    return streak;
+  }catch(e){ return window._foodStreakVal||0; }
+}
+function _renderStreak(){
+  var s=window._foodStreakVal||0;
+  var a=document.getElementById('ssstr'); if(a) a.textContent='🔥'+s;
+  var b=document.getElementById('streakPill'); if(b) b.textContent='🔥 '+s+' day'+(s===1?'':'s');
+}
 function updStats(){
   document.getElementById('ssmls').textContent=todayFood.length;
   document.getElementById('sscal').textContent=tots.cal>0?Math.round(tots.cal):'—';
-  var streak=todayFood.length>0?1:0;
-  document.getElementById('ssstr').textContent='🔥'+streak;
-  document.getElementById('streakPill').textContent='🔥 '+streak+' day'+(streak===1?'':'s');
+  _renderStreak();
+  refreshFoodStreak();
   if(lastWeight) document.getElementById('sswt').textContent=lastWeight+'lbs';
 }
 
@@ -12191,6 +12214,7 @@ async function logFoodFromChat(offer, photo){
   if(profile && tots.cal>0){ var pct=tots.cal/(profile.calTarget||profile.cal_target||2000); if(pct>=0.85&&pct<=1.15) scores.food=Math.min(4, scores.food+0.2); }
   try{ trackMealForMenu({name:r.name, emoji:r.emoji, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, meal:meal, insight:r.insight, rating:r.rating}); }catch(e){}
   try{ updTots(); rendTodayFood(); updHalo(); pulseH(); updStats(); markTileDone('Food'); }catch(e){ console.error('food UI refresh', e); }
+  try{ if(typeof refreshFoodStreak==='function') refreshFoodStreak(true); }catch(e){}
   return true;
 }
 
