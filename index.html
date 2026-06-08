@@ -2071,7 +2071,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.243.0';
+var APP_VERSION = 'v5.244.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -2196,6 +2196,9 @@ var todayStr=new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',
 // making "today" wrong (Jim thought it was the day the app first opened). Recompute on reopen/focus.
 function refreshTodayDate(){
   try{
+    // Don't overwrite the day context while the user is browsing a PAST day —
+    // loadDayView owns todayDateStr then, and clobbering it makes logs save to the wrong day.
+    if(typeof isViewingToday==='function' && typeof viewDate!=='undefined' && !isViewingToday()) return;
     var d=new Date();
     todayDateStr=d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
     todayStr=d.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
@@ -8333,9 +8336,15 @@ async function quickLogMeal(r){
 async function commitMeal(r,graced){
   var meal=document.querySelector('#mFood .rrow .rb.sel .rbl');meal=meal?meal.textContent:'Meal';
   var eatTime=document.getElementById('foodTime').value.trim()||new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
-  var entry=Object.assign({},r,{meal:meal,eat_time:eatTime,eatTime:eatTime,graced:graced,photo:photoData,date_str:todayDateStr});
+  // Save to the day actually being viewed (derived from viewDate, not the clobberable todayDateStr).
+  var onToday=(typeof isViewingToday==='function')?isViewingToday():true;
+  var targetDS=(typeof viewDate!=='undefined' && !onToday)
+    ? viewDate.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})
+    : new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  var entry=Object.assign({},r,{meal:meal,eat_time:eatTime,eatTime:eatTime,graced:graced,photo:photoData,date_str:targetDS});
   // Save to Supabase. Photo is downscaled (~900px JPEG) and persisted so it can be re-viewed later.
-  var foodRow={client_code:cl.code,name:r.name,emoji:r.emoji,calories:r.calories,protein:r.protein,carbs:r.carbs,fat:r.fat,sugar:Math.round(r.sugar||0),rating:r.rating,insight:r.insight,meal:meal,eat_time:eatTime,graced:graced,date_str:todayDateStr};
+  var foodRow={client_code:cl.code,name:r.name,emoji:r.emoji,calories:r.calories,protein:r.protein,carbs:r.carbs,fat:r.fat,sugar:Math.round(r.sugar||0),rating:r.rating,insight:r.insight,meal:meal,eat_time:eatTime,graced:graced,date_str:targetDS};
+  if(!onToday){ try{ foodRow.logged_at=_isoForDateStr(targetDS, eatTime); }catch(e){} }
   var _ins=await insertFoodLog(foodRow, photoData);
   if(_ins && _ins.id!=null) entry.id=_ins.id;
   // Track for My Menu (don't await — fire and forget, runs in background)
