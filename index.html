@@ -1092,7 +1092,7 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
   <div class="tab" id="tTraining">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
       <div>
-        <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:22px;font-weight:800;letter-spacing:-0.3px;line-height:1;">Your Fitness</div>
+        <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:22px;font-weight:800;letter-spacing:-0.3px;line-height:1;">Journal</div>
         <div style="font-size:11px;color:var(--muted);margin-top:3px;" id="trainingSubtitle">Loading…</div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
@@ -1801,7 +1801,7 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
 <div class="bnav" id="bnav">
   <div class="bni active" id="bnToday" onclick="switchTab('Today')"><div class="bni-ic">📋</div><div class="bni-lb">Today</div></div>
   <div class="bni" id="bnAsk" onclick="switchTab('Ask')"><div class="bni-ic">💬</div><div class="bni-lb">Jim</div></div>
-  <div class="bni" id="bnTraining" onclick="switchTab('Training')"><div class="bni-ic">🏋</div><div class="bni-lb">Fitness</div></div>
+  <div class="bni" id="bnTraining" onclick="switchTab('Training')"><div class="bni-ic">📓</div><div class="bni-lb">Journal</div></div>
   <div class="bni" id="bnFollow" onclick="switchTab('Follow')"><div class="bni-ic">🐐</div><div class="bni-lb">Yusuf</div></div>
   <div class="bni trainer-only" id="bnClients" onclick="switchTab('Clients')"><div class="bni-ic">👥</div><div class="bni-lb">Clients</div></div>
   <div class="bni" id="bnProfile" onclick="switchTab('Profile')"><div class="bni-ic">👤</div><div class="bni-lb">Profile</div></div>
@@ -2071,7 +2071,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.244.0';
+var APP_VERSION = 'v5.245.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -2666,8 +2666,93 @@ function selectTrainingDay(dateStr){
   }
 }
 
+// JOURNAL — the client's unified record: each day, training + eating interleaved by time. Last 14 days.
+function _journalMin(r){
+  try{ if(r.eat_time){ var m=String(r.eat_time).match(/(\d{1,2}):(\d{2})\s*(am|pm)?/i); if(m){ var h=+m[1]; if(/pm/i.test(m[3]||'')&&h<12)h+=12; if(/am/i.test(m[3]||'')&&h===12)h=0; return h*60+(+m[2]); } } }catch(e){}
+  try{ if(r.logged_at){ var s=r.logged_at; var d=new Date(/[Z+]/.test(s)?s:s+'Z'); if(!isNaN(d.getTime())) return d.getHours()*60+d.getMinutes(); } }catch(e){}
+  return 0;
+}
+function _journalDayLabel(d, ds){
+  if(!d) return ds;
+  var now=new Date(); now.setHours(0,0,0,0); var dd=new Date(d); dd.setHours(0,0,0,0);
+  var diff=Math.round((now-dd)/86400000);
+  var wk=dd.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+  if(diff===0) return 'Today \u00b7 '+wk;
+  if(diff===1) return 'Yesterday \u00b7 '+wk;
+  return wk;
+}
+function _journalMealRow(f, foodsEnc, idx){
+  var rmap={nutrient_dense:['#3fcf83','Nutrient-dense'],good:['#3fcf83','Good'],clean:['#3fcf83','Clean'],okay:['#e8b341','Okay'],bad:['#e06b6b','Heavy'],unknown:['#888','\u2014']};
+  var rr=rmap[f.rating]||rmap.unknown;
+  var tap='openClientMealSwipe(\''+foodsEnc+'\','+idx+')';
+  return '<div style="background:var(--s2);border:1px solid var(--border);border-radius:11px;padding:10px 12px;margin-bottom:8px;">'
+    +'<div style="display:flex;align-items:center;gap:10px;cursor:pointer;" onclick="'+tap+'">'
+      +'<span style="font-size:19px;flex-shrink:0;">'+(f.emoji||'\ud83c\udf7d\ufe0f')+'</span>'
+      +'<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;">'+(f.name||'').replace(/</g,'&lt;')+'</div>'
+        +'<div style="font-size:10.5px;color:var(--muted);margin-top:1px;">'+(f.calories||0)+' cal \u00b7 '+(f.protein||0)+'g protein'+(f.eat_time?(' \u00b7 '+f.eat_time):'')+'</div></div>'
+      +'<span style="flex-shrink:0;font-size:9.5px;font-weight:800;color:'+rr[0]+';border:1px solid '+rr[0]+';border-radius:6px;padding:3px 6px;">'+rr[1]+'</span>'
+    +'</div>'+_jimReadHtml(f)+'</div>';
+}
+function _journalWorkoutRow(w){
+  var id='jw_'+(w.id||Math.random().toString(36).slice(2));
+  var time=''; try{ if(w.logged_at){ var d=new Date(/[Z+]/.test(w.logged_at)?w.logged_at:w.logged_at+'Z'); if(!isNaN(d.getTime())) time=d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); } }catch(e){}
+  if(!time && w.eat_time) time=w.eat_time;
+  var desc=(w.description||'').replace(/</g,'&lt;');
+  var intens=w.intensity?(' \u00b7 '+w.intensity+'/10'):'';
+  return '<div style="background:rgba(245,197,24,0.05);border:1px solid rgba(245,197,24,0.22);border-radius:11px;padding:11px 13px;margin-bottom:8px;">'
+    +'<div onclick="var b=document.getElementById(\''+id+'\');if(b)b.style.display=(b.style.display===\'none\'?\'block\':\'none\');" style="display:flex;align-items:center;gap:9px;cursor:pointer;">'
+      +'<span style="font-size:18px;flex-shrink:0;">\ud83c\udfcb\ufe0f</span>'
+      +'<div style="flex:1;min-width:0;"><div style="font-size:13.5px;font-weight:800;color:var(--text);">'+((w.title||'Workout').replace(/</g,'&lt;'))+'</div>'
+        +'<div style="font-size:10.5px;color:var(--muted);margin-top:1px;">'+(time||'')+intens+'</div></div>'
+      +'<span style="color:var(--muted);font-size:13px;flex-shrink:0;">\u25be</span></div>'
+    +'<div id="'+id+'" style="display:none;margin-top:9px;font-size:12.5px;color:var(--m2);line-height:1.6;white-space:pre-wrap;">'+(desc||'(no detail logged)')+'</div>'
+  +'</div>';
+}
+async function loadJournal(){
+  if(!cl) return;
+  var holder=document.getElementById('trainingHistory');
+  var sub=document.getElementById('trainingSubtitle');
+  var board=document.getElementById('trainingWeekCal'); if(board) board.style.display='none';
+  if(!holder) return;
+  holder.innerHTML='<div style="text-align:center;padding:30px;color:var(--muted);font-size:13px;">Loading\u2026</div>';
+  try{
+    var since=new Date(); since.setDate(since.getDate()-14); since.setHours(0,0,0,0);
+    var foods=await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(cl.code)+'&order=id.desc&limit=300')||[];
+    var wos=await sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(cl.code)+'&order=id.desc&limit=120')||[];
+    function dk(ds){ var d=new Date(ds); return isNaN(d.getTime())?null:d; }
+    function within(ds){ var d=dk(ds); return d && d.getTime()>=since.getTime(); }
+    var days={};
+    foods.forEach(function(f){ if(!f.date_str||!within(f.date_str))return; (days[f.date_str]=days[f.date_str]||{date:dk(f.date_str),foods:[],wos:[]}).foods.push(f); });
+    wos.forEach(function(w){ if(!w.date_str||!within(w.date_str))return; (days[w.date_str]=days[w.date_str]||{date:dk(w.date_str),foods:[],wos:[]}).wos.push(w); });
+    var keys=Object.keys(days).sort(function(a,b){ return days[b].date - days[a].date; });
+    if(sub) sub.textContent='Your last 14 days';
+    if(!keys.length){ holder.innerHTML='<div style="padding:34px 20px;text-align:center;color:var(--muted);font-size:13px;line-height:1.6;">Nothing logged in the last 14 days yet.<br>Log a meal or workout and it\'ll show up here.</div>'; return; }
+    var html='';
+    keys.forEach(function(k){
+      var day=days[k];
+      var label=_journalDayLabel(day.date, k);
+      var tc=0,tp=0,tcb=0,tf=0; day.foods.forEach(function(f){ tc+=f.calories||0; tp+=f.protein||0; tcb+=f.carbs||0; tf+=f.fat||0; });
+      var foodsEnc=encodeURIComponent(JSON.stringify(day.foods.map(function(f){return {id:f.id,name:f.name,emoji:f.emoji,calories:f.calories,protein:f.protein,carbs:f.carbs,fat:f.fat,rating:f.rating,eat_time:f.eat_time,photo:f.photo||null,coach_comment:f.coach_comment||'',insight:f.insight||'',client_code:cl.code,_t:(f.logged_at?new Date(f.logged_at).getTime():0)};})));
+      var items=[];
+      day.wos.forEach(function(w){ items.push({m:_journalMin(w),k:'w',d:w}); });
+      day.foods.forEach(function(f){ items.push({m:_journalMin(f),k:'f',d:f}); });
+      items.sort(function(a,b){ return a.m-b.m; });
+      var rows=items.map(function(it){
+        if(it.k==='w') return _journalWorkoutRow(it.d);
+        return _journalMealRow(it.d, foodsEnc, day.foods.indexOf(it.d));
+      }).join('');
+      html+='<div style="margin-bottom:18px;">'
+        +'<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:9px;gap:8px;">'
+          +'<div style="font-size:11px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:var(--gold);">'+label+'</div>'
+          +(tc>0?'<div style="font-size:10px;color:var(--muted);white-space:nowrap;">'+Math.round(tc)+' cal \u00b7 '+Math.round(tp)+'p \u00b7 '+Math.round(tcb)+'c \u00b7 '+Math.round(tf)+'f</div>':'')
+        +'</div>'+rows+'</div>';
+    });
+    holder.innerHTML=html;
+  }catch(e){ console.error('loadJournal',e); holder.innerHTML='<div style="padding:20px;color:var(--muted);font-size:13px;text-align:center;">Could not load your journal. Try again.</div>'; }
+}
 async function loadTrainingHistory(){
   if(!cl) return;
+  if(!isTrainer(cl.code)){ return loadJournal(); }
   var holder = document.getElementById('trainingHistory');
   var sub = document.getElementById('trainingSubtitle');
   if(!holder) return;
