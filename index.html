@@ -2071,7 +2071,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.240.0';
+var APP_VERSION = 'v5.241.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -4967,7 +4967,7 @@ function jvStatList(kind){
   var codes=Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer && !_hidden[k]; });
   var list=[], title='';
   if(kind==='total'){ title='All clients'; list=codes.slice(); }
-  else if(kind==='checkedin'){ title='Checked in today'; list=codes.filter(function(c){ return per[c]&&per[c].cnt[0]>=1; }); }
+  else if(kind==='checkedin'){ title='Logged today'; list=codes.filter(function(c){ return per[c]&&per[c].cnt[0]>=1; }); }
   else if(kind==='caughtup'){ title='Caught up today'; var hmap=jvHandledMap(), tk=_jvTodayKey(); list=Object.keys(hmap).filter(function(c){ return hmap[c]===tk && CLIENTS[c] && !CLIENTS[c].isTrainer && !_hidden[c]; }); }
   else if(kind==='workedout'){ title='Worked out today'; var wb=(jvData&&jvData.woByClient)||{}; list=Object.keys(wb).filter(function(c){ return !_hidden[c] && CLIENTS[c] && !CLIENTS[c].isTrainer && (wb[c]||[]).length>=1; }); }
   list.sort(function(a,b){ return (CLIENTS[a].name||a).localeCompare(CLIENTS[b].name||b); });
@@ -5072,6 +5072,12 @@ function _jvClassify(p, nowMs){
 }
 function _jvTodayKey(){ return _jvDayKey(new Date()); }
 function jvHandledMap(){ try{ return JSON.parse(localStorage.getItem('yjb_jv_handled')||'{}'); }catch(e){ return {}; } }
+function _jvGotStartedSet(){ try{ return JSON.parse(localStorage.getItem('yjb_jv_started')||'{}')||{}; }catch(e){ return {}; } }
+function _jvDismissStarted(code){
+  try{ var s=_jvGotStartedSet(); s[code]=1; localStorage.setItem('yjb_jv_started',JSON.stringify(s)); }catch(e){}
+  if(typeof showToast==='function') showToast('Cleared from Get them started');
+  if(typeof renderMobFrontDesk==='function') renderMobFrontDesk();
+}
 function jvIsHandled(code){ return jvHandledMap()[code]===_jvTodayKey(); }
 function jvMarkHandled(code){ var m=jvHandledMap(); m[code]=_jvTodayKey(); try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} try{ if(cl) fetch(SB_URL+'/rest/v1/jv_handled?on_conflict=coach_code,client_code,date_str', {method:'POST', headers:Object.assign({},sbHeaders(),{'Prefer':'resolution=merge-duplicates,return=minimal','Content-Type':'application/json'}), body:JSON.stringify({coach_code:cl.code, client_code:code, date_str:_jvTodayKey()})}); }catch(e){} jvRenderTriage(); }
 function jvUnhandle(code){ var m=jvHandledMap(); delete m[code]; try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} try{ if(cl) fetch(SB_URL+'/rest/v1/jv_handled?coach_code=eq.'+encodeURIComponent(cl.code)+'&client_code=eq.'+encodeURIComponent(code)+'&date_str=eq.'+encodeURIComponent(_jvTodayKey()), {method:'DELETE', headers:sbHeaders()}); }catch(e){} jvRenderTriage(); }
@@ -5146,7 +5152,7 @@ function jvRenderTriage(){
   var _total=codes.length;
   html+='<div class="jvStats">'
     +'<div class="jvStat" onclick="jvStatList(\'total\')" style="cursor:pointer;"><div class="jvStatN" style="color:var(--gold);">'+_total+'</div><div class="jvStatL">total clients</div></div>'
-    +'<div class="jvStat" onclick="jvStatList(\'checkedin\')" style="cursor:pointer;"><div class="jvStatN" style="color:#3fcf83;">'+_logT+'</div><div class="jvStatL">checked in today</div></div>'
+    +'<div class="jvStat" onclick="jvStatList(\'checkedin\')" style="cursor:pointer;"><div class="jvStatN" style="color:#3fcf83;">'+_logT+'</div><div class="jvStatL">logged today</div></div>'
     +'<div class="jvStat" onclick="jvStatList(\'caughtup\')" style="cursor:pointer;"><div class="jvStatN" style="color:#fff;">'+_clrT+'</div><div class="jvStatL">caught up today</div></div>'
     +'<div class="jvStat" onclick="jvStatList(\'workedout\')" style="cursor:pointer;"><div class="jvStatN" style="color:#9fd0ff;">'+_woT+'</div><div class="jvStatL">worked out</div></div>'
     +'</div>';
@@ -5455,9 +5461,22 @@ function _jvPhotoZoom(i){
 function _jvOpenCompare(){
   var rows=window._jvPhotos||[];
   if(rows.length<2){ if(typeof showToast==='function') showToast('Need at least 2 photos to compare'); return; }
-  window._jvCmp=[rows.length-1, 0]; // [left = oldest, right = newest] (rows are newest-first)
+  // Choose a default angle that has 2+ photos so we compare like-for-like (front vs front, back vs back).
+  var counts={}; rows.forEach(function(p){ var a=(p.angle||'Front'); counts[a]=(counts[a]||0)+1; });
+  var pick=null; ['Front','Back','Side'].forEach(function(a){ if(pick==null && counts[a]>=2) pick=a; });
+  if(pick==null){ var best=null,bn=0; Object.keys(counts).forEach(function(a){ if(counts[a]>bn){bn=counts[a];best=a;} }); pick=best||(rows[0].angle||'Front'); }
+  window._jvCmpAngle=pick;
+  _jvCmpDefaultForAngle();
   _jvRenderCompare();
 }
+function _jvCmpDefaultForAngle(){
+  var rows=window._jvPhotos||[]; var ang=window._jvCmpAngle;
+  var idxs=[]; rows.forEach(function(p,i){ if((p.angle||'Front')===ang) idxs.push(i); });
+  if(idxs.length>=2) window._jvCmp=[idxs[idxs.length-1], idxs[0]]; // oldest (left) vs newest (right)
+  else if(idxs.length===1) window._jvCmp=[idxs[0], idxs[0]];
+  else window._jvCmp=[];
+}
+function _jvCmpSetAngle(a){ window._jvCmpAngle=a; _jvCmpDefaultForAngle(); _jvRenderCompare(); }
 function _jvCmpPick(i){
   var c=(window._jvCmp||[]).slice();
   if(c.indexOf(i)>-1) return;     // already shown
@@ -5476,14 +5495,17 @@ function _jvRenderCompare(){
       +'<div style="flex:1;border-radius:12px;overflow:hidden;background:#111;display:flex;align-items:center;justify-content:center;"><img src="'+p.photo+'" style="width:100%;height:100%;object-fit:contain;display:block;"></div>'
       +'<div style="text-align:center;color:#ddd;font-size:11px;font-weight:700;line-height:1.3;">'+lbl(p)+'</div></div>';
   }
-  var strip=rows.map(function(p,i){
-    var on=(c.indexOf(i)>-1);
-    return '<div onclick="_jvCmpPick('+i+')" style="flex:0 0 auto;width:52px;aspect-ratio:3/4;border-radius:8px;overflow:hidden;cursor:pointer;border:2px solid '+(on?'var(--gold)':'transparent')+';opacity:'+(on?'1':'0.62')+';"><img src="'+p.photo+'" style="width:100%;height:100%;object-fit:cover;display:block;"></div>';
+  var present=[]; var seen={}; rows.forEach(function(p){ var a=(p.angle||'Front'); if(!seen[a]){seen[a]=1;present.push(a);} });
+  var angleRow = present.length>1 ? '<div style="display:flex;gap:6px;justify-content:center;margin-bottom:12px;flex-shrink:0;">'+present.map(function(a){ var on=a===window._jvCmpAngle; return '<div onclick="_jvCmpSetAngle(\''+a+'\')" style="padding:5px 13px;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;border:1px solid '+(on?'var(--gold)':'#333')+';color:'+(on?'var(--gold)':'#999')+';background:'+(on?'rgba(245,197,24,0.10)':'transparent')+';">'+a+'</div>'; }).join('')+'</div>' : '';
+  var strip=rows.map(function(p,i){ return {p:p,i:i}; }).filter(function(o){ return (o.p.angle||'Front')===window._jvCmpAngle; }).map(function(o){
+    var on=(c.indexOf(o.i)>-1);
+    return '<div onclick="_jvCmpPick('+o.i+')" style="flex:0 0 auto;width:52px;aspect-ratio:3/4;border-radius:8px;overflow:hidden;cursor:pointer;border:2px solid '+(on?'var(--gold)':'transparent')+';opacity:'+(on?'1':'0.62')+';"><img src="'+o.p.photo+'" style="width:100%;height:100%;object-fit:cover;display:block;"></div>';
   }).join('');
   ov.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-shrink:0;">'
       +'<div style="color:#fff;font-size:14px;font-weight:800;">Compare</div>'
       +'<div onclick="document.getElementById(\'jvCompareOv\').style.display=\'none\';" style="color:#999;font-size:24px;line-height:1;cursor:pointer;padding:0 6px;">\u00d7</div>'
     +'</div>'
+    +angleRow
     +'<div style="flex:1;display:flex;gap:10px;min-height:0;">'+pane(c[0])+pane(c[1])+'</div>'
     +'<div style="flex-shrink:0;margin-top:12px;"><div style="font-size:9px;color:#777;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:7px;">Tap to swap a side</div>'
       +'<div style="display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px;">'+strip+'</div></div>';
@@ -6729,12 +6751,13 @@ async function renderMobFrontDesk(){
   }
   var html='<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;">'
     +statCard(_total,'total clients','var(--gold)','total')
-    +statCard(_logT,'checked in today','#3fcf83','checkedin')
+    +statCard(_logT,'logged today','#3fcf83','checkedin')
     +statCard(_clrT,'caught up today','#fff','caughtup')
     +statCard(_woT,'worked out','#9fd0ff','workedout')
     +'</div>';
-  // Get-them-started batch (just-added clients who haven't logged yet)
-  var batch=codes.filter(function(c){ return JV_RECENT_BATCH[c] && (!per[c] || !per[c].ever); })
+  // Get-them-started batch (just-added clients who haven't logged yet) — minus ones you've cleared.
+  var _started=_jvGotStartedSet();
+  var batch=codes.filter(function(c){ return JV_RECENT_BATCH[c] && (!per[c] || !per[c].ever) && !_started[c]; })
     .sort(function(a,b){ return (CLIENTS[a].name||a).localeCompare(CLIENTS[b].name||b); });
   if(batch.length){
     html+='<div style="background:#100e07;border:1px solid rgba(245,197,24,0.30);border-radius:14px;padding:12px 14px;margin-top:12px;">'
@@ -6743,7 +6766,10 @@ async function renderMobFrontDesk(){
       +'<div style="font-size:13px;color:var(--gold);" id="mobBatchCaret">\u25be</div>'
       +'</div>'
       +'<div id="mobBatchGrid" style="display:none;flex-wrap:wrap;gap:7px;margin-top:10px;">'
-      +batch.map(function(code){ return '<div onclick="_jvOpenClient(\''+code+'\')" style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:999px;padding:7px 13px;font-size:12.5px;font-weight:700;color:#eee;cursor:pointer;">'+(CLIENTS[code].name||code).replace(/</g,'&lt;')+'</div>'; }).join('')
+      +batch.map(function(code){ return '<div style="display:inline-flex;align-items:center;gap:8px;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:999px;padding:7px 7px 7px 13px;font-size:12.5px;font-weight:700;color:#eee;">'
+        +'<span onclick="_jvOpenClient(\''+code+'\')" style="cursor:pointer;">'+(CLIENTS[code].name||code).replace(/</g,'&lt;')+'</span>'
+        +'<span onclick="event.stopPropagation();_jvDismissStarted(\''+code+'\')" title="Clear — I\'ve started them" style="cursor:pointer;color:#777;font-size:15px;line-height:1;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;background:#000;">\u00d7</span>'
+        +'</div>'; }).join('')
       +'</div></div>';
   }
   el.innerHTML=html;
