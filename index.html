@@ -1092,10 +1092,10 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
   <div class="tab" id="tTraining">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
       <div>
-        <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:22px;font-weight:800;letter-spacing:-0.3px;line-height:1;">Journal</div>
+        <div id="trainingTitle" style="font-family:'Plus Jakarta Sans',sans-serif;font-size:22px;font-weight:800;letter-spacing:-0.3px;line-height:1;">Journal</div>
         <div style="font-size:11px;color:var(--muted);margin-top:3px;" id="trainingSubtitle">Loading…</div>
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+      <div id="trainingLogBtns" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
         <button onclick="logWorkoutFromPhoto()" style="background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:9px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;color:var(--text);">📸 From a photo</button>
         <button onclick="openManualWorkoutModal()" style="background:var(--gold);border:none;border-radius:10px;padding:9px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;color:#000;">+ Log Workout</button>
       </div>
@@ -2071,7 +2071,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.246.0';
+var APP_VERSION = 'v5.248.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -2341,6 +2341,7 @@ async function launchApp(){
   document.getElementById('bnav').style.display='grid';
   var bnavEl = document.getElementById('bnav');
   if(isTrainer(cl.code)){ bnavEl.classList.add('trainer-mode'); } else { bnavEl.classList.remove('trainer-mode'); }
+  try{ var _bnt=document.querySelector('#bnTraining .bni-lb'); var _bni=document.querySelector('#bnTraining .bni-ic'); if(_bnt) _bnt.textContent = isTrainer(cl.code)?'Feed':'Journal'; if(_bni) _bni.textContent = isTrainer(cl.code)?'📡':'📝'; }catch(e){}
   var _tps = document.getElementById('trainerProgramsSection');
   if(_tps) _tps.style.display = 'none';
   var _mcb = document.getElementById('manageClientsBox');
@@ -2711,6 +2712,8 @@ function _journalWorkoutRow(w){
 async function loadJournal(){
   if(!cl) return;
   var holder=document.getElementById('trainingHistory');
+  var titleEl=document.getElementById('trainingTitle'); if(titleEl) titleEl.textContent='Journal';
+  var logBtns=document.getElementById('trainingLogBtns'); if(logBtns) logBtns.style.display='flex';
   var sub=document.getElementById('trainingSubtitle');
   var board=document.getElementById('trainingWeekCal'); if(board) board.style.display='none';
   if(!holder) return;
@@ -2750,9 +2753,116 @@ async function loadJournal(){
     holder.innerHTML=html;
   }catch(e){ console.error('loadJournal',e); holder.innerHTML='<div style="padding:20px;color:var(--muted);font-size:13px;text-align:center;">Could not load your journal. Try again.</div>'; }
 }
+// THE FEED — trainer home base: everyone's recent activity in one chronological stream + your own posted moments.
+// Moments are saved to Supabase (coach_moments) so they sync + persist; localStorage is a fallback until the table exists.
+function _localMoments(){ try{ return JSON.parse(localStorage.getItem('yjb_coach_moments')||'[]')||[]; }catch(e){ return []; } }
+function _saveLocalMoments(a){ try{ localStorage.setItem('yjb_coach_moments', JSON.stringify(a.slice(0,200))); }catch(e){} }
+async function _loadMoments(){
+  var out=[];
+  try{ var rows=await sbSelect('coach_moments','coach_code=eq.'+encodeURIComponent(cl.code)+'&order=id.desc&limit=200'); (rows||[]).forEach(function(r){ out.push({text:r.text, ts:(r.created_at?new Date(r.created_at).getTime():Date.now()), id:r.id, src:'db'}); }); }catch(e){}
+  _localMoments().forEach(function(m){ out.push({text:m.text, ts:m.ts, src:'local'}); });
+  return out;
+}
+async function feedPostMoment(){
+  var inp=document.getElementById('feedMomentInput'); if(!inp) return;
+  var t=(inp.value||'').trim(); if(!t) return;
+  inp.value='';
+  var saved=false;
+  try{ var row=await sbInsertReturning('coach_moments',{coach_code:cl.code, text:t}); if(row && row.id!=null) saved=true; }catch(e){}
+  if(!saved){ var a=_localMoments(); a.unshift({text:t, ts:Date.now()}); _saveLocalMoments(a); }
+  if(typeof showToast==='function') showToast('📌 Posted to the feed');
+  loadTrainerFeed();
+}
+async function feedDeleteMoment(kind, ref){
+  if(kind==='db'){ try{ await fetch(SB_URL+'/rest/v1/coach_moments?id=eq.'+encodeURIComponent(ref), {method:'DELETE', headers:sbHeaders()}); }catch(e){} }
+  else { _saveLocalMoments(_localMoments().filter(function(m){ return m.ts!==ref; })); }
+  loadTrainerFeed();
+}
+function setFeedLens(v){ window._feedLens=v; loadTrainerFeed(); }
+function _feedLensRow(){
+  var lens=window._feedLens||'all';
+  function sp(v,label){ var on=lens===v; return '<span onclick="setFeedLens(\''+v+'\')" style="font-size:11.5px;font-weight:800;letter-spacing:0.3px;cursor:pointer;color:'+(on?'var(--gold)':'var(--muted)')+';">'+label+'</span>'; }
+  return '<div style="display:flex;gap:16px;align-items:center;margin-bottom:14px;">'+sp('all','All')+sp('gym','Gym')+sp('kitchen','Kitchen')+'</div>';
+}
+function _feedDayLabel(d){
+  if(!d) return '';
+  var now=new Date(); now.setHours(0,0,0,0); var dd=new Date(d); dd.setHours(0,0,0,0);
+  var diff=Math.round((now-dd)/86400000);
+  var wk=dd.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+  if(diff===0) return 'Today · '+wk; if(diff===1) return 'Yesterday · '+wk; return wk;
+}
+function _feedTs(r){ try{ if(r.logged_at){ var s=r.logged_at; var d=new Date(/[Z+]/.test(s)?s:s+'Z'); if(!isNaN(d.getTime())) return d.getTime(); } }catch(e){} try{ if(r.date_str){ var d2=new Date(r.date_str); if(!isNaN(d2.getTime())) return d2.getTime(); } }catch(e){} return 0; }
+function _feedTimeStr(ts){ try{ return new Date(ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'})+' ET'; }catch(e){ return ''; } }
+async function loadTrainerFeed(){
+  if(!cl) return;
+  var holder=document.getElementById('trainingHistory');
+  var titleEl=document.getElementById('trainingTitle'); if(titleEl) titleEl.textContent='The Feed';
+  var sub=document.getElementById('trainingSubtitle');
+  var board=document.getElementById('trainingWeekCal'); if(board) board.style.display='none';
+  var logBtns=document.getElementById('trainingLogBtns'); if(logBtns) logBtns.style.display='none';
+  if(!holder) return;
+  holder.innerHTML='<div style="text-align:center;padding:30px;color:var(--muted);font-size:13px;">Loading…</div>';
+  try{
+    var lens=window._feedLens||'all';
+    var hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
+    var foods = (lens==='gym') ? [] : (await sbSelect('food_logs','order=id.desc&limit=160')||[]);
+    var wos   = (lens==='kitchen') ? [] : (await sbSelect('workout_logs','order=id.desc&limit=120')||[]);
+    var weights = (lens==='all') ? (await sbSelect('weight_logs','order=id.desc&limit=80')||[]) : [];
+    var moments = (lens==='all') ? (await _loadMoments()) : [];
+    var items=[];
+    foods.forEach(function(f){ var c=f.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(f),kind:'food',code:c,data:f}); });
+    wos.forEach(function(w){ var c=w.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(w),kind:'wo',code:c,data:w}); });
+    weights.forEach(function(w){ var c=w.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(w),kind:'weight',code:c,data:w}); });
+    moments.forEach(function(m){ items.push({ts:m.ts,kind:'moment',data:m}); });
+    items.sort(function(a,b){ return b.ts-a.ts; });
+    if(sub) sub.textContent='Everyone’s recent activity';
+    var html=_feedLensRow();
+    if(lens==='all'){ html+='<div style="background:var(--surface);border:1px solid var(--border);border-radius:13px;padding:12px;margin-bottom:16px;">'
+      +'<textarea id="feedMomentInput" placeholder="Drop a moment — a great chat, a win, a note to remember…" style="width:100%;box-sizing:border-box;background:var(--s2);border:1px solid var(--border);border-radius:9px;padding:10px;font-size:13px;color:var(--text);font-family:inherit;resize:vertical;min-height:46px;outline:none;"></textarea>'
+      +'<div style="display:flex;justify-content:flex-end;margin-top:8px;"><button onclick="feedPostMoment()" style="background:var(--gold);border:none;border-radius:9px;padding:8px 16px;font-size:12px;font-weight:800;cursor:pointer;color:#000;font-family:\'Plus Jakarta Sans\',sans-serif;">📌 Post moment</button></div></div>'; }
+    if(!items.length){ holder.innerHTML=html+'<div style="padding:30px 20px;text-align:center;color:var(--muted);font-size:13px;">Nothing here yet.</div>'; return; }
+    // group by day
+    var dayKeys=[], dayMap={};
+    items.forEach(function(it){ var d=new Date(it.ts); d.setHours(0,0,0,0); var k=d.getTime(); if(!dayMap[k]){ dayMap[k]=[]; dayKeys.push(k); } dayMap[k].push(it); });
+    dayKeys.sort(function(a,b){ return b-a; });
+    dayKeys.forEach(function(k){
+      html+='<div style="font-size:11px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:var(--gold);margin:4px 0 9px;">'+_feedDayLabel(new Date(k))+'</div>';
+      dayMap[k].forEach(function(it){ html+=_feedItemHtml(it); });
+      html+='<div style="height:10px;"></div>';
+    });
+    holder.innerHTML=html;
+  }catch(e){ console.error('loadTrainerFeed',e); holder.innerHTML='<div style="padding:20px;color:var(--muted);font-size:13px;text-align:center;">Could not load the feed. Try again.</div>'; }
+}
+function _feedItemHtml(it){
+  if(it.kind==='moment'){
+    var delRef = (it.data.src==='db') ? "'db',"+it.data.id : "'local',"+it.ts;
+    return '<div style="background:rgba(245,197,24,0.07);border:1px solid rgba(245,197,24,0.3);border-radius:11px;padding:11px 13px;margin-bottom:8px;">'
+      +'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">'
+        +'<div style="font-size:10px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:var(--gold);">📌 Moment · '+_feedTimeStr(it.ts)+'</div>'
+        +'<span onclick="feedDeleteMoment('+delRef+')" style="color:#666;font-size:14px;cursor:pointer;line-height:1;">×</span></div>'
+      +'<div style="font-size:13px;color:var(--text);line-height:1.5;margin-top:5px;white-space:pre-wrap;">'+(it.data.text||'').replace(/</g,'&lt;')+'</div></div>';
+  }
+  var code=it.code; var nm=(CLIENTS[code]&&CLIENTS[code].name)||code; var phone=CLIENTS[code]&&CLIENTS[code].phone;
+  var when=_feedTimeStr(it.ts);
+  var icon, line;
+  if(it.kind==='wo'){ icon='🏋️'; var ti=(it.data.title||'Workout'); var intn=it.data.intensity?(' · '+it.data.intensity+'/10'):''; line='logged '+ti.replace(/</g,'&lt;')+intn; }
+  else if(it.kind==='weight'){ icon='⚖️'; var wv=it.data.weight; line='logged a weigh-in'+(wv!=null&&wv!==''?(' · '+wv+' lb'):''); }
+  else { var f=it.data; icon=f.emoji||'🍽️'; line='logged '+(f.name||'a meal').replace(/</g,'&lt;')+' · '+(f.calories||0)+' cal'; }
+  var textBtn = phone ? '<span onclick="event.stopPropagation();textClient(\''+code+'\')" style="flex-shrink:0;font-size:11px;font-weight:700;color:var(--gold);border:1px solid rgba(245,197,24,0.4);border-radius:7px;padding:5px 9px;cursor:pointer;">💬 Text</span>' : '';
+  return '<div style="background:var(--s2);border:1px solid var(--border);border-radius:11px;padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;">'
+    +'<div onclick="_jvOpenClient(\''+code+'\')" style="flex:1;min-width:0;display:flex;align-items:center;gap:10px;cursor:pointer;">'
+      +'<span style="font-size:18px;flex-shrink:0;">'+icon+'</span>'
+      +'<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:800;color:var(--text);">'+nm.replace(/</g,'&lt;')+'</div>'
+        +'<div style="font-size:10.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+line+' · '+when+'</div></div></div>'
+    +textBtn+'</div>';
+}
 async function loadTrainingHistory(){
   if(!cl) return;
   if(!isTrainer(cl.code)){ return loadJournal(); }
+  return loadTrainerFeed();
+}
+async function _loadTrainingHistory_legacy(){
+  if(!cl) return;
   var holder = document.getElementById('trainingHistory');
   var sub = document.getElementById('trainingSubtitle');
   if(!holder) return;
