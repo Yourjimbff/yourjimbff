@@ -2072,7 +2072,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.265.0';
+var APP_VERSION = 'v5.266.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -4707,17 +4707,56 @@ function jvToggleDeepJarvis(code,name){
   if(box.style.display!=='none' && box.getAttribute('data-mode')==='jarvis'){ box.style.display='none'; return; }
   box.setAttribute('data-mode','jarvis');
   box.style.display='block';
-  box.innerHTML='<div style="background:#101010;border:1px solid #232323;border-radius:12px;padding:13px;">'
-    +'<div style="font-size:11px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:var(--gold);margin-bottom:4px;">📓 Jarvis log · '+(name||'').replace(/</g,'&lt;')+'</div>'
-    +'<div style="font-size:11px;color:#666;margin-bottom:8px;line-height:1.5;">What Jarvis has documented. To add, tell Jarvis on the Feed.</div>'
-    +'<div id="jvClientJarvisLog"></div>'
+  box.innerHTML='<div style="background:#0d0d0d;border:1px solid #232323;border-radius:12px;padding:14px;">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:11px;gap:8px;">'
+      +'<div style="font-size:11px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:var(--gold);">🧠 Memory</div>'
+      +'<button id="jvMemBtn" onclick="jvBuildClientMemory(\''+code+'\')" style="background:#161616;border:1px solid rgba(245,197,24,0.4);border-radius:8px;padding:7px 12px;font-size:11px;font-weight:800;color:var(--gold);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;white-space:nowrap;">⟳ Build from chats</button>'
+    +'</div>'
+    +'<div id="jvMemDossier"></div>'
+    +'<div id="jvClientJarvisLog" style="margin-top:13px;"></div>'
     +'</div>';
+  _jvLoadClientMemory(code);
   _jvLoadClientNotes(code);
+}
+async function _jvLoadClientMemory(code){
+  var el=document.getElementById('jvMemDossier'); if(!el) return;
+  try{
+    var rows=await sbSelect('client_notes','client_code=eq.'+encodeURIComponent(code)+'&order=id.desc&limit=80')||[];
+    var mem=null; for(var i=0;i<rows.length;i++){ if((rows[i].note||'').indexOf('[MEMORY]')===0){ mem=rows[i]; break; } }
+    var first=(((CLIENTS[code]&&CLIENTS[code].name)||'this client').split(' ')[0]).replace(/</g,'&lt;');
+    if(!mem){ el.innerHTML='<div style="background:#141414;border:1px dashed #2a2a2a;border-radius:10px;padding:14px;font-size:12.5px;color:#888;line-height:1.55;">No memory yet. Tap <b style="color:var(--gold);">Build from chats</b> and Jim reads every conversation with '+first+', drops the noise, and pulls out who they are, what matters, and where they\'re at.</div>'; return; }
+    var when=''; try{ if(mem.logged_at) when=new Date(mem.logged_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}); }catch(e){}
+    var t=(mem.note||'').replace('[MEMORY]','').trim();
+    el.innerHTML='<div style="background:rgba(245,197,24,0.06);border:1px solid rgba(245,197,24,0.25);border-radius:11px;padding:13px 14px;"><div style="font-size:13px;color:#eee;line-height:1.62;white-space:pre-wrap;">'+t.replace(/</g,'&lt;')+'</div>'+(when?'<div style="font-size:10px;color:#666;margin-top:10px;">Updated '+when+'</div>':'')+'</div>';
+  }catch(e){ el.innerHTML=''; }
+}
+async function jvBuildClientMemory(code){
+  var btn=document.getElementById('jvMemBtn'); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='Reading chats…'; }
+  try{
+    var msgs=await sbSelect('chat_messages','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.asc&limit=400')||[];
+    var notes=await sbSelect('client_notes','client_code=eq.'+encodeURIComponent(code)+'&order=id.asc&limit=80')||[];
+    var convo=msgs.filter(function(m){return m.content;}).map(function(m){ return (m.role==='assistant'?'Jim: ':'Client: ')+m.content; }).join('\n');
+    if(convo.length>14000) convo=convo.slice(convo.length-14000);
+    var noteTxt=notes.filter(function(n){return (n.note||'').indexOf('[MEMORY]')!==0;}).map(function(n){return '- '+n.note;}).join('\n');
+    var nm=(CLIENTS[code]&&CLIENTS[code].name)||'the client';
+    var prompt='You are Jim, building a private coaching dossier on '+nm+' for the coach (Yusuf). Read the conversation history and notes below and distill a high-signal profile a great coach keeps in their head. '
+      +'IGNORE entirely: app, bug, or tech complaints, sync issues, "how do I log this", and pure logging chatter like "logged oatmeal". Keep ONLY what reveals the human. '
+      +'Write tight prose under these mini-headers (skip any with no signal): WHO THEY ARE, GOALS AND WHY, STRUGGLES AND TRIGGERS, WINS AND WHAT MOTIVATES THEM, WHERE THEY ARE NOW. Quote their own words where revealing. Be specific and concise - a coach cheat sheet, not a transcript. If there is little real signal, say so in one line instead of padding.\n\n=== CONVERSATIONS ===\n'+(convo||'(none)')+'\n\n=== EXISTING NOTES ===\n'+(noteTxt||'(none)');
+    var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:prompt}]})});
+    var data=await res.json();
+    var txt=data&&data.content?(Array.isArray(data.content)?data.content.map(function(b){return b.text||'';}).join(''):data.content):(data.text||data.completion||'');
+    txt=(txt||'').trim();
+    if(txt){ try{ await sbInsertReturning('client_notes',{client_code:code, note:'[MEMORY] '+txt, logged_at:new Date().toISOString()}); }catch(e){} }
+    _jvLoadClientMemory(code);
+    if(typeof showToast==='function') showToast('🧠 Memory updated');
+  }catch(e){ console.error('jvBuildClientMemory',e); if(typeof showToast==='function') showToast('Could not build memory'); }
+  var b=document.getElementById('jvMemBtn'); if(b){ b.disabled=false; b.style.opacity='1'; b.textContent='⟳ Build from chats'; }
 }
 async function _jvLoadClientNotes(code){
   var log=document.getElementById('jvClientJarvisLog'); if(!log) return;
   try{
     var rows=await sbSelect('client_notes','client_code=eq.'+encodeURIComponent(code)+'&order=id.desc&limit=40')||[];
+    rows=rows.filter(function(n){return (n.note||'').indexOf('[MEMORY]')!==0;});
     if(!rows.length){ log.innerHTML='<div style="font-size:11.5px;color:#666;padding:4px 0;line-height:1.5;">No log yet. Tell Jarvis about '+(((CLIENTS[code]&&CLIENTS[code].name)||'this client').split(' ')[0])+' — a call, a chat, how they\'re doing — and he\'ll keep the record + give you a read.</div>'; return; }
     log.innerHTML='<div style="font-size:9.5px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:#666;margin-bottom:7px;">Log</div>'+rows.map(function(n){
       var when=''; try{ if(n.logged_at) when=new Date(n.logged_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}); }catch(e){}
@@ -5797,7 +5836,7 @@ function jvOpenDeep(code){
     + '</div>'
     + '<div style="display:flex;gap:8px;margin-bottom:10px;">'
     + '<button onclick="textClient(\''+code+'\')" style="flex:1;background:var(--gold);border:none;border-radius:10px;padding:11px;font-weight:800;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Text '+safeName.split(' ')[0]+'</button>'
-    + '<button onclick="jvToggleDeepJarvis(\''+code+'\',\''+safeName+'\')" style="flex:1;background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:11px;font-weight:800;color:#fff;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Log</button>'
+    + '<button onclick="jvToggleDeepJarvis(\''+code+'\',\''+safeName+'\')" style="flex:1;background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:11px;font-weight:800;color:#fff;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Memory</button>'
     + '</div>'
     + '<button id="jvDeepCaughtBtn" onclick="jvDeepToggleCaught(\''+code+'\')" style="width:100%;margin-bottom:14px;border-radius:10px;padding:11px;font-weight:800;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;'+( (jvHandledMap()[code]===_jvTodayKey()) ? 'background:rgba(63,207,131,0.14);border:1px solid #3fcf83;color:#3fcf83;' : 'background:#161616;border:1px solid #2a2a2a;color:#fff;' )+'">'+( (jvHandledMap()[code]===_jvTodayKey()) ? '\u2713 Caught up today \u2014 tap to undo' : '\u2713 Mark caught up today' )+'</button>'
     + '<div id="jvDeepNotes" style="display:none;margin-bottom:18px;"></div>'
@@ -7009,19 +7048,7 @@ async function deleteClientNote(id){
   if(_notesClientCode) loadClientNotes(_notesClientCode);
 }
 // Inline notes for the Front Desk deep-dive — expands under the buttons instead of a bottom sheet.
-function jvToggleDeepJarvis(code, name){
-  var box=document.getElementById('jvDeepNotes'); if(!box) return;
-  var open = box.style.display!=='none' && box.style.display!=='';
-  if(open){ box.style.display='none'; return; }
-  box.style.display='block';
-  box.innerHTML='<div style="background:#161616;border:1px solid #2a2a2a;border-radius:12px;padding:13px;">'
-    + '<div id="jvNotesList" style="max-height:260px;overflow-y:auto;margin-bottom:10px;"><div style="color:#777;font-size:12px;padding:6px 0;">Loading\u2026</div></div>'
-    + '<textarea id="jvNewNoteInput" placeholder="Type a note about '+(name||'this client').replace(/</g,"&lt;").replace(/"/g,'&quot;')+'\u2026" style="width:100%;box-sizing:border-box;min-height:64px;background:#0f0f0f;border:1px solid #2a2a2a;border-radius:10px;padding:10px;font-size:14px;color:#fff;font-family:\'Plus Jakarta Sans\',sans-serif;resize:vertical;"></textarea>'
-    + '<button onclick="jvSaveDeepNote(\''+code+'\')" style="width:100%;margin-top:8px;background:var(--gold);border:none;border-radius:10px;padding:11px;font-size:13px;font-weight:800;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Save note</button>'
-    + '</div>';
-  jvLoadDeepNotes(code);
-  try{ box.scrollIntoView({behavior:'smooth',block:'nearest'}); }catch(e){}
-}
+
 async function jvLoadDeepNotes(code){
   var list=document.getElementById('jvNotesList'); if(!list) return;
   try{
