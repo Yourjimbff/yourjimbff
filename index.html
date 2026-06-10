@@ -2072,7 +2072,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.285.0';
+var APP_VERSION = 'v5.288.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -2816,8 +2816,8 @@ async function loadTrainerFeed(){
   try{
     var lens=window._feedLens||'all';
     var hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
-    var foods = (lens==='gym') ? [] : (await sbSelect('food_logs','select=id,client_code,name,emoji,calories,protein,carbs,fat,rating,insight,logged_at,date_str&order=id.desc&limit=400')||[]);
-    var wos   = (lens==='kitchen') ? [] : (await sbSelect('workout_logs','select=id,client_code,title,intensity,description,notes,logged_at,date_str&order=id.desc&limit=300')||[]);
+    var foods = (lens==='gym') ? [] : (await sbSelect('food_logs','select=id,client_code,name,emoji,calories,protein,carbs,fat,rating,insight,logged_at,date_str,photo,note&order=id.desc&limit=400')||[]);
+    var wos   = (lens==='kitchen') ? [] : (await sbSelect('workout_logs','select=id,client_code,title,intensity,description,notes,logged_at,date_str,photo&order=id.desc&limit=300')||[]);
     var weights = (lens==='all') ? (await sbSelect('weight_logs','order=id.desc&limit=150')||[]) : [];
     var photos = (lens==='all') ? (await sbSelect('progress_photos','order=id.desc&limit=90')||[]) : [];
     var moments = (lens==='all') ? (await _loadMoments()) : [];
@@ -2830,8 +2830,10 @@ async function loadTrainerFeed(){
     items.sort(function(a,b){ return b.ts-a.ts; });
     items.forEach(function(it,i){ it._idx=i; }); window._feedItems=items;
     if(sub) sub.textContent='Everyone’s recent activity';
-    var html=_feedLensRow();
-    if(lens==='all'){ html+='<div style="background:linear-gradient(180deg,#1b1608,#0d0d0d);border:1px solid rgba(245,197,24,0.45);border-radius:18px;padding:17px;margin-bottom:18px;box-shadow:0 0 16px rgba(245,197,24,0.10),inset 0 1px 0 rgba(245,197,24,0.06);">'+'<div style="font-size:15px;font-weight:900;letter-spacing:0.5px;color:var(--gold);line-height:1;margin-bottom:11px;">JARVIS</div>'+'<textarea id="feedMomentInput" placeholder="" style="width:100%;box-sizing:border-box;background:#161616;border:1px solid #2a2a2a;border-radius:12px;padding:13px;font-size:14px;color:#fff;font-family:inherit;resize:vertical;min-height:148px;outline:none;line-height:1.5;"></textarea>'+'<div style="display:flex;gap:10px;margin-top:11px;align-items:stretch;">'+'<button id="jarvisMicBtn" onclick="jarvisVoiceToggle()" style="flex:1;background:#161616;border:1px solid rgba(245,197,24,0.4);border-radius:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;">'+_MICSVG+'</button>'+'<button id="jarvisSendBtn" onclick="jarvisIngest()" style="flex:1.6;background:var(--gold);border:none;border-radius:12px;padding:15px;font-size:14px;font-weight:800;cursor:pointer;color:#000;font-family:\'Plus Jakarta Sans\',sans-serif;">Send ➤</button>'+'</div>'+'<div id="jarvisThread">'+_jarvisThreadHtml()+'</div></div>'; }
+    var html='';
+    if(lens==='all'){ html+=_jarvisCardHtml('feed'); }
+    html+=_feedLensRow();
+    if(lens==='all'){ html+=_feedMetricsHtml(foods,wos,weights,hidden); }
     if(!items.length){ holder.innerHTML=html+'<div style="padding:30px 20px;text-align:center;color:var(--muted);font-size:13px;">Nothing here yet.</div>'; return; }
     // group by day
     var dayKeys=[], dayMap={};
@@ -2909,6 +2911,24 @@ async function feedDetailRecent(code){
     box.setAttribute('data-loaded','1'); if(btn) btn.textContent='Hide recent activity';
   }catch(e){ box.innerHTML='<div style="font-size:12px;color:#666;">Could not load.</div>'; if(btn) btn.textContent='Show recent activity · last 3 days'; }
 }
+function _feedMetricsHtml(foods,wos,weights,hidden){
+  hidden=hidden||{};
+  var t0=new Date(); t0.setHours(0,0,0,0); var t0ms=t0.getTime();
+  function ok(c){ return c && !hidden[c] && CLIENTS[c] && !CLIENTS[c].isTrainer && c!==cl.code; }
+  var logged={}, trained={};
+  (foods||[]).forEach(function(f){ if(ok(f.client_code) && _feedTs(f)>=t0ms) logged[f.client_code]=1; });
+  (weights||[]).forEach(function(w){ if(ok(w.client_code) && _feedTs(w)>=t0ms) logged[w.client_code]=1; });
+  (wos||[]).forEach(function(w){ if(ok(w.client_code) && _feedTs(w)>=t0ms){ logged[w.client_code]=1; trained[w.client_code]=1; } });
+  var hmap=(typeof jvHandledMap==='function')?jvHandledMap():{}; var tk=(typeof _jvTodayKey==='function')?_jvTodayKey():'';
+  var caught=0; Object.keys(hmap).forEach(function(c){ if(hmap[c]===tk && ok(c)) caught++; });
+  function chip(n,label,color){ return '<div style="flex:1;background:#101010;border:1px solid #232323;border-radius:13px;padding:11px 13px;text-align:center;">'
+    +'<div style="font-family:\'Plus Jakarta Sans\',sans-serif;font-size:21px;font-weight:800;line-height:1;color:'+color+';">'+n+'</div>'
+    +'<div style="font-size:9px;color:#888;letter-spacing:0.7px;text-transform:uppercase;margin-top:4px;font-weight:700;">'+label+'</div></div>'; }
+  return '<div style="display:flex;gap:8px;margin-bottom:16px;">'
+    +chip(Object.keys(logged).length,'logged today','#3fcf83')
+    +chip(Object.keys(trained).length,'trained','#9fd0ff')
+    +chip(caught,'caught up','#f5c518')+'</div>';
+}
 function _feedItemHtml(it){
   if(it.kind==='moment'){
     var delRef = (it.data.src==='db') ? "'db',"+it.data.id : "'local',"+it.ts;
@@ -2926,15 +2946,23 @@ function _feedItemHtml(it){
   else if(it.kind==='photo'){ icon='📸'; var ang=it.data.angle?(' · '+it.data.angle):''; line='Logged a progress photo'+ang; }
   else { var f=it.data; icon='🍽️'; var _rm={nutrient_dense:['#3fcf83','Nutrient-dense'],good:['#3fcf83','Good'],clean:['#3fcf83','Clean'],okay:['#e8b341','Okay'],bad:['#e06b6b','Heavy']}; var _r=_rm[f.rating]; var _rt=_r?(' · <span style="color:'+_r[0]+';font-weight:700;">'+_r[1]+'</span>'):''; line='Logged '+(f.name||'a meal').replace(/</g,'&lt;')+' · '+(f.calories||0)+' cal'+_rt; }
   var textBtn = phone ? '<span onclick="event.stopPropagation();textClient(\''+code+'\')" style="flex-shrink:0;font-size:11.5px;font-weight:700;color:var(--gold);border:1px solid rgba(245,197,24,0.4);border-radius:9px;padding:8px 12px;cursor:pointer;">💬 Text</span>' : '';
-  return '<div style="background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:11px 13px;margin-bottom:7px;display:flex;align-items:center;gap:11px;">'
-    +'<div onclick="feedOpenDetail('+it._idx+')" style="flex:1;min-width:0;display:flex;align-items:center;gap:11px;cursor:pointer;">'
-      +'<div style="width:38px;height:38px;border-radius:10px;background:#1d1d1d;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;">'+icon+'</div>'
-      +'<div style="flex:1;min-width:0;">'
-        +'<div style="font-size:15px;font-weight:800;color:var(--text);letter-spacing:0.1px;">'+nm.replace(/</g,'&lt;')+'</div>'
-        +'<div style="font-size:13px;color:var(--muted);line-height:1.35;font-weight:500;margin-top:2px;">'+line+'</div>'
-        +'<div style="font-size:10.5px;color:var(--muted);margin-top:3px;">'+when+'</div>'
-      +'</div></div>'
-    +textBtn+'</div>';
+  var photoUrl = (it.kind==='wo'||it.kind==='food') ? it.data.photo : null;
+  var noteTxt = (it.kind==='wo') ? (it.data.notes||'') : (it.kind==='food' ? (it.data.note||'') : '');
+  var photoHtml = photoUrl ? '<div style="margin-top:10px;"><img src="'+photoUrl+'" onclick="event.stopPropagation();openPhotoLightbox(\''+photoUrl+'\')" style="width:100%;max-height:260px;object-fit:cover;border-radius:11px;display:block;cursor:pointer;"></div>' : '';
+  var noteHtml = noteTxt ? '<div style="margin-top:9px;font-size:12.5px;color:var(--text);line-height:1.5;white-space:pre-wrap;"><span style="color:var(--muted);font-weight:700;">Note: </span>'+String(noteTxt).replace(/</g,'&lt;')+'</div>' : '';
+  return '<div style="background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:11px 13px;margin-bottom:7px;">'
+    +'<div style="display:flex;align-items:center;gap:11px;">'
+      +'<div onclick="feedOpenDetail('+it._idx+')" style="flex:1;min-width:0;display:flex;align-items:center;gap:11px;cursor:pointer;">'
+        +'<div style="width:38px;height:38px;border-radius:10px;background:#1d1d1d;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;">'+icon+'</div>'
+        +'<div style="flex:1;min-width:0;">'
+          +'<div style="font-size:15px;font-weight:800;color:var(--text);letter-spacing:0.1px;">'+nm.replace(/</g,'&lt;')+'</div>'
+          +'<div style="font-size:13px;color:var(--muted);line-height:1.35;font-weight:500;margin-top:2px;">'+line+'</div>'
+          +'<div style="font-size:10.5px;color:var(--muted);margin-top:3px;">'+when+'</div>'
+        +'</div></div>'
+      +textBtn
+    +'</div>'
+    +photoHtml+noteHtml
+  +'</div>';
 }
 async function loadTrainingHistory(){
   if(!cl) return;
@@ -4694,10 +4722,10 @@ function _jarvisSyncThreads(){
   ['jarvisThread','clJarvisThread'].forEach(function(id){ var e=document.getElementById(id); if(e) e.innerHTML=html; });
 }
 function _jarvisCardHtml(ns){
-  var ids=_jarvisIds(ns); var mh=(ns==='cl')?84:148;
+  var ids=_jarvisIds(ns); var mh=110;
   return '<div style="background:linear-gradient(180deg,#1b1608,#0d0d0d);border:1px solid rgba(245,197,24,0.45);border-radius:18px;padding:16px;margin-bottom:14px;box-shadow:0 0 16px rgba(245,197,24,0.10),inset 0 1px 0 rgba(245,197,24,0.06);">'
     +'<div style="font-size:15px;font-weight:900;letter-spacing:0.5px;color:var(--gold);line-height:1;margin-bottom:10px;">JARVIS</div>'
-    +'<textarea id="'+ids.inp+'" oninput="window._clJarvisDraft=this.value" placeholder="Tell Jarvis about a client…" style="width:100%;box-sizing:border-box;background:#161616;border:1px solid #2a2a2a;border-radius:12px;padding:12px;font-size:14px;color:#fff;font-family:inherit;resize:vertical;min-height:'+mh+'px;outline:none;line-height:1.5;"></textarea>'
+    +'<textarea id="'+ids.inp+'"'+(ns==='cl'?' oninput="window._clJarvisDraft=this.value"':'')+' placeholder="Tell Jarvis about a client…" style="width:100%;box-sizing:border-box;background:#161616;border:1px solid #2a2a2a;border-radius:12px;padding:12px;font-size:14px;color:#fff;font-family:inherit;resize:vertical;min-height:'+mh+'px;outline:none;line-height:1.5;"></textarea>'
     +'<div style="display:flex;gap:10px;margin-top:10px;align-items:stretch;">'
     +'<button id="'+ids.mic+'" onclick="jarvisVoiceToggle(\''+ns+'\')" style="flex:1;background:#161616;border:1px solid rgba(245,197,24,0.4);border-radius:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;">'+_MICSVG+'</button>'
     +'<button id="'+ids.send+'" onclick="jarvisIngest(\''+ns+'\')" style="flex:1.6;background:var(--gold);border:none;border-radius:12px;padding:14px;font-size:14px;font-weight:800;cursor:pointer;color:#000;font-family:\'Plus Jakarta Sans\',sans-serif;">Send ➤</button>'
@@ -12637,7 +12665,7 @@ function buildCoachVoice(){
     'MACRO MATH — A TOTAL IS A SUM, NEVER A FREEHAND NUMBER:\n'+
     'When a meal has multiple components, the total MUST equal the parts added up. List each component with its calories/protein, then state the total as the literal sum of exactly those lines. If the parts you listed add to 235 cal, the total is 235 — never a different figure. Do not eyeball it, do not round the sum into a new number, do not let a total drift from its components. Add the columns explicitly before you write them.\n'+
     '- The same rule governs "protein/calories remaining today": remaining = their daily target minus the CORRECTED logged total. Recompute it from the real total every time you change a log. Never carry forward a remaining figure that was based on a number you just fixed.\n'+
-    '- STALE TOTALS / WHEN CHALLENGED: If the client questions a number, corrects an ingredient (e.g. "the syrup is sugar-free, zero cal"), or asks you to show the breakdown, do NOT repeat the previously logged total, and do NOT say "you\'re right, already accounted for that" or "that\'s already handled" \u2014 those are yes-man reflexes that leave a wrong number on the screen. Instead, rebuild the meal from the EXACT components they have now stated, add the columns, and give the freshly computed number. A figure you just calculated from the stated parts ALWAYS wins over any older logged number. Never affirm or repeat a total you have not recomputed in THIS message. If the corrected number differs from before, state it plainly without a drawn-out apology, and re-emit the [FOOD_LOG] marker so the saved entry matches the corrected math.\n'+
+    '- STALE TOTALS / WHEN CHALLENGED: If the client questions a number, says the total looks too high or too low, corrects an ingredient (e.g. "the syrup is sugar-free, zero cal"), or asks for the breakdown, do NOT repeat the old total and do NOT say "you\'re right, already accounted for that" -- recompute from scratch. THE DAY\'S TOTAL IS THE SUM OF THE MEALS ALREADY LOGGED IN TODAY\'S CONTEXT, EACH COUNTED EXACTLY ONCE. Re-add the columns from that logged list and state the fresh number. NEVER add a meal that is already in the logged list, and NEVER take a prior running total and then add a meal that total already included -- that is the double-count to avoid. The meals are ALREADY SAVED, so fixing a count almost never means logging anything new: just restate the correct total. ONLY touch the data when a SPECIFIC already-logged meal\'s macros were genuinely wrong -- then correct THAT meal IN PLACE with a [FOOD_EDIT] using its id. NEVER re-emit a [FOOD_LOG] to fix or correct a meal that is already logged -- [FOOD_LOG] creates a brand-new duplicate row, which is the exact bug that double-counts meals. Emit [FOOD_LOG] ONLY for a genuinely new meal not yet in the log. When unsure, recompute and explain -- never re-log.\n'+
     '- If you catch your own math off, fix the log with a [FOOD_EDIT] and state the corrected numbers plainly — but the goal is to not be off in the first place. Slow down and add it up.\n\n'+
     'MACROS MUST BE PLAUSIBLE FOR THE FOOD — A WRONG ESTIMATE THAT ADDS UP IS STILL WRONG:\n'+
     'Before you assign a component\'s macros, sanity-check them against what the food physically is. Getting the sum right does not save you if the parts are nonsense.\n'+
@@ -13386,7 +13414,12 @@ async function sendChatMessage(){
       for(var fa=0; fa<foodAdds.items.length; fa++){
         var addOffer = foodAdds.items[fa];
         var addPhoto = (foodAdds.items.length===1) ? photoSnapshot : null;
-        if(addOffer && addOffer.name){ var aOk = await logFoodFromChat(addOffer, addPhoto); if(aOk) _foodToasts++; }
+        if(addOffer && addOffer.name){
+          var _sig=((addOffer.name||'').toLowerCase().trim())+'|'+Math.round(addOffer.calories||0)+'|'+((addOffer.meal||'').toLowerCase());
+          var _nowFa=Date.now(); window.__chatFoodSig=window.__chatFoodSig||{};
+          if(window.__chatFoodSig[_sig] && (_nowFa-window.__chatFoodSig[_sig])<600000){ continue; } // identical meal within 10 min -> skip duplicate insert
+          var aOk = await logFoodFromChat(addOffer, addPhoto); if(aOk){ _foodToasts++; window.__chatFoodSig[_sig]=_nowFa; }
+        }
       }
     }
     if(_foodToasts>0) showToast('✓ Food log updated');
