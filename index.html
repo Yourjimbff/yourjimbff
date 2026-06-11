@@ -744,6 +744,9 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
     <!-- DAILY ENGINE (trainer-only) -->
     <!-- Daily Engine removed from Today screen (kept render fns; they no-op without the element). -->
 
+    <!-- REVIEW — "Yusuf reviewed your ___" acknowledgments (clients) -->
+    <div id="reviewBanner" style="display:none;margin-bottom:14px;"></div>
+
     <!-- BROADCAST — "Message from Yusuf" banner (clients) -->
     <div id="broadcastBanner" style="display:none;background:linear-gradient(135deg,rgba(245,197,24,0.14),rgba(245,197,24,0.05));border:1px solid rgba(245,197,24,0.4);border-radius:18px;padding:15px 16px;margin-bottom:14px;">
       <div style="display:flex;align-items:flex-start;gap:11px;">
@@ -1869,7 +1872,8 @@ async function sbSelect(table, filter){
       'step_logs': 'updated_at',
       'sleep_logs': 'updated_at',
       'programs': 'created_at',
-      'program_workouts': 'day_of_week'
+      'program_workouts': 'day_of_week',
+      'reviews': 'created_at'
     };
     var orderCol = orderColMap[table] || 'logged_at';
     var url = SB_URL+'/rest/v1/'+table+'?'+filter+'&order='+orderCol+'.desc';
@@ -2074,7 +2078,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.311.0';
+var APP_VERSION = 'v5.312.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -2321,6 +2325,7 @@ async function launchApp(){
   showLoading(true);
   if(typeof jvInit==="function") jvInit();
   if(typeof loadBroadcasts==="function") loadBroadcasts();
+  if(typeof loadMyReviews==="function") loadMyReviews();
   // Load today's food + latest weight in parallel (was two sequential awaits)
   var _ftoday=new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
   var _launch = await Promise.all([
@@ -2887,11 +2892,17 @@ function feedOpenDetail(idx){
     body+='<div style="font-size:12px;color:var(--muted);margin:5px 0 13px;">'+dateLbl+' · '+when+(ph.weight?(' · '+ph.weight+' lb'):'')+'</div>';
     if(ph.photo) body+='<img src="'+ph.photo+'" style="width:100%;border-radius:12px;margin-bottom:4px;">';
   }
+  var _revKind = it.kind==='food' ? 'food' : (it.kind==='wo' ? 'workout' : null);
+  var _revId = (it.data && it.data.id!=null) ? it.data.id : '';
+  var reviewSection = _revKind ? ('<div style="margin-top:14px;background:#101010;border:1px solid #242424;border-radius:12px;padding:12px;">'
+    +'<input id="reviewCommentInput" placeholder="Add a note (optional) \u2014 they see it as you" style="width:100%;box-sizing:border-box;background:#181818;border:1px solid #2a2a2a;border-radius:9px;padding:10px;color:#fff;font-size:13px;font-family:\'Plus Jakarta Sans\',sans-serif;margin-bottom:9px;">'
+    +'<button id="reviewBtn" onclick="markReviewed(\''+_revKind+'\',\''+_revId+'\',\''+code+'\',\'reviewBtn\')" style="width:100%;background:rgba(34,197,94,0.14);border:1px solid #22c55e;border-radius:10px;padding:11px;font-weight:800;color:#22c55e;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\ud83d\udc40 Mark reviewed</button>'
+    +'</div>') : '';
   var first=String(name).split(' ')[0].replace(/</g,'&lt;');
   var textBtn = phone ? '<button onclick="textClient(\''+code+'\')" style="flex:1;background:var(--gold);border:none;border-radius:10px;padding:11px;font-weight:800;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Text '+first+'</button>' : '';
   o.innerHTML='<div style="background:#0d0d0d;border-top:1px solid #2a2a2a;border-radius:18px 18px 0 0;width:100%;max-width:560px;max-height:88vh;overflow-y:auto;padding:18px 18px 30px;box-sizing:border-box;">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;"><div style="font-size:15px;font-weight:800;color:var(--text);letter-spacing:0.1px;">'+String(name).replace(/</g,'&lt;')+'</div><button onclick="feedCloseDetail()" style="background:#1a1a1a;border:1px solid #2a2a2a;color:#fff;border-radius:8px;padding:6px 13px;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Close</button></div>'
-    +body
+    +body+reviewSection
     +'<div style="display:flex;gap:8px;margin-top:14px;">'+textBtn+'<button onclick="_jvOpenClient(\''+code+'\');feedCloseDetail();" style="flex:1;background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:11px;font-weight:800;color:#fff;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Full profile</button></div>'
     +'<button id="feedRecentBtn" onclick="feedDetailRecent(\''+code+'\')" style="width:100%;margin-top:10px;background:transparent;border:1px solid #2a2a2a;border-radius:10px;padding:10px;font-weight:700;color:var(--muted);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;font-size:12.5px;">Show recent activity · last 3 days</button>'
     +'<div id="feedRecentBox" style="margin-top:10px;"></div>'
@@ -6719,6 +6730,46 @@ function jvToggleSpeak(){
     return;
   }
   if(window._jvReadText) jvSpeak(window._jvReadText);
+}
+async function markReviewed(kind, refId, code, btnId){
+  try{
+    var ci = document.getElementById('reviewCommentInput');
+    var comment = ci ? (ci.value||'').trim() : '';
+    var ok = await sbInsert('reviews', {client_code:code, kind:kind, ref_id:(refId!=null&&refId!==''?String(refId):null), comment:(comment||null), seen:false});
+    var nm = (CLIENTS[code]&&CLIENTS[code].name)||code;
+    if(ok!==false){
+      if(typeof showToast==='function') showToast('\u2713 Reviewed \u2014 '+nm+' will see it');
+      var btn = btnId?document.getElementById(btnId):null;
+      if(btn){ btn.textContent='Reviewed \u2713'; btn.disabled=true; btn.style.opacity='0.6'; btn.style.cursor='default'; }
+      if(ci) ci.value='';
+    } else { if(typeof showToast==='function') showToast('Could not save review'); }
+  }catch(e){ if(typeof showToast==='function') showToast('Could not save review'); }
+}
+async function loadMyReviews(){
+  try{
+    if(!cl || !cl.code) return;
+    var el = document.getElementById('reviewBanner'); if(!el) return;
+    var rows = await sbSelect('reviews','client_code=eq.'+encodeURIComponent(cl.code)+'&seen=eq.false&limit=20');
+    if(!rows || !rows.length){ el.style.display='none'; el.innerHTML=''; return; }
+    var label = {food:'your meal', workout:'your workout', day:'your day'};
+    var html='';
+    rows.forEach(function(r){
+      var what = label[r.kind] || 'your log';
+      var note = (r.comment && String(r.comment).trim()) ? String(r.comment).trim().replace(/</g,'&lt;') : '';
+      html += '<div style="background:linear-gradient(135deg,rgba(34,197,94,0.13),rgba(34,197,94,0.04));border:1px solid rgba(34,197,94,0.4);border-radius:18px;padding:14px 15px;margin-bottom:10px;">'
+        +'<div style="display:flex;align-items:flex-start;gap:11px;">'
+        +'<div style="width:32px;height:32px;border-radius:50%;background:var(--gold);display:flex;align-items:center;justify-content:center;font-weight:800;color:#000;flex-shrink:0;font-family:\'Plus Jakarta Sans\',sans-serif;">Y</div>'
+        +'<div style="flex:1;min-width:0;">'
+        +'<div style="font-size:13.5px;color:var(--text);font-weight:700;">\ud83d\udc40 Yusuf reviewed '+what+'</div>'
+        +(note?'<div style="font-size:13px;color:var(--text);line-height:1.5;margin-top:7px;padding:9px 12px;background:rgba(255,255,255,0.04);border-left:2px solid var(--gold);border-radius:7px;">'+note+'</div>':'')
+        +'</div></div></div>';
+    });
+    el.innerHTML = html; el.style.display='block';
+    var ids = rows.map(function(r){ return r.id; }).filter(function(x){ return x!=null; });
+    if(ids.length){
+      try{ await fetch(SB_URL+'/rest/v1/reviews?id=in.('+ids.join(',')+')', {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal','Content-Type':'application/json'}), body:JSON.stringify({seen:true})}); }catch(e){}
+    }
+  }catch(e){}
 }
 var _broadcasts = [];
 async function loadBroadcasts(){
