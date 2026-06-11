@@ -2074,7 +2074,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.308.0';
+var APP_VERSION = 'v5.309.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -6462,7 +6462,7 @@ async function jvChatSend(){
     jvChatHistory.push({role:'assistant',content:txt});
     (_pg.results||[]).forEach(function(r){
       if(r.ok){ jvChatHistory.push({role:'assistant',content:'\u2705 '+((CLIENTS[r.code]&&CLIENTS[r.code].name)||r.code)+' \u2014 live in their app:\n\n'+_jvProgramBullets(r.workouts||[])}); }
-      else { jvChatHistory.push({role:'assistant',content:'\u26a0\ufe0f Couldn\u2019t save '+((CLIENTS[r.code]&&CLIENTS[r.code].name)||r.code)+'\u2019s program \u2014 the programs table may need a look.'}); }
+      else { jvChatHistory.push({role:'assistant',content:'\u26a0\ufe0f Couldn\u2019t save '+((CLIENTS[r.code]&&CLIENTS[r.code].name)||r.code)+'\u2019s program \u2014 it came back malformed. Ask me to build it again and it should land.'}); }
     });
     (_pe.results||[]).forEach(function(r){
       if(r.ok){ var ch=(r.changes||[]).filter(function(c){return c.remove!==true;}); var rm=(r.changes||[]).filter(function(c){return c.remove===true;}); var body='\u2705 '+((CLIENTS[r.code]&&CLIENTS[r.code].name)||r.code)+' \u2014 updated, live in their app:\n\n'+_jvProgramBullets(ch); if(rm.length) body+='\n\n('+rm.length+' day'+(rm.length===1?'':'s')+' cleared to rest)'; jvChatHistory.push({role:'assistant',content:body}); }
@@ -6470,7 +6470,7 @@ async function jvChatSend(){
     });
     (_pp.results||[]).forEach(function(r){
       if(r.ok){ var live=(r.days||[]).filter(function(d){return !d.removedDay;}); var rm=(r.days||[]).filter(function(d){return d.removedDay;}); var body='\u2705 '+((CLIENTS[r.code]&&CLIENTS[r.code].name)||r.code)+' \u2014 updated, live in their app'+(r.cloned?' (now their own program)':'')+':\n\n'+_jvProgramBullets(live); if(rm.length) body+='\n\n('+rm.length+' day'+(rm.length===1?'':'s')+' cleared to rest)'; jvChatHistory.push({role:'assistant',content:body}); }
-      else { jvChatHistory.push({role:'assistant',content:'\u26a0\ufe0f Couldn\u2019t patch '+((CLIENTS[r.code]&&CLIENTS[r.code].name)||r.code)+'\u2019s program \u2014 the programs table may need a look.'}); }
+      else { jvChatHistory.push({role:'assistant',content:'\u26a0\ufe0f Couldn\u2019t patch '+((CLIENTS[r.code]&&CLIENTS[r.code].name)||r.code)+'\u2019s program \u2014 it came back malformed. Ask me to build it again and it should land.'}); }
     });
 
     (_pr.results||[]).forEach(function(r){
@@ -6530,7 +6530,7 @@ async function _jvApplyProgramPatch(txt){
   for(var i=0;i<jobs.length;i++){
     var code=jobs[i].code;
     try{
-      var spec=JSON.parse(jobs[i].json);
+      var spec=_jvSafeParse(jobs[i].json); if(!spec) throw new Error('parse');
       var prog=await _jvResolveOwnedProgram(code);
       if(!prog||!prog.id){ results.push({code:code, ok:false}); continue; }
       var wr=await fetch(SB_URL+'/rest/v1/program_workouts?program_id=eq.'+encodeURIComponent(prog.id)+'&order=day_of_week.asc',{headers:sbHeaders()});
@@ -6571,6 +6571,16 @@ async function _jvApplyProgramPatch(txt){
   return {clean:clean, results:results};
 }
 
+function _jvSafeParse(raw){
+  if(raw==null) return null;
+  var t=String(raw).replace(/```json|```/gi,'').trim();
+  try{ return JSON.parse(t); }catch(e){}
+  var a=t.indexOf('{'), b=t.lastIndexOf('}');
+  if(a>=0 && b>a){ t=t.slice(a,b+1); }
+  t=t.replace(/,\s*([}\]])/g,'$1');
+  try{ return JSON.parse(t); }catch(e){}
+  return null;
+}
 async function _jvApplyProgramRemove(txt){
   var jobs=[], seen={}, m;
   var reCode=/\[PROGRAM_REMOVE\s+client=([^\]\s\/]+)/gi;
@@ -6596,7 +6606,7 @@ async function _jvApplyPrograms(txt){
   for(var i=0;i<jobs.length;i++){
     var code=jobs[i].code;
     try{
-      var spec=JSON.parse(jobs[i].json);
+      var spec=_jvSafeParse(jobs[i].json); if(!spec) throw new Error('parse');
       // one active program per client — retire the old ones first so the new one is what shows
       try{ await fetch(SB_URL+'/rest/v1/programs?client_code=eq.'+encodeURIComponent(code), {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal','Content-Type':'application/json'}), body:JSON.stringify({is_active:false})}); }catch(e){}
       var _rs=parseInt(spec.restSteps||spec.rest_steps||0)||0;
@@ -6625,7 +6635,7 @@ async function _jvApplyProgramEdits(txt){
   for(var i=0;i<jobs.length;i++){
     var code=jobs[i].code;
     try{
-      var spec=JSON.parse(jobs[i].json);
+      var spec=_jvSafeParse(jobs[i].json); if(!spec) throw new Error('parse');
       // find their active program; if none exists, start a blank one so the edit lands somewhere
       var pr=await fetch(SB_URL+'/rest/v1/programs?client_code=eq.'+encodeURIComponent(code)+'&is_active=eq.true&order=created_at.desc&limit=1',{headers:sbHeaders()});
       var rows=pr.ok?await pr.json():[];
