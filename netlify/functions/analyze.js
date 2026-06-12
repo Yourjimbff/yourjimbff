@@ -35,10 +35,11 @@ exports.handler = async function(event, context) {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01'
       },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 400,
-        messages: body.messages
+     body: JSON.stringify({
+  model: body.model || 'claude-haiku-4-5-20251001',
+  max_tokens: body.max_tokens || 700,
+  temperature: body.temperature != null ? body.temperature : 0.2,
+  messages: body.messages
       })
     });
  
