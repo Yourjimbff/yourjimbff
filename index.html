@@ -2081,7 +2081,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.361.0';
+var APP_VERSION = 'v5.363.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -4784,8 +4784,9 @@ async function jarvisIngest(ns){
     var today2=new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
     var sys="You are Jarvis, fitness coach Yusuf's private work assistant, in an ongoing chat with him. Today is "+today2+". "
       +"YOUR NORTH STAR: the client's experience and journey come first - help Yusuf truly understand each client, solve their real underlying problem, and always hand him the best concrete next action so the client feels understood and led forward. "
-      +"Each turn return ONLY JSON, no markdown: {\"client_code\":\"\",\"client_name\":\"\",\"note\":\"\",\"reply\":\"\"}. "
+      +"Each turn return ONLY JSON, no markdown: {\"client_code\":\"\",\"client_name\":\"\",\"note\":\"\",\"log\":null,\"reply\":\"\"}. "
       +"note = anything NEW worth recording on that client's profile this turn (what happened, a fact, a follow-up). Use real dates (today is "+today2+"); NEVER write placeholders like [date] or brackets; omit unknown details. Leave note EMPTY if there is nothing new to log (for example when you are just talking it through with him). "
+      +"log = ONLY when Yusuf is explicitly recording numbers FOR a client (examples: log Naya's day; Sarah weighed 162; Mike 1900 cal 150 protein 9k steps). Otherwise null. When logging, log is an object with three fields: food (an object with name, calories, protein, carbs, fat - or null if no food was mentioned), weight (a number or null), steps (a number or null). Name the food as a short whole-food meal name, or Daily intake if only totals are given. Use null for any field Yusuf did not state, and NEVER invent numbers. "
       +"reply = your message back to Yusuf - coaching, the best next action, or just continuing the conversation. Direct, human, a sharp coach's voice, never clinical. "
       +"client_code and client_name = who this is about, matched from the roster, or empty if unclear. ROSTER (name [code]): "+roster+".";
     var msgs=[{role:'user',content:sys},{role:'assistant',content:'Ready.'}];
@@ -4801,6 +4802,24 @@ async function jarvisIngest(ns){
     var name=(obj&&obj.client_name?String(obj.client_name).trim():'')||(CLIENTS[code]&&CLIENTS[code].name)||'';
     var loggedTo=null;
     if(code && CLIENTS[code] && note){ try{ await sbInsertReturning('client_notes',{client_code:code, note:'[Jarvis] '+note, logged_at:new Date().toISOString()}); }catch(e){} try{ await _postMomentText((name?(name+': '):'')+note); }catch(e){} loggedTo=name||code; }
+    var _logSum=[];
+    try{
+      var lg=obj&&obj.log;
+      if(lg && code && CLIENTS[code]){
+        var _now2=new Date(), _ds2=_now2.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}), _iso2=_now2.toISOString();
+        if(lg.food && ((lg.food.calories||0)||(lg.food.protein||0)||(lg.food.carbs||0)||(lg.food.fat||0))){
+          var _fr={client_code:code, name:(lg.food.name||'Logged meal'), calories:Math.round(lg.food.calories||0), protein:Math.round(lg.food.protein||0), carbs:Math.round(lg.food.carbs||0), fat:Math.round(lg.food.fat||0), rating:'unknown', logged_at:_iso2};
+          try{ var _fres=await insertFoodLog(_fr,null); if(_fres&&_fres.ok){ _logSum.push(Math.round(lg.food.calories||0).toLocaleString()+' cal'+((lg.food.protein)?(' \u00b7 '+Math.round(lg.food.protein)+'P'):'')); } }catch(e){}
+        }
+        if(lg.weight!=null && !isNaN(parseFloat(lg.weight))){
+          try{ await sbInsert('weight_logs',{client_code:code, weight:parseFloat(lg.weight), notes:'[Jarvis]'}); _logSum.push(parseFloat(lg.weight)+' lb'); }catch(e){}
+        }
+        if(lg.steps!=null && !isNaN(parseInt(lg.steps,10))){
+          try{ await sbUpsert('step_logs',{client_code:code, steps:parseInt(lg.steps,10), date_str:_ds2, updated_at:_iso2}, 'client_code,date_str'); _logSum.push(parseInt(lg.steps,10).toLocaleString()+' steps'); }catch(e){}
+        }
+        if(_logSum.length){ loggedTo=(name||code); reply='\u2705 Logged to '+(name||code)+': '+_logSum.join(' \u00b7 ')+(reply&&reply!=='Got it.'?('\n\n'+reply):''); }
+      }
+    }catch(e){ console.error('jarvis log',e); }
     window._jarvisThread.push({role:'jarvis', text:reply, logged:loggedTo});
   }catch(e){ console.error('jarvisIngest',e); window._jarvisThread.push({role:'jarvis', text:'Could not reach Jarvis. Try again.', logged:null}); }
   if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent=(ns==='cl'?'Send ➤':'\u26a1 Send to Jarvis'); }
@@ -6052,7 +6071,7 @@ function jvOpenDeep(code){
   var safeName=(info.name||'').replace(/'/g,"\\'");
   document.getElementById('jvDeepInner').innerHTML=
     '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">'
-    + '<div style="font-size:22px;font-weight:800;color:#fff;">'+info.name+'</div>'
+    + '<div><div style="font-size:22px;font-weight:800;color:#fff;line-height:1.05;">'+info.name+'</div><div style="font-size:10px;font-weight:800;letter-spacing:1.6px;text-transform:uppercase;color:#6f6f6f;margin-top:4px;">Main page</div></div>'
     + '<button onclick="jvCloseDeep()" style="background:#161616;border:1px solid #2a2a2a;color:#fff;border-radius:8px;padding:6px 13px;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Close</button>'
     + '</div>'
     + '<div style="display:flex;gap:8px;margin-bottom:10px;">'
@@ -6315,21 +6334,11 @@ async function _jvDeepHistory(code){
       var tline = meals.length ? (Math.round(tot.c).toLocaleString()+' cal \u00b7 '+Math.round(tot.p)+'g P \u00b7 '+Math.round(tot.cb)+'g C \u00b7 '+Math.round(tot.ft)+'g F') : '';
       var wt = (k in wtByDay) ? ('\u2696\ufe0f '+(Math.round(wtByDay[k]*10)/10)+' lbs') : '';
       var st = (k in stepsByDay) ? ('\ud83d\udc5f '+stepsByDay[k].toLocaleString()+' steps') : '';
-      var woBlock=gp.wos.map(woCard).join('');
-      var bySlot={};
-      meals.forEach(function(f){
-        var s=(f.meal||'').toLowerCase();
-        var key = s.indexOf('break')>=0?'Breakfast' : s.indexOf('lunch')>=0?'Lunch' : s.indexOf('dinner')>=0?'Dinner' : s.indexOf('snack')>=0?'Snacks' : 'Other';
-        (bySlot[key]=bySlot[key]||[]).push(f);
-      });
-      function slotHead(t){ return '<div style="font-size:11px;font-weight:800;color:#cdcdcd;letter-spacing:0.3px;margin:12px 0 6px;">'+t+'</div>'; }
-      var emptyRow='<div style="border:1px dashed #2a2a2a;border-radius:10px;padding:9px 12px;margin-bottom:9px;font-size:12px;color:#6a6a6a;">\u2014 not logged</div>';
-      var mealBlock='';
-      ['Breakfast','Lunch','Dinner'].forEach(function(slot){
-        mealBlock += slotHead(slot) + (bySlot[slot] ? bySlot[slot].map(mealCard).join('') : emptyRow);
-      });
-      if(bySlot['Snacks']) mealBlock += slotHead('Snacks & mini meals') + bySlot['Snacks'].map(mealCard).join('');
-      if(bySlot['Other']) mealBlock += slotHead('Other') + bySlot['Other'].map(mealCard).join('');
+      var _items=[];
+      gp.meals.forEach(function(f){ _items.push({t:tsOf(f.date_str,f.logged_at),h:mealCard(f)}); });
+      gp.wos.forEach(function(w){ _items.push({t:tsOf(w.date_str,w.logged_at),h:woCard(w)}); });
+      _items.sort(function(a,b){return a.t-b.t;});
+      var stream=_items.map(function(it){return it.h;}).join('');
       html+='<div style="margin-bottom:28px;">'
         + '<div style="margin-bottom:14px;border-bottom:1px solid #2e2e2e;padding-bottom:10px;">'
         +   '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;">'
@@ -6338,8 +6347,7 @@ async function _jvDeepHistory(code){
         +   '</div>'
         +   (tline?'<div style="font-size:12px;font-weight:800;color:var(--gold);margin-top:5px;">'+tline+'</div>':'')
         + '</div>'
-        + (woBlock||'')
-        + (mealBlock?'<div style="font-size:10px;font-weight:800;letter-spacing:1.4px;text-transform:uppercase;color:#777;margin:12px 0 9px;">\ud83c\udf73\ufe0f The Kitchen</div>'+mealBlock:'')
+        + (stream||'<div style="color:#6a6a6a;font-size:12px;padding:6px 0;">Nothing logged this day.</div>')
         + '</div>';
     });
     el.innerHTML=html;
@@ -7796,7 +7804,7 @@ var dashView = 'clients';
 function _reorderClientsTab(){
   try{
     var tc=document.getElementById('tClients'); if(!tc) return;
-    var order=['mobFrontDesk','dashHeader','dashDayTabs','dashViewTabs','clientSearch','clientSearchResults','clientList','salesCard','weightHistCard'];
+    var order=['clientSearch','clientSearchResults','mobFrontDesk','dashHeader','dashDayTabs','dashViewTabs','clientList','salesCard','weightHistCard'];
     order.forEach(function(id){ var el=document.getElementById(id); if(el) tc.appendChild(el); });
   }catch(e){}
 }
