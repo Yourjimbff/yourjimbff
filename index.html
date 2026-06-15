@@ -1935,6 +1935,7 @@ window.addEventListener('load', function(){
   if(location.search.indexOf('v=')>-1){ try{ history.replaceState(null,'',location.pathname); }catch(e){} }
   checkForUpdate(); // fire-and-forget; reloads only if a newer version is live
   setTimeout(async function(){
+    await loadRosterFromDB();
     var savedCode = localStorage.getItem('yjb_logged_in');
     if(savedCode && CLIENTS[savedCode]){
       document.getElementById('lcode').value = savedCode;
@@ -2086,7 +2087,38 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.398.0';
+// ===== ROSTER LOADER (Stage B) =====
+// Pulls the clients table from Supabase and merges it INTO the hardcoded CLIENTS
+// object. The hardcoded list stays as a fallback: if this fetch ever fails, the
+// app runs off the baked-in roster exactly like before. DB wins on conflict.
+var _rosterLoadPromise = null;
+async function loadRosterFromDB(){
+  if(_rosterLoadPromise) return _rosterLoadPromise;
+  _rosterLoadPromise = (async function(){
+    try{
+      var rows = await sbSelect('clients','select=code,name,initials,phone,coach_code,is_trainer,active&order=code.asc&limit=2000');
+      if(rows && rows.length){
+        rows.forEach(function(r){
+          if(!r.code) return;
+          var e = CLIENTS[r.code] || {};
+          e.name = r.name || e.name || r.code;
+          if(r.initials) e.initials = r.initials;
+          if(r.phone) e.phone = r.phone;
+          if(r.coach_code) e.coach_code = r.coach_code;
+          if(r.is_trainer) e.isTrainer = true;
+          e.active = (r.active !== false);
+          CLIENTS[r.code] = e;
+          if(r.is_trainer && typeof TRAINER_CODES !== 'undefined' && TRAINER_CODES.indexOf(r.code) === -1){ TRAINER_CODES.push(r.code); }
+        });
+        window._rosterFromDB = true;
+      }
+    }catch(err){ console.error('loadRosterFromDB failed — running on hardcoded roster', err); }
+    return true;
+  })();
+  return _rosterLoadPromise;
+}
+
+var APP_VERSION = 'v5.399.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -2229,7 +2261,9 @@ function showLoading(show){ document.getElementById('loadingOverlay').className 
 // ===== LOGIN =====
 async function doLogin(){
   var entered = document.getElementById('lcode').value.trim().toLowerCase();
-  // First check the hardcoded CLIENTS map
+  // Make sure the DB roster is merged in before we validate (no-op if already loaded)
+  await loadRosterFromDB();
+  // First check the CLIENTS map (now includes anyone from the DB)
   var c = CLIENTS[entered];
   // Then check custom trainer access codes (set via changeAccessCode)
   if(!c){
