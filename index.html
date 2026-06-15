@@ -2086,7 +2086,7 @@ var CLIENTS = {
   'rodrigoa1':{name:'Rodrigo A',initials:'RA',phone:'+15126454575'}
 };
 
-var APP_VERSION = 'v5.397.0';
+var APP_VERSION = 'v5.398.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -2831,19 +2831,25 @@ async function loadTrainerFeed(targetId){
   try{
     var lens=window._feedLens||'all';
     var hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
-    var foods = (lens==='gym') ? [] : (await sbSelect('food_logs','select=id,client_code,name,emoji,calories,protein,carbs,fat,rating,logged_at,date_str&order=logged_at.desc.nullslast&limit=400')||[]);
-    var _feedCut=Date.now()-3*86400000; foods=foods.filter(function(f){return _feedTs(f)>=_feedCut;});
-    try{ var _allIds=foods.filter(function(f){return f.id!=null;}).slice().sort(function(a,b){return _feedTs(b)-_feedTs(a);}).slice(0,150).map(function(f){return f.id;}); var _pm={}; var _pp=[]; for(var _bi=0;_bi<_allIds.length;_bi+=40){ var _chunk=_allIds.slice(_bi,_bi+40); if(_chunk.length) _pp.push(sbSelect('food_logs','id=in.('+_chunk.join(',')+')&select=id,photo&limit=40').catch(function(){return [];})); } var _pr=await Promise.all(_pp); _pr.forEach(function(_pf){ (_pf||[]).forEach(function(r){ if(r.photo) _pm[r.id]=r.photo; }); }); foods.forEach(function(f){ if(_pm[f.id]) f.photo=_pm[f.id]; }); }catch(e){}
-    try{ var _rids=foods.filter(function(f){return f.id!=null;}).slice().sort(function(a,b){return _feedTs(b)-_feedTs(a);}).slice(0,200).map(function(f){return f.id;}); var _rm={}; var _rp=[]; for(var _ri=0;_ri<_rids.length;_ri+=40){ var _rc=_rids.slice(_ri,_ri+40); if(_rc.length) _rp.push(sbSelect('food_logs','id=in.('+_rc.join(',')+')&select=id,raw_text&limit=40').catch(function(){return [];})); } var _rr2=await Promise.all(_rp); _rr2.forEach(function(_rr){ (_rr||[]).forEach(function(r){ if(r.raw_text) _rm[r.id]=r.raw_text; }); }); foods.forEach(function(f){ if(_rm[f.id]) f.raw_text=_rm[f.id]; }); }catch(e){}
-    try{ window._reviewedMap={}; var _rvw=await sbSelect('reviews','select=kind,ref_id,reaction,comment&order=id.asc&limit=3000')||[]; _rvw.forEach(function(r){ if(r.ref_id==null) return; var _k=(r.kind||'')+':'+r.ref_id; if(!window._reviewedMap[_k]) window._reviewedMap[_k]={}; var _rx=r.reaction||'seen'; if(_rx==='like') window._reviewedMap[_k].like=true; else if(_rx==='comment'){ window._reviewedMap[_k].comment=true; if(r.comment) window._reviewedMap[_k].comment_text=r.comment; } else window._reviewedMap[_k].seen=true; }); }catch(e){}
-    var wos   = (lens==='kitchen') ? [] : (await sbSelect('workout_logs','select=id,client_code,title,intensity,description,notes,logged_at,date_str,photo&order=logged_at.desc.nullslast&limit=300')||[]);
-    wos=wos.filter(function(w){return _feedTs(w)>=_feedCut;});
-    var weights = (lens==='all') ? (await sbSelect('weight_logs','order=id.desc&limit=150')||[]) : [];
-    weights=weights.filter(function(w){return _feedTs(w)>=_feedCut;});
-    var photos = (lens==='all'||lens==='caught') ? (await sbSelect('progress_photos','order=id.desc&limit=90')||[]) : [];
-    photos=photos.filter(function(p){return _feedTs(p)>=_feedCut;});
-    var moments = (lens==='all') ? (await _loadMoments()) : [];
-    moments=(moments||[]).filter(function(m){return (m&&m.ts)?(m.ts>=_feedCut):true;});
+    var _feedCut=Date.now()-3*86400000;
+    // Fire every independent fetch at once instead of one-after-another — this back-to-back chain was the 20s stall.
+    var _foodsP = (lens==='gym') ? Promise.resolve([]) : sbSelect('food_logs','select=id,client_code,name,emoji,calories,protein,carbs,fat,rating,logged_at,date_str&order=logged_at.desc.nullslast&limit=400').catch(function(){return [];});
+    var _wosP   = (lens==='kitchen') ? Promise.resolve([]) : sbSelect('workout_logs','select=id,client_code,title,intensity,description,notes,logged_at,date_str,photo&order=logged_at.desc.nullslast&limit=300').catch(function(){return [];});
+    var _weightsP = (lens==='all') ? sbSelect('weight_logs','order=id.desc&limit=150').catch(function(){return [];}) : Promise.resolve([]);
+    var _photosP  = (lens==='all'||lens==='caught') ? sbSelect('progress_photos','order=id.desc&limit=90').catch(function(){return [];}) : Promise.resolve([]);
+    var _reviewsP = sbSelect('reviews','select=kind,ref_id,reaction,comment&order=id.asc&limit=3000').catch(function(){return [];});
+    var _momentsP = (lens==='all') ? Promise.resolve(_loadMoments()).catch(function(){return [];}) : Promise.resolve([]);
+    var foods = (await _foodsP)||[];
+    foods=foods.filter(function(f){return _feedTs(f)>=_feedCut;});
+    // photo + raw_text backfills depend on which foods survived the cut — run them together, alongside everything else still in flight
+    var _photoBackfill = (async function(){ try{ var _allIds=foods.filter(function(f){return f.id!=null;}).slice().sort(function(a,b){return _feedTs(b)-_feedTs(a);}).slice(0,150).map(function(f){return f.id;}); var _pm={}; var _pp=[]; for(var _bi=0;_bi<_allIds.length;_bi+=40){ var _chunk=_allIds.slice(_bi,_bi+40); if(_chunk.length) _pp.push(sbSelect('food_logs','id=in.('+_chunk.join(',')+')&select=id,photo&limit=40').catch(function(){return [];})); } var _pr=await Promise.all(_pp); _pr.forEach(function(_pf){ (_pf||[]).forEach(function(r){ if(r.photo) _pm[r.id]=r.photo; }); }); foods.forEach(function(f){ if(_pm[f.id]) f.photo=_pm[f.id]; }); }catch(e){} })();
+    var _rawBackfill = (async function(){ try{ var _rids=foods.filter(function(f){return f.id!=null;}).slice().sort(function(a,b){return _feedTs(b)-_feedTs(a);}).slice(0,200).map(function(f){return f.id;}); var _rm={}; var _rp=[]; for(var _ri=0;_ri<_rids.length;_ri+=40){ var _rc=_rids.slice(_ri,_ri+40); if(_rc.length) _rp.push(sbSelect('food_logs','id=in.('+_rc.join(',')+')&select=id,raw_text&limit=40').catch(function(){return [];})); } var _rr2=await Promise.all(_rp); _rr2.forEach(function(_rr){ (_rr||[]).forEach(function(r){ if(r.raw_text) _rm[r.id]=r.raw_text; }); }); foods.forEach(function(f){ if(_rm[f.id]) f.raw_text=_rm[f.id]; }); }catch(e){} })();
+    var _resAll = await Promise.all([_wosP,_weightsP,_photosP,_reviewsP,_momentsP,_photoBackfill,_rawBackfill]);
+    var wos=(_resAll[0]||[]).filter(function(w){return _feedTs(w)>=_feedCut;});
+    var weights=(_resAll[1]||[]).filter(function(w){return _feedTs(w)>=_feedCut;});
+    var photos=(_resAll[2]||[]).filter(function(p){return _feedTs(p)>=_feedCut;});
+    try{ window._reviewedMap={}; var _rvw=_resAll[3]||[]; _rvw.forEach(function(r){ if(r.ref_id==null) return; var _k=(r.kind||'')+':'+r.ref_id; if(!window._reviewedMap[_k]) window._reviewedMap[_k]={}; var _rx=r.reaction||'seen'; if(_rx==='like') window._reviewedMap[_k].like=true; else if(_rx==='comment'){ window._reviewedMap[_k].comment=true; if(r.comment) window._reviewedMap[_k].comment_text=r.comment; } else window._reviewedMap[_k].seen=true; }); }catch(e){}
+    var moments=(_resAll[4]||[]).filter(function(m){return (m&&m.ts)?(m.ts>=_feedCut):true;});
     try{ var _woT={}; wos.forEach(function(w){ var c=w.client_code; var t=_feedTs(w); if(c&&t){ (_woT[c]=_woT[c]||[]).push(t); } }); var _POST=3*3600000, _PRE=3*3600000; foods.forEach(function(f){ var c=f.client_code; var ft=_feedTs(f); if(!c||!ft||!_woT[c]) return; for(var _wi=0;_wi<_woT[c].length;_wi++){ var _d=ft-_woT[c][_wi]; if(_d>=0&&_d<=_POST){ f._fuel='post'; break; } if(_d<0&&(-_d)<=_PRE){ f._fuel='pre'; break; } } }); }catch(e){}
     var items=[];
     foods.forEach(function(f){ var c=f.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(f),kind:'food',code:c,data:f}); });
