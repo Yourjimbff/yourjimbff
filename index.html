@@ -1333,17 +1333,17 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
       </div>
       <div>
         <div class="il">Protein (g)</div>
-        <input class="ifield" type="number" id="editFoodProt" placeholder="0">
+        <input class="ifield" type="number" id="editFoodProt" placeholder="0" oninput="editRecalcCal()">
       </div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
       <div>
         <div class="il">Carbs (g)</div>
-        <input class="ifield" type="number" id="editFoodCarb" placeholder="0">
+        <input class="ifield" type="number" id="editFoodCarb" placeholder="0" oninput="editRecalcCal()">
       </div>
       <div>
         <div class="il">Fat (g)</div>
-        <input class="ifield" type="number" id="editFoodFat" placeholder="0">
+        <input class="ifield" type="number" id="editFoodFat" placeholder="0" oninput="editRecalcCal()">
       </div>
     </div>
     <div class="il">Time eaten</div>
@@ -2118,7 +2118,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.399.0';
+var APP_VERSION = 'v5.403.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -2747,7 +2747,9 @@ function _journalMealRow(f, foodsEnc, idx){
 }
 function _journalWorkoutRow(w){
   var id='jw_'+(w.id||Math.random().toString(36).slice(2));
-  var time=''; try{ if(w.logged_at){ var d=new Date(/[Z+]/.test(w.logged_at)?w.logged_at:w.logged_at+'Z'); if(!isNaN(d.getTime())) time=d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); } }catch(e){}
+  var time='';
+  if(w.performed_at){ time=w.performed_at; }
+  else { try{ if(w.logged_at){ var d=new Date(/[Z+]/.test(w.logged_at)?w.logged_at:w.logged_at+'Z'); if(!isNaN(d.getTime())) time=d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); } }catch(e){} }
   if(!time && w.eat_time) time=w.eat_time;
   var desc=(w.description||'').replace(/</g,'&lt;');
   var intens=w.intensity?(' \u00b7 '+w.intensity+'/10'):'';
@@ -2868,7 +2870,7 @@ async function loadTrainerFeed(targetId){
     var _feedCut=Date.now()-3*86400000;
     // Fire every independent fetch at once instead of one-after-another — this back-to-back chain was the 20s stall.
     var _foodsP = (lens==='gym') ? Promise.resolve([]) : sbSelect('food_logs','select=id,client_code,name,emoji,calories,protein,carbs,fat,rating,logged_at,date_str&order=logged_at.desc.nullslast&limit=400').catch(function(){return [];});
-    var _wosP   = (lens==='kitchen') ? Promise.resolve([]) : sbSelect('workout_logs','select=id,client_code,title,intensity,description,notes,logged_at,date_str,photo&order=logged_at.desc.nullslast&limit=300').catch(function(){return [];});
+    var _wosP   = (lens==='kitchen') ? Promise.resolve([]) : sbSelect('workout_logs','select=id,client_code,title,intensity,description,notes,logged_at,date_str,photo,performed_at&order=logged_at.desc.nullslast&limit=300').catch(function(){return [];});
     var _weightsP = (lens==='all') ? sbSelect('weight_logs','order=id.desc&limit=150').catch(function(){return [];}) : Promise.resolve([]);
     var _photosP  = (lens==='all'||lens==='caught') ? sbSelect('progress_photos','order=id.desc&limit=90').catch(function(){return [];}) : Promise.resolve([]);
     var _reviewsP = sbSelect('reviews','select=kind,ref_id,reaction,comment&order=id.asc&limit=3000').catch(function(){return [];});
@@ -4649,7 +4651,7 @@ function renderTodayWorkoutCard(){
     if(goldCard) goldCard.style.display = 'none';
     if(workoutTile) workoutTile.style.display = '';
     if(tileName) tileName.textContent = 'Fitness';
-    if(tileSub){ if(typeof todayWo!=='undefined' && todayWo && todayWo.length){ tileSub.innerHTML = woTelemetry(todayWo); } else { tileSub.textContent = clientAssignedProgram ? 'Rest day \u00b7 log freestyle if you trained' : "Log today's training"; } }
+    if(tileSub){ if(typeof todayWo!=='undefined' && todayWo && todayWo.length){ tileSub.innerHTML = woTelemetry(todayWo); } else if(typeof isViewingToday==='function' && !isViewingToday()){ tileSub.textContent = "Log this day's training"; } else { tileSub.textContent = clientAssignedProgram ? 'Rest day \u00b7 log freestyle if you trained' : "Log today's training"; } }
     return;
   }
 
@@ -6273,10 +6275,59 @@ function _jvRenderCompare(){
     +'</div>'
     +angleRow
     +'<div style="flex:1;display:flex;gap:10px;min-height:0;">'+pane(c[0])+pane(c[1])+'</div>'
+    +'<div id="jvCmpWeight" style="flex-shrink:0;"></div>'
     +'<div style="flex-shrink:0;margin-top:12px;"><div style="font-size:9px;color:#777;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:7px;">Tap to swap a side</div>'
       +'<div style="display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px;">'+strip+'</div></div>';
   ov.style.display='flex';
+  try{ _jvCompareWeight(); }catch(e){}
 }
+
+// Weight trend line for the trainer-side Compare view (Jarvis deep-dive).
+// Fetches the viewed client's weigh-ins, draws a sparkline, and headlines the
+// delta between the two photos currently being compared.
+async function _jvCompareWeight(){
+  var el=document.getElementById('jvCmpWeight'); if(!el) return;
+  var code=window._jvDeepCode; if(!code){ el.innerHTML=''; return; }
+  try{
+    var rows=window._jvPhotos||[]; var c=window._jvCmp||[];
+    var sel=[rows[c[0]],rows[c[1]]].filter(Boolean);
+    var weights=await sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(code)+'&limit=500');
+    weights=(weights||[]).slice().filter(function(x){ return x&&x.weight!=null&&!isNaN(parseFloat(x.weight)); })
+      .sort(function(a,b){ return new Date(a.logged_at)-new Date(b.logged_at); });
+    var nums=weights.map(function(x){ return parseFloat(x.weight); });
+
+    // Headline delta = change between the two compared photos' weights (chronological).
+    var delta=null, labelNote='';
+    if(sel.length===2){
+      var ch=sel.slice().sort(function(a,b){ return (new Date(a.date_str)-new Date(b.date_str)); });
+      var w0=parseFloat(ch[0].weight), w1=parseFloat(ch[1].weight);
+      if(!isNaN(w0)&&!isNaN(w1)){ delta=Math.round((w1-w0)*10)/10; labelNote=' between these photos'; }
+    }
+    if(delta===null){
+      if(nums.length<2){ el.innerHTML=''; return; }
+      delta=Math.round((nums[nums.length-1]-nums[0])*10)/10;
+    }
+
+    var trendColor=(typeof weightLineColor==='function')?weightLineColor(delta):'#F5C518';
+    var plot=nums.slice(); if(plot.length<2){ if(plot.length===1) plot=[plot[0],plot[0]]; else if(sel.length===2){ var a=parseFloat(sel[0].weight),b=parseFloat(sel[1].weight); plot=[isNaN(a)?0:a,isNaN(b)?0:b]; } else { el.innerHTML=''; return; } }
+    var w=300,h=70,pad=8;
+    var minV=Math.min.apply(null,plot), maxV=Math.max.apply(null,plot);
+    if(maxV-minV<1) maxV=minV+1;
+    var n=plot.length;
+    var pts=plot.map(function(v,i){ return { x: pad+(i/(n-1))*(w-pad*2), y: h-pad-((v-minV)/(maxV-minV))*(h-pad*2) }; });
+    var d='M '+pts[0].x+' '+pts[0].y; for(var i=1;i<pts.length;i++){ d+=' L '+pts[i].x+' '+pts[i].y; }
+    var dArea=d+' L '+pts[pts.length-1].x+' '+h+' L '+pts[0].x+' '+h+' Z';
+    var deltaLabel = delta<0 ? '<span style="color:#22c77a;">\u2193 '+Math.abs(delta)+' lbs</span>' : (delta>0 ? '<span style="color:#e5746b;">\u2191 '+delta+' lbs</span>' : '<span style="color:#8f8f8f;">No change</span>');
+
+    el.innerHTML='<div style="background:#161616;border:1px solid #2a2a2a;border-radius:14px;padding:12px 14px 9px;margin-top:12px;">'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px;"><div style="font-size:10.5px;color:#8f8f8f;letter-spacing:1px;text-transform:uppercase;font-weight:700;">Weight'+(labelNote?'<span style="text-transform:none;letter-spacing:0;color:#666;font-weight:600;"> '+labelNote+'</span>':'')+'</div><div style="font-size:13.5px;font-weight:800;">'+deltaLabel+'</div></div>'
+      + '<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" style="width:100%;height:70px;overflow:visible;"><defs><linearGradient id="jvcmpwgrad" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="'+trendColor+'" stop-opacity="0.3"/><stop offset="100%" stop-color="'+trendColor+'" stop-opacity="0"/></linearGradient></defs>'
+      + '<path d="'+dArea+'" fill="url(#jvcmpwgrad)"/><path d="'+d+'" fill="none" stroke="'+trendColor+'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+      + '<circle cx="'+pts[0].x+'" cy="'+pts[0].y+'" r="3" fill="'+trendColor+'"/><circle cx="'+pts[pts.length-1].x+'" cy="'+pts[pts.length-1].y+'" r="4" fill="'+trendColor+'"/></svg>'
+      + '</div>';
+  }catch(e){ el.innerHTML=''; }
+}
+
 // Weight trend chart for the Jarvis client view — one point per day, charted over time.
 async function _jvLoadDeepWeight(code){
   var el=document.getElementById('jvDeepWeight'); if(!el) return;
@@ -9236,7 +9287,7 @@ Capture sugar in grams if shown or clearly known, else 0 — tracked quietly, ne
     for(var _try=0; _try<2 && !curParsed; _try++){
       try{
         var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:content}],temperature:0.2})});
-        if(!res.ok) throw new Error('status '+res.status);
+        if(!res.ok){ var _eb=''; try{ var _ej=await res.json(); _eb=(_ej&&(_ej.error||_ej.type))?(' \u2014 '+(_ej.error||_ej.type)):''; }catch(_pe){} throw new Error('status '+res.status+_eb); }
         var data=await res.json();
         var raw=(data.content&&data.content[0]?(data.content[0].text||''):'').replace(/```json|```/g,'').trim();
         if(raw && raw.charAt(0)!=='{'){ var _m=raw.match(/\{[\s\S]*\}/); if(_m) raw=_m[0]; }
@@ -9253,7 +9304,7 @@ Capture sugar in grams if shown or clearly known, else 0 — tracked quietly, ne
     try{ if(curResult){ var _ovP=parseFloat(curResult.protein)||0,_ovC=parseFloat(curResult.carbs)||0,_ovF=parseFloat(curResult.fat)||0; curResult.calories=Math.round(_ovP*4+_ovC*4+_ovF*9); } }catch(e){}
     curResult.emoji = bestFoodEmoji(curResult.name, curResult.emoji);
     showAIResult(curResult);
-  }catch(e){console.error(e);showToast('AI error — try again');}
+  }catch(e){console.error(e);showToast('AI error: '+((e&&e.message)?e.message:'try again'));}
   finally{btn.classList.remove('loading');btn.disabled=false;}
 }
 
@@ -9347,6 +9398,7 @@ function editFoodResult(){
 }
 function cancelFoodEdit(){ var d=document.getElementById('arcEdit'); if(d) d.remove(); }
 function recalcCal(){ var g=function(id){ var e=document.getElementById(id); return e?(parseFloat(e.value)||0):0; }; var ce=document.getElementById('edCal'); if(ce) ce.value=Math.round(g('edPr')*4+g('edCa')*4+g('edFa')*9); }
+function editRecalcCal(){ var g=function(id){ var e=document.getElementById(id); return e?(parseFloat(e.value)||0):0; }; var ce=document.getElementById('editFoodCal'); if(ce) ce.value=Math.round(g('editFoodProt')*4+g('editFoodCarb')*4+g('editFoodFat')*9); }
 function saveFoodEdit(){
   if(!curResult) return;
   function num(id,old){ var e=document.getElementById(id); if(!e) return old; var v=parseFloat(e.value); return isNaN(v)?old:Math.max(0,Math.round(v)); }
@@ -9613,10 +9665,7 @@ function openPhotoLightbox(src){
 // ---- Repeat / search a past meal (zero-friction re-log) ----
 function _escHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 var FOOD_SLOT_GUIDE={
-  'Breakfast':'Protein + a light carb + a little fat. If you trained fasted, this is your post-workout meal. e.g. 3 whole eggs + a handful of blueberries.',
-  'Lunch':'Meat + vegetables. Clean and simple. e.g. grilled chicken + a big salad.',
-  'Dinner':'Meat + vegetable + a real carb (about a fist of rice or potato). e.g. steak, asparagus + a fist of potatoes.',
-  'Snack':'Optional. Real food only \u2014 fruit, Greek yogurt, or a small oat bowl. Skip the bars and chocolate.'
+  'Breakfast':'', 'Lunch':'', 'Dinner':'', 'Snack':''
 };
 var FOOD_SLOT_PH={
   'Breakfast':'What did you have for breakfast? e.g. 3 eggs + a handful of blueberries',
@@ -9625,7 +9674,7 @@ var FOOD_SLOT_PH={
   'Snack':'What was the snack? e.g. Greek yogurt + berries'
 };
 function _applyFoodSlot(key){
-  try{ var g=document.getElementById('foodSlotGuide'); if(g) g.textContent=FOOD_SLOT_GUIDE[key]||''; }catch(e){}
+  try{ var g=document.getElementById('foodSlotGuide'); if(g){ var _gt=FOOD_SLOT_GUIDE[key]||''; g.textContent=_gt; g.style.display=_gt?'':'none'; } }catch(e){}
   try{ var t=document.getElementById('foodTxt'); if(t&&FOOD_SLOT_PH[key]) t.placeholder=FOOD_SLOT_PH[key]; }catch(e){}
 }
 function _foodSlot(el,key){ try{ selR(el,'meal'); }catch(e){} _applyFoodSlot(key); }
@@ -13306,6 +13355,7 @@ function buildCoachVoice(){
     '3. THEN ask intensity in the same message: "And how hard did it hit, 1-10?"\n'+
     'If anything they said was ambiguous (a weight that might apply to one or all sets, an exercise name you had to guess), briefly note your assumption so they can correct it.\n'+
     'You may lightly note an exercise\'s actual muscle group ONLY if it helps accuracy or they seem to have it categorized wrong — e.g. hanging leg raises are an AB/core exercise, not legs; face pulls and rear delt flys are rear delts/shoulders. Keep it a brief aside, never a lecture.\n\n'+
+    'FACTORS THAT SHAPED THE SESSION \u2014 KEEP THEM: if they volunteer anything about how it felt or WHY it went the way it did \u2014 needing the bathroom, training too close to a meal, low or high energy, poor sleep, stress, a tweak or pain, being rushed, feeling strong \u2014 preserve that faithfully in your reply in THEIR words (it becomes the session note). These are real coaching signals that explain performance. Do NOT scrub them into a vague word like "distracted," and never drop them. Keep it brief and non-judgmental \u2014 just keep the actual factor they named.\n\n'+
     'CASE A-FOLLOWUP — CORRECTIONS IN CHAT:\n'+
     'CRITICAL DISTINCTION — two different "edits" exist, do not confuse them:\n'+
     '  (1) Editing the LOGGED WORKOUT (the record of what they DID today) → YES, help right here. This includes "can we edit my pull day," "fix my log," "change what you recorded," adding/removing exercises from the log, fixing sets/reps/weights, or recategorizing (e.g. "hanging leg raises are abs not legs"). Treat "edit my [workout] today" as editing the LOG by default — that is the common case.\n'+
