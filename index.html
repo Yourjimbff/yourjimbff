@@ -951,7 +951,7 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
     <div class="tile" id="tileEntry">
       <div class="thead" onclick="openEntryModal()">
         <div class="tic tigl"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20 L4 16 L15 5 a2 2 0 0 1 3 3 L7 19 L4 20 Z" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-        <div class="tinfo"><div class="tname">Entry</div><div class="tsub" id="entrySub">A personal note or update</div></div>
+        <div class="tinfo"><div class="tname">Entry</div><div class="tsub" id="entrySub">A note on your progress — keep it real</div></div>
         <div class="tr"><div class="tchev">›</div></div>
       </div>
     </div>
@@ -1373,8 +1373,8 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
     <div class="mhnd"></div>
     <div class="mtitle">Entry</div>
     <div class="msub">A note, an update, a ramble — however it comes out.</div>
-    <textarea class="ifield" id="entryTxt" style="min-height:150px;margin-top:14px;" placeholder="How's your progress going? Type it, talk it, ramble — whatever's on your mind. A win, a tough day, how your body feels, what clicked this week. No format needed."></textarea>
-    <button onclick="toggleEntryVoice()" style="width:100%;margin-top:10px;background:transparent;color:var(--m2);border:1px solid var(--border);border-radius:12px;padding:10px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;display:flex;align-items:center;justify-content:center;gap:7px;" id="entryVoiceBtn">🎙️ Talk it through</button>
+    <textarea class="ifield" id="entryTxt" style="min-height:230px;margin-top:14px;" placeholder="How's your progress going? Type it, talk it, ramble — whatever's on your mind. A win, a tough day, how your body feels, what clicked this week. No format needed."></textarea>
+    <button onclick="toggleEntryVoice()" style="width:100%;margin-top:10px;background:transparent;color:var(--m2);border:1px solid var(--border);border-radius:12px;padding:10px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;display:flex;align-items:center;justify-content:center;gap:7px;" id="entryVoiceBtn">🎙️ Ramble it — dictate instead</button>
     <button class="sbtn" id="entryPublishBtn" onclick="publishEntry()" style="margin-top:12px;">Publish entry ✓</button>
     <div id="entryList" style="margin-top:20px;"></div>
   </div>
@@ -2140,7 +2140,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.409.0';
+var APP_VERSION = 'v5.410.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -2451,7 +2451,7 @@ async function launchApp(){
   // Trainer/program extras can finish in the background (not on the home screen)
   loadTrainerPrograms();
   loadClientAssignedProgram();
-  try{ if(typeof isTrainer==='function' && isTrainer(cl.code)){ switchTab('Clients'); } }catch(e){}
+  try{ if(typeof isTrainer==='function' && isTrainer(cl.code)){ switchTab('Today'); } }catch(e){}
 }
 
 // ===== DAILY ENGINE BOARD (trainer-only coaching-moments tracker) =====
@@ -3186,6 +3186,9 @@ function toggleEntryVoice(){
   try{ entryRecognition.start(); }catch(e){}
 }
 
+var _editingEntryId=null;
+window._entryCache=window._entryCache||{};
+
 async function publishEntry(){
   if(!cl) return;
   var inp=document.getElementById('entryTxt');
@@ -3193,31 +3196,59 @@ async function publishEntry(){
   if(!body){ showToast('Write or say something first'); return; }
   if(entryListening){ try{ entryRecognition.stop(); }catch(e){} }
   var btn=document.getElementById('entryPublishBtn');
-  if(btn){ btn.disabled=true; btn.style.opacity='0.6'; var _ot=btn.textContent; btn.textContent='Publishing\u2026'; }
-  var ds=(typeof todayDateStr!=='undefined' && todayDateStr) ? todayDateStr : new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
-  var row={ client_code: cl.code, body: body, date_str: ds, logged_at: new Date().toISOString() };
+  var _ot=btn?btn.textContent:'';
+  if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent=_editingEntryId?'Saving\u2026':'Publishing\u2026'; }
   try{
-    var saved=await sbInsertReturning('journal_entries', row);
-    if(saved){
-      showToast('\u2713 Entry published');
+    if(_editingEntryId){
+      // EDIT existing entry — update body, refresh Jim's reflection to match.
+      var eid=_editingEntryId;
+      await fetch(SB_URL+'/rest/v1/journal_entries?id=eq.'+encodeURIComponent(eid), {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}), body:JSON.stringify({body:body})});
+      showToast('\u2713 Entry updated');
+      _editingEntryId=null;
       if(inp) inp.value='';
       closeM('mEntry');
       try{ loadEntries(); }catch(e){}
-      // refresh whichever history view is showing
-      try{ if(isTrainer(cl.code)){ if(typeof loadTrainerFeed==='function') loadTrainerFeed(); } else { if(typeof loadJournal==='function') loadJournal(); } }catch(e){}
-    } else { showToast('Could not publish — try again'); }
+      _entryReflect(eid, body);
+    } else {
+      var ds=(typeof todayDateStr!=='undefined' && todayDateStr) ? todayDateStr : new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+      var row={ client_code: cl.code, body: body, date_str: ds, logged_at: new Date().toISOString() };
+      var saved=await sbInsertReturning('journal_entries', row);
+      if(saved){
+        showToast('\u2713 Entry published');
+        if(inp) inp.value='';
+        closeM('mEntry');
+        try{ loadEntries(); }catch(e){}
+        try{ if(isTrainer(cl.code)){ if(typeof loadTrainerFeed==='function') loadTrainerFeed(); } else { if(typeof loadJournal==='function') loadJournal(); } }catch(e){}
+        if(saved.id) _entryReflect(saved.id, body);
+      } else { showToast('Could not publish — try again'); }
+    }
   }catch(e){ console.error('publishEntry', e); showToast('Could not publish — try again'); }
   finally{ if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent=_ot||'Publish entry \u2713'; } }
 }
 
-// Render the signed-in user's own recent entries (inside the modal + under the tile sub).
+// Jim reflects on an entry — ONE warm, honest response that matches the depth given. Then it's saved + shown.
+async function _entryReflect(id, body){
+  try{
+    var sys='You are Jim, a warm, honest coaching companion. The person just wrote a personal journal entry / progress note. Write ONE short reflection back to them. Rules: match the depth they gave — a quick line gets a quick line, a long honest entry earns a fuller (still tight) response. Acknowledge specifically what THEY said, in their spirit. Be encouraging and real — never fake-deep, never a lecture, no fixing, no advice unless it is obvious and kind, and do NOT ask a question at the end (this is not an ongoing chat, it is a reflection). Speak plainly and human. 1-3 sentences. Return ONLY the reflection text, no preamble, no quotes.';
+    var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:sys+'\n\nTHEIR ENTRY:\n'+body+'\n\nYour reflection:'}],temperature:0.6})});
+    if(!res.ok) return;
+    var data=await res.json();
+    var txt=(data&&data.content&&data.content[0]?(data.content[0].text||''):'').trim();
+    if(!txt) return;
+    await fetch(SB_URL+'/rest/v1/journal_entries?id=eq.'+encodeURIComponent(id), {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}), body:JSON.stringify({reflection:txt})});
+    if(window._entryCache[id]) window._entryCache[id].reflection=txt;
+    try{ loadEntries(); }catch(e){}
+  }catch(e){ console.error('entry reflect', e); }
+}
+
 async function loadEntries(){
   if(!cl) return;
   var listEl=document.getElementById('entryList');
   var subEl=document.getElementById('entrySub');
   try{
     var rows=await sbSelect('journal_entries','client_code=eq.'+encodeURIComponent(cl.code)+'&order=logged_at.desc&limit=50')||[];
-    if(subEl) subEl.textContent = rows.length ? (rows.length+' '+(rows.length===1?'entry':'entries')) : 'A personal note or update';
+    rows.forEach(function(r){ if(r&&r.id!=null) window._entryCache[r.id]=r; });
+    if(subEl) subEl.textContent = rows.length ? (rows.length+' '+(rows.length===1?'entry':'entries')) : 'A note on your progress \u2014 keep it real';
     if(listEl){
       if(!rows.length){ listEl.innerHTML='<div style="font-size:12.5px;color:var(--muted);text-align:center;padding:8px 0 2px;">No entries yet \u2014 your first one shows up here.</div>'; }
       else { listEl.innerHTML=rows.map(function(r){ return _entryCardHtml(r); }).join(''); }
@@ -3225,10 +3256,11 @@ async function loadEntries(){
   }catch(e){ if(listEl) listEl.innerHTML=''; }
 }
 
-// A clean expandable entry card (used in the modal list + the client's own Journal).
 function _entryCardHtml(r){
   var id='ent_'+(r.id||Math.random().toString(36).slice(2));
+  var rid=(r.id!=null?String(r.id):'');
   var body=String(r.body||'').trim();
+  var refl=String(r.reflection||'').trim();
   var when=''; try{ if(r.logged_at){ var d=new Date(/[Z+]/.test(r.logged_at)?r.logged_at:r.logged_at+'Z'); if(!isNaN(d.getTime())) when=d.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' \u00b7 '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); } }catch(e){}
   if(!when) when=r.date_str||'';
   var long=body.length>200;
@@ -3238,12 +3270,38 @@ function _entryCardHtml(r){
     ? ('<span>'+head.replace(/</g,'&lt;')+'</span><span id="'+moreId+'" style="display:none;">'+body.slice(200).replace(/</g,'&lt;')+'</span>'
         +' <span onclick="var e=document.getElementById(\''+moreId+'\');var sh=e.style.display===\'none\';e.style.display=sh?\'inline\':\'none\';this.textContent=sh?\' less\':\'\u2026 more\';" style="color:var(--gold);font-weight:700;cursor:pointer;">\u2026 more</span>')
     : body.replace(/</g,'&lt;');
+  var editBtn = rid ? ('<span onclick="event.stopPropagation();openEntryEdit(\''+rid+'\')" style="font-size:11px;font-weight:700;color:var(--muted);cursor:pointer;padding:2px 6px;">\u270e edit</span>') : '';
+  var reflHtml = refl
+    ? ('<div style="margin-top:11px;padding-top:11px;border-top:1px solid var(--border);">'
+        + '<div style="font-size:10px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:var(--m2);margin-bottom:4px;">Jim</div>'
+        + '<div style="font-size:13px;color:var(--m2);line-height:1.6;white-space:pre-wrap;font-style:italic;">'+refl.replace(/</g,'&lt;')+'</div></div>')
+    : '';
   return '<div style="background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:12px 13px;margin-bottom:8px;text-align:left;">'
-    + '<div style="font-size:10px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:var(--gold);margin-bottom:6px;">\u270d\ufe0f Entry \u00b7 '+when+'</div>'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">'
+    +   '<div style="font-size:10px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:var(--gold);">\u270d\ufe0f Entry \u00b7 '+when+'</div>'+editBtn
+    + '</div>'
     + '<div style="font-size:13.5px;color:var(--text);line-height:1.6;white-space:pre-wrap;">'+bodyHtml+'</div>'
+    + reflHtml
     + '</div>';
 }
-function openEntryModal(){ try{ loadEntries(); }catch(e){} openM('mEntry'); }
+
+function openEntryModal(){
+  _editingEntryId=null;
+  var inp=document.getElementById('entryTxt'); if(inp) inp.value='';
+  var btn=document.getElementById('entryPublishBtn'); if(btn) btn.textContent='Publish entry \u2713';
+  var t=document.querySelector('#mEntry .mtitle'); if(t) t.textContent='Entry';
+  try{ loadEntries(); }catch(e){}
+  openM('mEntry');
+}
+
+function openEntryEdit(id){
+  var r=window._entryCache[id]; if(!r){ showToast('Could not open that entry'); return; }
+  _editingEntryId=id;
+  var inp=document.getElementById('entryTxt'); if(inp) inp.value=String(r.body||'');
+  var btn=document.getElementById('entryPublishBtn'); if(btn) btn.textContent='Save changes \u2713';
+  var t=document.querySelector('#mEntry .mtitle'); if(t) t.textContent='Edit Entry';
+  openM('mEntry');
+}
 
 async function loadTrainingHistory(){
   if(!cl) return;
