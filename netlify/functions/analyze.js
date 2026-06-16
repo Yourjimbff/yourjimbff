@@ -43,6 +43,19 @@ exports.handler = async function(event, context) {
     });
 
     const data = await response.json();
+    // If Anthropic rejected the call, pass the real status + message through
+    // instead of masking it as a 200 the app can't interpret.
+    if (!response.ok || (data && data.type === 'error')) {
+      return {
+        statusCode: response.status || 502,
+        headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          error: (data && data.error && data.error.message) || 'Upstream error',
+          type: (data && data.error && data.error.type) || 'unknown',
+          upstream_status: response.status
+        })
+      };
+    }
     return {
       statusCode: 200,
       headers: {
