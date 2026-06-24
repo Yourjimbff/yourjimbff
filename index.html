@@ -2193,7 +2193,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.441.0';
+var APP_VERSION = 'v5.442.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -6911,18 +6911,20 @@ async function _jvDeepHistory(code){
       sbSelect('food_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=90'),
       sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=40'),
       sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=60'),
-      sbSelect('step_logs','client_code=eq.'+encodeURIComponent(code)+'&order=updated_at.desc&limit=60')
+      sbSelect('step_logs','client_code=eq.'+encodeURIComponent(code)+'&order=updated_at.desc&limit=60'),
+      sbSelect('journal_entries','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=60')
     ]);
-    var foods=res[0]||[], wos=res[1]||[], weights=res[2]||[], steps=res[3]||[];
+    var foods=res[0]||[], wos=res[1]||[], weights=res[2]||[], steps=res[3]||[], journals=res[4]||[];
     try{ window._jvEditCache={food:{},workout:{}}; foods.forEach(function(f){ if(f&&f.id!=null) window._jvEditCache.food[f.id]=f; }); wos.forEach(function(w){ if(w&&w.id!=null) window._jvEditCache.workout[w.id]=w; }); }catch(e){}
     var _cmtMap={}; try{ var _cmts=await sbSelect('reviews','client_code=eq.'+encodeURIComponent(code)+'&reaction=eq.comment&select=kind,ref_id,comment,created_at&order=id.desc&limit=300')||[]; _cmts.forEach(function(r){ if(r.ref_id==null||!r.comment) return; var _k=((r.kind||'food'))+':'+String(r.ref_id); (_cmtMap[_k]=_cmtMap[_k]||[]).push(r.comment); }); }catch(e){}
     var wtByDay={}, stepsByDay={};
     weights.forEach(function(r){ var k=keyOf(r.date_str,r.logged_at||r.created_at); if(k && !(k in wtByDay) && r.weight!=null) wtByDay[k]=r.weight; });
     steps.forEach(function(r){ var k=keyOf(r.date_str,r.updated_at); var v=Number(r.steps)||0; if(k && v>0 && (!(k in stepsByDay) || v>stepsByDay[k])) stepsByDay[k]=v; });
     var groups={};
-    function g(k,ts){ if(!groups[k]) groups[k]={ts:ts,meals:[],wos:[]}; if(ts>groups[k].ts) groups[k].ts=ts; return groups[k]; }
+    function g(k,ts){ if(!groups[k]) groups[k]={ts:ts,meals:[],wos:[],journals:[]}; if(ts>groups[k].ts) groups[k].ts=ts; return groups[k]; }
     foods.forEach(function(f){ var k=keyOf(f.date_str,f.logged_at); g(k,tsOf(f.date_str,f.logged_at)).meals.push(f); });
     wos.forEach(function(w){ var k=keyOf(w.date_str,w.logged_at); g(k,tsOf(w.date_str,w.logged_at)).wos.push(w); });
+    journals.forEach(function(j){ var k=keyOf(j.date_str,j.logged_at); g(k,tsOf(j.date_str,j.logged_at)).journals.push(j); });
     var keys=Object.keys(groups).sort(function(a,b){return groups[b].ts-groups[a].ts;}).slice(0,3);
     if(!keys.length){ el.innerHTML='<div style="color:#888;font-size:13px;padding:14px 0;line-height:1.5;">No logs in the last week \u2014 they haven\u2019t put anything in yet. That\u2019s the reason they\u2019re flagged.</div>'; return; }
     var todayMs=new Date(_jvDayKey(new Date())).getTime();
@@ -6952,6 +6954,17 @@ async function _jvDeepHistory(code){
         + '</div>'
         + '</div>';
     }
+    function journalCard(j){
+      var body=String(j.body||'').trim();
+      if(!body) return '';
+      var when=_fmtLogTs(j.logged_at);
+      var refl=(j.reflection&&String(j.reflection).trim())?'<div style="margin-top:8px;background:rgba(245,197,24,0.08);border-left:2px solid var(--gold);border-radius:6px;padding:7px 9px;font-size:12px;color:#eee;line-height:1.5;"><span style="color:var(--gold);font-weight:800;">Jim: </span>'+String(j.reflection).replace(/</g,'&lt;')+'</div>':'';
+      return '<div style="background:#141414;border:1px solid #242424;border-radius:12px;padding:12px;margin-bottom:9px;">'
+        + '<div style="font-size:10px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:var(--gold);">\u270d\ufe0f Journal'+(when?' \u00b7 <span style="color:#777;font-weight:600;text-transform:none;letter-spacing:0;">'+when+'</span>':'')+'</div>'
+        + '<div style="margin-top:7px;font-size:13px;color:#e8e8e8;line-height:1.6;white-space:pre-wrap;">'+body.replace(/</g,'&lt;')+'</div>'
+        + refl
+        + '</div>';
+    }
     var html='';
     keys.forEach(function(k){
       var gp=groups[k];
@@ -6965,6 +6978,7 @@ async function _jvDeepHistory(code){
       var _items=[];
       gp.meals.forEach(function(f){ _items.push({t:tsOf(f.date_str,f.logged_at),h:mealCard(f)}); });
       gp.wos.forEach(function(w){ _items.push({t:tsOf(w.date_str,w.logged_at),h:woCard(w)}); });
+      gp.journals.forEach(function(j){ _items.push({t:tsOf(j.date_str,j.logged_at),h:journalCard(j)}); });
       _items.sort(function(a,b){return a.t-b.t;});
       var stream=_items.map(function(it){return it.h;}).join('');
       html+='<div style="margin-bottom:28px;">'
