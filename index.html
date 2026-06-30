@@ -1206,9 +1206,10 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
         <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:22px;font-weight:800;letter-spacing:-0.3px;line-height:1;">Your Clients</div>
         <div style="font-size:11px;color:var(--muted);margin-top:3px;" id="trainerActiveCount">Loading...</div>
       </div>
-      <div style="text-align:right;">
+      <div style="text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
+        <button onclick="openAddClient()" style="background:transparent;border:1px solid var(--gold);border-radius:10px;padding:8px 14px;font-size:12px;font-weight:800;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;color:var(--gold);">+ Add client</button>
         <button onclick="loadTrainerDashboard()" style="background:var(--gold);border:none;border-radius:10px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;color:#000;">↻ Refresh</button>
-        <div style="font-size:10px;color:var(--muted);margin-top:4px;" id="trainerLastRefresh"></div>
+        <div style="font-size:10px;color:var(--muted);" id="trainerLastRefresh"></div>
       </div>
     </div>
 
@@ -2120,6 +2121,7 @@ var CLIENTS = {
 // object. The hardcoded list stays as a fallback: if this fetch ever fails, the
 // app runs off the baked-in roster exactly like before. DB wins on conflict.
 var _rosterLoadPromise = null;
+var PERMA_HIDE = {};
 async function loadRosterFromDB(){
   if(_rosterLoadPromise) return _rosterLoadPromise;
   _rosterLoadPromise = (async function(){
@@ -2128,6 +2130,7 @@ async function loadRosterFromDB(){
       if(rows && rows.length){
         rows.forEach(function(r){
           if(!r.code) return;
+          if(r.name && /adisa/i.test(r.name)){ PERMA_HIDE[r.code]=true; return; }
           var e = CLIENTS[r.code] || {};
           e.name = r.name || e.name || r.code;
           if(r.initials) e.initials = r.initials;
@@ -2148,7 +2151,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.430.0';
+var APP_VERSION = 'v5.431.0';
 var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
 
 var cl=null, profile=null;
@@ -2463,6 +2466,60 @@ async function launchApp(){
   loadTrainerPrograms();
   loadClientAssignedProgram();
   try{ if(typeof isTrainer==='function' && isTrainer(cl.code)){ switchTab('Today'); } }catch(e){}
+}
+
+// ===== ADD A CLIENT (trainer) — inserts a new login into the clients table =====
+function openAddClient(){
+  if(!cl || (typeof isTrainer==='function' && !isTrainer(cl.code))){ showToast('Trainer only'); return; }
+  if(document.getElementById('addClientOverlay')) return;
+  var ov=document.createElement('div');
+  ov.id='addClientOverlay';
+  ov.style.cssText='position:fixed;inset:0;z-index:99998;display:flex;align-items:center;justify-content:center;padding:22px;background:rgba(7,7,9,0.9);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);';
+  var ist='width:100%;box-sizing:border-box;background:#141414;border:1px solid var(--border);border-radius:12px;padding:13px;font-size:15px;color:var(--text);font-family:inherit;margin-top:6px;';
+  ov.innerHTML='<div style="position:relative;max-width:360px;width:100%;background:#0d0d0e;border:1px solid rgba(245,197,24,0.28);border-radius:22px;padding:24px;">'
+    +'<div style="font-family:\'Plus Jakarta Sans\',sans-serif;font-size:19px;font-weight:800;color:var(--text);">Add a client</div>'
+    +'<div style="font-size:12.5px;color:var(--m2);line-height:1.5;margin-top:5px;">Creates their login. Share the code with them to sign in.</div>'
+    +'<div style="font-size:11px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--muted);margin-top:16px;">Name</div>'
+    +'<input id="acName" oninput="_acSuggest()" placeholder="First Last" style="'+ist+'">'
+    +'<div style="font-size:11px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--muted);margin-top:14px;">Login code</div>'
+    +'<input id="acCode" oninput="this._touched=true" placeholder="e.g. jamesd1" style="'+ist+'">'
+    +'<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.4;">Lowercase letters and numbers. This is what they type to log in.</div>'
+    +'<button id="acCreateBtn" onclick="addClientToDb()" style="margin-top:18px;width:100%;background:var(--gold);color:#000;border:none;border-radius:12px;padding:14px;font-family:\'Plus Jakarta Sans\',sans-serif;font-weight:800;font-size:15px;cursor:pointer;">Create client</button>'
+    +'<button onclick="_closeAddClient()" style="margin-top:9px;width:100%;background:transparent;color:var(--m2);border:none;padding:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;">Cancel</button>'
+    +'</div>';
+  document.body.appendChild(ov);
+  setTimeout(function(){ var n=document.getElementById('acName'); if(n) n.focus(); }, 60);
+}
+function _closeAddClient(){ var o=document.getElementById('addClientOverlay'); if(o&&o.parentNode) o.parentNode.removeChild(o); }
+function _acSuggest(){
+  var n=(document.getElementById('acName')||{}).value||'';
+  var codeEl=document.getElementById('acCode'); if(!codeEl||codeEl._touched) return;
+  var parts=n.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  var base=''; if(parts.length){ base=parts[0]+(parts[1]?parts[1][0]:''); }
+  base=base.replace(/[^a-z0-9]/g,'');
+  codeEl.value=base?base+'1':'';
+}
+async function addClientToDb(){
+  var name=((document.getElementById('acName')||{}).value||'').trim();
+  var code=((document.getElementById('acCode')||{}).value||'').trim().toLowerCase().replace(/[^a-z0-9]/g,'');
+  if(!name){ showToast('Enter a name'); return; }
+  if(!code){ showToast('Enter a login code'); return; }
+  if(CLIENTS[code]){ showToast('That code is taken — pick another'); return; }
+  var initials=(name.split(/\s+/).map(function(w){return w[0]||'';}).join('').slice(0,2)||name.slice(0,2)).toUpperCase();
+  var btn=document.getElementById('acCreateBtn'); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='Creating\u2026'; }
+  try{
+    await sbInsert('clients',{code:code,name:name,initials:initials,coach_code:cl.code,is_trainer:false,active:true});
+    CLIENTS[code]={name:name,initials:initials,coach_code:cl.code,active:true};
+    _closeAddClient();
+    showToast('\u2713 '+name+' added \u00b7 code: '+code);
+    _rosterLoadPromise=null;
+    try{ await loadRosterFromDB(); }catch(e){}
+    if(typeof loadTrainerDashboard==='function') loadTrainerDashboard();
+  }catch(e){
+    console.error('addClient', e);
+    showToast('Could not add \u2014 try again');
+    if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent='Create client'; }
+  }
 }
 
 // ===== ONE-TIME CLIENT MILESTONE POPUP (Naya — 200 days) =====
@@ -5730,6 +5787,7 @@ function getHiddenClientSet(){
     var ra = JSON.parse(localStorage.getItem('yjb_reactivated_clients')||'[]');
     ra.forEach(function(c){ delete s[c]; });
   }catch(e){}
+  for(var pk in PERMA_HIDE){ s[pk]=true; }
   return s;
 }
 
