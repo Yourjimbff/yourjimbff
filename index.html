@@ -987,7 +987,7 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
         <div class="tr"><div class="tchev" style="color:var(--gold);">›</div></div>
       </div>
     </div>
-    <div id="todayVersionTag" onclick="jvForceUpdate()" title="Tap to pull the latest version" style="text-align:center;font-size:10px;color:var(--muted);opacity:0.5;letter-spacing:0.6px;margin:26px 0 10px;cursor:pointer;"></div>
+    <div id="todayVersionTag" onclick="_verTagTap()" title="Tap to pull the latest version" style="text-align:center;font-size:10px;color:var(--muted);opacity:0.5;letter-spacing:0.6px;margin:26px 0 10px;cursor:pointer;"></div>
   </div>
 
   <!-- WHAT I DID TODAY — full day share card modal -->
@@ -1965,6 +1965,7 @@ async function checkForUpdate(){
 window.addEventListener('load', function(){
   // tidy the cache-bust param left by an auto-update or manual refresh
   if(location.search.indexOf('v=')>-1){ try{ history.replaceState(null,'',location.pathname); }catch(e){} }
+  try{ if(location.search.indexOf('debug=1')>-1){ window._followDebug=true; } }catch(e){}
   checkForUpdate(); // fire-and-forget; reloads only if a newer version is live
   setTimeout(async function(){
     await loadRosterFromDB();
@@ -2153,7 +2154,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.441.0';
+var APP_VERSION = 'v5.443.0';
 var APP_BUILD = "Jul 8 — Repost client meals: from a client's recent activity view, repost a great meal to the Follow Yusuf feed ('Meals worth stealing'). Shows their first name, and every client can like + comment, with Yusuf able to reply under comments. Plus the v5.437 deep-dive upgrade: 7-day at-a-glance summary (eating quality + training frequency) and full history with Show more.";
 
 var cl=null, profile=null;
@@ -2166,6 +2167,21 @@ function rendVersion(){
   if(jv) jv.textContent = APP_VERSION + ' · tap to refresh';
   var tv = document.getElementById('todayVersionTag');
   if(tv) tv.textContent = 'YOURJIMBFF ' + APP_VERSION + ' · tap to refresh';
+}
+function _verTagTap(){
+  // Triple-tap within 1.2s toggles the Follow-feed diagnostic; a normal tap just refreshes.
+  window._verTaps=(window._verTaps||0)+1;
+  clearTimeout(window._verTapTimer);
+  if(window._verTaps>=3){
+    window._verTaps=0;
+    window._followDebug=!window._followDebug;
+    if(typeof showToast==='function') showToast(window._followDebug?'\ud83d\udd0d Follow debug ON':'Follow debug off');
+    return;
+  }
+  window._verTapTimer=setTimeout(function(){
+    if(window._verTaps===1){ jvForceUpdate(); }  // single tap = refresh
+    window._verTaps=0;
+  }, 1200);
 }
 function jvForceUpdate(){
   // bust the browser cache and pull the freshest deploy from the server
@@ -3277,7 +3293,8 @@ function _feedItemHtml(it){
   var _vSt=_pill+(_seenD?'color:#3fcf83;border-color:#3fcf83;':''); var _lSt=_pill+(_likeD?'color:#ff3b30;border-color:#3a3a3a;':'');
   var _canRepost = (it.kind==='food' && it.data && it.data.photo && it.data.id!=null);
   if(_canRepost){ try{ window._jvRepostCache=window._jvRepostCache||{}; window._jvRepostCache[it.data.id]=it.data; }catch(e){} }
-  var _repostPill = _canRepost ? ('<span onclick="event.stopPropagation();jvRepostMeal(\''+it.data.id+'\',\''+code+'\',this)" title="Repost to the client feed" style="'+_pill+'color:var(--gold);border-color:rgba(245,197,24,0.35);">\u2934 Repost</span>') : '';
+  var _icR='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" style="vertical-align:-2px;"><path d="M17 1l4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 11V9a4 4 0 0 1 4-4h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 23l-4-4 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 13v2a4 4 0 0 1-4 4H3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  var _repostPill = _canRepost ? ('<span onclick="event.stopPropagation();jvRepostMeal(\''+it.data.id+'\',\''+code+'\',this)" title="Repost to the client feed" style="'+_pill+'">'+_icR+' Repost</span>') : '';
   var actRow = _rk ? ('<div style="display:flex;gap:6px;margin-top:11px;flex-wrap:wrap;">'
     +'<span '+(_likeD?'':'onclick="event.stopPropagation();quickReact(\''+_rk+'\',\''+_rid+'\',\''+code+'\',\'like\',this)"')+' title="Like" style="'+_lSt+'">'+(_likeD?_icHf:_icH)+' Like</span>'
     +'<span onclick="event.stopPropagation();feedOpenDetail('+it._idx+')" title="Comment" style="'+_pill+'">'+_icC+' Comment</span>'
@@ -7742,6 +7759,29 @@ async function loadMyReviews(){
     var _rb=document.getElementById('reviewBanner'); if(_rb){ _rb.style.display='none'; _rb.innerHTML=''; }
     try{ if(typeof renderFoodRecents==='function') renderFoodRecents(); }catch(e){}
     try{ if(typeof rendTodayWo==='function') rendTodayWo(); }catch(e){}
+    try{ _checkRepostToast(); }catch(e){}
+  }catch(e){}
+}
+// When a client opens the app, toast them once if Yusuf reposted one of their meals since they last checked.
+async function _checkRepostToast(){
+  try{
+    if(!cl || cl.isTrainer) return;
+    var rows = await sbSelect('coach_reposts','client_code=eq.'+encodeURIComponent(cl.code)+'&order=id.desc&limit=10');
+    if(!rows || !rows.length) return;
+    var newestId = rows[0].id;
+    var seenKey = 'yjb_seen_repost_'+cl.code;
+    var lastSeen = 0; try{ lastSeen = parseInt(localStorage.getItem(seenKey)||'0',10)||0; }catch(e){}
+    if(newestId > lastSeen){
+      // count how many are new
+      var newCount = rows.filter(function(r){ return r.id>lastSeen; }).length;
+      try{ localStorage.setItem(seenKey, String(newestId)); }catch(e){}
+      // small delay so it lands after the app settles, not mid-load
+      setTimeout(function(){
+        if(typeof showToast==='function'){
+          showToast(newCount>1 ? ('\u2b50 Yusuf reposted '+newCount+' of your meals!') : '\u2b50 Yusuf reposted your meal!');
+        }
+      }, 1400);
+    }
   }catch(e){}
 }
 function _myReviewLine(kind,id){
@@ -10469,6 +10509,16 @@ async function quickLogMeal(r){
 }
 
 async function commitMeal(r,graced){
+  // Guard against double-insert from rapid/duplicate taps: ignore a second call for the
+  // same meal within a short window while the first is still in flight.
+  try{
+    var _sig=(r&&r.name?String(r.name):'meal')+'|'+(r&&r.calories!=null?r.calories:'')+'|'+(graced?'g':'');
+    var _now=Date.now();
+    if(window._lastMealCommit && window._lastMealCommit.sig===_sig && (_now-window._lastMealCommit.t)<4000){
+      return; // duplicate submit — swallow it
+    }
+    window._lastMealCommit={sig:_sig, t:_now};
+  }catch(e){}
   var meal = window._looseFoodMode ? 'Extras' : (function(){ var _m=document.querySelector('#mFood .rrow .rb.sel .rbl'); return _m?_m.textContent:'Meal'; })();
   var eatTime=document.getElementById('foodTime').value.trim()||new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
   // Save to the day actually being viewed (derived from viewDate, not the clobberable todayDateStr).
@@ -10761,6 +10811,25 @@ async function loadFollowDay(){
     var stepRows = await sbSelect('step_logs', inFilter+'&date_str=eq.'+encodeURIComponent(dStr)+'&limit=10') || [];
     var steps = 0; stepRows.forEach(function(s){ if((s.steps||0)>steps) steps=s.steps; });
 
+    // TEMP DIAGNOSTIC — remove after debugging. Shows what the feed queried vs. found.
+    var _dbgHtml='';
+    if(window._followDebug){
+      try{
+        var _allToday = await sbSelect('food_logs','date_str=eq.'+encodeURIComponent(dStr)+'&select=client_code,name&limit=50')||[];
+        var _codes={}; _allToday.forEach(function(f){ _codes[f.client_code]=(_codes[f.client_code]||0)+1; });
+        var _recent = await sbSelect('food_logs',inFilter+'&select=name,date_str,logged_at&order=logged_at.desc&limit=6')||[];
+        _dbgHtml='<div style="background:#1a1400;border:1px solid #5a4a00;border-radius:10px;padding:12px;margin-bottom:14px;font-size:11px;color:#e8c860;font-family:monospace;line-height:1.6;word-break:break-word;">'
+          +'<b>FOLLOW DEBUG</b><br>querying date_str = "'+dStr+'"<br>'
+          +'coach codes = '+JSON.stringify(codeList)+'<br>'
+          +'foods matched for today = '+foods.length+'<br>'
+          +'ALL food logged today (any acct) = '+_allToday.length+'<br>'
+          +'&nbsp;&nbsp;by client_code = '+JSON.stringify(_codes)+'<br>'
+          +'your recent trainer foods (any day):<br>'
+          +_recent.map(function(f){return '&nbsp;&nbsp;"'+(f.name||'?')+'" date_str="'+(f.date_str||'?')+'"';}).join('<br>')
+          +'</div>';
+      }catch(e){ _dbgHtml='<div style="color:#e88;font-size:11px;">debug error: '+e+'</div>'; }
+    }
+
     // Reposted client meals (only on the Today view — they're curated highlights, not day-bound).
     var reposts=[], repostReviews=[];
     if(isToday){
@@ -10771,7 +10840,7 @@ async function loadFollowDay(){
     }
 
     if(!foods.length && !workouts.length && !steps && !reposts.length){
-      body.innerHTML = '<div style="text-align:center;padding:40px 16px;color:var(--muted);font-size:13px;line-height:1.6;">'+(isToday?'Yusuf hasn\u2019t logged anything yet today.<br>Check back \u2014 this fills in as the day goes.':'Nothing logged this day.')+'</div>';
+      body.innerHTML = (window._followDebug && _dbgHtml ? _dbgHtml : '') + '<div style="text-align:center;padding:40px 16px;color:var(--muted);font-size:13px;line-height:1.6;">'+(isToday?'Yusuf hasn\u2019t logged anything yet today.<br>Check back \u2014 this fills in as the day goes.':'Nothing logged this day.')+'</div>';
       return;
     }
 
@@ -10806,6 +10875,7 @@ async function loadFollowDay(){
     dash += '</div>';
 
     var html = dash;
+    if(window._followDebug && _dbgHtml) html = _dbgHtml + html;
 
     // Reposted client meals — curated highlights at the top of today's feed.
     if(reposts && reposts.length){
