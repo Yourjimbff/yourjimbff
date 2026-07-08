@@ -2175,7 +2175,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.450.0';
+var APP_VERSION = 'v5.452.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -2339,25 +2339,13 @@ async function doLogin(){
   if(!c){
     try{
       var _rows = await sbSelect('clients','code=eq.'+encodeURIComponent(entered)+'&select=code,name,initials,phone,coach_code,is_trainer,active&order=code.asc&limit=1');
-      // DIAGNOSTIC: surface exactly what the DB returned for this code
-      try{
-        var _le=document.getElementById('lerr');
-        if(_le){
-          if(!_rows){ _le.textContent='DEBUG: query failed (null) for "'+entered+'"'; }
-          else if(!_rows.length){ _le.textContent='DEBUG: no row found in clients for "'+entered+'"'; }
-          else { var _rr=_rows[0]; _le.textContent='DEBUG: found code="'+_rr.code+'" name="'+(_rr.name||'')+'" active='+_rr.active+' is_trainer='+_rr.is_trainer; }
-          _le.classList.add('show');
-        }
-      }catch(_e){}
       if(_rows && _rows.length){
         var r=_rows[0];
         c = {name:(r.name||r.code), initials:r.initials||undefined, phone:r.phone||undefined, coach_code:r.coach_code||undefined, active:(r.active!==false)};
         if(r.is_trainer) c.isTrainer=true;
         CLIENTS[entered]=c;  // cache so the rest of the app sees them
       }
-    }catch(e){
-      try{ var _le2=document.getElementById('lerr'); if(_le2){ _le2.textContent='DEBUG: lookup threw: '+e; _le2.classList.add('show'); } }catch(_e){}
-    }
+    }catch(e){}
   }
   if(!c){ document.getElementById('lerr').classList.add('show'); return; }
   // Block hidden clients from logging in (trainer trimmed them)
@@ -3027,7 +3015,7 @@ async function loadJournal(){
     wos.forEach(function(w){ if(!w.date_str||!within(w.date_str))return; (days[w.date_str]=days[w.date_str]||{date:dk(w.date_str),foods:[],wos:[]}).wos.push(w); });
     entries.forEach(function(en){ if(!en.date_str||!within(en.date_str))return; (days[en.date_str]=days[en.date_str]||{date:dk(en.date_str),foods:[],wos:[]}); (days[en.date_str].entries=days[en.date_str].entries||[]).push(en); });
     var keys=Object.keys(days).sort(function(a,b){ return days[b].date - days[a].date; });
-    if(sub) sub.textContent='Your last 14 days';
+    if(sub) sub.textContent = (cl && isTrainer(cl.code)) ? 'Your last 14 days' : 'Your last 14 days · private, only Yusuf sees this';
     if(!keys.length){ holder.innerHTML='<div style="padding:34px 20px;text-align:center;color:var(--muted);font-size:13px;line-height:1.6;">Nothing logged in the last 14 days yet.<br>Log a meal or workout and it\'ll show up here.</div>'; return; }
     var html='';
     keys.forEach(function(k){
@@ -3122,18 +3110,24 @@ async function loadTrainerFeed(targetId){
     var _weightsP = (lens==='all') ? sbSelect('weight_logs','order=id.desc&limit=150').catch(function(){return [];}) : Promise.resolve([]);
     var _photosP  = (lens==='all'||lens==='caught') ? sbSelect('progress_photos','order=id.desc&limit=90').catch(function(){return [];}) : Promise.resolve([]);
     var _reviewsP = sbSelect('reviews','select=kind,ref_id,reaction,comment,created_at&order=id.asc&limit=3000').catch(function(){return [];});
+    // Which food_ids has the trainer already reposted — so the feed can show "Reposted" instead of "Repost".
+    var _repostedP = sbSelect('coach_reposts','select=food_id&order=id.desc&limit=1000').catch(function(){return [];});
     var _momentsP = (lens==='all') ? Promise.resolve(_loadMoments()).catch(function(){return [];}) : Promise.resolve([]);
     var _journalP = sbSelect('journal_entries','select=id,client_code,body,logged_at,date_str&order=logged_at.desc.nullslast&limit=200').catch(function(){return [];});
     var foods = (await _foodsP)||[];
     foods=foods.filter(function(f){return _feedTs(f)>=_feedCut;});
+    // Hide feed-hidden clients (e.g. Naya) from the activity feed entirely.
+    try{ if(typeof FEED_HIDE!=='undefined'){ foods=foods.filter(function(f){ return !FEED_HIDE[f.client_code]; }); } }catch(e){}
     // photo + raw_text backfills depend on which foods survived the cut — run them together, alongside everything else still in flight
     var _photoBackfill = (async function(){ try{ var _allIds=foods.filter(function(f){return f.id!=null;}).slice().sort(function(a,b){return _feedTs(b)-_feedTs(a);}).slice(0,150).map(function(f){return f.id;}); var _pm={}; var _pp=[]; for(var _bi=0;_bi<_allIds.length;_bi+=40){ var _chunk=_allIds.slice(_bi,_bi+40); if(_chunk.length) _pp.push(sbSelect('food_logs','id=in.('+_chunk.join(',')+')&select=id,photo&limit=40').catch(function(){return [];})); } var _pr=await Promise.all(_pp); _pr.forEach(function(_pf){ (_pf||[]).forEach(function(r){ if(r.photo) _pm[r.id]=r.photo; }); }); foods.forEach(function(f){ if(_pm[f.id]) f.photo=_pm[f.id]; }); }catch(e){} })();
     var _rawBackfill = (async function(){ try{ var _rids=foods.filter(function(f){return f.id!=null;}).slice().sort(function(a,b){return _feedTs(b)-_feedTs(a);}).slice(0,200).map(function(f){return f.id;}); var _rm={}; var _rp=[]; for(var _ri=0;_ri<_rids.length;_ri+=40){ var _rc=_rids.slice(_ri,_ri+40); if(_rc.length) _rp.push(sbSelect('food_logs','id=in.('+_rc.join(',')+')&select=id,raw_text&limit=40').catch(function(){return [];})); } var _rr2=await Promise.all(_rp); _rr2.forEach(function(_rr){ (_rr||[]).forEach(function(r){ if(r.raw_text) _rm[r.id]=r.raw_text; }); }); foods.forEach(function(f){ if(_rm[f.id]) f.raw_text=_rm[f.id]; }); }catch(e){} })();
     var _resAll = await Promise.all([_wosP,_weightsP,_photosP,_reviewsP,_momentsP,_photoBackfill,_rawBackfill]);
     var wos=(_resAll[0]||[]).filter(function(w){return _feedTs(w)>=_feedCut;});
+    try{ if(typeof FEED_HIDE!=='undefined'){ wos=wos.filter(function(w){ return !FEED_HIDE[w.client_code]; }); } }catch(e){}
     var weights=(_resAll[1]||[]).filter(function(w){return _feedTs(w)>=_feedCut;});
     var photos=(_resAll[2]||[]).filter(function(p){return _feedTs(p)>=_feedCut;});
     try{ window._reviewedMap={}; var _rvw=_resAll[3]||[]; _rvw.forEach(function(r){ if(r.ref_id==null) return; var _k=(r.kind||'')+':'+r.ref_id; if(!window._reviewedMap[_k]) window._reviewedMap[_k]={}; var _rx=r.reaction||'seen'; if(_rx==='like'){ window._reviewedMap[_k].like=true; window._reviewedMap[_k].like_ts=r.created_at; } else if(_rx==='comment'){ window._reviewedMap[_k].comment=true; window._reviewedMap[_k].comment_ts=r.created_at; if(r.comment) window._reviewedMap[_k].comment_text=r.comment; } else window._reviewedMap[_k].seen=true; }); }catch(e){}
+    try{ window._repostedFoodIds={}; var _rpd=await _repostedP; (_rpd||[]).forEach(function(r){ if(r.food_id!=null) window._repostedFoodIds[String(r.food_id)]=true; }); }catch(e){}
     var moments=(_resAll[4]||[]).filter(function(m){return (m&&m.ts)?(m.ts>=_feedCut):true;});
     var journals=((await _journalP)||[]).filter(function(j){return _feedTs(j)>=_feedCut;});
     try{ var _woT={}; wos.forEach(function(w){ var c=w.client_code; var t=_feedTs(w); if(c&&t){ (_woT[c]=_woT[c]||[]).push(t); } }); var _POST=3*3600000, _PRE=3*3600000; foods.forEach(function(f){ var c=f.client_code; var ft=_feedTs(f); if(!c||!ft||!_woT[c]) return; for(var _wi=0;_wi<_woT[c].length;_wi++){ var _d=ft-_woT[c][_wi]; if(_d>=0&&_d<=_POST){ f._fuel='post'; break; } if(_d<0&&(-_d)<=_PRE){ f._fuel='pre'; break; } } }); }catch(e){}
@@ -3342,7 +3336,12 @@ function _feedItemHtml(it){
   var _canRepost = (it.kind==='food' && it.data && it.data.photo && it.data.id!=null);
   if(_canRepost){ try{ window._jvRepostCache=window._jvRepostCache||{}; window._jvRepostCache[it.data.id]=it.data; }catch(e){} }
   var _icR='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" style="vertical-align:-2px;"><path d="M17 1l4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 11V9a4 4 0 0 1 4-4h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 23l-4-4 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 13v2a4 4 0 0 1-4 4H3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-  var _repostPill = _canRepost ? ('<span onclick="event.stopPropagation();jvRepostMeal(\''+it.data.id+'\',\''+code+'\',this)" title="Repost to the client feed" style="'+_pill+'">'+_icR+' Repost</span>') : '';
+  var _alreadyReposted = _canRepost && window._repostedFoodIds && window._repostedFoodIds[String(it.data.id)];
+  var _repostPill = _canRepost ? (
+    _alreadyReposted
+      ? '<span style="'+_pill+'color:#3fcf83;border-color:#3fcf83;opacity:0.85;">'+_icR+' Reposted</span>'
+      : '<span onclick="event.stopPropagation();jvRepostMeal(\''+it.data.id+'\',\''+code+'\',this)" title="Repost to the client feed" style="'+_pill+'">'+_icR+' Repost</span>'
+  ) : '';
   var actRow = _rk ? ('<div style="display:flex;gap:6px;margin-top:11px;flex-wrap:wrap;">'
     +'<span '+(_likeD?'':'onclick="event.stopPropagation();quickReact(\''+_rk+'\',\''+_rid+'\',\''+code+'\',\'like\',this)"')+' title="Like" style="'+_lSt+'">'+(_likeD?_icHf:_icH)+' Like</span>'
     +'<span onclick="event.stopPropagation();feedOpenDetail('+it._idx+')" title="Comment" style="'+_pill+'">'+_icC+' Comment</span>'
@@ -5038,18 +5037,8 @@ function programDisplayEnabled(){
 }
 function refreshProgramToggleUI(){
   var sec = document.getElementById('programToggleSection');
-  var tog = document.getElementById('programToggle');
-  var knob = document.getElementById('programToggleKnob');
-  if(!sec) return;
-  // Only show the toggle when there's actually a program to toggle.
-  if(clientAssignedProgram && clientAssignedProgram.program){
-    sec.style.display = 'block';
-    var on = programDisplayEnabled();
-    if(tog) tog.style.background = on ? 'var(--gold)' : 'var(--border)';
-    if(knob) knob.style.left = on ? '25px' : '3px';
-  } else {
-    sec.style.display = 'none';
-  }
+  if(sec) sec.style.display = 'none';   // program toggle removed from the profile page
+  return;
 }
 function toggleProgramDisplay(){
   var now = programDisplayEnabled();
@@ -5907,6 +5896,8 @@ var trainerRefreshTimer = null;
 // Reversible via localStorage 'yjb_hidden_clients' (an array of codes).
 // Clients Yusuf has parked as inactive — always hidden from the trainer board (baked in, survives incognito; they can still log in if they ever start).
 var INACTIVE_BASELINE={abraham1:1,alexc1:1,alexn1:1,alinayi1:1,angelm1:1,arnoldn1:1,anastasia1:1,ariel1:1,austinl1:1,brandong1:1,cameronl1:1,cesarm1:1,carmen1:1,brooksc1:1,claytonb1:1,connorm1:1,danam1:1,coleti1:1,evan1:1,evint1:1,fahad1:1,georginat1:1,hiral1:1,hunterc1:1,jaimet1:1,jasonm1:1,javia1:1,jesg1:1,jesuse1:1,joe1:1,joshuao1:1,jovanh1:1,justinr1:1,kadenh1:1,kassidee1:1,kelly1:1,kelsiew1:1,kent1:1,kunal1:1,lizzy1:1,lucianou1:1,luisa1:1,luisb1:1,luisbar1:1,magaly1:1,mattp1:1};
+// Clients hidden from FEEDS only (activity feed, Follow feed, repost eligibility) — account still works.
+var FEED_HIDE={naya1:1};
 function getHiddenClientSet(){
   var s={};
   for(var k in INACTIVE_BASELINE){ s[k]=true; }
@@ -7222,6 +7213,7 @@ async function jvRepostMeal(foodId, clientCode, btn){
       ok = await sbInsert('coach_reposts', rec2);
     }
     if(ok!==false){
+      try{ window._repostedFoodIds=window._repostedFoodIds||{}; window._repostedFoodIds[String(foodId)]=true; }catch(e){}
       if(btn){ btn.textContent='\u2713 Reposted to feed'; btn.style.background='rgba(63,207,131,0.14)'; btn.style.borderColor='#3fcf83'; btn.style.color='#3fcf83'; }
       if(typeof showToast==='function') showToast('Reposted '+firstName+'\u2019s meal \u2014 clients can see it in Follow Yusuf');
     } else {
@@ -7260,36 +7252,47 @@ function _repostCardHtml(rp, reviews){
   var rt = rp.rating && rmap[rp.rating] ? rmap[rp.rating] : null;
   var macro = (rp.calories!=null) ? (rp.calories+' cal'+(rp.protein!=null?' \u00b7 '+rp.protein+'P':'')+(rp.carbs!=null?' \u00b7 '+rp.carbs+'C':'')+(rp.fat!=null?' \u00b7 '+rp.fat+'F':'')) : '';
   var firstName = String(rp.client_first||'Someone').replace(/</g,'&lt;');
-  // avatar initial
   var _initial=(firstName.replace(/[^A-Za-z0-9]/g,'').charAt(0)||'?').toUpperCase();
   var _ah=0; for(var _ai=0;_ai<firstName.length;_ai++){ _ah=(_ah*31+firstName.charCodeAt(_ai))%360; }
+  // When the client originally logged this meal.
+  var _loggedLine='';
+  try{
+    if(rp.client_logged_at){
+      var _d=new Date(rp.client_logged_at);
+      if(!isNaN(_d.getTime())) _loggedLine='Logged '+_d.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' at '+_d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}).toLowerCase().replace(' ','');
+    }
+    if(!_loggedLine && rp.client_eat_time) _loggedLine='Logged at '+String(rp.client_eat_time);
+  }catch(e){}
   var comHtml = comments.map(function(c){
     var who = (c.client_code===(rp.coach_code||'yusuf1') || (CLIENTS[c.client_code]&&CLIENTS[c.client_code].isTrainer)) ? 'Yusuf' : (((CLIENTS[c.client_code]&&CLIENTS[c.client_code].name)||'Someone').split(' ')[0]);
     var isCoach = (who==='Yusuf');
     return '<div style="margin-top:5px;font-size:12.5px;color:#ddd;line-height:1.45;"><span style="font-weight:700;color:'+(isCoach?'var(--gold)':'#fff')+';">'+who+'</span> '+String(c.comment).replace(/</g,'&lt;')+'</div>';
   }).join('');
-  return '<div style="border-bottom:1px solid #1e1e1e;margin-bottom:2px;padding-bottom:14px;">'
-    // header: avatar + name
-    +'<div style="display:flex;align-items:center;gap:9px;padding:10px 2px;">'
-    +'<div style="width:30px;height:30px;border-radius:50%;background:hsl('+_ah+',38%,42%);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:#fff;font-family:\'Plus Jakarta Sans\',sans-serif;flex-shrink:0;">'+_initial+'</div>'
-    +'<div style="font-size:13.5px;font-weight:700;color:#fff;">'+firstName+'</div>'
+  return '<div style="background:#1c1c1e;border:1px solid #2a2a2c;border-radius:16px;overflow:hidden;margin-bottom:22px;box-shadow:0 2px 10px rgba(0,0,0,0.25);">'
+    // header: "Yusuf reposted [Name]" with avatar
+    +'<div style="display:flex;align-items:center;gap:9px;padding:12px 14px;">'
+    +'<div style="width:32px;height:32px;border-radius:50%;background:hsl('+_ah+',38%,42%);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:#fff;font-family:\'Plus Jakarta Sans\',sans-serif;flex-shrink:0;">'+_initial+'</div>'
+    +'<div style="min-width:0;">'
+    +'<div style="font-size:13.5px;color:#fff;line-height:1.2;"><span style="font-weight:700;">Yusuf</span> <span style="color:#9a9a9a;">reposted</span> <span style="font-weight:700;">'+firstName+'</span></div>'
+    +(_loggedLine?'<div style="font-size:10.5px;color:#777;margin-top:2px;">'+_loggedLine+'</div>':'')
+    +'</div>'
     +'</div>'
     // photo
-    +(rp.photo?'<div style="width:100%;overflow:hidden;background:#111;border-radius:10px;"><img src="'+rp.photo+'" onclick="openPhotoLightbox(this.src)" style="width:100%;height:auto;display:block;cursor:zoom-in;"></div>':'')
+    +(rp.photo?'<div style="width:100%;overflow:hidden;background:#111;"><img src="'+rp.photo+'" onclick="openPhotoLightbox(this.src)" style="width:100%;height:auto;display:block;cursor:zoom-in;"></div>':'')
     // like row
-    +'<div style="display:flex;align-items:center;gap:14px;padding:9px 2px 4px;">'
-    +'<span onclick="_repostLike(\''+rid+'\',this)" style="cursor:'+(mineLiked?'default':'pointer')+';display:inline-flex;align-items:center;gap:6px;font-size:14px;font-weight:700;color:'+(mineLiked?'#ff3b30':'#ddd')+';">'
+    +'<div style="display:flex;align-items:center;gap:14px;padding:11px 14px 5px;">'
+    +'<span onclick="_repostLike(\''+rid+'\',this)" style="cursor:'+(mineLiked?'default':'pointer')+';display:inline-flex;align-items:center;gap:6px;font-size:15px;font-weight:700;color:'+(mineLiked?'#ff3b30':'#ddd')+';">'
     +(mineLiked?'\u2665':'\u2661')+' <span id="rpl_'+rid+'">'+likeCount+'</span></span>'
     +'</div>'
-    // caption: name + food
-    +'<div style="padding:0 2px;font-size:13px;color:#eee;line-height:1.5;"><span style="font-weight:700;color:#fff;">'+firstName+'</span> '+(rp.emoji?rp.emoji+' ':'')+String(rp.name||'Meal').replace(/</g,'&lt;')+'</div>'
-    // stats
-    +(macro?'<div style="padding:3px 2px 0;font-size:11.5px;color:#8a8a8a;">'+macro+(rt?' \u00b7 <span style="color:'+rt[0]+';">'+rt[1]+'</span>':'')+'</div>':'')
+    // caption: name + food (slightly larger)
+    +'<div style="padding:2px 14px 0;font-size:14.5px;color:#fff;line-height:1.45;"><span style="font-weight:700;">'+firstName+'</span> '+(rp.emoji?rp.emoji+' ':'')+String(rp.name||'Meal').replace(/</g,'&lt;')+'</div>'
+    // stats (slightly more prominent)
+    +(macro?'<div style="padding:5px 14px 0;font-size:12.5px;font-weight:600;color:#a8a8a8;">'+macro+(rt?' \u00b7 <span style="color:'+rt[0]+';">'+rt[1]+'</span>':'')+'</div>':'')
     // comments
-    +(comHtml?'<div style="padding:6px 2px 0;">'+comHtml+'</div>':'')
+    +(comHtml?'<div style="padding:7px 14px 0;">'+comHtml+'</div>':'')
     // add comment
-    +'<div style="display:flex;gap:7px;margin-top:9px;padding:0 2px;align-items:center;">'
-    +'<input id="rpc_'+rid+'" placeholder="Add a comment\u2026" style="flex:1;min-width:0;background:transparent;border:none;border-bottom:1px solid #2a2a2a;padding:6px 2px;font-size:12.5px;color:#fff;font-family:inherit;outline:none;">'
+    +'<div style="display:flex;gap:7px;margin-top:10px;padding:0 14px 14px;align-items:center;">'
+    +'<input id="rpc_'+rid+'" placeholder="Add a comment\u2026" style="flex:1;min-width:0;background:#111;border:1px solid #2a2a2a;border-radius:9px;padding:8px 11px;font-size:12.5px;color:#fff;font-family:inherit;outline:none;">'
     +'<button onclick="_repostComment(\''+rid+'\',this)" style="background:transparent;border:none;font-size:12.5px;font-weight:800;color:var(--gold);cursor:pointer;font-family:inherit;flex-shrink:0;">Post</button>'
     +'</div>'
     +'</div>';
@@ -7321,6 +7324,7 @@ async function loadFeedTab(){
   body.innerHTML='<div style="text-align:center;padding:40px 0;color:var(--muted);font-size:13px;">Loading…</div>';
   try{
     var reposts = await _loadRepostsForFeed();
+    try{ if(typeof FEED_HIDE!=='undefined'){ reposts=(reposts||[]).filter(function(rp){ return !FEED_HIDE[rp.client_code]; }); } }catch(e){}
     if(!reposts || !reposts.length){
       body.innerHTML='<div style="text-align:center;padding:48px 20px;color:var(--muted);font-size:13px;line-height:1.6;">No featured meals yet.<br>When Yusuf reposts a great meal, it\u2019ll show up here.</div>';
       return;
@@ -13065,13 +13069,11 @@ function loadProfileTab(){
   });
   updCalDisplay();
 
-  // Show change-access-code card only for trainers
+  // Change-access-code card hidden for everyone (moved out of the profile page).
   var accessCard = document.getElementById('changeAccessCard');
   if(accessCard){
-    if(cl && isTrainer(cl.code)){
-      accessCard.style.display = 'block';
-      var currEl = document.getElementById('acCurrentCode');
-      if(currEl) currEl.textContent = cl.code;
+    accessCard.style.display = 'none';
+    if(false){
     } else {
       accessCard.style.display = 'none';
     }
