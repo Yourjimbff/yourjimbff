@@ -2152,8 +2152,8 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.438.0';
-var APP_BUILD = "Jul 8 — Repost client meals: from any client's deep-dive, repost a great meal to the Follow Yusuf feed ('Meals worth stealing'). Shows their first name, and every client can like + comment, with Yusuf able to reply under comments. Plus the v5.437 deep-dive upgrade: 7-day at-a-glance summary (eating quality + training frequency) and full history with Show more.";
+var APP_VERSION = 'v5.439.0';
+var APP_BUILD = "Jul 8 — Repost client meals: from a client's recent activity view, repost a great meal to the Follow Yusuf feed ('Meals worth stealing'). Shows their first name, and every client can like + comment, with Yusuf able to reply under comments. Plus the v5.437 deep-dive upgrade: 7-day at-a-glance summary (eating quality + training frequency) and full history with Show more.";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -3166,12 +3166,23 @@ async function feedDetailRecent(code){
   try{
     var foods=await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=40')||[];
     var wos=await sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=20')||[];
+    // Cache the meals so the repost button has full data (photo, macros) to snapshot.
+    try{ window._jvRepostCache=window._jvRepostCache||{}; foods.forEach(function(f){ if(f&&f.id!=null) window._jvRepostCache[f.id]=f; }); }catch(e){}
     var cutoff=Date.now()-3*86400000; var rows=[];
-    foods.forEach(function(f){ var ts=_feedTs(f); if(ts>=cutoff) rows.push({ts:ts,txt:(f.emoji||'🍽️')+' '+(f.name||'meal')+' · '+(f.calories||0)+' cal'}); });
-    wos.forEach(function(w){ var ts=_feedTs(w); if(ts>=cutoff) rows.push({ts:ts,txt:'🏋️ '+(w.title||'Workout')+(w.intensity?(' · '+w.intensity+'/10'):'')}); });
+    foods.forEach(function(f){ var ts=_feedTs(f); if(ts>=cutoff) rows.push({ts:ts, food:f, txt:(f.emoji||'🍽️')+' '+(f.name||'meal')+' · '+(f.calories||0)+' cal'}); });
+    wos.forEach(function(w){ var ts=_feedTs(w); if(ts>=cutoff) rows.push({ts:ts, txt:'🏋️ '+(w.title||'Workout')+(w.intensity?(' · '+w.intensity+'/10'):'')}); });
     rows.sort(function(a,b){return b.ts-a.ts;});
     if(!rows.length){ box.innerHTML='<div style="font-size:12px;color:#666;padding:6px 0;">Nothing in the last 3 days.</div>'; }
-    else { box.innerHTML=rows.map(function(r){ var wh=''; try{ wh=new Date(r.ts).toLocaleString('en-US',{weekday:'short',hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}); }catch(e){} return '<div style="font-size:12.5px;color:#ccc;padding:7px 0;border-bottom:1px solid #1c1c1c;">'+r.txt.replace(/</g,'&lt;')+' <span style="color:#666;font-size:10.5px;">· '+wh+'</span></div>'; }).join(''); }
+    else { box.innerHTML=rows.map(function(r){
+      var wh=''; try{ wh=new Date(r.ts).toLocaleString('en-US',{weekday:'short',hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}); }catch(e){}
+      var repostBtn = (r.food && r.food.photo && r.food.id!=null)
+        ? '<button onclick="jvRepostMeal(\''+r.food.id+'\',\''+code+'\',this)" title="Repost to the client feed" style="flex-shrink:0;margin-left:8px;background:#12100a;border:1px solid rgba(245,197,24,0.30);border-radius:7px;padding:5px 9px;font-size:10.5px;font-weight:800;color:var(--gold);cursor:pointer;font-family:inherit;line-height:1;">\u2934 Repost</button>'
+        : '';
+      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:7px 0;border-bottom:1px solid #1c1c1c;">'
+        +'<span style="font-size:12.5px;color:#ccc;min-width:0;flex:1;">'+r.txt.replace(/</g,'&lt;')+' <span style="color:#666;font-size:10.5px;">· '+wh+'</span></span>'
+        + repostBtn
+        +'</div>';
+    }).join(''); }
     box.setAttribute('data-loaded','1'); if(btn) btn.textContent='Hide recent activity';
   }catch(e){ box.innerHTML='<div style="font-size:12px;color:#666;">Could not load.</div>'; if(btn) btn.textContent='Show recent activity · last 3 days'; }
 }
@@ -7067,7 +7078,6 @@ async function _jvDeepHistory(code, showAll){
         +   '<input id="mci_'+f.id+'" placeholder="Comment\u2026" style="flex:1;min-width:0;background:#0e0e0e;border:1px solid #262626;border-radius:8px;padding:8px 10px;font-size:12.5px;color:#fff;font-family:inherit;outline:none;">'
         +   '<button onclick="jvMealComment(\'food\',\''+(f.id!=null?f.id:'')+'\',\''+code+'\',this)" style="background:var(--gold);border:none;border-radius:8px;padding:8px 13px;font-size:12px;font-weight:800;color:#000;cursor:pointer;font-family:inherit;flex-shrink:0;">Send</button>'
         + '</div>'
-        + (f.photo?('<button onclick="jvRepostMeal(\''+(f.id!=null?f.id:'')+'\',\''+code+'\',this)" title="Repost to the client feed" style="width:100%;margin-top:7px;background:#12100a;border:1px solid rgba(245,197,24,0.30);border-radius:9px;padding:9px;font-size:12px;font-weight:800;color:var(--gold);cursor:pointer;font-family:inherit;">\u2934 Repost to feed \u2014 let everyone learn from this</button>'):'')
         + '</div>';
     }
     var html='';
@@ -7112,7 +7122,9 @@ function jvCloseDeep(){
 // Stores a lightweight record in coach_reposts: which food_log, whose it is, and when reposted.
 async function jvRepostMeal(foodId, clientCode, btn){
   if(btn){ if(btn._busy) return; btn._busy=true; btn.style.opacity='0.6'; btn.textContent='Reposting\u2026'; }
-  var f = (window._jvEditCache && window._jvEditCache.food && window._jvEditCache.food[foodId]) || null;
+  var f = (window._jvRepostCache && window._jvRepostCache[foodId])
+       || (window._jvEditCache && window._jvEditCache.food && window._jvEditCache.food[foodId])
+       || null;
   var firstName = ((CLIENTS[clientCode] && CLIENTS[clientCode].name) || 'A client').split(' ')[0];
   var rec = {
     food_id: String(foodId),
