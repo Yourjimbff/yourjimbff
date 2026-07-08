@@ -2152,8 +2152,8 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.436.0';
-var APP_BUILD = "Jun 3 — Jarvis Cockpit: triage bands (Needs you / On the bubble / Cruising) as the default view, real things-logged count over a rolling 7 days, Cockpit/Feed toggle. Fixed the stale-date bug that made active clients show as quiet. Compare view rebuilt with smooth zoom + Supabase Storage photos.";
+var APP_VERSION = 'v5.437.0';
+var APP_BUILD = "Jul 8 — Client deep-dive upgrade: at-a-glance 7-day summary (eating quality + training frequency, scored against your standard) at the top of every profile, and full history now defaults to 7 days with a Show more button to load everything. Built for check-in calls — open a client and see the whole picture.";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -6635,6 +6635,7 @@ function jvOpenDeep(code){
     +   '<button onclick="jvAssignProgram(\''+code+'\')" style="flex:1;background:#12100a;border:1px solid rgba(245,197,24,0.32);border-radius:10px;padding:10px 6px;font-weight:800;font-size:12px;color:var(--gold);cursor:pointer;font-family:inherit;">Program</button>'
     + '</div>'
     + '<div id="jvDeepNotes" style="display:none;margin-bottom:18px;"></div>'
+    + '<div id="jvDeepSummary"></div>'
     + '<div id="jvDeepWeight"></div>'
     + '<div id="jvDeepProgram"></div>'
     + dossier
@@ -6642,10 +6643,75 @@ function jvOpenDeep(code){
     + '<div id="jvDeepPhotos"></div>';
   document.body.classList.add('jv-deep-open');
   window._jvDeepCode=code; window._jvDeepOpenAt=Date.now(); window._jvDeepMode=jvMode;
+  _jvDeepSummary(code);
   _jvDeepHistory(code);
   _jvLoadDeepProgram(code);
   _jvLoadDeepWeight(code);
   _jvLoadDeepPhotos(code);
+}
+// 7-day at-a-glance summary for the client deep-dive: eating quality + training frequency,
+// scored against Yusuf's standard. Green = on standard, amber = slipping, red = off.
+async function _jvDeepSummary(code){
+  var el=document.getElementById('jvDeepSummary'); if(!el) return;
+  el.innerHTML='<div style="background:#0e0e0e;border:1px solid #1d1d1d;border-radius:14px;padding:14px 16px;margin-bottom:16px;color:#777;font-size:12px;">Reading the last 7 days\u2026</div>';
+  function keyOf(ds,ts){ if(ds) return ds; if(ts){ try{return _jvDayKey(new Date(ts));}catch(e){} } return '?'; }
+  // The 7 day-keys we care about (today back 6 days)
+  var days={}; for(var i=0;i<7;i++){ var d=new Date(); d.setDate(d.getDate()-i); days[_jvDayKey(d)]=1; }
+  try{
+    var res=await Promise.all([
+      sbSelect('food_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=120&select=rating,date_str,logged_at'),
+      sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=40&select=date_str,logged_at')
+    ]);
+    var foods=res[0]||[], wos=res[1]||[];
+    // --- Eating quality: score each rated meal in-window. good/clean/nutrient_dense=1, okay=0.5, bad=0 ---
+    var scoreOf={nutrient_dense:1,good:1,clean:1,okay:0.5,bad:0};
+    var qSum=0,qN=0, mealDays={}, goodN=0,okN=0,badN=0;
+    foods.forEach(function(f){
+      var k=keyOf(f.date_str,f.logged_at); if(!(k in days)) return;
+      mealDays[k]=1;
+      if(f.rating && (f.rating in scoreOf)){ qSum+=scoreOf[f.rating]; qN++;
+        if(scoreOf[f.rating]===1) goodN++; else if(scoreOf[f.rating]===0.5) okN++; else badN++;
+      }
+    });
+    var loggedDays=Object.keys(mealDays).length;
+    // --- Training frequency: distinct days with a workout in the window ---
+    var woDays={}; wos.forEach(function(w){ var k=keyOf(w.date_str,w.logged_at); if(k in days) woDays[k]=1; });
+    var trainedDays=Object.keys(woDays).length;
+
+    // Eating verdict (only meaningful if they rated meals; else "no data")
+    var eatPct = qN? Math.round((qSum/qN)*100) : null;
+    var eatColor, eatLabel;
+    if(eatPct===null){ eatColor='#666'; eatLabel='no rated meals'; }
+    else if(eatPct>=80){ eatColor='#3fcf83'; eatLabel='eating clean'; }
+    else if(eatPct>=60){ eatColor='#e8b341'; eatLabel='mostly on'; }
+    else { eatColor='#e06b6b'; eatLabel='off-plan a lot'; }
+
+    // Training verdict against standard (daily training = your standard; 5-7 strong, 3-4 okay, <3 low)
+    var trColor, trLabel;
+    if(trainedDays>=5){ trColor='#3fcf83'; trLabel='training hard'; }
+    else if(trainedDays>=3){ trColor='#e8b341'; trLabel='could train more'; }
+    else { trColor='#e06b6b'; trLabel='barely training'; }
+
+    function tile(big,sub,color,foot){
+      return '<div style="flex:1;background:#101010;border:1px solid #232323;border-radius:13px;padding:13px 12px;text-align:center;min-width:0;">'
+        +'<div style="font-family:\'Plus Jakarta Sans\',sans-serif;font-size:24px;font-weight:800;line-height:1;color:'+color+';">'+big+'</div>'
+        +'<div style="font-size:9px;color:#888;letter-spacing:0.7px;text-transform:uppercase;margin-top:5px;font-weight:700;">'+sub+'</div>'
+        +'<div style="font-size:10.5px;color:'+color+';font-weight:700;margin-top:6px;">'+foot+'</div>'
+      +'</div>';
+    }
+    var eatBig = (eatPct===null)?'\u2014':(eatPct+'%');
+    var eatSub = (qN? (goodN+' good \u00b7 '+okN+' ok \u00b7 '+badN+' heavy') : 'eating quality');
+    var trBig = trainedDays+'/7';
+    var trSub = 'days trained';
+    el.innerHTML='<div style="margin-bottom:16px;">'
+      +'<div style="font-size:10px;font-weight:800;letter-spacing:1.4px;text-transform:uppercase;color:#777;margin-bottom:9px;">Last 7 days \u00b7 at a glance</div>'
+      +'<div style="display:flex;gap:9px;">'
+      + tile(eatBig, eatSub, eatColor, eatLabel)
+      + tile(trBig, trSub, trColor, trLabel)
+      +'</div>'
+      + (loggedDays<3 && trainedDays<3 ? '<div style="font-size:11px;color:#8a6a2a;margin-top:9px;background:rgba(245,197,24,0.06);border:1px solid rgba(245,197,24,0.18);border-radius:9px;padding:8px 11px;">Thin data this week \u2014 only '+loggedDays+' day'+(loggedDays===1?'':'s')+' of meals logged. Numbers may not reflect the full picture.</div>' : '')
+    +'</div>';
+  }catch(e){ el.innerHTML=''; }
 }
 // Client progress photos in the Jarvis client view — view them without logging in as the client.
 async function _jvLoadDeepPhotos(code){
@@ -6948,8 +7014,9 @@ async function jvSaveEdit(kind,id,code,btn){
   }catch(e){ try{ alert('Could not save — try again.'); }catch(_){}; try{ if(btn){ btn.disabled=false; btn.textContent='Save changes'; } }catch(_){} }
 }
 
-async function _jvDeepHistory(code){
+async function _jvDeepHistory(code, showAll){
   var el=document.getElementById('jvDeepDays'); if(!el) return;
+  var DAY_LIMIT = showAll ? 999 : 7;
   var rmap={nutrient_dense:['Nutrient Dense','#22c77a'],good:['Good','#22c77a'],clean:['Good','#22c77a'],okay:['Okay','#d9a93a'],bad:['Off-plan','#e5746b']};
   function keyOf(ds,ts){ if(ds) return ds; if(ts){ try{return _jvDayKey(new Date(ts));}catch(e){} } return '?'; }
   function tsOf(ds,ts){ if(ts){ var d=new Date(ts); if(!isNaN(d.getTime())) return d.getTime(); } if(ds){ var d2=new Date(ds); if(!isNaN(d2.getTime())) return d2.getTime(); } return 0; }
@@ -6970,7 +7037,10 @@ async function _jvDeepHistory(code){
     function g(k,ts){ if(!groups[k]) groups[k]={ts:ts,meals:[],wos:[]}; if(ts>groups[k].ts) groups[k].ts=ts; return groups[k]; }
     foods.forEach(function(f){ var k=keyOf(f.date_str,f.logged_at); g(k,tsOf(f.date_str,f.logged_at)).meals.push(f); });
     wos.forEach(function(w){ var k=keyOf(w.date_str,w.logged_at); g(k,tsOf(w.date_str,w.logged_at)).wos.push(w); });
-    var keys=Object.keys(groups).sort(function(a,b){return groups[b].ts-groups[a].ts;}).slice(0,3);
+    var allKeys=Object.keys(groups).sort(function(a,b){return groups[b].ts-groups[a].ts;});
+    var totalDays=allKeys.length;
+    var keys=allKeys.slice(0, DAY_LIMIT);
+    var hiddenCount=totalDays-keys.length;
     if(!keys.length){ el.innerHTML='<div style="color:#888;font-size:13px;padding:14px 0;line-height:1.5;">No logs in the last week \u2014 they haven\u2019t put anything in yet. That\u2019s the reason they\u2019re flagged.</div>'; return; }
     var todayMs=new Date(_jvDayKey(new Date())).getTime();
     function woCard(w){
@@ -7025,6 +7095,11 @@ async function _jvDeepHistory(code){
         + (stream||'<div style="color:#6a6a6a;font-size:12px;padding:6px 0;">Nothing logged this day.</div>')
         + '</div>';
     });
+    if(!showAll && hiddenCount>0){
+      html+='<button onclick="_jvDeepHistory(\''+code+'\',true)" style="width:100%;background:#12100a;border:1px solid rgba(245,197,24,0.30);border-radius:11px;padding:12px;font-weight:800;font-size:13px;color:var(--gold);cursor:pointer;font-family:inherit;margin:4px 0 8px;">Show more \u00b7 '+hiddenCount+' more day'+(hiddenCount===1?'':'s')+'</button>';
+    } else if(showAll && totalDays>7){
+      html+='<button onclick="_jvDeepHistory(\''+code+'\',false)" style="width:100%;background:#141414;border:1px solid #2a2a2a;border-radius:11px;padding:11px;font-weight:700;font-size:12.5px;color:#9a9a9a;cursor:pointer;font-family:inherit;margin:4px 0 8px;">Show less</button>';
+    }
     el.innerHTML=html;
   }catch(e){ el.innerHTML='<div style="color:#888;font-size:13px;padding:10px 0;">Couldn\u2019t load history \u2014 try Refresh.</div>'; }
 }
