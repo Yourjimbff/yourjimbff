@@ -2152,8 +2152,8 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.437.0';
-var APP_BUILD = "Jul 8 — Client deep-dive upgrade: at-a-glance 7-day summary (eating quality + training frequency, scored against your standard) at the top of every profile, and full history now defaults to 7 days with a Show more button to load everything. Built for check-in calls — open a client and see the whole picture.";
+var APP_VERSION = 'v5.438.0';
+var APP_BUILD = "Jul 8 — Repost client meals: from any client's deep-dive, repost a great meal to the Follow Yusuf feed ('Meals worth stealing'). Shows their first name, and every client can like + comment, with Yusuf able to reply under comments. Plus the v5.437 deep-dive upgrade: 7-day at-a-glance summary (eating quality + training frequency) and full history with Show more.";
 
 var cl=null, profile=null;
 var allFood=[], todayFood=[], todayWo=[];
@@ -7067,6 +7067,7 @@ async function _jvDeepHistory(code, showAll){
         +   '<input id="mci_'+f.id+'" placeholder="Comment\u2026" style="flex:1;min-width:0;background:#0e0e0e;border:1px solid #262626;border-radius:8px;padding:8px 10px;font-size:12.5px;color:#fff;font-family:inherit;outline:none;">'
         +   '<button onclick="jvMealComment(\'food\',\''+(f.id!=null?f.id:'')+'\',\''+code+'\',this)" style="background:var(--gold);border:none;border-radius:8px;padding:8px 13px;font-size:12px;font-weight:800;color:#000;cursor:pointer;font-family:inherit;flex-shrink:0;">Send</button>'
         + '</div>'
+        + (f.photo?('<button onclick="jvRepostMeal(\''+(f.id!=null?f.id:'')+'\',\''+code+'\',this)" title="Repost to the client feed" style="width:100%;margin-top:7px;background:#12100a;border:1px solid rgba(245,197,24,0.30);border-radius:9px;padding:9px;font-size:12px;font-weight:800;color:var(--gold);cursor:pointer;font-family:inherit;">\u2934 Repost to feed \u2014 let everyone learn from this</button>'):'')
         + '</div>';
     }
     var html='';
@@ -7106,6 +7107,103 @@ async function _jvDeepHistory(code, showAll){
 function jvCloseDeep(){
   document.body.classList.remove('jv-deep-open');
   window._jvDeepCode=null;
+}
+// --- Repost a client's meal to the shared Follow Yusuf feed so every client can learn from it. ---
+// Stores a lightweight record in coach_reposts: which food_log, whose it is, and when reposted.
+async function jvRepostMeal(foodId, clientCode, btn){
+  if(btn){ if(btn._busy) return; btn._busy=true; btn.style.opacity='0.6'; btn.textContent='Reposting\u2026'; }
+  var f = (window._jvEditCache && window._jvEditCache.food && window._jvEditCache.food[foodId]) || null;
+  var firstName = ((CLIENTS[clientCode] && CLIENTS[clientCode].name) || 'A client').split(' ')[0];
+  var rec = {
+    food_id: String(foodId),
+    client_code: clientCode,
+    client_first: firstName,
+    coach_code: (cl && cl.code) || 'yusuf1',
+    reposted_at: new Date().toISOString(),
+    // denormalized snapshot so the feed can render even if the source log changes
+    name: (f && f.name) || 'Meal',
+    emoji: (f && f.emoji) || '\ud83c\udf7d\ufe0f',
+    photo: (f && f.photo) || null,
+    calories: (f && f.calories!=null) ? Math.round(f.calories) : null,
+    protein: (f && f.protein!=null) ? Math.round(f.protein) : null,
+    carbs: (f && f.carbs!=null) ? Math.round(f.carbs) : null,
+    fat: (f && f.fat!=null) ? Math.round(f.fat) : null,
+    rating: (f && f.rating) || null
+  };
+  try{
+    var ok = await sbInsert('coach_reposts', rec);
+    if(ok!==false){
+      if(btn){ btn.textContent='\u2713 Reposted to feed'; btn.style.background='rgba(63,207,131,0.14)'; btn.style.borderColor='#3fcf83'; btn.style.color='#3fcf83'; }
+      if(typeof showToast==='function') showToast('Reposted '+firstName+'\u2019s meal \u2014 clients can see it in Follow Yusuf');
+    } else {
+      if(btn){ btn._busy=false; btn.style.opacity='1'; btn.textContent='\u2934 Repost to feed'; }
+      jvRepostTableMissing();
+    }
+  }catch(e){
+    if(btn){ btn._busy=false; btn.style.opacity='1'; btn.textContent='\u2934 Repost to feed'; }
+    jvRepostTableMissing();
+  }
+}
+function jvRepostTableMissing(){
+  var sql="CREATE TABLE IF NOT EXISTS coach_reposts (id BIGSERIAL PRIMARY KEY, food_id TEXT, client_code TEXT, client_first TEXT, coach_code TEXT, reposted_at TIMESTAMPTZ DEFAULT now(), name TEXT, emoji TEXT, photo TEXT, calories INT, protein INT, carbs INT, fat INT, rating TEXT);\nALTER TABLE coach_reposts ENABLE ROW LEVEL SECURITY;\nCREATE POLICY open_all ON coach_reposts FOR ALL USING (true) WITH CHECK (true);";
+  try{ navigator.clipboard.writeText(sql); if(typeof showToast==='function') showToast('One-time setup: SQL copied \u2014 Supabase \u2192 SQL Editor \u2192 paste \u2192 Run, then try again'); }
+  catch(e){ if(typeof showToast==='function') showToast('Set up the coach_reposts table in Supabase SQL editor first'); }
+}
+// Load reposted meals for the client-facing Follow Yusuf feed (newest first).
+async function _loadRepostsForFeed(){
+  try{
+    var rows = await sbSelect('coach_reposts','order=reposted_at.desc&limit=40');
+    return rows || [];
+  }catch(e){ return []; }
+}
+// Render a single reposted-meal card for the client feed, with likes + threaded comments.
+// reviews rows use kind='repost', ref_id=repost.id so all clients share the same like/comment stream.
+function _repostCardHtml(rp, reviews){
+  var rid = String(rp.id);
+  var likeCount=0, comments=[];
+  (reviews||[]).forEach(function(r){
+    if(r.kind!=='repost' || String(r.ref_id)!==rid) return;
+    if(r.reaction==='like') likeCount++;
+    else if(r.comment) comments.push(r);
+  });
+  var mineLiked = (reviews||[]).some(function(r){ return r.kind==='repost' && String(r.ref_id)===rid && r.reaction==='like' && r.client_code===(cl&&cl.code); });
+  var rmap={nutrient_dense:['#3fcf83','Nutrient-dense'],good:['#3fcf83','Good'],clean:['#3fcf83','Clean'],okay:['#e8b341','Okay'],bad:['#e06b6b','Heavy']};
+  var rt = rp.rating && rmap[rp.rating] ? rmap[rp.rating] : null;
+  var macro = (rp.calories!=null) ? (rp.calories+' cal'+(rp.protein!=null?' \u00b7 '+rp.protein+'P':'')+(rp.carbs!=null?' \u00b7 '+rp.carbs+'C':'')+(rp.fat!=null?' \u00b7 '+rp.fat+'F':'')) : '';
+  var cmtHtml = comments.map(function(c){
+    var who = (c.client_code===(rp.coach_code||'yusuf1') || (CLIENTS[c.client_code]&&CLIENTS[c.client_code].isTrainer)) ? 'Yusuf' : (((CLIENTS[c.client_code]&&CLIENTS[c.client_code].name)||'Someone').split(' ')[0]);
+    var isCoach = (who==='Yusuf');
+    return '<div style="margin-top:8px;'+(isCoach?'background:rgba(245,197,24,0.10);border-left:2px solid var(--gold);':'background:rgba(255,255,255,0.04);border-left:2px solid #333;')+'border-radius:6px;padding:7px 10px;font-size:12.5px;color:#eee;line-height:1.5;">'
+      +'<span style="color:'+(isCoach?'var(--gold)':'#9fd0ff')+';font-weight:800;">'+who+': </span>'+String(c.comment).replace(/</g,'&lt;')+'</div>';
+  }).join('');
+  return '<div style="background:#242424;border:1px solid #333;border-radius:16px;overflow:hidden;margin-bottom:14px;">'
+    +'<div style="padding:12px 16px 0;font-size:11px;letter-spacing:0.6px;color:var(--gold);font-weight:800;">\u2934 Yusuf reposted '+String(rp.client_first||'a client').replace(/</g,'&lt;')+'\u2019s meal</div>'
+    +(rp.photo?'<div style="width:100%;overflow:hidden;background:#111;margin-top:10px;"><img src="'+rp.photo+'" onclick="openPhotoLightbox(this.src)" style="width:100%;height:auto;display:block;cursor:zoom-in;"></div>':'')
+    +'<div style="padding:14px 16px;">'
+    +'<div style="font-weight:700;font-size:15px;color:#fff;">'+(rp.emoji?rp.emoji+' ':'')+String(rp.name||'Meal').replace(/</g,'&lt;')+'</div>'
+    +(macro?'<div style="font-size:11.5px;color:#999;margin-top:4px;">'+macro+(rt?' \u00b7 <span style="color:'+rt[0]+';">'+rt[1]+'</span>':'')+'</div>':'')
+    +'<div style="display:flex;gap:8px;margin-top:12px;align-items:center;">'
+    +'<button onclick="_repostLike(\''+rid+'\',this)" '+(mineLiked?'disabled':'')+' style="flex-shrink:0;background:transparent;border:1px solid '+(mineLiked?'#ff3b30':'#3a3a3a')+';border-radius:9px;padding:8px 13px;font-size:12.5px;font-weight:800;color:'+(mineLiked?'#ff3b30':'#bbb')+';cursor:'+(mineLiked?'default':'pointer')+';font-family:inherit;">\u2665 '+(likeCount||'')+' Like</button>'
+    +'<input id="rpc_'+rid+'" placeholder="Add a comment\u2026" style="flex:1;min-width:0;background:#0e0e0e;border:1px solid #2a2a2a;border-radius:9px;padding:8px 11px;font-size:12.5px;color:#fff;font-family:inherit;outline:none;">'
+    +'<button onclick="_repostComment(\''+rid+'\',this)" style="background:var(--gold);border:none;border-radius:9px;padding:8px 14px;font-size:12px;font-weight:800;color:#000;cursor:pointer;font-family:inherit;flex-shrink:0;">Send</button>'
+    +'</div>'
+    + cmtHtml
+    +'</div></div>';
+}
+async function _repostLike(rid, btn){
+  if(btn){ if(btn._busy) return; btn._busy=true; btn.style.color='#ff3b30'; btn.style.borderColor='#ff3b30'; btn.style.cursor='default'; btn.disabled=true; }
+  try{ await sbInsert('reviews',{client_code:(cl&&cl.code), kind:'repost', ref_id:rid, reaction:'like', comment:null, seen:false}); if(typeof showToast==='function') showToast('\u2665 Liked'); }
+  catch(e){ if(btn){ btn._busy=false; btn.disabled=false; btn.style.cursor='pointer'; } }
+}
+async function _repostComment(rid, btn){
+  var inp=document.getElementById('rpc_'+rid); if(!inp) return; var txt=(inp.value||'').trim(); if(!txt) return;
+  if(btn){ if(btn._busy) return; btn._busy=true; btn.style.opacity='0.6'; }
+  try{
+    await sbInsert('reviews',{client_code:(cl&&cl.code), kind:'repost', ref_id:rid, reaction:'comment', comment:txt, seen:false});
+    inp.value=''; if(typeof showToast==='function') showToast('Comment posted');
+    if(typeof loadFollowDay==='function') loadFollowDay();
+  }catch(e){ if(typeof showToast==='function') showToast('Could not post'); }
+  finally{ if(btn){ btn._busy=false; btn.style.opacity='1'; } }
 }
 async function jvAssignProgram(code){
   var name=(CLIENTS[code]&&CLIENTS[code].name)||code;
@@ -10645,7 +10743,16 @@ async function loadFollowDay(){
     var stepRows = await sbSelect('step_logs', inFilter+'&date_str=eq.'+encodeURIComponent(dStr)+'&limit=10') || [];
     var steps = 0; stepRows.forEach(function(s){ if((s.steps||0)>steps) steps=s.steps; });
 
-    if(!foods.length && !workouts.length && !steps){
+    // Reposted client meals (only on the Today view — they're curated highlights, not day-bound).
+    var reposts=[], repostReviews=[];
+    if(isToday){
+      try{ reposts = await _loadRepostsForFeed(); }catch(e){ reposts=[]; }
+      if(reposts.length){
+        try{ repostReviews = await sbSelect('reviews','kind=eq.repost&select=client_code,kind,ref_id,reaction,comment&order=id.asc&limit=1000') || []; }catch(e){ repostReviews=[]; }
+      }
+    }
+
+    if(!foods.length && !workouts.length && !steps && !reposts.length){
       body.innerHTML = '<div style="text-align:center;padding:40px 16px;color:var(--muted);font-size:13px;line-height:1.6;">'+(isToday?'Yusuf hasn\u2019t logged anything yet today.<br>Check back \u2014 this fills in as the day goes.':'Nothing logged this day.')+'</div>';
       return;
     }
@@ -10681,6 +10788,17 @@ async function loadFollowDay(){
     dash += '</div>';
 
     var html = dash;
+
+    // Reposted client meals — curated highlights at the top of today's feed.
+    if(reposts && reposts.length){
+      var rpCards = reposts.map(function(rp){ try{ return _repostCardHtml(rp, repostReviews); }catch(e){ return ''; } }).join('');
+      if(rpCards){
+        html += '<div style="margin-bottom:18px;">'
+          + '<div style="font-size:11px;letter-spacing:1.6px;text-transform:uppercase;color:var(--gold);font-weight:800;margin-bottom:11px;">\u2b50 Meals worth stealing</div>'
+          + rpCards
+          + '</div>';
+      }
+    }
 
     window._followFoods = foods.slice();
     var timeline = [];
