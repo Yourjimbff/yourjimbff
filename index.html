@@ -1659,7 +1659,7 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
       <div class="psi"><div class="psi-ic">📷</div><div class="psi-tx">Add a photo</div><div class="psi-sb">Gym, sauna, or a finish-line shot</div></div>
     </div>
     <button class="sbtn" style="margin-top:16px;" onclick="logWorkout()">Log Workout ✓</button>
-    <button class="obtn" onclick="closeM('mWorkout')">Cancel</button>
+    <button class="obtn" onclick="if(typeof _clearWoDraft==='function')_clearWoDraft();closeM('mWorkout')">Cancel</button>
   </div>
 </div>
 
@@ -1976,6 +1976,7 @@ async function checkForUpdate(){
     var txt = await res.text();
     var m = txt.match(/var APP_VERSION = '([^']+)'/);
     if(m && m[1] && m[1] !== APP_VERSION){
+      if(typeof _hasActiveWoDraft==='function' && _hasActiveWoDraft()){ return; } // don't yank the page out from under a workout in progress
       sessionStorage.setItem('yjb_just_updated','1');
       // reload(true) is ignored by modern browsers (serves cache). Navigate with a cache-bust
       // query param to GUARANTEE the fresh deploy is fetched from the network.
@@ -2175,7 +2176,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.454.0';
+var APP_VERSION = 'v5.456.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -2517,6 +2518,7 @@ async function launchApp(){
   refreshTileStates();
   renderEngineBoard();
   try{ setTimeout(maybeShowMilestone, 650); }catch(e){}
+  try{ setTimeout(function(){ if(typeof _restoreWoDraft==='function') _restoreWoDraft(); }, 1100); }catch(e){}
   try{ setTimeout(maybeShowThanksAli, 650); }catch(e){}
   showLoading(false); // hide only once tiles are populated \u2014 no more staggered pop-in
   // Trainer/program extras can finish in the background (not on the home screen)
@@ -5630,6 +5632,45 @@ function logProgramWorkoutModified(){
 }
 
 // Fully blank freestyle entry.
+// ===== WORKOUT DRAFT — survive an iOS cold-launch mid-workout so nothing is lost =====
+function _saveWoDraft(){
+  try{
+    if(!cl) return;
+    var desc=(document.getElementById('woDesc')||{}).value||'';
+    var dur=(document.getElementById('woDur')||{}).value||'';
+    var notes=(document.getElementById('woNotes')||{}).value||'';
+    var intensity=(document.getElementById('woIntSlider')||{}).value||'0';
+    if(!desc.trim() && !notes.trim() && !dur.trim() && (intensity==='0'||!intensity)){ return; }
+    localStorage.setItem('yjb_wo_draft', JSON.stringify({code:cl.code, desc:desc, dur:dur, notes:notes, intensity:intensity, at:Date.now()}));
+  }catch(e){}
+}
+function _clearWoDraft(){ try{ localStorage.removeItem('yjb_wo_draft'); }catch(e){} }
+function _hasActiveWoDraft(){
+  try{ var d=JSON.parse(localStorage.getItem('yjb_wo_draft')||'null'); return !!(d && d.at && (Date.now()-d.at)<3*3600*1000 && (d.desc||'').trim()); }catch(e){ return false; }
+}
+function _restoreWoDraft(){
+  try{
+    var d=JSON.parse(localStorage.getItem('yjb_wo_draft')||'null');
+    if(!d || !d.at) return;
+    if((Date.now()-d.at) >= 3*3600*1000){ _clearWoDraft(); return; }
+    if(cl && d.code && d.code!==cl.code) return;
+    if(!(d.desc||'').trim() && !(d.notes||'').trim()) return;
+    if(typeof openM==='function') openM('mWorkout');
+    var titleEl=document.querySelector('#mWorkout .mtitle'); if(titleEl) titleEl.textContent='Log Workout';
+    var subEl=document.querySelector('#mWorkout .msub'); if(subEl) subEl.textContent='Picking up where you left off';
+    var de=document.getElementById('woDesc'); if(de) de.value=d.desc||'';
+    var du=document.getElementById('woDur'); if(du) du.value=d.dur||'';
+    var no=document.getElementById('woNotes'); if(no) no.value=d.notes||'';
+    var sl=document.getElementById('woIntSlider'); if(sl){ sl.value=d.intensity||'0'; if(typeof updateWoIntensity==='function') updateWoIntensity(d.intensity||0); }
+    if(typeof showToast==='function') showToast('\u21a9\ufe0e Restored your workout in progress');
+  }catch(e){}
+}
+function _initWoDraftListeners(){
+  ['woDesc','woDur','woNotes'].forEach(function(id){ var el=document.getElementById(id); if(el&&!el._draftBound){ el.addEventListener('input', _saveWoDraft); el._draftBound=true; } });
+  var sl=document.getElementById('woIntSlider'); if(sl&&!sl._draftBound){ sl.addEventListener('input', _saveWoDraft); sl._draftBound=true; }
+}
+window.addEventListener('load', _initWoDraftListeners);
+
 function openFreestyleWorkout(){
   resetFreestyleForm();
   var titleEl = document.querySelector('#mWorkout .mtitle');
@@ -9979,7 +10020,7 @@ function hdlFoodPhoto(input){
   if(!input.files||!input.files[0])return;
   var reader=new FileReader();
   reader.onload=function(e){
-    downscaleImage(e.target.result, 720, 0.68).then(function(compact){
+    downscaleImage(e.target.result, 1440, 0.85).then(function(compact){
       photoData=compact;
       var slot=document.getElementById('foodPhotoSlot');
       slot.classList.add('hi');
@@ -9997,7 +10038,7 @@ function hdlWorkoutPhoto(input){
   if(!input.files||!input.files[0])return;
   var reader=new FileReader();
   reader.onload=function(e){
-    downscaleImage(e.target.result, 720, 0.68).then(function(compact){
+    downscaleImage(e.target.result, 1440, 0.85).then(function(compact){
       workoutPhotoData=compact;
       var slot=document.getElementById('woPhotoSlot');
       slot.classList.add('hi');
@@ -10464,7 +10505,7 @@ function openMealCard(data){
     : '';
   document.getElementById('mealCardInner').innerHTML =
     '<div style="background:#161616;border:1px solid #2a2a2a;border-radius:22px;overflow:hidden;box-shadow:0 14px 48px rgba(0,0,0,0.6);">'
-    + '<div style="padding:22px 22px 18px;">'+sub+'<div style="font-family:\'Plus Jakarta Sans\',sans-serif;font-size:30px;line-height:1.02;color:#fff;letter-spacing:0.5px;">'+(data.emoji?data.emoji+' ':'')+nm.replace(/</g,'&lt;')+'</div>'+when+'</div>'
+    + '<div style="padding:22px 22px 18px;">'+sub+'<div style="font-family:\'Plus Jakarta Sans\',sans-serif;font-size:22px;font-weight:800;line-height:1.12;color:#fff;letter-spacing:0.2px;">'+nm.replace(/</g,'&lt;')+'</div>'+when+'</div>'
     + (photo? '<div style="height:2px;background:linear-gradient(90deg,rgba(245,197,24,0) 0%,#F5C518 50%,rgba(245,197,24,0) 100%);"></div>'+photo+'<div style="height:2px;background:linear-gradient(90deg,rgba(245,197,24,0) 0%,#F5C518 50%,rgba(245,197,24,0) 100%);"></div>' : '')
     + '<div style="padding:6px 14px 16px;'+(photo?'':'border-top:1px solid #232323;')+'">'+macroRow+'</div>'
     + commentBlock
@@ -10495,7 +10536,7 @@ function _shareCardFood(d){
     : '<div style="flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#111;border-radius:16px;font-size:92px;">'+(d.emoji||'\ud83c\udf7d\ufe0f')+'</div>';
   function macro(v,l){ return '<div style="text-align:center;flex:1;"><div style="font-family:\'Plus Jakarta Sans\',sans-serif;font-weight:800;font-size:25px;color:#fff;line-height:1;">'+v+'</div><div style="font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:#8a8a8a;margin-top:5px;font-weight:700;">'+l+'</div></div>'; }
   var body = hero
-    + '<div style="font-family:\'Plus Jakarta Sans\',sans-serif;font-weight:800;font-size:22px;color:#fff;line-height:1.15;margin-top:15px;">'+(d.emoji?d.emoji+' ':'')+nm+'</div>'
+    + '<div style="font-family:\'Plus Jakarta Sans\',sans-serif;font-weight:800;font-size:20px;color:#fff;line-height:1.2;margin-top:15px;letter-spacing:0.2px;">'+nm+'</div>'
     + '<div style="display:flex;gap:6px;margin-top:14px;">'
       + macro(Math.round(d.calories||0).toLocaleString(),'Cal')
       + macro(Math.round(d.protein||0)+'g','Protein')
@@ -11542,7 +11583,7 @@ async function addPhotoToMeal(i, input){
   if(!e || !input.files || !input.files[0]) return;
   var reader = new FileReader();
   reader.onload = function(ev){
-    downscaleImage(ev.target.result, 720, 0.68).then(async function(compact){
+    downscaleImage(ev.target.result, 1440, 0.85).then(async function(compact){
       e.photo = compact;
       if(e.id){
         try{
@@ -12316,6 +12357,7 @@ async function logWorkout(){
 
   scores.workout=Math.min(2,scores.workout+fp*0.6);
   rendTodayWo();updHalo();pulseH();updStats();
+  if(typeof _clearWoDraft==='function') _clearWoDraft();
   closeM('mWorkout');
   var doneMsg = woIntensity >= 9 ? '⚡ PR session logged — refuel properly' : woIntensity >= 7 ? '🔥 Heavy session logged' : woIntensity >= 5 ? '💪 Solid workout logged' : '✓ Workout logged';
   showToast(doneMsg);
@@ -14708,7 +14750,7 @@ async function logFoodFromChat(offer, photo){
   // Downscale the chat photo (~900px) before persisting so it matches the tile flow and stays light
   var savedPhoto = null;
   if(photo){
-    try{ savedPhoto = await downscaleImage(photo, 720, 0.68); }catch(e){ savedPhoto = photo; }
+    try{ savedPhoto = await downscaleImage(photo, 1440, 0.85); }catch(e){ savedPhoto = photo; }
   }
   var foodRow = {client_code:cl.code, name:r.name, emoji:r.emoji, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, sugar:r.sugar, rating:r.rating, insight:r.insight, meal:meal, eat_time:eatTime, graced:false, date_str:_targetDate};
   if(_daysAgo>0) foodRow.logged_at = _isoForDateStr(_targetDate, eatTime);
@@ -14806,7 +14848,7 @@ function addPhotoToWorkout(i, input){
   var w = todayWo[i]; if(!w){ showToast('Workout not found'); return; }
   var reader=new FileReader();
   reader.onload=function(e){
-    downscaleImage(e.target.result, 720, 0.68).then(function(compact){
+    downscaleImage(e.target.result, 1440, 0.85).then(function(compact){
       w.photo = compact;            // update in memory immediately
       if(typeof rendTodayWo==='function') rendTodayWo();
       if(w.id!=null){ attachWorkoutPhoto(w.id, compact); }  // persist (handles DB + toast)
@@ -14819,7 +14861,7 @@ function addPhotoToWorkout(i, input){
 async function attachWorkoutPhoto(id, photo){
   if(id==null || !photo) return false;
   var compact = photo;
-  try{ compact = await downscaleImage(photo, 720, 0.68); }catch(e){ compact = photo; }
+  try{ compact = await downscaleImage(photo, 1440, 0.85); }catch(e){ compact = photo; }
   try{
     var res=await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+encodeURIComponent(id),{
       method:'PATCH', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal','Content-Type':'application/json'}), body:JSON.stringify({photo: compact})
