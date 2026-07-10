@@ -13,7 +13,7 @@
 body{background:#0d0d0d;color:var(--text);font-family:'Plus Jakarta Sans',sans-serif;max-width:430px;margin:0 auto;min-height:100vh;overflow-x:hidden;}
 
 
-.screen{display:none;min-height:100vh;flex-direction:column;}
+.screen{display:none;flex-direction:column;}
 .screen.active{display:flex;}
 
 .ls{background:var(--black);align-items:center;justify-content:center;padding:40px 28px;}
@@ -110,7 +110,7 @@ body{background:#0d0d0d;color:var(--text);font-family:'Plus Jakarta Sans',sans-s
 .bni-ic{font-size:22px;}
 .bni-lb{font-size:9px;color:var(--muted);font-weight:700;letter-spacing:0.5px;text-transform:uppercase;}
 .bni.active .bni-lb{color:var(--gold);}
-.tab{display:none;padding:18px 18px calc(120px + env(safe-area-inset-bottom, 0px));}
+.tab{display:none;padding:18px 18px calc(84px + env(safe-area-inset-bottom, 0px));}
 .tab.active{display:block;}
 .dayrow{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;}
 .daylbl{font-size:11px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;font-weight:600;}
@@ -1894,7 +1894,7 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
 <div class="bnav" id="bnav">
   <div class="bni active" id="bnToday" onclick="switchTab('Today')"><div class="bni-ic">📋</div><div class="bni-lb">Today</div></div>
   <div class="bni" id="bnAsk" onclick="switchTab('Ask')"><div class="bni-ic">💬</div><div class="bni-lb">Jim</div></div>
-  <div class="bni" id="bnFeed" onclick="switchTab('Feed')"><div class="bni-ic">⭐</div><div class="bni-lb" id="bnFeedLabel">Feed</div></div>
+  <div class="bni" id="bnFeed" onclick="switchTab('Feed')" style="display:none;"><div class="bni-ic">⭐</div><div class="bni-lb" id="bnFeedLabel">Feed</div></div>
   <div class="bni" id="bnFollow" onclick="switchTab('Follow')"><div class="bni-ic">🐐</div><div class="bni-lb">Yusuf</div></div>
   <div class="bni" id="bnTraining" onclick="switchTab('Training')"><div class="bni-ic">📝</div><div class="bni-lb">Journal</div></div>
   <div class="bni trainer-only" id="bnClients" onclick="switchTab('Clients')"><div class="bni-ic">👥</div><div class="bni-lb">Clients</div></div>
@@ -2204,7 +2204,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.483.0';
+var APP_VERSION = 'v5.485.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -3502,11 +3502,19 @@ async function publishEntry(){
       // Optional check-in weight, appended so Yusuf sees it inline
       try{ var _w=(document.getElementById('checkinWeight')||{}).value; if(_w&&String(_w).trim()){ body += (body?'\n':'')+'Weight: '+String(_w).trim()+' lbs'; } }catch(e){}
       var ds=(typeof todayDateStr!=='undefined' && todayDateStr) ? todayDateStr : new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
-      var row={ client_code: cl.code, body: body, date_str: ds, logged_at: new Date().toISOString() };
-      if(_ciPhoto) row.photo=_ciPhoto;
-      var saved=await sbInsertReturning('journal_entries', row);
-      if(!saved && _ciPhoto){ // photo column may not exist — retry without it
-        try{ saved=await sbInsertReturning('journal_entries', { client_code: cl.code, body: body, date_str: ds, logged_at: new Date().toISOString() }); }catch(e){}
+      var isoNow=new Date().toISOString();
+      var attempts=[];
+      if(_ciPhoto) attempts.push({ client_code: cl.code, body: body, date_str: ds, logged_at: isoNow, photo:_ciPhoto });
+      attempts.push({ client_code: cl.code, body: body, date_str: ds, logged_at: isoNow });
+      attempts.push({ client_code: cl.code, body: body, date_str: ds });
+      attempts.push({ client_code: cl.code, body: body });
+      var saved=null, lastErr='';
+      for(var _ai=0; _ai<attempts.length && !saved; _ai++){
+        try{
+          var _r=await fetch(SB_URL+'/rest/v1/journal_entries',{method:'POST',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=representation'}),body:JSON.stringify(attempts[_ai])});
+          if(_r.ok){ var _rows=await _r.json(); saved=(_rows&&_rows.length)?_rows[0]:{ok:true}; }
+          else { lastErr=(await _r.text()||('HTTP '+_r.status)); }
+        }catch(_e){ lastErr=String(_e&&_e.message||_e); }
       }
       if(saved){
         showToast('\u2713 Check-in sent');
@@ -3516,8 +3524,7 @@ async function publishEntry(){
         closeM('mEntry');
         try{ loadEntries(); }catch(e){}
         try{ if(isTrainer(cl.code)){ if(typeof loadTrainerFeed==='function') loadTrainerFeed(); } else { if(typeof loadJournal==='function') loadJournal(); } }catch(e){}
-        // No Jim reply — check-ins go straight to Yusuf, unsolicited replies are off.
-      } else { showToast('Could not send — try again'); }
+      } else { console.error('check-in insert failed:', lastErr); showToast('Could not send: '+(lastErr?String(lastErr).slice(0,60):'unknown error')); }
     }
   }catch(e){ console.error('publishEntry', e); showToast('Could not publish — try again'); }
   finally{ if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent=_ot||'Send check-in \u2713'; } }
@@ -13088,13 +13095,20 @@ async function saveProgressPhoto(){
   // Upload full-res to Supabase Storage and keep only the URL in the DB. Falls back to inline base64 if the bucket isn't set up yet.
   var photoUrl = await uploadProgressImage(_ppNewPhotoBlob, cl.code);
   var _photoVal = (photoUrl || _ppNewPhotoData);
-  var row = { client_code: cl.code, photo: _photoVal, date_str: dateStr, weight: (wInput!==''? wInput : null), angle: _ppNewAngle||'Front', logged_at: new Date().toISOString() };
-  var saved = await sbInsertReturning('progress_photos', row);
-  if(!saved){ // older tables may not have angle/logged_at — retry with just the essentials
-    try{ saved = await sbInsertReturning('progress_photos', { client_code: cl.code, photo: _photoVal, date_str: dateStr, weight: (wInput!==''? wInput : null) }); }catch(e){}
-  }
-  if(!saved){ // retry without weight too
-    try{ saved = await sbInsertReturning('progress_photos', { client_code: cl.code, photo: _photoVal, date_str: dateStr }); }catch(e){}
+  var _isoNow=new Date().toISOString();
+  var _attempts=[
+    { client_code: cl.code, photo: _photoVal, date_str: dateStr, weight: (wInput!==''? wInput : null), angle: _ppNewAngle||'Front', logged_at: _isoNow },
+    { client_code: cl.code, photo: _photoVal, date_str: dateStr, weight: (wInput!==''? wInput : null) },
+    { client_code: cl.code, photo: _photoVal, date_str: dateStr },
+    { client_code: cl.code, photo: _photoVal }
+  ];
+  var saved=null, _ppErr='';
+  for(var _pi=0; _pi<_attempts.length && !saved; _pi++){
+    try{
+      var _pr=await fetch(SB_URL+'/rest/v1/progress_photos',{method:'POST',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=representation'}),body:JSON.stringify(_attempts[_pi])});
+      if(_pr.ok){ var _prows=await _pr.json(); saved=(_prows&&_prows.length)?_prows[0]:{client_code:cl.code,photo:_photoVal,date_str:dateStr}; }
+      else { _ppErr=(await _pr.text()||('HTTP '+_pr.status)); }
+    }catch(_e){ _ppErr=String(_e&&_e.message||_e); }
   }
   if(saved){
     if(saved.angle==null) saved.angle = _ppNewAngle||'Front';
@@ -13105,7 +13119,8 @@ async function saveProgressPhoto(){
     showToast('\u2713 Progress photo saved');
   } else {
     if(btn){ btn.textContent='Save'; btn.disabled=false; }
-    showToast('\u26a0\ufe0f Could not save \u2014 the progress_photos table may need to be created');
+    console.error('progress photo save failed:', _ppErr);
+    showToast('Could not save: '+(_ppErr?String(_ppErr).slice(0,60):'unknown error'));
   }
 }
 
