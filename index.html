@@ -2203,7 +2203,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.502.0';
+var APP_VERSION = 'v5.503.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -11733,6 +11733,45 @@ function renderMealStatus(){
     + row('Dinner','Dinner','+ Log dinner',false)
     + row('Snack','Mini meal','+ Add',true);
 }
+// An "Unknown" rating is a question, not a verdict — let the client tell Jim what was in it.
+function dismissClarify(i){
+  var box=document.getElementById('clarifyBox'+i);
+  if(box) box.innerHTML='<div style="font-size:12px;color:var(--muted);line-height:1.45;">No problem — it stays unrated. Snap a photo or add the ingredients next time and Jim can grade it.</div>';
+}
+async function clarifyMeal(i){
+  var e=_orderedTodayFood()[i]; if(!e) return;
+  var inp=document.getElementById('clarifyInput'+i);
+  var ing=inp?String(inp.value||'').trim():'';
+  if(!ing){ showToast('Tell Jim what was in it'); return; }
+  var box=document.getElementById('clarifyBox'+i);
+  if(box) box.innerHTML='<div style="font-size:12px;color:var(--muted);text-align:center;padding:6px 0;">Re-grading…</div>';
+  var sys='You are a nutrition coach re-rating a logged meal now that the client has told you what was actually in it. '
+    +'Reply with ONLY compact JSON, no markdown: {"rating":"nutrient_dense"|"good"|"bad","insight":"1-2 sentence coaching response"}. '
+    +'RATING RULES: nutrient_dense = genuinely whole, minimally-processed foods (meat, fish, eggs, vegetables, fruit, potatoes, rice, oats, yogurt, legumes). Be generous — if the ingredients are real whole food, it is nutrient_dense. '
+    +'good = mostly clean with some processed or restaurant elements. bad = junk, deep-fried, highly processed, or alcohol. '
+    +'Never answer "unknown" — the client has told you the ingredients, so commit to a rating.';
+  var ctx='Meal: '+(e.name||'')+'\nMacros: '+Math.round(e.calories||0)+' cal, '+Math.round(e.protein||0)+'g protein, '+Math.round(e.carbs||0)+'g carbs, '+Math.round(e.fat||0)+'g fat\nWhat was actually in it: '+ing;
+  try{
+    var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:sys+'\n\n'+ctx}],temperature:0.2,max_tokens:400})});
+    var data=await res.json(); var txt=''; if(data&&data.content){ data.content.forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; }); }
+    txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
+    var m=txt.match(/\{[\s\S]*\}/); if(m) txt=m[0];
+    var p=JSON.parse(txt);
+    var newRating=(p.rating==='nutrient_dense'||p.rating==='good'||p.rating==='bad')?p.rating:'good';
+    var newInsight=String(p.insight||'').trim();
+    e.rating=newRating; if(newInsight) e.insight=newInsight;
+    // remember what they told us, appended to the name context
+    if(e.id!=null){
+      try{ await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(e.id),{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),body:JSON.stringify({rating:newRating,insight:(newInsight||e.insight||null),note:((e.note?e.note+' · ':'')+'Ingredients: '+ing)})}); }catch(err){}
+    }
+    if(!e.note) e.note='Ingredients: '+ing;
+    rendTodayFood(); updHalo();
+    showToast('\u2713 Re-graded');
+  }catch(err){
+    console.error('clarifyMeal', err);
+    if(box) box.innerHTML='<div style="font-size:12px;color:var(--muted);">Could not re-grade — try again.</div>';
+  }
+}
 function rendTodayFood(){
   try{ renderMealStatus(); }catch(e){}
   var c=document.getElementById('todayFoodList');
@@ -11766,7 +11805,7 @@ function rendTodayFood(){
     var hdr='';
     var slot=_slotLabel(e.meal);
     if(slot!==_lastSlot){ _lastSlot=slot; hdr='<div class="mealhdr">'+slot+'</div>'; }
-    return hdr+'<div class="fe">'+ph+'<div class="febdy"><div class="fetop"><div class="fenm" onclick="event.stopPropagation();shareMeal('+i+')" style="cursor:pointer;">'+_titleCase(e.name)+'</div><div class="febg '+bcls+'">'+btxt+'</div><div class="ferm" onclick="event.stopPropagation();toggleMealMenu('+i+')" style="margin-right:0;font-size:16px;font-weight:700;letter-spacing:1px;" title="More">⋯</div></div><div id="mealMenu'+i+'" style="display:none;gap:8px;margin:6px 0 2px;flex-wrap:wrap;"><button onclick="document.getElementById(\'mealPhotoInput'+i+'\').click()" style="flex:1;min-width:80px;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:8px;font-size:12px;font-weight:700;color:var(--text);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Change Pic</button><button onclick="editFoodEntry('+i+')" style="flex:1;min-width:80px;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:8px;font-size:12px;font-weight:700;color:var(--text);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Edit</button><button onclick="rmMeal('+i+')" style="flex:1;min-width:80px;background:rgba(255,68,85,0.08);border:1px solid rgba(255,68,85,0.25);border-radius:8px;padding:8px;font-size:12px;font-weight:700;color:#ff4455;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Delete</button><input type="file" id="mealPhotoInput'+i+'" accept="image/*" style="display:none;" onchange="addPhotoToMeal('+i+', this)"></div><div class="femta">'+e.calories+' cal · '+e.protein+'g P · '+Math.round(e.carbs||0)+'g C · '+Math.round(e.fat||0)+'g F · '+(e.eatTime||e.eat_time||'')+'</div>'+((e.insight&&String(e.insight).trim()&&String(e.insight).trim().toLowerCase()!=='null')?'<div class="fein">'+e.insight+'</div>':'')+((e.note&&String(e.note).trim())?'<div style="font-size:12px;color:var(--m2);margin-top:7px;line-height:1.45;font-style:italic;"><span style="font-style:normal;font-weight:700;color:var(--muted);">Note: </span>'+String(e.note).replace(/</g,'&lt;')+'</div>':'')+((e.coach_comment&&e.coach_comment.trim())?'<div style="display:flex;gap:7px;align-items:flex-start;background:rgba(245,197,24,0.09);border:1px solid rgba(245,197,24,0.3);border-radius:11px;padding:9px 11px;margin-top:8px;"><div style="width:22px;height:22px;border-radius:50%;background:var(--gold);display:flex;align-items:center;justify-content:center;font-family:\'Plus Jakarta Sans\',sans-serif;font-size:10px;font-weight:800;color:#000;flex-shrink:0;">Y</div><div style="flex:1;font-size:12.5px;color:var(--text);line-height:1.45;"><span style="font-size:8.5px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:var(--gold);display:block;margin-bottom:2px;">Yusuf</span>'+_ccInline(e.coach_comment)+'</div></div>':'')+_myReviewLine('food',e.id)+'</div></div>';
+    return hdr+'<div class="fe">'+ph+'<div class="febdy"><div class="fetop"><div class="fenm" onclick="event.stopPropagation();shareMeal('+i+')" style="cursor:pointer;">'+_titleCase(e.name)+'</div><div class="febg '+bcls+'">'+btxt+'</div><div class="ferm" onclick="event.stopPropagation();toggleMealMenu('+i+')" style="margin-right:0;font-size:16px;font-weight:700;letter-spacing:1px;" title="More">⋯</div></div><div id="mealMenu'+i+'" style="display:none;gap:8px;margin:6px 0 2px;flex-wrap:wrap;"><button onclick="document.getElementById(\'mealPhotoInput'+i+'\').click()" style="flex:1;min-width:80px;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:8px;font-size:12px;font-weight:700;color:var(--text);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Change Pic</button><button onclick="editFoodEntry('+i+')" style="flex:1;min-width:80px;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:8px;font-size:12px;font-weight:700;color:var(--text);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Edit</button><button onclick="rmMeal('+i+')" style="flex:1;min-width:80px;background:rgba(255,68,85,0.08);border:1px solid rgba(255,68,85,0.25);border-radius:8px;padding:8px;font-size:12px;font-weight:700;color:#ff4455;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Delete</button><input type="file" id="mealPhotoInput'+i+'" accept="image/*" style="display:none;" onchange="addPhotoToMeal('+i+', this)"></div><div class="femta">'+e.calories+' cal · '+e.protein+'g P · '+Math.round(e.carbs||0)+'g C · '+Math.round(e.fat||0)+'g F · '+(e.eatTime||e.eat_time||'')+'</div>'+((e.rating==='unknown')?('<div id="clarifyBox'+i+'" style="margin-top:8px;background:rgba(245,197,24,0.06);border:1px solid rgba(245,197,24,0.25);border-radius:11px;padding:10px 11px;"><div style="font-size:12px;color:var(--m2);line-height:1.45;margin-bottom:8px;">Jim couldn\'t tell how clean this was. <span style="color:var(--gold);font-weight:700;">What was in it?</span></div><input id="clarifyInput'+i+'" type="text" placeholder="e.g. eggs, steak, peppers, sweet potato" style="width:100%;box-sizing:border-box;background:#161616;border:1px solid var(--border);border-radius:9px;color:var(--text);font-size:12.5px;padding:9px 11px;font-family:inherit;"><div style="display:flex;gap:7px;margin-top:8px;"><button onclick="clarifyMeal('+i+')" style="flex:1;background:var(--gold);color:#000;border:none;border-radius:9px;padding:9px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;">Re-grade it</button><button onclick="dismissClarify('+i+')" style="background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:9px;padding:9px 13px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;">I don\'t know</button></div></div>'):'')+((e.insight&&String(e.insight).trim()&&String(e.insight).trim().toLowerCase()!=='null')?'<div class="fein">'+e.insight+'</div>':'')+((e.note&&String(e.note).trim())?'<div style="font-size:12px;color:var(--m2);margin-top:7px;line-height:1.45;font-style:italic;"><span style="font-style:normal;font-weight:700;color:var(--muted);">Note: </span>'+String(e.note).replace(/</g,'&lt;')+'</div>':'')+((e.coach_comment&&e.coach_comment.trim())?'<div style="display:flex;gap:7px;align-items:flex-start;background:rgba(245,197,24,0.09);border:1px solid rgba(245,197,24,0.3);border-radius:11px;padding:9px 11px;margin-top:8px;"><div style="width:22px;height:22px;border-radius:50%;background:var(--gold);display:flex;align-items:center;justify-content:center;font-family:\'Plus Jakarta Sans\',sans-serif;font-size:10px;font-weight:800;color:#000;flex-shrink:0;">Y</div><div style="flex:1;font-size:12.5px;color:var(--text);line-height:1.45;"><span style="font-size:8.5px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:var(--gold);display:block;margin-bottom:2px;">Yusuf</span>'+_ccInline(e.coach_comment)+'</div></div>':'')+_myReviewLine('food',e.id)+'</div></div>';
   }).join('');
   updateFoodCommentTag();
 }
