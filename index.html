@@ -842,15 +842,6 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
       </div>
     </div>
 
-    <!-- GROCERY LIST -->
-    <div class="tile" id="tileGroc">
-      <div class="thead" onclick="openGrocery()">
-        <div class="tic tig"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4 H5.5 L8 15.5 H18.5 L20.5 7 H6.2"/><circle cx="9.5" cy="19" r="1.4"/><circle cx="17.5" cy="19" r="1.4"/></svg></div>
-        <div class="tinfo"><div class="tname">Grocery List</div><div class="tsub">What you have · what you need</div></div>
-        <div class="tr"><div class="tchev">›</div></div>
-      </div>
-    </div>
-
     <!-- TODAY'S WORKOUT CARD (visible when client has assigned program) -->
     <div id="todayWorkoutCard" style="display:none;background:var(--surface);border:2px solid rgba(245,197,24,0.55);border-radius:var(--r);padding:14px 16px;margin-bottom:10px;cursor:pointer;position:relative;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.07);" onclick="onWorkoutTileClick()">
       <div style="display:flex;align-items:center;gap:12px;">
@@ -2251,7 +2242,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.522.0';
+var APP_VERSION = 'v5.523.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -7593,20 +7584,7 @@ async function loadFeedTab(){
   if(cl && typeof isTrainer==='function' && isTrainer(cl.code)){
     if(head) head.textContent='Planner';
     body.innerHTML='<div style="text-align:center;padding:40px 0;color:var(--muted);font-size:13px;">Loading…</div>';
-    if(!_tpPlan){ try{ await loadTrainingPlan(); }catch(e){} }
-    if(!_tpPlan) _tpPlan=_tpDefaultPlan();
-    try{ await loadSetLogs(); }catch(e){}
-    if(_tpOpenDay===null) _tpOpenDay=_tpTodayName();
-    body.innerHTML=''
-      +'<div style="font-size:12px;color:var(--muted);line-height:1.5;margin-bottom:16px;">Your vetted library. Your rules. Clients can\'t see this yet.</div>'
-      +'<div class="il" style="margin-top:0;">Program name</div>'
-      +'<input class="ifield" id="tpName" type="text" placeholder="e.g. Men\'s Push / Pull / Legs" value="'+String(_tpName||'').replace(/"/g,'&quot;')+'" style="margin:0;">'
-      +'<div class="il">Repeat for (weeks · max 12)</div>'
-      +'<input class="ifield" id="tpWeeks" type="number" min="1" max="12" value="'+(_tpWeeks||4)+'" onchange="tpSetWeeks(this.value)" style="margin:0 0 16px;">'
-      +'<div id="tpBody"></div>'
-      +'<button class="sbtn" onclick="saveTrainingPlan()" style="margin-top:6px;">Save program ✓</button>'
-      +'<button class="obtn" onclick="tpResetDefault()">Reset to default week</button>';
-    renderTrainingBuilder();
+    await renderPlanTab();
     return;
   }
   if(head) head.textContent='Feed';
@@ -11930,16 +11908,31 @@ async function loadGrocery(){
   try{
     if(!cl) return;
     _groc = await sbSelect('grocery_items','client_code=eq.'+encodeURIComponent(cl.code)+'&order=id.asc&limit=300') || [];
+    // purge any duplicates that slipped in earlier
+    var seen={}, dupes=[], clean=[];
+    _groc.forEach(function(g){
+      var k=String(g.name||'').trim().toLowerCase();
+      if(seen[k]){ dupes.push(g.id); } else { seen[k]=true; clean.push(g); }
+    });
+    _groc=clean;
+    if(dupes.length){
+      dupes.forEach(function(id){ try{ fetch(SB_URL+'/rest/v1/grocery_items?id=eq.'+id,{method:'DELETE',headers:sbHeaders()}); }catch(e){} });
+    }
+    _grocReindex();
   }catch(e){ _groc=[]; }
 }
+var _grocNames={};
+function _grocKey(s){ return String(s||'').trim().toLowerCase(); }
+function _grocReindex(){ _grocNames={}; (_groc||[]).forEach(function(g){ _grocNames[_grocKey(g.name)]=true; }); }
 async function grocAdd(name, cat){
   name=String(name||'').trim(); if(!name) return null;
+  var k=_grocKey(name);
+  if(_grocNames[k]) return null;          // already there, or already being added
+  _grocNames[k]=true;                      // reserve BEFORE awaiting — kills the race
   cat=cat||'Other';
-  var exists=_groc.some(function(g){ return (g.name||'').toLowerCase()===name.toLowerCase(); });
-  if(exists) return null;
-  var row={client_code:cl.code, name:_tcase(name), category:cat, have:false};
-  var saved=await sbInsertReturning('grocery_items', row);
+  var saved=await sbInsertReturning('grocery_items', {client_code:cl.code, name:_tcase(name), category:cat, have:false});
   if(saved){ _groc.push(saved); return saved; }
+  delete _grocNames[k];                     // insert failed, release the name
   return null;
 }
 async function grocToggle(id){
@@ -11949,6 +11942,8 @@ async function grocToggle(id){
   try{ await fetch(SB_URL+'/rest/v1/grocery_items?id=eq.'+id,{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),body:JSON.stringify({have:g.have})}); }catch(e){}
 }
 async function grocRemove(id){
+  var g=_groc.find(function(x){ return String(x.id)===String(id); });
+  if(g) delete _grocNames[_grocKey(g.name)];
   _groc=_groc.filter(function(x){ return String(x.id)!==String(id); });
   renderGrocery();
   try{ await fetch(SB_URL+'/rest/v1/grocery_items?id=eq.'+id,{method:'DELETE',headers:sbHeaders()}); }catch(e){}
@@ -12025,7 +12020,39 @@ function renderGrocery(){
   el.innerHTML=html;
 }
 
+
+var _planSeg='training';
+function planSetSeg(s){ _planSeg=s; renderPlanTab(); }
+async function renderPlanTab(){
+  var body=document.getElementById('feedTabBody'); if(!body) return;
+  function seg(id,label){
+    var on=_planSeg===id;
+    return '<span onclick="planSetSeg(\''+id+'\')" style="flex:1;text-align:center;font-size:12.5px;font-weight:800;cursor:pointer;padding:9px 0;border-radius:10px;background:'+(on?'var(--gold)':'transparent')+';color:'+(on?'#000':'#888')+';">'+label+'</span>';
+  }
+  var tabs='<div style="display:flex;gap:4px;background:#141414;border:1px solid #242424;border-radius:13px;padding:4px;margin-bottom:18px;">'+seg('training','Training')+seg('grocery','Grocery')+'</div>';
+
+  if(_planSeg==='grocery'){
+    body.innerHTML=tabs+'<div id="grocBody"><div style="text-align:center;padding:30px 0;color:var(--muted);font-size:13px;">Loading…</div></div>';
+    await loadGrocery();
+    renderGrocery();
+    return;
+  }
+  if(!_tpPlan){ try{ await loadTrainingPlan(); }catch(e){} }
+  if(!_tpPlan) _tpPlan=_tpDefaultPlan();
+  try{ await loadSetLogs(); }catch(e){}
+  if(_tpOpenDay===null) _tpOpenDay=_tpTodayName();
+  body.innerHTML=tabs
+    +'<div class="il" style="margin-top:0;">Program name</div>'
+    +'<input class="ifield" id="tpName" type="text" placeholder="e.g. Men\'s Push / Pull / Legs" value="'+String(_tpName||'').replace(/"/g,'&quot;')+'" style="margin:0;">'
+    +'<div class="il">Repeat for (weeks \u00b7 max 12)</div>'
+    +'<input class="ifield" id="tpWeeks" type="number" min="1" max="12" value="'+(_tpWeeks||4)+'" onchange="tpSetWeeks(this.value)" style="margin:0 0 16px;">'
+    +'<div id="tpBody"></div>'
+    +'<button class="sbtn" onclick="saveTrainingPlan()" style="margin-top:6px;">Save program \u2713</button>'
+    +'<button class="obtn" onclick="tpResetDefault()">Reset to default week</button>';
+  renderTrainingBuilder();
+}
 async function openGrocery(){
+
   if(!cl) return;
   openM('mGroc');
   var el=document.getElementById('grocBody');
