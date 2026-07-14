@@ -2234,7 +2234,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.562.0';
+var APP_VERSION = 'v5.563.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -11738,16 +11738,37 @@ var CARB_CAP=35;
 // ===== PROFILE & GOALS — drives every serving size =====
 var MP_PROFILE={gender:'male', age:29, ht:70, wt:180, goal:'lose', act:'moderate', cal:0, prot:0, carb:0, fat:0};
 var ACT_LEVELS=[
-  {k:'low',      l:'Low',     m:1.25, d:'Desk job, little movement'},
-  {k:'moderate', l:'Moderate',m:1.45, d:'Lifting 4-5x + walking'},
-  {k:'high',     l:'High',    m:1.65, d:'Lifting + on your feet all day'},
-  {k:'athlete',  l:'Very high',m:1.85,d:'Training hard, very active job'}
+  {k:'low',      l:'Low',      m:1.20, d:'Desk job, little movement'},
+  {k:'moderate', l:'Moderate', m:1.38, d:'Lifting 4-5x + walking'},
+  {k:'high',     l:'High',     m:1.55, d:'Lifting + on your feet all day'},
+  {k:'athlete',  l:'Very high',m:1.70, d:'Training hard, very active job'}
 ];
 function _mpLoadProfile(){ try{ var s=localStorage.getItem('yjb_profile'); if(s){ MP_PROFILE=Object.assign(MP_PROFILE, JSON.parse(s)); } }catch(e){} }
 function mpSetProfile(k,v){
   if(k==='gender'||k==='goal'||k==='act') MP_PROFILE[k]=v;
   else MP_PROFILE[k]=parseFloat(v)||0;
-  if(['gender','goal','act','age','ht','wt'].indexOf(k)>=0){ MP_PROFILE.cal=0; MP_PROFILE.prot=0; MP_PROFILE.carb=0; MP_PROFILE.fat=0; }  // recompute
+
+  if(['gender','goal','act','age','ht','wt'].indexOf(k)>=0){
+    MP_PROFILE.cal=0; MP_PROFILE.prot=0; MP_PROFILE.carb=0; MP_PROFILE.fat=0;   // back to auto
+  } else {
+    // Keep the four numbers honest: they must add up to the calories.
+    var T=_mpTargets();
+    var cal=MP_PROFILE.cal||T.cal, prot=MP_PROFILE.prot||T.prot, carb=MP_PROFILE.carb||T.carb, fat=MP_PROFILE.fat||T.fat;
+    if(k==='carb' || k==='prot'){                       // you moved carbs/protein -> fat absorbs
+      fat = Math.round((cal - prot*4 - carb*4)/9);
+      if(fat<30) fat=30;
+      MP_PROFILE.fat=fat;
+    } else if(k==='fat'){                               // you moved fat -> carbs absorb
+      carb = Math.round((cal - prot*4 - fat*9)/4);
+      if(carb<40) carb=40;
+      MP_PROFILE.carb=carb;
+    } else if(k==='cal'){                               // you moved calories -> carbs absorb
+      carb = Math.round((cal - prot*4 - fat*9)/4);
+      if(carb<40) carb=40;
+      MP_PROFILE.carb=carb;
+    }
+    MP_PROFILE.cal=cal; MP_PROFILE.prot=prot;
+  }
   try{ localStorage.setItem('yjb_profile', JSON.stringify(MP_PROFILE)); }catch(e){}
   renderMealPlan();
 }
@@ -11757,12 +11778,13 @@ function _mpAuto(){
   var bmr = 10*(P.wt*0.4536) + 6.25*(P.ht*2.54) - 5*P.age + (P.gender==='male'?5:-161);
   var tdee = bmr*mult;
   var cal = P.goal==='lose' ? tdee*0.8 : (P.goal==='gain' ? tdee*1.1 : tdee);
-  var prot = Math.round(P.wt * (P.goal==='gain'?1.0:0.9));
-  // Carbs stay capped — the sheet's caps (20+15+35+25 = 95g), scaled by goal. Fat fills the rest.
-  var carbK = P.goal==='lose' ? 0.75 : (P.goal==='gain' ? 1.5 : 1);
-  var carb = Math.round(95 * carbK);
-  var fat  = Math.round((cal - prot*4 - carb*4)/9);
-  if(fat < P.wt*0.3) fat = Math.round(P.wt*0.3);
+  var prot = Math.round(P.wt * (P.goal==='gain'?1.0:0.9));   // ~1g per lb
+  // Fat is a real target, not a leftover: 25-35% of calories depending on goal.
+  var fatPct = P.goal==='lose' ? 0.35 : (P.goal==='gain' ? 0.25 : 0.30);
+  var fat  = Math.round((cal*fatPct)/9);
+  // Carbs get what's left.
+  var carb = Math.round((cal - prot*4 - fat*9)/4);
+  if(carb<60){ carb=60; fat=Math.round((cal - prot*4 - carb*4)/9); }
   return { cal:Math.round(cal), prot:prot, carb:carb, fat:fat };
 }
 function _mpTargets(){
@@ -11818,11 +11840,17 @@ function _mpProfileCard(){
         +'<div style="display:flex;gap:7px;">'
           + macro('cal','Cal',T.cal,A.cal) + macro('prot','Protein',T.prot,A.prot) + macro('carb','Carbs',T.carb,A.carb) + macro('fat','Fat',T.fat,A.fat)
         +'</div>'
-        +'<div style="font-size:11px;color:#7a7a7a;margin-top:10px;line-height:1.55;">That\u2019s about <b style="color:#ccc;">'+T.protPerMeal+'g protein</b> and <b style="color:#ccc;">'+T.carbPerMeal+'g carbs</b> a meal.</div>'
+        +'<div style="font-size:11px;color:#7a7a7a;margin-top:10px;line-height:1.6;">'
+          +'Split: <b style="color:#ccc;">'+Math.round(T.prot*4/T.cal*100)+'% protein \u00b7 '+Math.round(T.carb*4/T.cal*100)+'% carbs \u00b7 '+Math.round(T.fat*9/T.cal*100)+'% fat</b>. '
+          +'About <b style="color:#ccc;">'+T.protPerMeal+'g protein</b> and <b style="color:#ccc;">'+T.carbPerMeal+'g carbs</b> a meal.'
+          +'<br><span style="color:#5e5e5e;">Lower the carbs and fat picks up the slack \u2014 they always add to your calories.</span>'
+        +'</div>'
+        +'<div style="text-align:center;margin-top:11px;"><span onclick="mpResetGoals()" style="cursor:pointer;font-size:11px;font-weight:700;color:#777;">Reset to calculated</span></div>'
       +'</div>'
     ) : '')
   +'</div>';
 }
+function mpResetGoals(){ MP_PROFILE.cal=0; MP_PROFILE.prot=0; MP_PROFILE.carb=0; MP_PROFILE.fat=0; try{ localStorage.setItem('yjb_profile', JSON.stringify(MP_PROFILE)); }catch(e){} renderMealPlan(); }
 var _mpProfOpen=false;
 function mpToggleProfile(){ _mpProfOpen=!_mpProfOpen; renderMealPlan(); }
 
