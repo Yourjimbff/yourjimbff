@@ -2234,7 +2234,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.546.0';
+var APP_VERSION = 'v5.547.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -11808,8 +11808,9 @@ var OILS=[
 var MEALS=['Breakfast','Lunch','Dinner','Snack'];
 // plan[meal] = {eggs:N, protein:{n,oz}, dairy:[names], veg:[names], carb:name, oil:name}
 var _mp={};
-MEALS.forEach(function(m){ _mp[m]={prot:[], veg:[], carb:null}; });
+MEALS.forEach(function(m){ _mp[m]={prot:[], veg:[], carb:null, carbK:1, extras:[]}; });
 var _mpOpen='Breakfast';
+var _mpSaved=[];
 
 function _mpProteinsFor(m){
   if(m==='Breakfast') return ['Whole Eggs','Ground Beef','Turkey Bacon','Ground Turkey','Steak','Chicken Breast','Greek Yogurt','Cottage Cheese','Organic Cheese'];
@@ -11843,7 +11844,8 @@ function _mpTotals(m){
     if(P){ var k=it.q/4; t.cal+=P.cal*k; t.p+=P.p*k; t.f+=P.f*k; }
   });
   (s.veg||[]).forEach(function(n){ var V=VEGGIES.find(function(x){ return x.n===n; }); if(V){ t.cal+=V.cal; t.c+=V.c; } });
-  if(s.carb){ var C=CARBS.find(function(x){ return x.n===s.carb; }); if(C){ t.cal+=C.cal; t.p+=C.p; t.f+=C.f; t.c+=CARB_CAP; } }
+  if(s.carb){ var C=CARBS.find(function(x){ return x.n===s.carb; }); var k=s.carbK||1; if(C){ t.cal+=C.cal*k; t.p+=C.p*k; t.f+=C.f*k; t.c+=CARB_CAP*k; } }
+  (s.extras||[]).forEach(function(n){ var E=_E(n); if(E){ t.cal+=E.cal; t.p+=E.p; t.f+=E.f; t.c+=E.c; } });
   t.cal=Math.round(t.cal); t.p=Math.round(t.p); t.c=Math.round(t.c); t.f=Math.round(t.f);
   return t;
 }
@@ -11916,48 +11918,93 @@ function mpEditGoal(m,k,v){
   try{ localStorage.setItem('yjb_meal_goals', JSON.stringify(MEAL_GOALS)); }catch(e){}
   renderMealPlan();
 }
-function _mpSlot(m,sec,label,value,placeholder){
+var EXTRAS=[
+  {n:'Organic Cheese', cal:110, p:7, f:9, c:1, unit:'1 oz'},
+  {n:'Feta Cheese',    cal:75,  p:4, f:6, c:1, unit:'1 oz'},
+  {n:'Avocado',        cal:120, p:1, f:11, c:3, unit:'\u00bd'},
+  {n:'Olive Oil',      cal:120, p:0, f:14, c:0, unit:'1 tbsp'},
+  {n:'Butter',         cal:100, p:0, f:11, c:0, unit:'1 tbsp'},
+  {n:'Greek Yogurt',   cal:190, p:17, f:9, c:9, unit:'1 cup'},
+  {n:'Walnuts',        cal:185, p:4, f:18, c:4, unit:'1 oz'}
+];
+function _E(n){ return EXTRAS.find(function(x){ return x.n===n; }); }
+var CARB_PORTIONS=[{k:0.5,l:'\u00bd'},{k:0.75,l:'\u00be'},{k:1,l:'Full'}];
+function mpCarbPortion(m,k){ _mp[m].carbK=k; renderMealPlan(); saveMealPlanNew(); }
+function mpExtra(m,n){
+  var s=_mp[m]; s.extras=s.extras||[];
+  var i=s.extras.indexOf(n);
+  if(i>=0) s.extras.splice(i,1); else s.extras.push(n);
+  renderMealPlan(); saveMealPlanNew();
+}
+function _mpSlot(m,sec,label,lines,placeholder){
   var open=(_mpSec[m]===sec);
-  var has=!!value;
-  return '<div onclick="mpSec(\''+m+'\',\''+sec+'\')" style="flex:1;min-width:0;cursor:pointer;background:'+(open?'rgba(245,197,24,0.09)':'#151515')+';border:1px solid '+(open?'var(--gold)':'#282828')+';border-radius:11px;padding:11px 10px;text-align:center;">'
-    +'<div style="font-size:9.5px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:'+(open?'var(--gold)':'#6e6e6e')+';">'+label+'</div>'
-    +'<div style="font-size:12.5px;font-weight:'+(has?'800':'500')+';color:'+(has?'#fff':'#4e4e4e')+';margin-top:5px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+(has?value:placeholder)+'</div>'
+  var has=lines && lines.length;
+  return '<div onclick="mpSec(\''+m+'\',\''+sec+'\')" style="flex:1;min-width:0;cursor:pointer;background:'+(open?'#1b1810':'#151515')+';border:1px solid '+(open?'var(--gold)':'#2a2a2a')+';border-radius:12px;padding:12px 10px;text-align:center;">'
+    +'<div style="font-size:8.5px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:'+(open?'var(--gold)':'#606060')+';margin-bottom:6px;">'+label+'</div>'
+    +(has
+      ? lines.map(function(t){ return '<div style="font-size:13px;font-weight:800;color:#fff;line-height:1.35;">'+_escHtml(t)+'</div>'; }).join('')
+      : '<div style="font-size:12.5px;font-weight:500;color:#4a4a4a;">'+placeholder+'</div>')
   +'</div>';
+}
+function mpSaveMeal(m){
+  var s=_mp[m], T=_mpTotals(m);
+  var bits=_mpBits(m);
+  if(!bits.length){ showToast('Build the meal first'); return; }
+  var nm=prompt('Name this meal (optional)', m+' \u2014 '+bits[0]);
+  if(nm===null) return;
+  _mpSaved.push({name:(String(nm).trim()||bits.join(' + ')), slot:m, s:JSON.parse(JSON.stringify(s)), cal:T.cal, p:T.p});
+  saveMealPlanNew();
+  renderMealPlan();
+  showToast('\u2713 Saved to your meals');
+}
+function mpLoadSaved(i){
+  var sv=_mpSaved[i]; if(!sv) return;
+  _mp[sv.slot]=JSON.parse(JSON.stringify(sv.s));
+  _mpOpen=sv.slot;
+  renderMealPlan(); saveMealPlanNew();
+  showToast('Loaded '+sv.name);
+}
+function mpDelSaved(i){ _mpSaved.splice(i,1); saveMealPlanNew(); renderMealPlan(); }
+function _mpBits(m){
+  var s=_mp[m];
+  var b=(s.prot||[]).map(_mpProtLabel).concat(s.veg||[]);
+  if(s.carb) b.push(s.carb);
+  (s.extras||[]).forEach(function(n){ b.push(n); });
+  return b;
 }
 function _mpMealCard(m){
   var s=_mp[m], open=(_mpOpen===m), T=_mpTotals(m), sc=_mpScore(m);
-  s.prot=s.prot||[]; s.veg=s.veg||[];
-
-  var pNames=s.prot.map(_mpProtLabel);
-  var vName=s.veg.length?(s.veg.length===1?s.veg[0]:s.veg.length+' veg'):'';
+  s.prot=s.prot||[]; s.veg=s.veg||[]; s.extras=s.extras||[];
   var C=s.carb?CARBS.find(function(x){return x.n===s.carb;}):null;
-  var bits=[].concat(pNames, s.veg); if(s.carb) bits.push(s.carb);
+  var k=s.carbK||1;
+  var bits=_mpBits(m);
   var recipe=bits.join('  +  ');
+
+  var pLines=s.prot.map(_mpProtLabel);
+  var vLines=s.veg.slice(0,2); if(s.veg.length>2) vLines.push('+'+(s.veg.length-2)+' more');
+  var cLines=C?[s.carb, (k<1?CARB_PORTIONS.find(function(x){return x.k===k;}).l+' serving':C.srv)]:[];
 
   var body='';
   if(open){
-    // editable goals
     var g=MEAL_GOALS[m];
-    body+='<div style="margin-top:12px;display:flex;align-items:center;gap:7px;flex-wrap:wrap;font-size:11.5px;color:#7a7a7a;">'
+    body+='<div style="margin-top:13px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px;color:#6e6e6e;">'
       +'<span>Goal</span>'
-      +'<input value="'+g.p+'" onchange="mpEditGoal(\''+m+'\',\'p\',this.value)" style="width:52px;background:#151515;border:1px solid #2a2a2a;border-radius:7px;color:var(--gold);font-size:11.5px;font-weight:800;padding:5px 4px;text-align:center;">'
+      +'<input value="'+g.p+'" onchange="mpEditGoal(\''+m+'\',\'p\',this.value)" style="width:50px;background:#151515;border:1px solid #282828;border-radius:6px;color:#bbb;font-size:11px;font-weight:800;padding:4px;text-align:center;">'
       +'<span>g protein \u00b7 \u2264</span>'
-      +'<input value="'+g.f+'" onchange="mpEditGoal(\''+m+'\',\'f\',this.value)" style="width:38px;background:#151515;border:1px solid #2a2a2a;border-radius:7px;color:var(--gold);font-size:11.5px;font-weight:800;padding:5px 4px;text-align:center;">'
+      +'<input value="'+g.f+'" onchange="mpEditGoal(\''+m+'\',\'f\',this.value)" style="width:36px;background:#151515;border:1px solid #282828;border-radius:6px;color:#bbb;font-size:11px;font-weight:800;padding:4px;text-align:center;">'
       +'<span>g fat \u00b7 \u2264</span>'
-      +'<input value="'+g.c+'" onchange="mpEditGoal(\''+m+'\',\'c\',this.value)" style="width:38px;background:#151515;border:1px solid #2a2a2a;border-radius:7px;color:var(--gold);font-size:11.5px;font-weight:800;padding:5px 4px;text-align:center;">'
+      +'<input value="'+g.c+'" onchange="mpEditGoal(\''+m+'\',\'c\',this.value)" style="width:36px;background:#151515;border:1px solid #282828;border-radius:6px;color:#bbb;font-size:11px;font-weight:800;padding:4px;text-align:center;">'
       +'<span>g carbs</span>'
     +'</div>';
 
-    // the sentence: Protein + Veg + Carb
-    body+='<div style="display:flex;align-items:stretch;gap:7px;margin-top:13px;">'
-      +_mpSlot(m,'protein','Protein',pNames.join(', '),'Choose')
-      +'<div style="display:flex;align-items:center;color:#4a4a4a;font-size:14px;font-weight:800;">+</div>'
-      +_mpSlot(m,'veg','Veg',vName,'Optional')
-      +'<div style="display:flex;align-items:center;color:#4a4a4a;font-size:14px;font-weight:800;">+</div>'
-      +_mpSlot(m,'carb','Carb',s.carb||'','Optional')
+    body+='<div style="display:flex;align-items:stretch;gap:6px;margin-top:14px;">'
+      +_mpSlot(m,'protein','Protein',pLines,'Choose')
+      +'<div style="display:flex;align-items:center;color:#3e3e3e;font-size:13px;font-weight:800;">+</div>'
+      +_mpSlot(m,'veg','Veg',vLines,'Optional')
+      +'<div style="display:flex;align-items:center;color:#3e3e3e;font-size:13px;font-weight:800;">+</div>'
+      +_mpSlot(m,'carb','Carb',cLines,'Optional')
     +'</div>';
 
-    // dropdown, anchored right below the row
     var sec=_mpSec[m];
     if(sec){
       var dd='';
@@ -11967,10 +12014,10 @@ function _mpMealCard(m){
           var ctl = isD ? '<span style="font-size:11.5px;color:#888;">'+_D(it.n).unit+'</span>'
             : '<span style="display:inline-flex;align-items:center;gap:8px;">'
                 +'<button onclick="event.stopPropagation();mpProtQty(\''+m+'\',\''+_escAttr(it.n)+'\',-1)" style="width:28px;height:28px;border-radius:7px;background:#1c1c1c;border:1px solid #2e2e2e;color:#ccc;font-size:14px;font-weight:800;cursor:pointer;line-height:1;">\u2212</button>'
-                +'<span style="font-size:13px;font-weight:800;color:var(--gold);min-width:52px;text-align:center;display:inline-block;">'+(isEgg?it.q+' eggs':it.q+' oz')+'</span>'
+                +'<span style="font-size:13px;font-weight:800;color:#fff;min-width:52px;text-align:center;display:inline-block;">'+(isEgg?it.q+' eggs':it.q+' oz')+'</span>'
                 +'<button onclick="event.stopPropagation();mpProtQty(\''+m+'\',\''+_escAttr(it.n)+'\',1)" style="width:28px;height:28px;border-radius:7px;background:#1c1c1c;border:1px solid #2e2e2e;color:#ccc;font-size:14px;font-weight:800;cursor:pointer;line-height:1;">+</button>'
               +'</span>';
-          return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:rgba(245,197,24,0.07);border:1px solid rgba(245,197,24,0.32);border-radius:10px;padding:10px 11px;margin-bottom:7px;">'
+          return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:#1a1a1a;border:1px solid #333;border-radius:10px;padding:10px 11px;margin-bottom:7px;">'
             +'<span style="font-size:13px;font-weight:800;color:#fff;">'+_escHtml(it.n)+'</span>'
             +'<span style="display:flex;align-items:center;gap:9px;">'+ctl
               +'<button onclick="mpProtToggle(\''+m+'\',\''+_escAttr(it.n)+'\')" style="background:transparent;border:none;color:#777;font-size:16px;cursor:pointer;padding:0 2px;">\u00d7</button>'
@@ -11986,42 +12033,59 @@ function _mpMealCard(m){
       else if(sec==='carb'){
         dd=_mpCarbsFor(m).map(function(n){ return _pill(n, s.carb===n, 'mpPick(\''+m+'\',\'carb\',\''+_escAttr(n)+'\')'); }).join('');
         if(C){
-          dd+='<div style="margin-top:9px;background:rgba(245,197,24,0.08);border:1px solid rgba(245,197,24,0.35);border-radius:10px;padding:11px 12px;">'
-            +'<div style="font-size:13px;font-weight:800;color:var(--gold);">Eat '+C.srv+'</div>'
-            +'<div style="font-size:11.5px;color:#9c9c9c;margin-top:3px;">That\u2019s '+CARB_CAP+'g net carbs \u2014 one serving \u00b7 '+C.cal+' cal</div>'
+          dd+='<div style="margin-top:10px;padding-top:10px;border-top:1px solid #252525;">'
+            +'<div style="font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:#6a6a6a;margin-bottom:7px;">How much</div>'
+            +CARB_PORTIONS.map(function(p){ return _pill(p.l, k===p.k, 'mpCarbPortion(\''+m+'\','+p.k+')'); }).join('')
+            +'<div style="font-size:12.5px;color:#ccc;margin-top:7px;line-height:1.5;">Eat <b style="color:#fff;">'+_carbAmt(C,k)+'</b> \u2014 '+Math.round(CARB_CAP*k)+'g net carbs \u00b7 '+Math.round(C.cal*k)+' cal</div>'
           +'</div>';
         }
       }
+      else if(sec==='extra'){
+        dd=EXTRAS.map(function(e){ return _pill(e.n+' \u00b7 '+e.unit, s.extras.indexOf(e.n)>=0, 'mpExtra(\''+m+'\',\''+_escAttr(e.n)+'\')'); }).join('');
+      }
       body+='<div style="margin-top:9px;background:#101010;border:1px solid #262626;border-radius:12px;padding:12px 12px 8px;">'
         +dd
-        +'<div style="text-align:right;margin-top:4px;"><span onclick="mpSec(\''+m+'\',null)" style="cursor:pointer;font-size:12px;font-weight:800;color:var(--gold);padding:5px 2px;display:inline-block;">Done</span></div>'
+        +'<div style="text-align:right;margin-top:4px;"><span onclick="mpSec(\''+m+'\',null)" style="cursor:pointer;font-size:12px;font-weight:800;color:#999;padding:5px 2px;display:inline-block;">Done</span></div>'
       +'</div>';
     }
 
+    // Add more food
+    body+='<div onclick="mpSec(\''+m+'\',\'extra\')" style="margin-top:9px;cursor:pointer;text-align:center;border:1px dashed #2e2e2e;border-radius:11px;padding:11px;font-size:12.5px;font-weight:700;color:#8a8a8a;">'
+      + (s.extras.length ? _escHtml(s.extras.join(', ')) : '+ Add more (cheese, avocado, oil\u2026)')
+    +'</div>';
+
     if(bits.length){
-      body+='<div style="margin-top:14px;padding-top:13px;border-top:1px solid #222;display:flex;align-items:flex-start;gap:14px;">'
-        +'<div style="flex:1;min-width:0;font-size:13.5px;color:#e4e4e4;font-weight:600;line-height:1.5;">'+_escHtml(recipe)+'</div>'
-        +'<div style="text-align:right;flex-shrink:0;">'
-          +'<div style="font-size:19px;font-weight:800;color:var(--gold);line-height:1;">'+T.cal+'</div>'
-          +'<div style="font-size:11px;color:#8a8a8a;margin-top:4px;white-space:nowrap;">'+T.p+'P \u00b7 '+T.c+'C \u00b7 '+T.f+'F</div>'
-          +(sc[0]?'<div style="font-size:10px;font-weight:800;color:'+sc[1]+';margin-top:4px;">'+sc[0]+'</div>':'')
+      body+='<div style="margin-top:15px;padding-top:14px;border-top:1px solid #232323;">'
+        +'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-bottom:13px;">'
+          +'<div style="text-align:center;"><div style="font-size:20px;font-weight:800;color:#fff;line-height:1;">'+T.p+'g</div><div style="font-size:8.5px;letter-spacing:0.8px;text-transform:uppercase;color:#6e6e6e;margin-top:5px;font-weight:800;">Protein</div></div>'
+          +'<div style="text-align:center;"><div style="font-size:20px;font-weight:800;color:#fff;line-height:1;">'+T.c+'g</div><div style="font-size:8.5px;letter-spacing:0.8px;text-transform:uppercase;color:#6e6e6e;margin-top:5px;font-weight:800;">Carbs</div></div>'
+          +'<div style="text-align:center;"><div style="font-size:20px;font-weight:800;color:#fff;line-height:1;">'+T.f+'g</div><div style="font-size:8.5px;letter-spacing:0.8px;text-transform:uppercase;color:#6e6e6e;margin-top:5px;font-weight:800;">Fat</div></div>'
+          +'<div style="text-align:center;"><div style="font-size:20px;font-weight:800;color:var(--gold);line-height:1;">'+T.cal+'</div><div style="font-size:8.5px;letter-spacing:0.8px;text-transform:uppercase;color:#6e6e6e;margin-top:5px;font-weight:800;">Cal</div></div>'
         +'</div>'
+        +(sc[0]?'<div style="text-align:center;font-size:11px;font-weight:800;color:'+sc[1]+';margin-bottom:12px;">'+sc[0]+'</div>':'')
+        +'<button onclick="mpSaveMeal(\''+m+'\')" style="width:100%;background:transparent;border:1px solid #333;border-radius:11px;padding:11px;font-size:12.5px;font-weight:800;color:#ccc;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Save as a meal</button>'
       +'</div>';
     }
   }
 
-  return '<div style="background:var(--surface);border:1px solid #242424;border-radius:14px;padding:15px 16px;margin-bottom:10px;">'
+  return '<div style="background:var(--surface);border:1px solid #242424;border-radius:14px;padding:16px;margin-bottom:10px;">'
     +'<div onclick="mpOpen(\''+m+'\')" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;gap:11px;">'
       +'<div style="min-width:0;flex:1;">'
-        +'<div style="font-size:15px;font-weight:800;color:#fff;">'+m+'</div>'
-        +'<div style="font-size:11.5px;color:'+(bits.length?'#999':'#666')+';margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+(bits.length?_escHtml(recipe):MEAL_FORMULA[m])+'</div>'
-        +(bits.length?'':'<div style="font-size:10.5px;margin-top:5px;">'+_goalLine(m)+'</div>')
+        +'<div style="font-size:19px;font-weight:800;color:#fff;letter-spacing:-0.2px;">'+m+'</div>'
+        +(bits.length
+          ? '<div style="font-size:12.5px;color:#b0b0b0;margin-top:5px;line-height:1.45;">'+_escHtml(recipe)+'</div>'
+          : '<div style="font-size:11.5px;color:#666;margin-top:4px;">'+MEAL_FORMULA[m]+'</div><div style="font-size:10.5px;margin-top:5px;">'+_goalLine(m)+'</div>')
       +'</div>'
-      +(bits.length?'<div style="text-align:right;flex-shrink:0;"><div style="font-size:15px;font-weight:800;color:var(--gold);line-height:1;">'+T.cal+'</div><div style="font-size:10px;color:#777;margin-top:2px;">'+T.p+'P</div></div>':'')
-      +'<div style="color:#6a6a6a;font-size:13px;flex-shrink:0;">'+(open?'\u25b2':'\u25bc')+'</div>'
+      +(bits.length?'<div style="text-align:right;flex-shrink:0;"><div style="font-size:17px;font-weight:800;color:var(--gold);line-height:1;">'+T.cal+'</div><div style="font-size:10px;color:#777;margin-top:3px;">'+T.p+'g P</div></div>':'')
+      +'<div style="color:#5a5a5a;font-size:13px;flex-shrink:0;">'+(open?'\u25b2':'\u25bc')+'</div>'
     +'</div>'
     +body
   +'</div>';
+}
+function _carbAmt(C,k){
+  if(k>=1) return C.srv;
+  var m=C.srv.match(/^([\d.\u00bc\u00bd\u00be\u2153\u2154]+)\s*(.*)$/);
+  return (k===0.5?'half of ':'three-quarters of ')+C.srv;
 }
 function _mpDayTotals(){
   var t={cal:0,p:0,c:0,f:0};
@@ -12048,6 +12112,20 @@ function renderMealPlan(){
   html+='<div style="background:#101010;border:1px solid #242424;border-radius:14px;padding:14px 15px;margin-bottom:14px;">'
     +'<div style="font-size:13px;color:#ddd;line-height:1.55;font-weight:600;">Build each meal the same way: <span style="color:var(--gold);font-weight:800;">protein first</span>, vegetables next, <span style="color:var(--gold);font-weight:800;">carbs last</span> \u2014 one serving, capped at '+CARB_CAP+'g net carbs.</div>'
   +'</div>';
+  if(_mpSaved.length){
+    html+='<div style="background:var(--surface);border:1px solid #242424;border-radius:14px;padding:15px 16px;margin-bottom:14px;">'
+      +'<div style="font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:#7a7a7a;margin-bottom:10px;">Your Meals</div>'
+      + _mpSaved.map(function(sv,i){
+        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:#141414;border:1px solid #262626;border-radius:11px;padding:11px 12px;margin-bottom:7px;">'
+          +'<div onclick="mpLoadSaved('+i+')" style="flex:1;min-width:0;cursor:pointer;">'
+            +'<div style="font-size:13.5px;font-weight:800;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+_escHtml(sv.name)+'</div>'
+            +'<div style="font-size:11px;color:#777;margin-top:2px;">'+sv.slot+' · '+sv.cal+' cal · '+sv.p+'g protein</div>'
+          +'</div>'
+          +'<button onclick="mpDelSaved('+i+')" style="background:transparent;border:none;color:#666;font-size:16px;cursor:pointer;padding:2px 4px;flex-shrink:0;">×</button>'
+        +'</div>';
+      }).join('')
+    +'</div>';
+  }
   html+=MEALS.map(_mpMealCard).join('');
   html+='<div style="background:#0e0e0e;border:1px solid rgba(245,197,24,0.28);border-radius:16px;padding:15px 16px;margin-top:6px;">'
     +'<div style="font-size:10px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:var(--gold);margin-bottom:12px;">Day Total</div>'
@@ -12081,14 +12159,24 @@ function renderMealPlan(){
 }
 async function saveMealPlanNew(){
   if(!cl) return;
-  try{ await fetch(SB_URL+'/rest/v1/meal_plans',{method:'POST',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'}),body:JSON.stringify({client_code:cl.code,plan:_mp,updated_at:new Date().toISOString()})}); }catch(e){}
+  try{ await fetch(SB_URL+'/rest/v1/meal_plans',{method:'POST',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'}),body:JSON.stringify({client_code:cl.code,plan:{meals:_mp,saved:_mpSaved},updated_at:new Date().toISOString()})}); }catch(e){}
 }
 async function loadMealPlanNew(){
   try{
     var rows=await sbSelect('meal_plans','client_code=eq.'+encodeURIComponent(cl.code)+'&limit=1');
     if(rows&&rows[0]&&rows[0].plan){
       var p=rows[0].plan; if(typeof p==='string'){ try{p=JSON.parse(p);}catch(e){p=null;} }
-      if(p && p.Breakfast){ MEALS.forEach(function(m){ if(p[m]){ var q=Object.assign({prot:[],veg:[],carb:null}, p[m]); if(!q.prot||!q.prot.length){ q.prot = q.protein ? [{n:q.protein, q:(q.qty|| (q.protein==='Whole Eggs'?3:6))}] : []; } delete q.protein; delete q.qty; _mp[m]=q; } }); }
+      if(!p) return;
+      var mealsObj = p.meals || p;   // supports old shape
+      if(Array.isArray(p.saved)) _mpSaved=p.saved;
+      MEALS.forEach(function(m){
+        if(!mealsObj[m]) return;
+        var q=Object.assign({prot:[],veg:[],carb:null,carbK:1,extras:[]}, mealsObj[m]);
+        if(!q.prot||!q.prot.length){ q.prot = q.protein ? [{n:q.protein, q:(q.qty||(q.protein==='Whole Eggs'?3:6))}] : []; }
+        delete q.protein; delete q.qty;
+        q.veg=q.veg||[]; q.extras=q.extras||[]; q.carbK=q.carbK||1;
+        _mp[m]=q;
+      });
     }
   }catch(e){}
 }
