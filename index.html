@@ -2234,7 +2234,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.551.0';
+var APP_VERSION = 'v5.552.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -11977,26 +11977,71 @@ function mpCarbToggle(m,n){
   renderMealPlan(); saveMealPlanNew();
 }
 function mpRemoveCustom(m,i){ _mp[m].custom.splice(i,1); renderMealPlan(); saveMealPlanNew(); }
+var _mpFound={};      // pending search result per meal, awaiting confirm
+var _mpEditIdx={};    // which custom item is being edited
 async function mpSearchAdd(m){
   var el=document.getElementById('mpSearch_'+m); if(!el) return;
-  var q=String(el.value||'').trim(); if(!q) return;
+  var q=String(el.value||'').trim(); if(!q){ return; }
   var box=document.getElementById('mpSearchBox_'+m);
-  if(box) box.innerHTML='<div style="font-size:12px;color:#888;padding:8px 0;">Looking up \u201c'+_escHtml(q)+'\u201d\u2026</div>';
+  if(box) box.innerHTML='<div style="font-size:12px;color:#888;padding:10px 2px;">Looking up \u201c'+_escHtml(q)+'\u201d\u2026</div>';
   var obj=null;
   try{
-    var sys='You are a nutrition estimator. For the food and portion given, reply with ONLY compact JSON, no markdown: {"calories":number,"protein":number,"carbs":number,"fat":number}. Use the exact portion described.';
+    var sys='You are a nutrition estimator. For the food and portion given, reply with ONLY compact JSON, no markdown: {"calories":number,"protein":number,"carbs":number,"fat":number}. Use the exact portion described. If no portion is given, assume one typical serving.';
     var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:sys+'\n\nFood: '+q}],temperature:0.2,max_tokens:300})});
     var data=await res.json(); var txt=''; if(data&&data.content){ data.content.forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; }); }
     txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
     var mm=txt.match(/\{[\s\S]*\}/); if(mm) txt=mm[0];
     obj=JSON.parse(txt);
-  }catch(e){ showToast('Could not look that up'); if(box) box.innerHTML=''; return; }
+  }catch(e){
+    if(box) box.innerHTML='<div style="font-size:12px;color:#e06b6b;padding:10px 2px;">Couldn\u2019t look that up \u2014 add it manually below.</div>';
+    obj={calories:0,protein:0,carbs:0,fat:0};
+  }
+  _mpFound[m]={ n:_tcase(q), cal:Math.round(obj.calories||0), p:Math.round(obj.protein||0), c:Math.round(obj.carbs||0), f:Math.round(obj.fat||0) };
+  renderMealPlan();
+}
+function mpFoundEdit(m,k,v){
+  if(!_mpFound[m]) return;
+  _mpFound[m][k] = (k==='n') ? String(v) : (Math.round(parseFloat(v))||0);
+}
+function mpFoundConfirm(m){
+  var f=_mpFound[m]; if(!f) return;
   var s=_mp[m]; s.custom=s.custom||[];
-  s.custom.push({n:_tcase(q), cal:Math.round(obj.calories||0), p:Math.round(obj.protein||0), c:Math.round(obj.carbs||0), f:Math.round(obj.fat||0)});
-  el.value='';
-  renderMealPlan(); saveMealPlanNew();
-  showToast('Added '+_tcase(q));
-  try{ if(typeof _rememberFood==='function') _rememberFood({name:_tcase(q),calories:obj.calories,protein:obj.protein,carbs:obj.carbs,fat:obj.fat}); }catch(e){}
+  s.custom.push({n:f.n, cal:f.cal, p:f.p, c:f.c, f:f.f});
+  delete _mpFound[m];
+  var el=document.getElementById('mpSearch_'+m); if(el) el.value='';
+  saveMealPlanNew(); renderMealPlan();
+  showToast('Added '+f.n);
+  try{ if(typeof _rememberFood==='function') _rememberFood({name:f.n,calories:f.cal,protein:f.p,carbs:f.c,fat:f.f}); }catch(e){}
+}
+function mpFoundCancel(m){ delete _mpFound[m]; renderMealPlan(); }
+function mpEditCustom(m,i){ _mpEditIdx[m]=(_mpEditIdx[m]===i)?null:i; renderMealPlan(); }
+function mpCustomSet(m,i,k,v){
+  var x=_mp[m].custom[i]; if(!x) return;
+  x[k]=(k==='n')?String(v):(Math.round(parseFloat(v))||0);
+  saveMealPlanNew();
+  if(k!=='n') renderMealPlan();
+}
+function mpRemoveCustom(m,i){ _mp[m].custom.splice(i,1); _mpEditIdx[m]=null; saveMealPlanNew(); renderMealPlan(); }
+function _mpNumField(label,val,oninput){
+  return '<div style="flex:1;min-width:0;"><div style="font-size:8.5px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:#6a6a6a;margin-bottom:4px;text-align:center;">'+label+'</div>'
+    +'<input value="'+val+'" inputmode="numeric" onchange="'+oninput+'" style="width:100%;min-width:0;background:#151515;border:1px solid #2c2c2c;border-radius:8px;color:#fff;font-size:13.5px;font-weight:800;padding:8px 4px;text-align:center;box-sizing:border-box;"></div>';
+}
+function _mpFoundCard(m){
+  var f=_mpFound[m]; if(!f) return '';
+  return '<div style="margin-top:10px;background:#121212;border:1px solid var(--gold);border-radius:12px;padding:13px;">'
+    +'<input value="'+String(f.n).replace(/"/g,'&quot;')+'" onchange="mpFoundEdit(\''+m+'\',\'n\',this.value)" style="width:100%;box-sizing:border-box;background:transparent;border:none;color:#fff;font-size:14px;font-weight:800;padding:0 0 9px;font-family:\'Plus Jakarta Sans\',sans-serif;">'
+    +'<div style="display:flex;gap:6px;">'
+      +_mpNumField('Cal',f.cal,'mpFoundEdit(\''+m+'\',\'cal\',this.value)')
+      +_mpNumField('Protein',f.p,'mpFoundEdit(\''+m+'\',\'p\',this.value)')
+      +_mpNumField('Carbs',f.c,'mpFoundEdit(\''+m+'\',\'c\',this.value)')
+      +_mpNumField('Fat',f.f,'mpFoundEdit(\''+m+'\',\'f\',this.value)')
+    +'</div>'
+    +'<div style="font-size:11px;color:#7a7a7a;margin-top:9px;line-height:1.5;">Jim\u2019s estimate \u2014 fix any number, then add it.</div>'
+    +'<div style="display:flex;gap:7px;margin-top:11px;">'
+      +'<button onclick="mpFoundConfirm(\''+m+'\')" style="flex:1;background:var(--gold);color:#000;border:none;border-radius:10px;padding:11px;font-size:13px;font-weight:800;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Add to '+m+'</button>'
+      +'<button onclick="mpFoundCancel(\''+m+'\')" style="background:transparent;border:1px solid #333;color:#999;border-radius:10px;padding:11px 15px;font-size:13px;font-weight:700;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Cancel</button>'
+    +'</div>'
+  +'</div>';
 }
 function mpSaveMeal(m){
   var s=_mp[m], T=_mpTotals(m);
@@ -12097,24 +12142,38 @@ function _mpMealCard(m){
       +'</div>';
     }
 
-    // Custom foods already added
+    // Foods you added — tap to edit
     if(s.custom.length){
       body+='<div style="margin-top:11px;">'
         + s.custom.map(function(x,i){
-            return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:10px 12px;margin-bottom:6px;">'
-              +'<div style="min-width:0;"><div style="font-size:13px;font-weight:800;color:#fff;">'+_escHtml(x.n)+'</div>'
-              +'<div style="font-size:11px;color:#7a7a7a;margin-top:2px;">'+x.cal+' cal \u00b7 '+x.p+'P \u00b7 '+x.c+'C \u00b7 '+x.f+'F</div></div>'
-              +'<button onclick="mpRemoveCustom(\''+m+'\','+i+')" style="background:transparent;border:none;color:#666;font-size:16px;cursor:pointer;padding:2px 4px;flex-shrink:0;">\u00d7</button>'
+            var ed=(_mpEditIdx[m]===i);
+            return '<div style="background:#161616;border:1px solid '+(ed?'var(--gold)':'#2a2a2a')+';border-radius:10px;padding:11px 12px;margin-bottom:6px;">'
+              +'<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">'
+                +'<div onclick="mpEditCustom(\''+m+'\','+i+')" style="flex:1;min-width:0;cursor:pointer;">'
+                  +'<div style="font-size:13px;font-weight:800;color:#fff;">'+_escHtml(x.n)+'</div>'
+                  +'<div style="font-size:11px;color:#7a7a7a;margin-top:2px;">'+x.cal+' cal \u00b7 '+x.p+'P \u00b7 '+x.c+'C \u00b7 '+x.f+'F</div>'
+                +'</div>'
+                +'<span onclick="mpEditCustom(\''+m+'\','+i+')" style="font-size:11px;font-weight:800;color:'+(ed?'var(--gold)':'#777')+';cursor:pointer;flex-shrink:0;">'+(ed?'Done':'Edit')+'</span>'
+                +'<button onclick="mpRemoveCustom(\''+m+'\','+i+')" style="background:transparent;border:none;color:#666;font-size:16px;cursor:pointer;padding:2px 4px;flex-shrink:0;">\u00d7</button>'
+              +'</div>'
+              +(ed ? '<div style="margin-top:10px;"><input value="'+String(x.n).replace(/"/g,'&quot;')+'" onchange="mpCustomSet(\''+m+'\','+i+',\'n\',this.value)" style="width:100%;box-sizing:border-box;background:#101010;border:1px solid #2c2c2c;border-radius:8px;color:#fff;font-size:13px;font-weight:700;padding:9px 10px;margin-bottom:7px;font-family:\'Plus Jakarta Sans\',sans-serif;">'
+                +'<div style="display:flex;gap:6px;">'
+                  +_mpNumField('Cal',x.cal,'mpCustomSet(\''+m+'\','+i+',\'cal\',this.value)')
+                  +_mpNumField('Protein',x.p,'mpCustomSet(\''+m+'\','+i+',\'p\',this.value)')
+                  +_mpNumField('Carbs',x.c,'mpCustomSet(\''+m+'\','+i+',\'c\',this.value)')
+                  +_mpNumField('Fat',x.f,'mpCustomSet(\''+m+'\','+i+',\'f\',this.value)')
+                +'</div></div>' : '')
             +'</div>';
           }).join('')
       +'</div>';
     }
     // Search any food
     body+='<div style="margin-top:10px;display:flex;gap:7px;">'
-      +'<input id="mpSearch_'+m+'" type="text" placeholder="Add any food \u2014 protein waffles, Nutrition Solutions\u2026" onkeydown="if(event.key===\'Enter\'){event.preventDefault();mpSearchAdd(\''+m+'\');}" style="flex:1;min-width:0;background:#141414;border:1px solid #282828;border-radius:11px;color:#fff;font-size:12.5px;padding:11px 12px;font-family:\'Plus Jakarta Sans\',sans-serif;">'
-      +'<button onclick="mpSearchAdd(\''+m+'\')" style="background:#1e1e1e;border:1px solid #333;color:#ddd;border-radius:11px;padding:0 15px;font-size:17px;font-weight:800;cursor:pointer;flex-shrink:0;">+</button>'
+      +'<input id="mpSearch_'+m+'" type="text" placeholder="Search any food \u2014 protein waffles, Nutrition Solutions\u2026" onkeydown="if(event.key===\'Enter\'){event.preventDefault();mpSearchAdd(\''+m+'\');}" style="flex:1;min-width:0;background:#141414;border:1px solid #282828;border-radius:11px;color:#fff;font-size:12.5px;padding:11px 12px;font-family:\'Plus Jakarta Sans\',sans-serif;">'
+      +'<button onclick="mpSearchAdd(\''+m+'\')" style="background:#1e1e1e;border:1px solid #333;color:#ddd;border-radius:11px;padding:0 15px;font-size:13px;font-weight:800;cursor:pointer;flex-shrink:0;">Find</button>'
     +'</div>'
-    +'<div id="mpSearchBox_'+m+'"></div>';
+    +'<div id="mpSearchBox_'+m+'"></div>'
+    + _mpFoundCard(m);
 
     if(bits.length){
       var g=MEAL_GOALS[m];
