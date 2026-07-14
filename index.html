@@ -2234,7 +2234,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.557.0';
+var APP_VERSION = 'v5.559.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -11937,7 +11937,7 @@ function mpProtToggle(m,n){
   var s=_mp[m]; s.prot=s.prot||[];
   var i=s.prot.findIndex(function(x){ return x.n===n; });
   if(i>=0) s.prot.splice(i,1);
-  else { s.prot.push({n:n, q:(n==='Whole Eggs'?3:6)}); _mpBump(n); _mpQ[m+'_protein']=''; }
+  else { s.prot.push({n:n, q:_mpAutoProtQty(m,n)}); _mpBump(n); _mpQ[m+'_protein']=''; }
   renderMealPlan(); saveMealPlanNew();
 }
 function mpProtQty(m,n,d){
@@ -12028,20 +12028,24 @@ function _mpBump(n){ _mpUse[n]=(_mpUse[n]||0)+1; try{ localStorage.setItem('yjb_
 function _mpRank(list){
   return list.slice().sort(function(a,b){ return (_mpUse[b]||0)-(_mpUse[a]||0); });
 }
-function mpQ(m,sec,v){ _mpQ[m+'_'+sec]=v; renderMealPlan(); }
+var _mpPickCfg={};
+function mpQ(m,sec,v){
+  _mpQ[m+'_'+sec]=v;
+  var box=document.getElementById('mpRes_'+m+'_'+sec);
+  var cfg=_mpPickCfg[m+'_'+sec];
+  if(box && cfg){ box.innerHTML=_mpPickerResults(m,sec,cfg.all,cfg.chosen,cfg.fn); }   // input untouched
+}
 function _mpQget(m,sec){ return _mpQ[m+'_'+sec]||''; }
 function _mpFilter(list,q){
   q=String(q||'').trim().toLowerCase();
   if(!q) return list;
   return list.filter(function(n){ return n.toLowerCase().indexOf(q)>=0; });
 }
-function _mpPicker(m,sec,placeholder,all,chosen,toggleFn){
+function _mpPickerResults(m,sec,all,chosen,toggleFn){
   var q=_mpQget(m,sec);
   var hits=_mpFilter(_mpRank(all).filter(function(n){ return chosen.indexOf(n)<0; }), q);
   var lib = q ? mpLibMatches(q) : [];
-  var html='<div style="margin-bottom:10px;">'
-    +'<input value="'+String(q).replace(/"/g,'&quot;')+'" autocomplete="off" oninput="mpQ(\''+m+'\',\''+sec+'\',this.value)" placeholder="'+placeholder+'" style="width:100%;box-sizing:border-box;background:#161616;border:1px solid #2e2e2e;border-radius:10px;color:#fff;font-size:13px;padding:11px 12px;font-family:\'Plus Jakarta Sans\',sans-serif;">'
-  +'</div>';
+  var html='';
   if(hits.length){
     html+='<div>'+hits.slice(0,24).map(function(n){ return _pill(n,false,toggleFn+'(\''+m+'\',\''+_escAttr(n)+'\')'); }).join('')+'</div>';
   }
@@ -12057,12 +12061,20 @@ function _mpPicker(m,sec,placeholder,all,chosen,toggleFn){
     +'</div>';
   }
   if(q && !hits.length && !lib.length){
-    html+='<div style="padding:12px 2px;">'
+    html+='<div style="padding:10px 2px 2px;">'
       +'<div style="font-size:12.5px;color:#8a8a8a;margin-bottom:9px;">Not on the list \u2014 have Jim look it up.</div>'
-      +'<button onclick="mpJimLookup(\''+m+'\',\''+sec+'\')" style="width:100%;background:var(--gold);color:#000;border:none;border-radius:10px;padding:11px;font-size:13px;font-weight:800;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Look up \u201c'+_escHtml(q)+'\u201d</button>'
+      +'<button onclick="mpJimLookup(\''+m+'\',\''+sec+'\')" style="width:100%;background:#242424;border:1px solid #3a3a3a;color:#fff;border-radius:10px;padding:11px;font-size:13px;font-weight:800;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Look up \u201c'+_escHtml(q)+'\u201d</button>'
     +'</div>';
   }
   return html;
+}
+function _mpPicker(m,sec,placeholder,all,chosen,toggleFn){
+  _mpPickCfg[m+'_'+sec]={all:all,chosen:chosen,fn:toggleFn};
+  var q=_mpQget(m,sec);
+  return '<div style="margin-bottom:10px;">'
+      +'<input id="mpQ_'+m+'_'+sec+'" value="'+String(q).replace(/"/g,'&quot;')+'" autocomplete="off" oninput="mpQ(\''+m+'\',\''+sec+'\',this.value)" placeholder="'+placeholder+'" style="width:100%;box-sizing:border-box;background:#161616;border:1px solid #2e2e2e;border-radius:10px;color:#fff;font-size:13px;padding:11px 12px;font-family:\'Plus Jakarta Sans\',sans-serif;">'
+    +'</div>'
+    +'<div id="mpRes_'+m+'_'+sec+'">'+_mpPickerResults(m,sec,all,chosen,toggleFn)+'</div>';
 }
 async function mpJimLookup(m,sec){
   var q=_mpQget(m,sec); if(!q) return;
@@ -12071,12 +12083,51 @@ async function mpJimLookup(m,sec){
   _mpQ[m+'_'+sec]='';
   await mpSearchAdd(m, q);
 }
+
+// Pick a food -> we size it for you, to hit the goal. No math for the client.
+function _mpProtSoFar(m,skip){
+  var s=_mp[m], t=0;
+  (s.prot||[]).forEach(function(it){
+    if(skip && it.n===skip) return;
+    if(it.n==='Whole Eggs'){ t+=6*it.q; return; }
+    var D=_D(it.n); if(D){ t+=D.p; return; }
+    var P=_P(it.n); if(P){ t+=P.p*it.q/4; }
+  });
+  (s.custom||[]).forEach(function(x){ t+=x.p||0; });
+  return t;
+}
+function _mpAutoProtQty(m,n){
+  var need = _mpTargets().protPerMeal - _mpProtSoFar(m,n);
+  if(need<10) need=10;
+  if(n==='Whole Eggs') return Math.max(2, Math.min(4, Math.round(need/6)));   // nobody auto-eats 8 eggs
+  var P=_P(n); if(!P) return 6;
+  var oz = need/(P.p/4);
+  oz = Math.round(oz/2)*2;
+  return Math.max(2, Math.min(16, oz));
+}
+function _mpCarbSoFar(m,skip){
+  var s=_mp[m], t=0;
+  (s.carbs||[]).forEach(function(n){
+    if(n===skip) return;
+    var C=CARBS.find(function(x){ return x.n===n; });
+    if(C) t += C.c * ((s.carbP||{})[n]!=null? s.carbP[n] : 1);
+  });
+  (s.custom||[]).forEach(function(x){ t+=x.c||0; });
+  return t;
+}
+function _mpAutoCarbQty(m,n){
+  var C=CARBS.find(function(x){ return x.n===n; }); if(!C) return 1;
+  var need = _mpTargets().carbPerMeal - _mpCarbSoFar(m,n);
+  if(need < C.c*0.5) need = C.c*0.5;
+  var q = Math.round((need/C.c)*2)/2;
+  return Math.max(0.5, Math.min(6, q));
+}
 function mpVegToggle(m,n){ mpPick(m,'veg',n); }
 function mpCarbToggle(m,n){
   var s=_mp[m]; s.carbs=s.carbs||[]; s.carbP=s.carbP||{};
   var i=s.carbs.indexOf(n);
   if(i>=0){ s.carbs.splice(i,1); delete s.carbP[n]; }
-  else { s.carbs.push(n); s.carbP[n]=1; _mpBump(n); _mpQ[m+'_carb']=''; }
+  else { s.carbs.push(n); s.carbP[n]=_mpAutoCarbQty(m,n); _mpBump(n); _mpQ[m+'_carb']=''; }
   renderMealPlan(); saveMealPlanNew();
 }
 var CARB_QTYS=[0.5,1,1.5,2,3];
@@ -12254,7 +12305,13 @@ function _mpMealCard(m){
             'mpProtQty(\''+m+'\',\''+_escAttr(it.n)+'\',1)',
             'mpProtToggle(\''+m+'\',\''+_escAttr(it.n)+'\')');
         }).join('');
-        if(s.prot.length) dd+='<div style="height:6px;"></div>';
+        if(s.prot.length){
+          var pNow=_mpProtSoFar(m), pGoal=_mpTargets().protPerMeal;
+          dd+='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-bottom:11px;border-bottom:1px solid #242424;">'
+            +'<span style="font-size:12px;color:#8a8a8a;">Protein this meal</span>'
+            +'<span style="font-size:13.5px;font-weight:800;color:#fff;">'+Math.round(pNow)+'g <span style="color:#5e5e5e;font-weight:600;">/ '+pGoal+'g</span></span>'
+          +'</div>';
+        }
         dd+=_mpPicker(m,'protein','Search a protein\u2026', _mpProtAll(m), s.prot.map(function(x){return x.n;}), 'mpProtToggle');
       }
       else if(sec==='veg'){
@@ -12358,7 +12415,7 @@ function _mpMealCard(m){
         +'<div style="font-size:19px;font-weight:800;color:#fff;letter-spacing:-0.2px;">'+m+'</div>'
         +(bits.length
           ? '<div style="font-size:12.5px;color:#b0b0b0;margin-top:5px;line-height:1.45;">'+_escHtml(recipe)+'</div>'
-          : '<div style="font-size:11.5px;color:#666;margin-top:4px;">'+MEAL_FORMULA[m]+'</div>')
+          : '<div style="font-size:11.5px;color:#777;margin-top:5px;">Aim for <b style="color:#bbb;">'+_mpTargets().protPerMeal+'g protein</b> \u00b7 <b style="color:#bbb;">'+_mpTargets().carbPerMeal+'g carbs</b></div>')
       +'</div>'
       +(bits.length?'<div style="text-align:right;flex-shrink:0;"><div style="font-size:17px;font-weight:800;color:var(--gold);line-height:1;">'+T.cal+'</div><div style="font-size:10px;color:#777;margin-top:3px;">'+T.p+'g P</div></div>':'')
       +'<div style="color:#5a5a5a;font-size:13px;flex-shrink:0;">'+(open?'\u25b2':'\u25bc')+'</div>'
