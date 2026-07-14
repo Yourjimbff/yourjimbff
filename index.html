@@ -2234,7 +2234,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.560.0';
+var APP_VERSION = 'v5.562.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -11736,46 +11736,89 @@ function tpResetDefault(){ _tpPlan=_tpDefaultPlan(); renderTrainingBuilder(); sh
 // Protein + fat and veggies balanced. Carbs last, capped at 35g NET carbs per serving.
 var CARB_CAP=35;
 // ===== PROFILE & GOALS — drives every serving size =====
-var MP_PROFILE={gender:'male', age:29, ht:70, wt:180, goal:'lose'};
+var MP_PROFILE={gender:'male', age:29, ht:70, wt:180, goal:'lose', act:'moderate', cal:0, prot:0, carb:0, fat:0};
+var ACT_LEVELS=[
+  {k:'low',      l:'Low',     m:1.25, d:'Desk job, little movement'},
+  {k:'moderate', l:'Moderate',m:1.45, d:'Lifting 4-5x + walking'},
+  {k:'high',     l:'High',    m:1.65, d:'Lifting + on your feet all day'},
+  {k:'athlete',  l:'Very high',m:1.85,d:'Training hard, very active job'}
+];
 function _mpLoadProfile(){ try{ var s=localStorage.getItem('yjb_profile'); if(s){ MP_PROFILE=Object.assign(MP_PROFILE, JSON.parse(s)); } }catch(e){} }
 function mpSetProfile(k,v){
-  if(k==='gender'||k==='goal') MP_PROFILE[k]=v; else MP_PROFILE[k]=parseFloat(v)||0;
+  if(k==='gender'||k==='goal'||k==='act') MP_PROFILE[k]=v;
+  else MP_PROFILE[k]=parseFloat(v)||0;
+  if(['gender','goal','act','age','ht','wt'].indexOf(k)>=0){ MP_PROFILE.cal=0; MP_PROFILE.prot=0; MP_PROFILE.carb=0; MP_PROFILE.fat=0; }  // recompute
   try{ localStorage.setItem('yjb_profile', JSON.stringify(MP_PROFILE)); }catch(e){}
   renderMealPlan();
 }
-function _mpTargets(){
+function _mpAuto(){
   var P=MP_PROFILE;
+  var mult=(ACT_LEVELS.find(function(a){ return a.k===P.act; })||ACT_LEVELS[1]).m;
   var bmr = 10*(P.wt*0.4536) + 6.25*(P.ht*2.54) - 5*P.age + (P.gender==='male'?5:-161);
-  var tdee = bmr*1.45;                                  // lifting 4-5x + walking
+  var tdee = bmr*mult;
   var cal = P.goal==='lose' ? tdee*0.8 : (P.goal==='gain' ? tdee*1.1 : tdee);
-  var prot = Math.round(P.wt * (P.goal==='gain'?1.0:0.9));   // g/day
-  var carbPerMeal = P.goal==='lose' ? 25 : (P.goal==='gain' ? 50 : 35);
-  return { cal:Math.round(cal), prot:prot, protPerMeal:Math.round(prot/3), carbPerMeal:carbPerMeal };
+  var prot = Math.round(P.wt * (P.goal==='gain'?1.0:0.9));
+  // Carbs stay capped — the sheet's caps (20+15+35+25 = 95g), scaled by goal. Fat fills the rest.
+  var carbK = P.goal==='lose' ? 0.75 : (P.goal==='gain' ? 1.5 : 1);
+  var carb = Math.round(95 * carbK);
+  var fat  = Math.round((cal - prot*4 - carb*4)/9);
+  if(fat < P.wt*0.3) fat = Math.round(P.wt*0.3);
+  return { cal:Math.round(cal), prot:prot, carb:carb, fat:fat };
 }
+function _mpTargets(){
+  var a=_mpAuto(), P=MP_PROFILE;
+  var t={
+    cal:  P.cal  || a.cal,
+    prot: P.prot || a.prot,
+    carb: P.carb || a.carb,
+    fat:  P.fat  || a.fat
+  };
+  t.protPerMeal = Math.round(t.prot/3);
+  t.carbPerMeal = Math.round(t.carb/3);
+  return t;
+}
+// Carb ceiling per meal, split off the DAILY carb goal, weighted like the sheet.
+var CARB_SPLIT={Breakfast:0.20, Lunch:0.20, Dinner:0.40, Dessert:0.20};
+function _mealCarbCap(m){ return Math.round(_mpTargets().carb * (CARB_SPLIT[m]||0.25)); }
 function _mpProfileCard(){
-  var P=MP_PROFILE, T=_mpTargets();
+  var P=MP_PROFILE, T=_mpTargets(), A=_mpAuto();
   function seg(k,val,label){
     var on=P[k]===val;
-    return '<span onclick="mpSetProfile(\''+k+'\',\''+val+'\')" style="flex:1;text-align:center;cursor:pointer;padding:8px 0;border-radius:8px;font-size:12px;font-weight:800;background:'+(on?'var(--gold)':'transparent')+';color:'+(on?'#000':'#888')+';">'+label+'</span>';
+    return '<span onclick="mpSetProfile(\''+k+'\',\''+val+'\')" style="flex:1;text-align:center;cursor:pointer;padding:9px 2px;border-radius:8px;font-size:11.5px;font-weight:800;background:'+(on?'var(--gold)':'transparent')+';color:'+(on?'#000':'#888')+';">'+label+'</span>';
   }
   function num(k,label,unit){
     return '<div style="flex:1;min-width:0;"><div style="font-size:9px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:#6a6a6a;margin-bottom:5px;">'+label+'</div>'
-      +'<div style="display:flex;align-items:baseline;gap:3px;"><input value="'+P[k]+'" inputmode="numeric" onchange="mpSetProfile(\''+k+'\',this.value)" style="width:100%;min-width:0;background:#151515;border:1px solid #282828;border-radius:8px;color:#fff;font-size:14px;font-weight:800;padding:8px 6px;text-align:center;"></div>'
+      +'<input value="'+P[k]+'" inputmode="numeric" onchange="mpSetProfile(\''+k+'\',this.value)" style="width:100%;min-width:0;box-sizing:border-box;background:#151515;border:1px solid #282828;border-radius:8px;color:#fff;font-size:14px;font-weight:800;padding:9px 6px;text-align:center;">'
       +'<div style="font-size:9px;color:#5a5a5a;text-align:center;margin-top:3px;">'+unit+'</div></div>';
   }
-  return '<div style="background:var(--surface);border:1px solid #242424;border-radius:14px;padding:15px 16px;margin-bottom:12px;">'
+  function macro(k,label,val,auto){
+    var custom = P[k] && P[k]!==auto;
+    return '<div style="flex:1;min-width:0;">'
+      +'<div style="font-size:9px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:#6a6a6a;margin-bottom:5px;text-align:center;">'+label+'</div>'
+      +'<input value="'+val+'" inputmode="numeric" onchange="mpSetProfile(\''+k+'\',this.value)" style="width:100%;min-width:0;box-sizing:border-box;background:#151515;border:1px solid '+(custom?'#3d3d3d':'#282828')+';border-radius:8px;color:'+(k==='cal'?'var(--gold)':'#fff')+';font-size:15px;font-weight:800;padding:9px 4px;text-align:center;">'
+    +'</div>';
+  }
+  var act=(ACT_LEVELS.find(function(a){ return a.k===P.act; })||ACT_LEVELS[1]);
+  return '<div style="background:var(--surface);border:1px solid #242424;border-radius:16px;padding:16px;margin-bottom:14px;">'
     +'<div onclick="mpToggleProfile()" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;">'
-      +'<div><div style="font-size:19px;font-weight:800;color:#fff;letter-spacing:-0.2px;">Your Goals</div>'
-        +'<div style="font-size:11.5px;color:#999;margin-top:3px;">'+T.cal+' cal \u00b7 '+T.prot+'g protein a day \u00b7 '+T.carbPerMeal+'g carbs a meal</div></div>'
-      +'<div style="color:#666;font-size:14px;">'+(_mpProfOpen?'\u25b2':'\u25bc')+'</div>'
+      +'<div style="min-width:0;"><div style="font-size:18px;font-weight:800;color:#fff;letter-spacing:-0.2px;">Your Goals</div>'
+        +'<div style="font-size:12px;color:#9a9a9a;margin-top:4px;"><b style="color:var(--gold);">'+T.cal+' cal</b> \u00b7 '+T.prot+'g protein \u00b7 '+T.carb+'g carbs \u00b7 '+T.fat+'g fat</div></div>'
+      +'<div style="color:#666;font-size:14px;flex-shrink:0;">'+(_mpProfOpen?'\u25b2':'\u25bc')+'</div>'
     +'</div>'
     +(_mpProfOpen ? (
-      '<div style="display:flex;gap:4px;background:#141414;border:1px solid #232323;border-radius:10px;padding:4px;margin-top:14px;">'+seg('gender','male','Male')+seg('gender','female','Female')+'</div>'
+       '<div style="display:flex;gap:4px;background:#141414;border:1px solid #232323;border-radius:10px;padding:4px;margin-top:15px;">'+seg('gender','male','Male')+seg('gender','female','Female')+'</div>'
       +'<div style="display:flex;gap:8px;margin-top:12px;">'+num('age','Age','years')+num('ht','Height','inches')+num('wt','Weight','lbs')+'</div>'
-      +'<div style="font-size:9px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:#6a6a6a;margin:14px 0 6px;">Goal</div>'
+      +'<div style="font-size:9px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:#6a6a6a;margin:16px 0 6px;">How active are you?</div>'
+      +'<div style="display:flex;gap:4px;background:#141414;border:1px solid #232323;border-radius:10px;padding:4px;">'+ACT_LEVELS.map(function(a){ return seg('act',a.k,a.l); }).join('')+'</div>'
+      +'<div style="font-size:11px;color:#7a7a7a;margin-top:6px;text-align:center;">'+act.d+'</div>'
+      +'<div style="font-size:9px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:#6a6a6a;margin:16px 0 6px;">Goal</div>'
       +'<div style="display:flex;gap:4px;background:#141414;border:1px solid #232323;border-radius:10px;padding:4px;">'+seg('goal','lose','Lose fat')+seg('goal','maintain','Maintain')+seg('goal','gain','Build')+'</div>'
-      +'<div style="margin-top:14px;padding-top:13px;border-top:1px solid #232323;font-size:12px;color:#9a9a9a;line-height:1.6;">'
-        +'Target <b style="color:#fff;">'+T.cal+' cal</b> and <b style="color:#fff;">'+T.prot+'g protein</b> a day \u2014 about <b style="color:#fff;">'+T.protPerMeal+'g protein</b> and <b style="color:#fff;">'+T.carbPerMeal+'g carbs</b> per meal.'
+      +'<div style="margin-top:16px;padding-top:15px;border-top:1px solid #242424;">'
+        +'<div style="font-size:9px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:#6a6a6a;margin-bottom:9px;">Your daily numbers \u2014 change any of them</div>'
+        +'<div style="display:flex;gap:7px;">'
+          + macro('cal','Cal',T.cal,A.cal) + macro('prot','Protein',T.prot,A.prot) + macro('carb','Carbs',T.carb,A.carb) + macro('fat','Fat',T.fat,A.fat)
+        +'</div>'
+        +'<div style="font-size:11px;color:#7a7a7a;margin-top:10px;line-height:1.55;">That\u2019s about <b style="color:#ccc;">'+T.protPerMeal+'g protein</b> and <b style="color:#ccc;">'+T.carbPerMeal+'g carbs</b> a meal.</div>'
       +'</div>'
     ) : '')
   +'</div>';
@@ -11980,13 +12023,7 @@ var MEAL_FORMULA={
   Dinner:'meat + vegetables + carbs',
   Dessert:'berries + yogurt + honey'
 };
-// Carb ceiling per meal, straight off the sheet. Scales with the goal.
-var MEAL_CARB_BASE={Breakfast:20, Lunch:15, Dinner:35, Dessert:25};
-function _mealCarbCap(m){
-  var g=MP_PROFILE.goal;
-  var k = g==='lose' ? 0.75 : (g==='gain' ? 1.4 : 1);
-  return Math.round((MEAL_CARB_BASE[m]||25)*k);
-}
+
 var MEAL_GOALS={
   Breakfast:{p:'35-50', f:30, c:35},
   Lunch:{p:'40-60', f:30, c:35},
@@ -12417,23 +12454,21 @@ function _mpMealCard(m){
   }
 
   var cap=_mealCarbCap(m);
-  return '<div style="background:#111;border:1.5px solid var(--gold);border-radius:4px;margin-bottom:12px;overflow:hidden;">'
-    +'<div onclick="mpOpen(\''+m+'\')" style="cursor:pointer;">'
-      +'<div style="text-align:center;padding:11px 12px;border-bottom:1.5px solid var(--gold);">'
-        +'<span style="font-size:15px;font-weight:800;color:#fff;letter-spacing:0.2px;">'+m+'</span>'
+  return '<div style="background:var(--surface);border:1px solid '+(open?'#3a3529':'#242424')+';border-radius:16px;margin-bottom:11px;overflow:hidden;">'
+    +'<div onclick="mpOpen(\''+m+'\')" style="cursor:pointer;padding:17px 16px;">'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">'
+        +'<span style="font-size:11px;font-weight:800;letter-spacing:1.4px;text-transform:uppercase;color:var(--gold);">'+m+'</span>'
+        +'<span style="font-size:10.5px;color:#666;flex-shrink:0;">\u2264'+cap+'g carbs</span>'
       +'</div>'
-      +'<div style="padding:16px 14px;text-align:center;">'
-        +'<div style="font-size:15px;font-weight:800;color:#fff;line-height:1.5;letter-spacing:0.1px;">'+MEAL_FORMULA[m]+'</div>'
-        +'<div style="font-size:11px;color:#8a8a8a;margin-top:7px;">cap ~'+cap+'g carbs</div>'
-        + (bits.length
-            ? '<div style="margin-top:13px;padding-top:13px;border-top:1px solid #2a2a2a;">'
-                +'<div style="font-size:13px;color:#ddd;font-weight:600;line-height:1.5;">'+_escHtml(recipe)+'</div>'
-                +'<div style="font-size:12px;color:#8a8a8a;margin-top:6px;"><b style="color:var(--gold);">'+T.cal+' cal</b> \u00b7 '+T.p+'g protein \u00b7 '+T.c+'g carbs</div>'
-              +'</div>'
-            : '<div style="margin-top:12px;font-size:11.5px;color:#6a6a6a;">Tap to build it</div>')
-      +'</div>'
+      +'<div style="font-size:15.5px;font-weight:800;color:#fff;line-height:1.45;letter-spacing:0.1px;">'+MEAL_FORMULA[m]+'</div>'
+      + (bits.length
+          ? '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #232323;">'
+              +'<div style="font-size:12.5px;color:#b8b8b8;font-weight:600;line-height:1.5;">'+_escHtml(recipe)+'</div>'
+              +'<div style="font-size:11.5px;color:#8a8a8a;margin-top:6px;"><b style="color:var(--gold);">'+T.cal+' cal</b> \u00b7 '+T.p+'g protein \u00b7 '+T.c+'g carbs \u00b7 '+T.f+'g fat</div>'
+            +'</div>'
+          : '<div style="margin-top:10px;font-size:11.5px;color:#5e5e5e;">Tap to build it</div>')
     +'</div>'
-    + (open ? '<div style="padding:0 14px 16px;border-top:1px solid #2a2a2a;">'+body+'</div>' : '')
+    + (open ? '<div style="padding:0 16px 16px;">'+body+'</div>' : '')
   +'</div>';
 }
 function _carbServing(C,k){
@@ -12489,30 +12524,28 @@ function renderMealPlan(){
   }
   html+=MEALS.map(_mpMealCard).join('');
   var TG=_mpTargets();
-  function bar(val,goal,label,unit){
+  function line(val,goal,label,unit){
     var pct=Math.max(0,Math.min(100, goal? (val/goal*100):0));
-    return '<div style="margin-bottom:11px;">'
-      +'<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:5px;">'
-        +'<span style="font-size:11px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:#8a8a8a;">'+label+'</span>'
-        +'<span style="font-size:12.5px;font-weight:800;color:#fff;">'+val+unit+' <span style="color:#5e5e5e;font-weight:600;">/ '+goal+unit+'</span></span>'
+    return '<div style="margin-bottom:12px;">'
+      +'<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;">'
+        +'<span style="font-size:11.5px;font-weight:700;color:#9a9a9a;">'+label+'</span>'
+        +'<span style="font-size:13px;font-weight:800;color:#fff;">'+val+unit+' <span style="color:#5a5a5a;font-weight:600;">of '+goal+unit+'</span></span>'
       +'</div>'
-      +'<div style="height:5px;background:#1c1c1c;border-radius:3px;overflow:hidden;"><div style="height:100%;width:'+pct+'%;background:var(--gold);"></div></div>'
+      +'<div style="height:4px;background:#1e1e1e;border-radius:2px;overflow:hidden;"><div style="height:100%;width:'+pct+'%;background:'+(pct>105?'#e0a03a':'var(--gold)')+';"></div></div>'
     +'</div>';
   }
-  html+='<div style="background:#0e0e0e;border:1px solid #242424;border-radius:16px;padding:16px;margin-top:6px;">'
-    +'<div style="font-size:19px;font-weight:800;color:#fff;letter-spacing:-0.2px;margin-bottom:14px;">Day Total</div>'
-    + bar(T.cal, TG.cal, 'Calories','')
-    + bar(T.p, TG.prot, 'Protein','g')
-    +'<div style="display:flex;gap:18px;margin-top:13px;padding-top:12px;border-top:1px solid #1f1f1f;">'
-      +'<div style="font-size:12px;color:#8a8a8a;">Carbs <b style="color:#fff;">'+T.c+'g</b></div>'
-      +'<div style="font-size:12px;color:#8a8a8a;">Fat <b style="color:#fff;">'+T.f+'g</b></div>'
-    +'</div>'
+  html+='<div style="background:var(--surface);border:1px solid #242424;border-radius:16px;padding:17px 16px;margin-top:4px;">'
+    +'<div style="font-size:11px;font-weight:800;letter-spacing:1.4px;text-transform:uppercase;color:var(--gold);margin-bottom:14px;">These meals vs your day</div>'
+    + line(T.cal, TG.cal, 'Calories','')
+    + line(T.p, TG.prot, 'Protein','g')
+    + line(T.c, TG.carb, 'Carbs','g')
+    + line(T.f, TG.fat, 'Fat','g')
   +'</div>';
   var G=_mpGroceryList();
   var total=Object.keys(G).reduce(function(a,k){ return a+G[k].length; },0);
-  if(total){
-    html+='<div style="margin-top:12px;">'
-      +'<button onclick="mpToggleGroc()" style="width:100%;background:transparent;border:1px solid #2e2e2e;border-radius:12px;padding:13px;font-size:13px;font-weight:800;color:#bbb;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">'+(_grocOpen?'Hide grocery list':'Make a grocery list from these meals')+'</button>';
+  html+='<div style="margin-top:12px;">'
+    +'<button onclick="mpToggleGroc()" style="width:100%;background:transparent;border:1px solid #2e2e2e;border-radius:12px;padding:14px;font-size:13px;font-weight:800;color:'+(total?'#ddd':'#5e5e5e')+';cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">'+(_grocOpen?'Hide grocery list':(total?'Grocery list \u00b7 '+total+' items':'Grocery list \u2014 build a meal first'))+'</button>';
+  if(true){
     if(_grocOpen){
       html+='<div style="margin-top:10px;background:#111;border:1px solid #242424;border-radius:12px;padding:15px;">';
       Object.keys(G).forEach(function(cat){
