@@ -2244,7 +2244,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.572.0';
+var APP_VERSION = 'v5.573.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -11725,6 +11725,68 @@ function _tpCardioRows(day){
   return rows
     +'<button onclick="tpCardioOpen(\''+day+'\')" style="width:100%;margin-top:2px;background:transparent;border:1px dashed #2e2e2e;border-radius:9px;padding:9px;font-size:12px;font-weight:700;color:#888;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">+ Add cardio</button>';
 }
+function _tpSessionNote(day){
+  var note=(_tpSessNotes[day]||'');
+  return '<div style="margin-top:14px;padding-top:13px;border-top:1px solid #232323;">'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:#6a6a6a;margin-bottom:9px;">Session notes</div>'
+    +'<textarea id="tpSess_'+day+'" rows="2" placeholder="How did the whole session go? Type it, or tap the mic to speak." onchange="tpSaveSessNote(\''+day+'\',this.value)" style="width:100%;box-sizing:border-box;background:#0f0f0f;border:1px solid #262626;border-radius:10px;color:#ddd;font-size:12.5px;padding:10px 11px;font-family:\'Plus Jakarta Sans\',sans-serif;resize:vertical;">'+_escHtml(note)+'</textarea>'
+    +'<button id="tpSessMic_'+day+'" onclick="tpSessVoice(\''+day+'\')" style="width:100%;margin-top:8px;background:#141414;border:1px solid #2a2a2a;color:#bbb;border-radius:10px;padding:10px;font-size:12.5px;font-weight:800;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">\ud83c\udf99\ufe0f Speak your session</button>'
+    +'<div id="tpSessStatus_'+day+'" style="display:none;font-size:11.5px;color:#8a8a8a;margin-top:7px;line-height:1.5;"></div>'
+  +'</div>';
+}
+var _tpSessNotes={};
+var _tpSessRec=null, _tpSessListening=false, _tpSessTx='', _tpSessDay=null;
+async function tpSaveSessNote(day,val){
+  _tpSessNotes[day]=val;
+  if(!cl) return;
+  try{
+    await fetch(SB_URL+'/rest/v1/session_notes',{method:'POST',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'}),
+      body:JSON.stringify({client_code:cl.code,date_str:todayDateStr,day:day,note:val,updated_at:new Date().toISOString()})});
+  }catch(e){}
+}
+async function loadSessNotes(){
+  _tpSessNotes={};
+  try{
+    var rows=await sbSelect('session_notes','client_code=eq.'+encodeURIComponent(cl.code)+'&date_str=eq.'+todayDateStr);
+    (rows||[]).forEach(function(r){ _tpSessNotes[r.day]=r.note||''; });
+  }catch(e){}
+}
+function tpSessVoice(day){
+  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){ showToast('Voice not supported on this browser'); return; }
+  var btn=document.getElementById('tpSessMic_'+day);
+  var status=document.getElementById('tpSessStatus_'+day);
+  if(_tpSessListening){ try{ _tpSessRec.stop(); }catch(e){} return; }
+  _tpSessTx=''; _tpSessDay=day;
+  _tpSessRec=new SR();
+  _tpSessRec.continuous=true; _tpSessRec.interimResults=true; _tpSessRec.lang='en-US';
+  _tpSessRec.onstart=function(){
+    _tpSessListening=true;
+    if(btn){ btn.innerHTML='\u23f9 Stop'; btn.style.background='#ff4455'; btn.style.color='#fff'; btn.style.borderColor='#ff4455'; }
+    if(status){ status.style.display='block'; status.textContent='Listening\u2026 talk through the session.'; }
+  };
+  _tpSessRec.onresult=function(ev){
+    var f='',it='';
+    for(var i=ev.resultIndex;i<ev.results.length;i++){ var t=ev.results[i][0].transcript; if(ev.results[i].isFinal) f+=t+' '; else it+=t; }
+    if(f) _tpSessTx+=f;
+    if(status) status.textContent='\u201c'+(_tpSessTx+it).trim()+'\u201d';
+  };
+  _tpSessRec.onerror=function(e){ _tpSessListening=false; if(btn){ btn.innerHTML='\ud83c\udf99\ufe0f Speak your session'; btn.style.background='#141414'; btn.style.color='#bbb'; btn.style.borderColor='#2a2a2a'; } };
+  _tpSessRec.onend=function(){
+    _tpSessListening=false;
+    if(btn){ btn.innerHTML='\ud83c\udf99\ufe0f Speak your session'; btn.style.background='#141414'; btn.style.color='#bbb'; btn.style.borderColor='#2a2a2a'; }
+    var said=_tpSessTx.trim();
+    if(said.length>1){
+      var cur=_tpSessNotes[day]||'';
+      var merged=(cur?cur.trim()+' ':'')+said;
+      _tpSessNotes[day]=merged;
+      var ta=document.getElementById('tpSess_'+day); if(ta) ta.value=merged;
+      tpSaveSessNote(day,merged);
+      if(status) status.style.display='none';
+    } else if(status){ status.style.display='none'; }
+  };
+  try{ _tpSessRec.start(); }catch(e){}
+}
 function _tpRestBlock(day){
   var female = _clientGender()==='female';
   var target = female
@@ -11793,6 +11855,7 @@ function _tpDayCard(day){
                  : (exs.map(function(e,i){ return _tpExRow(day,i,e); }).join('')
                     +(window._tpCanEdit?'<button onclick="tpAddOpen(\''+day+'\')" style="width:100%;margin-top:4px;background:transparent;border:1px dashed #2e2e2e;border-radius:9px;padding:9px;font-size:12px;font-weight:700;color:#888;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">+ Add exercise</button>':'')
                     +'<div style="margin-top:14px;padding-top:13px;border-top:1px solid #232323;"><div style="font-size:10px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:#6a6a6a;margin-bottom:9px;">Cardio</div>'+_tpCardioRows(day)+'</div>'
+                    +_tpSessionNote(day)
                     +'<button onclick="tpCompleteDay(\''+day+'\')" style="width:100%;margin-top:9px;background:var(--gold);color:#000;border:none;border-radius:11px;padding:12px;font-size:13.5px;font-weight:800;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Complete workout \u2713</button>'))) : '')
   +'</div>';
 }
@@ -11814,6 +11877,7 @@ async function tpCompleteDay(day){
     try{ if(typeof loadWorkouts==='function') loadWorkouts(); }catch(e){}
     try{ await loadTpHistory(); }catch(e){}
   try{ await loadTpSteps(); }catch(e){}
+  try{ await loadSessNotes(); }catch(e){}
   }catch(e){ showToast('Could not save workout'); }
 }
 function tpSwapOpen(day,i){
@@ -11904,6 +11968,7 @@ function _tpHistoryView(){
     var dt=new Date(w.logged_at||w.date_str);
     var when=dayNames[dt.getDay()];
     var lines=(w.description||'').split('\n').filter(Boolean);
+    var open=(_tpHistOpen===String(w.id));
     return '<div style="background:var(--surface);border:1px solid #242424;border-radius:14px;padding:14px 15px;margin-bottom:10px;">'
       +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:'+(lines.length?'10px':'0')+';">'
         +'<span style="font-size:13px;font-weight:800;letter-spacing:0.5px;text-transform:uppercase;color:var(--gold);">'+_escHtml(w.title||'Workout')+'</span>'
@@ -11915,8 +11980,29 @@ function _tpHistoryView(){
           var sets=parts.join(':');
           return '<div style="font-size:12.5px;color:#ccc;padding:5px 0;border-top:1px solid #1e1e1e;line-height:1.5;"><b style="color:#fff;">'+_escHtml(name)+'</b>'+(sets?'<span style="color:#999;">'+_escHtml(sets)+'</span>':'')+'</div>';
         }).join('')
+      + (open
+          ? '<div style="margin-top:10px;padding-top:10px;border-top:1px solid #232323;display:flex;gap:7px;">'
+              +'<input id="tpHistAdd_'+w.id+'" type="text" placeholder="e.g. Extra set: 135 lb \u00d7 8" onkeydown="if(event.key===\'Enter\'){event.preventDefault();tpHistAppend('+w.id+');}" style="flex:1;min-width:0;background:#0f0f0f;border:1px solid #2a2a2a;border-radius:9px;color:#fff;font-size:12.5px;padding:10px 11px;font-family:\'Plus Jakarta Sans\',sans-serif;">'
+              +'<button onclick="tpHistAppend('+w.id+')" style="background:var(--gold);color:#000;border:none;border-radius:9px;padding:0 14px;font-size:12.5px;font-weight:800;cursor:pointer;flex-shrink:0;font-family:\'Plus Jakarta Sans\',sans-serif;">Add</button>'
+            +'</div>'
+          : '<div style="text-align:right;margin-top:8px;"><span onclick="tpHistToggle('+w.id+')" style="cursor:pointer;font-size:11.5px;font-weight:800;color:#888;">+ Add to this workout</span></div>')
     +'</div>';
   }).join('');
+}
+var _tpHistOpen=null;
+function tpHistToggle(id){ _tpHistOpen=(_tpHistOpen===String(id))?null:String(id); renderTrainingBuilder(); }
+async function tpHistAppend(id){
+  var el=document.getElementById('tpHistAdd_'+id); if(!el) return;
+  var line=String(el.value||'').trim(); if(!line) return;
+  var w=_tpHistory.find(function(x){ return String(x.id)===String(id); }); if(!w) return;
+  var desc=(w.description||'').trim();
+  w.description = desc ? desc+'\n'+line : line;
+  _tpHistOpen=null;
+  renderTrainingBuilder();
+  try{
+    await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+id,{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),body:JSON.stringify({description:w.description})});
+    showToast('\u2713 Added to that workout');
+  }catch(e){ showToast('Could not save'); }
 }
 function renderTrainingBuilder(){
   var el=document.getElementById('tpBody'); if(!el) return;
@@ -12913,7 +12999,7 @@ async function renderPlanTab(){
   if(_tpOpenDay===null) _tpOpenDay=_tpTodayName();
   window._tpCanEdit = true;   // clients manage their own plan
   body.innerHTML='<div id="tpBody"></div>'
-    + '<button class="sbtn" onclick="saveTrainingPlan()" style="margin-top:6px;">Save \u2713</button><button class="obtn" onclick="tpResetDefault()">Reset to my default split</button>';
+    + '<button class="sbtn" onclick="saveTrainingPlan()" style="margin-top:6px;">Save \u2713</button>';
   renderTrainingBuilder();
 }
 function resetPlate(){
