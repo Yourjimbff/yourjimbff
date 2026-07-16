@@ -2244,7 +2244,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.568.0';
+var APP_VERSION = 'v5.569.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -11754,6 +11754,7 @@ async function tpCompleteDay(day){
     showToast('\u2713 Workout logged');
     renderTrainingBuilder();
     try{ if(typeof loadWorkouts==='function') loadWorkouts(); }catch(e){}
+    try{ await loadTpHistory(); }catch(e){}
   }catch(e){ showToast('Could not save workout'); }
 }
 function tpSwapOpen(day,i){
@@ -11785,13 +11786,89 @@ function tpSwapPick(enc){
   renderTrainingBuilder();
   showToast('Swapped to '+x.n);
 }
+
+// ---- week history ----
+var _tpWeekOffset=0;         // 0 = this week, -1 = last week, etc.
+var _tpHistory=[];           // completed sessions pulled from workout_logs
+function _weekStart(d){ var x=new Date(d); var day=(x.getDay()+6)%7; x.setDate(x.getDate()-day); x.setHours(0,0,0,0); return x; }
+function _weekRange(offset){
+  var s=_weekStart(new Date()); s.setDate(s.getDate()+offset*7);
+  var e=new Date(s); e.setDate(e.getDate()+6);
+  return {start:s, end:e};
+}
+function _fmtRange(r){
+  var mo=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return mo[r.start.getMonth()]+' '+r.start.getDate()+' \u2013 '+mo[r.end.getMonth()]+' '+r.end.getDate();
+}
+function tpWeekNav(dir){
+  if(dir>0 && _tpWeekOffset>=0) return;   // can't go into the future
+  _tpWeekOffset+=dir;
+  renderTrainingBuilder();
+}
+async function loadTpHistory(){
+  if(!cl) return;
+  try{
+    var rows=await sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(cl.code)+'&order=logged_at.desc&limit=200');
+    _tpHistory=rows||[];
+  }catch(e){ _tpHistory=[]; }
+}
+function _tpWeekHeader(){
+  var r=_weekRange(_tpWeekOffset);
+  var label=_tpWeekOffset===0?'This week':(_tpWeekOffset===-1?'Last week':_fmtRange(r));
+  var canFwd=_tpWeekOffset<0;
+  return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px;background:var(--surface);border:1px solid #242424;border-radius:14px;padding:10px 8px;">'
+    +'<button onclick="tpWeekNav(-1)" style="background:transparent;border:none;color:#bbb;font-size:20px;font-weight:800;cursor:pointer;padding:4px 12px;line-height:1;">\u2039</button>'
+    +'<div style="text-align:center;min-width:0;">'
+      +'<div style="font-size:14px;font-weight:800;color:#fff;">'+label+'</div>'
+      +'<div style="font-size:11px;color:#888;margin-top:2px;">'+_fmtRange(r)+'</div>'
+    +'</div>'
+    +'<button onclick="tpWeekNav(1)" '+(canFwd?'':'disabled')+' style="background:transparent;border:none;color:'+(canFwd?'#bbb':'#333')+';font-size:20px;font-weight:800;cursor:'+(canFwd?'pointer':'default')+';padding:4px 12px;line-height:1;">\u203a</button>'
+  +'</div>';
+}
+function _tpHistoryView(){
+  var r=_weekRange(_tpWeekOffset);
+  var s=r.start.getTime(), e=r.end.getTime()+86399999;
+  var week=_tpHistory.filter(function(w){
+    var t=new Date(w.logged_at||w.date_str).getTime();
+    return t>=s && t<=e;
+  });
+  if(!week.length){
+    return '<div style="text-align:center;padding:40px 16px;color:#666;">'
+      +'<div style="font-size:34px;margin-bottom:10px;opacity:0.4;">\ud83d\uddd3\ufe0f</div>'
+      +'<div style="font-size:13px;">No workouts logged this week.</div>'
+    +'</div>';
+  }
+  // sort oldest-first within the week
+  week.sort(function(a,b){ return new Date(a.logged_at)-new Date(b.logged_at); });
+  var dayNames=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  return week.map(function(w){
+    var dt=new Date(w.logged_at||w.date_str);
+    var when=dayNames[dt.getDay()];
+    var lines=(w.description||'').split('\n').filter(Boolean);
+    return '<div style="background:var(--surface);border:1px solid #242424;border-radius:14px;padding:14px 15px;margin-bottom:10px;">'
+      +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:'+(lines.length?'10px':'0')+';">'
+        +'<span style="font-size:13px;font-weight:800;letter-spacing:0.5px;text-transform:uppercase;color:var(--gold);">'+_escHtml(w.title||'Workout')+'</span>'
+        +'<span style="font-size:11px;color:#888;flex-shrink:0;">'+when+'</span>'
+      +'</div>'
+      + lines.map(function(ln){
+          var parts=ln.split(':');
+          var name=parts.shift();
+          var sets=parts.join(':');
+          return '<div style="font-size:12.5px;color:#ccc;padding:5px 0;border-top:1px solid #1e1e1e;line-height:1.5;"><b style="color:#fff;">'+_escHtml(name)+'</b>'+(sets?'<span style="color:#999;">'+_escHtml(sets)+'</span>':'')+'</div>';
+        }).join('')
+    +'</div>';
+  }).join('');
+}
 function renderTrainingBuilder(){
   var el=document.getElementById('tpBody'); if(!el) return;
-  var days=_tpTrainingDays();
-  var warn = days<4
-    ? '<div style="background:rgba(255,68,85,0.08);border:1px solid rgba(255,68,85,0.3);border-radius:12px;padding:11px 13px;margin-bottom:14px;font-size:12.5px;color:#ff8a95;line-height:1.45;"><b>'+days+' training day'+(days===1?'':'s')+'</b> \u2014 below the 4-day minimum.</div>'
-    : '<div style="background:rgba(245,197,24,0.07);border:1px solid rgba(245,197,24,0.28);border-radius:12px;padding:11px 13px;margin-bottom:14px;font-size:12.5px;color:var(--gold);line-height:1.45;"><b>'+days+' training days</b> \u00b7 meets the 4-day minimum. Finish with abs, calves, or a walk.</div>';
-  el.innerHTML = warn + WEEKDAYS.map(_tpDayCard).join('');
+  var _y=window.scrollY;
+  var header=_tpWeekHeader();
+  if(_tpWeekOffset<0){
+    el.innerHTML = header + _tpHistoryView();
+  } else {
+    el.innerHTML = header + WEEKDAYS.map(_tpDayCard).join('');
+  }
+  window.scrollTo(0,_y);
 }
 function tpSetType(day,t){
   if(!_tpPlan[day]) _tpPlan[day]={};
@@ -12773,6 +12850,7 @@ async function renderPlanTab(){
   if(!_tpPlan) _tpPlan=_tpDefaultPlan();
   try{ await loadSetLogs(); }catch(e){}
   try{ await loadExerciseNotes(); }catch(e){}
+  try{ await loadTpHistory(); }catch(e){}
   if(_tpOpenDay===null) _tpOpenDay=_tpTodayName();
   body.innerHTML='<div id="tpBody"></div>'
     +'<button class="sbtn" onclick="saveTrainingPlan()" style="margin-top:6px;">Save \u2713</button>'
