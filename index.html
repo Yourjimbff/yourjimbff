@@ -2233,7 +2233,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.579.0';
+var APP_VERSION = 'v5.585.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -4104,7 +4104,7 @@ function renderTrainingList(){
           '</div>'+
           '<div style="font-size:16px;color:var(--muted);opacity:0.4;line-height:1;flex-shrink:0;margin-top:2px;">›</div>'+
         '</div>'+
-        (w.photo ? '<div style="margin-top:13px;border-radius:12px;overflow:hidden;background:#111;"><img src="'+w.photo+'" style="width:100%;height:auto;display:block;"></div>' : '')+
+        _woPhotosHtml(w.photo, {margin:'13px 0 0'})+
         (exHtml || (function(){
           var d=(w.description||'').trim();
           if(!d) return '';
@@ -5875,9 +5875,9 @@ function resetFreestyleForm(){
   if(typeof updateWoIntensity === 'function') updateWoIntensity(0);
   woIntensity = 0;
   // Reset workout photo
-  workoutPhotoData = null;
+  workoutPhotoData = null; workoutPhotos = [];
   var wps = document.getElementById('woPhotoSlot');
-  if(wps){ wps.classList.remove('hi'); wps.innerHTML='<input type="file" id="woPhotoInput" accept="image/*" onchange="hdlWorkoutPhoto(this)"><div class="psi" style="flex-direction:row;gap:9px;padding:11px 13px;"><div class="psi-ic" style="font-size:18px;">📷</div><div class="psi-tx" style="font-size:12.5px;">Add a photo</div></div>'; }
+  if(wps){ renderWoPhotoSlot(); }
 }
 
 function renderClientAssignedProgramSection(){
@@ -10277,20 +10277,97 @@ function hdlFoodPhoto(input){
 function hdlFoodPhotoNew(i){hdlFoodPhoto(i);}
 
 // Workout photo capture — gym proof, sauna, progress shot.
-var workoutPhotoData = null;
+var workoutPhotoData = null;      // legacy single (kept for save compat)
+var workoutPhotos = [];           // up to 2
+var _woPendingReads=0;
 function hdlWorkoutPhoto(input){
   if(!input.files||!input.files[0])return;
+  if(workoutPhotos.length>=2){ showToast('Up to 2 photos'); return; }
   var reader=new FileReader();
   reader.onload=function(e){
-    downscaleImage(e.target.result, 1440, 0.85).then(function(compact){
-      workoutPhotoData=compact;
-      var slot=document.getElementById('woPhotoSlot');
-      slot.classList.add('hi');
-      slot.innerHTML='<img src="'+workoutPhotoData+'" alt="workout"><div class="pchg">Change</div><input type="file" accept="image/*" onchange="hdlWorkoutPhoto(this)" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;">';
-      showToast('📷 Photo ready');
+    downscaleImage(e.target.result, 1440, 0.82).then(function(compact){
+      workoutPhotos.push(compact);
+      workoutPhotoData=workoutPhotos[0]||null;
+      renderWoPhotoSlot();
+      readWorkoutScreenshot(compact);   // auto-read it and fill the field
     });
   };
   reader.readAsDataURL(input.files[0]);
+  try{ input.value=''; }catch(e){}
+}
+async function readWorkoutScreenshot(dataUrl){
+  var status=document.getElementById('woVoiceStatus');
+  if(status){ status.style.display='block'; status.textContent='Reading your screenshot…'; }
+  _woPendingReads++;
+  var parsed=null;
+  try{
+    var b64=dataUrl.split(',')[1];
+    var mt=(dataUrl.split(';')[0].split(':')[1])||'image/jpeg';
+    var sys='This image is a screenshot from a workout-tracking app (or a photo of a written log). Extract the workout into ONLY valid JSON, no prose, no markdown. Shape: {"title":"short workout name or empty string","exercises":[{"name":"Exercise","did":"sets x reps @ weight if shown, e.g. 3x8 @ 135 lb — else empty"}]}. Read exactly what is shown. Do NOT invent numbers. If you cannot read a workout, return {"title":"","exercises":[]}.';
+    var content=[
+      {type:'image',source:{type:'base64',media_type:mt,data:b64}},
+      {type:'text',text:sys}
+    ];
+    var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:content}],max_tokens:600})});
+    var data=await res.json();
+    var txt=''; if(data&&data.content){ data.content.forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; }); }
+    txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
+    var mm=txt.match(/\{[\s\S]*\}/); if(mm) txt=mm[0];
+    parsed=JSON.parse(txt);
+  }catch(e){ parsed=null; }
+  _woPendingReads--;
+
+  if(parsed && parsed.exercises && parsed.exercises.length){
+    var lines=[];
+    if(parsed.title){ window._woLoggedTitle=window._woLoggedTitle||parsed.title; }
+    parsed.exercises.forEach(function(ex){ if(ex&&ex.name) lines.push('• '+ex.name+(ex.did?' — '+ex.did:'')); });
+    var block=(parsed.title?parsed.title+'\n':'')+lines.join('\n');
+    var el=document.getElementById('woDesc');
+    if(el){
+      var cur=String(el.value||'').trim();
+      el.value = cur ? cur+'\n'+block : block;   // second screenshot APPENDS
+      _woOrganized=true;
+    }
+    if(status){ status.style.display='none'; }
+    if(_woPendingReads<=0) _askKeepScreenshot();
+  } else {
+    if(status){ status.textContent='Couldn’t read that one — it’s still attached as a photo.'; setTimeout(function(){ if(status) status.style.display='none'; },2600); }
+  }
+}
+function _askKeepScreenshot(){
+  var host=document.getElementById('woVoiceStatus'); if(!host) return;
+  host.style.display='block';
+  host.innerHTML='<div style="display:flex;align-items:center;gap:8px;justify-content:center;flex-wrap:wrap;padding:4px 0;">'
+    +'<span style="color:#9a9a9a;">Filled it in. Keep the screenshot attached?</span>'
+    +'<button onclick="_keepScreenshot(true)" style="background:#141414;border:1px solid #2a2a2a;color:#ddd;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:800;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Keep</button>'
+    +'<button onclick="_keepScreenshot(false)" style="background:transparent;border:1px solid #2a2a2a;color:#999;border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Drop it</button>'
+  +'</div>';
+}
+function _keepScreenshot(keep){
+  if(!keep){ workoutPhotos=[]; workoutPhotoData=null; renderWoPhotoSlot(); }
+  var host=document.getElementById('woVoiceStatus'); if(host){ host.style.display='none'; host.innerHTML=''; }
+}
+function removeWoPhoto(i){ workoutPhotos.splice(i,1); workoutPhotoData=workoutPhotos[0]||null; renderWoPhotoSlot(); }
+function renderWoPhotoSlot(){
+  var slot=document.getElementById('woPhotoSlot'); if(!slot) return;
+  if(!workoutPhotos.length){
+    slot.classList.remove('hi');
+    slot.style.padding='0';
+    slot.innerHTML='<input type="file" id="woPhotoInput" accept="image/*" onchange="hdlWorkoutPhoto(this)"><div class="psi" style="flex-direction:row;gap:8px;padding:9px 12px;"><div class="psi-ic" style="font-size:15px;">📷</div><div class="psi-tx" style="font-size:12px;">Add a photo <span style="color:var(--muted);font-weight:400;">(screenshot works too)</span></div></div>';
+    return;
+  }
+  slot.classList.remove('hi');
+  slot.style.padding='0';
+  var thumbs=workoutPhotos.map(function(p,i){
+    return '<div style="position:relative;width:64px;height:64px;border-radius:10px;overflow:hidden;flex-shrink:0;">'
+      +'<img src="'+p+'" style="width:100%;height:100%;object-fit:cover;display:block;">'
+      +'<button onclick="event.stopPropagation();removeWoPhoto('+i+')" style="position:absolute;top:2px;right:2px;width:18px;height:18px;border-radius:9px;background:rgba(0,0,0,0.65);border:none;color:#fff;font-size:11px;line-height:1;cursor:pointer;padding:0;">×</button>'
+    +'</div>';
+  }).join('');
+  var addBtn = workoutPhotos.length<2
+    ? '<label style="width:64px;height:64px;border-radius:10px;border:1px dashed #333;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;color:#888;font-size:20px;">+<input type="file" id="woPhotoInput" accept="image/*" onchange="hdlWorkoutPhoto(this)" style="display:none;"></label>'
+    : '';
+  slot.innerHTML='<div style="display:flex;gap:8px;align-items:center;padding:8px;">'+thumbs+addBtn+'</div>';
 }
 
 function _statedMacros(t){
@@ -12005,7 +12082,8 @@ function renderTrainingBuilder(){
   if(_tpWeekOffset<0){
     el.innerHTML = header + _tpHistoryView();
   } else {
-    el.innerHTML = header + WEEKDAYS.map(_tpDayCard).join('');
+    var _brief = (cl && typeof isTrainer==='function' && isTrainer(cl.code)) ? _briefingCard() : '';
+    el.innerHTML = _brief + header + WEEKDAYS.map(_tpDayCard).join('');
   }
   window.scrollTo(0,_y);
 }
@@ -12982,6 +13060,155 @@ async function loadGrocTab(){
   try{ await loadSavedFoods(); }catch(e){}      // your library powers the search
   await loadMealPlanNew();
   renderMealPlan();
+}
+
+// ===== COACHING BRIEFING (Phase 1: template engine, real data, no AI call) =====
+// Reads the client's actual signals and stacks them into one short, forward-looking read.
+function _briefName(){ try{ return (cl&&cl.name?String(cl.name).split(' ')[0]:''); }catch(e){ return ''; } }
+function _weekWorkoutCount(offset){
+  // count logged sessions in the given week from _tpHistory
+  try{
+    var r=_weekRange(offset||0), s=r.start.getTime(), e=r.end.getTime()+86399999;
+    return (_tpHistory||[]).filter(function(w){ var t=new Date(w.logged_at||w.date_str).getTime(); return t>=s&&t<=e; }).length;
+  }catch(e){ return 0; }
+}
+function _recentNoteMood(){
+  // scan today's + recent session/exercise notes for duress vs. strong language
+  var txt='';
+  try{ for(var k in _tpSessNotes){ txt+=' '+(_tpSessNotes[k]||''); } }catch(e){}
+  try{ for(var k2 in _tpNotes){ txt+=' '+(_tpNotes[k2]||''); } }catch(e){}
+  txt=txt.toLowerCase();
+  if(!txt.trim()) return null;
+  var hard=['exhausted','drained','tired','stress','stressed','overwhelm','sore','pain','hurt','tight','sick','burn','burnt','no sleep','tough','struggl','hard week','underwater','can\u2019t','cant'];
+  var good=['strong','great','pr','crushed','easy','energ','good','felt amazing','best','locked in','dialed','fire'];
+  var h=0,g=0;
+  hard.forEach(function(w){ if(txt.indexOf(w)>=0) h++; });
+  good.forEach(function(w){ if(txt.indexOf(w)>=0) g++; });
+  if(h>g && h>0) return 'strain';
+  if(g>h && g>0) return 'strong';
+  return null;
+}
+function _pacingRead(){
+  // are they moving toward goal weight?
+  try{
+    if(!profile) return null;
+    var w=parseFloat(profile.weight), gw=parseFloat(profile.goalWeight);
+    if(isNaN(w)||isNaN(gw)) return null;
+    var goal=(profile.goal||'').toLowerCase();
+    var diff=Math.abs(w-gw);
+    if(diff<=1.5) return 'atgoal';
+    return goal.indexOf('gain')>=0||goal.indexOf('build')>=0 ? 'building' : 'toward';
+  }catch(e){ return null; }
+}
+function _buildBriefing(){
+  var name=_briefName();
+  var hi = name ? name : 'there';
+  var foodCt = (typeof todayFood!=='undefined'&&todayFood)?todayFood.length:0;
+  var woToday = (typeof todayWo!=='undefined'&&todayWo)?todayWo.length:0;
+  var thisWk=_weekWorkoutCount(0), lastWk=_weekWorkoutCount(-1);
+  var target=Math.min(_tpTrainingDays()||4, 5);
+  var mood=_recentNoteMood();
+  var pacing=_pacingRead();
+  var hour=new Date().getHours();
+  var partOfDay = hour<11?'morning':(hour<17?'afternoon':'evening');
+
+  // Total signal available this week — food today, sessions this week, any notes, weight for pacing.
+  var hasNotes = mood!==null;
+  var hasPacing = pacing!==null;
+  var totalHistory = (_tpHistory||[]).length;
+  var signal = (foodCt>0?1:0) + (thisWk>0?thisWk:0) + (lastWk>0?1:0) + (hasNotes?1:0) + (hasPacing?1:0) + (totalHistory>0?1:0);
+  var isNewish = signal<=1 && totalHistory<2 && thisWk===0 && foodCt===0;
+
+  // --- pick a HEADLINE (the read) by stacking signals, most important first ---
+  var head='', sub='';
+
+  // 0) Not enough logged yet to read them accurately — be honest instead of faking it.
+  if(isNewish){
+    head = name?('Let’s get a read, '+name+'.'):'Let’s get a baseline.';
+    sub  = 'I don’t have enough logged yet to tell you where you really stand. Start logging your food and training — a few days in, this turns into a real read on your progress.';
+    return {head:head, sub:sub, thisWk:thisWk, target:target, foodCt:foodCt, mode:'baseline'};
+  }
+
+  // 1) Strain in their own words outranks everything — meet them there (your tone)
+  if(mood==='strain'){
+    head = name?('Heavy stretch, '+name+'.'):'Heavy stretch.';
+    sub  = 'You said it felt hard \u2014 that\u2019s logged and it\u2019s real. Don\u2019t chase perfect today. Just show up, hit protein, move a little. Consistency beats intensity right now.';
+  }
+  // 2) Ghosting — nothing logged, past midday
+  else if(hour>=14 && foodCt===0 && woToday===0 && thisWk===0){
+    head = name?(name+', it\u2019s quiet.'):'It\u2019s quiet today.';
+    sub  = 'Nothing logged yet and it\u2019s past 2. Busy or slipping? Either way \u2014 log one thing right now and we\u2019re back on.';
+  }
+  // 3) On a roll — consistent training + logging
+  else if(thisWk>=Math.max(3,target-1) && foodCt>0){
+    head = name?('Locked in, '+name+'.'):'Locked in.';
+    sub  = 'That\u2019s '+thisWk+' sessions this week and your food\u2019s tracked. This is exactly what progress looks like. Keep the standard.';
+  }
+  // 4) Strong week in their words
+  else if(mood==='strong' && (thisWk>0||woToday>0)){
+    head = name?('Feeling it, '+name+'.'):'Feeling it.';
+    sub  = 'You\u2019re logging strong sessions. Ride it \u2014 add a little where you can, and keep the food matched to the work.';
+  }
+  // 5) Building momentum vs last week
+  else if(thisWk>lastWk && thisWk>0){
+    head = 'Trending up.';
+    sub  = 'More training this week than last ('+thisWk+' vs '+lastWk+'). That\u2019s the direction. Protect it \u2014 sleep and food carry the gains.';
+  }
+  // 6) Slipped from last week
+  else if(lastWk>=target && thisWk<lastWk){
+    head = name?(name+', let\u2019s reset.'):'Let\u2019s reset.';
+    sub  = 'Last week was '+lastWk+' sessions, this week\u2019s at '+thisWk+'. No guilt \u2014 just get one in today and rebuild the rhythm.';
+  }
+  // 7) Pacing toward goal, steady
+  else if(pacing==='atgoal'){
+    head = 'Right at your number.';
+    sub  = 'You\u2019re on your goal weight \u2014 now it\u2019s about holding it. Keep training, keep protein high, and let the habit run.';
+  }
+  else if(pacing==='building'){
+    head = 'Build mode.';
+    sub  = 'You\u2019re chasing size \u2014 that means eating enough and pushing the heavy lifts. Don\u2019t undereat on training days.';
+  }
+  // 8) Default — a clean, oriented start
+  else {
+    head = 'Good '+partOfDay+(name?', '+name:'')+'.';
+    if(woToday>0) sub='Workout\u2019s in. Now match it \u2014 protein and a solid meal. You\u2019re on track.';
+    else if(foodCt>0) sub='Food\u2019s tracked. If today\u2019s a training day, let\u2019s get that session logged too.';
+    else sub='Here\u2019s the move: log your food as you go and get your session in. Small, consistent, repeatable.';
+  }
+  return {head:head, sub:sub, thisWk:thisWk, target:target, foodCt:foodCt, mode:'read'};
+}
+var COACH_BLUE='#8fb4d4';       // icy silver-blue — the intelligence layer, not the gold action UI
+var COACH_BLUE_DIM='#6e8ba6';
+function _briefingCard(){
+  var b=_buildBriefing();
+  // trainer override (Phase 2) takes precedence when present
+  var ov = (typeof _clientCoachLine==='function') ? _clientCoachLine() : null;
+  var overrideHtml = ov ? (
+    '<div style="display:flex;gap:9px;align-items:flex-start;margin-bottom:13px;padding-bottom:13px;border-bottom:1px solid rgba(143,180,212,0.18);">'
+      +'<div style="font-size:15px;flex-shrink:0;">\ud83d\udc4b</div>'
+      +'<div style="min-width:0;"><div style="font-size:10px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:'+COACH_BLUE+';margin-bottom:3px;">From Yusuf</div>'
+        +'<div style="font-size:13px;color:#fff;font-weight:600;line-height:1.5;">'+_escHtml(ov)+'</div></div>'
+    +'</div>'
+  ) : '';
+  var meter='';
+  if(b.mode!=='baseline'){
+    var dots='';
+    for(var i=0;i<b.target;i++){ dots+='<span style="width:7px;height:7px;border-radius:50%;background:'+(i<b.thisWk?COACH_BLUE:'#2a2f36')+';display:inline-block;box-shadow:'+(i<b.thisWk?'0 0 6px rgba(143,180,212,0.5)':'none')+';"></span>'; }
+    meter='<div style="display:flex;align-items:center;gap:6px;margin-top:14px;">'+dots
+      +'<span style="font-size:11px;color:'+COACH_BLUE_DIM+';margin-left:6px;">'+b.thisWk+' of '+b.target+' sessions this week</span>'
+    +'</div>';
+  }
+  var eyebrow='<div style="display:flex;align-items:center;gap:7px;margin-bottom:9px;">'
+      +'<span style="width:22px;height:22px;border-radius:7px;background:rgba(143,180,212,0.12);border:1px solid rgba(143,180,212,0.3);display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;color:'+COACH_BLUE+';">\u2726</span>'
+      +'<span style="font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:'+COACH_BLUE+';">'+(b.mode==='baseline'?'Getting your baseline':'Your coach read')+'</span>'
+    +'</div>';
+  return '<div style="background:linear-gradient(150deg,#13181e,#0c0f13);border:1px solid rgba(143,180,212,0.22);border-radius:18px;padding:17px 17px;margin-bottom:16px;box-shadow:0 0 0 1px rgba(143,180,212,0.04),0 8px 24px rgba(0,0,0,0.3);">'
+    + overrideHtml
+    + eyebrow
+    +'<div style="font-size:19px;font-weight:800;color:#fff;letter-spacing:-0.3px;line-height:1.25;">'+_escHtml(b.head)+'</div>'
+    +'<div style="font-size:13.5px;color:#aeb9c4;line-height:1.6;margin-top:8px;">'+_escHtml(b.sub)+'</div>'
+    + meter
+  +'</div>';
 }
 async function renderPlanTab(){
   var body=document.getElementById('feedTabBody'); if(!body) return;
@@ -14686,7 +14913,7 @@ async function logWorkout(){
     intensity: _hasInt ? woIntensity : null,
     notes: notes,
     feel: !_hasInt ? '' : woIntensity >= 9 ? 'PR Day' : woIntensity >= 7 ? 'Heavy' : woIntensity >= 5 ? 'Solid' : woIntensity >= 3 ? 'Light' : 'Easy',
-    photo: workoutPhotoData || null,
+    photo: workoutPhotos.length ? (workoutPhotos.length>1 ? JSON.stringify(workoutPhotos) : workoutPhotos[0]) : null,
     logged_at: new Date().toISOString()
   };
   todayWo.unshift(entry);
@@ -14701,7 +14928,7 @@ async function logWorkout(){
       intensity: _hasInt ? woIntensity : null,
       notes: notes,
       feel: entry.feel,
-      photo: workoutPhotoData || null,
+      photo: workoutPhotos.length ? (workoutPhotos.length>1 ? JSON.stringify(workoutPhotos) : workoutPhotos[0]) : null,
       date_str: todayDateStr
     };
     var saved = await sbInsertReturning('workout_logs', row);
@@ -15111,6 +15338,19 @@ function onFitnessTileTap(){
   if(!hasWo){ openManualWorkoutModal(); return; }
   tog('Workout');
 }
+function _woPhotosHtml(photo, opts){
+  if(!photo) return '';
+  var arr=[];
+  if(typeof photo==='string' && photo.charAt(0)==='['){ try{ arr=JSON.parse(photo); }catch(e){ arr=[photo]; } }
+  else arr=[photo];
+  arr=arr.filter(Boolean);
+  if(!arr.length) return '';
+  var m=(opts&&opts.margin)||'8px 0';
+  var two=arr.length>1;
+  return '<div style="display:'+(two?'grid':'block')+';'+(two?'grid-template-columns:1fr 1fr;gap:6px;':'')+'margin:'+m+';">'
+    + arr.map(function(src){ return '<div style="border-radius:12px;overflow:hidden;background:#111;"><img src="'+src+'" onclick="event.stopPropagation();openPhotoLightbox(this.src)" style="width:100%;height:auto;display:block;cursor:pointer;"></div>'; }).join('')
+  +'</div>';
+}
 function rendTodayWo(){
   var c=document.getElementById('todayWoList');
   var _lwb=document.getElementById('logWoBtn'); if(_lwb) _lwb.textContent='Log a workout';
@@ -15125,7 +15365,7 @@ function rendTodayWo(){
   var _lwbShow=document.getElementById('logWoBtn'); if(_lwbShow) _lwbShow.style.display='';
   var fe={'Rough':'😤','Good':'💪','Great':'🔥','Best ever':'⚡','PR Day':'⚡','Heavy':'🔥','Solid':'💪','Light':'🚶','Easy':'🚶'};
   c.innerHTML=todayWo.map(function(w,i){
-    var photoHtml = w.photo ? '<div style="margin:8px 0;border-radius:12px;overflow:hidden;"><img src="'+w.photo+'" onclick="event.stopPropagation();openPhotoLightbox(this.src)" style="width:100%;height:auto;display:block;cursor:pointer;"></div>' : '';
+    var photoHtml = _woPhotosHtml(w.photo, {margin:'8px 0'});
     // Always show the workout as bullet points (one line per exercise).
     var lines = (w.desc||'').split('\n').map(function(s){return s.replace(/^[•\-\s]+/,'').trim();}).filter(Boolean);
     if(lines.length<=1){ lines = (w.desc||'').split(',').map(function(s){return s.trim();}).filter(Boolean); }
