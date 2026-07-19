@@ -2274,7 +2274,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.607.0';
+var APP_VERSION = 'v5.608.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -16075,10 +16075,13 @@ function openProfileGoals(){
     try{ host.appendChild(panel); }catch(e){}
     // inside the modal the collapsible header is redundant
     var hd=document.getElementById('profilePanelHead'); if(hd) hd.style.display='none';
+    var mc=document.getElementById('manageClientsBox'); if(mc) mc.style.display='none';
+    var ac=document.getElementById('changeAccessCard'); if(ac) ac.style.display='none';
     panel.style.background='transparent'; panel.style.border='none'; panel.style.marginBottom='0';
   }
   var b=document.getElementById('profilePanelBody');
   if(b){ b.style.display='block'; b.style.padding='0'; }
+  _pGoalOpen=null;
   try{ if(typeof loadProfileTab==='function') loadProfileTab(); }catch(e){}
   try{ renderPhaseUI(); }catch(e){}
   try{ openM('mProfileGoals'); }catch(e){}
@@ -16149,6 +16152,7 @@ function selPGender(el,val){
 // ===== TRAINING PHASES — the calibrator =====
 var PHASES={
   fatloss:{
+    fatLo:0.25, fatHi:0.30, proHi:1.05,
     key:'fatloss', step:'Phase 1', name:'Fat Loss',
     line:'Strip it off. Clean, whole, deliberate.',
     who:'You\u2019re carrying real fat and want it gone.',
@@ -16157,6 +16161,7 @@ var PHASES={
     days:{male:5, female:4}
   },
   comp:{
+    fatLo:0.25, fatHi:0.32, proHi:1.12,
     key:'comp', step:'Phase 2', name:'Composition Change',
     line:'Fuel the work. Recomp with intent.',
     who:'You\u2019ve lost a lot already and you\u2019re training hard now.',
@@ -16165,6 +16170,7 @@ var PHASES={
     days:{male:6, female:5}
   },
   build:{
+    fatLo:0.25, fatHi:0.35, proHi:1.18,
     key:'build', step:'Phase 3', name:'Build & Condition',
     line:'Add muscle without losing your shape.',
     who:'You\u2019re fit, lean-ish, training and eating well.',
@@ -16174,6 +16180,22 @@ var PHASES={
   }
 };
 var PHASE_ORDER=['fatloss','comp','build'];
+// How conditioned do you want to be — this sets the cardio minutes, not the other way round.
+var COND_LEVELS=[
+  {key:'healthy', name:'Healthy',   line:'Moving enough to feel good.',            min:120},
+  {key:'solid',   name:'In shape',  line:'Visibly fit, good engine.',              min:180},
+  {key:'high',    name:'Very fit',  line:'Lean, conditioned, hard to gas out.',    min:250},
+  {key:'elite',   name:'Athlete',   line:'Performance-level conditioning.',        min:330}
+];
+function _condFromMin(m){
+  var best=COND_LEVELS[0];
+  for(var i=0;i<COND_LEVELS.length;i++){ if(m>=COND_LEVELS[i].min-30) best=COND_LEVELS[i]; }
+  return best;
+}
+function pSetCond(k){
+  for(var i=0;i<COND_LEVELS.length;i++){ if(COND_LEVELS[i].key===k){ profile.cardio_min=COND_LEVELS[i].min; profile.cardio_manual=1; } }
+  renderPhaseUI();
+}
 function _pGender(){ try{ return (profile&&profile.gender==='female')?'female':'male'; }catch(e){ return 'male'; } }
 function _pDayRange(){ return _pGender()==='female' ? {min:4,max:7} : {min:5,max:7}; }
 function _curPhase(){
@@ -16230,6 +16252,24 @@ function _fuelTargets(){
   if(profile.carb_manual>0) carb=profile.carb_manual;
   else carb=Math.round((cal - prot*4 - fat*9)/4);
   return {cal:cal, prot:prot, carb:carb, fat:fat, days:days, cardio:cardio, phase:P};
+}
+// Ranges, not single numbers — the target is a band you work inside.
+function _fuelRanges(){
+  var T=_fuelTargets(), P=PHASES[_curPhase()];
+  var gw=parseFloat(profile&&(profile.goal_weight||profile.goalWeight))||parseFloat(profile&&profile.weight)||160;
+  var cw=parseFloat(profile&&profile.weight)||gw;
+  // protein: at least your goal weight, and higher if you're building toward it
+  var pLo=Math.round(Math.max(gw, cw*0.9));
+  var pHi=Math.round(gw*(P.proHi||1.1));
+  if(pHi<=pLo) pHi=pLo+10;
+  // fat: a band as a % of calories
+  var fLo=Math.round(T.cal*(P.fatLo||0.25)/9);
+  var fHi=Math.round(T.cal*(P.fatHi||0.32)/9);
+  // carbs: whatever's left at each end of the band
+  var cHi=Math.round((T.cal - pLo*4 - fLo*9)/4);
+  var cLo=Math.round((T.cal - pHi*4 - fHi*9)/4);
+  if(cLo<50) cLo=50;
+  return {cal:T.cal, pLo:pLo, pHi:pHi, fLo:fLo, fHi:fHi, cLo:cLo, cHi:cHi};
 }
 function pSetFuel(k,v){
   var n=parseInt(v,10)||0;
@@ -16352,16 +16392,17 @@ function renderDailyStrip(){
 }
 
 // ---- Goal target: set it once, then it collapses to a line
-var _pGoalOpen=false;
+var _pGoalOpen=null;   // null = decide on open; true/false = user's explicit choice
 function pToggleGoal(){ _pGoalOpen=!_pGoalOpen; renderPhaseUI(); }
-function pSetGoalW(v){ var lb=wToLb(parseFloat(v)); profile.goal_weight=isNaN(lb)?null:Math.round(lb*10)/10; profile.goalWeight=profile.goal_weight; renderPhaseUI(); }
-function pSetGoalBF(v){ profile.goal_bodyfat=parseFloat(v)||null; renderPhaseUI(); }
+function pSetGoalW(v){ _pGoalOpen=true; var lb=wToLb(parseFloat(v)); profile.goal_weight=isNaN(lb)?null:Math.round(lb*10)/10; profile.goalWeight=profile.goal_weight; renderPhaseUI(); }
+function pSetGoalBF(v){ _pGoalOpen=true; profile.goal_bodyfat=parseFloat(v)||null; renderPhaseUI(); }
 function pSetBodyFat(v){ profile.bodyfat=parseFloat(v)||null; renderPhaseUI(); }
 function _renderGoalWrap(){
   var w=document.getElementById('pGoalWrap'); if(!w) return;
   var gw=profile&&(profile.goal_weight||profile.goalWeight);
   var gbf=profile&&profile.goal_bodyfat;
   var isSet=!!(gw||gbf);
+  if(_pGoalOpen===null) _pGoalOpen = !isSet;   // first render: open only if nothing set yet
   if(isSet && !_pGoalOpen){
     var parts=[];
     if(gw) parts.push(wToDisp(gw)+' '+wUnit());
@@ -16487,15 +16528,23 @@ function renderPhaseUI(){
       +'<div style="font-size:11.5px;color:var(--m2);line-height:1.5;margin-bottom:10px;">Weight sessions a week. '+(_pGender()==='female'?'4\u20136 is the range for most women':'5\u20137 is the range for most men')+'.</div>'
       +'<div style="display:flex;gap:4px;background:#141414;border:1px solid #232323;border-radius:12px;padding:5px;">'+dayBtns+'</div>'
       +'<div style="font-size:11.5px;color:var(--gold);margin-top:8px;text-align:center;">'+_dayRead+'</div>'
-      +'<div style="margin-top:20px;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px;">Cardio</div>'
-      +'<div style="font-size:11.5px;color:var(--m2);line-height:1.55;margin-bottom:10px;">'+_cardioWhy(T)+'</div>'
-      +'<div style="display:flex;gap:10px;align-items:flex-end;">'
-        +'<div style="flex:1;min-width:0;"><div style="font-size:9px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:var(--muted);margin-bottom:5px;">Minutes / week</div>'
-          +'<input value="'+T.cardio+'" inputmode="numeric" onchange="pSetCardio(this.value)" style="width:100%;box-sizing:border-box;background:#141414;border:1px solid #2a2a2a;border-radius:9px;color:#fff;font-size:16px;font-weight:800;padding:11px 6px;text-align:center;font-family:inherit;"></div>'
-        +'<div style="flex:1;min-width:0;"><div style="font-size:9px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:var(--muted);margin-bottom:5px;">Days / week</div>'
-          +'<input value="'+cd+'" inputmode="numeric" onchange="pSetCardioDays(this.value)" style="width:100%;box-sizing:border-box;background:#141414;border:1px solid #2a2a2a;border-radius:9px;color:#fff;font-size:16px;font-weight:800;padding:11px 6px;text-align:center;font-family:inherit;"></div>'
+      +'<div style="margin-top:20px;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px;">Conditioning</div>'
+      +'<div style="font-size:11.5px;color:var(--m2);line-height:1.55;margin-bottom:10px;">How good a shape do you want to be in? That sets your cardio.</div>'
+      + COND_LEVELS.map(function(L){
+          var on=(_condFromMin(T.cardio).key===L.key);
+          return '<div onclick="pSetCond(\''+L.key+'\')" style="display:flex;align-items:center;gap:10px;background:'+(on?'rgba(245,197,24,0.09)':'transparent')+';border:1px solid '+(on?'rgba(245,197,24,0.45)':'#232323')+';border-radius:11px;padding:11px 12px;margin-bottom:7px;cursor:pointer;">'
+            +'<div style="width:17px;height:17px;border-radius:50%;border:2px solid '+(on?'var(--gold)':'#3a3a3a')+';flex-shrink:0;display:flex;align-items:center;justify-content:center;">'+(on?'<div style="width:8px;height:8px;border-radius:50%;background:var(--gold);"></div>':'')+'</div>'
+            +'<div style="flex:1;min-width:0;"><div style="font-size:13.5px;font-weight:800;color:'+(on?'#fff':'var(--text)')+';">'+L.name+'</div>'
+              +'<div style="font-size:11.5px;color:var(--m2);margin-top:1px;">'+L.line+'</div></div>'
+            +'<div style="font-size:12px;font-weight:800;color:'+(on?'var(--gold)':'#5a5a5a')+';flex-shrink:0;">'+L.min+'<span style="font-size:9px;"> min</span></div>'
+          +'</div>';
+        }).join('')
+      +'<div style="display:flex;align-items:center;gap:10px;margin-top:11px;">'
+        +'<span style="flex:1;min-width:0;font-size:12px;color:var(--m2);">Spread over</span>'
+        +'<input value="'+cd+'" inputmode="numeric" onchange="pSetCardioDays(this.value)" style="width:52px;background:#141414;border:1px solid #2a2a2a;border-radius:8px;color:#fff;font-size:15px;font-weight:800;padding:8px 4px;text-align:center;flex-shrink:0;font-family:inherit;">'
+        +'<span style="font-size:12px;color:var(--m2);flex-shrink:0;">days'+(perDay?' \u2014 about '+perDay+' min each':'')+'</span>'
       +'</div>'
-      +(perDay?'<div style="font-size:11.5px;color:var(--gold);margin-top:8px;text-align:center;">That\u2019s about <b>'+perDay+' min</b> a session.</div>':'');
+      +'<div style="font-size:11.5px;color:var(--m2);line-height:1.55;margin-top:11px;">'+_cardioWhy(T)+'</div>';
   }
 
   // ---- fuel
@@ -16507,15 +16556,21 @@ function renderPhaseUI(){
         +'<div style="font-size:9px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:var(--muted);text-align:center;margin-bottom:5px;">'+label+'</div>'
         +'<input value="'+val+'" inputmode="numeric" onchange="pSetFuel(\''+k+'\',this.value)" style="width:100%;box-sizing:border-box;background:#141414;border:1px solid #2a2a2a;border-radius:9px;color:'+color+';font-size:16px;font-weight:800;padding:11px 4px;text-align:center;font-family:inherit;"></div>';
     }
+    var R=_fuelRanges();
+    function rng(lo,hi){ return '<div style="font-size:10px;color:#6f6f6f;text-align:center;margin-top:4px;font-weight:700;">'+lo+'\u2013'+hi+'</div>'; }
     fc.innerHTML='<div style="margin-top:20px;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px;">Your Fuel</div>'
-      +'<div style="font-size:11.5px;color:var(--m2);line-height:1.5;margin-bottom:11px;">Calibrated from your phase, training and cardio. Type over anything.</div>'
-      +'<div style="display:flex;gap:7px;">'
-        +box('cal','Cal',T.cal,'#fff')+box('prot','Protein',T.prot,'#fff')+box('carb','Carbs',T.carb,'#fff')+box('fat','Fat',T.fat,'#fff')
+      +'<div style="font-size:11.5px;color:var(--m2);line-height:1.5;margin-bottom:11px;">A working range, not a fixed number. Land anywhere in the band.</div>'
+      +'<div style="display:flex;gap:7px;align-items:flex-start;">'
+        +'<div style="flex:1;min-width:0;">'+box('cal','Cal',T.cal,'#fff')+'</div>'
+        +'<div style="flex:1;min-width:0;">'+box('prot','Protein',T.prot,'#fff')+rng(R.pLo,R.pHi)+'</div>'
+        +'<div style="flex:1;min-width:0;">'+box('carb','Carbs',T.carb,'#fff')+rng(R.cLo,R.cHi)+'</div>'
+        +'<div style="flex:1;min-width:0;">'+box('fat','Fat',T.fat,'#fff')+rng(R.fLo,R.fHi)+'</div>'
       +'</div>'
-      +'<div style="font-size:11.5px;color:var(--m2);margin-top:10px;line-height:1.6;">'
-        +'Protein anchors to your goal weight. Fat holds at <b style="color:#ccc;">'+fatPctNow+'% of calories</b> \u2014 carbs take the rest, so fat never balloons to cover a surplus.'
+      +'<div style="font-size:11.5px;color:var(--m2);margin-top:12px;line-height:1.65;">'
+        +'<b style="color:#ccc;">Protein '+R.pLo+'\u2013'+R.pHi+'g.</b> Your goal weight is the floor, not the ceiling \u2014 building toward a heavier frame means the top of that range is fair game.<br><br>'
+        +'<b style="color:#ccc;">Fat '+R.fLo+'\u2013'+R.fHi+'g.</b> The low end keeps you very lean; the high end is fine in a surplus. Carbs move to cover whatever fat doesn\u2019t.'
       +'</div>'
-      +'<div style="text-align:center;margin-top:10px;"><span onclick="pResetFuel()" style="cursor:pointer;font-size:11px;font-weight:800;color:#777;">Reset to calculated</span></div>';
+      +'<div style="text-align:center;margin-top:11px;"><span onclick="pResetFuel()" style="cursor:pointer;font-size:11px;font-weight:800;color:#777;">Reset to calculated</span></div>';
   }
   try{ updGoalsTileSub(); }catch(e){}
 }
