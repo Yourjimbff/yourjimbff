@@ -1,13 +1,3 @@
-  // Fuel comes from the phase calibrator (fat is a % of calories, never a remainder).
-  profile.weight=w; profile.goal_weight=gw; profile.goalWeight=gw; profile.age=age; profile.height=height; profile.gender=gender;
-  var _T=_fuelTargets();
-  var cal=_T.cal, pro=_T.prot;
-  profile = Object.assign(profile,{
-    goal:goal, phase:_curPhase(),
-    train_days:_T.days, cardio_min:_T.cardio,
-    carb_target:_T.carb, fat_target:_T.fat,
-    cal_target:cal, calTarget:cal, protein_target:pro, proteinTarget:pro
-  });
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2284,7 +2274,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.604.0';
+var APP_VERSION = 'v5.607.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -16298,6 +16288,14 @@ function _daFuelToday(){
   cal=Math.max(1200, Math.round(cal/10)*10);
   return {cal:cal, base:T.cal, trained:tr, cardio:cd};
 }
+// Don't ask "did you train?" at 8am. Ask in the evening, or any time on a past day.
+function _daShouldAsk(){
+  try{ if(typeof isViewingToday==='function' && !isViewingToday()) return true; }catch(e){}
+  try{ return new Date().getHours() >= 18; }catch(e){ return true; }
+}
+function _daIsToday(){
+  try{ return (typeof isViewingToday==='function') ? isViewingToday() : true; }catch(e){ return true; }
+}
 function renderDailyStrip(){
   var host=document.getElementById('dailyStrip'); if(!host) return;
   var tr=_daTrained(), cd=_daCardio(), F=_daFuelToday();
@@ -16312,9 +16310,9 @@ function renderDailyStrip(){
       +'<span style="flex:1;min-width:0;font-size:13px;color:#ddd;font-weight:700;">Trained today</span>'
       +'<span style="font-size:11px;color:var(--muted);flex-shrink:0;">from your log</span>'
     +'</div>';
-  } else {
+  } else if(_daShouldAsk() || tr.val!==null){
     rows+='<div style="display:flex;align-items:center;gap:9px;margin-bottom:9px;">'
-      +'<span style="flex:1;min-width:0;font-size:13px;color:#ccc;font-weight:600;">Did you train today?</span>'
+      +'<span style="flex:1;min-width:0;font-size:13px;color:#ccc;font-weight:600;">Did you train'+(_daIsToday()?' today':'')+'?</span>'
       +'<div style="display:flex;gap:6px;flex-shrink:0;">'+pill('Yes',tr.val===true,"daSetTrained(true)")+pill('No',tr.val===false,"daSetTrained(false)",true)+'</div>'
     +'</div>';
   }
@@ -16332,7 +16330,7 @@ function renderDailyStrip(){
       +'<span style="font-size:11px;color:var(--muted);flex-shrink:0;">min</span>'
       +'<span onclick="daSetCardio(false)" style="cursor:pointer;color:#5a5a5a;font-size:15px;flex-shrink:0;">\u00d7</span>'
     +'</div>';
-  } else {
+  } else if(_daShouldAsk() || cd.min!=null){
     rows+='<div style="display:flex;align-items:center;gap:9px;">'
       +'<span style="flex:1;min-width:0;font-size:13px;color:#ccc;font-weight:600;">Any cardio?</span>'
       +'<div style="display:flex;gap:6px;flex-shrink:0;">'+pill('Yes',false,"daSetCardio(true)")+pill('No',cd.min===0,"daSetCardio(false)",true)+'</div>'
@@ -16346,8 +16344,9 @@ function renderDailyStrip(){
       +'<span style="font-size:15px;font-weight:800;color:#fff;">'+F.cal.toLocaleString()+' cal</span>'
     +'</div>';
   }
+  if(!rows){ host.innerHTML=''; return; }   // too early to ask and nothing logged
   host.innerHTML='<div style="background:var(--surface);border:1px solid #242424;border-radius:16px;padding:15px 16px;margin-bottom:14px;">'
-    +'<div style="font-size:10px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">Today\u2019s activity</div>'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:var(--muted);margin-bottom:12px;">'+(_daIsToday()?'Today\u2019s activity':'That day\u2019s activity')+'</div>'
     + rows + read
   +'</div>';
 }
@@ -16385,6 +16384,46 @@ function _renderGoalWrap(){
     +(isSet?'<div style="text-align:center;margin-top:10px;"><span onclick="pToggleGoal()" style="cursor:pointer;font-size:11.5px;font-weight:800;color:#777;">Done</span></div>':'');
 }
 
+// ---- Units: US (lbs / ft-in) or Metric (kg / cm)
+function _unitSys(){ try{ return (cl && localStorage.getItem('yjb_unit_'+cl.code)==='kg') ? 'metric' : 'us'; }catch(e){ return 'us'; } }
+function pSetUnits(sys){
+  try{ if(cl) localStorage.setItem('yjb_unit_'+cl.code, sys==='metric'?'kg':'lbs'); }catch(e){}
+  try{
+    var w=document.getElementById('pWeight');
+    if(w && w.value!=='' && profile && profile.weight) w.value = wToDisp(profile.weight);
+    var h=document.getElementById('pHeight');
+    if(h && profile) h.value = _htDisp(profile.height);
+  }catch(e){}
+  try{ var pu=document.querySelectorAll('.pUnitHint'); for(var i=0;i<pu.length;i++) pu[i].textContent='('+wUnit()+')'; }catch(e){}
+  renderPhaseUI();
+}
+// height stored canonically in inches
+function _htToIn(v){
+  if(v==null) return null;
+  var s=String(v).trim(); if(!s) return null;
+  var n=parseFloat(s);
+  if(/cm/i.test(s)) return n/2.54;
+  var fi=s.match(/(\d+)\s*['\u2019]\s*(\d+(\.\d+)?)?/);
+  if(fi) return parseInt(fi[1],10)*12 + (parseFloat(fi[2])||0);
+  if(isNaN(n)) return null;
+  return _unitSys()==='metric' ? n/2.54 : n;
+}
+function _htDisp(v){
+  var inches=_htToIn(v); if(inches==null) return '';
+  if(_unitSys()==='metric') return Math.round(inches*2.54)+' cm';
+  var ft=Math.floor(inches/12), rem=Math.round(inches-ft*12);
+  if(rem===12){ ft++; rem=0; }
+  return ft+"'"+rem+'"';
+}
+function _renderUnitToggle(){
+  var host=document.getElementById('pUnitToggle'); if(!host) return;
+  var sys=_unitSys();
+  function b(k,label){
+    var on=(sys===k);
+    return '<span onclick="pSetUnits(\''+k+'\')" style="cursor:pointer;padding:6px 12px;border-radius:7px;font-size:11px;font-weight:800;letter-spacing:0.3px;background:'+(on?'var(--gold)':'transparent')+';color:'+(on?'#000':'#8a8a8a')+';">'+label+'</span>';
+  }
+  host.innerHTML=b('us','LBS / FT')+b('metric','KG / CM');
+}
 function _cardioWhy(T){
   var P=T.phase, m=T.cardio;
   var base;
@@ -16503,32 +16542,37 @@ function updCalDisplay(){
 }
 
 async function saveProfileTab(){
-  var w = wToLb(parseFloat(document.getElementById('pWeight').value))||profile.weight;
-  var gw = wToLb(parseFloat(document.getElementById('pGoalWeight').value))||profile.goalWeight||profile.goal_weight;
-  var age = parseInt(document.getElementById('pAge').value)||profile.age;
-  var heightEl = document.getElementById('pHeight');
-  var height = (heightEl && heightEl.value.trim()) ? _htDisp(heightEl.value.trim()) : (profile.height||'');
+  function _v(id){ var e=document.getElementById(id); return e ? String(e.value||'').trim() : ''; }
+  var w = wToLb(parseFloat(_v('pWeight')));
+  if(isNaN(w)) w = profile.weight;
+  // goal weight field only exists while the target section is expanded
+  var gwRaw = _v('pGoalWeight');
+  var gw = gwRaw!=='' ? wToLb(parseFloat(gwRaw)) : (profile.goal_weight||profile.goalWeight);
+  if(isNaN(gw)) gw = profile.goal_weight||profile.goalWeight;
+  var age = parseInt(_v('pAge'),10)||profile.age;
+  var height = _v('pHeight') ? _htDisp(_v('pHeight')) : (profile.height||'');
+  var bf = parseFloat(_v('pBodyFat')); if(isNaN(bf)) bf = profile.bodyfat||null;
   var genderEl = document.querySelector('#pGenderRow .rb.sel');
   var gender = genderEl?genderEl.textContent.toLowerCase():profile.gender||'male';
-  var goalEl = document.querySelector('#pGoalRow .rb.sel');
-  var goal = goalEl?goalEl.textContent.replace(/\n.*/,'').toLowerCase():profile.goal||'maintain';
-  // Anchor to GOAL weight (Yusuf's rule), centered on x14 maintenance; cut/build shift it.
-  var basis = gw||w||150;
-  var mult = goal==='cut'?13:goal==='build'?15:14;
-  var cal = Math.round(basis*mult);
-  var pro = Math.round(basis);
-  // A number typed into the target boxes always wins over the calculation.
-  var _ct=document.getElementById('pCalTarget'), _pt=document.getElementById('pProTarget');
-  var calManual = _ct ? parseInt(_ct.value,10) : 0;
-  var proManual = _pt ? parseInt(_pt.value,10) : 0;
-  if(calManual>0) cal = calManual;
-  if(proManual>0) pro = proManual;
-  // Merge — never wipe existing stats with blanks
-  profile = Object.assign(profile,{weight:w,goal_weight:gw,goalWeight:gw,age:age,height:height,gender:gender,goal:goal,cal_target:cal,calTarget:cal,protein_target:pro,proteinTarget:pro});
+  // Write stats first so the calibrator reads the new numbers
+  profile.weight=w; profile.goal_weight=gw; profile.goalWeight=gw;
+  profile.age=age; profile.height=height; profile.gender=gender; profile.bodyfat=bf;
+  // Fuel comes from the phase calibrator — fat is a % of calories, never a remainder.
+  var _T=_fuelTargets();
+  var cal=_T.cal, pro=_T.prot;
+  var phase=_curPhase();
+  var goal=(phase==='fatloss')?'cut':(phase==='build'?'build':'maintain');
+  profile = Object.assign(profile,{
+    goal:goal, phase:phase,
+    train_days:_T.days, cardio_min:_T.cardio,
+    carb_target:_T.carb, fat_target:_T.fat,
+    cal_target:cal, calTarget:cal, protein_target:pro, proteinTarget:pro
+  });
   localStorage.setItem('yjb_profile_'+cl.code, JSON.stringify(profile));
   try{ updGoalsTileSub(); }catch(e){}
   try{ renderDailyStrip(); }catch(e){}
-  try{ await sbUpsert('profiles',{client_code:cl.code,name:cl.name,weight:w,goal_weight:gw,age:age,height:height,gender:gender,goal:goal,phase:profile.phase,train_days:profile.train_days,cardio_min:profile.cardio_min,carb_target:profile.carb_target,fat_target:profile.fat_target,cal_target:cal,protein_target:pro}, 'client_code'); }catch(e){}
+  try{ updTots(); }catch(e){}
+  try{ await sbUpsert('profiles',{client_code:cl.code,name:cl.name,weight:w,goal_weight:gw,age:age,height:height,gender:gender,goal:goal,phase:phase,train_days:_T.days,cardio_min:_T.cardio,carb_target:_T.carb,fat_target:_T.fat,cal_target:cal,protein_target:pro}, 'client_code'); }catch(e){}
   showToast('✓ Profile saved');
 }
 
