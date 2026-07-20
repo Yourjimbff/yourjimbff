@@ -2277,7 +2277,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.631.0';
+var APP_VERSION = 'v5.632.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -3437,10 +3437,12 @@ function renderMyEntries(){
         +'<span style="margin-left:auto;">'+_lockBtn(r)+'</span>'
       +'</div>'
       +'<div onclick="jOpenEntry(\''+r.id+'\')" style="cursor:pointer;font-size:13px;color:'+(open?'#ccc':'var(--m2)')+';margin-top:8px;line-height:1.6;white-space:pre-wrap;">'+_escHtml(open?body:first)+(open?'':(body.length>110?'\u2026':''))+'</div>'
+      + (!open ? _renderThread(r) : '')
       +(open?('<div style="display:flex;gap:8px;margin-top:11px;">'
           +'<span onclick="jEditEntry(\''+r.id+'\')" style="cursor:pointer;font-size:11.5px;font-weight:800;color:var(--gold);">Edit</span>'
           +'<span onclick="jDeleteEntry(\''+r.id+'\')" style="cursor:pointer;font-size:11.5px;font-weight:800;color:#7a4a4a;margin-left:auto;">Delete</span>'
         +'</div>'
+        + _renderThread(r)
         + _shareRow(r)
         +(r.reflection?('<div style="margin-top:11px;padding-top:11px;border-top:1px solid #242424;font-size:12.5px;color:#9a9a9a;line-height:1.6;">'+_escHtml(r.reflection)+'</div>'):'')):'')
     +'</div>';
@@ -3466,6 +3468,94 @@ async function jToggleShare(id){
     showToast('Couldn\u2019t change that \u2014 try again');
   }
 }
+// ===== CONVERSATIONAL JOURNAL — an entry becomes a thread =====
+function _thread(r){
+  try{ return Array.isArray(r.thread) ? r.thread : (r.thread ? JSON.parse(r.thread) : []); }catch(e){ return []; }
+}
+async function _saveThread(id, arr){
+  try{
+    await fetch(SB_URL+'/rest/v1/journal_entries?id=eq.'+encodeURIComponent(id),{method:'PATCH',
+      headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
+      body:JSON.stringify({thread:arr})});
+  }catch(e){}
+}
+// Jim reads the entry, the thread so far, and their recent entries.
+async function _jimReply(entryBody, thread){
+  var past='';
+  try{
+    var prev=(window._journalRecent||[]).filter(function(e){ return e && e.body; }).slice(0,5);
+    if(prev.length){
+      past='\n\nTHEIR RECENT ENTRIES (context only, never summarise these back):\n'
+        + prev.slice().reverse().map(function(e){ return '- '+(e.date_str?e.date_str+': ':'')+String(e.body).slice(0,200); }).join('\n');
+    }
+  }catch(e){}
+  var sys='You are Jim, a warm, honest coaching companion inside someone\u2019s private journal. '
+    +'They wrote an entry and want you to think with them about it. This IS an ongoing conversation \u2014 they can reply to you.\n'
+    +'RULES:\n'
+    +'- Mirror something real back. Reflect what they actually said, in their own spirit and vocabulary.\n'
+    +'- Match their depth. A short entry gets a short reply. A long honest one earns a fuller (still tight) response.\n'
+    +'- Be specific. Name the actual thing they described, not a generic version of it.\n'
+    +'- No lecturing, no fixing, no advice unless it is obvious and kind. Never fake-deep. Never flattery.\n'
+    +'- You MAY end with one genuine question if it would open something up \u2014 but only if it earns its place. Never a filler question.\n'
+    +'- If their recent entries show a real pattern, you may name it in ONE clause. Only if unmistakable. Never open with "I notice".\n'
+    +'- 2-5 sentences. Plain, human, no markdown, no headers.'
+    + past;
+  var msgs=[{role:'user',content:sys+'\n\nTHEIR ENTRY:\n'+entryBody}];
+  (thread||[]).forEach(function(m){ msgs.push({role: m.role==='jim'?'assistant':'user', content:m.text}); });
+  var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({messages:msgs, max_tokens:500})});
+  var d=await res.json();
+  return (d.content||[]).map(function(b){ return b.text||''; }).join('').trim();
+}
+function _renderThread(r){
+  var t=_thread(r);
+  var open=(String(_openEntryId)===String(r.id));
+  if(!open) return t.length ? '<div style="font-size:10.5px;color:#6a6a6a;margin-top:7px;">\u21b3 '+t.filter(function(m){return m.role==='jim';}).length+' from Jim</div>' : '';
+  var bubbles=t.map(function(m){
+    if(m.role==='jim'){
+      return '<div style="display:flex;justify-content:flex-start;margin-bottom:8px;"><div style="max-width:88%;background:#1a1a1a;border:1px solid #262626;border-radius:14px 14px 14px 4px;padding:10px 12px;font-size:13px;color:#ddd;line-height:1.55;">'+_escHtml(m.text)+'</div></div>';
+    }
+    return '<div style="display:flex;justify-content:flex-end;margin-bottom:8px;"><div style="max-width:85%;background:var(--gold);color:#000;border-radius:14px 14px 4px 14px;padding:10px 12px;font-size:13px;font-weight:600;line-height:1.5;">'+_escHtml(m.text)+'</div></div>';
+  }).join('');
+  var box='<div style="display:flex;gap:7px;align-items:center;margin-top:9px;">'
+    +'<input id="jrep_'+r.id+'" placeholder="" onkeydown="if(event.key===\'Enter\'){event.preventDefault();jThreadSend(\''+r.id+'\');}" style="flex:1;min-width:0;background:#141414;border:1px solid #2a2a2a;border-radius:11px;color:#fff;font-size:13px;padding:10px 11px;font-family:inherit;outline:none;">'
+    +'<button onclick="jThreadSend(\''+r.id+'\')" style="flex:0 0 auto;width:30px;height:30px;display:flex;align-items:center;justify-content:center;background:var(--gold);border:none;border-radius:9px;color:#000;cursor:pointer;padding:0;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>'
+  +'</div>';
+  if(!t.length){
+    return '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #242424;">'
+      +'<span onclick="jStartConvo(\''+r.id+'\')" style="cursor:pointer;font-size:11.5px;font-weight:800;color:var(--gold);">Start a conversation about this</span>'
+    +'</div>';
+  }
+  return '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #242424;">'+bubbles+box+'</div>';
+}
+async function jStartConvo(id){
+  var r=null; for(var i=0;i<_myEntries.length;i++){ if(String(_myEntries[i].id)===String(id)) r=_myEntries[i]; }
+  if(!r) return;
+  var t=_thread(r);
+  t.push({role:'jim', text:'\u2026', pending:true});
+  r.thread=t; renderMyEntries();
+  try{
+    var reply=await _jimReply(r.body, []);
+    t[t.length-1]={role:'jim', text:reply||'\u2014'};
+  }catch(e){ t[t.length-1]={role:'jim', text:'Couldn\u2019t reach me just then. Try again.'}; }
+  r.thread=t; renderMyEntries(); _saveThread(id, t);
+}
+async function jThreadSend(id){
+  var el=document.getElementById('jrep_'+id); if(!el) return;
+  var txt=String(el.value||'').trim(); if(!txt) return;
+  var r=null; for(var i=0;i<_myEntries.length;i++){ if(String(_myEntries[i].id)===String(id)) r=_myEntries[i]; }
+  if(!r) return;
+  var t=_thread(r);
+  t.push({role:'me', text:txt});
+  t.push({role:'jim', text:'\u2026', pending:true});
+  r.thread=t; renderMyEntries();
+  try{
+    var reply=await _jimReply(r.body, t.slice(0,-1));
+    t[t.length-1]={role:'jim', text:reply||'\u2014'};
+  }catch(e){ t[t.length-1]={role:'jim', text:'Couldn\u2019t reach me just then.'}; }
+  r.thread=t; renderMyEntries(); _saveThread(id, t);
+}
+
 function _lockIcon(locked){
   return locked
     ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>'
@@ -3486,7 +3576,12 @@ function _shareRow(r){
              : 'Shared with Yusuf. Tap the lock to make it private again.')
   +'</div>';
 }
-function jOpenEntry(id){ _openEntryId=(String(_openEntryId)===String(id))?null:id; renderMyEntries(); }
+function jOpenEntry(id){
+  var y=0; try{ y=window.scrollY||document.documentElement.scrollTop||0; }catch(e){}
+  _openEntryId=(String(_openEntryId)===String(id))?null:id;
+  renderMyEntries();
+  try{ window.scrollTo(0,y); }catch(e){}
+}
 function jEditEntry(id){
   var r=_myEntries.filter(function(x){ return String(x.id)===String(id); })[0]; if(!r) return;
   var ta=document.getElementById('jPageText'); if(!ta) return;
@@ -3514,14 +3609,14 @@ function renderJournalPage(){
     '<div style="background:var(--surface);border:1px solid #262626;border-radius:16px;padding:14px;margin-bottom:16px;">'
       +'<div id="jTypeRowPage" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:11px;">'+pills+'</div>'
       +'<textarea id="jPageText" oninput="jSaveDraft(this.value);jPageGrow(this)" placeholder="" style="width:100%;box-sizing:border-box;min-height:96px;background:#141414;border:1px solid #2a2a2a;border-radius:12px;color:#fff;font-size:14.5px;line-height:1.55;padding:12px;font-family:inherit;resize:none;outline:none;">'+_escHtml(draft)+'</textarea>'
-      +'<div style="display:flex;gap:8px;margin-top:10px;align-items:center;justify-content:flex-end;">'
+      +'<div style="display:flex;gap:22px;margin-top:10px;align-items:center;justify-content:flex-end;">'
         +'<button onclick="jPageVoice()" id="jPageMic" aria-label="Voice" style="flex:0 0 auto;width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:transparent;border:none;border-radius:9px;color:#7a7a7a;cursor:pointer;padding:0;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 19v3"/></svg></button>'
         +'<button onclick="jPageSave()" id="jPageSaveBtn" aria-label="Submit" style="flex:0 0 auto;width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:var(--gold);border:none;border-radius:9px;color:#000;cursor:pointer;padding:0;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>'
       +'</div>'
       +'<div onclick="jToggleReply()" style="display:flex;align-items:center;gap:9px;cursor:pointer;margin-top:11px;padding:9px 11px;background:'+(_jReplyOn()?'rgba(245,197,24,0.05)':'transparent')+';border:1px solid '+(_jReplyOn()?'rgba(245,197,24,0.22)':'#232323')+';border-radius:11px;">'
         +'<div style="width:32px;height:19px;border-radius:10px;background:'+(_jReplyOn()?'var(--gold)':'#2a2a2a')+';flex-shrink:0;position:relative;">'
           +'<div style="position:absolute;top:2px;left:'+(_jReplyOn()?'15px':'2px')+';width:15px;height:15px;border-radius:50%;background:'+(_jReplyOn()?'#000':'#666')+';transition:left .18s;"></div></div>'
-        +'<div style="flex:1;min-width:0;font-size:12px;color:'+(_jReplyOn()?'#ccc':'#777')+';">Want a smart response?</div>'
+        +'<div style="flex:1;min-width:0;font-size:12px;color:'+(_jReplyOn()?'#ccc':'#777')+';">Talk it through with Jim</div>'
       +'</div>'
       +(draft?'<div style="font-size:10.5px;color:#6a6a6a;margin-top:8px;text-align:center;">Draft saved \u2014 it\u2019ll be here when you come back</div>':'')
     +'</div>';
@@ -3578,8 +3673,8 @@ function jVoiceUI(on){
   var MIC='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 19v3"/></svg>';
   b.innerHTML=MIC;
   if(on){
-    b.style.background='#c8342c'; b.style.color='#fff';
-    b.style.animation='jpulse 1.2s ease-in-out infinite';
+    b.style.background='transparent'; b.style.color='var(--gold)';
+    b.style.animation='';
   } else {
     b.style.background='transparent'; b.style.color='#7a7a7a';
     b.style.animation='';
@@ -3630,7 +3725,14 @@ async function jPageSave(){
   showToast(saved?'Saved':'Saved here \u2014 will sync when it can');
   jClearDraft();
   renderJournalPage();
-  try{ if(document.getElementById('jPageEntries')){ loadMyJournalEntries(); } else if(typeof loadJournal==='function'){ loadJournal(); } }catch(e){}
+  var _wantConvo=_jReplyOn();
+  try{
+    if(document.getElementById('jPageEntries')){
+      await loadMyJournalEntries();
+      // "Want a smart response?" -> open the conversation straight away
+      if(_wantConvo && _myEntries.length){ _openEntryId=_myEntries[0].id; renderMyEntries(); jStartConvo(_myEntries[0].id); }
+    } else if(typeof loadJournal==='function'){ loadJournal(); }
+  }catch(e){}
 }
 
 async function loadJournal(){
