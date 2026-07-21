@@ -2295,7 +2295,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.645.0';
+var APP_VERSION = 'v5.646.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -3437,8 +3437,11 @@ function renderJournalOnAskTab(){
   host.innerHTML='<div style="margin:18px 0 15px;">'
     +'<div style="font-family:\'Plus Jakarta Sans\',sans-serif;font-size:21px;font-weight:800;letter-spacing:-0.3px;line-height:1.1;">Smart Journal</div>'
     +'<div style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.45;">Document your progress. Reflect, think, note anything that matters.</div></div>'
-    +'<div id="jTabComposer"></div><div id="jTabEntries"></div>';
+    +'<div id="jTabComposer"></div>'
+    +'<div id="jArchiveHost"></div>'
+    +'<div id="jTabEntries" style="display:none;"></div>';
   try{ renderJournalPage(); }catch(e){}
+  try{ var ab=document.getElementById('jArchiveHost'); if(ab) ab.innerHTML=_archiveBar(); }catch(e){}
   try{ loadMyJournalEntries(); }catch(e){}
   return true;
 }
@@ -3468,6 +3471,8 @@ async function loadMyJournalEntries(){
   try{
     _myEntries=await sbSelect('journal_entries','client_code=eq.'+encodeURIComponent(cl.code)+'&order=logged_at.desc&limit=60')||[];
     try{ window._journalRecent=_myEntries.slice(0,12); }catch(e){}
+    try{ var _lb=document.getElementById('jArchiveLbl'); if(_lb) _lb.innerHTML=_archiveLabel(); }catch(e){}
+    if(document.getElementById('jArchiveHost') && !_archiveOpen){ host.style.display='none'; return; }
     renderMyEntries();
   }catch(e){ host.innerHTML='<div style="text-align:center;padding:22px;color:#6a6a6a;font-size:12.5px;">Couldn\u2019t load entries.</div>'; }
 }
@@ -3550,7 +3555,16 @@ async function jStartConvo(id){
   paint();
   try{
     var reply=await _jimReply(r.body, []);
-    t[t.length-1]={role:'jim', text:reply||'\u2014'};
+    reply=reply||'\u2014';
+    var ix=t.length-1;
+    t[ix]={role:'jim', text:''};
+    r.thread=t; paint();
+    await new Promise(function(res){
+      _typeInto(function(){ return document.getElementById('jimMsg'+ix); }, reply,
+        function(){ var b=document.getElementById('jConvoBody'); if(b) b.scrollTop=b.scrollHeight; },
+        res);
+    });
+    t[ix]={role:'jim', text:reply};
   }catch(e){ t[t.length-1]={role:'jim', text:'Couldn\u2019t reach me just then. Try again.'}; }
   r.thread=t; paint(); _saveThread(id, t);
 }
@@ -3634,7 +3648,7 @@ function renderConvoBody(){
   if(!r) return;
   var entry='<div style="display:flex;justify-content:flex-end;margin-bottom:16px;"><div style="max-width:88%;background:#1e1e1e;border-radius:16px;padding:12px 14px;font-size:15px;color:#f0f0f0;line-height:1.6;white-space:pre-wrap;">'+_escHtml(String(r.body||''))+'</div></div>';
   var t=_thread(r);
-  var bubbles=t.map(function(m){
+  var bubbles=t.map(function(m, idx){
     if(m.role==='jim'){
       // Jim answers as plain text on the page — no container
       return '<div style="font-size:15px;color:#e8e8e8;line-height:1.72;margin:4px 2px 22px;white-space:pre-wrap;">'+_escHtml(m.text)+'</div>';
@@ -3658,7 +3672,16 @@ async function jConvoSend(){
   r.thread=t; renderConvoBody();
   try{
     var reply=await _jimReply(r.body, t.slice(0,-1));
-    t[t.length-1]={role:'jim', text:reply||'\u2014'};
+    reply=reply||'\u2014';
+    var ix=t.length-1;
+    t[ix]={role:'jim', text:''};
+    r.thread=t; renderConvoBody();
+    await new Promise(function(res){
+      _typeInto(function(){ return document.getElementById('jimMsg'+ix); }, reply,
+        function(){ var b=document.getElementById('jConvoBody'); if(b) b.scrollTop=b.scrollHeight; },
+        res);
+    });
+    t[ix]={role:'jim', text:reply};
   }catch(e){ t[t.length-1]={role:'jim', text:'Couldn\u2019t reach me just then.'}; }
   r.thread=t; renderConvoBody(); _saveThread(_convoId, t);
 }
@@ -3709,6 +3732,65 @@ function _entryMenu(r){
     + row('Delete', "_menuId=null;jDeleteEntry('"+r.id+"')", '#a06060')
   +'</div>';
 }
+// ===== PROMPTS — give them somewhere to start =====
+var J_PROMPTS = [
+  {label:'Placeholder prompt one',   text:'Placeholder prompt one'},
+  {label:'Placeholder prompt two',   text:'Placeholder prompt two'},
+  {label:'Placeholder prompt three', text:'Placeholder prompt three'}
+];
+function _promptRow(){
+  var chips=J_PROMPTS.map(function(p,i){
+    return '<span onclick="jUsePrompt('+i+')" style="display:inline-block;background:var(--s2);border:1px solid var(--border);border-radius:14px;padding:11px 13px;font-size:12.5px;color:var(--m2);cursor:pointer;line-height:1.4;">'+_escHtml(p.label)+'</span>';
+  }).join('');
+  return '<div style="margin-bottom:13px;">'
+    +'<div style="font-size:12px;color:#7a7a7a;margin-bottom:9px;">Start anywhere, or just talk.</div>'
+    +'<div style="display:flex;flex-direction:column;gap:7px;">'+chips+'</div>'
+  +'</div>';
+}
+function jUsePrompt(i){
+  var p=J_PROMPTS[i]; if(!p) return;
+  var ta=document.getElementById('jPageText'); if(!ta) return;
+  var v=String(ta.value||'');
+  ta.value = v.trim() ? (v.replace(/\s*$/,'') + '\n\n' + p.text + '\n') : (p.text + '\n');
+  jSaveDraft(ta.value); jPageGrow(ta);
+  try{ ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }catch(e){}
+}
+// ===== ARCHIVE — past entries stay out of the way until asked for =====
+var _archiveOpen=false;
+function jToggleArchive(){
+  _archiveOpen=!_archiveOpen;
+  var h=document.getElementById(_jHost.ent);
+  if(h) h.style.display=_archiveOpen?'':'none';
+  var lb=document.getElementById('jArchiveLbl');
+  if(lb) lb.innerHTML=_archiveLabel();
+  if(_archiveOpen) renderMyEntries();
+}
+function _archiveLabel(){
+  var n=(_myEntries||[]).length;
+  return '<span style="font-size:12.5px;font-weight:700;color:#8a8a8a;">Past entries'+(n?(' \u00b7 '+n):'')+'</span>'
+    +'<span style="margin-left:auto;color:#5a5a5a;font-size:12px;">'+(_archiveOpen?'\u2303':'\u2304')+'</span>';
+}
+function _archiveBar(){
+  return '<div onclick="jToggleArchive()" id="jArchiveBar" style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:13px 2px;margin-top:8px;border-top:1px solid #1f1f1f;">'
+    +'<span id="jArchiveLbl" style="display:flex;align-items:center;width:100%;">'+_archiveLabel()+'</span>'
+  +'</div>';
+}
+// ===== STREAMING — write the reply in at reading pace =====
+function _typeInto(getEl, text, onTick, done){
+  var i=0, n=text.length;
+  var step=function(){
+    var el=getEl(); if(!el){ if(done) done(); return; }
+    // faster through long passages, but never a dump
+    var chunk = n>400 ? 4 : (n>200 ? 3 : 2);
+    i=Math.min(n, i+chunk);
+    el.textContent=text.slice(0,i);
+    if(onTick) onTick();
+    if(i<n) setTimeout(step, 16);
+    else if(done) done();
+  };
+  step();
+}
+
 var _jHost={comp:'jPageComposer', ent:'jPageEntries'};
 var _openDays={};
 function _dayKeyOf(r){ return String(r.date_str||'').trim() || 'Undated'; }
@@ -3815,6 +3897,7 @@ function renderJournalPage(){
   }).join('');
   host.innerHTML=
     '<div style="background:var(--surface);border:1px solid #262626;border-radius:16px;padding:14px;margin-bottom:16px;">'
+      + (document.getElementById('jArchiveHost') ? _promptRow() : '')
       +'<div id="jTypeRowPage" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:11px;">'+pills+'</div>'
       +'<textarea id="jPageText" oninput="jSaveDraft(this.value);jPageGrow(this)" placeholder="" style="width:100%;box-sizing:border-box;min-height:96px;background:#141414;border:1px solid #2a2a2a;border-radius:12px;color:#fff;font-size:14.5px;line-height:1.55;padding:12px;font-family:inherit;resize:none;outline:none;">'+_escHtml(draft)+'</textarea>'
       +'<div style="display:flex;gap:22px;margin-top:10px;align-items:center;justify-content:flex-end;">'
@@ -4415,7 +4498,7 @@ function ciClearPhoto(){ _ciPhoto=null; var p=document.getElementById('checkinPh
 var J_TYPES=[{k:'training',n:'Training'},{k:'food',n:'Food'},{k:'sleep',n:'Sleep'},{k:'mood',n:'Mood'},{k:'progress',n:'Progress'}];
 var J_MOODS=['\u{1F624}','\u{1F614}','\u{1F610}','\u{1F642}','\u{1F525}'];
 var _jType='', _jMood='', _jDate='';
-function _jReplyOn(){ try{ return localStorage.getItem('yjb_jreply_'+(cl?cl.code:'x'))==='1'; }catch(e){ return false; } }
+function _jReplyOn(){ try{ var v=localStorage.getItem('yjb_jreply_'+(cl?cl.code:'x')); return v===null ? true : v==='1'; }catch(e){ return true; } }
 function jToggleReply(){
   try{ localStorage.setItem('yjb_jreply_'+(cl?cl.code:'x'), _jReplyOn()?'0':'1'); }catch(e){}
   // re-render whichever composer is actually on screen, keeping what's typed
