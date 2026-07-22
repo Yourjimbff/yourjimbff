@@ -2351,7 +2351,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.687.0';
+var APP_VERSION = 'v5.688.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -9113,10 +9113,16 @@ async function renderDayTimeline(){
     var dayWeights=(gByDay[ds]||[]).slice();
     var slots={walk:(dayWalks.length?dayWalks:null), breakfast:[], lunch:[], dinner:[], workout:dayRealWos.slice(), weigh:(dayWeights.length?dayWeights:null)};
     dayFoods.forEach(function(f){
-      var m=_tlMins(f);
-      if(m<11*60) slots.breakfast.push(f);
-      else if(m<16*60) slots.lunch.push(f);
-      else slots.dinner.push(f);
+      var ml=String(f.meal||'').toLowerCase();
+      if(ml.indexOf('break')>=0) slots.breakfast.push(f);
+      else if(ml.indexOf('lunch')>=0) slots.lunch.push(f);
+      else if(ml.indexOf('dinner')>=0) slots.dinner.push(f);
+      else {
+        var m=_tlMins(f);
+        if(m<11*60) slots.breakfast.push(f);
+        else if(m<16*60) slots.lunch.push(f);
+        else slots.dinner.push(f);
+      }
     });
 
     // day header
@@ -9160,8 +9166,8 @@ function _tlSlot(key, label, filled, ds, plan){
     var planHint=(plan&&plan.type&&key==='workout');
     var head = planHint ? plan.type : label;
     return '<div onclick="tlAddSlot(\''+key+'\',\''+ds+'\')" style="padding:11px 2px 9px;margin-bottom:5px;cursor:pointer;">'
-      +'<div style="font-size:13px;font-weight:700;color:#6d6a62;letter-spacing:0.2px;">'+_escHtml(head)+(planHint?'<span style="color:#5a5344;font-weight:600;"> · planned</span>':'')+'</div>'
-      +'<div style="height:15px;border-bottom:1px solid #202020;margin-top:9px;"></div>'
+      +'<div style="font-size:14px;font-weight:600;color:#b7b4ab;letter-spacing:0.2px;">'+_escHtml(head)+(planHint?'<span style="color:#8f8878;font-weight:600;"> · planned</span>':'')+'</div>'
+      +'<div style="height:15px;border-bottom:1px solid #2b2b2b;margin-top:9px;"></div>'
     +'</div>';
   }
 
@@ -13112,10 +13118,29 @@ function _matchHistory(name){
 }
 // The heart of it: write what you ate. Match your own history and scale by quantity.
 // No match -> log it plain with no numbers. Macros stay a tap away on the entry.
+// Pull stated macros out of a sentence: "2 pancakes, 60g carbs, 40g protein, 28g fat"
+// -> {macros:{protein:40,carbs:60,fat:28,cal:null}, rest:"2 pancakes", hasMacro:true}
+function _parseInlineMacros(q){
+  var s=' '+String(q||'')+' ';
+  var out={protein:null,carbs:null,fat:null,cal:null};
+  function grab(re, key){ var m=s.match(re); if(m){ out[key]=parseFloat(m[1]); s=s.replace(m[0],' , '); } }
+  grab(/(\d+(?:\.\d+)?)\s*g?\s*(?:of\s+)?protein\b/i,'protein');
+  grab(/(\d+(?:\.\d+)?)\s*g?\s*(?:of\s+)?carb(?:s|ohydrates)?\b/i,'carbs');
+  grab(/(\d+(?:\.\d+)?)\s*g?\s*(?:of\s+)?fat\b/i,'fat');
+  grab(/(\d+(?:\.\d+)?)\s*(?:kcal|cal(?:ories)?)\b/i,'cal');
+  if(out.protein==null){ var mp=s.match(/protein\s*[:=]?\s*(\d+(?:\.\d+)?)/i); if(mp){ out.protein=parseFloat(mp[1]); s=s.replace(mp[0],' , '); } }
+  if(out.carbs==null){ var mc=s.match(/carb(?:s)?\s*[:=]?\s*(\d+(?:\.\d+)?)/i); if(mc){ out.carbs=parseFloat(mc[1]); s=s.replace(mc[0],' , '); } }
+  if(out.fat==null){ var mf=s.match(/fat\s*[:=]?\s*(\d+(?:\.\d+)?)/i); if(mf){ out.fat=parseFloat(mf[1]); s=s.replace(mf[0],' , '); } }
+  var rest=s.replace(/[-\u2013\u2014]/g,' ').replace(/\s*,\s*/g,', ').replace(/(^[\s,]+|[\s,]+$)/g,'').replace(/\s{2,}/g,' ').trim();
+  var hasMacro=(out.protein!=null||out.carbs!=null||out.fat!=null||out.cal!=null);
+  return {macros:out, rest:rest, hasMacro:hasMacro};
+}
 async function smartLogFromText(q){
-  var parts=String(q||'').split(/[,\n]+/).map(function(s){ return s.trim(); }).filter(Boolean);
   var _photo=(typeof photoData!=='undefined')?(photoData||null):null;
-  if(!parts.length){ if(_photo){ parts=['Meal']; } else { showToast('Write what you ate'); return; } }
+  var raw=String(q||'').trim();
+  var mm=_parseInlineMacros(raw);
+  var parts = mm.hasMacro ? [] : raw.split(/[,\n]+/).map(function(s){ return s.trim(); }).filter(Boolean);
+  if(!mm.hasMacro && !parts.length){ if(_photo){ parts=['Meal']; } else { showToast('Write what you ate'); return; } }
   var meal=(window._mealSlot||((typeof _mealSlotNow==='function')?_mealSlotNow():'Meal'));
   var eatTime=(function(){ var _t=document.getElementById('foodTime'); var v=_t?String(_t.value||'').trim():''; return v||new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}); })();
   var btn=document.getElementById('plateLogBtn'); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; }
@@ -13128,6 +13153,18 @@ async function smartLogFromText(q){
     if(remember){ try{ _rememberFood(entry); }catch(e){} }
     loggedNames.push(entry.name);
   }
+  if(mm.hasMacro){
+    // they stated the macros inline -> one food, their exact numbers
+    var nm=_tcase(mm.rest||'Meal');
+    var P=mm.macros;
+    var pro=(P.protein!=null?Math.round(P.protein):0), carb=(P.carbs!=null?Math.round(P.carbs):0), fat=(P.fat!=null?Math.round(P.fat):0);
+    var cal=(P.cal!=null)?Math.round(P.cal):Math.round(pro*4+carb*4+fat*9);
+    await _push(
+      {client_code:cl.code,name:nm,emoji:'🍽️',calories:cal,protein:pro,carbs:carb,fat:fat,rating:'good',meal:meal,eat_time:eatTime,graced:false,date_str:todayDateStr},
+      {name:nm,emoji:'🍽️',calories:cal,protein:pro,carbs:carb,fat:fat,rating:'good',insight:'',meal:meal,eat_time:eatTime,eatTime:eatTime,graced:false,photo:null,date_str:todayDateStr,note:''},
+      (!/^\s*\d/.test(nm))
+    );
+  } else {
   for(var i=0;i<parts.length;i++){
     var pr=_qtyParse(parts[i]);
     var hist=_matchHistory(pr.name);
@@ -13149,6 +13186,7 @@ async function smartLogFromText(q){
         false
       );
     }
+  }
   }
   // fold in anything tapped into the plate (already has macros)
   try{
