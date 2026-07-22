@@ -1828,9 +1828,9 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
 <div class="mbg" id="mTlWalk">
   <div class="msh">
     <div class="mhnd"></div>
-    <div class="mtitle" style="text-align:center;">Morning walk</div>
-    <div class="il" style="margin-top:16px;">Steps</div>
-    <input class="ifield" id="tlWalkInput" type="number" step="1" inputmode="numeric" placeholder="e.g. 6000" style="font-size:22px;text-align:center;font-weight:800;">
+    <div class="mtitle" style="text-align:center;">Morning Walk</div>
+    <div class="il" style="margin-top:16px;">How was your walk?</div>
+    <textarea class="ifield" id="tlWalkInput" placeholder="Steps, how long, what you thought about, what you talked about, how you feel. Whatever you want." style="min-height:130px;line-height:1.5;"></textarea>
     <button class="sbtn" style="margin-top:16px;" onclick="tlSaveWalk()">Log it &#10003;</button>
     <button class="obtn" onclick="closeM('mTlWalk')">Cancel</button>
   </div>
@@ -2347,7 +2347,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.679.0';
+var APP_VERSION = 'v5.681.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -9220,15 +9220,33 @@ function tlWalkLog(ds){
   setTimeout(function(){ try{ document.getElementById('tlWalkInput').focus(); }catch(e){} }, 120);
 }
 async function tlSaveWalk(){
-  var i=document.getElementById('tlWalkInput'); var v=i?parseInt(i.value,10):NaN;
+  var i=document.getElementById('tlWalkInput'); var txt=i?String(i.value||'').trim():'';
   var ds=_tlSlotDate||todayDateStr;
-  if(!v || v<=0){ try{ showToast('Enter your step count'); }catch(e){} return; }
-  try{
-    await sbUpsert('step_logs',{client_code:cl.code, steps:v, date_str:ds, updated_at:new Date().toISOString()}, 'client_code,date_str');
-    try{ showToast('\ud83d\udeb6 '+v.toLocaleString()+' steps'); }catch(e){}
-    try{ closeM('mTlWalk'); }catch(e){}
-    renderDayTimeline();
-  }catch(e){ try{ showToast('Could not save'); }catch(_){} }
+  if(!txt){ try{ showToast('Write anything about your walk'); }catch(e){} return; }
+  var iso=new Date().toISOString();
+  // 1) mark the walk on the day
+  try{ await sbInsert('workout_logs', {client_code:cl.code, title:'Morning Walk', description:txt, duration:null, date_str:ds, logged_at:iso}); }catch(e){}
+  // 2) double it as a journal entry (they wrote something, so it's worth keeping)
+  try{ await _tlWalkJournal(txt, ds, iso); }catch(e){}
+  try{ showToast('Logged'); }catch(e){}
+  try{ closeM('mTlWalk'); }catch(e){}
+  renderDayTimeline();
+}
+// Save the walk reflection into the journal. Field-fallback so it survives schema differences.
+async function _tlWalkJournal(body, ds, iso){
+  var base={client_code:cl.code, body:body, date_str:ds, logged_at:iso||new Date().toISOString()};
+  var rich=Object.assign({}, base, {title:'Walk Journal Entry', entry_type:'reflection', title_edited:true, shared:false});
+  var tries=[rich, Object.assign({},base,{title:'Walk Journal Entry'}), base, {client_code:cl.code, body:body}];
+  for(var k=0;k<tries.length;k++){
+    try{
+      var r=await fetch(SB_URL+'/rest/v1/journal_entries',{method:'POST',
+        headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
+        body:JSON.stringify(tries[k])});
+      if(r.ok) return true;
+    }catch(e){}
+  }
+  try{ sqPush('journal_entries', base, 'POST'); }catch(e){}
+  return false;
 }
 function _parseDs(ds){ try{ var d=new Date(ds); return isNaN(d.getTime())?null:d; }catch(e){ return null; } }
 async function tlComplete(dateStr, title){
@@ -15277,7 +15295,15 @@ function renderGoalProgress(){
     +'<div style="display:flex;gap:8px;margin-top:11px;">'+m('Protein',tots.protein,T.prot)+m('Carbs',tots.carbs,T.carb)+m('Fat',tots.fat,T.fat)+'</div>'
   +'</div>';
 }
-function openMealSlot(key){ window._forceFoodSlot=key; try{ openM('mFood'); }catch(e){} }
+function openMealSlot(key){
+  window._forceFoodSlot=key;
+  try{ openM('mFood'); }catch(e){}
+  try{
+    var nm=String(key||'').replace(/\b\w/g,function(c){return c.toUpperCase();});
+    var t=document.querySelector('#mFood .mtitle'); if(t && nm) t.textContent=nm;
+    var q=document.querySelector('#mFood .il'); if(q) q.textContent='What did you eat?';
+  }catch(e){}
+}
 // Restore the full meal logger to its normal (formal) layout.
 function _foodNormalMode(){
   window._looseFoodMode=false;
@@ -18820,6 +18846,7 @@ function openM(id){
   if(id==='mFood'){
     var _ia=document.getElementById('foodInputArea'); if(_ia) _ia.style.display='';
     document.querySelectorAll('#mFood .mtitle, #mFood .msub').forEach(function(el){ el.style.display=''; });
+    var _mt=document.querySelector('#mFood .mtitle'); if(_mt && !window._forceFoodSlot) _mt.textContent='Log A Meal';
     document.getElementById('aire').classList.remove('show');
     var _rs=document.getElementById('foodRecentsSearch'); if(_rs) _rs.value='';
     try{ renderFoodRecents(); }catch(e){}
