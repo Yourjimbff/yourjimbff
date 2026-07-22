@@ -2322,7 +2322,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.676.0';
+var APP_VERSION = 'v5.677.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -9088,6 +9088,108 @@ function _tlRow(e, clock, i, known){
 function tlExpand(kind, id){
   // reuse existing detail views where they exist
   try{ if(kind==='w' && typeof openWorkoutDetail==='function'){ openWorkoutDetail(id); return; } }catch(e){}
+}
+
+// ===== SCROLLABLE CALENDAR — past above, future below, plan baked in =====
+var _tlDaysBack=14, _tlDaysFwd=7;
+function _tlDateStr(d){ return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
+function _tlPlanForDate(d){
+  try{
+    if(!_tpPlan) return null;
+    var idx=(d.getDay()+6)%7;            // 0=Mon
+    var key=WEEKDAYS[idx];
+    var day=_tpPlan[key];
+    if(!day || !day.type || day.type==='Rest') return null;
+    return {type:day.type, ex:(day.ex||[])};
+  }catch(e){ return null; }
+}
+async function renderDayTimeline(){
+  var body=document.getElementById('feedTabBody'); if(!body||!cl) return;
+  var head=document.getElementById('feedTabHeading'); if(head) head.textContent='Training';
+  body.innerHTML='<div style="text-align:center;padding:40px 0;color:var(--muted);font-size:13px;">Loading\u2026</div>';
+
+  // make sure the plan is loaded so planned sessions can show
+  try{ if(!_tpPlan){ await loadTrainingPlan(); } }catch(e){}
+  if(!_tpPlan){ try{ _tpPlan=_tpDefaultPlan(); }catch(e){} }
+
+  var today=new Date(); today.setHours(0,0,0,0);
+  var start=new Date(today); start.setDate(start.getDate()-_tlDaysBack);
+  var end=new Date(today);   end.setDate(end.getDate()+_tlDaysFwd);
+
+  // pull the whole window of logs in two queries
+  var foods=[], workouts=[];
+  try{
+    foods=await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(cl.code)+'&limit=400&order=logged_at.desc')||[];
+    workouts=await sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(cl.code)+'&limit=200&order=logged_at.desc')||[];
+  }catch(e){}
+  // index by date_str
+  var fByDay={}, wByDay={};
+  foods.forEach(function(f){ (fByDay[f.date_str]=fByDay[f.date_str]||[]).push(f); });
+  workouts.forEach(function(w){ (wByDay[w.date_str]=wByDay[w.date_str]||[]).push(w); });
+
+  var html='<div id="tlScroll" style="max-height:calc(100vh - 210px);overflow-y:auto;-webkit-overflow-scrolling:touch;padding-right:2px;">';
+  var cur=new Date(start);
+  while(cur.getTime()<=end.getTime()){
+    var ds=_tlDateStr(cur);
+    var isToday=(cur.getTime()===today.getTime());
+    var isFuture=(cur.getTime()>today.getTime());
+    var dayFoods=(fByDay[ds]||[]).slice();
+    var dayWos=(wByDay[ds]||[]).slice();
+    var plan=_tlPlanForDate(cur);
+    // is the planned session already done? (any logged workout that day)
+    var planDone = dayWos.length>0;
+
+    // build events for the day
+    var ev=[];
+    dayFoods.forEach(function(f){ ev.push({kind:'food', mins:_tlMins(f), data:f}); });
+    dayWos.forEach(function(w){ ev.push({kind:'workout', mins:_tlMins(w), data:w}); });
+    ev.sort(function(a,b){ return a.mins-b.mins; });
+
+    // day header
+    html+='<div id="'+(isToday?'tlTodayAnchor':'')+'" style="margin:'+(cur.getTime()===start.getTime()?'0':'22px')+' 0 10px;display:flex;align-items:baseline;gap:9px;">'
+      +'<span style="font-size:14px;font-weight:800;color:'+(isToday?'var(--gold)':'var(--text)')+';letter-spacing:-0.2px;">'+_tlDayLabel(cur)+'</span>'
+      +'<span style="font-size:11px;color:#6a6a6a;">'+cur.toLocaleDateString('en-US',{month:'short',day:'numeric'})+'</span>'
+    +'</div>';
+
+    // planned session (if any and not yet done) — with tap-to-complete
+    if(plan && !planDone){
+      html+='<div style="display:flex;align-items:center;gap:10px;background:rgba(245,197,24,0.06);border:1px dashed rgba(245,197,24,0.4);border-radius:10px;padding:10px 12px;margin-bottom:7px;">'
+        +'<span style="font-size:14px;">\ud83d\udccb</span>'
+        +'<div style="flex:1;min-width:0;"><div style="font-size:13.5px;font-weight:700;color:var(--text);">'+_escHtml(plan.type)+'<span style="font-size:10.5px;color:#8a7a3a;font-weight:600;"> \u00b7 planned</span></div>'
+          +(plan.ex&&plan.ex.length?'<div style="font-size:10.5px;color:var(--m2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+_escHtml(plan.ex.map(function(x){return x.n||x.name||x;}).slice(0,4).join(', '))+'</div>':'')
+        +'</div>'
+        +'<span onclick="tlComplete(\''+ds+'\',\''+_escHtml(plan.type).replace(/\'/g,"")+'\')" style="flex-shrink:0;cursor:pointer;background:var(--gold);color:#000;font-size:11.5px;font-weight:800;padding:7px 12px;border-radius:8px;display:inline-flex;align-items:center;gap:5px;">\u2713 Done</span>'
+      +'</div>';
+    }
+
+    // logged events
+    if(ev.length){
+      ev.forEach(function(e){ var known=(e.mins!=null && e.mins<99999 && e.mins>=0); html+=_tlRow(e, known?_tlClock(e.mins):'', 0, known); });
+    } else if(!plan){
+      html+='<div style="font-size:11.5px;color:#5a5a5a;padding:4px 2px 2px;">'+(isFuture?'Nothing planned.':'Nothing logged.')+'</div>';
+    }
+
+    cur.setDate(cur.getDate()+1);
+  }
+  html+='</div>';
+  body.innerHTML=html;
+
+  // land on today
+  setTimeout(function(){
+    try{
+      var sc=document.getElementById('tlScroll'), an=document.getElementById('tlTodayAnchor');
+      if(sc && an){ sc.scrollTop = an.offsetTop - 8; }
+    }catch(e){}
+  }, 30);
+}
+// One-tap complete: log the planned session as done (no sets/intensity required)
+async function tlComplete(dateStr, title){
+  try{
+    await sbInsert('workout_logs', {client_code:cl.code, title:title||'Workout', description:'', duration:null, date_str:dateStr, logged_at:new Date().toISOString()});
+    try{ showToast('\u2713 Marked done'); }catch(e){}
+    renderDayTimeline();
+    try{ if(typeof loadTodayWorkouts==='function') await loadTodayWorkouts(); }catch(e){}
+  }catch(e){ try{ showToast('Could not save'); }catch(_){} }
 }
 
 async function loadFeedTab(){
