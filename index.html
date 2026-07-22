@@ -2010,8 +2010,8 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
   <div class="bni active" id="bnToday" onclick="switchTab('Today')"><div class="bni-ic">📋</div><div class="bni-lb">Today</div></div>
   <div class="bni" id="bnFeed" onclick="switchTab('Feed')"><div class="bni-ic">🏋️</div><div class="bni-lb" id="bnFeedLabel">Training</div></div>
   <div class="bni" id="bnAsk" onclick="switchTab('Ask')"><div class="bni-ic" id="bnAskIc">💬</div><div class="bni-lb" id="bnAskLb">Jim</div></div>
-  <div class="bni" id="bnFollow" onclick="switchTab('Follow')"><div class="bni-ic">🐐</div><div class="bni-lb">Yusuf</div></div>
   <div class="bni" id="bnTraining" onclick="switchTab('Training')"><div class="bni-ic">📝</div><div class="bni-lb">Journal</div></div>
+  <div class="bni" id="bnFollow" onclick="switchTab('Follow')"><div class="bni-ic">🐐</div><div class="bni-lb">Yusuf</div></div>
   <div class="bni trainer-only" id="bnClients" onclick="switchTab('Clients')"><div class="bni-ic">👥</div><div class="bni-lb">Clients</div></div>
 </div>
 
@@ -2319,7 +2319,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.661.0';
+var APP_VERSION = 'v5.666.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -2435,7 +2435,7 @@ var _slogLoaded=false;
 function _slogKey(){ return 'yjb_slogdraft_'+(cl?cl.code:'x'); }
 function showSmartLogBar(){
   var bar=document.getElementById('smartLogBar');
-  if(bar) bar.style.display = (cl && typeof isTrainer==='function' && isTrainer(cl.code)) ? 'none' : 'flex';
+  if(bar) bar.style.display = 'flex';   // available to everyone, including the trainer, for logging
 }
 async function openSmartLog(){
   var v=document.getElementById('slogView'); if(v) v.style.display='flex';
@@ -5103,15 +5103,19 @@ function openMyJournal(){ switchTab(cl && typeof isTrainer==='function' && isTra
 function _labelAskTab(){
   try{
     var item=document.getElementById('bnAsk');
+    var follow=document.getElementById('bnFollow');
     if(cl && typeof isTrainer==='function' && isTrainer(cl.code)){
       // Trainer: this nav slot is their Journal
       if(item) item.style.display='';
       var ic=document.getElementById('bnAskIc'), lb=document.getElementById('bnAskLb');
       if(ic) ic.textContent='\ud83d\udcd3';
       if(lb) lb.textContent='Journal';
+      // The Yusuf/Follow tab is client-facing \u2014 the trainer doesn't need it
+      if(follow) follow.style.display='none';
     } else {
       // Client: Jim comes off the nav entirely (chat still reachable by function)
       if(item) item.style.display='none';
+      if(follow) follow.style.display='';
     }
   }catch(e){}
 }
@@ -8931,11 +8935,139 @@ async function _repostComment(rid, btn){
   finally{ if(btn){ btn._busy=false; btn.style.opacity='1'; } }
 }
 // The perpetual Feed tab — every reposted meal, newest first, with likes + comments.
+// ===== DAY TIMELINE — the client's own day, ordered by when things actually happened =====
+var _tlViewDate = new Date();
+function _tlMins(r){ return _journalMin(r); }
+function _tlClock(mins){
+  if(mins==null || mins>=99999 || mins<0) return '';
+  var h=Math.floor(mins/60), m=mins%60, ap=h>=12?'pm':'am', hh=h%12; if(hh===0) hh=12;
+  return hh+':'+(m<10?'0':'')+m+ap;
+}
+function _tlDayLabel(d){
+  var now=new Date(); now.setHours(0,0,0,0); var dd=new Date(d); dd.setHours(0,0,0,0);
+  var diff=Math.round((now-dd)/86400000);
+  if(diff===0) return 'Today';
+  if(diff===1) return 'Yesterday';
+  if(diff===-1) return 'Tomorrow';
+  return d.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+}
+function tlShiftDay(dir){
+  var d=new Date(_tlViewDate); d.setDate(d.getDate()+dir);
+  // don't wander more than 7 days ahead
+  var now=new Date(); now.setHours(0,0,0,0); var ahead=Math.round((new Date(d.getFullYear(),d.getMonth(),d.getDate())-now)/86400000);
+  if(ahead>7) return;
+  _tlViewDate=d; renderDayTimeline();
+}
+function tlToday(){ _tlViewDate=new Date(); renderDayTimeline(); }
+async function renderDayTimeline(){
+  var body=document.getElementById('feedTabBody'); if(!body||!cl) return;
+  var head=document.getElementById('feedTabHeading'); if(head) head.textContent='Training';
+  var vd=new Date(_tlViewDate);
+  var dStr=vd.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  var now=new Date(); now.setHours(0,0,0,0);
+  var isToday=(new Date(vd.getFullYear(),vd.getMonth(),vd.getDate()).getTime()===now.getTime());
+  var isFuture=(new Date(vd.getFullYear(),vd.getMonth(),vd.getDate()).getTime()>now.getTime());
+
+  // day navigation header
+  var nav='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">'
+    +'<span onclick="tlShiftDay(-1)" style="cursor:pointer;color:#8a8a8a;padding:6px 10px;font-size:18px;">\u2039</span>'
+    +'<div style="text-align:center;cursor:pointer;" onclick="tlToday()">'
+      +'<div style="font-size:17px;font-weight:800;color:var(--text);letter-spacing:-0.2px;">'+_tlDayLabel(vd)+'</div>'
+      +(isToday?'':'<div style="font-size:10px;color:var(--gold);margin-top:2px;font-weight:700;">tap for today</div>')
+    +'</div>'
+    +'<span onclick="tlShiftDay(1)" style="cursor:pointer;color:#8a8a8a;padding:6px 10px;font-size:18px;">\u203a</span>'
+  +'</div>';
+
+  body.innerHTML=nav+'<div style="text-align:center;padding:36px 0;color:var(--muted);font-size:13px;">Loading\u2026</div>';
+
+  try{
+    var foods=await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(cl.code)+'&date_str=eq.'+encodeURIComponent(dStr)+'&limit=50')||[];
+    var workouts=await sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(cl.code)+'&date_str=eq.'+encodeURIComponent(dStr)+'&limit=20')||[];
+
+    // build ordered events
+    var ev=[];
+    foods.forEach(function(f){ ev.push({kind:'food', mins:_tlMins(f), data:f}); });
+    workouts.forEach(function(w){ ev.push({kind:'workout', mins:_tlMins(w), data:w}); });
+    ev.sort(function(a,b){ return a.mins-b.mins; });
+
+    if(!ev.length){
+      var empty = isFuture
+        ? 'Nothing planned yet.<br><span style="color:#6a6a6a;">Plan a workout to hold yourself to it.</span>'
+        : (isToday ? 'Nothing logged yet today.<br><span style="color:#6a6a6a;">Use \u201cLog anything\u201d on Today to fill this in.</span>'
+                   : 'Nothing logged this day.');
+      body.innerHTML=nav+'<div style="text-align:center;padding:40px 16px;color:var(--muted);font-size:13px;line-height:1.7;">'+empty+'</div>';
+      return;
+    }
+
+    // day totals
+    var cal=foods.reduce(function(s,f){return s+(f.calories||0);},0);
+    var pro=foods.reduce(function(s,f){return s+(f.protein||0);},0);
+    var mc=function(v,l){ return '<div style="text-align:center;"><div style="font-family:\'Plus Jakarta Sans\',sans-serif;font-weight:800;font-size:19px;line-height:0.9;color:var(--text);">'+v+'</div><div style="font-size:8px;color:var(--muted);letter-spacing:1.2px;text-transform:uppercase;margin-top:4px;font-weight:700;">'+l+'</div></div>'; };
+    var dash='';
+    if(cal>0){
+      dash='<div style="background:#242424;border:1px solid #333;border-radius:14px;padding:13px 10px;margin-bottom:18px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;">'
+        +mc(Math.round(cal).toLocaleString(),'Cal')+mc(Math.round(pro)+'g','Protein')+mc(workouts.length||'\u2014','Sessions')+'</div>';
+    }
+
+    // the timeline
+    var rows='', lastMins=null;
+    ev.forEach(function(e, i){
+      var known=(e.mins!=null && e.mins<99999 && e.mins>=0);
+      var clock=known?_tlClock(e.mins):'';
+      // gap-proportional spacer: more real time => more space (capped)
+      var gap=8;
+      if(lastMins!=null && known){ var dm=Math.max(0, e.mins-lastMins); gap=Math.min(40, 8+Math.round(dm/12)); }
+      if(known) lastMins=e.mins;
+      rows+='<div style="height:'+gap+'px;"></div>';
+      rows+=_tlRow(e, clock, i);
+    });
+
+    body.innerHTML=nav+dash
+      +'<div style="position:relative;padding-left:8px;">'+rows+'</div>';
+  }catch(err){
+    body.innerHTML=nav+'<div style="text-align:center;padding:36px 16px;color:#6a6a6a;font-size:13px;">Couldn\u2019t load this day.</div>';
+  }
+}
+function _tlRow(e, clock, i){
+  var dotColor = e.kind==='workout' ? 'var(--gold)' : '#6aa9e0';
+  var timeCol='<div style="width:52px;flex-shrink:0;text-align:right;padding-right:12px;font-size:10.5px;color:#7a7a7a;font-weight:700;padding-top:14px;">'+(clock||'')+'</div>';
+  var dot='<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;padding-top:15px;"><div style="width:9px;height:9px;border-radius:50%;background:'+dotColor+';"></div><div style="flex:1;width:2px;background:#242424;margin-top:2px;"></div></div>';
+  var card;
+  if(e.kind==='workout'){
+    var w=e.data;
+    card='<div onclick="tlExpand(\'w\','+(w.id||0)+')" style="flex:1;min-width:0;background:#1c1c1c;border:1px solid #2c2c2c;border-radius:13px;padding:13px 14px;margin-left:10px;cursor:pointer;">'
+      +'<div style="display:flex;align-items:center;gap:8px;"><span style="font-size:15px;">\ud83c\udfcb\ufe0f</span>'
+        +'<span style="font-size:14px;font-weight:800;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+_escHtml(w.title||'Workout')+'</span>'
+        +(w.duration?'<span style="margin-left:auto;font-size:11px;color:var(--muted);flex-shrink:0;">'+w.duration+' min</span>':'')
+      +'</div>'
+      +(w.description?'<div style="font-size:11.5px;color:var(--m2);margin-top:6px;line-height:1.5;max-height:34px;overflow:hidden;">'+_escHtml(String(w.description).slice(0,90))+'</div>':'')
+    +'</div>';
+  } else {
+    var f=e.data;
+    card='<div style="flex:1;min-width:0;background:#1c1c1c;border:1px solid #2c2c2c;border-radius:13px;padding:12px 14px;margin-left:10px;">'
+      +'<div style="display:flex;align-items:center;gap:8px;"><span style="font-size:15px;">'+(f.emoji||'\ud83c\udf7d\ufe0f')+'</span>'
+        +'<span style="font-size:14px;font-weight:700;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+_escHtml(f.name||'Meal')+'</span>'
+        +(f.calories?'<span style="margin-left:auto;font-size:11px;color:var(--muted);flex-shrink:0;">'+Math.round(f.calories)+' cal</span>':'')
+      +'</div>'
+    +'</div>';
+  }
+  return '<div style="display:flex;align-items:flex-start;">'+timeCol+dot+card+'</div>';
+}
+function tlExpand(kind, id){
+  // reuse existing detail views where they exist
+  try{ if(kind==='w' && typeof openWorkoutDetail==='function'){ openWorkoutDetail(id); return; } }catch(e){}
+}
+
 async function loadFeedTab(){
   var body=document.getElementById('feedTabBody'); if(!body) return;
   var head=document.getElementById('feedTabHeading');
   // Everyone gets the training tracker here now.
   if(head) head.textContent='Training';
+  if(cl && typeof isTrainer==='function' && isTrainer(cl.code)){
+    _tlViewDate=new Date();
+    await renderDayTimeline();
+    return;
+  }
   body.innerHTML='<div style="text-align:center;padding:40px 0;color:var(--muted);font-size:13px;">Loading…</div>';
   await renderPlanTab();
   return;
