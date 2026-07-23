@@ -2412,7 +2412,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.719.0';
+var APP_VERSION = 'v5.720.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -9638,30 +9638,38 @@ function tlEditPickMeal(m){ window._edMeal=m; _edPaintMeal(); }
 function _edReadTag(){ var t=document.getElementById('edTagInput'); return t?String(t.value||'').trim():''; }
 // PATCH that survives missing columns (mirrors insertFoodLog's behaviour)
 async function sbPatchGraceful(table, id, patch){
-  var payload=Object.assign({}, patch), dropped=[];
+  var payload=Object.assign({}, patch), dropped=[], lastErr='';
   async function attempt(){
     try{
       var res=await fetch(SB_URL+'/rest/v1/'+table+'?id=eq.'+encodeURIComponent(id), {method:'PATCH',
         headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
         body:JSON.stringify(payload)});
-      if(!res.ok){ var b=''; try{ b=await res.text(); }catch(e){} return {ok:false, body:b}; }
+      if(!res.ok){ var b=''; try{ b=await res.text(); }catch(e){} return {ok:false, body:b, status:res.status}; }
       return {ok:true};
-    }catch(e){ return {ok:false, body:''}; }
+    }catch(e){ return {ok:false, body:String(e&&e.message||e), status:0}; }
   }
   var r=await attempt(), guard=0;
-  while(!r.ok && guard<5){
-    var body=r.body||'';
-    var m=/column\s+"?([a-z_]+)"?[\s\S]*?does not exist/i.exec(body) || /could not find the '([a-z_]+)' column/i.exec(body);
+  // Optional columns to shed, in order of least value — photo is the LAST thing we give up.
+  var OPTIONAL=['note','insight','emoji','graced','rating','photo'];
+  while(!r.ok && guard<7){
+    lastErr=(r.body||'')+' [http '+(r.status||0)+']';
+    var m=/column\s+"?([a-z_]+)"?[\s\S]*?does not exist/i.exec(r.body||'')
+       || /could not find the '([a-z_]+)' column/i.exec(r.body||'')
+       || /'([a-z_]+)' column of/i.exec(r.body||'');
     var col=m && m[1];
-    if(!col || !(col in payload)){
-      // not a column problem — if a photo is riding along, it's the likely payload issue
-      if(payload.photo){ delete payload.photo; dropped.push('photo'); r=await attempt(); guard++; continue; }
-      break;
+    if(col && (col in payload)){
+      delete payload[col]; dropped.push(col);
+    } else {
+      // couldn't identify the column — shed the least important field still present
+      var shed=null;
+      for(var k=0;k<OPTIONAL.length;k++){ if(OPTIONAL[k] in payload){ shed=OPTIONAL[k]; break; } }
+      if(!shed) break;
+      delete payload[shed]; dropped.push(shed);
     }
-    delete payload[col]; dropped.push(col);
     r=await attempt(); guard++;
   }
-  return {ok:r.ok, dropped:dropped, saved:payload};
+  try{ window._lastPatchError = r.ok ? '' : lastErr; }catch(e){}
+  return {ok:r.ok, dropped:dropped, saved:payload, error:lastErr};
 }
 function tlSaveFoodEdit(){
   var id=window._tlEditId; if(!id){ try{ closeM('mEditFood'); }catch(e){} return; }
@@ -9691,7 +9699,12 @@ function tlSaveFoodEdit(){
   (async function(){
     var res=await sbPatchGraceful('food_logs', id, patch);
     if(!res.ok){ try{ showToast('Could not save'); window._tlCache=null; renderDayTimeline(); }catch(e){} return; }
-    if(res.dropped.indexOf('photo')>=0){ try{ showToast('Saved, but the photo would not store'); }catch(e){} }
+    if(res.dropped.indexOf('photo')>=0){
+      try{ showToast('Saved \u2014 photo rejected by the database'); }catch(e){}
+      try{ console.warn('photo not stored. server said:', res.error); }catch(e){}
+    } else if(res.dropped.length){
+      try{ console.warn('dropped columns on save:', res.dropped.join(', '), res.error); }catch(e){}
+    }
     try{ _syncToday(); }catch(e){}
   })();
   return true;
