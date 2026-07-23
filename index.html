@@ -1433,7 +1433,12 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
   <div class="msh">
     <div class="mhnd"></div>
     <div class="mtitle" style="text-align:center;">Edit Meal</div>
-    <div class="il" style="margin-top:16px;">Meal name</div>
+    <div class="il" style="margin-top:16px;">Photo</div>
+    <div class="pslot" id="editPhotoSlot" style="min-height:60px;">
+      <input type="file" id="editPhotoInput" accept="image/*" onchange="hdlEditPhoto(this)">
+      <div class="psi" style="padding:9px;"><div class="psi-ic" style="font-size:20px;margin-bottom:2px;">📷</div><div class="psi-tx" style="color:#e6e6e6;">Add a photo</div></div>
+    </div>
+    <div class="il">Meal name</div>
     <input class="ifield" type="text" id="editFoodName" placeholder="">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
       <div>
@@ -2385,7 +2390,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.699.0';
+var APP_VERSION = 'v5.700.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -9234,7 +9239,8 @@ function _tlSlot(key, label, filled, ds, plan){
       var open=_woDraftOpen(ds);
       var dr=_woDraft(ds);
       var exs=(plan.ex||[]);
-      var dayKey=WEEKDAYS[(d.getDay()+6)%7];
+      var _wd=_parseDs(ds)||new Date();
+      var dayKey=WEEKDAYS[(_wd.getDay()+6)%7];
       var loggedCt=0;
       try{ loggedCt=exs.filter(function(e){ var L=(_tpToday&&_tpToday[e.n])||[]; return L.some(function(x){ return x&&x.w; }); }).length; }catch(e){}
       var s='<div style="background:#131313;border-left:3px solid #6b5a1e;border-radius:8px;padding:9px 11px;margin-bottom:6px;">'
@@ -9307,19 +9313,33 @@ function _tlSlot(key, label, filled, ds, plan){
       +'</div>';
     if(xp){
       var full = isWo ? (it.description||'') : '';
-      var det=[];
-      if(isFood){
-        if(it.calories) det.push(Math.round(it.calories)+' cal');
-        if(it.protein) det.push(Math.round(it.protein)+'g protein');
-        if(it.carbs) det.push(Math.round(it.carbs)+'g carbs');
-        if(it.fat) det.push(Math.round(it.fat)+'g fat');
+      var mac='';
+      if(isFood && (it.calories||it.protein||it.carbs||it.fat)){
+        function chip(v,lbl,col){
+          return '<div style="flex:1;text-align:center;background:#1f1f1f;border-radius:9px;padding:9px 4px;">'
+            +'<div style="font-size:15px;font-weight:800;color:'+col+';line-height:1.1;">'+(v||0)+'g</div>'
+            +'<div style="font-size:9.5px;font-weight:700;color:#8a8a8a;letter-spacing:0.6px;margin-top:3px;">'+lbl+'</div>'
+          +'</div>';
+        }
+        mac='<div style="margin-top:10px;">'
+          +'<div style="text-align:center;margin-bottom:9px;">'
+            +'<span style="font-size:22px;font-weight:800;color:#f2f2f2;">'+Math.round(it.calories||0)+'</span>'
+            +'<span style="font-size:11px;font-weight:700;color:#8a8a8a;letter-spacing:0.8px;margin-left:5px;">CALORIES</span>'
+          +'</div>'
+          +'<div style="display:flex;gap:7px;">'
+            +chip(Math.round(it.protein||0),'PROTEIN','#7fc8a9')
+            +chip(Math.round(it.carbs||0),'CARBS','#8fb4de')
+            +chip(Math.round(it.fat||0),'FAT','#dcc07a')
+          +'</div>'
+        +'</div>';
       }
       out+='<div style="margin-top:10px;padding-top:10px;border-top:1px solid #262626;">'
         +(isFood&&it.photo?'<img src="'+it.photo+'" onclick="try{openPhotoLightbox(this.src)}catch(e){}" style="width:100%;border-radius:10px;margin-bottom:10px;cursor:pointer;">':'')
         +(full?'<div style="font-size:13.5px;color:#dcdcdc;line-height:1.5;white-space:pre-wrap;word-break:break-word;">'+_escHtml(full)+'</div>':'')
-        +(det.length?'<div style="font-size:12.5px;color:#b4b4b4;line-height:1.6;">'+det.join('<br>')+'</div>':'')
+        +mac
         +'<div class="il" style="margin-top:12px;">Note</div>'
         +'<textarea id="tlNote_'+uid+'" onchange="tlSaveNote(\''+key+'\','+(it.id||0)+',this.value)" class="ifield" style="min-height:60px;font-size:14px;">'+_escHtml(it.note||'')+'</textarea>'
+        +((isFood&&it.id)?'<div onclick="event.stopPropagation();tlEditFood('+it.id+')" style="text-align:right;font-size:11.5px;font-weight:700;color:#8fb4de;padding:9px 2px 2px;cursor:pointer;">Edit</div>':'')
       +'</div>';
     }
     out+='</div>';
@@ -9415,6 +9435,158 @@ async function tlShiftMealDay(delta){
   try{ closeM('mMoveMeal'); }catch(e){}
   try{ renderDayTimeline(); }catch(e){}
   try{ if(typeof rendTodayFood==='function') rendTodayFood(); if(typeof updTots==='function') updTots(); }catch(e){}
+}
+// --- Edit a logged meal straight from the calendar (fix anything, add the photo later) ---
+function _tlFindFood(id){
+  var list=(window._tlCache&&window._tlCache.foods)||[];
+  for(var i=0;i<list.length;i++){ if(list[i].id==id) return list[i]; }
+  return null;
+}
+function _tlSetEditPhoto(src){
+  window._tlEditPhoto = src || null;
+  var slot=document.getElementById('editPhotoSlot'); if(!slot) return;
+  if(src){
+    slot.classList.add('hi');
+    slot.innerHTML='<input type="file" id="editPhotoInput" accept="image/*" onchange="hdlEditPhoto(this)"><img src="'+src+'" style="width:100%;border-radius:10px;display:block;"><div style="position:absolute;right:8px;bottom:8px;background:rgba(0,0,0,0.65);color:#fff;font-size:11px;font-weight:700;padding:5px 9px;border-radius:8px;">Change</div>';
+  } else {
+    slot.classList.remove('hi');
+    slot.innerHTML='<input type="file" id="editPhotoInput" accept="image/*" onchange="hdlEditPhoto(this)"><div class="psi" style="padding:9px;"><div class="psi-ic" style="font-size:20px;margin-bottom:2px;">📷</div><div class="psi-tx" style="color:#e6e6e6;">Add a photo</div></div>';
+  }
+}
+function hdlEditPhoto(inp){
+  var f=inp&&inp.files&&inp.files[0]; if(!f) return;
+  var rd=new FileReader();
+  rd.onload=function(ev){
+    try{
+      var img=new Image();
+      img.onload=function(){
+        try{
+          var mx=1200, w=img.width, hh=img.height;
+          if(w>mx||hh>mx){ if(w>hh){ hh=Math.round(hh*mx/w); w=mx; } else { w=Math.round(w*mx/hh); hh=mx; } }
+          var c=document.createElement('canvas'); c.width=w; c.height=hh;
+          c.getContext('2d').drawImage(img,0,0,w,hh);
+          _tlSetEditPhoto(c.toDataURL('image/jpeg',0.82));
+        }catch(e){ _tlSetEditPhoto(ev.target.result); }
+      };
+      img.onerror=function(){ _tlSetEditPhoto(ev.target.result); };
+      img.src=ev.target.result;
+    }catch(e){ _tlSetEditPhoto(ev.target.result); }
+  };
+  rd.readAsDataURL(f);
+}
+function tlEditFood(id){
+  var e=_tlFindFood(id); if(!e) return;
+  window._tlEditId=id;
+  try{
+    document.getElementById('editFoodName').value=e.name||'';
+    document.getElementById('editFoodCal').value=(e.calories!=null?e.calories:'');
+    document.getElementById('editFoodProt').value=(e.protein!=null?e.protein:'');
+    document.getElementById('editFoodCarb').value=(e.carbs!=null?e.carbs:'');
+    document.getElementById('editFoodFat').value=(e.fat!=null?e.fat:'');
+    document.getElementById('editFoodTime').value=e.eat_time||e.eatTime||'';
+    var dEl=document.getElementById('editFoodDate'); if(dEl) dEl.value='';
+    var iEl=document.getElementById('editFoodInsight'); if(iEl) iEl.value=e.insight||'';
+    var nEl=document.getElementById('editFoodNote'); if(nEl) nEl.value=e.note||'';
+  }catch(err){}
+  _tlSetEditPhoto(e.photo||null);
+  try{ openM('mEditFood'); }catch(err){}
+}
+async function tlSaveFoodEdit(){
+  var id=window._tlEditId; if(!id){ try{ closeM('mEditFood'); }catch(e){} return; }
+  function num(id2){ var el=document.getElementById(id2); var v=el?parseFloat(el.value):NaN; return isNaN(v)?null:Math.max(0,Math.round(v)); }
+  var patch={
+    name:(document.getElementById('editFoodName').value||'').trim(),
+    calories:num('editFoodCal'), protein:num('editFoodProt'), carbs:num('editFoodCarb'), fat:num('editFoodFat'),
+    eat_time:(document.getElementById('editFoodTime').value||'').trim(),
+    note:((document.getElementById('editFoodNote')||{}).value||'').trim()
+  };
+  if(window._tlEditPhoto) patch.photo=window._tlEditPhoto;
+  try{
+    var r=await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id), {method:'PATCH',
+      headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
+      body:JSON.stringify(patch)});
+    if(!r.ok && patch.photo){ delete patch.photo;
+      await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id), {method:'PATCH',
+        headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
+        body:JSON.stringify(patch)});
+    }
+    var row=_tlFindFood(id); if(row){ Object.keys(patch).forEach(function(k){ row[k]=patch[k]; }); }
+    try{ (allFood||[]).forEach(function(f){ if(f.id==id) Object.keys(patch).forEach(function(k){ f[k]=patch[k]; }); }); }catch(e){}
+    try{ showToast('Saved'); }catch(e){}
+  }catch(e){ try{ showToast('Could not save'); }catch(_){} }
+  window._tlEditId=null; window._tlEditPhoto=null;
+  try{ closeM('mEditFood'); }catch(e){}
+  try{ renderDayTimeline(true); }catch(e){}
+  try{ if(typeof rendTodayFood==='function') rendTodayFood(); if(typeof updTots==='function') updTots(); }catch(e){}
+}
+function hdlEditPhoto(inp){
+  try{
+    var f=inp.files&&inp.files[0]; if(!f) return;
+    var rd=new FileReader();
+    rd.onload=function(ev){
+      var img=new Image();
+      img.onload=function(){
+        try{
+          var mx=1000, w=img.width, h=img.height;
+          if(w>mx||h>mx){ if(w>h){ h=Math.round(h*mx/w); w=mx; } else { w=Math.round(w*mx/h); h=mx; } }
+          var cv=document.createElement('canvas'); cv.width=w; cv.height=h;
+          cv.getContext('2d').drawImage(img,0,0,w,h);
+          window._editPhoto=cv.toDataURL('image/jpeg',0.72);
+        }catch(e){ window._editPhoto=ev.target.result; }
+        try{
+          var slot=document.getElementById('editPhotoSlot');
+          if(slot){ slot.classList.add('hi'); slot.innerHTML='<input type="file" id="editPhotoInput" accept="image/*" onchange="hdlEditPhoto(this)"><img src="'+window._editPhoto+'" style="width:100%;border-radius:10px;display:block;">'; }
+        }catch(e){}
+      };
+      img.src=ev.target.result;
+    };
+    rd.readAsDataURL(f);
+  }catch(e){}
+}
+// Edit a logged meal straight from the calendar
+function tlEditFood(id){
+  var row=null;
+  try{ ((window._tlCache&&window._tlCache.foods)||[]).forEach(function(r){ if(r.id==id) row=r; }); }catch(e){}
+  if(!row) return;
+  window._tlEditId=id; window._editPhoto=row.photo||null;
+  function set(el,v){ var e=document.getElementById(el); if(e) e.value=(v==null?'':v); }
+  set('editFoodName',row.name); set('editFoodCal',row.calories); set('editFoodProt',row.protein);
+  set('editFoodCarb',row.carbs); set('editFoodFat',row.fat); set('editFoodTime',row.eat_time||'');
+  set('editFoodInsight',row.insight||''); set('editFoodNote',row.note||'');
+  try{
+    var slot=document.getElementById('editPhotoSlot');
+    if(slot){
+      if(row.photo){ slot.classList.add('hi'); slot.innerHTML='<input type="file" id="editPhotoInput" accept="image/*" onchange="hdlEditPhoto(this)"><img src="'+row.photo+'" style="width:100%;border-radius:10px;display:block;">'; }
+      else { slot.classList.remove('hi'); slot.innerHTML='<input type="file" id="editPhotoInput" accept="image/*" onchange="hdlEditPhoto(this)"><div class="psi" style="padding:9px;"><div class="psi-ic" style="font-size:20px;margin-bottom:2px;">\ud83d\udcf7</div><div class="psi-tx" style="color:#e6e6e6;">Add a photo</div></div>'; }
+    }
+  }catch(e){}
+  try{ var dt=document.getElementById('editFoodDate'); if(dt) dt.value=''; }catch(e){}
+  try{ openM('mEditFood'); }catch(e){}
+}
+async function tlSaveFoodEdit(){
+  var id=window._tlEditId; if(!id) return false;
+  function val(el){ var e=document.getElementById(el); return e?e.value:''; }
+  function num(el){ var v=parseFloat(val(el)); return isNaN(v)?null:Math.max(0,Math.round(v)); }
+  var body={
+    name:(val('editFoodName').trim()||null),
+    calories:num('editFoodCal'), protein:num('editFoodProt'),
+    carbs:num('editFoodCarb'), fat:num('editFoodFat'),
+    eat_time:(val('editFoodTime').trim()||null),
+    note:val('editFoodNote').trim()
+  };
+  if(window._editPhoto) body.photo=window._editPhoto;
+  try{
+    await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id), {method:'PATCH',
+      headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
+      body:JSON.stringify(body)});
+    try{ ((window._tlCache&&window._tlCache.foods)||[]).forEach(function(r){ if(r.id==id){ for(var k in body) r[k]=body[k]; } }); }catch(e){}
+    try{ showToast('Saved'); }catch(e){}
+  }catch(e){ try{ showToast('Could not save'); }catch(_){} }
+  window._tlEditId=null; window._editPhoto=null;
+  try{ closeM('mEditFood'); }catch(e){}
+  try{ renderDayTimeline(true); }catch(e){}
+  try{ if(typeof rendTodayFood==='function') rendTodayFood(); }catch(e){}
+  return true;
 }
 function tlXp(uid){
   window._tlXp=window._tlXp||{};
@@ -16576,6 +16748,7 @@ function editFoodEntry(i){
 }
 
 async function saveEditedFood(){
+  if(window._tlEditId){ await tlSaveFoodEdit(); return; }
   if(editingFoodIdx === null) return;
   var e = todayFood[editingFoodIdx];
   if(!e){ closeM('mEditFood'); return; }
