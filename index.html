@@ -2412,7 +2412,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.717.0';
+var APP_VERSION = 'v5.718.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -9414,6 +9414,14 @@ function _syncToday(){
   try{ if(typeof loadWeights==='function') loadWeights(); }catch(e){}
 }
 // Today logged something: the calendar must refetch rather than trust its cache.
+// Drop a freshly-logged row straight into the calendar's cache so it appears instantly.
+function _tlCacheAdd(kind, row){
+  try{
+    if(!window._tlCache) return;               // nothing cached yet: next render fetches anyway
+    var arr=window._tlCache[kind]; if(!arr) return;
+    arr.unshift(row);
+  }catch(e){}
+}
 function _tlInvalidate(){
   try{ window._tlCache=null; }catch(e){}
   try{
@@ -9456,7 +9464,7 @@ function tlToggleEx(ds, i){
 }
 function tlWoNote(ds, v){ var d=_woDraft(ds); d.note=v; _woSaveDraft(ds,d); }
 function tlWoTime(ds, v){ var d=_woDraft(ds); d.time=v; _woSaveDraft(ds,d); renderDayTimeline(true); }
-async function tlLogInlineWorkout(ds){
+function tlLogInlineWorkout(ds){
   var d=_parseDs(ds); var plan=d?_tlPlanForDate(d):null; if(!plan||!plan.type) return;
   var dr=_woDraft(ds); var exs=(plan.ex||[]);
   var lines=exs.map(function(e){
@@ -9467,15 +9475,16 @@ async function tlLogInlineWorkout(ds){
   });
   var desc=lines.join('\n')+(dr.note?('\n\n'+dr.note):'');
   var iso=_timeToISO(dr.time||_tlNowClock(), ds);
-  try{
-    await sbInsert('workout_logs',{client_code:cl.code, title:plan.type, description:desc, duration:null, date_str:ds, logged_at:iso});
-    try{ localStorage.removeItem(_woKey(ds)); }catch(e){}
-    try{ if(window._woOpen) window._woOpen[ds]=false; }catch(e){}
-    try{ showToast('\u2713 '+plan.type+' logged'); }catch(e){}
-  }catch(e){ try{ showToast('Could not save'); }catch(_){} }
-  renderDayTimeline();
-  try{ _syncToday(); }catch(e){}
-  try{ if(typeof loadTodayWorkouts==='function') await loadTodayWorkouts(); }catch(e){}
+  var row={client_code:cl.code, title:plan.type, description:desc, duration:null, date_str:ds, logged_at:iso};
+  try{ localStorage.removeItem(_woKey(ds)); }catch(e){}
+  try{ if(window._woOpen) window._woOpen[ds]=false; }catch(e){}
+  _tlCacheAdd('workouts', row);
+  try{ renderDayTimeline(true); }catch(e){}
+  try{ showToast('\u2713 '+plan.type+' logged'); }catch(e){}
+  (async function(){
+    try{ await sbInsert('workout_logs', row); try{ _syncToday(); }catch(e){} }
+    catch(e){ try{ showToast('Could not save'); window._tlCache=null; renderDayTimeline(); }catch(_){} }
+  })();
 }
 // --- Move a logged meal to a different slot (mis-tagged breakfast, etc.) ---
 function tlMoveMeal(id, ds){
@@ -9853,16 +9862,17 @@ function tlAddActivity(ds, presetTag){
     }, ms);
   });
 }
-async function tlSaveActivity(){
+function tlSaveActivity(){
   var title=((document.getElementById('evTitle')||{}).value||'').trim();
   if(!title){ try{ showToast('Write what it was'); }catch(e){} return; }
   var tag=((document.getElementById('evTag')||{}).value||'').trim();
   var tm=((document.getElementById('evTime')||{}).value||'').trim();
-  var note='';
   var ds=window._actDs||todayDateStr;
   var iso=_timeToISO(tm, ds);
   var isMeal=(window._evType==='meal');
+  var photo=window._actPhoto||null;
 
+  var row;
   if(isMeal){
     // same brain as the meal logger: your own history first, stated macros honoured, otherwise bare
     var mm=_parseInlineMacros(title);
@@ -9881,38 +9891,43 @@ async function tlSaveActivity(){
         nm=_tcase(hist.name)+(mult!==1?(' \u00d7'+mult):''); rating=(hist.rating||'good');
       }
     }
-    var row={client_code:cl.code,name:nm,emoji:'\ud83c\udf7d\ufe0f',calories:cal,protein:pro,carbs:carb,fat:fat,
-             rating:rating,meal:(tag||_evMealNow()),eat_time:tm,graced:false,date_str:ds,note:note,logged_at:iso};
-    if(window._actPhoto) row.photo=window._actPhoto;
-    try{
-      var ins=await insertFoodLog(row, window._actPhoto||null);
-      // a meal logged on the calendar is the same meal on Today — keep them in step
-      if(ds===todayDateStr){
-        var entry=Object.assign({}, row, {id:(ins&&ins.id!=null?ins.id:null), eatTime:tm, insight:''});
-        try{ allFood.push(entry); todayFood.push(entry); }catch(e){}
-        try{ if(entry.calories){ tots.cal+=(+entry.calories||0); tots.protein+=(+entry.protein||0); tots.carbs+=(+entry.carbs||0); tots.fat+=(+entry.fat||0); } }catch(e){}
-      }
-    }
-    catch(e){ try{ showToast('Could not save'); }catch(_){} }
+    row={client_code:cl.code,name:nm,emoji:'\ud83c\udf7d\ufe0f',calories:cal,protein:pro,carbs:carb,fat:fat,
+         rating:rating,meal:(tag||_evMealNow()),eat_time:tm,graced:false,date_str:ds,note:'',logged_at:iso};
   } else {
-    var wrow={client_code:cl.code, title:_tcase(title), description:note, duration:null, date_str:ds, logged_at:iso};
-    if(window._actPhoto) wrow.photo=window._actPhoto;
-    try{ await sbInsert('workout_logs', wrow); }
-    catch(_e){ delete wrow.photo; try{ await sbInsert('workout_logs', wrow); }catch(__e){} }
+    row={client_code:cl.code, title:_tcase(title), description:'', duration:null, date_str:ds, logged_at:iso};
   }
+  if(photo) row.photo=photo;
+
+  // --- show it instantly, save in the background ---
   window._actPhoto=null;
-  try{ showToast('\u2713 Logged'); }catch(e){}
   try{ closeM('mAddActivity'); }catch(e){}
-  renderDayTimeline();
-  try{ _syncToday(); }catch(e){}
-  try{
-    if(typeof rendTodayFood==='function') rendTodayFood();
-    if(typeof updTots==='function') updTots();
-    if(typeof refreshTileStates==='function') refreshTileStates();
-    if(typeof updHalo==='function') updHalo();
-    if(typeof updStats==='function') updStats();
-    if(typeof loadTodayWorkouts==='function') loadTodayWorkouts();
-  }catch(e){}
+  _tlCacheAdd(isMeal?'foods':'workouts', row);
+  try{ renderDayTimeline(true); }catch(e){}
+  if(isMeal && ds===todayDateStr){
+    var entry=Object.assign({}, row, {id:null, eatTime:tm, insight:''});
+    try{ allFood.push(entry); todayFood.push(entry); }catch(e){}
+    try{ if(entry.calories){ tots.cal+=(+entry.calories||0); tots.protein+=(+entry.protein||0); tots.carbs+=(+entry.carbs||0); tots.fat+=(+entry.fat||0); } }catch(e){}
+    try{ if(typeof rendTodayFood==='function') rendTodayFood(); if(typeof updTots==='function') updTots(); }catch(e){}
+  }
+
+  (async function(){
+    var ok=false, newId=null;
+    try{
+      if(isMeal){ var ins=await insertFoodLog(row, photo); ok=!(ins&&ins.ok===false); newId=(ins&&ins.id!=null)?ins.id:null; }
+      else{
+        try{ var w=await sbInsert('workout_logs', row); ok=true; newId=(w&&w.id!=null)?w.id:null; }
+        catch(_e){ var r2=Object.assign({},row); delete r2.photo; try{ await sbInsert('workout_logs', r2); ok=true; }catch(__e){ ok=false; } }
+      }
+    }catch(e){ ok=false; }
+    if(ok){
+      if(newId!=null){ row.id=newId; try{ (todayFood||[]).forEach(function(f){ if(f.id==null && f.name===row.name) f.id=newId; }); }catch(e){} }
+      try{ renderDayTimeline(true); }catch(e){}
+      try{ _syncToday(); }catch(e){}
+    } else {
+      try{ showToast('Could not save'); }catch(e){}
+      try{ window._tlCache=null; renderDayTimeline(); }catch(e){}
+    }
+  })();
 }
 function tlAddSlot(key, ds){
   _tlSlotDate=ds;
@@ -9957,18 +9972,21 @@ function tlWeighIn(ds){
   try{ openM('mTlWeigh'); }catch(e){}
   setTimeout(function(){ try{ document.getElementById('tlWeighInput').focus(); }catch(e){} }, 120);
 }
-async function tlSaveWeigh(){
+function tlSaveWeigh(){
   var i=document.getElementById('tlWeighInput'); var v=i?parseFloat(i.value):NaN;
   if(!v || v<=0){ try{ showToast('Enter your weight first'); }catch(e){} return; }
   var tm=(document.getElementById('tlWeighTime')||{}).value||'';
-  var iso=_timeToISO(tm, _tlSlotDate||todayDateStr);
-  try{
-    await sbInsert('weight_logs',{client_code:cl.code, weight:v, notes:'', logged_at:iso});
-    try{ showToast('\u2696\ufe0f '+v+' logged'); }catch(e){}
-    try{ closeM('mTlWeigh'); }catch(e){}
-    renderDayTimeline();
-  try{ _syncToday(); }catch(e){}
-  }catch(e){ try{ showToast('Could not save'); }catch(_){} }
+  var ds=_tlSlotDate||todayDateStr;
+  var iso=_timeToISO(tm, ds);
+  var row={client_code:cl.code, weight:v, notes:'', logged_at:iso};
+  try{ closeM('mTlWeigh'); }catch(e){}
+  _tlCacheAdd('weights', row);
+  try{ renderDayTimeline(true); }catch(e){}
+  try{ showToast('\u2696\ufe0f '+v+' logged'); }catch(e){}
+  (async function(){
+    try{ await sbInsert('weight_logs', row); try{ _syncToday(); }catch(e){} }
+    catch(e){ try{ showToast('Could not save'); window._tlCache=null; renderDayTimeline(); }catch(_){} }
+  })();
 }
 // --- Morning walk quick log (its own opaque sheet) ---
 function tlWalkLog(ds){
@@ -9978,19 +9996,21 @@ function tlWalkLog(ds){
   try{ openM('mTlWalk'); }catch(e){}
   setTimeout(function(){ try{ document.getElementById('tlWalkInput').focus(); }catch(e){} }, 120);
 }
-async function tlSaveWalk(){
+function tlSaveWalk(){
   var i=document.getElementById('tlWalkInput'); var txt=i?String(i.value||'').trim():'';
   var ds=_tlSlotDate||todayDateStr;
   var tm=(document.getElementById('tlWalkTime')||{}).value||'';
   var iso=_timeToISO(tm, ds);
-  // 1) mark the walk on the day (a time alone is enough to log it)
-  try{ await sbInsert('workout_logs', {client_code:cl.code, title:'Morning Walk', description:txt, duration:null, date_str:ds, logged_at:iso}); }catch(e){}
-  // 2) if they wrote something, double it as a journal entry
-  try{ if(txt) await _tlWalkJournal(txt, ds, iso); }catch(e){}
-  try{ showToast('Logged'); }catch(e){}
+  var row={client_code:cl.code, title:'Morning Walk', description:txt, duration:null, date_str:ds, logged_at:iso};
   try{ closeM('mTlWalk'); }catch(e){}
-  renderDayTimeline();
-  try{ _syncToday(); }catch(e){}
+  _tlCacheAdd('workouts', row);
+  try{ renderDayTimeline(true); }catch(e){}
+  try{ showToast('Logged'); }catch(e){}
+  (async function(){
+    try{ await sbInsert('workout_logs', row); }catch(e){}
+    try{ if(txt) await _tlWalkJournal(txt, ds, iso); }catch(e){}
+    try{ _syncToday(); }catch(e){}
+  })();
 }
 // Save the walk reflection into the journal. Field-fallback so it survives schema differences.
 async function _tlWalkJournal(body, ds, iso){
