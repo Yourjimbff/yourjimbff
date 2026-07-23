@@ -2412,7 +2412,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.715.0';
+var APP_VERSION = 'v5.717.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -7325,7 +7325,7 @@ async function tlCompleteWorkout(){
     try{ showToast('\u2713 '+(w.title||'Workout')+' logged'); }catch(e){}
   }catch(e){ try{ showToast('Could not save'); }catch(_){} }
   try{ closeM('mTodayWorkout'); }catch(e){}
-  try{ if(cl && typeof canSeeCalendar==='function' && canSeeCalendar(cl.code) && typeof renderDayTimeline==='function') renderDayTimeline(); }catch(e){}
+  try{ _tlInvalidate(); }catch(e){}
   try{ if(typeof loadTodayWorkouts==='function') await loadTodayWorkouts(); }catch(e){}
 }
 
@@ -9400,12 +9400,36 @@ function _tlSlot(key, label, filled, ds, plan){
   });
   return out;
 }
+// --- Cross-logging: the Calendar and Today are two views of the same day ---
+// Anything logged on the calendar refreshes Today; anything logged on Today
+// invalidates the calendar's cache so it can't show a stale day.
+function _syncToday(){
+  try{ if(typeof rendTodayFood==='function') rendTodayFood(); }catch(e){}
+  try{ if(typeof updTots==='function') updTots(); }catch(e){}
+  try{ if(typeof refreshTileStates==='function') refreshTileStates(); }catch(e){}
+  try{ if(typeof updHalo==='function') updHalo(); }catch(e){}
+  try{ if(typeof updStats==='function') updStats(); }catch(e){}
+  try{ if(typeof loadTodayWorkouts==='function') loadTodayWorkouts(); }catch(e){}
+  try{ if(typeof renderWeightCard==='function') renderWeightCard(); }catch(e){}
+  try{ if(typeof loadWeights==='function') loadWeights(); }catch(e){}
+}
+// Today logged something: the calendar must refetch rather than trust its cache.
+function _tlInvalidate(){
+  try{ window._tlCache=null; }catch(e){}
+  try{
+    if(cl && typeof canSeeCalendar==='function' && canSeeCalendar(cl.code)
+       && document.getElementById('tlScroll') && typeof renderDayTimeline==='function'){
+      renderDayTimeline();
+    }
+  }catch(e){}
+}
 async function tlDelWorkout(id){
   if(!id) return;
   try{
     await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+encodeURIComponent(id), {method:'DELETE', headers: sbHeaders()});
     try{ showToast('Removed'); }catch(e){}
     renderDayTimeline();
+  try{ _syncToday(); }catch(e){}
     try{ if(typeof loadTodayWorkouts==='function') await loadTodayWorkouts(); }catch(e){}
   }catch(e){ try{ showToast('Could not remove'); }catch(_){} }
 }
@@ -9450,6 +9474,7 @@ async function tlLogInlineWorkout(ds){
     try{ showToast('\u2713 '+plan.type+' logged'); }catch(e){}
   }catch(e){ try{ showToast('Could not save'); }catch(_){} }
   renderDayTimeline();
+  try{ _syncToday(); }catch(e){}
   try{ if(typeof loadTodayWorkouts==='function') await loadTodayWorkouts(); }catch(e){}
 }
 // --- Move a logged meal to a different slot (mis-tagged breakfast, etc.) ---
@@ -9495,6 +9520,7 @@ async function tlSetMeal(meal){
   window._mmDayChanged=false;
   try{ closeM('mMoveMeal'); }catch(e){}
   try{ renderDayTimeline(); }catch(e){}
+  try{ _syncToday(); }catch(e){}
   try{ if(typeof rendTodayFood==='function') rendTodayFood(); if(typeof updTots==='function') updTots(); }catch(e){}
 }
 // Shift a logged meal to the previous/next day (for late-night logs that landed wrong)
@@ -9514,6 +9540,7 @@ async function tlShiftMealDay(delta){
   }catch(e){ try{ showToast('Could not move it'); }catch(_){} }
   try{ closeM('mMoveMeal'); }catch(e){}
   try{ renderDayTimeline(); }catch(e){}
+  try{ _syncToday(); }catch(e){}
   try{ if(typeof rendTodayFood==='function') rendTodayFood(); if(typeof updTots==='function') updTots(); }catch(e){}
 }
 // --- Edit a logged meal straight from the calendar (fix anything, add the photo later) ---
@@ -9600,6 +9627,33 @@ function tlEditNudgeDay(delta){
 }
 function tlEditPickMeal(m){ window._edMeal=m; _edPaintMeal(); }
 function _edReadTag(){ var t=document.getElementById('edTagInput'); return t?String(t.value||'').trim():''; }
+// PATCH that survives missing columns (mirrors insertFoodLog's behaviour)
+async function sbPatchGraceful(table, id, patch){
+  var payload=Object.assign({}, patch), dropped=[];
+  async function attempt(){
+    try{
+      var res=await fetch(SB_URL+'/rest/v1/'+table+'?id=eq.'+encodeURIComponent(id), {method:'PATCH',
+        headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
+        body:JSON.stringify(payload)});
+      if(!res.ok){ var b=''; try{ b=await res.text(); }catch(e){} return {ok:false, body:b}; }
+      return {ok:true};
+    }catch(e){ return {ok:false, body:''}; }
+  }
+  var r=await attempt(), guard=0;
+  while(!r.ok && guard<5){
+    var body=r.body||'';
+    var m=/column\s+"?([a-z_]+)"?[\s\S]*?does not exist/i.exec(body) || /could not find the '([a-z_]+)' column/i.exec(body);
+    var col=m && m[1];
+    if(!col || !(col in payload)){
+      // not a column problem — if a photo is riding along, it's the likely payload issue
+      if(payload.photo){ delete payload.photo; dropped.push('photo'); r=await attempt(); guard++; continue; }
+      break;
+    }
+    delete payload[col]; dropped.push(col);
+    r=await attempt(); guard++;
+  }
+  return {ok:r.ok, dropped:dropped, saved:payload};
+}
 async function tlSaveFoodEdit(){
   var id=window._tlEditId; if(!id){ try{ closeM('mEditFood'); }catch(e){} return; }
   function num(id2){ var el=document.getElementById(id2); var v=el?parseFloat(el.value):NaN; return isNaN(v)?null:Math.max(0,Math.round(v)); }
@@ -9612,21 +9666,16 @@ async function tlSaveFoodEdit(){
   var _tag=_edReadTag(); if(_tag) patch.meal=_tag;
   if(window._edDs) patch.date_str=window._edDs;
   if(window._tlEditPhoto) patch.photo=window._tlEditPhoto;
-  try{
-    var r=await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id), {method:'PATCH',
-      headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
-      body:JSON.stringify(patch)});
-    var photoFailed=false;
-    if(!r.ok && patch.photo){ delete patch.photo; photoFailed=true;
-      await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id), {method:'PATCH',
-        headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
-        body:JSON.stringify(patch)});
-    }
-    if(photoFailed){ try{ showToast('Saved, but the photo was too large'); }catch(e){} }
-    var row=_tlFindFood(id); if(row){ Object.keys(patch).forEach(function(k){ row[k]=patch[k]; }); }
-    try{ (allFood||[]).forEach(function(f){ if(f.id==id) Object.keys(patch).forEach(function(k){ f[k]=patch[k]; }); }); }catch(e){}
-    if(!photoFailed){ try{ showToast('Saved'); }catch(e){} }
-  }catch(e){ try{ showToast('Could not save'); }catch(_){} }
+  var res=await sbPatchGraceful('food_logs', id, patch);
+  if(res.ok){
+    var row=_tlFindFood(id); if(row){ Object.keys(res.saved).forEach(function(k){ row[k]=res.saved[k]; }); }
+    try{ (allFood||[]).forEach(function(f){ if(f.id==id) Object.keys(res.saved).forEach(function(k){ f[k]=res.saved[k]; }); }); }catch(e){}
+    try{ (todayFood||[]).forEach(function(f){ if(f.id==id) Object.keys(res.saved).forEach(function(k){ f[k]=res.saved[k]; }); }); }catch(e){}
+    if(res.dropped.indexOf('photo')>=0){ try{ showToast('Saved, but the photo would not store'); }catch(e){} }
+    else { try{ showToast('Saved'); }catch(e){} }
+  } else {
+    try{ showToast('Could not save'); }catch(e){}
+  }
   window._tlEditId=null; window._tlEditPhoto=null;
   try{ closeM('mEditFood'); }catch(e){}
   try{ renderDayTimeline(true); }catch(e){}
@@ -9835,7 +9884,15 @@ async function tlSaveActivity(){
     var row={client_code:cl.code,name:nm,emoji:'\ud83c\udf7d\ufe0f',calories:cal,protein:pro,carbs:carb,fat:fat,
              rating:rating,meal:(tag||_evMealNow()),eat_time:tm,graced:false,date_str:ds,note:note,logged_at:iso};
     if(window._actPhoto) row.photo=window._actPhoto;
-    try{ await insertFoodLog(row, window._actPhoto||null); }
+    try{
+      var ins=await insertFoodLog(row, window._actPhoto||null);
+      // a meal logged on the calendar is the same meal on Today — keep them in step
+      if(ds===todayDateStr){
+        var entry=Object.assign({}, row, {id:(ins&&ins.id!=null?ins.id:null), eatTime:tm, insight:''});
+        try{ allFood.push(entry); todayFood.push(entry); }catch(e){}
+        try{ if(entry.calories){ tots.cal+=(+entry.calories||0); tots.protein+=(+entry.protein||0); tots.carbs+=(+entry.carbs||0); tots.fat+=(+entry.fat||0); } }catch(e){}
+      }
+    }
     catch(e){ try{ showToast('Could not save'); }catch(_){} }
   } else {
     var wrow={client_code:cl.code, title:_tcase(title), description:note, duration:null, date_str:ds, logged_at:iso};
@@ -9847,7 +9904,15 @@ async function tlSaveActivity(){
   try{ showToast('\u2713 Logged'); }catch(e){}
   try{ closeM('mAddActivity'); }catch(e){}
   renderDayTimeline();
-  try{ if(typeof rendTodayFood==='function') rendTodayFood(); if(typeof updTots==='function') updTots(); }catch(e){}
+  try{ _syncToday(); }catch(e){}
+  try{
+    if(typeof rendTodayFood==='function') rendTodayFood();
+    if(typeof updTots==='function') updTots();
+    if(typeof refreshTileStates==='function') refreshTileStates();
+    if(typeof updHalo==='function') updHalo();
+    if(typeof updStats==='function') updStats();
+    if(typeof loadTodayWorkouts==='function') loadTodayWorkouts();
+  }catch(e){}
 }
 function tlAddSlot(key, ds){
   _tlSlotDate=ds;
@@ -9902,6 +9967,7 @@ async function tlSaveWeigh(){
     try{ showToast('\u2696\ufe0f '+v+' logged'); }catch(e){}
     try{ closeM('mTlWeigh'); }catch(e){}
     renderDayTimeline();
+  try{ _syncToday(); }catch(e){}
   }catch(e){ try{ showToast('Could not save'); }catch(_){} }
 }
 // --- Morning walk quick log (its own opaque sheet) ---
@@ -9924,6 +9990,7 @@ async function tlSaveWalk(){
   try{ showToast('Logged'); }catch(e){}
   try{ closeM('mTlWalk'); }catch(e){}
   renderDayTimeline();
+  try{ _syncToday(); }catch(e){}
 }
 // Save the walk reflection into the journal. Field-fallback so it survives schema differences.
 async function _tlWalkJournal(body, ds, iso){
@@ -13855,7 +13922,7 @@ async function smartLogFromText(q){
   try{ _plateLogBtnLabel(); }catch(e){}
   try{ closeM('mFood'); }catch(e){}
   try{ if(typeof rendTodayFood==='function') rendTodayFood(); if(typeof updTots==='function') updTots(); if(typeof refreshTileStates==='function') refreshTileStates(); if(typeof updHalo==='function') updHalo(); if(typeof pulseH==='function') pulseH(); if(typeof updStats==='function') updStats(); }catch(e){}
-  try{ if(cl && typeof canSeeCalendar==='function' && canSeeCalendar(cl.code) && typeof renderDayTimeline==='function') renderDayTimeline(); }catch(e){}
+  try{ _tlInvalidate(); }catch(e){}
   if(btn){ btn.disabled=false; btn.style.opacity='1'; }
   try{ showToast('\u2713 Logged '+(loggedNames.length>1?(loggedNames.length+' items'):(loggedNames[0]||'it'))); }catch(e){}
 }
@@ -13898,7 +13965,7 @@ async function logPlateMeal(){
   _plate=[]; try{ photoData=null; }catch(e){}
   try{ closeM('mFood'); }catch(e){}
   try{ if(typeof rendTodayFood==='function') rendTodayFood(); if(typeof updTots==='function') updTots(); if(typeof refreshTileStates==='function') refreshTileStates(); if(typeof updHalo==='function') updHalo(); if(typeof pulseH==='function') pulseH(); if(typeof updStats==='function') updStats(); }catch(e){}
-  try{ if(cl && typeof canSeeCalendar==='function' && canSeeCalendar(cl.code) && typeof renderDayTimeline==='function') renderDayTimeline(); }catch(e){}
+  try{ _tlInvalidate(); }catch(e){}
   if(btn){ btn.disabled=false; btn.style.opacity='1'; }
   showToast('✓ '+mealName+' logged');
   try{ _gradePlateMeal(entry, names.join(', ')); }catch(e){}
@@ -17024,6 +17091,7 @@ async function saveEditedFood(){
   closeM('mEditFood');
   editingFoodIdx = null;
   showToast(movedOffToday ? ('\u2713 Moved to '+newDateStr) : '\u2713 Updated');
+  try{ _tlInvalidate(); }catch(e){}
 }
 
 // ===== MY MENU SYSTEM =====
@@ -17775,6 +17843,7 @@ async function logWorkout(){
 
   // Reset form
   resetFreestyleForm();
+  try{ _tlInvalidate(); }catch(e){}
 }
 async function deleteTodayWorkout(id){
   if(!id) return;
@@ -18319,6 +18388,7 @@ async function logWeight(){
   await renderWeightJourney();
   document.getElementById('weightInput').value='';
   wVal=null;
+  try{ _tlInvalidate(); }catch(e){}
 }
 
 // ===== WEIGHT JOURNEY GRAPH =====
@@ -21143,6 +21213,7 @@ async function logWorkoutFromOffer(offer){
     if(typeof markTileDone === 'function') markTileDone('Workout');
   }
   return savedId;
+  try{ _tlInvalidate(); }catch(e){}
 }
 
 async function patchWorkoutIntensity(workoutId, intensity){
