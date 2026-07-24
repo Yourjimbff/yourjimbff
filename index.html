@@ -2462,7 +2462,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.771.0';
+var APP_VERSION = 'v5.772.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -9373,6 +9373,7 @@ async function renderDayTimeline(soft){
     foods=res[0]||[]; workouts=res[1]||[]; weights=res[2]||[]; journals=res[3]||[];
     if(!_tpPlan){ try{ _tpPlan=_tpDefaultPlan(); }catch(e){} }
     window._tlCache={foods:foods, workouts:workouts, weights:weights, journals:journals};
+    window._tlFetchedAt=Date.now();
   }
   window._tlKeepScroll=_keepScroll;
   function _rowDs(r){ if(r&&r.date_str) return r.date_str; try{ if(r&&r.logged_at){ var d=new Date(/[Z+]/.test(r.logged_at)?r.logged_at:r.logged_at+'Z'); if(!isNaN(d.getTime())) return _tlDateStr(d); } }catch(e){} return null; }
@@ -9715,6 +9716,35 @@ function _tlCacheAdd(kind, row){
     var arr=window._tlCache[kind]; if(!arr) return;
     arr.unshift(row);
   }catch(e){}
+}
+function _tlSignature(c){
+  try{
+    function sig(a){ a=a||[]; return a.length+':'+a.map(function(r){ return (r.id||'')+'|'+(r.logged_at||r.date_str||''); }).join(','); }
+    return sig(c.foods)+'#'+sig(c.workouts)+'#'+sig(c.weights)+'#'+sig(c.journals);
+  }catch(e){ return String(Math.random()); }
+}
+// Re-open the tab, get what's already drawn. Only touch the DOM if the server
+// actually has something different — otherwise there's nothing to redraw.
+async function _tlRefreshQuiet(){
+  if(!cl) return;
+  var today=new Date(); today.setHours(0,0,0,0);
+  var start=new Date(today); start.setDate(start.getDate()-_tlDaysBack-2);
+  var cc='client_code=eq.'+encodeURIComponent(cl.code);
+  var win='&logged_at=gte.'+encodeURIComponent(start.toISOString());
+  function grab(t){
+    return sbSelect(t, cc+win+'&order=logged_at.desc&limit=300')
+      .catch(function(){ return sbSelect(t, cc+'&order=logged_at.desc&limit=200').catch(function(){ return []; }); });
+  }
+  var fresh;
+  try{
+    var r=await Promise.all([grab('food_logs'),grab('workout_logs'),grab('weight_logs'),grab('journal_entries')]);
+    fresh={foods:r[0]||[], workouts:r[1]||[], weights:r[2]||[], journals:r[3]||[]};
+  }catch(e){ return; }
+  var before = window._tlCache ? _tlSignature(window._tlCache) : '';
+  if(_tlSignature(fresh) === before) return;      // nothing changed — leave the screen alone
+  window._tlCache = fresh;
+  window._tlFetchedAt = Date.now();
+  try{ renderDayTimeline(true); }catch(e){}
 }
 function _tlInvalidate(){
   try{ window._tlCache=null; }catch(e){}
@@ -10421,9 +10451,9 @@ async function loadFeedTab(){
     // Calendar view (trainers + the clients on the calendar list)
     _tlViewDate=new Date();
     if(window._tlCache){
-      // draw from what we already have, then quietly freshen it
-      await renderDayTimeline(true);
-      setTimeout(function(){ try{ renderDayTimeline(); }catch(e){} }, 400);
+      await renderDayTimeline(true);            // instant, from what we already have
+      var age = Date.now() - (window._tlFetchedAt||0);
+      if(age > 60000){ setTimeout(function(){ try{ _tlRefreshQuiet(); }catch(e){} }, 250); }
     } else {
       await renderDayTimeline();
     }
