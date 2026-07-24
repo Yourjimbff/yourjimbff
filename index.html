@@ -2418,7 +2418,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.743.0';
+var APP_VERSION = 'v5.744.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -9220,6 +9220,21 @@ function tlExpand(kind, id){
 var _tlDaysBack=14, _tlDaysFwd=7;
 function _tlDateStr(d){ return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
 var _PLAN_DEFAULT_MIN=17*60;   // 5pm if nothing has been set
+// A day starts when you get up and ends when you go down. Thin bookends, not blocks.
+function _sleepEdge(kind){
+  try{
+    _pLoadSleep();
+    var v = (kind==='wake') ? (profile&&profile.waketime) : (profile&&profile.bedtime);
+    if(!v) return '';
+    var lbl = (kind==='wake') ? 'Wake' : 'Bed';
+    return '<div data-tl="sleepedge" style="display:flex;align-items:center;gap:9px;padding:5px 12px;margin-bottom:'+(kind==='wake'?'8px':'2px')+';cursor:pointer;opacity:0.72;">'
+      +'<span style="font-size:9.5px;font-weight:800;letter-spacing:0.9px;text-transform:uppercase;color:#6f6f6f;">'+lbl+'</span>'
+      +'<span style="font-size:11.5px;font-weight:700;color:#8d8d8d;">'+_escHtml(_fmt12(v))+'</span>'
+      +'<span style="flex:1;height:1px;background:#1e1e1e;"></span>'
+    +'</div>';
+  }catch(e){}
+  return '';
+}
 // where an unfilled slot nominally sits, so it can act as a drop target
 function _slotMins(key){
   return ({walk:7*60, breakfast:8*60, lunch:12*60+30, dinner:18*60+30, weigh:6*60+45})[key] || 12*60;
@@ -9350,6 +9365,7 @@ async function renderDayTimeline(soft){
     +'</div>';
 
     html+='<div style="padding-left:2px;">';
+    html+=_sleepEdge('wake');
     // everything that actually happened, in the order it happened
     var logged=[];
     (slots.walk||[]).forEach(function(it){ logged.push({k:'walk', lbl:'Morning walk', it:it}); });
@@ -9380,6 +9396,7 @@ async function renderDayTimeline(soft){
     if(!(slots.lunch||[]).length)     html+=_tlSlot('lunch', 'Lunch', null, ds, null);
     if(!(slots.dinner||[]).length)    html+=_tlSlot('dinner', 'Dinner', null, ds, null);
     if(!(slots.weigh||[]).length)     html+=_tlSlot('weigh', 'Weigh-in', null, ds, null);
+    html+=_sleepEdge('bed');
     html+='<div data-tl="act" data-ds="'+_escHtml(ds)+'" style="text-align:center;font-size:11px;font-weight:800;color:#7a7a7a;letter-spacing:0.7px;text-transform:uppercase;padding:8px 0 2px;cursor:pointer;">+ Add</div>';
     html+='</div>';
 
@@ -9546,7 +9563,10 @@ function _tlSlot(key, label, filled, ds, plan){
         +timeRow
         +acts
         +(it.photo?'<img data-tl="zoom" data-src="'+it.photo+'" src="'+it.photo+'" style="width:130px;height:130px;object-fit:cover;border-radius:10px;display:block;margin-bottom:10px;cursor:pointer;">':'')
-        +(full?'<div style="font-size:13.5px;color:#dcdcdc;line-height:1.5;white-space:pre-wrap;word-break:break-word;margin-bottom:10px;">'+_escHtml(full)+'</div>':'')
+        +((isWo && it.id && !window._tlRO)
+            ? '<textarea id="woTxt_'+uid+'" class="ifield" style="min-height:64px;font-size:13.5px;line-height:1.5;margin-bottom:8px;">'+_escHtml(full)+'</textarea>'
+              +'<div data-tl="wosave" data-id="'+it.id+'" data-uid="'+uid+'" style="text-align:center;font-size:11.5px;font-weight:700;color:#cfcfcf;background:#242424;border-radius:8px;padding:9px;margin-bottom:10px;cursor:pointer;">Save</div>'
+            : (full?'<div style="font-size:13.5px;color:#dcdcdc;line-height:1.5;white-space:pre-wrap;word-break:break-word;margin-bottom:10px;">'+_escHtml(full)+'</div>':''))
         +(window._tlRO ? '' : (
             '<div class="il" style="margin-top:0;">Note</div>'
             +'<textarea id="tlNote_'+uid+'" class="ifield" style="min-height:44px;font-size:13.5px;padding:9px 11px;">'+_escHtml(it.note||'')+'</textarea>'
@@ -9889,6 +9909,13 @@ function _tlBindTaps(){
     if(a==='wo'){ tlToggleWorkout(el.getAttribute('data-ds')); return; }
     if(a==='act'){ tlAddActivity(el.getAttribute('data-ds')); return; }
     if(a==='zoom'){ try{ openPhotoLightbox(el.getAttribute('data-src')); }catch(e){} return; }
+    if(a==='sleepedge'){ try{ openProfileGoals(); setTimeout(function(){ try{ _pSleepOpen=true; _renderSleepWrap(); }catch(e){} },160); }catch(e){} return; }
+    if(a==='wosave'){
+      var uid2=el.getAttribute('data-uid');
+      var ta2=document.getElementById('woTxt_'+uid2);
+      tlSaveWorkoutText(el.getAttribute('data-id'), ta2?ta2.value:'');
+      return;
+    }
     if(a==='note'){
       var uid=el.getAttribute('data-uid');
       var ta=document.getElementById('tlNote_'+uid);
@@ -9896,6 +9923,14 @@ function _tlBindTaps(){
       return;
     }
   });
+}
+async function tlSaveWorkoutText(id, txt){
+  if(!id) return;
+  try{ ((window._tlCache&&window._tlCache.workouts)||[]).forEach(function(r){ if(r.id==id) r.description=txt; }); }catch(e){}
+  var res=await sbPatchGraceful('workout_logs', id, {description:txt});
+  if(res.ok){ try{ showToast('Saved'); }catch(e){} try{ _syncToday(); }catch(e){} }
+  else { try{ showToast('Could not save'); }catch(e){} }
+  try{ renderDayTimeline(true); }catch(e){}
 }
 async function tlSetWorkoutTime(id, ds, val){
   if(!id) return;
