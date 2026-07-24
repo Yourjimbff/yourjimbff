@@ -2416,7 +2416,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.729.0';
+var APP_VERSION = 'v5.731.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -4312,6 +4312,7 @@ function renderJournalPage(){
   host.innerHTML=
     '<div style="background:var(--surface);border:1px solid #262626;border-radius:16px;padding:14px;margin-bottom:16px;">'
       + (document.getElementById('jArchiveHost') ? '' : '<div id="jTypeRowPage" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:11px;">'+pills+'</div>')
+      + (draft.trim() ? '' : _jPromptRow())
       +'<textarea id="jPageText" oninput="jSaveDraft(this.value);jPageGrow(this)" placeholder="" style="width:100%;box-sizing:border-box;min-height:300px;background:#141414;border:1px solid #2a2a2a;border-radius:14px;color:#fff;font-size:16px;line-height:1.65;padding:15px;font-family:inherit;resize:none;outline:none;">'+_escHtml(draft)+'</textarea>'
 
       +'<div style="display:flex;gap:22px;margin-top:11px;align-items:center;">'
@@ -4929,6 +4930,32 @@ function ciPhoto(input){
 function ciClearPhoto(){ _ciPhoto=null; var p=document.getElementById('checkinPhotoPrev'); if(p){ p.style.display='none'; p.innerHTML=''; } var i=document.getElementById('checkinPhotoInput'); if(i) i.value=''; }
 // ===== JOURNAL v1 — collection first =====
 var J_TYPES=[{k:'training',n:'Training'},{k:'food',n:'Food'},{k:'sleep',n:'Sleep'},{k:'mood',n:'Mood'},{k:'progress',n:'Progress'}];
+// Tappable starters so the page is never blank. They open a line, they don't finish it.
+var J_PROMPTS={
+  '':        ['What today asked of me','One thing I did right','What I kept putting off','Where my head was at'],
+  training:  ['How the session felt','What got heavier','Where I held back','What I want to hit next time'],
+  food:      ['What I ate and why','Where the hunger came from','A meal I actually enjoyed','What I reached for and why'],
+  sleep:     ['How I slept','What kept me up','How I felt waking up','What I did before bed'],
+  mood:      ['Where my head was today','What set me off','What steadied me','What I needed and did not ask for'],
+  progress:  ['What is different than a month ago','What the mirror said','What the numbers said','What I keep proving to myself']
+};
+function jPickPrompt(enc){
+  var t=''; try{ t=decodeURIComponent(enc); }catch(e){ return; }
+  var ta=document.getElementById('jPageText'); if(!ta) return;
+  var cur=String(ta.value||'');
+  ta.value = cur.trim() ? (cur.replace(/\s+$/,'') + '\n\n' + t + '\n') : (t + '\n');
+  try{ jSaveDraft(ta.value); jPageGrow(ta); }catch(e){}
+  try{ ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }catch(e){}
+  try{ renderJournalComposer(); }catch(e){}
+}
+function _jPromptRow(){
+  var list=J_PROMPTS[_jType||'']||J_PROMPTS[''];
+  return '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:11px;">'
+    + list.map(function(t){
+        return '<span onclick="jPickPrompt(\''+encodeURIComponent(t)+'\')" style="background:transparent;border:1px dashed #333;border-radius:20px;padding:6px 12px;font-size:11px;font-weight:700;color:#8a8a8a;cursor:pointer;">'+_escHtml(t)+'</span>';
+      }).join('')
+    +'</div>';
+}
 var J_MOODS=['\u{1F624}','\u{1F614}','\u{1F610}','\u{1F642}','\u{1F525}'];
 var _jType='', _jMood='', _jDate='';
 function _jReplyOn(){ try{ return _jMode()!=='quiet'; }catch(e){ return true; } }
@@ -9188,10 +9215,6 @@ async function renderDayTimeline(soft){
   var _keepScroll=(soft&&_sc0)?_sc0.scrollTop:null;
   if(!soft) body.innerHTML='<div style="text-align:center;padding:40px 0;color:var(--muted);font-size:13px;">Loading\u2026</div>';
 
-  // make sure the plan is loaded so planned sessions can show
-  try{ if(!_tpPlan){ await loadTrainingPlan(); } }catch(e){}
-  if(!_tpPlan){ try{ _tpPlan=_tpDefaultPlan(); }catch(e){} }
-
   var today=new Date(); today.setHours(0,0,0,0);
   var start=new Date(today); start.setDate(start.getDate()-_tlDaysBack);
   var end=new Date(today);   end.setDate(end.getDate()+_tlDaysFwd);
@@ -9200,13 +9223,28 @@ async function renderDayTimeline(soft){
   var foods=[], workouts=[], weights=[], journals=[];
   if(soft && window._tlCache){
     foods=window._tlCache.foods; workouts=window._tlCache.workouts; weights=window._tlCache.weights; journals=window._tlCache.journals||[];
+    if(!_tpPlan){ try{ _tpPlan=_tpDefaultPlan(); }catch(e){} }
   } else {
+    // Only the window we actually draw, and all of it at once. Five trips in a row was the 10s.
+    var since=new Date(start); since.setDate(since.getDate()-2);
+    var win='&logged_at=gte.'+encodeURIComponent(since.toISOString());
+    var cc='client_code=eq.'+encodeURIComponent(cl.code);
+    function grab(table, extra){
+      return sbSelect(table, cc+win+(extra||'')+'&order=logged_at.desc&limit=300')
+        .catch(function(){ return sbSelect(table, cc+'&order=logged_at.desc&limit=200').catch(function(){ return []; }); });
+    }
+    var res=[];
     try{
-      foods=await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(cl.code)+'&limit=400&order=logged_at.desc')||[];
-      workouts=await sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(cl.code)+'&limit=200&order=logged_at.desc')||[];
-      weights=await sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(cl.code)+'&limit=200&order=logged_at.desc')||[];
-      journals=await sbSelect('journal_entries','client_code=eq.'+encodeURIComponent(cl.code)+'&limit=200&order=logged_at.desc')||[];
-    }catch(e){}
+      res = await Promise.all([
+        grab('food_logs'),
+        grab('workout_logs'),
+        grab('weight_logs'),
+        grab('journal_entries'),
+        (!_tpPlan && typeof loadTrainingPlan==='function') ? loadTrainingPlan().catch(function(){}) : Promise.resolve()
+      ]);
+    }catch(e){ res=[]; }
+    foods=res[0]||[]; workouts=res[1]||[]; weights=res[2]||[]; journals=res[3]||[];
+    if(!_tpPlan){ try{ _tpPlan=_tpDefaultPlan(); }catch(e){} }
     window._tlCache={foods:foods, workouts:workouts, weights:weights, journals:journals};
   }
   window._tlKeepScroll=_keepScroll;
@@ -9416,7 +9454,15 @@ function _tlSlot(key, label, filled, ds, plan){
           +'<span data-tl="edit" data-id="'+it.id+'" style="font-size:10.5px;font-weight:700;color:#9a9a9a;padding:3px 8px;cursor:pointer;">Edit</span>'
         +'</div>';
       }
+      // a completed session can still have its time corrected
+      var timeRow = (isWo && it.id)
+        ? '<div style="display:flex;align-items:center;gap:9px;margin-bottom:10px;">'
+            +'<span style="font-size:10.5px;font-weight:800;color:#8a8a8a;letter-spacing:0.6px;text-transform:uppercase;flex-shrink:0;">Time</span>'
+            +'<input type="text" value="'+_escHtml(clock||_tlNowClock())+'" data-tl="wotime" data-id="'+it.id+'" data-ds="'+_escHtml(ds)+'" style="flex:1;min-width:0;background:#242424;border:1px solid #333;border-radius:8px;padding:8px 10px;font-family:\'Plus Jakarta Sans\',sans-serif;font-size:13px;font-weight:700;color:#f0f0f0;outline:none;">'
+          +'</div>'
+        : '';
       out+='<div style="margin-top:9px;padding-top:9px;border-top:1px solid #262626;">'
+        +timeRow
         +acts
         +(it.photo?'<img data-tl="zoom" data-src="'+it.photo+'" src="'+it.photo+'" style="width:130px;height:130px;object-fit:cover;border-radius:10px;display:block;margin-bottom:10px;cursor:pointer;">':'')
         +(full?'<div style="font-size:13.5px;color:#dcdcdc;line-height:1.5;white-space:pre-wrap;word-break:break-word;margin-bottom:10px;">'+_escHtml(full)+'</div>':'')
@@ -9742,6 +9788,11 @@ function tlSaveFoodEdit(){
 function _tlBindTaps(){
   var body=document.getElementById('feedTabBody'); if(!body || body._tlBound) return;
   body._tlBound=true;
+  body.addEventListener('change', function(ev){
+    var el=ev.target;
+    if(!el || !el.getAttribute || el.getAttribute('data-tl')!=='wotime') return;
+    tlSetWorkoutTime(el.getAttribute('data-id'), el.getAttribute('data-ds'), el.value);
+  });
   body.addEventListener('click', function(ev){
     var el=ev.target;
     while(el && el!==body && !el.getAttribute('data-tl')) el=el.parentNode;
@@ -9762,6 +9813,17 @@ function _tlBindTaps(){
       return;
     }
   });
+}
+async function tlSetWorkoutTime(id, ds, val){
+  if(!id) return;
+  var iso=_timeToISO(val, ds);
+  try{
+    ((window._tlCache&&window._tlCache.workouts)||[]).forEach(function(r){ if(r.id==id) r.logged_at=iso; });
+    renderDayTimeline(true);
+  }catch(e){}
+  var res=await sbPatchGraceful('workout_logs', id, {logged_at:iso});
+  if(res.ok){ try{ showToast('Time updated'); }catch(e){} try{ _syncToday(); }catch(e){} }
+  else { try{ showToast('Could not update time'); window._tlCache=null; renderDayTimeline(); }catch(e){} }
 }
 function tlXp(uid){
   window._tlXp=window._tlXp||{};
@@ -10087,7 +10149,13 @@ async function loadFeedTab(){
   if(cl && typeof canSeeCalendar==='function' && canSeeCalendar(cl.code)){
     // Calendar view (trainers + the clients on the calendar list)
     _tlViewDate=new Date();
-    await renderDayTimeline();
+    if(window._tlCache){
+      // draw from what we already have, then quietly freshen it
+      await renderDayTimeline(true);
+      setTimeout(function(){ try{ renderDayTimeline(); }catch(e){} }, 40);
+    } else {
+      await renderDayTimeline();
+    }
     return;
   }
   // Client: keep the normal titled plan view.
