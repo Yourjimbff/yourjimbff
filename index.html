@@ -2462,7 +2462,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.770.0';
+var APP_VERSION = 'v5.771.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -9661,8 +9661,9 @@ function _tlSlot(key, label, filled, ds, plan){
       var editing = !!(window._tlEditTxt && window._tlEditTxt[uid]);
       var acts='';
       if(isFood && it.id && !window._tlRO){
-        acts='<div style="text-align:right;margin-bottom:8px;">'
+        acts='<div style="display:flex;justify-content:flex-end;gap:4px;margin-bottom:8px;">'
           +'<span data-tl="edit" data-id="'+it.id+'" style="font-size:10.5px;font-weight:700;color:rgba(255,255,255,0.72);padding:3px 8px;cursor:pointer;">Edit</span>'
+          +'<span data-tl="delfood" data-id="'+it.id+'" style="font-size:10.5px;font-weight:700;color:rgba(255,120,110,0.9);padding:3px 8px;cursor:pointer;">Delete</span>'
         +'</div>';
       }
       // a completed session can still have its time corrected
@@ -10026,6 +10027,7 @@ function _tlBindTaps(){
     if(a==='zoom'){ try{ openPhotoLightbox(el.getAttribute('data-src')); }catch(e){} return; }
     if(a==='weighview'){ try{ tlWeighIn(el.getAttribute('data-ds')); }catch(e){} return; }
     if(a==='sleepedge'){ try{ openProfileGoals(); setTimeout(function(){ try{ _pSleepOpen=true; _renderSleepWrap(); }catch(e){} },160); }catch(e){} return; }
+    if(a==='delfood'){ tlDelFood(el.getAttribute('data-id')); return; }
     if(a==='wosave'){
       var uid2=el.getAttribute('data-uid');
       var ta2=document.getElementById('woTxt_'+uid2);
@@ -10040,6 +10042,18 @@ function _tlBindTaps(){
       return;
     }
   });
+}
+async function tlDelFood(id){
+  if(!id) return;
+  try{
+    await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id), {method:'DELETE', headers:sbHeaders()});
+    try{ if(window._tlCache&&window._tlCache.foods) window._tlCache.foods=window._tlCache.foods.filter(function(r){ return String(r.id)!==String(id); }); }catch(e){}
+    try{ allFood=(allFood||[]).filter(function(f){ return String(f.id)!==String(id); }); }catch(e){}
+    try{ todayFood=(todayFood||[]).filter(function(f){ return String(f.id)!==String(id); }); }catch(e){}
+    try{ showToast('Removed'); }catch(e){}
+    renderDayTimeline(true);
+    try{ _syncToday(); }catch(e){}
+  }catch(e){ try{ showToast('Could not remove'); }catch(_){} }
 }
 async function tlSaveWorkoutText(id, txt){
   if(!id) return;
@@ -10236,9 +10250,10 @@ function tlSaveActivity(){
       cal=(P.cal!=null)?Math.round(P.cal):Math.round(pro*4+carb*4+fat*9);
       nm=_tcase(mm.rest||title); rating='good';
     } else {
-      var pr=_qtyParse(title); var hist=_matchHistory(pr.name);
+      var _multiOk = !_looksLikeMultipleItems(_qtyParse(title).name);
+      var pr=_qtyParse(title); var hist=_matchHistory(_multiOk ? pr.name : title);
       if(hist){
-        var mult=pr.qty||1;
+        var mult=_multiOk ? (pr.qty||1) : 1;
         cal=Math.round((+hist.calories||0)*mult); pro=Math.round((+hist.protein||0)*mult);
         carb=Math.round((+hist.carbs||0)*mult); fat=Math.round((+hist.fat||0)*mult);
         nm=_tcase(hist.name)+(mult!==1?(' \u00d7'+mult):''); rating=(hist.rating||'good');
@@ -14215,10 +14230,23 @@ function _matchHistory(name){
   var list=_savedFoods||[];
   var hit=list.find(function(f){ return String(f.name||'').toLowerCase()===n; });
   if(hit) return hit;
-  var cands=list.filter(function(f){ var fn=String(f.name||'').toLowerCase(); return fn && (fn.indexOf(n)>=0 || n.indexOf(fn)>=0); });
+  // Loose "contains" matching is how a plate of eggs became somebody else's whole breakfast.
+  // Only accept a partial match when the two names are actually comparable in length.
+  var cands=list.filter(function(f){
+    var fn=String(f.name||'').toLowerCase();
+    if(!fn) return false;
+    if(fn.indexOf(n)<0 && n.indexOf(fn)<0) return false;
+    var shorter=Math.min(fn.length,n.length), longer=Math.max(fn.length,n.length);
+    return (shorter/longer) >= 0.7;
+  });
   if(!cands.length) return null;
   cands.sort(function(a,b){ return String(b.name||'').length-String(a.name||'').length; });
   return cands[0];
+}
+// A leading number only multiplies a saved food when the rest of the text is
+// clearly just that food. "5 eggs and 2 handfuls of potatoes" is a plate, not 5x something.
+function _looksLikeMultipleItems(s){
+  return /\band\b|\bwith\b|,|\+/.test(String(s||'')) || (String(s||'').match(/\d/g)||[]).length>0;
 }
 // The heart of it: write what you ate. Match your own history and scale by quantity.
 // No match -> log it plain with no numbers. Macros stay a tap away on the entry.
@@ -14272,9 +14300,10 @@ async function smartLogFromText(q){
   } else {
   for(var i=0;i<parts.length;i++){
     var pr=_qtyParse(parts[i]);
-    var hist=_matchHistory(pr.name);
+    var multiOk = !_looksLikeMultipleItems(pr.name);
+    var hist=_matchHistory(multiOk ? pr.name : parts[i]);
     if(hist){
-      var mult=pr.qty||1;
+      var mult=multiOk ? (pr.qty||1) : 1;
       var cal=Math.round((+hist.calories||0)*mult), pro=Math.round((+hist.protein||0)*mult), carb=Math.round((+hist.carbs||0)*mult), fat=Math.round((+hist.fat||0)*mult);
       var nm=_tcase(hist.name)+(mult!==1?(' \u00d7'+mult):'');
       await _push(
