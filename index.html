@@ -2418,7 +2418,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.740.0';
+var APP_VERSION = 'v5.741.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -9201,6 +9201,10 @@ function tlExpand(kind, id){
 var _tlDaysBack=14, _tlDaysFwd=7;
 function _tlDateStr(d){ return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
 var _PLAN_DEFAULT_MIN=17*60;   // 5pm if nothing has been set
+// where an unfilled slot nominally sits, so it can act as a drop target
+function _slotMins(key){
+  return ({walk:7*60, breakfast:8*60, lunch:12*60+30, dinner:18*60+30, weigh:6*60+45})[key] || 12*60;
+}
 function _planMins(ds, plan){
   try{
     var d=_woDraft(ds);
@@ -9365,6 +9369,7 @@ async function renderDayTimeline(soft){
   html+='</div>';
   body.innerHTML=html;
   _tlBindTaps();
+  try{ _wdBind(); }catch(e){}
 
   function _tlLand(){
     try{
@@ -9416,14 +9421,18 @@ function _tlSlot(key, label, filled, ds, plan){
       var loggedCt=0;
       try{ loggedCt=exs.filter(function(e){ var L=(_tpToday&&_tpToday[e.n])||[]; return L.some(function(x){ return x&&x.w; }); }).length; }catch(e){}
       var _pm=_planMins(ds, plan);
-      var s='<div data-mins="'+_pm+'" style="background:#131313;border-left:3px solid #6b5a1e;border-radius:8px;padding:9px 11px;margin-bottom:6px;">'
+      var _pd=_parseDs(ds), _t0=new Date(); _t0.setHours(0,0,0,0);
+      var _future = !!(_pd && (function(){ var c=new Date(_pd); c.setHours(0,0,0,0); return c>=_t0; })());
+      var _drag = _future && !window._tlRO;
+      var s='<div data-mins="'+_pm+'"'+(_drag?(' data-wodrag="'+_escHtml(ds)+'"'):'')
+        +' style="background:#131313;border-left:3px solid #6b5a1e;border-radius:8px;padding:9px 11px;margin-bottom:6px;'
+        +(_drag?'touch-action:pan-y;':'')+'">'
         +'<div data-tl="wo" data-ds="'+_escHtml(ds)+'" style="cursor:pointer;display:flex;align-items:center;">'
           +'<div style="flex:1;min-width:0;">'
             +'<div style="font-size:10.5px;font-weight:800;color:#c9a227;letter-spacing:0.7px;text-transform:uppercase;">Workout</div>'
             +'<div style="font-size:14px;font-weight:700;color:#ededed;line-height:1.25;margin-top:2px;">'+_escHtml(head)+'</div>'
             +'<div style="font-size:11px;color:#8d8d8d;margin-top:3px;">'+_minsTo12(_pm)+' \u00b7 '+(loggedCt?(loggedCt+' of '+exs.length+' logged'):(exs.length+' exercises'))+'</div>'
           +'</div>'
-          +'<span style="flex-shrink:0;color:#8a8a8a;font-weight:700;font-size:15px;">'+(open?'\u25b2':'\u25bc')+'</span>'
         +'</div>';
       if(open){
         var _canEdit = (typeof isTrainer==='function' && cl && isTrainer(cl.code));
@@ -9446,7 +9455,7 @@ function _tlSlot(key, label, filled, ds, plan){
       s+='</div>';
       return s;
     }
-    return '<div data-tl="add" data-key="'+key+'" data-ds="'+_escHtml(ds)+'" style="display:flex;align-items:flex-start;min-height:68px;background:#111;border-left:3px solid #2e2e2e;border-radius:8px;padding:10px 12px;margin-bottom:6px;cursor:pointer;">'
+    return '<div data-mins="'+_slotMins(key)+'" data-tl="add" data-key="'+key+'" data-ds="'+_escHtml(ds)+'" style="display:flex;align-items:flex-start;min-height:68px;background:#111;border-left:3px solid #2e2e2e;border-radius:8px;padding:10px 12px;margin-bottom:6px;cursor:pointer;">'
       +'<div style="flex:1;font-size:11.5px;font-weight:800;color:#9a9a9a;letter-spacing:0.7px;text-transform:uppercase;">'+_escHtml(head)+'</div>'
       +'<span style="flex-shrink:0;font-size:16px;color:#4a4a4a;line-height:1;">+</span>'
     +'</div>';
@@ -16640,6 +16649,90 @@ function navFollowDay(dir){
   if(dir>0 && d.getTime()>rt.getTime()) return; // no future
   followViewDate = d;
   loadFollowDay();
+}
+// ===== Drag a planned workout to another point in the day =====
+// Long-press to lift so it never fights the scroll. Drops set the time for THAT day only.
+var _wd=null;
+function _wdReset(){
+  if(_wd){
+    try{ if(_wd.timer) clearTimeout(_wd.timer); }catch(e){}
+    try{ if(_wd.el){ _wd.el.style.transform=''; _wd.el.style.opacity=''; _wd.el.style.boxShadow=''; _wd.el.style.zIndex=''; } }catch(e){}
+    try{ if(_wd.line && _wd.line.parentNode) _wd.line.parentNode.removeChild(_wd.line); }catch(e){}
+  }
+  _wd=null;
+}
+function _wdBind(){
+  var host=document.getElementById('feedTabBody'); if(!host || host._wdBound) return;
+  host._wdBound=true;
+
+  host.addEventListener('touchstart', function(ev){
+    if(window._tlRO) return;
+    var el=ev.target;
+    while(el && el!==host && !(el.getAttribute && el.getAttribute('data-wodrag'))) el=el.parentNode;
+    if(!el || el===host) return;
+    var y=(ev.touches&&ev.touches[0])?ev.touches[0].clientY:0;
+    _wd={el:el, ds:el.getAttribute('data-wodrag'), startY:y, live:false, timer:null, line:null, sibs:[], mins:null};
+    _wd.timer=setTimeout(function(){
+      if(!_wd) return;
+      _wd.live=true;
+      try{ if(navigator.vibrate) navigator.vibrate(10); }catch(e){}
+      el.style.opacity='0.95'; el.style.zIndex='30';
+      el.style.boxShadow='0 14px 34px rgba(0,0,0,0.6)';
+      var sibs=[];
+      Array.prototype.forEach.call(el.parentNode.children, function(c){
+        if(c===el) return;
+        var mv=c.getAttribute && c.getAttribute('data-mins');
+        if(mv==null||mv==='') return;
+        var r=c.getBoundingClientRect();
+        sibs.push({mins:parseInt(mv,10), mid:(r.top+r.bottom)/2, el:c});
+      });
+      sibs.sort(function(a,b){ return a.mid-b.mid; });
+      _wd.sibs=sibs;
+      var ln=document.createElement('div');
+      ln.style.cssText='height:3px;background:var(--gold);border-radius:3px;margin:2px 0;box-shadow:0 0 10px rgba(245,197,24,0.7);';
+      _wd.line=ln;
+    }, 280);
+  }, {passive:true});
+
+  host.addEventListener('touchmove', function(ev){
+    if(!_wd) return;
+    var y=(ev.touches&&ev.touches[0])?ev.touches[0].clientY:0;
+    if(!_wd.live){
+      if(Math.abs(y-_wd.startY)>10) _wdReset();   // they meant to scroll
+      return;
+    }
+    ev.preventDefault();
+    _wd.el.style.transform='translateY('+(y-_wd.startY)+'px) scale(1.02)';
+    var prev=null, next=null;
+    for(var i=0;i<_wd.sibs.length;i++){
+      var s=_wd.sibs[i];
+      if(y>=s.mid) prev=s; else { next=s; break; }
+    }
+    try{
+      if(_wd.line){
+        if(next) next.el.parentNode.insertBefore(_wd.line, next.el);
+        else if(prev) prev.el.parentNode.insertBefore(_wd.line, prev.el.nextSibling);
+      }
+    }catch(e){}
+    var m;
+    if(!prev && !next) m=_planMins(_wd.ds, null);
+    else if(!prev) m=Math.max(5, next.mins-45);
+    else if(!next) m=Math.min(24*60-10, prev.mins+45);
+    else m=Math.round((prev.mins+next.mins)/2);
+    _wd.mins=m;
+  }, {passive:false});
+
+  function drop(){
+    if(!_wd){ return; }
+    var live=_wd.live, ds=_wd.ds, mins=_wd.mins;
+    _wdReset();
+    if(!live || ds==null || mins==null) return;
+    var d=_woDraft(ds); d.time=_minsTo12(mins); _woSaveDraft(ds, d);
+    try{ showToast(_minsTo12(mins)); }catch(e){}
+    renderDayTimeline(true);
+  }
+  host.addEventListener('touchend', drop, {passive:true});
+  host.addEventListener('touchcancel', function(){ _wdReset(); }, {passive:true});
 }
 // ===== FOLLOW: the client sees Yusuf's calendar, read-only =====
 async function renderFollowCalendar(){
