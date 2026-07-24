@@ -2416,7 +2416,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.731.0';
+var APP_VERSION = 'v5.732.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -9347,6 +9347,19 @@ async function renderDayTimeline(soft){
   setTimeout(_tlLand, 260);
 }
 // One soft slot in the day. Ghosted + tappable when empty; solid when filled.
+// A real food eaten on its own is never "okay". Prompts drift; this doesn't.
+var WHOLE_FOODS=/\b(apple|apples|banana|bananas|kiwi|kiwis|orange|oranges|clementine|mandarin|grape|grapes|berry|berries|strawberr|blueberr|raspberr|blackberr|melon|watermelon|cantaloupe|mango|pineapple|peach|pear|plum|cherry|cherries|apricot|fig|figs|date|dates|pomegranate|papaya|guava|avocado|tomato|tomatoes|cucumber|carrot|carrots|celery|broccoli|cauliflower|spinach|kale|arugula|lettuce|romaine|cabbage|zucchini|squash|asparagus|green bean|brussels|pepper|peppers|onion|mushroom|beet|radish|pea|peas|corn|potato|potatoes|sweet potato|yam|rice|oat|oats|oatmeal|quinoa|lentil|lentils|chickpea|bean|beans|egg|eggs|chicken breast|chicken thigh|turkey|steak|sirloin|ribeye|beef|bison|elk|venison|pork|lamb|salmon|tuna|cod|tilapia|halibut|shrimp|scallop|sardine|mackerel|greek yogurt|cottage cheese|almond|almonds|walnut|walnuts|cashew|cashews|pistachio|pecan|peanut|water|black coffee|green tea)\b/i;
+var PROCESSED_HINT=/\b(fried|fries|breaded|nugget|chips|donut|doughnut|candy|soda|pizza|burger|shake|ice cream|cookie|cake|pastry|croissant|bacon|sausage|hot dog|processed|fast food|mcdonald|wendy|taco bell|chick-fil|popeyes|kfc|dunkin|starbucks)\b/i;
+function _wholeFoodFloor(name, rating){
+  try{
+    var n=String(name||'');
+    if(!n) return rating;
+    if(PROCESSED_HINT.test(n)) return rating;          // it announced itself, leave it
+    if(!WHOLE_FOODS.test(n)) return rating;            // not a food we recognise as whole
+    if(rating==='okay'||rating==='bad'||rating==='unknown') return 'nutrient_dense';
+  }catch(e){}
+  return rating;
+}
 function _tlSlot(key, label, filled, ds, plan){
   var has = Array.isArray(filled) ? filled.length>0 : !!filled;
 
@@ -14103,12 +14116,13 @@ async function logPlateMeal(){
 }
 async function _gradePlateMeal(entry, foodsText){
   try{
-    var sys='You grade a logged meal for a whole-foods fitness coaching app. Reply ONLY compact JSON, no markdown, no prose: {"rating": one of "nutrient_dense" | "good" | "okay" | "bad", "insight": string}. rating = overall quality for a fitness client (nutrient_dense = whole, high-protein, minimally processed; good = solid and balanced; okay = fine but not ideal; bad = off-plan / heavily processed / mostly empty calories). insight = ONE warm, specific sentence (max ~24 words) about this meal — no preamble, no quotes.';
+    var sys='You grade a logged meal for a whole-foods fitness coaching app. Reply ONLY compact JSON, no markdown, no prose: {"rating": one of "nutrient_dense" | "good" | "okay" | "bad", "insight": string}. rating = overall quality for a fitness client (nutrient_dense = whole, high-protein, minimally processed; good = solid and balanced; okay = fine but not ideal; bad = off-plan / heavily processed / mostly empty calories). WHOLE-FOOD FLOOR: a single real food on its own (fruit, veg, eggs, plain meat/fish, plain yogurt, nuts, rice, oats, potatoes) is NEVER "okay" or "bad" — a small portion or low protein is not a downgrade. Only processed/fried/packaged food earns "okay" or "bad". insight = ONE warm, specific sentence (max ~24 words) about this meal — no preamble, no quotes.';
     var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:sys+'\n\nMeal: '+foodsText+' ('+Math.round(entry.protein||0)+'g protein, '+Math.round(entry.carbs||0)+'g carbs, '+Math.round(entry.fat||0)+'g fat, '+Math.round(entry.calories||0)+' cal).'}]})});
     var data=await res.json(); var txt=''; if(data&&data.content){ data.content.forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; }); }
     txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
     var obj=JSON.parse(txt);
     var rating=(['nutrient_dense','good','okay','bad'].indexOf(obj.rating)>=0)?obj.rating:'good';
+    rating=_wholeFoodFloor((typeof name!=='undefined'?name:''), rating);
     entry.rating=rating; entry.insight=(obj.insight&&String(obj.insight).trim())?String(obj.insight).trim():'';
     if(entry.id!=null){ try{ await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+entry.id,{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}),body:JSON.stringify({rating:rating,insight:entry.insight})}); }catch(e){} }
     if(typeof rendTodayFood==='function') rendTodayFood();
@@ -19159,6 +19173,9 @@ function _daIsToday(){
 // Tools tab: the logging tiles moved to the Calendar. Their code stays (the calendar uses it),
 // but they no longer appear here. What's left is the profile + databases.
 function _retireTodayTiles(){
+  // Only strip the logging tiles from someone who HAS the calendar to log in instead.
+  // A client without the calendar still needs these — never strand them.
+  try{ if(!(cl && typeof canSeeCalendar==='function' && canSeeCalendar(cl.code))) return; }catch(e){ return; }
   // the day navigator belongs to the Calendar, not a profile page
   try{ var dr=document.querySelector('#tToday .dayrow'); if(dr) dr.style.display='none'; }catch(e){}
   ['tileEntry','tileFood','tileWorkout','todayWorkoutCard','dayCardTile','logAnotherWo','dailyStrip',
@@ -20841,7 +20858,8 @@ function buildCoachVoice(){
     'MATCH THE MOMENT — BE WARM AND HUMAN FIRST: People share life around their food — taking their mom out, a Friday treat, a hard day, a celebration. Meet that warmth before (or alongside) the logging. A sweet moment gets a sweet, genuine reaction — then the [FOOD_LOG] marker that actually logs it. e.g. reply "Love that you took her out — that\'s what it\'s about. Enjoy every bite." AND emit the [FOOD_LOG] marker on its own line. The warm words are never a substitute for the marker — if you say it\'s logged, the marker must be there. Never answer a heartfelt or playful message with a cold checklist. Read the room; be kind, a little playful, never clinical, never skeptical.\n'+
     'WHOLE-FOOD NUDGE — CARRY YUSUF\'S POINT OF VIEW (this IS the product, not fluff):\n'+
     'You are not a neutral calorie counter — you hold Yusuf\'s whole-food lens. When a meal hits its macros mostly through PROCESSED or fried sources (breading, fries, heavy oils, fast-casual, packaged), name that plainly and offer the clean build that gets the SAME thing better. Frame it as upgrading the craving, NEVER as "don\'t eat that." For a chicken + breading + waffle-fries plate: "Most of those calories are the breading and fries, not the chicken. Want the same thing cleaner? Grilled chicken with protein waffles or protein pancakes gets you the same protein for way fewer calories, and you\'ll feel better after. Not a crime — just aim for the real-food version next time." One or two lines, his voice. Do NOT do this on a genuinely whole-food meal (grilled chicken, rice, veg) — nothing to upgrade, just confirm warmly.\n'+
-    '- RATING follows the same lens: a fried / processed / fast-casual plate is "okay", not "good" — even when the protein is solid. Reserve "good" and "nutrient_dense" for genuinely whole-food meals.\n\n'+
+    '- RATING follows the same lens: a fried / processed / fast-casual plate is "okay", not "good" — even when the protein is solid. Reserve "good" and "nutrient_dense" for genuinely whole-food meals.\n'+
+    '- WHOLE-FOOD FLOOR (do not get this wrong): a single real food eaten on its own — fruit, vegetables, eggs, plain meat or fish, plain yogurt, nuts, rice, oats, potatoes — is NEVER "okay" and NEVER "bad". A kiwi is a kiwi. Rate it "nutrient_dense" or "good". Low calories, low protein, or "not a full meal" are NOT reasons to downgrade real food. "okay" means processed, not small.\n\n'+
     'DON\'T-DOUBLE-DOWN NUDGE — GATED, ONLY WHEN IT TRULY FITS:\n'+
     'If a client stacks a SECOND heavy/processed meal on top of a first (doubling down on a high-calorie processed day) AND their goal is FAT LOSS AND they are already over or near their calorie target, you may add ONE light nudge in Yusuf\'s voice: "Try not to double down on bad meals — Yusuf\'s words, quote him on it. If you\'re still hungry, take a walk and let it digest, drink some water, keep the next one lighter. You don\'t have to chase it with more."\n'+
     '- HARD GATE: ONLY for fat-loss-goal clients who are over/near target. NEVER for a maintain or gain/build goal, NEVER for a lighter client, NEVER on a small or whole-food meal, NEVER if there is any restrictive-eating signal. For everyone else this nudge is OFF — just log neutrally. When unsure, do NOT nudge. Pushing "eat less" on the wrong person causes real harm; the gate protects the client and protects Yusuf.\n\n'+
