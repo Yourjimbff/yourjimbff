@@ -1841,6 +1841,7 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
     <div id="evPillRow" style="display:flex;gap:8px;margin-top:4px;margin-bottom:16px;">
       <div id="evPillMeal" onclick="evSetType('meal')" class="evPill">Meal</div>
       <div id="evPillAct" onclick="evSetType('activity')" class="evPill">Activity</div>
+      <div id="evPillCall" onclick="evSetType('call')" class="evPill">Call</div>
     </div>
 
     <div id="evCardWrap" style="position:relative;">
@@ -1854,6 +1855,7 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
       <input type="file" id="evPhotoInput" accept="image/*" onchange="hdlActPhoto(this)" style="display:none;">
     </div>
 
+    <div id="evCallBody" style="display:none;"></div>
     <div id="evSuggest" style="display:none;position:absolute;left:0;right:0;top:100%;margin-top:6px;z-index:9;background:#161616;border:1px solid #2a2a2a;border-radius:12px;overflow:hidden;max-height:196px;overflow-y:auto;-webkit-overflow-scrolling:touch;box-shadow:0 14px 44px rgba(0,0,0,0.6);"></div>
     </div>
     <button class="sbtn" style="margin-top:16px;" onclick="tlSaveActivity()">Save</button>
@@ -2462,7 +2464,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v5.772.0';
+var APP_VERSION = 'v5.774.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -10170,17 +10172,52 @@ function _evMealNow(){
 function evSetType(t){
   if(window._evLocked && t!=='meal') return;
   window._evType=t;
-  var meal=(t==='meal');
-  var accent = meal ? '#97a341' : '#dfb055';
+  var meal=(t==='meal'), call=(t==='call');
+  var accent = call ? '#7fb0d8' : (meal ? '#97a341' : '#dfb055');
   try{
     document.getElementById('evPillMeal').classList.toggle('on', meal);
-    document.getElementById('evPillAct').classList.toggle('on', !meal);
+    document.getElementById('evPillAct').classList.toggle('on', t==='activity');
+    var pc=document.getElementById('evPillCall'); if(pc) pc.classList.toggle('on', call);
+    // a call is booked, not written — swap the block for the open times
+    var card=document.getElementById('evCardWrap'), body=document.getElementById('evCallBody');
+    var save=document.getElementById('plateLogBtn');
+    if(card) card.style.display = call ? 'none' : '';
+    if(save) save.style.display = call ? 'none' : '';
+    if(body){ body.style.display = call ? 'block' : 'none'; if(call) evRenderCallSlots(); }
+    if(call) return;
     var card=document.getElementById('evCard'); if(card) card.style.borderLeftColor=accent;
     var tag=document.getElementById('evTag');
     if(tag){ tag.style.color='#f4f4f4'; tag.value = meal ? _evMealNow() : 'Activity'; }
     var sg=document.getElementById('evSuggest'); if(sg){ sg.style.display='none'; sg.innerHTML=''; }
     var ti=document.getElementById('evTitle'); if(ti) setTimeout(function(){ try{ ti.focus({preventScroll:true}); }catch(e){} }, 60);
   }catch(e){}
+}
+async function evRenderCallSlots(){
+  var host=document.getElementById('evCallBody'); if(!host) return;
+  var ds=window._actDs||todayDateStr;
+  if(typeof isTrainer==='function' && cl && isTrainer(cl.code)){
+    host.innerHTML='<div style="padding:18px 2px;color:rgba(255,255,255,0.6);font-size:12.5px;line-height:1.6;">'
+      +'Clients book these themselves. Set when you\u2019re free and they\u2019ll fill it in.</div>'
+      +'<button class="sbtn" style="margin-top:4px;" onclick="closeM(\'mAddActivity\');setTimeout(openAvailability,180);">Set my availability</button>';
+    return;
+  }
+  host.innerHTML='<div style="padding:20px 2px;color:rgba(255,255,255,0.5);font-size:12.5px;">Loading\u2026</div>';
+  var avail=await loadAvailability(true), booked=await loadBookings(true);
+  var all=buildOpenSlots(avail, booked, 21);
+  var mine=all.filter(function(d){ return _tlDateStr(d)===ds; });
+  var tz=(avail[0] && avail[0].tz) || _myTz();
+  if(!mine.length){
+    host.innerHTML='<div style="padding:18px 2px;color:rgba(255,255,255,0.6);font-size:12.5px;line-height:1.6;">'
+      +'Nothing open that day.</div>'
+      +'<button class="obtn" style="margin-top:4px;" onclick="closeM(\'mAddActivity\');setTimeout(openBooking,180);">See other days</button>';
+    return;
+  }
+  host.innerHTML='<div style="font-size:11.5px;color:rgba(255,255,255,0.55);margin-bottom:10px;">Your time ('+_escHtml(_tzLabel(_myTz()))+').</div>'
+    +'<div style="display:flex;flex-wrap:wrap;gap:7px;">'
+    + mine.map(function(d){
+        return '<span onclick="closeM(\'mAddActivity\');setTimeout(function(){onPickSlot(\''+d.toISOString()+'\');},180);" style="font-size:12.5px;font-weight:700;color:#fff;background:#1a1a1a;border:1px solid rgba(255,255,255,0.14);border-radius:9px;padding:9px 12px;cursor:pointer;">'+_fmtLocal(d)+'</span>';
+      }).join('')
+    +'</div>';
 }
 var _evSugT=null;
 function evOnTitleInput(){
@@ -10238,6 +10275,7 @@ function tlAddActivity(ds, presetTag){
     document.getElementById('evTime').value=_tlNowClock();
   }catch(e){}
   try{ var sg=document.getElementById('evSuggest'); if(sg){ sg.style.display='none'; sg.innerHTML=''; } }catch(e){}
+  try{ var cb=document.getElementById('evCallBody'); if(cb){ cb.style.display='none'; cb.innerHTML=''; } }catch(e){}
   evSetType('meal');
   // opened from a meal slot: it's a meal, full stop — no toggling to activity
   var locked = !!presetTag;
@@ -17202,42 +17240,70 @@ function renderBookingSlots(avail, booked){
   }
   var tz=(avail[0] && avail[0].tz) || _myTz();
   var mine=(booked||[]).filter(function(b){ return b.client_code===cl.code; });
-  var slots=buildOpenSlots(avail, booked, 14);
+  var slots=buildOpenSlots(avail, booked, 21);
+
   var html='';
   if(mine.length){
-    html+='<div style="font-size:10.5px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:#fff;margin-bottom:8px;">Booked</div>';
     mine.forEach(function(b){
       var d=new Date(b.starts_at);
-      html+='<div style="background:#1a1a1a;border-left:3px solid #7fb0d8;border-radius:8px;padding:10px 12px;margin-bottom:6px;display:flex;align-items:center;gap:10px;">'
+      html+='<div style="background:#1a1a1a;border-left:3px solid #7fb0d8;border-radius:8px;padding:11px 13px;margin-bottom:8px;display:flex;align-items:center;gap:10px;">'
         +'<div style="flex:1;min-width:0;">'
-          +'<div style="font-size:13.5px;font-weight:700;color:#fff;">'+d.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})+'</div>'
-          +'<div style="font-size:11.5px;color:rgba(255,255,255,0.72);margin-top:3px;">'+_fmtLocal(d)+' your time \u00b7 '+_fmtInZone(d,tz)+' Yusuf</div>'
+          +'<div style="font-size:10px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:#fff;">Booked</div>'
+          +'<div style="font-size:14px;font-weight:700;color:#fff;margin-top:3px;">'+d.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})+' \u00b7 '+_fmtLocal(d)+'</div>'
+          +'<div style="font-size:11.5px;color:rgba(255,255,255,0.6);margin-top:3px;">'+_fmtInZone(d,tz)+' for Yusuf</div>'
         +'</div>'
-        +'<span onclick="onCancelBooking('+(b.id||0)+')" style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.5);cursor:pointer;padding:4px;">Cancel</span>'
+        +'<span onclick="onCancelBooking('+(b.id||0)+')" style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.45);cursor:pointer;padding:6px;">Cancel</span>'
       +'</div>';
     });
-    html+='<div style="height:16px;"></div>';
+    html+='<div style="height:14px;"></div>';
   }
+
   if(!slots.length){
-    html+='<div style="text-align:center;padding:26px 16px;color:rgba(255,255,255,0.5);font-size:13px;">Nothing open in the next two weeks.</div>';
-    host.innerHTML=html; return;
+    host.innerHTML = html+'<div style="text-align:center;padding:26px 16px;color:rgba(255,255,255,0.5);font-size:13px;">Nothing open in the next three weeks.</div>';
+    return;
   }
-  var byDay={};
+
+  // group by day, then show one day at a time — a wall of chips is unreadable
+  var days=[], byDay={};
   slots.forEach(function(d){
-    var k=d.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-    (byDay[k]=byDay[k]||[]).push(d);
+    var k=_tlDateStr(d);
+    if(!byDay[k]){ byDay[k]=[]; days.push({key:k, date:d}); }
+    byDay[k].push(d);
   });
-  html+='<div style="font-size:11.5px;color:rgba(255,255,255,0.55);line-height:1.5;margin-bottom:12px;">'
-     +'Shown in your time ('+_escHtml(_tzLabel(_myTz()))+').</div>';
-  Object.keys(byDay).forEach(function(k){
-    html+='<div style="font-size:11px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:#fff;margin:14px 0 7px;">'+_escHtml(k)+'</div>'
-      +'<div style="display:flex;flex-wrap:wrap;gap:7px;">'
-      + byDay[k].map(function(d){
-          return '<span onclick="onPickSlot(\''+d.toISOString()+'\')" style="font-size:12.5px;font-weight:700;color:#fff;background:#1a1a1a;border:1px solid rgba(255,255,255,0.14);border-radius:9px;padding:9px 12px;cursor:pointer;">'+_fmtLocal(d)+'</span>';
-        }).join('')
-      +'</div>';
-  });
+  window._bkDays=days; window._bkByDay=byDay; window._bkTz=tz;
+  if(!window._bkPick || !byDay[window._bkPick]) window._bkPick=days[0].key;
+
+  html+='<div style="display:flex;gap:7px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:2px 0 12px;margin:0 -2px;">'
+    + days.map(function(o){
+        var on = (o.key===window._bkPick);
+        var wd = o.date.toLocaleDateString('en-US',{weekday:'short'});
+        var dn = o.date.getDate();
+        var mo = o.date.toLocaleDateString('en-US',{month:'short'});
+        return '<div onclick="bkPickDay(\''+o.key+'\')" style="flex:0 0 auto;min-width:58px;text-align:center;cursor:pointer;'
+          +'background:'+(on?'#ffffff':'#1a1a1a')+';border:1px solid '+(on?'#ffffff':'rgba(255,255,255,0.12)')+';border-radius:11px;padding:9px 6px;">'
+          +'<div style="font-size:9.5px;font-weight:800;letter-spacing:0.7px;text-transform:uppercase;color:'+(on?'rgba(0,0,0,0.55)':'rgba(255,255,255,0.55)')+';">'+wd+'</div>'
+          +'<div style="font-size:16px;font-weight:800;color:'+(on?'#12100c':'#fff')+';line-height:1.1;margin-top:2px;">'+dn+'</div>'
+          +'<div style="font-size:9px;font-weight:700;color:'+(on?'rgba(0,0,0,0.45)':'rgba(255,255,255,0.4)')+';margin-top:1px;">'+mo+'</div>'
+        +'</div>';
+      }).join('')
+    +'</div>';
+
+  var picked=byDay[window._bkPick]||[];
+  html+='<div style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:9px;">'
+      + picked.length+' open \u00b7 your time ('+_escHtml(_tzLabel(_myTz()))+')</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">'
+    + picked.map(function(d){
+        return '<div onclick="onPickSlot(\''+d.toISOString()+'\')" style="text-align:center;cursor:pointer;background:#1a1a1a;border:1px solid rgba(255,255,255,0.13);border-radius:10px;padding:13px 8px;">'
+          +'<div style="font-size:14px;font-weight:700;color:#fff;">'+_fmtLocal(d)+'</div>'
+          +'<div style="font-size:10px;color:rgba(255,255,255,0.42);margin-top:2px;">'+_fmtInZone(d,tz)+' his time</div>'
+        +'</div>';
+      }).join('')
+    +'</div>';
   host.innerHTML=html;
+}
+function bkPickDay(k){
+  window._bkPick=k;
+  try{ renderBookingSlots(_availCache||[], _bookCache||[]); }catch(e){}
 }
 async function onPickSlot(iso){
   var avail=await loadAvailability();
