@@ -703,6 +703,9 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
 }
 .nudge{animation:tlNudge 200ms cubic-bezier(.34,1.4,.64,1);}
 @media (prefers-reduced-motion:reduce){ .nudge{animation:none;} }
+
+/* Snap and smooth both stand down while a programmatic scroll is in flight. */
+#tlScroll.nosnap{scroll-snap-type:none!important;scroll-behavior:auto!important;}
 </style>
 </head>
 <body>
@@ -2600,7 +2603,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v6.010.0';
+var APP_VERSION = 'v6.011.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -3259,6 +3262,16 @@ async function launchApp(){ try{ setTimeout(sqInit,600); }catch(e){}
   var weights = _launch[1];
   if(weights && weights.length > 0){ lastWeight = weights[0].weight; }
   if(typeof refreshFoodStreak==='function') refreshFoodStreak(true);
+  // Land on Calendar BEFORE the shell is visible, or Profile flashes first.
+  try{
+    if(typeof canSeeCalendar==='function' && canSeeCalendar(cl.code)){
+      var _tf=document.getElementById('tFeed'), _tt=document.getElementById('tToday');
+      if(_tf && _tt){ _tt.classList.remove('active'); _tf.classList.add('active'); }
+      var _bf=document.getElementById('bnFeed'), _bt=document.getElementById('bnToday');
+      if(_bf) _bf.classList.add('active');
+      if(_bt) _bt.classList.remove('active');
+    }
+  }catch(e){}
   // Build the app shell while still under the loading screen
   document.getElementById('sApp').style.display='flex';
   document.getElementById('bnav').style.display='flex';
@@ -3334,17 +3347,10 @@ async function launchApp(){ try{ setTimeout(sqInit,600); }catch(e){}
   // Trainer/program extras can finish in the background (not on the home screen)
   loadTrainerPrograms();
   loadClientAssignedProgram();
-  // Calendar is the front door. Today is the page, everything else is a detour.
   try{
     if(typeof canSeeCalendar==='function' && canSeeCalendar(cl.code)){
       switchTab('Feed');
-      setTimeout(function(){
-        try{
-          var f=document.getElementById('tFeed');
-          if(f && !f.classList.contains('active')) switchTab('Feed');
-          tlScrollToToday(false);
-        }catch(e){}
-      }, 220);
+      setTimeout(function(){ try{ tlScrollToToday(false); }catch(e){} }, 120);
     }
     else if(typeof isTrainer==='function' && isTrainer(cl.code)) switchTab('Today');
   }catch(e){}
@@ -9561,7 +9567,7 @@ async function renderDayTimeline(soft){
     var d=_rowDs(j); if(d){ (jByDay[d]=jByDay[d]||[]).push(j); }
   });
 
-  var html='<div id="tlScroll" style="position:relative;height:calc(100vh - 150px);overflow-y:auto;-webkit-overflow-scrolling:touch;padding-right:2px;scroll-snap-type:y proximity;scroll-behavior:smooth;">';
+  var html='<div id="tlScroll" style="position:relative;height:calc(100vh - 150px);overflow-y:auto;-webkit-overflow-scrolling:touch;padding-right:2px;scroll-snap-type:y proximity;">';
   var cur=new Date(start);
   while(cur.getTime()<=end.getTime()){
     var ds=_tlDateStr(cur);
@@ -12931,18 +12937,23 @@ function tlScrollToToday(smooth){
   try{
     var sc=document.getElementById('tlScroll'), an=document.getElementById('tlTodayAnchor');
     if(!sc||!an) return;
-    var y=Math.max(0, an.offsetTop-6);
-    // Already sitting on today? Don't re-run the whole scroll — just acknowledge the tap.
+    // Measure from live rects. offsetTop depends on whichever ancestor happens to be
+    // positioned, and lands on the wrong day when it guesses wrong.
+    var delta = an.getBoundingClientRect().top - sc.getBoundingClientRect().top;
+    var y = Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, sc.scrollTop + delta - 6));
+
     if(Math.abs(sc.scrollTop - y) < 24){
       an.classList.remove('nudge');
-      void an.offsetWidth;               // restart the animation
+      void an.offsetWidth;
       an.classList.add('nudge');
-      setTimeout(function(){ try{ an.classList.remove('nudge'); }catch(e){} }, 260);
+      setTimeout(function(){ try{ an.classList.remove('nudge'); }catch(e){} }, 240);
       return;
     }
-    if(smooth===false) sc.scrollTop=y;
-    else if(sc.scrollTo) sc.scrollTo({top:y, behavior:'smooth'});
-    else sc.scrollTop=y;
+    // Snap fights an in-flight programmatic scroll and can settle on a neighbouring day.
+    sc.classList.add('nosnap');
+    if(smooth===false || !sc.scrollTo){ sc.scrollTop=y; }
+    else { sc.scrollTo({top:y, behavior:'smooth'}); }
+    setTimeout(function(){ try{ sc.classList.remove('nosnap'); }catch(e){} }, smooth===false?60:420);
   }catch(e){}
 }
 function switchTab(t){
@@ -21400,7 +21411,12 @@ function _mUnlock(){
   try{
     if(window._mLockInner!=null){
       var s=document.getElementById('tlScroll');
-      if(s) s.scrollTop=window._mLockInner;
+      if(s){
+        s.classList.add('nosnap');
+        s.scrollTop=window._mLockInner;
+        void s.offsetHeight;
+        setTimeout(function(){ try{ s.classList.remove('nosnap'); }catch(e){} }, 60);
+      }
     }
   }catch(e){}
 }
