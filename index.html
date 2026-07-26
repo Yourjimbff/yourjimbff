@@ -2449,6 +2449,23 @@ async function sbInsert(table, data){
   }catch(e){ console.error('sbInsert failed',e); return false; }
 }
 
+// sbInsert returns a boolean and swallows the reason. For anything where a silent
+// failure would lie to the user, use this instead — it throws with the server's message.
+async function sbInsertStrict(table, data){
+  var res = await fetch(SB_URL+'/rest/v1/'+table, {
+    method:'POST', headers:sbHeaders(), body:JSON.stringify(data)
+  });
+  if(res.ok) return true;
+  var msg='';
+  try{
+    var t=await res.text();
+    try{ var j=JSON.parse(t); msg=j.message||j.hint||j.details||t; }catch(_p){ msg=t; }
+  }catch(e){ msg='HTTP '+res.status; }
+  var err=new Error(msg||('HTTP '+res.status));
+  err.status=res.status;
+  throw err;
+}
+
 // Like sbInsert but returns the created row (so we can grab its id immediately).
 async function sbInsertReturning(table, data){
   try{
@@ -2712,7 +2729,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v6.132.0';
+var APP_VERSION = 'v6.134.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -3504,17 +3521,30 @@ async function addClientToDb(){
   if(CLIENTS[code]){ showToast('That code is taken — pick another'); return; }
   var initials=(name.split(/\s+/).map(function(w){return w[0]||'';}).join('').slice(0,2)||name.slice(0,2)).toUpperCase();
   var btn=document.getElementById('acCreateBtn'); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='Creating\u2026'; }
-  try{
-    await sbInsert('clients',{code:code,name:name,initials:initials,coach_code:cl.code,is_trainer:false,active:true});
+  // Full row first. If the table is missing a newer column Postgres rejects the whole
+  // insert, so step down to the columns that have always existed rather than fail outright.
+  var _full={code:code,name:name,initials:initials,coach_code:cl.code,is_trainer:false,active:true};
+  var _mid={code:code,name:name,initials:initials,coach_code:cl.code};
+  var _core={code:code,name:name,initials:initials};
+  var _err=null, _ok=false;
+  for(var _i=0;_i<3 && !_ok;_i++){
+    try{ await sbInsertStrict('clients', [_full,_mid,_core][_i]); _ok=true; }
+    catch(e){ _err=e; }
+  }
+  if(_ok){
     CLIENTS[code]={name:name,initials:initials,coach_code:cl.code,active:true};
     _closeAddClient();
     showToast('\u2713 '+name+' added \u00b7 code: '+code);
     _rosterLoadPromise=null;
     try{ await loadRosterFromDB(); }catch(e){}
     if(typeof loadTrainerDashboard==='function') loadTrainerDashboard();
-  }catch(e){
-    console.error('addClient', e);
-    showToast('Could not add \u2014 try again');
+  } else {
+    console.error('addClient', _err);
+    // say what actually broke — "try again" never fixed a schema problem
+    var _msg='';
+    try{ _msg=(_err&&(_err.message||_err.hint||_err.details))||''; }catch(e){}
+    try{ if(!_msg && _err) _msg=String(_err); }catch(e){}
+    showToast(_msg ? ('Add failed: '+String(_msg).slice(0,110)) : 'Could not add \u2014 check the console');
     if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent='Create client'; }
   }
 }
@@ -9969,7 +9999,10 @@ function _tlSlot(key, label, filled, ds, plan){
       +'<div data-tl="xp" data-uid="'+uid+'" style="display:flex;align-items:flex-start;gap:9px;'+(xp?'':'min-height:48px;')+'cursor:pointer;">'
         +'<div style="flex:1;min-width:0;">'
           +'<div style="font-size:12.5px;font-weight:800;color:'+lblCol+';letter-spacing:1px;text-transform:uppercase;display:flex;align-items:center;">'+_tlIcon(key)+slotTap+'</div>'
-          +'<div style="font-size:15px;font-weight:700;color:#f0ece4;line-height:1.3;margin-top:3px;'+(xp?'':'overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;')+'">'+_escHtml(title)+'</div>'
+          // When it's open the full text is already in the field below. Don't print it twice.
+          +((xp && isWo)
+              ? ''
+              : '<div style="font-size:15px;font-weight:700;color:#f0ece4;line-height:1.3;margin-top:3px;'+(xp?'':'overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;')+'">'+_escHtml(title)+'</div>')
           +(cap.length?'<div style="font-size:12px;color:rgba(240,236,228,0.55);margin-top:4px;">'+cap.join(' \u00b7 ')+'</div>':'')
         +'</div>'
         +thumb
@@ -10005,9 +10038,7 @@ function _tlSlot(key, label, filled, ds, plan){
                 ? ('<textarea id="woTxt_'+uid+'" oninput="_woTxtTouch(\''+uid+'\')" style="width:100%;box-sizing:border-box;background:transparent;border:none;outline:none;resize:none;padding:0;margin:0 0 4px;font-family:inherit;font-size:13.5px;color:rgba(240,236,228,0.72);line-height:1.55;min-height:'+Math.max(40, Math.ceil((fullRaw.length||20)/40)*22)+'px;">'+_escHtml(fullRaw)+'</textarea>'
                    +'<div id="woSave_'+uid+'" data-tl="wosave" data-id="'+it.id+'" data-uid="'+uid+'" style="display:none;text-align:center;font-size:11.5px;font-weight:700;color:#000;background:var(--gold);border-radius:8px;padding:10px;margin-bottom:10px;cursor:pointer;">Save</div>')
                 : (fullRaw?'<div style="font-size:13.5px;color:rgba(240,236,228,0.72);line-height:1.55;white-space:pre-wrap;word-break:break-word;margin-bottom:10px;">'+_escHtml(fullRaw)+'</div>':''))
-            : ((full && String(full).trim()!==String(title||'').trim() && String(full).length>String(title||'').length+2)
-                 ? '<div style="font-size:13.5px;color:rgba(240,236,228,0.72);line-height:1.55;white-space:pre-wrap;word-break:break-word;margin-bottom:10px;">'+_escHtml(full)+'</div>'
-                 : ''))
+            : '')
         +((window._tlRO || !isFood) ? '' : (
             // a meal is a container — the useful action here is another food, not a note
             '<div data-tl="addmore" data-key="'+key+'" data-ds="'+_escHtml(ds)+'" style="display:flex;align-items:center;justify-content:center;gap:8px;'
@@ -16280,7 +16311,6 @@ function mpCarbToggle(m,n){
 }
 var CARB_QTYS=[0.5,1,1.5,2,3];
 function mpCarbQty(m,n,q){ _mp[m].carbP=_mp[m].carbP||{}; _mp[m].carbP[n]=q; renderMealPlan(); saveMealPlanNew(); }
-function mpRemoveCustom(m,i){ _mp[m].custom.splice(i,1); renderMealPlan(); saveMealPlanNew(); }
 var _mpFound={};
 var _mpEditIdx={};    // which custom item is being edited
 function mpLibMatches(q){
