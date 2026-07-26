@@ -1403,6 +1403,7 @@ body.needs-setup .setupBar{display:flex;}
       <div id="hiddenClientsCount" style="font-size:12px;color:var(--m2);line-height:1.5;margin-bottom:12px;">Hide clients who never log so your dashboard stays clean. Restore them anytime.</div>
       <button class="obtn" style="margin:0 0 8px;" onclick="trimInactiveClients()">Hide inactive clients</button>
       <button class="obtn" style="margin:0;" onclick="restoreAllHiddenClients()">↩︎ Restore hidden clients</button>
+      <button class="obtn" style="margin:8px 0 0;" onclick="openCallAccess()">Call access</button>
     </div>
     <button class="sbtn" onclick="saveProfileTab()">Save Profile ✓</button>
     <button class="obtn" onclick="doLogout()">Log out</button>
@@ -2704,7 +2705,16 @@ async function loadRosterFromDB(){
   if(_rosterLoadPromise) return _rosterLoadPromise;
   _rosterLoadPromise = (async function(){
     try{
-      var rows = await sbSelect('clients','select=code,name,initials,phone,coach_code,is_trainer,active&order=code.asc&limit=2000');
+      var rows=null, _hasCallCols=true;
+      try{
+        rows = await sbSelect('clients','select=code,name,initials,phone,coach_code,is_trainer,active,calls_enabled,call_credits&order=code.asc&limit=2000');
+      }catch(_e1){ rows=null; }
+      if(!rows || !rows.length){
+        // table hasn't got the call columns yet — fall back and grandfather instead
+        _hasCallCols=false;
+        rows = await sbSelect('clients','select=code,name,initials,phone,coach_code,is_trainer,active&order=code.asc&limit=2000');
+      }
+      window._callColsExist = _hasCallCols;
       if(rows && rows.length){
         rows.forEach(function(r){
           if(!r.code) return;
@@ -2716,6 +2726,12 @@ async function loadRosterFromDB(){
           if(r.coach_code) e.coach_code = r.coach_code;
           if(r.is_trainer) e.isTrainer = true;
           e.active = (r.active !== false);
+          // Grandfathering: anyone who already has a booking on record keeps access.
+          // Until the columns exist, an existing active client is treated as enabled and
+          // only brand-new signups start closed.
+          if(r.calls_enabled!=null) e.calls_enabled = (r.calls_enabled===true);
+          else if(!_hasCallCols) e.calls_enabled = true;
+          if(r.call_credits!=null) e.call_credits = (+r.call_credits||0);
           CLIENTS[r.code] = e;
           if(r.is_trainer && typeof TRAINER_CODES !== 'undefined' && TRAINER_CODES.indexOf(r.code) === -1){ TRAINER_CODES.push(r.code); }
         });
@@ -2729,7 +2745,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v6.135.0';
+var APP_VERSION = 'v6.220.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -3426,7 +3442,7 @@ async function launchApp(){ try{ setTimeout(sqInit,600); }catch(e){}
   var _mcb = document.getElementById('manageClientsBox');
   if(_mcb) _mcb.style.display = isTrainer(cl.code) ? 'block' : 'none';
   var _cc = document.getElementById('tileCheckin');
-  if(_cc) _cc.style.display = '';
+  if(_cc) _cc.style.display = callsEnabled(cl.code) ? '' : 'none';
   var _pb = document.getElementById('tileProgBuild');
   if(_pb) _pb.style.display = isTrainer(cl.code) ? '' : 'none';
   var _bnf = document.getElementById('bnFeed');
@@ -3523,7 +3539,8 @@ async function addClientToDb(){
   var btn=document.getElementById('acCreateBtn'); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='Creating\u2026'; }
   // Full row first. If the table is missing a newer column Postgres rejects the whole
   // insert, so step down to the columns that have always existed rather than fail outright.
-  var _full={code:code,name:name,initials:initials,coach_code:cl.code,is_trainer:false,active:true};
+  // new clients start with no scheduled calls; upgrade them from the command center
+  var _full={code:code,name:name,initials:initials,coach_code:cl.code,is_trainer:false,active:true,calls_enabled:false,call_credits:2};
   var _mid={code:code,name:name,initials:initials,coach_code:cl.code};
   var _core={code:code,name:name,initials:initials};
   var _err=null, _ok=false;
@@ -3532,9 +3549,9 @@ async function addClientToDb(){
     catch(e){ _err=e; }
   }
   if(_ok){
-    CLIENTS[code]={name:name,initials:initials,coach_code:cl.code,active:true};
+    CLIENTS[code]={name:name,initials:initials,coach_code:cl.code,active:true,calls_enabled:false,call_credits:2};
     _closeAddClient();
-    showToast('\u2713 '+name+' added \u00b7 code: '+code);
+    showToast('\u2713 '+name+' added \u00b7 code: '+code+' \u00b7 2 calls included');
     _rosterLoadPromise=null;
     try{ await loadRosterFromDB(); }catch(e){}
     if(typeof loadTrainerDashboard==='function') loadTrainerDashboard();
@@ -4956,7 +4973,39 @@ async function loadTrainerFeed(targetId){
     var journals=((await _journalP)||[]).filter(function(j){return _feedTs(j)>=_feedCut;});
     try{ var _woT={}; wos.forEach(function(w){ var c=w.client_code; var t=_feedTs(w); if(c&&t){ (_woT[c]=_woT[c]||[]).push(t); } }); var _POST=3*3600000, _PRE=3*3600000; foods.forEach(function(f){ var c=f.client_code; var ft=_feedTs(f); if(!c||!ft||!_woT[c]) return; for(var _wi=0;_wi<_woT[c].length;_wi++){ var _d=ft-_woT[c][_wi]; if(_d>=0&&_d<=_POST){ f._fuel='post'; break; } if(_d<0&&(-_d)<=_PRE){ f._fuel='pre'; break; } } }); }catch(e){}
     var items=[];
-    foods.forEach(function(f){ var c=f.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(f),kind:'food',code:c,data:f}); });
+    // One meal, one post. Four foods under breakfast is a plate, not four events.
+    (function(){
+      var groups={};
+      foods.forEach(function(f){
+        var c=f.client_code; if(!c||hidden[c]||c===cl.code) return;
+        var meal=String(f.meal||'').trim().toLowerCase()||'meal';
+        var day=String(f.date_str||'').trim();
+        var k=c+'|'+day+'|'+meal;
+        (groups[k]=groups[k]||[]).push(f);
+      });
+      Object.keys(groups).forEach(function(k){
+        var g=groups[k].sort(function(a,b){ return _feedTs(a)-_feedTs(b); });
+        if(g.length===1){
+          items.push({ts:_feedTs(g[0]),kind:'food',code:g[0].client_code,data:g[0]});
+          return;
+        }
+        var tot={calories:0,protein:0,carbs:0,fat:0}, photo=null;
+        g.forEach(function(f){
+          tot.calories+=(+f.calories||0); tot.protein+=(+f.protein||0);
+          tot.carbs+=(+f.carbs||0);       tot.fat+=(+f.fat||0);
+          if(!photo && f.photo_url) photo=f.photo_url;
+        });
+        var head=g.map(function(f){ return String(f.name||'').trim(); }).filter(Boolean);
+        var merged=Object.assign({}, g[0], {
+          name: head.join(', '),
+          calories:Math.round(tot.calories), protein:Math.round(tot.protein),
+          carbs:Math.round(tot.carbs), fat:Math.round(tot.fat),
+          photo_url:photo, _groupCount:g.length, _groupIds:g.map(function(f){return f.id;})
+        });
+        // newest timestamp, so the post surfaces when she finished the meal
+        items.push({ts:_feedTs(g[g.length-1]),kind:'food',code:merged.client_code,data:merged});
+      });
+    })();
     wos.forEach(function(w){ var c=w.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(w),kind:'wo',code:c,data:w}); });
     weights.forEach(function(w){ var c=w.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(w),kind:'weight',code:c,data:w}); });
     photos.forEach(function(ph){ var c=ph.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(ph),kind:'photo',code:c,data:ph}); });
@@ -5190,7 +5239,7 @@ function _feedItemHtml(it){
     else if(_wd.description){ _wl=String(_wd.description).split('\n').map(function(x){return x.trim();}).filter(function(l){ return l && !/^logged your/i.test(l) && !/did i get that right/i.test(l) && !/want me to change/i.test(l) && l.toLowerCase()!=='and'; }).map(function(l){ return l.replace(/^[•\-\s]+/,'').trim(); }).filter(Boolean); }
     if(_wl.length) woHtml='<div style="margin-top:9px;">'+_wl.map(function(l){ return '<div style="font-size:12.5px;color:#f0ece4;line-height:1.5;padding:1.5px 0;">· '+l.replace(/</g,'&lt;')+'</div>'; }).join('')+'</div>';
   }
-  var _verb = it.kind==='food'?'logged a meal':(it.kind==='wo'?'logged a workout':(it.kind==='weight'?'logged a weigh-in':(it.kind==='photo'?'shared a progress photo':'logged something')));
+  var _verb = it.kind==='food'?((it.data&&it.data._groupCount>1)?('logged '+it.data._groupCount+' foods'):'logged a meal'):(it.kind==='wo'?'logged a workout':(it.kind==='weight'?'logged a weigh-in':(it.kind==='photo'?'shared a progress photo':'logged something')));
   var _likeT=(_rmk&&_rmk.like_ts)?_revTimeStr(_rmk.like_ts):''; var _likeLabel = _likeD ? '<div style="font-size:11.5px;color:#ff3b30;font-weight:700;margin-top:10px;">'+_icHf+' Yusuf liked this'+(_likeT?'<span style="color:var(--muted);font-weight:600;"> \u00b7 '+_likeT+'</span>':'')+'</div>' : '';
   var _myCmt = (_rmk && _rmk.comment_text) ? '<div style="margin-top:10px;display:flex;gap:8px;align-items:flex-start;"><div style="width:23px;height:23px;border-radius:50%;background:var(--gold);color:#000;font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;">Y</div><div style="min-width:0;"><div style="font-weight:800;color:#f0ece4;font-size:12.5px;">Yusuf'+((_rmk&&_rmk.comment_ts&&_revTimeStr(_rmk.comment_ts))?'<span style="color:var(--muted);font-weight:600;font-size:11px;"> \u00b7 '+_revTimeStr(_rmk.comment_ts)+'</span>':'')+'</div><div style="font-size:12.5px;line-height:1.45;color:#f0ece4;margin-top:1px;">'+String(_rmk.comment_text).replace(/</g,'&lt;')+'</div></div></div>' : '';
   return '<div style="background:var(--s2);border:1px solid var(--border);border-radius:14px;padding:13px 14px;margin-bottom:9px;">'
@@ -9641,6 +9690,7 @@ function _tlPlanForDate(d){
   }catch(e){ return null; }
 }
 async function renderDayTimeline(soft){
+  try{ await loadMyReviews(); }catch(e){}
   var body=document.getElementById('feedTabBody'); if(!body||!cl) return;
   var head=document.getElementById('feedTabHeading'); if(head){ head.textContent=''; head.style.display='none'; }
   var _sc0=document.getElementById('tlScroll');
@@ -9951,6 +10001,13 @@ function _tlSlot(key, label, filled, ds, plan){
 
   var items = Array.isArray(filled) ? filled : [filled];
   var out='';
+
+  // A meal is one meal. Four foods logged to breakfast is a plate, not four breakfasts.
+  var _isFoodSlot=(key==='breakfast'||key==='lunch'||key==='dinner');
+  if(_isFoodSlot && items.length>1 && !window._tlRO){
+    return _tlMealCard(key, label, items, ds);
+  }
+
   items.forEach(function(it){
     var isFood=(key==='breakfast'||key==='lunch'||key==='dinner');
     var isCall=(key==='call');
@@ -9995,7 +10052,9 @@ function _tlSlot(key, label, filled, ds, plan){
     var xp=!!(window._tlXp&&window._tlXp[uid]);
     var thumb=(it.photo)?'<img src="'+it.photo+'" onclick="event.stopPropagation();try{openPhotoLightbox(this.src)}catch(e){}" style="width:38px;height:38px;border-radius:7px;object-fit:cover;flex-shrink:0;align-self:center;margin-left:9px;cursor:pointer;">':'';
     var slotTap=(isFood && it.id && !window._tlRO)?('<span data-tl="move" data-id="'+it.id+'" data-ds="'+_escHtml(ds)+'" style="cursor:pointer;border-bottom:1px dashed #5f5f5f;">'+_escHtml(slotName)+'</span>'):_escHtml(slotName);
-    out+='<div data-mins="'+((mins!=null&&mins<99999)?mins:0)+'" style="background:'+_tlBg(key)+';border-left:4px solid '+accent+';border-radius:8px;padding:13px 14px;margin-bottom:8px;'+(xp?'':'min-height:78px;')+'">'
+    var _rk=(key==='workout'||key==='walk')?'workout':(isJr?'journal':'food');
+    out+='<div data-mins="'+((mins!=null&&mins<99999)?mins:0)+'" style="position:relative;background:'+_tlBg(key)+';border-left:4px solid '+accent+';border-radius:8px;padding:13px 14px;margin-bottom:8px;'+(xp?'':'min-height:78px;')+'">'
+      +_revHeart(_rk, it.id)
       +'<div data-tl="xp" data-uid="'+uid+'" style="display:flex;align-items:flex-start;gap:9px;'+(xp?'':'min-height:48px;')+'cursor:pointer;">'
         +'<div style="flex:1;min-width:0;">'
           +'<div style="font-size:12.5px;font-weight:800;color:'+lblCol+';letter-spacing:1px;text-transform:uppercase;display:flex;align-items:center;">'+_tlIcon(key)+slotTap+'</div>'
@@ -10047,6 +10106,7 @@ function _tlSlot(key, label, filled, ds, plan){
           ))
       +'</div>';
     }
+    out+=_revComments(_rk, it.id);
     out+='</div>';
   });
   return out;
@@ -10405,6 +10465,8 @@ function _tlBindTaps(){
     var a=el.getAttribute('data-tl');
     ev.stopPropagation();
     if(a==='xp'){ tlXp(el.getAttribute('data-uid')); return; }
+    if(a==='mealxp'){ tlXp(el.getAttribute('data-uid')); return; }
+    if(a==='reply'){ ev.stopPropagation(); openReply(el.getAttribute('data-kind'), el.getAttribute('data-rid')); return; }
     if(a==='edit'){ tlEditFood(el.getAttribute('data-id')); return; }
     if(a==='move'){ tlMoveMeal(el.getAttribute('data-id'), el.getAttribute('data-ds')); return; }
     if(a==='add'){ tlAddSlot(el.getAttribute('data-key'), el.getAttribute('data-ds')); return; }
@@ -17594,8 +17656,9 @@ function buildOpenSlots(avail, booked, daysAhead){
 
 function onCheckinTile(){
   try{
-    if(typeof isTrainer==='function' && cl && isTrainer(cl.code)) openAvailability();
-    else openBooking();
+    if(typeof isTrainer==='function' && cl && isTrainer(cl.code)){ openAvailability(); return; }
+    if(!callsEnabled(cl.code)){ showToast('Scheduled calls aren\u2019t part of your plan'); return; }
+    openBooking();
   }catch(e){}
 }
 // the trainer's version of this tile is about setting times, not taking one
@@ -17764,8 +17827,11 @@ async function confirmBooking(){
   try{ closeM('mBookConfirm'); }catch(e){}
   var res=await createBooking(iso);
   if(res.ok){
+    // a one-off is only one-off if it gets spent
+    try{ if(callsAreCreditOnly(cl.code)) await consumeCallCredit(cl.code); }catch(e){}
     try{ showToast('\u2713 Booked'); }catch(e){}
     try{ window._tlCache=null; renderDayTimeline(); }catch(e){}
+    try{ if(typeof _retireTodayTiles==='function') _retireTodayTiles(); }catch(e){}
     var avail=await loadAvailability(); var booked=await loadBookings(true);
     renderBookingSlots(avail, booked);
   } else {
@@ -18549,6 +18615,31 @@ function isTrainer(code){
 // Flip CALENDAR_FOR_ALL to true to give it to every client.
 var CALENDAR_CODES = ['micaela1','kelly1','kellyg1'];
 var CALENDAR_FOR_ALL = true;   // every client is on the Calendar. Set false to roll everyone back.
+// ===== CALL BOOKING PERMISSION =========================================
+// Access is per client, not per tier, so pricing can change without a rebuild.
+// Trainers always have it. Clients are off unless their record says so.
+// A one-off credit lets a call be given without opening permanent booking.
+function callsEnabled(code){
+  try{
+    if(isTrainer(code)) return true;
+    var rec=CLIENTS[String(code==null?'':code).trim().toLowerCase()];
+    if(!rec) return false;
+    if(rec.calls_enabled===true) return true;
+    return (+rec.call_credits||0) > 0;
+  }catch(e){ return false; }
+}
+function callsAreCreditOnly(code){
+  try{
+    if(isTrainer(code)) return false;
+    var rec=CLIENTS[String(code||'').trim().toLowerCase()];
+    if(!rec) return false;
+    return rec.calls_enabled!==true && (+rec.call_credits||0)>0;
+  }catch(e){ return false; }
+}
+function callCreditsLeft(code){
+  try{ var rec=CLIENTS[String(code||'').trim().toLowerCase()]; return rec?(+rec.call_credits||0):0; }
+  catch(e){ return 0; }
+}
 function canSeeCalendar(code){
   if(isTrainer(code)) return true;
   if(CALENDAR_FOR_ALL) return true;
@@ -24598,6 +24689,8 @@ function openAccount(){
     var s=document.getElementById('acctSub'); if(s) s.textContent = sub || 'Tap My Goals to set up';
     var av2=document.getElementById('acctAvailName');
     if(av2) av2.textContent = (typeof isTrainer==='function' && cl && isTrainer(cl.code)) ? 'My Availability' : 'Schedule A Check-In Call';
+    var avr=document.getElementById('acctAvailRow');
+    if(avr) avr.style.display = callsEnabled(cl.code) ? '' : 'none';
     var v=document.getElementById('acctVer'); if(v) v.textContent='YOURJIMBFF '+APP_VERSION+' \u00b7 tap to refresh';
     _syncSetupState();
   }catch(e){}
@@ -24768,6 +24861,296 @@ function mlClearPhoto(){
     var i=document.getElementById('mlPhotoInput'); if(i) i.value='';
   }catch(e){}
 }
+
+// ===== CALL ACCESS (trainer) ===========================================
+// One switch per client, plus a one-off credit so a call can be given
+// without opening permanent booking.
+function openCallAccess(){
+  if(!cl || (typeof isTrainer==='function' && !isTrainer(cl.code))){ showToast('Trainer only'); return; }
+  if(document.getElementById('callAccessOverlay')) return;
+  var ov=document.createElement('div');
+  ov.id='callAccessOverlay';
+  ov.style.cssText='position:fixed;inset:0;z-index:99998;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(7,7,9,0.92);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);';
+  ov.innerHTML='<div style="max-width:400px;width:100%;max-height:86vh;display:flex;flex-direction:column;background:#131313;border:1px solid rgba(245,197,24,0.28);border-radius:22px;padding:22px;">'
+    +'<div style="font-size:19px;font-weight:800;color:var(--text);">Call access</div>'
+    +'<div style="font-size:12.5px;color:var(--m2);line-height:1.5;margin-top:5px;">On means they can book calls whenever. A credit is a single call without opening booking.</div>'
+    +(window._callColsExist===false
+        ? '<div style="font-size:12px;color:var(--gold);line-height:1.5;margin-top:11px;border:1px solid rgba(245,197,24,0.3);border-radius:10px;padding:10px 12px;">Add <b>calls_enabled</b> (bool) and <b>call_credits</b> (int) to the clients table, or these won\u2019t save.</div>'
+        : '')
+    +'<div id="caList" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;margin-top:14px;"></div>'
+    +'<button onclick="_closeCallAccess()" style="margin-top:12px;width:100%;background:transparent;color:var(--m2);border:1px solid var(--border);border-radius:12px;padding:12px;font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit;">Done</button>'
+  +'</div>';
+  document.body.appendChild(ov);
+  renderCallAccess();
+}
+function _closeCallAccess(){
+  var o=document.getElementById('callAccessOverlay'); if(o&&o.parentNode) o.parentNode.removeChild(o);
+  try{ if(typeof _retireTodayTiles==='function') _retireTodayTiles(); }catch(e){}
+}
+function renderCallAccess(){
+  var host=document.getElementById('caList'); if(!host) return;
+  var codes=Object.keys(CLIENTS).filter(function(c){
+    var r=CLIENTS[c];
+    if(!r || r.isTrainer) return false;
+    if(typeof PERMA_HIDE!=='undefined' && PERMA_HIDE[c]) return false;
+    return r.active!==false;
+  }).sort(function(a,b){
+    return String((CLIENTS[a].name||a)).localeCompare(String((CLIENTS[b].name||b)));
+  });
+  if(!codes.length){ host.innerHTML='<div style="font-size:13px;color:var(--muted);padding:8px 0;">No active clients.</div>'; return; }
+  host.innerHTML=codes.map(function(c){
+    var r=CLIENTS[c], on=(r.calls_enabled===true), cr=(+r.call_credits||0);
+    return '<div style="display:flex;align-items:center;gap:10px;padding:12px 2px;border-bottom:1px solid #232323;">'
+      +'<div style="flex:1;min-width:0;">'
+        +'<div style="font-size:14.5px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+_escHtml(r.name||c)+'</div>'
+        +'<div style="font-size:11.5px;color:'+(on?'var(--gold)':'rgba(240,236,228,0.42)')+';margin-top:2px;">'
+          +(on?'Books anytime':(cr>0?(cr+' call credit'+(cr===1?'':'s')):'No scheduled calls'))+'</div>'
+      +'</div>'
+      +'<div onclick="caGrantCredit(\''+c+'\')" style="flex-shrink:0;font-size:11.5px;font-weight:800;color:var(--gold);border:1px solid rgba(245,197,24,0.34);border-radius:8px;padding:7px 10px;cursor:pointer;">+1 call</div>'
+      +'<div onclick="caToggle(\''+c+'\')" style="flex-shrink:0;width:46px;height:27px;border-radius:14px;background:'+(on?'var(--gold)':'#333')+';position:relative;cursor:pointer;transition:background .18s;">'
+        +'<div style="position:absolute;top:3px;'+(on?'left:22px':'left:3px')+';width:21px;height:21px;border-radius:50%;background:'+(on?'#141008':'#8a8a8a')+';transition:left .18s;"></div>'
+      +'</div>'
+    +'</div>';
+  }).join('');
+}
+async function _caPersist(code, patch){
+  try{
+    await sbUpsert('clients', Object.assign({code:code}, patch), 'code');
+    return true;
+  }catch(e){
+    try{ showToast('Saved here \u2014 add the columns to sync'); }catch(_t){}
+    try{ sqPush('clients', Object.assign({code:code}, patch), 'UPSERT', 'code'); }catch(_q){}
+    return false;
+  }
+}
+async function caToggle(code){
+  var r=CLIENTS[code]; if(!r) return;
+  r.calls_enabled = !(r.calls_enabled===true);
+  renderCallAccess();
+  await _caPersist(code, {calls_enabled:r.calls_enabled});
+  try{ showToast((r.name||code)+(r.calls_enabled?' can book calls':' can no longer book')); }catch(e){}
+}
+async function caGrantCredit(code){
+  var r=CLIENTS[code]; if(!r) return;
+  r.call_credits = (+r.call_credits||0) + 1;
+  renderCallAccess();
+  await _caPersist(code, {call_credits:r.call_credits});
+  try{ showToast('Gave '+(r.name||code)+' one call'); }catch(e){}
+}
+// spending a credit is what makes a one-off actually one-off
+async function consumeCallCredit(code){
+  try{
+    var r=CLIENTS[code]; if(!r) return;
+    if(r.calls_enabled===true) return;          // standing access, nothing to spend
+    var left=(+r.call_credits||0); if(left<=0) return;
+    r.call_credits=left-1;
+    await _caPersist(code, {call_credits:r.call_credits});
+  }catch(e){}
+}
+
+// ===== ONE CARD PER MEAL ===============================================
+function _tlMealCard(key, label, items, ds){
+  var accent=_tlAccent(key);
+  var rows=items.slice().sort(function(a,b){ return (_tlMins(a)||0)-(_tlMins(b)||0); });
+  var tot={cal:0,pro:0,carb:0,fat:0};
+  rows.forEach(function(r){
+    tot.cal+=(+r.calories||0); tot.pro+=(+r.protein||0);
+    tot.carb+=(+r.carbs||0);   tot.fat+=(+r.fat||0);
+  });
+  var firstM=_tlMins(rows[0]);
+  var clock=(firstM!=null && firstM<99999 && firstM>0)?_tlClock(firstM):'';
+  var uid='meal_'+key+'_'+String(ds).replace(/[^0-9]/g,'');
+  var open=!!window._tlOpen[uid];
+
+  // one thumbnail for the plate, whichever food has a photo
+  var thumb='';
+  for(var i=0;i<rows.length;i++){
+    var u=rows[i] && (rows[i].photo_url||rows[i].photo);
+    if(u && String(u).indexOf('http')===0){
+      thumb='<div style="flex-shrink:0;width:52px;height:52px;border-radius:9px;overflow:hidden;margin-left:10px;"><img src="'+_escHtml(u)+'" style="width:100%;height:100%;object-fit:cover;" alt=""></div>';
+      break;
+    }
+  }
+
+  var lines=rows.map(function(r){
+    var nm=_tcase(String(r.name||'').trim());
+    var cal=(+r.calories||0);
+    return '<div style="display:flex;align-items:baseline;gap:10px;padding:5px 0;">'
+      +'<div style="flex:1;min-width:0;font-size:13.5px;font-weight:600;color:rgba(240,236,228,0.86);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+_escHtml(nm)+'</div>'
+      +'<div style="flex-shrink:0;font-size:12.5px;font-weight:700;color:rgba(240,236,228,0.5);">'+cal+'</div>'
+    +'</div>';
+  }).join('');
+
+  var detail = open
+    ? ('<div style="margin-top:11px;padding-top:11px;border-top:1px solid #2f2f2f;">'
+        + rows.map(function(r){
+            return '<div data-tl="xp" data-uid="'+(key+'_'+(r.id||0))+'" style="display:flex;align-items:baseline;gap:10px;padding:8px 0;cursor:pointer;border-bottom:1px solid #232323;">'
+              +'<div style="flex:1;min-width:0;">'
+                +'<div style="font-size:13.5px;font-weight:700;color:var(--text);">'+_escHtml(_tcase(String(r.name||'')))+'</div>'
+                +'<div style="font-size:11.5px;color:rgba(240,236,228,0.5);margin-top:2px;">'
+                  +(_tlClock(_tlMins(r))||'')+' \u00b7 '+(+r.calories||0)+' cal \u00b7 '
+                  +(+r.protein||0)+'P \u00b7 '+(+r.carbs||0)+'C \u00b7 '+(+r.fat||0)+'F</div>'
+              +'</div>'
+              +'<div style="flex-shrink:0;color:rgba(240,236,228,0.34);font-size:15px;">\u203a</div>'
+            +'</div>';
+          }).join('')
+        +'<div data-tl="addmore" data-key="'+key+'" data-ds="'+_escHtml(ds)+'" style="display:flex;align-items:center;justify-content:center;gap:8px;font-size:13px;font-weight:800;color:var(--gold);border:1px solid rgba(245,197,24,0.34);border-radius:10px;padding:12px;margin-top:11px;cursor:pointer;"><span style="font-size:16px;line-height:1;">+</span>Add another food</div>'
+      +'</div>')
+    : '';
+
+  var _ids=rows.map(function(r){ return r.id; }).filter(function(x){ return x!=null; });
+  return '<div data-mins="'+(firstM||0)+'" style="position:relative;background:'+_tlBg(key)+';border-left:4px solid '+accent+';border-radius:8px;padding:13px 14px;margin-bottom:8px;min-height:78px;">'
+    +_revHeart('food', _ids)
+    +'<div data-tl="mealxp" data-uid="'+uid+'" style="cursor:pointer;">'
+      +'<div style="display:flex;align-items:flex-start;">'
+        +'<div style="flex:1;min-width:0;">'
+          +'<div style="font-size:12.5px;font-weight:800;color:'+accent+';letter-spacing:1px;text-transform:uppercase;display:flex;align-items:center;">'+_tlIcon(key)+_escHtml(label)+'</div>'
+          +'<div style="font-size:12px;color:rgba(240,236,228,0.55);margin-top:4px;">'
+            +(clock?(clock+' \u00b7 '):'')+rows.length+' items \u00b7 '+Math.round(tot.cal)+' cal</div>'
+        +'</div>'
+        +thumb
+      +'</div>'
+      +'<div style="margin-top:9px;">'+lines+'</div>'
+      +'<div style="display:flex;align-items:baseline;gap:10px;margin-top:8px;padding-top:8px;border-top:1px solid #2f2f2f;">'
+        +'<div style="flex:1;font-size:11.5px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:rgba(240,236,228,0.44);">Total</div>'
+        +'<div style="font-size:13px;font-weight:800;color:'+accent+';">'+Math.round(tot.cal)+' cal</div>'
+        +'<div style="font-size:11.5px;color:rgba(240,236,228,0.5);">'+Math.round(tot.pro)+'P \u00b7 '+Math.round(tot.carb)+'C \u00b7 '+Math.round(tot.fat)+'F</div>'
+      +'</div>'
+    +'</div>'
+    +detail
+    +_revComments('food', _ids)
+  +'</div>';
+}
+
+// ===== WHAT YUSUF SAID =================================================
+// Reviews were write-only from the client's side: the trainer liked and
+// commented, and none of it ever reached the person who logged it.
+
+window._myRev = {};        // "food:123" -> {like:bool, comments:[...]}
+window._myRevLoaded = false;
+
+function _revKey(kind, id){ return String(kind||'food')+':'+String(id); }
+
+async function loadMyReviews(force){
+  try{
+    if(!cl || !cl.code) return;
+    if(window._myRevLoaded && !force) return;
+    var rows = await sbSelect('reviews',
+      'client_code=eq.'+encodeURIComponent(cl.code)
+      +'&select=kind,ref_id,reaction,comment,author_code,created_at&order=id.asc&limit=1000');
+    var map={};
+    (rows||[]).forEach(function(r){
+      if(r.ref_id==null) return;
+      var k=_revKey(r.kind, r.ref_id);
+      var e = map[k] || (map[k]={like:false, comments:[]});
+      if(r.reaction==='like') e.like=true;
+      else if(r.reaction==='comment' && r.comment){
+        e.comments.push({
+          text:String(r.comment),
+          ts:r.created_at,
+          mine:(String(r.author_code||'').toLowerCase()===String(cl.code).toLowerCase())
+        });
+      }
+    });
+    window._myRev=map;
+    window._myRevLoaded=true;
+  }catch(e){ window._myRevLoaded=true; }
+}
+
+// A · the heart. Smallest possible acknowledgment.
+function _revHeart(kind, ids){
+  try{
+    if(!window._myRev) return '';
+    var arr=Array.isArray(ids)?ids:[ids];
+    for(var i=0;i<arr.length;i++){
+      var e=window._myRev[_revKey(kind, arr[i])];
+      if(e && e.like){
+        return '<span style="position:absolute;top:12px;right:13px;line-height:1;">'
+          +'<svg width="17" height="17" viewBox="0 0 24 24" fill="var(--gold)">'
+          +'<path d="M12 21s-7.5-4.7-9.3-9A5.3 5.3 0 0 1 12 6.6a5.3 5.3 0 0 1 9.3 5.4C19.5 16.3 12 21 12 21z"/></svg></span>';
+      }
+    }
+  }catch(e){}
+  return '';
+}
+
+// C · the comment. This is the part that's actually coaching.
+function _revComments(kind, ids){
+  try{
+    if(!window._myRev) return '';
+    var arr=Array.isArray(ids)?ids:[ids];
+    var all=[], anchor=null;
+    arr.forEach(function(id){
+      var e=window._myRev[_revKey(kind,id)];
+      if(e && e.comments && e.comments.length){
+        if(anchor==null) anchor=id;
+        e.comments.forEach(function(c){ all.push(c); });
+      }
+    });
+    if(!all.length) return '';
+    all.sort(function(a,b){ return new Date(a.ts||0)-new Date(b.ts||0); });
+    var ini='Y';
+    try{ ini=String(("Yusuf")).trim().charAt(0).toUpperCase(); }catch(e){}
+    var body=all.map(function(c){
+      var who = c.mine ? 'You' : "Yusuf";
+      var col = c.mine ? 'rgba(240,236,228,0.5)' : 'var(--gold)';
+      return '<div style="margin-top:'+(all.indexOf(c)?'9px':'0')+';">'
+        +'<div style="font-size:11px;font-weight:800;letter-spacing:0.4px;text-transform:uppercase;color:'+col+';">'+_escHtml(who)+'</div>'
+        +'<div style="font-size:13.5px;color:rgba(240,236,228,0.9);line-height:1.5;margin-top:3px;white-space:pre-wrap;word-break:break-word;">'+_escHtml(c.text)+'</div>'
+      +'</div>';
+    }).join('');
+    return '<div style="margin-top:10px;padding:11px 12px;background:rgba(245,197,24,0.06);border:1px solid rgba(245,197,24,0.22);border-radius:10px;display:flex;gap:10px;">'
+      +'<div style="flex-shrink:0;width:26px;height:26px;border-radius:50%;background:#2a2a2a;border:1px solid var(--gold);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:var(--gold);">'+_escHtml(ini)+'</div>'
+      +'<div style="flex:1;min-width:0;">'+body
+        +'<div data-tl="reply" data-kind="'+_escHtml(kind)+'" data-rid="'+_escHtml(String(anchor))+'" style="font-size:11.5px;font-weight:800;color:rgba(240,236,228,0.5);margin-top:8px;cursor:pointer;">Reply</div>'
+      +'</div>'
+    +'</div>';
+  }catch(e){}
+  return '';
+}
+
+// replying keeps the conversation on the thing it's about
+function openReply(kind, refId){
+  window._replyTo={kind:kind, id:refId};
+  var ov=document.getElementById('replyOverlay');
+  if(ov && ov.parentNode) ov.parentNode.removeChild(ov);
+  ov=document.createElement('div');
+  ov.id='replyOverlay';
+  ov.style.cssText='position:fixed;inset:0;z-index:99998;display:flex;align-items:flex-end;justify-content:center;background:rgba(7,7,9,0.9);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);';
+  ov.innerHTML='<div style="width:100%;max-width:430px;background:#222;border-radius:22px 22px 0 0;padding:18px 18px calc(24px + env(safe-area-inset-bottom,0px));">'
+    +'<div style="width:42px;height:4px;border-radius:2px;background:#3d3d3d;margin:0 auto 15px;"></div>'
+    +'<div style="font-size:16px;font-weight:800;color:var(--text);">Reply</div>'
+    +'<textarea id="replyBox" rows="3" placeholder="Say something back\u2026" style="width:100%;margin-top:11px;background:#1e1e1e;border:1px solid #3a3a3a;border-radius:10px;padding:12px;font-family:inherit;font-size:14.5px;color:var(--text);outline:none;caret-color:var(--gold);resize:none;"></textarea>'
+    +'<button onclick="sendReply()" style="width:100%;margin-top:11px;background:var(--gold);color:var(--onaccent);border:none;border-radius:12px;padding:14px;font-family:inherit;font-size:14.5px;font-weight:800;cursor:pointer;">Send</button>'
+    +'<button onclick="_closeReply()" style="width:100%;margin-top:8px;background:transparent;color:rgba(240,236,228,0.6);border:1px solid #3a3a3a;border-radius:12px;padding:13px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;">Cancel</button>'
+  +'</div>';
+  document.body.appendChild(ov);
+  setTimeout(function(){ try{ document.getElementById('replyBox').focus(); }catch(e){} }, 200);
+}
+function _closeReply(){
+  var o=document.getElementById('replyOverlay');
+  if(o&&o.parentNode) o.parentNode.removeChild(o);
+}
+async function sendReply(){
+  var t=window._replyTo; if(!t) return;
+  var txt=((document.getElementById('replyBox')||{}).value||'').trim();
+  if(!txt){ try{ showToast('Nothing to send'); }catch(e){} return; }
+  _closeReply();
+  // show it straight away
+  try{
+    var k=_revKey(t.kind, t.id);
+    var e=window._myRev[k] || (window._myRev[k]={like:false,comments:[]});
+    e.comments.push({text:txt, ts:new Date().toISOString(), mine:true});
+    window._tlCache=null;
+    renderDayTimeline(true);
+  }catch(e){}
+  try{
+    await sbInsert('reviews',{client_code:cl.code, author_code:cl.code,
+      kind:t.kind, ref_id:String(t.id), reaction:'comment', comment:txt, seen:false});
+    showToast('Sent');
+  }catch(e){ try{ showToast('Saved \u2014 will send when it can'); }catch(_e){} }
+}
+
 </script>
 </body>
 </html>
