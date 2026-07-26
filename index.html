@@ -815,6 +815,12 @@ body.needs-setup .setupBar{display:flex;}
 #wkAdd{position:fixed;inset:0;z-index:99;background:rgba(7,7,9,0.9);display:none;align-items:flex-end;}
 #wkAdd.on{display:flex;}
 #wkAdd .in{width:100%;max-width:430px;margin:0 auto;background:#222;border-radius:20px 20px 0 0;padding:16px 17px calc(26px + env(safe-area-inset-bottom,0px));}
+
+.wkDots{display:flex;gap:2px;justify-content:center;margin-top:4px;}
+.wkDots i{width:4px;height:4px;border-radius:50%;background:var(--gold);}
+.wkDots i.off{background:rgba(240,236,228,0.16);}
+.wkCal{font-size:7.5px;font-weight:700;color:rgba(240,236,228,0.32);margin-top:3px;line-height:1;}
+.wkBlk.walk{background:rgba(245,197,24,0.5);color:var(--onaccent);}
 </style>
 </head>
 <body>
@@ -1612,7 +1618,9 @@ body.needs-setup .setupBar{display:flex;}
       <div><i style="background:rgba(245,197,24,.15);border:1px solid rgba(245,197,24,.45);"></i>Booked</div>
       <div><i style="background:rgba(240,236,228,.05);border:1px dashed rgba(240,236,228,.3);"></i>Missed</div>
       <div><i style="background:#2f3540;"></i>Call</div>
+      <div><i style="background:rgba(245,197,24,.5);"></i>Walk</div>
       <div><i style="background:rgba(240,236,228,.09);"></i>My time</div>
+      <div><i style="background:var(--gold);border-radius:50%;width:8px;height:8px;"></i>Meals logged</div>
     </div>
     <div class="wkTip">Tap a gap to add. Drag a booked block to move it, any day. Drag its bottom bar to change length.</div>
   </div>
@@ -2845,7 +2853,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v6.400.0';
+var APP_VERSION = 'v6.410.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -25589,6 +25597,43 @@ async function wkGather(){
     });
   }catch(e){}
 
+  // Food doesn't get blocks — three a day across seven days buries the workouts.
+  // It gets three dots under the date instead, which is the whole week at a glance.
+  var meals={};
+  try{
+    var fd = await sbSelect('food_logs',
+      'client_code=eq.'+encodeURIComponent(cl.code)+'&date_str=gte.'+from+'&date_str=lte.'+to
+      +'&select=date_str,meal,calories&limit=400') || [];
+    fd.forEach(function(f){
+      var ds=String(f.date_str||'').slice(0,10);
+      var di=days.findIndex(function(d){ return _wkDs(d)===ds; });
+      if(di<0) return;
+      var m=meals[di] || (meals[di]={b:0,l:0,d:0,cal:0});
+      var tag=String(f.meal||'').trim().toLowerCase();
+      if(tag.indexOf('break')===0) m.b++;
+      else if(tag.indexOf('lunch')===0) m.l++;
+      else if(tag.indexOf('dinn')===0) m.d++;
+      m.cal += (+f.calories||0);
+    });
+  }catch(e){}
+  window._wkMeals=meals;
+
+  // walks are movement and they were logged — thin blocks, no drag
+  try{
+    var jr = await sbSelect('journal_entries',
+      'client_code=eq.'+encodeURIComponent(cl.code)+'&date_str=gte.'+from+'&date_str=lte.'+to
+      +'&select=id,date_str,title,duration,logged_at&limit=200') || [];
+    jr.forEach(function(w){
+      if(!/walk/i.test(String(w.title||''))) return;
+      var ds=String(w.date_str||'').slice(0,10);
+      var di=days.findIndex(function(d){ return _wkDs(d)===ds; });
+      if(di<0) return;
+      var m=7*60;
+      try{ var lt=new Date(w.logged_at); if(!isNaN(lt)) m=lt.getHours()*60+lt.getMinutes(); }catch(e){}
+      out.push({d:di, m:m, dur:Math.max(20,(+w.duration||30)), n:'Walk', st:'walk', src:'walk', id:w.id});
+    });
+  }catch(e){}
+
   window._wkBlocks=out;
   window._wkDays=days;
   return out;
@@ -25624,8 +25669,13 @@ async function renderWeek(){
   var html='<div class="wkGh"></div>';
   days.forEach(function(d,i){
     var c = i===todayIdx?' today':(todayIdx>=0&&i>todayIdx?' ahead':(todayIdx<0&&window._wkOff>0?' ahead':''));
+    var M=(window._wkMeals||{})[i];
+    var dots='<div class="wkDots">'
+      + ['b','l','d'].map(function(k){ return '<i class="'+((M&&M[k]>0)?'':'off')+'"></i>'; }).join('')
+      + '</div>';
+    var kcal = (M && M.cal>0) ? ('<div class="wkCal">'+Math.round(M.cal/100)/10+'k</div>') : '<div class="wkCal">&nbsp;</div>';
     html+='<div class="wkGh'+c+'"><div class="d">'+['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][i]+'</div>'
-      +'<div class="n">'+d.getDate()+'</div></div>';
+      +'<div class="n">'+d.getDate()+'</div>'+dots+kcal+'</div>';
   });
   html+='<div class="wkAxis">'+hours.map(function(hh){
     var ap=hh>=12?'p':'a', h=hh%12; if(h===0)h=12; return '<div>'+h+ap+'</div>';
@@ -25666,7 +25716,7 @@ function wkDown(ev){
   var blk=ev.target.closest && ev.target.closest('.wkBlk');
   if(!blk) return;
   var bi=+blk.getAttribute('data-bi'), b=window._wkBlocks[bi];
-  if(!b || (b.st!=='plan' && b.st!=='busy')) return;      // history and calls don't move
+  if(!b || (b.st!=='plan' && b.st!=='busy')) return;      // history, walks and calls don't move
   var grip=!!(ev.target.getAttribute && ev.target.getAttribute('data-grip'));
   ev.preventDefault();
   try{ blk.setPointerCapture(ev.pointerId); }catch(e){}
