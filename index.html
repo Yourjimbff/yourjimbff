@@ -766,6 +766,12 @@ body.needs-setup .setupBar{display:flex;}
 
 /* native date inputs report a wide intrinsic width; let it shrink */
 .pBday{min-width:0;width:100%;font-size:14px;padding-left:6px;padding-right:6px;}
+
+/* meal feedback — one line, never a warning */
+.mfb{display:flex;align-items:flex-start;gap:8px;margin-top:11px;padding-top:11px;border-top:1px solid #2f2f2f;}
+.mfb svg{color:var(--gold);flex-shrink:0;margin-top:1px;}
+.mfb span{font-size:15px;font-weight:800;color:var(--gold);letter-spacing:-0.2px;}
+.mfb em{font-style:normal;font-size:14.5px;font-weight:600;color:rgba(240,236,228,0.72);line-height:1.45;}
 </style>
 </head>
 <body>
@@ -2745,7 +2751,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v6.412.0';
+var APP_VERSION = 'v6.520.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -7695,7 +7701,7 @@ function woRowHtml(name, hint, done){
   var prescEsc = presc.replace(/</g,'&lt;');
   return '<div class="wo-row" style="background:var(--s2);border-radius:10px;padding:10px 11px;">'+
     '<div style="display:flex;align-items:center;gap:8px;">'+
-      '<input class="wo-name" type="text" value="'+name+'" placeholder="Exercise" style="flex:1;background:transparent;border:none;font-size:13px;font-weight:700;color:var(--text);font-family:\'Plus Jakarta Sans\',sans-serif;outline:none;padding:2px 0;">'+
+      '<input class="wo-name" type="text" value="'+name+'" placeholder="Exercise" autocomplete="off" oninput="woNameInput(this)" onfocus="woNameInput(this)" onblur="setTimeout(woNameBlur,160)" style="flex:1;background:transparent;border:none;font-size:13px;font-weight:700;color:var(--text);font-family:\'Plus Jakarta Sans\',sans-serif;outline:none;padding:2px 0;">'+
       '<button onclick="this.closest(\'.wo-row\').remove()" style="background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;line-height:1;padding:0 2px;flex-shrink:0;" title="Remove">×</button>'+
     '</div>'+
     (presc?'<div style="font-size:10.5px;color:var(--m2);font-weight:700;margin-top:2px;letter-spacing:0.2px;">'+prescEsc+'</div>':'')+
@@ -7862,6 +7868,7 @@ function openFreestyleWorkout(){
 }
 
 function resetFreestyleForm(){
+  window._exReg=null;
   _woOrganized=false;
   var _ob=document.getElementById('woOrganizeBtn'); if(_ob) _ob.style.display='none';
   ['woDur','woNotes','woDesc','woSteps'].forEach(function(id){ var el = document.getElementById(id); if(el) el.value=''; });
@@ -10128,6 +10135,7 @@ function _tlSlot(key, label, filled, ds, plan){
           ))
       +'</div>';
     }
+    if(_rk==='food'){ out+=mealFeedbackHtml([it], ds, {}); }
     out+=_revComments(_rk, it.id);
     out+='</div>';
   });
@@ -25069,6 +25077,7 @@ function _tlMealCard(key, label, items, ds){
       +'</div>'
     +'</div>'
     +detail
+    +mealFeedbackHtml(rows, ds, {mealsBefore:0, mins:firstM})
     +_revComments('food', _ids)
   +'</div>';
 }
@@ -25396,6 +25405,236 @@ async function tbRemove(id){
   try{ showToast('Opened back up'); }catch(e){}
 }
 
+
+// ===== MEAL FEEDBACK ===================================================
+// One line. Verdict, then the reason. It never says what they didn't do,
+// and a correction always adds something rather than taking it away.
+
+var MF = {
+  CARB_CEIL: 50,        // grams in one sitting before it's worth a word
+  POST_WO_H: 3,         // hours after a session that carbs read as timed
+  PRO_FLOOR: 25         // grams of protein that make a meal a meal
+};
+
+// How far the meal sits from the nearest session that day.
+// Positive = meal came after the session. Negative = meal came before it.
+// Compared against the MEAL's clock, not the current time — otherwise a 1pm
+// lunch reads as post-lift just because you trained at 5.
+function _mfSessionGap(mealMins, ds){
+  try{
+    if(mealMins==null || mealMins>=99999) return null;
+    var rows=(window._tlCache && window._tlCache.workouts) ? window._tlCache.workouts : [];
+    var best=null;
+    rows.forEach(function(w){
+      if(String(w.date_str||'').slice(0,10)!==ds) return;
+      var m=null; try{ m=_tlMins(w); }catch(e){}
+      if(m==null||m>=99999) return;
+      var gap=mealMins-m;
+      if(best==null || Math.abs(gap)<Math.abs(best)) best=gap;
+    });
+    return best;
+  }catch(e){ return null; }
+}
+
+// The same note said the same way every day stops being read.
+function _mfPick(arr, seed){
+  try{
+    var s=0, str=String(seed||'');
+    for(var i=0;i<str.length;i++) s=(s*31+str.charCodeAt(i))|0;
+    return arr[Math.abs(s)%arr.length];
+  }catch(e){ return arr[0]; }
+}
+var MF_WALK=[
+  'A 15 minute walk helps it land.',
+  'A short walk after this settles it nicely.',
+  'A 15 minute walk helps it digest.',
+  'Take a walk after this and it settles well.'
+];
+var MF_PRO=[
+  'Eggs or tuna on the side makes it whole.',
+  'Add a palm of protein and it\u2019s complete.',
+  'Eggs, chicken or tuna alongside finishes it.'
+];
+var MF_BED=[
+  'A short walk helps you settle.',
+  'A slow walk before bed helps you wind down.',
+  'A short walk now and you\u2019ll sleep better.'
+];
+function _mfProteinSoFar(){
+  try{ return Math.round(+tots.protein||0); }catch(e){ return 0; }
+}
+function _mfMealsToday(){
+  try{ return (todayFood||[]).length; }catch(e){ return 0; }
+}
+function _mfNearBed(){
+  try{
+    var bed=_hhmmAny(profile && profile.bedtime);
+    if(bed==null) return false;
+    var now=new Date().getHours()*60+new Date().getMinutes();
+    return (bed - now) <= 150 && (bed - now) > -240;   // within 2.5h of bed
+  }catch(e){ return false; }
+}
+
+// items: [{calories,protein,carbs,fat}]  ds: the day it's on
+function mealFeedback(items, ds, opts){
+  try{
+    if(!items || !items.length) return null;
+    var t={cal:0,pro:0,carb:0,fat:0};
+    items.forEach(function(f){
+      t.cal+=(+f.calories||0); t.pro+=(+f.protein||0);
+      t.carb+=(+f.carbs||0);   t.fat+=(+f.fat||0);
+    });
+    if(!t.cal && !t.pro && !t.carb && !t.fat) return null;   // nothing to read
+
+    var isToday = (ds===todayDateStr);
+    var phase='';
+    try{ phase=_curPhase(); }catch(e){}
+    var building=(phase==='build');
+    var mealMins=null;
+    try{ mealMins=(opts&&opts.mins!=null)?opts.mins:_tlMins(items[0]); }catch(e){}
+    var gap=_mfSessionGap(mealMins, ds);
+    var after = (gap!=null && gap>=0 && gap<=MF.POST_WO_H*60);
+    var before= (gap!=null && gap<0  && Math.abs(gap)<=MF.POST_WO_H*60);
+    var seed=String(ds)+'|'+String(mealMins);
+    var mealsBefore = (opts && opts.mealsBefore!=null) ? opts.mealsBefore : Math.max(0,_mfMealsToday()-items.length);
+    var late = isToday && _mfNearBed();
+
+    // 1 · they haven't eaten and it's late. Eating is the win, full stop.
+    if(late && mealsBefore===0)
+      return {v:'Good \u2014 you needed this.', r:'Eating tonight helps you sleep and recover.'};
+
+    // 2 · carbs landed around a session, either side of it
+    if(t.carb > MF.CARB_CEIL && after)
+      return {v:'Perfect timing.', r:'Right after a lift is exactly when carbs work.'};
+    if(t.carb > MF.CARB_CEIL && before)
+      return {v:'Perfect timing.', r:'Great fuel going into a session.'};
+
+    // 3 · carbs while building are the point
+    if(t.carb > MF.CARB_CEIL && building)
+      return (t.pro < MF.PRO_FLOOR)
+        ? {v:'Working fuel.', r:'A little more protein rounds it out.'}
+        : {v:'Working fuel.', r:'Right where you should be.'};
+
+    // 4 · carbs with no session yet. If protein is also short, that's the more
+    //     useful thing to say, so lead with it.
+    if(t.carb > MF.CARB_CEIL)
+      return (t.pro < MF.PRO_FLOOR)
+        ? {v:'Great fuel.', r:_mfPick(MF_PRO, seed)}
+        : {v:'Great fuel.', r:_mfPick(MF_WALK, seed)};
+
+    // 5 · protein is the one thing missing
+    if(t.pro < MF.PRO_FLOOR)
+      return {v:'Nice and quick.', r:_mfPick(MF_PRO, seed)};
+
+    // 6 · good plate, close to bed
+    if(late)
+      return {v:'Really good plate.', r:_mfPick(MF_BED, seed)};
+
+    // 7 · nothing to add
+    return {v:'Perfect.', r:''};
+  }catch(e){ return null; }
+}
+
+function mealFeedbackHtml(items, ds, opts){
+  var f=mealFeedback(items, ds, opts);
+  if(!f) return '';
+  return '<div class="mfb">'
+    +'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>'
+    +'<div><span>'+_escHtml(f.v)+'</span>'+(f.r?(' <em>'+_escHtml(f.r)+'</em>'):'')+'</div>'
+  +'</div>';
+}
+
+
+// ===== THE REGISTER ====================================================
+// The program is a list of preferred exercises, not a contract. Swapping isn't
+// deviation. So every exercise they've ever logged is one tap away, and the
+// plan's exercises just sit at the top because they're the likely ones.
+
+window._exReg = null;
+
+async function buildExerciseRegister(){
+  if(window._exReg) return window._exReg;
+  var seen={}, out=[];
+  function add(nm, last, fromPlan){
+    nm=String(nm||'').trim();
+    if(!nm || nm.length<2) return;
+    var k=nm.toLowerCase();
+    if(seen[k]){ if(last && !seen[k].last) seen[k].last=last; if(fromPlan) seen[k].plan=true; return; }
+    var e={name:nm, last:last||'', plan:!!fromPlan, n:0};
+    seen[k]=e; out.push(e);
+  }
+  // everything they've actually done, newest first, with what they lifted
+  try{
+    var rows=await sbSelect('workout_logs',
+      'client_code=eq.'+encodeURIComponent(cl.code)+'&select=description,title&order=id.desc&limit=150') || [];
+    rows.forEach(function(w){
+      String(w.description||'').split('\n').forEach(function(ln){
+        var m=ln.match(/^\s*[\u2022\-]\s*(.+?)\s+[\u2014\u2013-]\s+(.+)$/);
+        if(m){ add(m[1], m[2].trim()); var k=m[1].trim().toLowerCase(); if(seen[k]) seen[k].n++; }
+        else {
+          var p=ln.replace(/^\s*[\u2022\-]\s*/,'').trim();
+          if(p && p.length<44 && !/^\d/.test(p)) { add(p); var k2=p.toLowerCase(); if(seen[k2]) seen[k2].n++; }
+        }
+      });
+    });
+  }catch(e){}
+  // whatever their plan suggests today
+  try{
+    var pl=_tpPlan()||{};
+    Object.keys(pl).forEach(function(day){
+      var d=pl[day]; if(!d||!d.exercises) return;
+      d.exercises.forEach(function(x){ add(x.name||x, '', true); });
+    });
+  }catch(e){}
+  out.sort(function(a,b){
+    if(a.plan!==b.plan) return a.plan?-1:1;      // today's list first
+    return (b.n||0)-(a.n||0);                     // then whatever they do most
+  });
+  window._exReg=out;
+  return out;
+}
+
+function woNameInput(inp){
+  (async function(){
+    var reg=await buildExerciseRegister();
+    var q=String(inp.value||'').trim().toLowerCase();
+    var hits=reg.filter(function(e){ return !q || e.name.toLowerCase().indexOf(q)>=0; }).slice(0,6);
+    woNameBlur();
+    if(!hits.length) return;
+    var box=document.createElement('div');
+    box.id='woSug';
+    box.style.cssText='position:absolute;z-index:60;background:#1b1b1b;border:1px solid #2d2d2d;border-radius:11px;overflow:hidden;box-shadow:0 12px 34px rgba(0,0,0,0.6);max-height:210px;overflow-y:auto;';
+    box.innerHTML=hits.map(function(e,i){
+      return '<div data-i="'+i+'" style="padding:10px 12px;cursor:pointer;border-bottom:1px solid #212121;">'
+        +'<div style="font-size:13.5px;font-weight:700;color:var(--text);">'+_escHtml(e.name)
+          +(e.plan?'<span style="font-size:9.5px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:var(--gold);margin-left:7px;">on your plan</span>':'')+'</div>'
+        +(e.last?'<div style="font-size:11.5px;color:rgba(240,236,228,0.5);margin-top:2px;">last time '+_escHtml(e.last)+'</div>':'')
+      +'</div>';
+    }).join('');
+    var r=inp.getBoundingClientRect();
+    box.style.left=r.left+'px';
+    box.style.top=(r.bottom+window.scrollY+4)+'px';
+    box.style.width=Math.max(200, r.width)+'px';
+    document.body.appendChild(box);
+    box.addEventListener('mousedown', function(ev){
+      var el=ev.target; while(el&&el!==box&&!el.getAttribute('data-i')) el=el.parentNode;
+      if(!el||el===box) return;
+      ev.preventDefault();
+      var e=hits[+el.getAttribute('data-i')];
+      inp.value=e.name;
+      // pre-fill what they lifted last time so overload is one edit, not a memory test
+      try{
+        var row=inp.closest('.wo-row'), did=row&&row.querySelector('.wo-did');
+        if(did && !did.value && e.last) did.value=e.last;
+      }catch(_e){}
+      woNameBlur();
+    });
+  })();
+}
+function woNameBlur(){
+  var b=document.getElementById('woSug');
+  if(b&&b.parentNode) b.parentNode.removeChild(b);
+}
 </script>
 </body>
 </html>
