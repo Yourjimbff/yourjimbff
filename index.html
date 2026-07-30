@@ -2834,7 +2834,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v6.730.0';
+var APP_VERSION = 'v6.731.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -26375,10 +26375,10 @@ async function jvCycleTier(code) {
 
   _jvRepaintStrip(code);
   try { if (typeof renderCallAccess === "function") renderCallAccess(); } catch (e) {}
-  var ok = await _jvSaveClient(code, {tier: next, calls_enabled: r.calls_enabled, call_credits: r.call_credits});
-  showToast(ok
+  var r2 = await _jvSaveClient(code, {tier: next, calls_enabled: r.calls_enabled, call_credits: r.call_credits});
+  showToast(r2.ok
     ? ((r.name || code) + " \u2192 " + (next === "vip" ? "VIP \u00b7 books anytime, top of your feed" : "1:1 \u00b7 2 calls"))
-    : "Couldn't save the tier \u2014 check the tier column exists");
+    : _saveErr(r2, "tier"));
 }
 
 async function jvEditTerm(code) {
@@ -26392,8 +26392,8 @@ async function jvEditTerm(code) {
   try { ends = acTermEnds(m); } catch (e) {}
   if (ends) r.term_ends = ends;
   _jvRepaintStrip(code);
-  var ok = await _jvSaveClient(code, ends ? {term_months: m, term_ends: ends} : {term_months: m});
-  showToast(ok ? ((r.name || code) + " \u00b7 " + m + " month term") : "Couldn't save the term");
+  var r2 = await _jvSaveClient(code, ends ? {term_months: m, term_ends: ends} : {term_months: m});
+  showToast(r2.ok ? ((r.name || code) + " \u00b7 " + m + " month term") : _saveErr(r2, "term"));
 }
 
 async function jvEditPaid(code) {
@@ -26404,21 +26404,37 @@ async function jvEditPaid(code) {
   if (isNaN(n)) { showToast("Enter an amount"); return; }
   r.paid = n;
   _jvRepaintStrip(code);
-  var ok = await _jvSaveClient(code, {paid: n});
-  showToast(ok ? ((r.name || code) + " \u00b7 $" + n.toLocaleString()) : "Couldn't save the amount");
+  var r2 = await _jvSaveClient(code, {paid: n});
+  showToast(r2.ok ? ((r.name || code) + " \u00b7 $" + n.toLocaleString()) : _saveErr(r2, "amount"));
 }
 
 // one honest write path, so a missing column shows up as a failed toast
 async function _jvSaveClient(code, patch) {
+  // report what Supabase actually said, rather than guessing at the cause
   try {
     var res = await fetch(SB_URL + "/rest/v1/clients?code=eq." + encodeURIComponent(code), {
       method: "PATCH",
-      headers: {apikey: SB_KEY, Authorization: "Bearer " + SB_KEY,
-                "Content-Type": "application/json", Prefer: "return=minimal"},
+      headers: sbHeaders(),
       body: JSON.stringify(patch)
     });
-    return res.ok;
-  } catch (e) { return false; }
+    if (res.ok) return {ok: true};
+    var msg = "";
+    try { var j = await res.json(); msg = j.message || j.hint || j.details || ""; } catch (e) {}
+    console.warn("client save failed", res.status, msg, patch);
+    return {ok: false, status: res.status, msg: msg};
+  } catch (e) {
+    return {ok: false, status: 0, msg: String(e && e.message || e)};
+  }
+}
+
+// a missing column and a stale schema cache look identical from the client, so
+// name both rather than picking one
+function _saveErr(r, what) {
+  if (r.status === 400 && /column|schema/i.test(r.msg || "")) {
+    return "Column missing, or PostgREST hasn't reloaded \u2014 run: notify pgrst, 'reload schema'";
+  }
+  if (r.status === 401 || r.status === 403) return "Not permitted \u2014 check the row policy on clients";
+  return "Couldn't save the " + what + (r.msg ? (" \u2014 " + r.msg) : (r.status ? (" \u2014 HTTP " + r.status) : ""));
 }
 
 
