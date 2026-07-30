@@ -1724,8 +1724,8 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
     </div>
 
     <div id="edResearchRow" style="display:flex;align-items:center;gap:8px;margin-top:11px;">
-      <span onclick="edResearch()" style="font-size:11.5px;font-weight:800;color:var(--gold);border:1px solid rgba(245,197,24,0.34);border-radius:9px;padding:8px 12px;cursor:pointer;">Look up the numbers</span>
-      <span id="edResearchNote" style="font-size:11px;color:rgba(240,236,228,0.42);line-height:1.4;">Fix the name first, then re-estimate.</span>
+      <span onclick="edResearch()" style="flex-shrink:0;font-size:11.5px;font-weight:800;color:var(--gold);border:1px solid rgba(245,197,24,0.34);border-radius:9px;padding:8px 12px;cursor:pointer;white-space:nowrap;">Estimate again</span>
+      <span id="edResearchNote" style="font-size:11px;color:rgba(240,236,228,0.42);line-height:1.4;">Change the name, then re-run the numbers.</span>
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:12px;">
@@ -2846,7 +2846,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v6.791.0';
+var APP_VERSION = 'v6.800.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -10603,7 +10603,7 @@ function tlEditFood(id){
   window._edMeal = e.meal || '';
   _edPaintDay(); _edPaintMeal();
   _tlSetEditPhoto(e.photo||null);
-  try{ var _rn=document.getElementById('edResearchNote'); if(_rn) _rn.textContent='Fix the name first, then re-estimate.'; }catch(err){}
+  try{ var _rn=document.getElementById('edResearchNote'); if(_rn) _rn.textContent='Change the name, then re-run the numbers.'; }catch(err){}
   try{ openM('mEditFood'); }catch(err){}
 }
 function _edPaintDay(){
@@ -25365,6 +25365,7 @@ function _tlMealCard(key, label, items, ds){
             +(clock?(clock+' \u00b7 '):'')+rows.length+' items \u00b7 '+Math.round(tot.cal)+' cal</div>'
         +'</div>'
         +thumb
+        + ((!window._tlRO) ? ('<div data-tl="addmore" data-key="'+key+'" data-ds="'+_escHtml(ds)+'" style="flex-shrink:0;margin-left:10px;align-self:center;width:30px;height:30px;border-radius:8px;border:1px solid rgba(245,197,24,0.34);color:var(--gold);display:flex;align-items:center;justify-content:center;font-size:19px;line-height:1;cursor:pointer;">+</div>') : '')
       +'</div>'
       +'<div style="margin-top:9px;">'+lines+'</div>'
       +'<div style="display:flex;align-items:baseline;gap:10px;margin-top:8px;padding-top:8px;border-top:1px solid #2f2f2f;">'
@@ -26793,11 +26794,28 @@ async function edResearch(){
   var note=document.getElementById('edResearchNote');
   var q=nEl?String(nEl.value||'').trim():'';
   if(!q){ if(note) note.textContent='Give it a name first.'; return; }
-  if(note) note.textContent='Estimating \u201c'+q+'\u201d\u2026';
+
+  // They've logged this before? Use their own numbers. Exact, instant, free.
   try{
-    var sys='You are a nutrition estimator. For the food and portion the user gives, reply with ONLY a compact JSON object, no markdown, no prose: {"name":string,"calories":number,"protein":number,"carbs":number,"fat":number}';
+    var hit=(_savedFoods||[]).find(function(f){ return String(f.name||'').trim().toLowerCase()===q.toLowerCase(); });
+    if(hit){
+      _edSet('editFoodCal', Math.round(hit.calories||0));
+      _edSet('editFoodProt', Math.round(hit.protein||0));
+      _edSet('editFoodCarb', Math.round(hit.carbs||0));
+      _edSet('editFoodFat', Math.round(hit.fat||0));
+      if(note) note.textContent='From the last time you logged it.';
+      return;
+    }
+  }catch(e){}
+
+  if(note) note.textContent='Working it out\u2026';
+  try{
+    // Same payload shape as the logging path: the instructions go INSIDE the
+    // user message. Sending them as a separate `system` key got them dropped,
+    // so the model answered in prose and the parse blew up every time.
+    var sys='You are a nutrition estimator. For the food and portion the user gives, reply with ONLY a compact JSON object, no markdown, no prose: {"name": string, "calories": number, "protein": number, "carbs": number, "fat": number}. Keep name concise (food + portion). calories in kcal; protein/carbs/fat in grams; for the exact portion described.';
     var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({messages:[{role:'user',content:q}],system:sys})});
+      body:JSON.stringify({messages:[{role:'user',content:sys+'\n\nFood: '+q}]})});
     var data=await res.json(); var txt='';
     if(data&&data.content){ data.content.forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; }); }
     txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
@@ -26808,10 +26826,10 @@ async function edResearch(){
     _edSet('editFoodCarb', Math.round(obj.carbs||0));
     _edSet('editFoodFat',  Math.round(obj.fat||0));
     if(obj.name && String(obj.name).trim()) nEl.value=String(obj.name).trim();
-    if(note) note.textContent='Was '+before+' cal \u00b7 now '+Math.round(obj.calories||0)+'. Edit any of them by hand.';
+    if(note) note.textContent='Was '+before+' cal, now '+Math.round(obj.calories||0)+'. Change any of them by hand.';
   }catch(e){
     console.error('edResearch', e);
-    if(note) note.textContent="Couldn't estimate that one \u2014 type the numbers in.";
+    if(note) note.textContent='That one didn\'t come back \u2014 try again, or type the numbers in.';
   }
 }
 function _edSet(id, v){ var el=document.getElementById(id); if(el) el.value=v; }
