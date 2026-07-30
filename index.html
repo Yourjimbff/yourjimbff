@@ -629,9 +629,10 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
 @keyframes yjbHeartPop{0%{transform:scale(1);}40%{transform:scale(1.5);}70%{transform:scale(0.88);}100%{transform:scale(1);}}
 
 /* ===== MEAL LOGGER ===== */
-.mlHead{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:2px 0 14px;}
+.mlHead{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:2px 0 14px;}
 .mlTag{font-size:12px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:var(--gold);}
-.mlTime{background:transparent;border:none;outline:none;text-align:right;width:110px;font-family:'Plus Jakarta Sans',sans-serif;font-size:12.5px;font-weight:700;color:rgba(240,236,228,0.6);caret-color:var(--gold);}
+.mlTime{background:#1b1b1b;border:1px solid #2d2d2d;border-radius:9px;outline:none;text-align:center;width:104px;padding:7px 8px;margin-right:34px;font-family:'Plus Jakarta Sans',sans-serif;font-size:12.5px;font-weight:700;color:rgba(240,236,228,0.78);caret-color:var(--gold);}
+.mlTime:focus{border-color:var(--gold);color:var(--text);}
 .mlEmpty{font-size:12.5px;color:rgba(240,236,228,0.34);padding:6px 2px 10px;}
 
 .mlRow{background:#262626;border-left:3px solid var(--gold);border-radius:8px;padding:10px 12px;margin-bottom:6px;}
@@ -842,6 +843,7 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
 /* Birthday and height side by side needs about 240px each. iOS won't shrink a
    native date input past its intrinsic width, so below that they stack. */
 .pBioRow{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:9px;align-items:start;}
+.pBioRow:has(input[type="time"]){grid-template-columns:minmax(0,1fr) minmax(0,1fr);}
 @media (max-width:560px){
   .pBioRow{grid-template-columns:1fr;gap:0;}
   .pBioRow > div + div{margin-top:12px;}
@@ -2130,7 +2132,7 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
     <div class="mhnd"></div>
     <div class="mlHead">
       <div class="mlTag" id="mlTag">Dinner</div>
-      <input class="mlTime" id="mlTime" type="text" autocomplete="off">
+      <input class="mlTime" id="mlTime" type="text" autocomplete="off" oninput="this._touched=true">
     </div>
 
     <div id="mlItems"></div>
@@ -2834,7 +2836,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v6.743.0';
+var APP_VERSION = 'v6.760.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -9840,6 +9842,15 @@ function _tlPlanForDate(d){
 async function renderDayTimeline(soft){
   try{ await loadMyReviews(); }catch(e){}
   try{ await loadSteps(); }catch(e){}
+  // Set logs were only ever loaded by the program builder, so on the calendar
+  // _tpToday and _tpLastW were empty: logged sets vanished on refresh and
+  // "Last time" never appeared. Load once per session, not on every repaint.
+  if(!window._tlSetsLoaded){
+    window._tlSetsLoaded = true;
+    try{ await loadSetLogs(); }catch(e){}
+    try{ await loadExerciseNotes(); }catch(e){}
+    try{ await loadTpHistory(); }catch(e){}
+  }
   var body=document.getElementById('feedTabBody'); if(!body||!cl) return;
   var head=document.getElementById('feedTabHeading'); if(head){ head.textContent=''; head.style.display='none'; }
   var _sc0=document.getElementById('tlScroll');
@@ -9952,9 +9963,15 @@ async function renderDayTimeline(soft){
     // everything that actually happened, in the order it happened
     var rows=[];
     (slots.walk||[]).forEach(function(it){ rows.push({k:'walk', lbl:'Morning walk', it:it, m:_tlMins(it)}); });
-    (slots.breakfast||[]).forEach(function(it){ rows.push({k:'breakfast', lbl:'Breakfast', it:it, m:_tlMins(it)}); });
-    (slots.lunch||[]).forEach(function(it){ rows.push({k:'lunch', lbl:'Lunch', it:it, m:_tlMins(it)}); });
-    (slots.dinner||[]).forEach(function(it){ rows.push({k:'dinner', lbl:'Dinner', it:it, m:_tlMins(it)}); });
+    // Eggs and potatoes at breakfast is one breakfast. Group the foods into a
+    // single row per meal and hand the whole list to the card, which knows how
+    // to lay out multiple items with a total.
+    [['breakfast','Breakfast'],['lunch','Lunch'],['dinner','Dinner']].forEach(function(pair){
+      var list=(slots[pair[0]]||[]);
+      if(!list.length) return;
+      var mins=Math.min.apply(null, list.map(function(x){ return _tlMins(x); }));
+      rows.push({k:pair[0], lbl:pair[1], it:list[0], all:list, m:mins});
+    });
     (slots.workout||[]).forEach(function(it){ rows.push({k:'workout', lbl:'Workout', it:it, m:_tlMins(it)}); });
     (jByDay[ds]||[]).forEach(function(it){ rows.push({k:'journal', lbl:'Journal', it:it, m:_tlMins(it)}); });
     ((window._bookByDay&&window._bookByDay[ds])||[]).forEach(function(b){
@@ -9989,7 +10006,7 @@ async function renderDayTimeline(soft){
     rows.forEach(function(r){
       if(r.planned)   html+=_tlSlot('workout','Workout', null, ds, plan);
       else if(r.empty) html+=_tlSlot(r.k, r.lbl, null, ds, null);
-      else             html+=_tlSlot(r.k, r.lbl, [r.it], ds, null);
+      else             html+=_tlSlot(r.k, r.lbl, (r.all || [r.it]), ds, null);
     });
     html+=_sleepEdge('bed');
     html+='<div data-tl="act" data-ds="'+_escHtml(ds)+'" style="text-align:center;font-size:11px;font-weight:800;color:rgba(240,236,228,0.4);letter-spacing:0.7px;text-transform:uppercase;padding:8px 0 2px;cursor:pointer;">+ Add</div>';
@@ -10140,8 +10157,10 @@ function _tlSlot(key, label, filled, ds, plan){
           +'</div>'
         +'</div>';
       if(open){
-        var _canEdit = (typeof isTrainer==='function' && cl && isTrainer(cl.code));
-        window._tpCanEdit = _canEdit;
+        // Clients manage their own plan. This used to be trainer-only, which
+        // hid swap, remove, reorder, the split pills and Add exercise from the
+        // people actually doing the workout.
+        window._tpCanEdit = true;
         var pills = _tpDayTypes().map(function(t){
           var on=(plan.type===t);
           return '<span onclick="event.stopPropagation();tpSetType(\''+dayKey+'\',\''+t+'\')" style="font-size:10.5px;font-weight:800;cursor:pointer;padding:5px 10px;border-radius:14px;background:'+(on?'#f5c518':'transparent')+';color:'+(on?'#141008':'#8a8a8a')+';border:1px solid '+(on?'#f5c518':'#2d2d2d')+';">'+t+'</span>';
@@ -10151,7 +10170,7 @@ function _tlSlot(key, label, filled, ds, plan){
         s+='<div style="margin-top:11px;">'
           +_sw
           +((_pOn && pills)
-              ? '<div style="display:flex;gap:5px;flex-wrap:wrap;margin:0 0 12px;">'+pills+'</div>'
+              ? '<div style="display:flex;gap:7px;flex-wrap:wrap;row-gap:8px;margin:0 0 14px;">'+pills+'</div>'
               : '')
           +(_pOn
               ? (plan.rest
@@ -13934,6 +13953,7 @@ function hdlFoodPhoto(input){
   reader.onload=function(e){
     downscaleImage(e.target.result, 1440, 0.85).then(function(compact){
       photoData=compact;
+      _mlTimeFromPhoto(input.files[0]);
       var slot=document.getElementById('foodPhotoSlot');
       slot.classList.add('hi');
       slot.innerHTML='<img src="'+photoData+'" alt="meal"><div class="pchg">Change</div><input type="file" accept="image/*" onchange="hdlFoodPhotoNew(this)" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;">';
@@ -15886,7 +15906,7 @@ function _tpDayCard(day){
       +'</div>'
       +'<div style="color:rgba(240,236,228,0.55);font-size:15px;flex-shrink:0;">'+(open?'\u25b2':'\u25bc')+'</div>'
     +'</div>'
-    +(open ? ((window._tpCanEdit?'<div style="display:flex;gap:5px;flex-wrap:wrap;margin:12px 0;">'+pills+'</div>':'<div style="height:6px;"></div>')
+    +(open ? ((window._tpCanEdit?'<div style="display:flex;gap:7px;flex-wrap:wrap;row-gap:8px;margin:14px 0;">'+pills+'</div>':'<div style="height:6px;"></div>')
         +(isRest ? (_tpRestBlock(day))
                  : (exs.map(function(e,i){ return _tpExRow(day,i,e); }).join('')
                     +(window._tpCanEdit?'<button onclick="tpAddOpen(\''+day+'\')" style="width:100%;margin-top:4px;background:transparent;border:1px dashed #313131;border-radius:9px;padding:9px;font-size:12px;font-weight:700;color:rgba(240,236,228,0.68);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">+ Add exercise</button>':'')
@@ -21205,10 +21225,10 @@ function _renderSleepWrap(){
   }
   w.innerHTML='<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:5px;">Sleep target</div>'
     +'<div style="font-size:11.5px;color:var(--m2);line-height:1.5;margin-bottom:10px;">The two times that decide the rest of your day.</div>'
-    +'<div style="display:flex;gap:10px;">'
-      +'<div style="flex:1;min-width:0;"><label class="il" style="margin-top:0;">Bedtime</label>'
+    +'<div class="pBioRow">'
+      +'<div style="min-width:0;"><label class="il" style="margin-top:0;">Bedtime</label>'
         +'<input class="ifield" type="time" id="pBedtime" value="'+_escHtml(bed)+'" onchange="pSetBedtime(this.value)" onblur="pSleepBlur()" style="margin:0;text-align:center;"></div>'
-      +'<div style="flex:1;min-width:0;"><label class="il" style="margin-top:0;">Wake time</label>'
+      +'<div style="min-width:0;"><label class="il" style="margin-top:0;">Wake time</label>'
         +'<input class="ifield" type="time" id="pWaketime" value="'+_escHtml(wake)+'" onchange="pSetWaketime(this.value)" onblur="pSleepBlur()" style="margin:0;text-align:center;"></div>'
     +'</div>'
     +'<div style="text-align:center;font-size:12px;color:'+((hrs!=null&&hrs>=7)?'#f5c518':'var(--m2)')+';margin-top:9px;font-weight:700;min-height:16px;"><span id="pSleepHrs">'+(hrs!=null?(hrs+'h'):'')+'</span>'+(hrs!=null?' a night':'')+'</div>'
@@ -26523,7 +26543,7 @@ function _tpFinBlock(day, ds) {
   // Tap a body part and its whole list drops in — you delete what you don't
   // want rather than picking one at a time. The pills never go away, so
   // stacking a second finisher is one tap, not two.
-  h += '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:' + (list.length ? '10' : '9') + 'px;">'
+  h += '<div style="display:flex;gap:7px;flex-wrap:wrap;row-gap:8px;margin-top:' + (list.length ? '13' : '11') + 'px;">'
     + FIN_ORDER.map(function (k) {
         var on = list.some(function (x) { return x.cat === k; });
         return _finPill(day, k, on);
@@ -26615,6 +26635,29 @@ function tpFinMinDs(day, i, ds, m){
   var it=_finList(day)[i]; if(!it) return;
   _finLogSet(ds, it.ex, {min: m});
   _finRepaint();
+}
+
+// iOS hands us the capture time as the file's lastModified when a photo comes
+// from the library. Use it, but only when it's plausible: same day, not in the
+// future, and only if the field is still on the default. Never overwrite a time
+// the person typed themselves.
+function _mlTimeFromPhoto(file){
+  try{
+    var el=document.getElementById('mlTime'); if(!el || !file || !file.lastModified) return;
+    if(el._touched) return;
+    var d=new Date(file.lastModified);
+    var now=new Date();
+    if(isNaN(d.getTime())) return;
+    if(d.getFullYear()!==now.getFullYear() || d.getMonth()!==now.getMonth() || d.getDate()!==now.getDate()) return;
+    if(d.getTime() > now.getTime()+60000) return;
+    var hh=d.getHours(), mm=d.getMinutes();
+    var ampm = hh<12 ? 'AM' : 'PM';
+    var h12 = hh%12; if(h12===0) h12=12;
+    var stamp = h12+':'+String(mm).padStart(2,'0')+' '+ampm;
+    if(String(el.value||'').trim()===stamp) return;
+    el.value=stamp;
+    showToast('Time set from the photo \u00b7 '+stamp);
+  }catch(e){}
 }
 </script>
 </body>
