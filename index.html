@@ -2853,7 +2853,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v6.810.0';
+var APP_VERSION = 'v6.821.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -10277,7 +10277,13 @@ function _tlSlot(key, label, filled, ds, plan){
     if(isFood && !window._tlRO && it.note && String(it.note).trim()) title = it.note;
     if(key==='weigh' && it.weight!=null) title = (Math.round((+it.weight)*10)/10)+' lb';
     var cap = [];
-    if(clock) cap.push(clock);
+    // The time on a session is the thing people most often get wrong, and it was
+    // only editable inside the expanded card. Tap it where you can see it.
+    if(clock) cap.push(
+      (isWo && it.id && !window._tlRO)
+        ? ('<span data-tl="taptime" data-id="'+it.id+'" data-ds="'+_escHtml(ds)+'" data-cur="'+_escHtml(clock)+'" style="cursor:pointer;border-bottom:1px dotted rgba(240,236,228,0.35);">'+_escHtml(clock)+'</span>')
+        : clock
+    );
     if(isFood && it.calories) cap.push(Math.round(it.calories)+' cal');
     var rm=(isWo&&it.id&&!window._tlRO)?'<span onclick="event.stopPropagation();tlDelWorkout('+it.id+')" title="Remove" style="flex-shrink:0;color:rgba(240,236,228,0.5);font-size:15px;line-height:1;cursor:pointer;padding:2px 0 2px 8px;">\u00d7</span>':'';
     var uid=key+'_'+(it.id||0);
@@ -10734,6 +10740,7 @@ function _tlBindTaps(){
     var a=el.getAttribute('data-tl');
     ev.stopPropagation();
     if(a==='xp'){ tlXp(el.getAttribute('data-uid')); return; }
+    if(a==='taptime'){ ev.stopPropagation(); tlTapTime(el.getAttribute('data-id'), el.getAttribute('data-ds'), el.getAttribute('data-cur')); return; }
     if(a==='mealxp'){ tlXp(el.getAttribute('data-uid')); return; }
     if(a==='reply'){ ev.stopPropagation(); openReply(el.getAttribute('data-kind'), el.getAttribute('data-rid')); return; }
     if(a==='edit'){ tlEditFood(el.getAttribute('data-id')); return; }
@@ -15026,7 +15033,9 @@ async function addFoodsFromText(q){
   for(var i=0;i<parts.length;i++){
     var p=parts[i];
     // exact match in the library first — no lookup needed
-    var hit=(_savedFoods||[]).find(function(f){ return String(f.name||'').toLowerCase()===p.toLowerCase(); });
+    // Exact string equality meant "nutrition solutions protein bar" never matched
+    // the saved "Nutrition Solutions Protein Bar, 1 bar". Score it instead.
+    var hit=_bestSavedFood(p);
     if(hit){ plateAdd({name:hit.name,calories:hit.calories,protein:hit.protein,carbs:hit.carbs,fat:hit.fat}); continue; }
     try{ await researchAndAdd(p); }catch(e){}
   }
@@ -26061,13 +26070,26 @@ function _tlWatchToday(){
   function check(){
     try{
       if(!an){ btn.classList.add('on'); return; }
-      var d=an.getBoundingClientRect().top - sc.getBoundingClientRect().top;
-      // showing today's header roughly in view = no button
       var tabOpen=false;
       try{ var f=document.getElementById('tFeed'); tabOpen=!!(f&&f.classList.contains('active')); }catch(e){}
       if(!tabOpen){ btn.classList.remove('on'); return; }
-      var near = d > -80 && d < sc.clientHeight*0.55;
-      btn.classList.toggle('on', !near);
+
+      // The old test used the day HEADER's position, so the pill appeared while
+      // today was still on screen — you'd be looking at today and being offered
+      // a trip to today. Test the whole day section instead: if any real part of
+      // it is in view, you're on today and the pill has no job.
+      var sec = an.closest ? an.closest('.tlDaySec') : null;
+      var box = sc.getBoundingClientRect();
+      var visible;
+      if(sec){
+        var r = sec.getBoundingClientRect();
+        var overlap = Math.min(r.bottom, box.bottom) - Math.max(r.top, box.top);
+        visible = overlap > 48;                       // a sliver doesn't count
+      } else {
+        var d = an.getBoundingClientRect().top - box.top;
+        visible = d > -80 && d < sc.clientHeight * 0.55;
+      }
+      btn.classList.toggle('on', !visible);
     }catch(e){}
   }
   if(sc._tlWatch) sc.removeEventListener('scroll', sc._tlWatch);
@@ -26938,6 +26960,64 @@ function woClearPhoto(ds) {
   try { window._tlCache = null; renderDayTimeline(true); } catch (e) {}
 }
 
+
+// Tap a session's time to correct it. Uses the same parser as logging, so
+// "7", "7am", "7:05 AM" and "19:05" all land.
+async function tlTapTime(id, ds, cur){
+  var v=prompt('What time was this?', cur||'');
+  if(v===null) return;
+  v=String(v).trim(); if(!v) return;
+  var mins=null;
+  try{ mins=_parseClock(v); }catch(e){}
+  if(mins==null){ showToast("Couldn't read that time \u2014 try 7:05 AM"); return; }
+  var hh=Math.floor(mins/60), mm=mins%60;
+  var h12=hh%12; if(h12===0) h12=12;
+  var stamp=h12+':'+String(mm).padStart(2,'0')+' '+(hh<12?'AM':'PM');
+  var iso=null;
+  try{ iso=_timeToISO(stamp, ds); }catch(e){}
+  if(!iso){ showToast("Couldn't set that time"); return; }
+  try{
+    var res=await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+encodeURIComponent(id),
+      {method:'PATCH',headers:sbHeaders(),body:JSON.stringify({logged_at:iso})});
+    if(!res.ok){ showToast("Couldn't save the time"); return; }
+  }catch(e){ showToast("Couldn't save the time"); return; }
+  try{ window._tlCache=null; }catch(e){}
+  try{ await renderDayTimeline(true); }catch(e){}
+  showToast('Moved to '+stamp);
+}
+
+// ---- matching typed food against what they've already logged ----
+function _foodNorm(s){
+  return String(s||'').toLowerCase()
+    .replace(/[^a-z0-9\s]/g,' ')
+    .replace(/\b(\d+|one|two|three|four|five|six|a|an|of|the|with|and)\b/g,' ')
+    .replace(/\b(whole|large|medium|small|slices?|handfuls?|cups?|scoops?|bars?|pieces?|grams?|g|oz)\b/g,' ')
+    .replace(/\s+/g,' ').trim();
+}
+function _bestSavedFood(q){
+  var list=(typeof _savedFoods!=='undefined' && _savedFoods) ? _savedFoods : [];
+  if(!list.length) return null;
+  var nq=_foodNorm(q);
+  if(!nq) return null;
+  var qt=nq.split(' ').filter(Boolean);
+  var best=null, bestScore=0;
+  list.forEach(function(f){
+    var nf=_foodNorm(f.name);
+    if(!nf) return;
+    var score=0;
+    if(nf===nq) score=1;
+    else if(nf.indexOf(nq)>=0 || nq.indexOf(nf)>=0) score=0.9;
+    else {
+      var ft=nf.split(' ').filter(Boolean);
+      var shared=qt.filter(function(t){ return ft.indexOf(t)>=0; }).length;
+      score = shared / Math.max(qt.length, ft.length);
+    }
+    if(score>bestScore){ bestScore=score; best=f; }
+  });
+  // 0.6 keeps "protein bar" off "protein waffles" while still catching the
+  // brand-name mouthfuls people actually type
+  return (bestScore>=0.6) ? best : null;
+}
 </script>
 </body>
 </html>
