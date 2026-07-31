@@ -2863,7 +2863,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v6.920.0';
+var APP_VERSION = 'v6.921.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -10215,7 +10215,9 @@ function _tlSlot(key, label, filled, ds, plan){
         s+='<div style="margin-top:11px;">'
           +_sw
           +((_pOn && pills)
-              ? '<div style="display:flex;gap:7px;flex-wrap:wrap;row-gap:8px;margin:0 0 14px;">'+pills+'</div>'
+              ? ('<div style="display:flex;gap:7px;flex-wrap:wrap;row-gap:8px;margin:0 0 14px;align-items:center;">'+pills
+                 + (((window._tpUndo||{})[dayKey]) ? ('<span onclick="event.stopPropagation();tpUndoType(\''+dayKey+'\')" style="font-size:10.5px;font-weight:800;cursor:pointer;padding:5px 10px;border-radius:14px;background:transparent;color:rgba(240,236,228,0.75);border:1px dashed #3a3a3a;">\u21a9 Undo</span>') : '')
+                 + '</div>')
               : '')
           +(_pOn
               ? (plan.rest
@@ -16163,30 +16165,57 @@ function renderTrainingBuilder(){
 }
 function tpSetType(day,t){
   if(!_tpPlan[day]) _tpPlan[day]={};
-  var had=(_tpPlan[day].ex||[]).length;
-  // Rest used to empty the list outright. Keep the exercises, just mark the day.
+  var prevType=_tpPlan[day].type||'';
+  var prevEx=(_tpPlan[day].ex||[]).slice();
+  var had=prevEx.length;
+  if(prevType===t) return;
+
+  // Switching used to leave the old exercises in place to avoid losing work,
+  // which made the pills look broken — you tap Pull and still see Push. Swap
+  // for real and keep an undo, rather than quietly refusing.
+  function stash(){
+    window._tpUndo=window._tpUndo||{};
+    window._tpUndo[day]= had ? {type:prevType, ex:prevEx} : null;
+  }
+
   if(t==='Rest'){
+    stash();
     _tpPlan[day].type='Rest';
-    renderTrainingBuilder();
+    _tpPlan[day].ex=[];
+    _tpAfterType(day, had ? 'Rest day \u00b7 your '+had+' exercises are one tap back' : 'Rest day');
     return;
   }
-  // Build is the blank slate. That's the whole point of choosing it, and it's
-  // recoverable — pick a split back and the template seeds in again.
   if(t==='Build'){
+    stash();
     _tpPlan[day].type='Build';
     _tpPlan[day].ex=[];
-    renderTrainingBuilder();
-    try{ showToast(had ? 'Blank day \u2014 add what you want' : 'Blank day \u2014 add your first exercise'); }catch(e){}
+    _tpAfterType(day, had ? 'Blank day \u00b7 undo to get them back' : 'Blank day \u2014 add your first exercise');
     return;
   }
-  // Switching between splits shouldn't overwrite what they've built. Only seed a
-  // template into a day that's actually empty.
+  stash();
   _tpPlan[day].type=t;
-  if(!had) _tpPlan[day].ex=_tpFromTemplate(t);
-  else {
-    try{ showToast('Kept your '+had+' exercise'+(had===1?'':'s')+'. Add or remove as you like.'); }catch(e){}
-  }
-  renderTrainingBuilder();
+  _tpPlan[day].ex=_tpFromTemplate(t);
+  _tpAfterType(day, had ? (t+' \u00b7 swapped, undo to go back') : t);
+}
+
+function _tpAfterType(day, msg){
+  try{ if(typeof _tpFinSave==='function') _tpFinSave(); }catch(e){}
+  try{ if(typeof saveTrainingPlan==='function' && !window._tpQuiet) _saveTrainingPlanQuiet(); }catch(e){}
+  try{ if(typeof _finRepaint==='function') _finRepaint(); else renderTrainingBuilder(); }catch(e){ try{ renderTrainingBuilder(); }catch(_e){} }
+  try{ showToast(msg); }catch(e){}
+}
+
+// One step back, so swapping a split is never a decision you have to be sure about.
+function tpUndoType(day){
+  var u=(window._tpUndo||{})[day];
+  if(!u){ showToast('Nothing to undo'); return; }
+  _tpPlan[day].type=u.type;
+  _tpPlan[day].ex=(u.ex||[]).slice();
+  window._tpUndo[day]=null;
+  try{ if(typeof _tpFinSave==='function') _tpFinSave(); }catch(e){}
+  try{ _saveTrainingPlanQuiet(); }catch(e){}
+  try{ if(typeof _finRepaint==='function') _finRepaint(); else renderTrainingBuilder(); }catch(e){}
+  showToast('Back to '+(u.type||'your day'));
 }
 function tpSet(day,i,k,v){
   var e=_tpPlan[day].ex[i]; if(!e) return;
