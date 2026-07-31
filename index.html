@@ -868,7 +868,13 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
 
 /* Jim: one line at the top of each day, in the flow. */
 .jimBar{margin:0 0 10px;}
-.jimRow{display:flex;align-items:center;gap:7px;background:#171717;border:1px solid #2f2f2f;border-radius:14px;padding:6px 7px 6px 13px;}
+.jimRow{display:flex;align-items:center;gap:7px;border-radius:14px;padding:6px 7px 6px 13px;
+  background:linear-gradient(180deg,#1d1c17 0%,#161616 100%);
+  border:1px solid rgba(245,197,24,0.34);
+  box-shadow:0 0 0 1px rgba(245,197,24,0.06), 0 6px 18px rgba(0,0,0,0.35), inset 0 1px 0 rgba(245,197,24,0.10);
+  transition:border-color .18s, box-shadow .18s;}
+.jimRow:focus-within{border-color:rgba(245,197,24,0.62);
+  box-shadow:0 0 0 1px rgba(245,197,24,0.16), 0 8px 22px rgba(0,0,0,0.42), inset 0 1px 0 rgba(245,197,24,0.16);}
 .jimBar.hasphoto .jimRow{border-color:rgba(245,197,24,0.5);}
 .jimIn{flex:1;min-width:0;background:transparent;border:none;outline:none;font-family:'Plus Jakarta Sans',sans-serif;font-size:15px;color:#f0ece4;padding:7px 0;}
 .jimIn::placeholder{color:rgba(240,236,228,0.34);}
@@ -2874,7 +2880,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v6.951.0';
+var APP_VERSION = 'v6.960.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -27689,6 +27695,13 @@ async function jimSend(ds) {
   if (ds) { try{ window._mealLogDs = ds; window._mlDs = ds; }catch(e){} }
   if (el) { el.value = ''; el.blur(); }
   var said = (p.mins != null ? (' at ' + _jimClock(p.mins)) : '') + (p.meal ? (' \u00b7 ' + p.meal) : '');
+  // A whole day in one message goes to the planner; a single food takes the
+  // fast path, because a round trip for "four eggs" isn't worth the wait.
+  if (_jimIsComplex(raw)) {
+    var handled = false;
+    try { handled = await jimSendSmart(ds, raw); } catch (e) {}
+    if (handled) { window._jimPhoto = null; _jimPaintPhoto(ds); return; }
+  }
   try {
     smartLogFromText(p.text || 'Meal');
     if (said) showToast('Logged' + said);
@@ -27723,6 +27736,95 @@ function jimMic(ds) {
   var el = document.getElementById('jimIn_' + (ds || ''));
   if (!SR) { if (el) el.focus(); showToast('Use your keyboard\u2019s mic'); return; }
   try { jarvisVoiceToggle('jim_'+(ds||'')); } catch (e) { if (el) el.focus(); }
+}
+
+
+// ===== JIM · WHOLE-DAY LOGGING =========================================
+// One message, a whole day. Meals in order with their own times, steps, the
+// workout. The model turns the sentence into actions; the app performs them and
+// tells you exactly what it did, so nothing is filed silently.
+
+var JIM_DEFAULT_TIMES = {breakfast: '9:00 AM', lunch: '1:00 PM', dinner: '7:00 PM', snack: '3:30 PM'};
+
+// Worth the round trip only when there's more than one thing in the sentence.
+function _jimIsComplex(s) {
+  var t = String(s || '').toLowerCase();
+  var signals = 0;
+  if (/\b(breakfast|lunch|dinner|snack)\b/.test(t)) signals++;
+  if (/\b(steps?|walked)\b/.test(t)) signals++;
+  if (/\b(push|pull|legs|arms|workout|trained|lifted|gym|ran|run)\b/.test(t)) signals++;
+  if ((t.match(/\b(breakfast|lunch|dinner|snack)\b/g) || []).length > 1) signals++;
+  return signals >= 2 || t.length > 120;
+}
+
+async function _jimPlan(raw) {
+  var sys = 'You turn a spoken daily log into actions. Reply with ONLY a compact JSON array, no markdown, no prose.\n'
+    + 'Each element is one of:\n'
+    + '{"type":"food","meal":"breakfast|lunch|dinner|snack","time":"9:00 AM","items":"the foods, comma separated","calories":number|null}\n'
+    + '{"type":"steps","count":number}\n'
+    + '{"type":"workout","title":"Push","detail":"what they did, or empty"}\n'
+    + 'Rules: keep the order they said it. Use their stated time if given, otherwise omit "time". '
+    + 'Only include what they actually mentioned. If they give a calorie total for a meal, put it in "calories". '
+    + 'Do not invent foods, steps or exercises.';
+  var res = await fetch('/.netlify/functions/analyze', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({messages: [{role: 'user', content: sys + '\n\nLog: ' + raw}]})
+  });
+  var data = await res.json(), txt = '';
+  if (data && data.content) data.content.forEach(function (b) { if (b && b.type === 'text' && b.text) txt += b.text; });
+  txt = (txt || '').replace(/```json/gi, '').replace(/```/g, '').trim();
+  var plan = JSON.parse(txt);
+  return Array.isArray(plan) ? plan : [];
+}
+
+async function _jimRun(plan, ds) {
+  var did = [];
+  for (var i = 0; i < plan.length; i++) {
+    var a = plan[i] || {};
+    try {
+      if (a.type === 'food' && a.items) {
+        var meal = String(a.meal || '').toLowerCase();
+        var cap = meal ? (meal.charAt(0).toUpperCase() + meal.slice(1)) : '';
+        if (cap) window._mealSlot = cap;
+        var t = a.time || JIM_DEFAULT_TIMES[meal] || '';
+        var tf = document.getElementById('foodTime'); if (tf) tf.value = t;
+        if (ds) { window._mealLogDs = ds; window._mlDs = ds; }
+        var line = String(a.items);
+        if (a.calories) line += ' ' + Math.round(a.calories) + ' cal';
+        smartLogFromText(line);
+        did.push((cap || 'Food') + (t ? (' \u00b7 ' + t) : ''));
+        await new Promise(function (r) { setTimeout(r, 350); });   // let each meal land in order
+      } else if (a.type === 'steps' && a.count) {
+        var n = parseInt(a.count, 10) || 0;
+        if (n > 0) {
+          await sbUpsert('step_logs', {client_code: cl.code, steps: n, date_str: ds || todayDateStr,
+                                       updated_at: new Date().toISOString()}, 'client_code,date_str');
+          did.push(n.toLocaleString() + ' steps');
+        }
+      } else if (a.type === 'workout' && a.title) {
+        var iso = _timeToISO('5:00 PM', ds || todayDateStr);
+        await fetch(SB_URL + '/rest/v1/workout_logs', {
+          method: 'POST', headers: Object.assign({}, sbHeaders(), {'Prefer': 'return=minimal'}),
+          body: JSON.stringify({client_code: cl.code, title: String(a.title),
+                                description: String(a.detail || ''), duration: null,
+                                date_str: ds || todayDateStr, logged_at: iso})});
+        did.push(String(a.title));
+      }
+    } catch (e) { console.error('jim action', a, e); }
+  }
+  return did;
+}
+
+async function jimSendSmart(ds, raw) {
+  showToast('Reading your day\u2026');
+  var plan = [];
+  try { plan = await _jimPlan(raw); } catch (e) { console.error('jimPlan', e); }
+  if (!plan.length) { showToast("Couldn't read that \u2014 logging it as food"); return false; }
+  var did = await _jimRun(plan, ds);
+  try { window._tlCache = null; await renderDayTimeline(true); } catch (e) {}
+  if (did.length) showToast('Logged ' + did.join(' \u00b7 '));
+  else showToast('Nothing I could log in that');
+  return true;
 }
 
 </script>
