@@ -2963,7 +2963,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v7.130.0';
+var APP_VERSION = 'v7.144.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -5329,9 +5329,8 @@ function feedOpenDetail(idx){
     var w=it.data;
     body+='<div style="font-size:20px;font-weight:800;color:#f0ece4;line-height:1.2;">'+_woEmoji(w.title)+' '+(w.title||'Workout').replace(/</g,'&lt;')+'</div>';
     body+='<div style="font-size:12px;color:var(--muted);margin:5px 0 13px;">'+dateLbl+' · '+when+(w.intensity?(' · '+w.intensity+'/10'):'')+'</div>';
-    var lines=String(w.description||'').split('\n').map(function(x){return x.replace(/^[•\-\s]+/,'').trim();}).filter(Boolean);
-    if(lines.length<=1 && w.description) lines=String(w.description).split(',').map(function(x){return x.trim();}).filter(Boolean);
-    if(lines.length) body+='<div style="margin-bottom:11px;">'+lines.map(function(l){return '<div style="font-size:13.5px;color:#f0ece4;padding:5px 0;border-bottom:1px solid #222222;">• '+l.replace(/</g,'&lt;')+'</div>';}).join('')+'</div>';
+    // a coach reads "barbell rowing 75 for 8", not a comma-separated dump
+    body+='<div style="margin-bottom:11px;">'+woProseHtml(w.description)+'</div>';
     if(w.notes) body+='<div style="font-size:12.5px;color:rgba(240,236,228,0.82);line-height:1.5;margin-bottom:11px;">'+String(w.notes).replace(/</g,'&lt;')+'</div>';
     if(w.photo) body+='<img src="'+w.photo+'" style="width:100%;border-radius:12px;margin-bottom:4px;">';
   } else if(it.kind==='weight'){
@@ -16273,12 +16272,7 @@ function _tpHistoryView(){
         +'<span style="font-size:13px;font-weight:800;letter-spacing:0.5px;text-transform:uppercase;color:var(--gold);">'+_escHtml(w.title||'Workout')+'</span>'
         +'<span style="font-size:11px;color:rgba(240,236,228,0.68);flex-shrink:0;">'+when+'</span>'
       +'</div>'
-      + lines.map(function(ln){
-          var parts=ln.split(':');
-          var name=parts.shift();
-          var sets=parts.join(':');
-          return '<div style="font-size:12.5px;color:rgba(240,236,228,0.82);padding:5px 0;border-top:1px solid #222222;line-height:1.5;"><b style="color:#f0ece4;">'+_escHtml(name)+'</b>'+(sets?'<span style="color:rgba(240,236,228,0.68);">'+_escHtml(sets)+'</span>':'')+'</div>';
-        }).join('')
+      + woProseHtml(w.description)
       + (open
           ? '<div style="margin-top:10px;padding-top:10px;border-top:1px solid #272727;display:flex;gap:7px;">'
               +'<input id="tpHistAdd_'+w.id+'" type="text" placeholder="e.g. Extra set: 135 lb \u00d7 8" onkeydown="if(event.key===\'Enter\'){event.preventDefault();tpHistAppend('+w.id+');}" style="flex:1;min-width:0;background:#151515;border:1px solid #2d2d2d;border-radius:9px;color:#f0ece4;font-size:12.5px;padding:10px 11px;font-family:\'Plus Jakarta Sans\',sans-serif;">'
@@ -27697,7 +27691,6 @@ async function cnPost(code) {
   if (!body) { showToast('Write the note first'); return; }
   var row = {client_code: code, coach_code: (cl && cl.code) || null, body: body,
              created_at: new Date().toISOString()};
-  // show it straight away; the write catches up
   (window._cnCache[code] = window._cnCache[code] || []).unshift(row);
   if (el) el.value = '';
   _cnRepaint(code);
@@ -27706,13 +27699,31 @@ async function cnPost(code) {
       method: 'POST', headers: Object.assign({}, sbHeaders(), {'Prefer': 'return=representation'}),
       body: JSON.stringify(row)
     });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    var back = await res.json();
-    if (back && back[0] && back[0].id) window._cnCache[code][0].id = back[0].id;
-    showToast('Note left for ' + ((CLIENTS[code] || {}).name || code).split(' ')[0]);
+    if (res.ok) {
+      var back = await res.json();
+      if (back && back[0] && back[0].id) window._cnCache[code][0].id = back[0].id;
+      showToast('Note left for ' + ((CLIENTS[code] || {}).name || code).split(' ')[0]);
+      return;
+    }
+    // Say what actually went wrong. "Check the table exists" was a guess, and it
+    // was the wrong one when the table was already there.
+    var msg = '';
+    try { var j = await res.json(); msg = j.message || j.hint || j.details || ''; } catch (e) {}
+    console.error('cnPost failed', res.status, msg, row);
+    if (res.status === 401 || res.status === 403 || /row-level security|policy/i.test(msg)) {
+      showToast('Blocked by row-level security on coach_notes');
+    } else if (res.status === 404 || /does not exist|schema cache/i.test(msg)) {
+      showToast("Table not visible \u2014 run: notify pgrst, 'reload schema'");
+    } else if (/column/i.test(msg)) {
+      var col = (msg.match(/'([a-z_]+)'/) || [])[1];
+      showToast(col ? ("No '" + col + "' column on coach_notes") : 'A column on coach_notes is missing');
+    } else {
+      showToast('Note failed \u2014 ' + (msg || ('HTTP ' + res.status)));
+    }
+    // it stays on screen either way; nothing they wrote is thrown away
   } catch (e) {
     console.error('cnPost', e);
-    showToast("Couldn't save the note \u2014 check the coach_notes table exists");
+    showToast("Couldn't reach the server \u2014 the note is still here");
   }
 }
 
@@ -28312,6 +28323,150 @@ function edNamePick(id){
   edNameHide();
   var note=document.getElementById('edResearchNote');
   if(note) note.textContent='From your library.';
+}
+
+// ===== READING A WORKOUT ===============================================
+// "Barbell Row: 65 lb x 10, 65 lb x 10, 75 lb x 8, 75 lb x 10, 75 lb x 8" is a
+// data dump. A coach reads it as "barbell rowing 75 for 8". Say it that way.
+
+function _woParseLine(line) {
+  var m = String(line || '').split(':');
+  if (m.length < 2) return null;
+  var name = m[0].trim();
+  var sets = m.slice(1).join(':').split(',').map(function (s) {
+    var t = s.trim();
+    var w = t.match(/([\d.]+)\s*(?:lb|kg)?/);
+    var r = t.match(/[x\u00d7]\s*([\d\u2013\-]+)/i);
+    if (!w) return null;
+    return {w: parseFloat(w[1]), r: (r ? r[1] : '').replace(/\u2013/g, '-')};
+  }).filter(Boolean);
+  if (!name || !sets.length) return null;
+  return {name: name, sets: sets};
+}
+
+// "65 for 10 twice, then 75 for 8, 10 and 8"
+function _woSay(ex) {
+  var groups = [], cur = null;
+  ex.sets.forEach(function (s) {
+    if (cur && cur.w === s.w) { cur.reps.push(s.r); }
+    else { cur = {w: s.w, reps: [s.r]}; groups.push(cur); }
+  });
+  var parts = groups.map(function (g) {
+    var same = g.reps.every(function (r) { return r === g.reps[0]; });
+    var n = g.reps.length;
+    if (same) {
+      return g.w + ' for ' + g.reps[0]
+        + (n === 1 ? '' : (n === 2 ? ', twice' : ', ' + n + ' times'));
+    }
+    var last = g.reps[g.reps.length - 1];
+    return g.w + ' for ' + g.reps.slice(0, -1).join(', ') + ' and ' + last;
+  });
+  var body = parts.length === 1 ? parts[0] : (parts.slice(0, -1).join('; then ') + '; then ' + parts[parts.length - 1]);
+  return body;
+}
+
+// Top set, so you can see the number that matters without reading the sentence.
+function _woTop(ex) {
+  // heaviest, and at equal weight the one they got most reps on
+  var best = ex.sets[0];
+  ex.sets.forEach(function (s) {
+    var sr = parseInt(String(s.r).split(/[-\u2013]/)[0], 10) || 0;
+    var br = parseInt(String(best.r).split(/[-\u2013]/)[0], 10) || 0;
+    if (s.w > best.w || (s.w === best.w && sr > br)) best = s;
+  });
+  return best;
+}
+
+function woProseHtml(desc) {
+  // The name and the sentence said the same thing twice. One bullet each.
+  var lines = String(desc || '').split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
+  var out = '', tail = [];
+  lines.forEach(function (l) {
+    var ex = _woParseLine(l);
+    if (!ex) { tail.push(l); return; }
+    var say = _woIsBody(ex.name)
+      ? _woSayBody(ex, ex.name)
+      : (_woVerb(ex.name) + ' ' + _woSay(ex));
+    out += '<div style="display:flex;gap:9px;font-size:13.5px;color:#f0ece4;line-height:1.5;padding:5px 0;">'
+      + '<span style="flex-shrink:0;color:rgba(240,236,228,0.3);">\u00b7</span>'
+      + '<span style="flex:1;min-width:0;">' + _escHtml(say) + '</span>'
+      + '</div>';
+  });
+  if (tail.length) {
+    out += '<div style="font-size:12.5px;color:rgba(240,236,228,0.55);margin-top:7px;line-height:1.5;white-space:pre-wrap;">'
+      + _escHtml(tail.join('\n')) + '</div>';
+  }
+  return out || ('<div style="font-size:12.5px;color:rgba(240,236,228,0.55);white-space:pre-wrap;">' + _escHtml(desc || '') + '</div>');
+}
+
+// Two identical workouts minutes apart is a double-tap, not two sessions.
+function _woDupes(list) {
+  var seen = {}, dupes = {};
+  (list || []).forEach(function (w) {
+    var k = String(w.date_str || '') + '|' + String(w.title || '') + '|' + String(w.description || '').slice(0, 120);
+    if (seen[k]) dupes[w.id] = seen[k];
+    else seen[k] = w.id;
+  });
+  return dupes;
+}
+
+
+var _WOVERB = {
+  press:'pressing', presses:'pressing',
+  row:'rowing', rows:'rowing',
+  curl:'curling', curls:'curling',
+  raise:'raising', raises:'raising',
+  fly:'flying', flies:'flying', flyes:'flying',
+  shrug:'shrugging', shrugs:'shrugging',
+  extension:'extending', extensions:'extending',
+  squat:'squatting', squats:'squatting',
+  deadlift:'deadlifting', deadlifts:'deadlifting',
+  lunge:'lunging', lunges:'lunging',
+  dip:'dipping', dips:'dipping',
+  pushdown:'pushing down', pushdowns:'pushing down',
+  pulldown:'pulling down', pulldowns:'pulling down',
+  crunch:'crunching', crunches:'crunching',
+  hold:'holding', holds:'holding',
+  carry:'carrying', carries:'carrying',
+  thrust:'thrusting', thrusts:'thrusting',
+  pullover:'pulling over', pullovers:'pulling over',
+  delt:'flying', delts:'flying',   // "rear delts" is a fly
+  kickback:'kicking back', kickbacks:'kicking back',
+  'pull-up':'doing pull-ups', 'pull-ups':'doing pull-ups',
+  'push-up':'doing push-ups', 'push-ups':'doing push-ups',
+  'chin-up':'doing chin-ups', 'chin-ups':'doing chin-ups',
+  'sit-up':'doing sit-ups', 'sit-ups':'doing sit-ups'
+};
+function _woVerb(name){
+  var n = String(name||'').split('/')[0].trim();     // "Pull Downs / Pull Ups" -> the first
+  var w = n.split(/\s+/);
+  var last = w[w.length-1].toLowerCase();
+  var pen  = (w[w.length-2]||'').toLowerCase();
+  // two-word movements: "pull downs", "push ups"
+  if((pen==='pull'||pen==='push') && /^(down|downs|up|ups)$/.test(last)){
+    var key = pen + last.replace(/s$/,'');
+    var v2 = _WOVERB[key] || _WOVERB[pen+'-'+last.replace(/s$/,'')+'s'];
+    if(v2) return (w.slice(0,-2).join(' ') + ' ' + v2).trim().toLowerCase();
+  }
+  var v = _WOVERB[last];
+  if(v) return (w.slice(0,-1).join(' ') + ' ' + v).trim().toLowerCase();
+  return 'doing ' + n.toLowerCase();                  // honest fallback
+}
+
+var _WOBODY = /\b(push[- ]?ups?|pull[- ]?ups?|chin[- ]?ups?|sit[- ]?ups?|dips?|burpees?|air squats?|mountain climbers?|jumping jacks?)\b/i;
+function _woIsBody(name){ return _WOBODY.test(String(name||'')); }
+
+// "35 push-ups", "10, 8 and 8 pull-ups"
+function _woSayBody(ex, name){
+  var reps = ex.sets.map(function(s){ return s.r; }).filter(Boolean);
+  if(!reps.length) return name;
+  var n = String(name||'').toLowerCase().replace(/\s+/g,'-').replace(/-+/g,'-');
+  var same = reps.every(function(r){ return r===reps[0]; });
+  if(same){
+    if(reps.length===1) return reps[0] + ' ' + n;                 // 35 push-ups
+    return reps[0] + ' ' + n + ', ' + (reps.length===2 ? 'twice' : reps.length + ' times');
+  }
+  return reps.slice(0,-1).join(', ') + ' and ' + reps[reps.length-1] + ' ' + n;
 }
 </script>
 </body>
