@@ -2896,7 +2896,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v7.050.0';
+var APP_VERSION = 'v7.051.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -27410,7 +27410,10 @@ var _FOODISH = /\b(eggs?|bar|shake|rice|chicken|beef|steak|turkey|salmon|tuna|to
 
 function _splitFoods(raw){
   var out=[];
-  String(raw||'').split(/[,\n]+/).map(function(s){ return s.trim(); }).filter(Boolean).forEach(function(p){
+  // A comma inside a number is a thousands separator, not a list. Protect it
+  // before splitting, then put it back.
+  var safe = String(raw||'').replace(/(\d),(\d)/g, '$1\u0000$2');
+  safe.split(/[,\n]+/).map(function(s){ return s.replace(/\u0000/g, ',').trim(); }).filter(Boolean).forEach(function(p){
     if(!/ and /i.test(p)){ out.push(p); return; }
     var halves=p.split(/ and /i).map(function(s){ return s.trim(); }).filter(Boolean);
     var ok = halves.length>1 && halves.every(function(hf){
@@ -27815,12 +27818,13 @@ var JIM_DEFAULT_TIMES = {breakfast: '9:00 AM', lunch: '1:00 PM', dinner: '7:00 P
 // Worth the round trip only when there's more than one thing in the sentence.
 function _jimIsComplex(s) {
   var t = String(s || '').toLowerCase();
-  var signals = 0;
-  if (/\b(breakfast|lunch|dinner|snack)\b/.test(t)) signals++;
-  if (/\b(steps?|walked)\b/.test(t)) signals++;
-  if (/\b(push|pull|legs|arms|workout|trained|lifted|gym|ran|run)\b/.test(t)) signals++;
-  if ((t.match(/\b(breakfast|lunch|dinner|snack)\b/g) || []).length > 1) signals++;
-  return signals >= 2 || t.length > 120;
+  // Anything that isn't food goes to the planner on its own. Sending "15,000
+  // steps" down the food path is how it became a 0-calorie lunch.
+  if (/\b(steps?|walked|walking)\b/.test(t)) return true;
+  if (/\b(push|pull|legs|arms|workout|worked out|trained|training|lifted|lifting|gym|ran|run|cardio|pilates|yoga|swim)\b/.test(t)) return true;
+  var meals = (t.match(/\b(breakfast|lunch|dinner|snack)\b/g) || []).length;
+  if (meals > 1) return true;
+  return t.length > 120;
 }
 
 async function _jimPlan(raw) {
@@ -27848,6 +27852,14 @@ async function _jimRun(plan, ds) {
   for (var i = 0; i < plan.length; i++) {
     var a = plan[i] || {};
     try {
+      // A step count is never food, whatever the planner decided. Catch it here
+      // rather than trusting every reply to be well-formed.
+      if (a.type === 'food' && /\b(steps?|walked)\b/i.test(String(a.items || ''))) {
+        var sm = String(a.items).match(/([\d,]{3,})/);
+        var sc = sm ? parseInt(sm[1].replace(/,/g, ''), 10) : 0;
+        if (sc > 0) { a = {type: 'steps', count: sc}; }
+        else { continue; }
+      }
       if (a.type === 'food' && a.items) {
         var meal = String(a.meal || '').toLowerCase();
         var cap = meal ? (meal.charAt(0).toUpperCase() + meal.slice(1)) : '';
