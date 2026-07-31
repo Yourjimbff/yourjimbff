@@ -2951,7 +2951,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v7.090.0';
+var APP_VERSION = 'v7.100.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -15359,8 +15359,21 @@ async function smartLogFromText(q){
         false
       );
     } else {
-      // bare: honest, no invented numbers
+      // No history for it, so estimate. Logging a null was called "honest" but a
+      // food with no numbers is worse than a good guess you can correct — and the
+      // estimator was sitting right there, unused by this path.
       var nmb=_tcase(pr.qty!==1?(pr.qty+' '+pr.name):pr.name);
+      var est=null;
+      try{ est=await _estimateFood(parts[i]); }catch(e){}
+      if(est){
+        var enm=_tcase(est.name||nmb);
+        await _push(
+          {client_code:cl.code,name:enm,emoji:'🍽️',calories:est.calories,protein:est.protein,carbs:est.carbs,fat:est.fat,rating:'good',meal:meal,eat_time:eatTime,graced:false,date_str:logDs},
+          {name:enm,emoji:'🍽️',calories:est.calories,protein:est.protein,carbs:est.carbs,fat:est.fat,rating:'good',insight:'',meal:meal,eat_time:eatTime,eatTime:eatTime,graced:false,photo:null,date_str:logDs,note:''},
+          true
+        );
+        continue;
+      }
       await _push(
         {client_code:cl.code,name:nmb,emoji:'🍽️',calories:null,protein:null,carbs:null,fat:null,rating:'unknown',meal:meal,eat_time:eatTime,graced:false,date_str:logDs},
         {name:nmb,emoji:'🍽️',calories:null,protein:null,carbs:null,fat:null,rating:'unknown',insight:'',meal:meal,eat_time:eatTime,eatTime:eatTime,graced:false,photo:null,date_str:logDs,note:''},
@@ -27867,12 +27880,25 @@ function _jimPaintPhoto(ds) {
   } catch (e) {}
 }
 function jimMic(ds) {
+  var d = ds || '';
   window._jarvisNs = window._jarvisNs || {};
-  window._jarvisNs['jim_'+(ds||'')] = {inp: 'jimIn_' + (ds || ''), mic: '', send: '', thread: ''};
+  window._jarvisNs['jim_' + d] = {inp: 'jimIn_' + d, mic: '', send: '', thread: ''};
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  var el = document.getElementById('jimIn_' + (ds || ''));
+  var el = document.getElementById('jimIn_' + d);
   if (!SR) { if (el) el.focus(); showToast('Use your keyboard\u2019s mic'); return; }
-  try { jarvisVoiceToggle('jim_'+(ds||'')); } catch (e) { if (el) el.focus(); }
+  try { jarvisVoiceToggle('jim_' + d); } catch (e) { if (el) el.focus(); }
+
+  // The recogniser writes straight to .value, which fires no input event — so
+  // the box never grew and the send button never appeared. Watch it instead.
+  if (el && !el._jimWatch) {
+    el._jimWatch = setInterval(function () {
+      if (!document.body.contains(el)) { clearInterval(el._jimWatch); el._jimWatch = null; return; }
+      if (el.value !== el._jimLast) {
+        el._jimLast = el.value;
+        try { jimGrow(el); jimReady(d); } catch (e) {}
+      }
+    }, 250);
+  }
 }
 
 
@@ -28208,6 +28234,24 @@ function _jimJournalAsk(text, ds){
       if(el){ el.value=text; jimGrow(el); jimReady(ds); el.focus(); }
     }catch(e){}
   };
+}
+
+// One estimator, shared. researchAndAdd had this and nothing else could reach it.
+async function _estimateFood(q){
+  var name=String(q||'').trim(); if(!name) return null;
+  var sys='You are a nutrition estimator. For the food and portion the user gives, reply with ONLY a compact JSON object, no markdown, no prose: {"name": string, "calories": number, "protein": number, "carbs": number, "fat": number}. Keep name concise (food + portion). calories in kcal; protein/carbs/fat in grams; for the exact portion described.';
+  try{
+    var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({messages:[{role:'user',content:sys+'\n\nFood: '+name}]})});
+    var data=await res.json(); var txt='';
+    if(data&&data.content) data.content.forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; });
+    txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
+    var o=JSON.parse(txt);
+    var cal=Math.round(+o.calories||0);
+    if(!(cal>0)) return null;                      // a zero estimate is no estimate
+    return {name:o.name||name, calories:cal, protein:Math.round(+o.protein||0),
+            carbs:Math.round(+o.carbs||0), fat:Math.round(+o.fat||0)};
+  }catch(e){ console.error('_estimateFood', e); return null; }
 }
 </script>
 </body>
