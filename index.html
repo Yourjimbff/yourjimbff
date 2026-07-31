@@ -865,6 +865,19 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
 .ownName{font-size:14px!important;font-weight:700!important;}
 .ownName::placeholder{color:rgba(240,236,228,0.30);font-weight:700;}
 .ownEx:focus-within{border-color:rgba(78,169,111,0.42);}
+
+/* Jim: one line above the nav. Fixed, so it's reachable without scrolling. */
+#jimBar{position:fixed;left:0;right:0;bottom:calc(74px + env(safe-area-inset-bottom,0px));z-index:5000;padding:0 12px;pointer-events:none;}
+#jimRow{display:flex;align-items:center;gap:7px;background:#171717;border:1px solid #2f2f2f;border-radius:16px;padding:7px 8px 7px 14px;
+  box-shadow:0 8px 24px rgba(0,0,0,0.45);pointer-events:auto;max-width:640px;margin:0 auto;}
+#jimBar.hasphoto #jimRow{border-color:rgba(245,197,24,0.5);}
+#jimIn{flex:1;min-width:0;background:transparent;border:none;outline:none;font-family:'Plus Jakarta Sans',sans-serif;
+  font-size:15px;color:#f0ece4;padding:7px 0;}
+#jimIn::placeholder{color:rgba(240,236,228,0.34);}
+.jimIcon{flex-shrink:0;background:#202020;border:1px solid #333;border-radius:11px;width:38px;height:38px;
+  display:flex;align-items:center;justify-content:center;font-size:15px;cursor:pointer;padding:0;}
+.jimIcon:active{background:#282828;}
+@media (min-width:1024px){ #jimBar{display:none;} }
 </style>
 </head>
 <body>
@@ -916,6 +929,8 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
 </div>
 
   <!-- DEEP DIVE slide-over (body-level so it works on mobile too, not just the desktop cockpit) -->
+  <div id="jimHost"></div>
+
   <div id="jvDeep">
     <div id="jvDeepInner"></div>
   </div>
@@ -2864,7 +2879,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v6.940.0';
+var APP_VERSION = 'v6.950.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -10069,6 +10084,11 @@ async function renderDayTimeline(soft){
   body.innerHTML=html;
   _tlBindTaps();
   try{ _tlWatchToday(); }catch(e){}
+  // Jim only belongs on the day view, and only on my own account for now.
+  try{
+    var jh=document.getElementById('jimHost');
+    if(jh) jh.innerHTML = (typeof jimBarHtml==='function') ? jimBarHtml() : '';
+  }catch(e){}
   try{ _wdBind(); }catch(e){}
 
   function _tlLand(){
@@ -13552,6 +13572,11 @@ function tlScrollToToday(smooth){
   }catch(e){}
 }
 function switchTab(t){
+  // Jim is a day-view tool. Anywhere else it's just covering content.
+  try{
+    var _jh=document.getElementById('jimHost');
+    if(_jh) _jh.innerHTML = (t==='feed' && typeof jimBarHtml==='function') ? jimBarHtml() : '';
+  }catch(e){}
   try{ var _tb=document.getElementById('tlTodayBtn'); if(_tb) _tb.classList.remove('on'); }catch(e){}
   var _wasFeed = !!(document.getElementById('tFeed') && document.getElementById('tFeed').classList.contains('active'));
   // Stop mic if leaving the Ask tab
@@ -27598,6 +27623,111 @@ async function cnRenderMine() {
     +   '<div style="font-size:11px;font-weight:800;letter-spacing:1px;color:var(--gold);margin-bottom:10px;">NOTES FROM YUSUF</div>'
     +   notes.slice(0, 6).map(_cnCardHtml).join('')
     + '</div></div>';
+}
+
+
+// ===== JIM · QUICK LOG =================================================
+// One line above the nav. Say what you ate, in a sentence, with the time and
+// the meal in it if you like. It files it and the card appears in your day.
+// Trainer only for now.
+
+function _jimAllowed() {
+  try { return !!(cl && typeof isTrainer === 'function' && isTrainer(cl.code)); }
+  catch (e) { return false; }
+}
+
+// Pull the meal and the time out of the sentence, hand the rest to the logger.
+function _jimParse(raw) {
+  var s = String(raw || '').trim();
+  var meal = null, mins = null;
+
+  var mm = s.match(/\b(breakfast|lunch|dinner|snack)\b/i);
+  if (mm) { meal = mm[1].toLowerCase(); s = s.replace(mm[0], ' '); }
+
+  // "at 11:30", "at 7pm", "11:30am" — the "at" is optional
+  var tm = s.match(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i)
+        || s.match(/\bat\s+(\d{1,2})(?::(\d{2}))?\b/i);
+  if (tm) {
+    var hh = parseInt(tm[1], 10), mi = parseInt(tm[2] || '0', 10);
+    var ap = (tm[3] || '').toLowerCase();
+    if (ap === 'pm' && hh < 12) hh += 12;
+    if (ap === 'am' && hh === 12) hh = 0;
+    if (!ap && hh <= 7) hh += 12;              // "at 6" in a food log means the evening
+    if (hh < 24 && mi < 60) { mins = hh * 60 + mi; s = s.replace(tm[0], ' '); }
+  }
+
+  s = s.replace(/^\s*(i\s+)?(had|ate|having|just had|for)\s+/i, '')
+       .replace(/\bfor\s*$/i, '')
+       .replace(/\s{2,}/g, ' ')
+       .replace(/^[\s,\-]+|[\s,\-]+$/g, '');
+
+  return {text: s, meal: meal, mins: mins};
+}
+
+function _jimClock(mins) {
+  var hh = Math.floor(mins / 60), mi = mins % 60;
+  var h12 = hh % 12; if (h12 === 0) h12 = 12;
+  return h12 + ':' + String(mi).padStart(2, '0') + ' ' + (hh < 12 ? 'AM' : 'PM');
+}
+
+function jimBarHtml() {
+  if (!_jimAllowed()) return '';
+  return '<div id="jimBar">'
+    + '<div id="jimRow">'
+    +   '<input id="jimIn" type="text" autocomplete="off" placeholder="What did you eat?" '
+    +     'onkeydown="if(event.key===\'Enter\'){event.preventDefault();jimSend();}">'
+    +   '<button onclick="jimPhoto()" title="Photo" class="jimIcon">\ud83d\udcf7</button>'
+    +   '<button onclick="jimMic()" title="Say it" class="jimIcon">' + _MICSVG + '</button>'
+    + '</div>'
+    + '<input type="file" id="jimFile" accept="image/*" style="display:none;" onchange="jimPhotoPicked(this)">'
+    + '</div>';
+}
+
+async function jimSend() {
+  var el = document.getElementById('jimIn');
+  var raw = el ? String(el.value || '').trim() : '';
+  if (!raw && !window._jimPhoto) { if (el) el.focus(); return; }
+
+  var p = _jimParse(raw);
+  // hand the parsed meal and time to the logger the sheet already uses
+  if (p.meal) window._mealSlot = p.meal.charAt(0).toUpperCase() + p.meal.slice(1);
+  var tf = document.getElementById('foodTime');
+  if (tf) tf.value = (p.mins != null) ? _jimClock(p.mins) : '';
+  if (window._jimPhoto) { try { photoData = window._jimPhoto; } catch (e) {} }
+
+  if (el) { el.value = ''; el.blur(); }
+  var said = (p.mins != null ? (' at ' + _jimClock(p.mins)) : '') + (p.meal ? (' \u00b7 ' + p.meal) : '');
+  try {
+    smartLogFromText(p.text || 'Meal');
+    if (said) showToast('Logged' + said);
+  } catch (e) { showToast("Couldn't log that"); }
+  window._jimPhoto = null;
+  _jimPaintPhoto();
+}
+
+function jimPhoto() { var f = document.getElementById('jimFile'); if (f) f.click(); }
+function jimPhotoPicked(input) {
+  if (!input.files || !input.files[0]) return;
+  var r = new FileReader();
+  r.onload = function (e) {
+    downscaleImage(e.target.result, 1440, 0.82).then(function (c) {
+      window._jimPhoto = c; _jimPaintPhoto();
+      var el = document.getElementById('jimIn'); if (el) el.focus();
+    });
+  };
+  r.readAsDataURL(input.files[0]);
+}
+function _jimPaintPhoto() {
+  var bar = document.getElementById('jimBar'); if (!bar) return;
+  bar.classList.toggle('hasphoto', !!window._jimPhoto);
+}
+function jimMic() {
+  window._jarvisNs = window._jarvisNs || {};
+  window._jarvisNs.jim = {inp: 'jimIn', mic: '', send: '', thread: ''};
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var el = document.getElementById('jimIn');
+  if (!SR) { if (el) el.focus(); showToast('Use your keyboard\u2019s mic'); return; }
+  try { jarvisVoiceToggle('jim'); } catch (e) { if (el) el.focus(); }
 }
 
 </script>
