@@ -2863,7 +2863,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v6.880.0';
+var APP_VERSION = 'v6.900.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -15072,21 +15072,6 @@ async function plateSaveFood(i){
 var _foodAddT=null;
 function onFoodAddInput(){ try{ _plateLogBtnLabel(); }catch(e){} if(_foodAddT) clearTimeout(_foodAddT); _foodAddT=setTimeout(renderFoodSuggest, 140); }
 // "4 eggs, 2 handfuls potatoes" -> look up each piece and add them all.
-async function addFoodsFromText(q){
-  var parts=String(q||'').split(/,| and /i).map(function(s){ return s.trim(); }).filter(Boolean);
-  if(!parts.length) return;
-  for(var i=0;i<parts.length;i++){
-    var p=parts[i];
-    // exact match in the library first — no lookup needed
-    // Exact string equality meant "nutrition solutions protein bar" never matched
-    // the saved "Nutrition Solutions Protein Bar, 1 bar". Score it instead.
-    var hit=_bestSavedFood(p);
-    if(hit){ plateAdd({name:hit.name,calories:hit.calories,protein:hit.protein,carbs:hit.carbs,fat:hit.fat}); continue; }
-    try{ await researchAndAdd(p); }catch(e){}
-  }
-  var el=document.getElementById('foodAdd'); if(el) el.value='';
-  var sg=document.getElementById('foodSuggest'); if(sg) sg.style.display='none';
-}
 function onFoodAddKey(e){ if(e && (e.key==='Enter'||e.keyCode===13)){ e.preventDefault(); var q=((document.getElementById('foodAdd')||{}).value||'').trim(); if(q){ try{ var sg=document.getElementById('foodSuggest'); if(sg) sg.style.display='none'; }catch(_){}; onLogMeal(); } } }
 function renderFoodSuggest(){
   var box=document.getElementById('foodSuggest'); if(!box) return;
@@ -15198,7 +15183,10 @@ async function smartLogFromText(q){
   var _photo=(typeof photoData!=='undefined')?(photoData||null):null;
   var raw=String(q||'').trim();
   var mm=_parseInlineMacros(raw);
-  var parts = mm.hasMacro ? [] : raw.split(/[,\n]+/).map(function(s){ return s.trim(); }).filter(Boolean);
+  var parts = mm.hasMacro ? [] : _splitFoods(raw);
+  // Their sentence IS the meal. The split parts are its breakdown, so hold on to
+  // the original — it used to be discarded the moment we split it.
+  window._mealTitleText = (parts.length > 1) ? raw : '';
   if(!mm.hasMacro && !parts.length){ if(_photo){ parts=['Meal']; } else { showToast('Write what you ate'); return; } }
   var meal=(window._mealSlot||((typeof _mealSlotNow==='function')?_mealSlotNow():'Meal'));
   var eatTime=(function(){ var _t=document.getElementById('foodTime'); var v=_t?String(_t.value||'').trim():''; return v||new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}); })();
@@ -15206,6 +15194,11 @@ async function smartLogFromText(q){
   var btn=document.getElementById('plateLogBtn'); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; }
   var loggedNames=[], _usedPhoto=false;
   async function _push(row, entry, remember){
+    // stamp the whole-meal sentence on every row of the meal, so the card can
+    // title itself no matter which row it reads first
+    try{
+      if(window._mealTitleText){ row.meal_text=window._mealTitleText; entry.meal_text=window._mealTitleText; }
+    }catch(e){}
     var ph=(!_usedPhoto)?_photo:null; if(ph){ row.photo=ph; entry.photo=ph; _usedPhoto=true; }
     try{ var _ins=await insertFoodLog(row, ph); if(_ins && _ins.id!=null) entry.id=_ins.id; }catch(e){}
     try{ allFood.push(entry); todayFood.push(entry); }catch(e){}
@@ -25428,6 +25421,12 @@ function _tlMealCard(key, label, items, ds){
       +'<div style="display:flex;align-items:flex-start;">'
         +'<div style="flex:1;min-width:0;">'
           +'<div style="font-size:12.5px;font-weight:800;color:'+accent+';letter-spacing:1px;text-transform:uppercase;display:flex;align-items:center;">'+_tlIcon(key)+_escHtml(label)+'</div>'
+          + (function(){
+              // If they wrote a sentence, that's the meal. Give it the headline
+              // and let the parsed foods be the breakdown underneath.
+              var t=''; rows.forEach(function(r){ if(!t && r.meal_text) t=r.meal_text; });
+              return t ? ('<div style="font-size:15px;font-weight:700;color:#f0ece4;margin-top:5px;line-height:1.35;">'+_escHtml(t)+'</div>') : '';
+            })()
           +'<div style="font-size:12px;color:rgba(240,236,228,0.55);margin-top:4px;">'
             +(clock?(clock+' \u00b7 '):'')+rows.length+' items \u00b7 '+Math.round(tot.cal)+' cal</div>'
         +'</div>'
@@ -26611,7 +26610,11 @@ var CARDIO_MINS = [20, 30, 40, 60];
 
 function _finList(day) {
   var d = _tpPlan[day]; if (!d) return [];
-  if (!d.fin) d.fin = [];
+  if (!Array.isArray(d.fin)) {
+    var cached = null;
+    try { cached = _finStore()[day]; } catch (e) {}
+    d.fin = Array.isArray(cached) ? cached : [];
+  }
   return d.fin;
 }
 
@@ -26654,7 +26657,35 @@ function _finLines(day) {
 }
 
 // the whole _tpPlan object is serialised on save, so fin rides along for free
-function _tpFinSave(){ try{ if(typeof saveTrainingPlan==='function') saveTrainingPlan(); }catch(e){} }
+// Every tap used to POST the whole program and toast the result. A failure lost
+// the selections, because they only lived in memory. Now localStorage takes them
+// instantly — that can't fail — and the server catches up quietly.
+function _finKey(){ try{ return 'finplan_'+((cl&&cl.code)||'me'); }catch(e){ return 'finplan_me'; } }
+function _finStore(){
+  try{ return JSON.parse(localStorage.getItem(_finKey())||'{}'); }catch(e){ return {}; }
+}
+function _tpFinSave(){
+  try{
+    var all=_finStore();
+    Object.keys(_tpPlan||{}).forEach(function(d){
+      if(_tpPlan[d] && Array.isArray(_tpPlan[d].fin)) all[d]=_tpPlan[d].fin;
+    });
+    localStorage.setItem(_finKey(), JSON.stringify(all));
+  }catch(e){}
+  clearTimeout(window._finSyncT);
+  window._finSyncT=setTimeout(function(){
+    try{ if(typeof _saveTrainingPlanQuiet==='function') _saveTrainingPlanQuiet(); }catch(e){}
+  }, 2500);
+}
+// same write as saveTrainingPlan, without the toast on every keystroke
+async function _saveTrainingPlanQuiet(){
+  if(!cl) return;
+  try{
+    await fetch(SB_URL+'/rest/v1/training_plans',{method:'POST',
+      headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'}),
+      body:JSON.stringify({client_code:cl.code,name:_tpName,weeks:_tpWeeks,plan:_tpPlan,updated_at:new Date().toISOString()})});
+  }catch(e){}
+}
 
 
 // The finishers block renders in two places — the program builder and the
@@ -27166,7 +27197,8 @@ function woRowRemove(ds, k){
 // you're doing. Two categories at a time — a finisher is a finisher, not a
 // second workout.
 
-var FIN_MAX = 2;
+var FIN_MAX = 2;      // categories
+var FIN_MAX_EX = 4;   // exercises in total
 window._finOpen = window._finOpen || {};
 
 function _finCats(day) {
@@ -27186,7 +27218,9 @@ function _tpFinBlock(day, ds) {
   var h = '<div style="margin-top:14px;padding-top:13px;border-top:1px solid #272727;">'
     + '<div style="font-size:11px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:#f0ece4;margin-bottom:2px;">Select a finisher</div>'
     + '<div style="font-size:11px;color:rgba(240,236,228,0.44);">'
-    + (full ? 'Two is the limit \u2014 tap a lit one to swap it out.' : 'Pick a body part, then what you did. Up to two.')
+    + (list.length
+        ? (list.length + ' of ' + FIN_MAX_EX + ' \u00b7 ' + (full ? 'tap a lit area to swap it' : 'one more area if you want it'))
+        : 'Pick an area, then what you did. Two areas, four moves.')
     + '</div>';
 
   // ---- the pills, always in the same place ----
@@ -27271,7 +27305,8 @@ function tpFinPick(day, k) {
     showToast('Cleared ' + f.label);
     return;
   }
-  if (_finCats(day).length >= FIN_MAX) { showToast('Two finishers is the limit'); return; }
+  if (_finCats(day).length >= FIN_MAX) { showToast('Two areas is the limit'); return; }
+  // opening another area closes this one — what you picked is already saved
   window._finOpen[day] = (window._finOpen[day] === k) ? null : k;
   _finRepaint();
 }
@@ -27288,12 +27323,35 @@ function tpFinAdd(day, cat, xi) {
     return;
   }
   if (_finCats(day).indexOf(cat) < 0 && _finCats(day).length >= FIN_MAX) {
-    showToast('Two finishers is the limit'); return;
+    showToast('Two areas is the limit'); return;
   }
+  if (list.length >= FIN_MAX_EX) { showToast('Four finishers is plenty'); return; }
   list.push({cat: cat, ex: name, done: false, min: (cat === 'cardio' ? 30 : null)});
   _tpFinSave(); _finRepaint();
+  if (list.length >= FIN_MAX_EX) window._finOpen[day] = null;   // done choosing
+  _finRepaint();
 }
 
+
+// "eggs and a protein bar" is two foods. "chicken and rice" arguably is too.
+// "peanut butter and jelly" is not. Commas always split; "and" only splits when
+// both halves look like something you'd log on their own.
+var _FOODISH = /\b(eggs?|bar|shake|rice|chicken|beef|steak|turkey|salmon|tuna|toast|bread|coffee|yogurt|oats|oatmeal|banana|apple|berries|potato(es)?|salad|protein|waffles?|pancakes?|cheese|milk|almonds?|avocado|beans|pasta|wrap|bagel|smoothie)\b/i;
+
+function _splitFoods(raw){
+  var out=[];
+  String(raw||'').split(/[,\n]+/).map(function(s){ return s.trim(); }).filter(Boolean).forEach(function(p){
+    if(!/ and /i.test(p)){ out.push(p); return; }
+    var halves=p.split(/ and /i).map(function(s){ return s.trim(); }).filter(Boolean);
+    var ok = halves.length>1 && halves.every(function(hf){
+      if(hf.length<3) return false;
+      try{ if(typeof _bestSavedFood==='function' && _bestSavedFood(hf)) return true; }catch(e){}
+      return _FOODISH.test(hf);
+    });
+    if(ok) out=out.concat(halves); else out.push(p);
+  });
+  return out;
+}
 </script>
 </body>
 </html>
