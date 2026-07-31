@@ -1029,6 +1029,7 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
     </div>
     <div class="phero" id="profHero"></div>
     <div id="pgCards"><div id="pgWeightCard"></div><div id="pgPhotoCard"></div></div>
+    <div id="cnMine"></div>
 
     <!-- WEIGHT -->
     <div class="tile" id="tileWeight">
@@ -2863,7 +2864,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v6.921.0';
+var APP_VERSION = 'v6.940.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -9134,6 +9135,7 @@ function jvOpenDeep(code){
     + '<div onclick="jvCloseDeep()" style="flex-shrink:0;font-size:26px;line-height:1;color:rgba(240,236,228,0.5);cursor:pointer;padding:0 6px;">\u00d7</div>'
     + '</div>'
     + '<div data-contract>' + _jvContractStrip(code) + '</div>'
+    + '<div id="cnHost_'+code+'"></div>'
     + '<div style="display:flex;gap:7px;margin:12px 0 16px;">'
     +   '<button onclick="textClient(\'CODE\')" style="flex:1.4;background:var(--gold);border:none;border-radius:10px;padding:11px 6px;font-weight:800;font-size:13px;color:var(--onaccent);cursor:pointer;font-family:inherit;">Text</button>'
     +   '<button id="jvDeepCaughtBtn" onclick="jvDeepToggleCaught(\'CODE\')" style="flex:1;border-radius:10px;padding:11px 6px;font-weight:800;font-size:12.5px;cursor:pointer;font-family:inherit;'+( (jvHandledMap()[code]===_jvTodayKey()) ? 'background:rgba(245,197,24,0.14);border:1px solid #f5c518;color:#f5c518;' : 'background:#1b1b1b;border:1px solid #2d2d2d;color:#f0ece4;' )+'">\u2713 Caught up</button>'
@@ -9147,7 +9149,9 @@ function jvOpenDeep(code){
     + '<div id="jvDeepDays"><div style="color:rgba(240,236,228,0.55);font-size:13px;padding:10px 0;">Loading recent history\u2026</div></div>'
     + '<div id="jvDeepPhotos"></div>';
   document.body.classList.add('jv-deep-open');
-  window._jvDeepCode=code; window._jvDeepOpenAt=Date.now(); window._jvDeepMode=jvMode;
+  window._jvDeepCode=code; window._jvDeepOpenAt=Date.now();
+  // notes load in the background and paint themselves in
+  try{ cnLoad(code).then(function(){ _cnRepaint(code); }); }catch(e){} window._jvDeepMode=jvMode;
   _jvDeepSummary(code);
   _jvDeepHistory(code);
   _jvLoadDeepProgram(code);
@@ -15188,7 +15192,7 @@ async function smartLogFromText(q){
   if(!mm.hasMacro && !parts.length){ if(_photo){ parts=['Meal']; } else { showToast('Write what you ate'); return; } }
   var meal=(window._mealSlot||((typeof _mealSlotNow==='function')?_mealSlotNow():'Meal'));
   var eatTime=(function(){ var _t=document.getElementById('foodTime'); var v=_t?String(_t.value||'').trim():''; return v||new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}); })();
-  var logDs=(window._mealLogDs||_tlDateStr(new Date()));
+  var logDs=(window._mealLogDs||_logDayStr());
   var btn=document.getElementById('plateLogBtn'); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; }
   var loggedNames=[], _usedPhoto=false;
   async function _push(row, entry, remember){
@@ -20355,6 +20359,7 @@ async function renderWeightJourney(){
     weights = (weights||[]).slice().sort(function(a,b){ return new Date(a.logged_at) - new Date(b.logged_at); });
     window._wtAll = weights;
     try{ renderProfileSubs(); }catch(e){}
+    try{ cnRenderMine(); }catch(e){}
     syncWeightUnitUI();
     _renderWeighList(weights);
     try{ renderProgressCards(); }catch(e){}
@@ -25046,7 +25051,7 @@ function mlSave(){
   var tmP=_parseClock(tmRaw);
   // store it in one canonical shape so the row sorts and reads the same as it was typed
   var tm = tmP ? _tlClock(tmP.h*60+tmP.m) : _tlNowClock();
-  var ds=window._mlDs||todayDateStr;
+  var ds=window._mlDs||_logDayStr();
   var iso=_timeToISO(tm, ds);
   var tag=window._mlTag||'Dinner';
 
@@ -27388,6 +27393,7 @@ function _mealSlotFor(f){
   if(ml.indexOf('dinner')>=0) return 'dinner';
   var m=0;
   try{ m=_tlMins(f)||0; }catch(e){}
+  if(m < DAY_ROLLOVER_HR*60) return 'dinner';   // 1am is last night's dinner
   if(m<11*60) return 'breakfast';
   if(m<16*60) return 'lunch';
   return 'dinner';
@@ -27470,6 +27476,128 @@ function _vipWhat(it) {
     if (it.kind === 'journal') return 'journal';
   } catch (e) {}
   return 'logged';
+}
+
+
+// A day ends when you go to bed, not at midnight. Someone finishing dinner at
+// 12:30am is closing out yesterday — filing it under tomorrow makes their day
+// look empty and the next one look like a binge.
+var DAY_ROLLOVER_HR = 3;
+
+function _logDayStr(d){
+  var t = d ? new Date(d) : new Date();
+  if(t.getHours() < DAY_ROLLOVER_HR) t.setDate(t.getDate() - 1);
+  try{ return _tlDateStr(t); }catch(e){
+    return t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0')+'-'+String(t.getDate()).padStart(2,'0');
+  }
+}
+
+// ===== COACHING NOTES ==================================================
+// You write, they read. No tags, no categories, no workflow. It's the thing
+// that beats a text when you want to leave an observation rather than start a
+// conversation.
+
+window._cnCache = window._cnCache || {};
+
+async function cnLoad(code) {
+  try {
+    var rows = await sbSelect('coach_notes',
+      'client_code=eq.' + encodeURIComponent(code) + '&order=created_at.desc&limit=50');
+    window._cnCache[code] = rows || [];
+    return window._cnCache[code];
+  } catch (e) { return window._cnCache[code] || []; }
+}
+
+function _cnWhen(iso) {
+  try {
+    var d = new Date(iso), now = new Date();
+    var days = Math.floor((now - d) / 86400000);
+    if (days === 0) return 'today';
+    if (days === 1) return 'yesterday';
+    if (days < 7) return days + ' days ago';
+    return d.toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
+  } catch (e) { return ''; }
+}
+
+// ---- trainer: on a client's page ----
+function cnSectionHtml(code) {
+  var notes = window._cnCache[code] || [];
+  return '<div style="margin-top:18px;padding-top:15px;border-top:1px solid #272727;">'
+    + '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:9px;">'
+    +   '<span style="font-size:11px;font-weight:800;letter-spacing:1px;color:var(--gold);">NOTES</span>'
+    +   (notes.length ? ('<span style="font-size:11px;color:rgba(240,236,228,0.4);">' + notes.length + '</span>') : '')
+    + '</div>'
+    + '<textarea id="cnBox_' + code + '" placeholder="What you\u2019re seeing, and what changes next\u2026" '
+    +   'style="width:100%;box-sizing:border-box;min-height:74px;background:#1b1b1b;border:1px solid #2d2d2d;border-radius:10px;padding:12px;color:#f0ece4;font-size:14px;line-height:1.5;font-family:inherit;outline:none;resize:vertical;"></textarea>'
+    + '<button onclick="cnPost(\'' + code + '\')" style="width:100%;margin-top:7px;background:var(--gold);color:var(--onaccent);border:none;border-radius:10px;padding:12px;font-family:inherit;font-size:13.5px;font-weight:800;cursor:pointer;">Leave the note</button>'
+    + (notes.length ? ('<div style="margin-top:13px;">' + notes.map(_cnCardHtml).join('') + '</div>') : '')
+    + '</div>';
+}
+
+function _cnCardHtml(n, i) {
+  var fresh = (i === 0);
+  return '<div style="background:' + (fresh ? '#1a1a1a' : '#161616') + ';border:1px solid ' + (fresh ? '#2a2a2a' : '#262626')
+    + ';border-left:3px solid ' + (fresh ? 'var(--gold)' : 'rgba(245,197,24,0.35)') + ';border-radius:9px;padding:11px 12px;margin-bottom:6px;">'
+    + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">'
+    +   '<span style="font-size:11px;color:rgba(240,236,228,0.4);">' + _cnWhen(n.created_at) + '</span>'
+    +   '<span onclick="cnDelete(' + (n.id || 0) + ',\'' + n.client_code + '\')" style="font-size:15px;color:rgba(240,236,228,0.28);cursor:pointer;line-height:1;">\u00d7</span>'
+    + '</div>'
+    + '<div style="font-size:' + (fresh ? '13.5' : '13') + 'px;color:' + (fresh ? '#f0ece4' : 'rgba(240,236,228,0.65)')
+    +   ';line-height:1.55;margin-top:5px;white-space:pre-wrap;">' + _escHtml(n.body || '') + '</div>'
+    + '</div>';
+}
+
+async function cnPost(code) {
+  var el = document.getElementById('cnBox_' + code);
+  var body = el ? String(el.value || '').trim() : '';
+  if (!body) { showToast('Write the note first'); return; }
+  var row = {client_code: code, coach_code: (cl && cl.code) || null, body: body,
+             created_at: new Date().toISOString()};
+  // show it straight away; the write catches up
+  (window._cnCache[code] = window._cnCache[code] || []).unshift(row);
+  if (el) el.value = '';
+  _cnRepaint(code);
+  try {
+    var res = await fetch(SB_URL + '/rest/v1/coach_notes', {
+      method: 'POST', headers: Object.assign({}, sbHeaders(), {'Prefer': 'return=representation'}),
+      body: JSON.stringify(row)
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var back = await res.json();
+    if (back && back[0] && back[0].id) window._cnCache[code][0].id = back[0].id;
+    showToast('Note left for ' + ((CLIENTS[code] || {}).name || code).split(' ')[0]);
+  } catch (e) {
+    console.error('cnPost', e);
+    showToast("Couldn't save the note \u2014 check the coach_notes table exists");
+  }
+}
+
+async function cnDelete(id, code) {
+  if (!id) return;
+  window._cnCache[code] = (window._cnCache[code] || []).filter(function (n) { return n.id !== id; });
+  _cnRepaint(code);
+  try {
+    await fetch(SB_URL + '/rest/v1/coach_notes?id=eq.' + id, {method: 'DELETE', headers: sbHeaders()});
+  } catch (e) {}
+}
+
+function _cnRepaint(code) {
+  var host = document.getElementById('cnHost_' + code);
+  if (host) { host.innerHTML = cnSectionHtml(code); return; }
+  try { if (window._jvDeepCode === code) jvOpenDeep(code); } catch (e) {}
+}
+
+// ---- client: reading their own ----
+async function cnRenderMine() {
+  var host = document.getElementById('cnMine');
+  if (!host || !cl) return;
+  var notes = await cnLoad(cl.code);
+  if (!notes.length) { host.innerHTML = ''; return; }
+  host.innerHTML = '<div class="tile" style="margin-bottom:12px;">'
+    + '<div style="padding:14px 15px;">'
+    +   '<div style="font-size:11px;font-weight:800;letter-spacing:1px;color:var(--gold);margin-bottom:10px;">NOTES FROM YUSUF</div>'
+    +   notes.slice(0, 6).map(_cnCardHtml).join('')
+    + '</div></div>';
 }
 
 </script>
