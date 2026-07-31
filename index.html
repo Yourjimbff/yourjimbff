@@ -2896,7 +2896,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v7.041.0';
+var APP_VERSION = 'v7.050.0';
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -27692,7 +27692,7 @@ function jimBarHtml(ds) {
   var d = ds || '';
   return '<div class="jimBar" data-ds="' + d + '">'
     + '<div class="jimRow">'
-    +   '<input class="jimIn" id="jimIn_' + d + '" type="text" autocomplete="off" placeholder="Tell me your day \u2014 meals, steps, your workout…" '
+    +   '<input class="jimIn" id="jimIn_' + d + '" type="text" autocomplete="off" placeholder="' + _jimAsk(d) + '" '
     +     'onclick="event.stopPropagation()" oninput="jimReady(\'' + d + '\')" '
     +     'onkeydown="if(event.key===\'Enter\'){event.preventDefault();jimSend(\'' + d + '\');}">'
     +   '<button onclick="event.stopPropagation();jimSend(\'' + d + '\')" title="Log it" class="jimSend">\u2191</button>'
@@ -27739,12 +27739,54 @@ function jimPhotoPicked(input, ds) {
   if (!input.files || !input.files[0]) return;
   var r = new FileReader();
   r.onload = function (e) {
-    downscaleImage(e.target.result, 1440, 0.82).then(function (c) {
+    downscaleImage(e.target.result, 1440, 0.85).then(function (c) {
       window._jimPhoto = c; _jimPaintPhoto(ds);
-      var el = document.getElementById('jimIn_' + (ds || '')); if (el) el.focus();
+      // A photo of a plate is proof. A screenshot of another app is data — offer
+      // to read it, because retyping numbers off a screen is the worst job here.
+      _jimShotAsk(c, ds);
     });
   };
   r.readAsDataURL(input.files[0]);
+}
+
+// Screenshots are tall and narrow or full-screen; a plate photo rarely is.
+// Cheap guess, and we ask rather than assume.
+function _jimShotAsk(dataUrl, ds){
+  var img = new Image();
+  img.onload = function(){
+    var ratio = img.height / img.width;
+    var looksLikeAShot = (ratio > 1.6);
+    var el = document.getElementById('jimIn_' + (ds || ''));
+    if (!looksLikeAShot) { if (el) el.focus(); return; }
+    _jimShotPrompt(dataUrl, ds);
+  };
+  img.onerror = function(){ var el=document.getElementById('jimIn_'+(ds||'')); if(el) el.focus(); };
+  img.src = dataUrl;
+}
+
+function _jimShotPrompt(dataUrl, ds){
+  var w = document.createElement('div');
+  w.style.cssText = 'position:fixed;inset:0;z-index:9000;display:flex;align-items:flex-end;'
+    + 'justify-content:center;background:rgba(8,8,8,0.7);-webkit-backdrop-filter:blur(5px);backdrop-filter:blur(5px);';
+  w.innerHTML = '<div style="width:100%;max-width:520px;background:#161616;border-top:1px solid #2a2a2a;'
+    + 'border-radius:20px 20px 0 0;padding:20px 18px 28px;font-family:\'Plus Jakarta Sans\',sans-serif;">'
+    + '<div style="font-size:17px;font-weight:800;color:#f0ece4;">Read this screenshot?</div>'
+    + '<div style="font-size:13px;color:rgba(240,236,228,0.5);margin-top:5px;line-height:1.5;">'
+    + 'I can pull the food, workout or steps out of it and log them for you.</div>'
+    + '<button id="jsY" style="width:100%;margin-top:16px;background:var(--gold);color:var(--onaccent);border:none;'
+    + 'border-radius:11px;padding:13px;font-family:inherit;font-size:14px;font-weight:800;cursor:pointer;">Read it</button>'
+    + '<button id="jsN" style="width:100%;margin-top:8px;background:transparent;color:rgba(240,236,228,0.6);'
+    + 'border:1px solid #2d2d2d;border-radius:11px;padding:13px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;">'
+    + 'Just attach it</button></div>';
+  document.body.appendChild(w);
+  w.querySelector('#jsY').onclick = function(){
+    w.remove(); window._jimPhoto = null; _jimPaintPhoto(ds);
+    jimReadShot(dataUrl, ds);
+  };
+  w.querySelector('#jsN').onclick = function(){
+    w.remove();
+    var el = document.getElementById('jimIn_' + (ds || '')); if (el) el.focus();
+  };
 }
 function _jimPaintPhoto(ds) {
   try {
@@ -27941,6 +27983,72 @@ function jimReady(ds){
     if(bar) bar.classList.toggle('ready', !!(el && String(el.value||'').trim()));
   }catch(e){}
 }
+
+// ===== JIM: WHAT IT ASKS, AND READING SCREENSHOTS ======================
+
+// The bar should ask for the thing you're most likely about to log. Time of day
+// gets it right most of the time; what's already logged gets it right the rest.
+function _jimAsk(ds) {
+  var m = 0;
+  try { var n = new Date(); m = n.getHours() * 60 + n.getMinutes(); } catch (e) {}
+  var done = {};
+  try {
+    var day = (window._tlCache && window._tlCache.foods) || [];
+    day.forEach(function (f) {
+      if (String(f.date_str || '') === ds) done[_mealSlotFor(f)] = 1;
+    });
+    ((window._tlCache && window._tlCache.workouts) || []).forEach(function (w) {
+      if (String(w.date_str || '') !== ds) return;
+      if (/walk/i.test(String(w.title || ''))) done.walk = 1; else done.workout = 1;
+    });
+  } catch (e) {}
+
+  if (m < 9 * 60 && !done.walk) return "Morning walk?";
+  if (m < 11 * 60 && !done.breakfast) return "What's for breakfast?";
+  if (m < 16 * 60 && !done.lunch) return "Lunch?";
+  if (m >= 15 * 60 && m < 20 * 60 && !done.workout) return "Workout?";
+  if (m < 21 * 60 && !done.dinner) return "Dinner?";
+  return "Anything else today?";
+}
+
+// ---- reading a screenshot from another app ----
+async function jimReadShot(dataUrl, ds) {
+  showToast('Reading that\u2026');
+  var sys = 'You are reading a screenshot from a fitness or nutrition app. Reply with ONLY a compact JSON array, '
+    + 'no markdown, no prose. Each element is one of:\n'
+    + '{"type":"food","meal":"breakfast|lunch|dinner|snack","items":"food name","calories":number,"protein":number,"carbs":number,"fat":number}\n'
+    + '{"type":"workout","title":"name","detail":"exercises or duration"}\n'
+    + '{"type":"steps","count":number}\n'
+    + 'Read only what the image actually shows. If you cannot read it, reply [].';
+  try {
+    var m = String(dataUrl).match(/^data:(image\/[a-z]+);base64,(.+)$/i);
+    if (!m) throw new Error('not an image');
+    var res = await fetch('/.netlify/functions/analyze', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({messages: [{role: 'user', content: [
+        {type: 'image', source: {type: 'base64', media_type: m[1], data: m[2]}},
+        {type: 'text', text: sys}
+      ]}]})
+    });
+    var data = await res.json(), txt = '';
+    if (data && data.content) data.content.forEach(function (b) { if (b && b.type === 'text' && b.text) txt += b.text; });
+    txt = (txt || '').replace(/```json/gi, '').replace(/```/g, '').trim();
+    var plan = JSON.parse(txt);
+    if (!Array.isArray(plan) || !plan.length) {
+      showToast("Couldn't read that one \u2014 type it instead");
+      return false;
+    }
+    var did = await _jimRun(plan, ds);
+    try { window._tlCache = null; await renderDayTimeline(true); } catch (e) {}
+    showToast(did.length ? ('Logged ' + did.join(' \u00b7 ')) : "Nothing I could log in that");
+    return true;
+  } catch (e) {
+    console.error('jimReadShot', e);
+    showToast("Couldn't read that one \u2014 type it instead");
+    return false;
+  }
+}
+
 </script>
 </body>
 </html>
