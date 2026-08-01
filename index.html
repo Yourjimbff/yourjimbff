@@ -1985,6 +1985,8 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
       <input type="file" id="foodPhotoInput" accept="image/*" onchange="hdlFoodPhoto(this)">
       <div class="psi" style="padding:9px;"><div class="psi-ic" style="font-size:20px;margin-bottom:2px;"><svg class="camIco" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></div><div class="psi-tx" style="color:#f0ece4;">Add a photo (optional)</div></div>
     </div>
+    <!-- MEAL LIBRARY picker — hidden until the client has saved meals or a coach template exists -->
+    <div id="mlibSec" style="display:none;margin:0 0 14px;"></div>
     <div class="il" style="margin-top:0;">Add a food</div>
     <div style="font-size:11.5px;color:rgba(240,236,228,0.44);line-height:1.45;margin:-3px 0 7px;">One food at a time. Tap a saved one for its exact macros, or type anything and we'll estimate it.</div>
     <div style="position:relative;">
@@ -2698,6 +2700,23 @@ async function uploadProgressImage(blob, clientCode){
   }catch(e){ console.error('uploadProgressImage error', e); return null; }
 }
 
+// Meal Library photos live in their own bucket so a saved meal's photo is one
+// small URL reused on every log, not base64 re-sent with every row.
+var MEAL_BUCKET = 'meal-photos';
+async function uploadMealPhoto(blob, clientCode){
+  if(!blob) return null;
+  try{
+    var path = (clientCode||'coach') + '/' + Date.now() + '-' + Math.random().toString(36).slice(2,8) + '.jpg';
+    var res = await fetch(SB_URL+'/storage/v1/object/'+MEAL_BUCKET+'/'+encodeURI(path), {
+      method:'POST',
+      headers:{ 'apikey':SB_KEY, 'Authorization':'Bearer '+SB_KEY, 'Content-Type':'image/jpeg', 'x-upsert':'true' },
+      body: blob
+    });
+    if(!res.ok){ try{ console.warn('Meal photo upload failed', res.status, await res.text()); }catch(_){ } return null; }
+    return SB_URL+'/storage/v1/object/public/'+MEAL_BUCKET+'/'+encodeURI(path);
+  }catch(e){ console.error('uploadMealPhoto error', e); return null; }
+}
+
 async function sbInsert(table, data){
   try{
     var res = await fetch(SB_URL+'/rest/v1/'+table, {
@@ -3007,7 +3026,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v7.157.3'; window.APP_VERSION = APP_VERSION;
+var APP_VERSION = 'v7.158.0'; window.APP_VERSION = APP_VERSION;
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -15160,6 +15179,377 @@ async function renderFoodRecents(){
     +'</div>';
   }).join('');
 }
+// ===== MEAL LIBRARY ====================================================
+// A client's personal database of meals they actually eat, plus coach-authored
+// templates any client can adopt. Lives inside the Log A Meal sheet — tap a
+// saved meal and it's logged in one go. Portions speak handfuls/cups/oz; a
+// macro estimate cached once at save time is what feeds the day's totals.
+var _mlibMeals=[], _mlibLoadedFor=null, _mlibPhotoStage=null, _mlibSheetEst=null, _mlibExpanded=false, _mlibLogBusy=false;
+// window._mlibTableExists: null until probed; false = meals table not migrated yet.
+
+async function mlibLoad(force){
+  if(!cl) return;
+  if(window._mlibTableExists===false) return;
+  if(!force && _mlibLoadedFor===cl.code) return;
+  try{
+    var res=await fetch(SB_URL+'/rest/v1/meals?or=(client_code.eq.'+encodeURIComponent(cl.code)+',is_template.eq.true)&order=times_logged.desc,last_logged_at.desc.nullslast&limit=300',{headers:sbHeaders()});
+    if(!res.ok){ window._mlibTableExists=false; return; }
+    _mlibMeals=await res.json()||[];
+    window._mlibTableExists=true;
+    _mlibLoadedFor=cl.code;
+  }catch(e){ /* offline — keep what we have, retry next open */ }
+}
+function mlibInit(){
+  _mlibExpanded=false;
+  mlibLoad().then(function(){ try{ mlibRenderPicker(); }catch(e){} });
+}
+function _mlibById(id){
+  for(var i=0;i<_mlibMeals.length;i++){ if(String(_mlibMeals[i].id)===String(id)) return _mlibMeals[i]; }
+  return null;
+}
+function _mlibComposeText(m){
+  return [m.protein,m.veg,m.carb,m.extras].filter(function(x){ return x&&String(x).trim(); }).join(' / ');
+}
+function _mlibIsTrainer(){ return (typeof isTrainer==='function' && cl && isTrainer(cl.code)); }
+function _mlibMine(){ return _mlibMeals.filter(function(m){ return m.client_code===cl.code && !m.is_template; }); }
+function _mlibTemplates(){
+  var mine=_mlibMine();
+  return _mlibMeals.filter(function(t){
+    if(!t.is_template) return false;
+    for(var i=0;i<mine.length;i++){ if(String(mine[i].source_template_id)===String(t.id)) return false; }
+    return true;
+  });
+}
+function _mlibRow(m,isTemplate){
+  var id=String(m.id).replace(/[^a-zA-Z0-9:_-]/g,'');
+  var trainer=_mlibIsTrainer();
+  var sub=_mlibComposeText(m);
+  var times=(+m.times_logged||0);
+  if(times>1) sub=(sub?sub+' · ':'')+'logged '+times+'×';
+  var thumb=m.photo_url
+    ? '<img src="'+escapeHtml(m.photo_url)+'" style="width:34px;height:34px;border-radius:9px;object-fit:cover;flex-shrink:0;" alt="">'
+    : '<div style="font-size:22px;line-height:1;flex-shrink:0;">🍽️</div>';
+  var chipFn=(isTemplate && !trainer) ? 'mlibAdopt(_mlibById(\''+id+'\'),{log:false})' : 'mlibOpenEdit(\''+id+'\')';
+  return '<div onclick="mlibTap(\''+id+'\')" style="display:flex;align-items:center;gap:11px;background:var(--s2);border:1px solid var(--border);border-radius:14px;padding:10px 12px;cursor:pointer;margin-bottom:7px;">'
+    +thumb
+    +'<div style="flex:1;min-width:0;">'
+      +'<div style="font-size:14px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+_escHtml(m.name||'Meal')
+      +((isTemplate && !trainer)?' <span style="font-size:10px;font-weight:800;letter-spacing:0.4px;color:var(--onaccent);background:var(--gold);border-radius:6px;padding:1px 5px;">COACH</span>':'')
+      +'</div>'
+      +(sub?'<div style="font-size:11px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+_escHtml(sub)+'</div>':'')
+    +'</div>'
+    +'<div onclick="event.stopPropagation();'+chipFn+'" style="flex-shrink:0;font-size:16px;font-weight:800;color:var(--gold);border:1px solid rgba(245,197,24,0.34);border-radius:8px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;">+</div>'
+  +'</div>';
+}
+function mlibRenderPicker(){
+  var host=document.getElementById('mlibSec'); if(!host||!cl) return;
+  if(window._mlibTableExists===false){
+    if(_mlibIsTrainer()){
+      host.style.display='';
+      host.innerHTML='<div style="font-size:12px;color:var(--gold);line-height:1.5;border:1px solid rgba(245,197,24,0.3);border-radius:10px;padding:10px 12px;margin-bottom:12px;">Run the <b>meals</b> migration or the meal library won’t load.</div>';
+    } else { host.style.display='none'; host.innerHTML=''; }
+    return;
+  }
+  var trainer=_mlibIsTrainer();
+  var mine=_mlibMine().slice().sort(function(a,b){
+    var d=(+b.times_logged||0)-(+a.times_logged||0);
+    if(d) return d;
+    return String(b.last_logged_at||b.created_at||'').localeCompare(String(a.last_logged_at||a.created_at||''));
+  });
+  var temps=_mlibTemplates();
+  if(!mine.length && !temps.length){ host.style.display='none'; host.innerHTML=''; return; }
+  var html='';
+  if(mine.length){
+    var shown=_mlibExpanded?mine:mine.slice(0,4);
+    html+='<div class="il" style="margin:0 0 7px;">My meals</div>';
+    html+=shown.map(function(m){ return _mlibRow(m,false); }).join('');
+    if(!_mlibExpanded && mine.length>4){
+      html+='<div onclick="_mlibExpanded=true;mlibRenderPicker()" style="text-align:center;font-size:12px;font-weight:700;color:var(--gold);padding:6px 0 2px;cursor:pointer;">Show all ('+mine.length+')</div>';
+    }
+  }
+  if(temps.length){
+    html+='<div class="il" style="margin:'+(mine.length?'10px':'0')+' 0 7px;">'+(trainer?'Your templates':'From your coach')+'</div>';
+    html+=temps.map(function(t){ return _mlibRow(t,true); }).join('');
+  }
+  host.innerHTML=html;
+  host.style.display='';
+}
+function mlibTap(id){
+  var m=_mlibById(id); if(!m) return;
+  if(m.is_template && !_mlibIsTrainer()){ mlibAdopt(m,{log:true}); return; }
+  mlibLogMeal(m);
+}
+async function mlibLogMeal(m){
+  if(!cl||!m) return;
+  if(_mlibLogBusy) return; _mlibLogBusy=true;
+  try{
+    var meal=(window._mealSlot||_mealSlotNow());
+    var eatTime=(function(){ var _t=document.getElementById('foodTime'); var v=_t?String(_t.value||'').trim():''; return v||new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}); })();
+    var mealText=_mlibComposeText(m);
+    var hasMacros=(+m.calories>0);
+    var cal=hasMacros?Math.round(+m.calories||0):null, pro=hasMacros?Math.round(+m.protein_g||0):null,
+        carb=hasMacros?Math.round(+m.carbs_g||0):null, fat=hasMacros?Math.round(+m.fat_g||0):null;
+    var rating=hasMacros?'good':'unknown';
+    var foodRow={client_code:cl.code,name:m.name,emoji:'🍽️',calories:cal,protein:pro,carbs:carb,fat:fat,rating:rating,meal:meal,eat_time:eatTime,graced:false,date_str:todayDateStr,meal_text:(mealText||null),note:(m.note||null)};
+    var entry={name:m.name,emoji:'🍽️',calories:cal,protein:pro,carbs:carb,fat:fat,rating:rating,insight:'',meal:meal,eat_time:eatTime,eatTime:eatTime,graced:false,photo:(m.photo_url||null),date_str:todayDateStr,meal_text:(mealText||''),note:(m.note||'')};
+    var _ins=null;
+    try{ _ins=await insertFoodLog(foodRow, m.photo_url||null); }catch(e){}
+    if(_ins && _ins.duplicate){ _mlibLogBusy=false; return; }
+    if(_ins && _ins.id!=null) entry.id=_ins.id;
+    allFood.push(entry); todayFood.push(entry);
+    if(hasMacros){
+      tots.cal+=cal; tots.protein+=pro; tots.carbs+=carb; tots.fat+=fat;
+      try{ trackMealForMenu({name:m.name,emoji:'🍽️',calories:cal,protein:pro,carbs:carb,fat:fat,meal:meal,rating:rating}); }catch(e){}
+    }
+    var rScore=hasMacros?1.0:0.2;
+    scores.food=Math.max(-4,Math.min(4,scores.food+rScore));
+    if(profile&&tots.cal>0){var pct=tots.cal/(profile.calTarget||profile.cal_target||2000);if(pct>=0.85&&pct<=1.15)scores.food=Math.min(4,scores.food+0.2);}
+    window._mlibJustLogged=true;
+    updTots();rendTodayFood();updHalo();pulseH();updStats();
+    try{ markTileDone('Food'); }catch(e){}
+    try{ _tlInvalidate(); }catch(e){}
+    closeM('mFood');
+    showToast('✓ '+m.name+' logged');
+    mlibBumpUsage(m);
+  }catch(e){ console.error('mlibLogMeal', e); }
+  _mlibLogBusy=false;
+}
+function _mlibSnapshot(m){
+  return {id:m.id, client_code:m.client_code||null, name:m.name, protein:m.protein||null, veg:m.veg||null, carb:m.carb||null,
+    extras:m.extras||null, note:m.note||null, photo_url:m.photo_url||null, is_template:(m.is_template===true),
+    source_template_id:m.source_template_id||null, calories:m.calories||null, protein_g:m.protein_g||null,
+    carbs_g:m.carbs_g||null, fat_g:m.fat_g||null, times_logged:(+m.times_logged||0), last_logged_at:m.last_logged_at||null};
+}
+async function mlibBumpUsage(m){
+  if(!m||String(m.id).indexOf('tmp:')===0) return;
+  m.times_logged=(+m.times_logged||0)+1;
+  m.last_logged_at=new Date().toISOString();
+  try{
+    var res=await fetch(SB_URL+'/rest/v1/meals?id=eq.'+encodeURIComponent(m.id),{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}),body:JSON.stringify({times_logged:m.times_logged,last_logged_at:m.last_logged_at})});
+    if(!res.ok) throw new Error('bump '+res.status);
+  }catch(e){
+    // the queue can only POST/UPSERT, so a failed bump syncs as a whole-row upsert by id
+    try{ sqPush('meals', _mlibSnapshot(m), 'UPSERT', 'id'); }catch(_q){}
+  }
+}
+async function mlibAdopt(t, opts){
+  if(!cl||!t) return;
+  opts=opts||{};
+  var copy={client_code:cl.code, name:t.name, protein:t.protein||null, veg:t.veg||null, carb:t.carb||null,
+    extras:t.extras||null, note:t.note||null, photo_url:t.photo_url||null, is_template:false,
+    source_template_id:t.id, calories:t.calories||null, protein_g:t.protein_g||null, carbs_g:t.carbs_g||null,
+    fat_g:t.fat_g||null, times_logged:0};
+  var row=null;
+  try{ row=await sbInsertReturning('meals', copy); }catch(e){}
+  if(!row){
+    row=Object.assign({}, copy, {id:'tmp:'+Date.now()});
+    try{ sqPush('meals', copy, 'POST'); }catch(e){}
+  }
+  _mlibMeals.push(row);
+  if(opts.log){ mlibLogMeal(row); }
+  else { showToast('✓ Added to your meals'); mlibRenderPicker(); }
+}
+function mlibOfferSave(prefill){
+  try{
+    if(!cl) return;
+    if(window._mlibTableExists===false) return;
+    if(window._mlibJustLogged){ window._mlibJustLogged=false; return; }
+    var nm=String((prefill&&prefill.name)||'').trim();
+    if(!nm) return;
+    if(typeof makeMealKey==='function'){
+      var key=makeMealKey(nm);
+      var own=_mlibMeals.filter(function(m){ return m.client_code===cl.code || (m.is_template && _mlibIsTrainer()); });
+      for(var i=0;i<own.length;i++){ if(makeMealKey(own[i].name||'')===key) return; }
+    }
+    var old=document.getElementById('mlibSaveBar'); if(old&&old.parentNode) old.parentNode.removeChild(old);
+    var bar=document.createElement('div');
+    bar.id='mlibSaveBar';
+    bar.style.cssText='position:fixed;left:24px;right:24px;bottom:92px;z-index:99997;display:flex;align-items:center;gap:10px;background:#131313;border:1px solid rgba(245,197,24,0.28);border-radius:14px;padding:12px 14px;box-shadow:0 14px 44px rgba(0,0,0,0.55);max-width:400px;margin:0 auto;';
+    bar.innerHTML='<div style="flex:1;min-width:0;font-size:13px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Save this to my meals?</div>'
+      +'<button id="mlibSaveYes" style="flex-shrink:0;background:var(--gold);color:var(--onaccent);border:none;border-radius:9px;padding:8px 13px;font-size:12.5px;font-weight:800;cursor:pointer;font-family:inherit;">Save</button>'
+      +'<div id="mlibSaveNo" style="flex-shrink:0;font-size:16px;color:var(--muted);padding:4px 6px;cursor:pointer;">×</div>';
+    document.body.appendChild(bar);
+    var _rm=function(){ try{ if(bar.parentNode) bar.parentNode.removeChild(bar); }catch(e){} };
+    document.getElementById('mlibSaveYes').onclick=function(){ _rm(); mlibOpenSaveSheet(prefill||{}); };
+    document.getElementById('mlibSaveNo').onclick=_rm;
+    setTimeout(_rm, 8000);
+  }catch(e){}
+}
+function mlibOpenSaveSheet(prefill){
+  _mlibSheetEst=(prefill&&prefill.est)||null;
+  _mlibSheet('new', prefill||{});
+}
+function mlibOpenEdit(id){
+  var m=_mlibById(id); if(!m) return;
+  _mlibSheetEst=null;
+  _mlibSheet('edit', m);
+}
+function _mlibSheet(mode, d){
+  if(document.getElementById('mlibSheetOverlay')) return;
+  _mlibPhotoStage=null;
+  var trainer=_mlibIsTrainer();
+  var isEdit=(mode==='edit');
+  var ov=document.createElement('div');
+  ov.id='mlibSheetOverlay';
+  ov.style.cssText='position:fixed;inset:0;z-index:99998;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(7,7,9,0.92);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);';
+  function f(id,label,val,ph){
+    return '<div style="font-size:11px;font-weight:800;letter-spacing:0.4px;color:var(--muted);margin:11px 0 4px;">'+label+'</div>'
+      +'<input id="'+id+'" type="text" value="'+escapeHtml(val||'')+'" placeholder="'+escapeHtml(ph||'')+'" autocomplete="off" style="width:100%;box-sizing:border-box;background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:11px 12px;font-size:14px;color:var(--text);font-family:inherit;">';
+  }
+  ov.innerHTML='<div style="max-width:400px;width:100%;max-height:86vh;display:flex;flex-direction:column;background:#131313;border:1px solid rgba(245,197,24,0.28);border-radius:22px;padding:22px;">'
+    +'<div style="font-size:19px;font-weight:800;color:var(--text);">'+(isEdit?'Edit meal':'Save to my meals')+'</div>'
+    +(trainer?'<div style="font-size:12.5px;color:var(--gold);line-height:1.5;margin-top:5px;">Publishing as a template every client can adopt.</div>'
+             :'<div style="font-size:12.5px;color:var(--m2);line-height:1.5;margin-top:5px;">Next time it’s one tap.</div>')
+    +'<div style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;">'
+      +f('mlibName','NAME',d.name,'Name it your way — “my usual eggs”')
+      +f('mlibProtein','PROTEIN',d.protein,'e.g. 2 palms chicken')
+      +f('mlibVeg','VEG',d.veg,'e.g. big handful spinach')
+      +f('mlibCarb','CARB',d.carb,'e.g. 1 cup rice')
+      +f('mlibExtras','EXTRAS',d.extras,'sauce, butter, anything else')
+      +f('mlibNote','MY NOTE',d.note,'e.g. squeeze lemon on top')
+      +'<div style="font-size:11px;font-weight:800;letter-spacing:0.4px;color:var(--muted);margin:11px 0 4px;">PHOTO</div>'
+      +'<div id="mlibPhotoSlot" style="position:relative;border:1px dashed var(--border);border-radius:12px;padding:14px;text-align:center;font-size:12.5px;color:var(--muted);cursor:pointer;">'
+        +(d.photo_url?'<img src="'+escapeHtml(d.photo_url)+'" style="width:100%;max-height:120px;object-fit:cover;border-radius:9px;" alt="">':'Add a photo (optional)')
+        +'<input id="mlibPhotoInput" type="file" accept="image/*" onchange="_mlibPhotoPick(this)" style="position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer;">'
+      +'</div>'
+    +'</div>'
+    +'<button id="mlibSheetSave" style="margin-top:14px;width:100%;background:var(--gold);color:var(--onaccent);border:none;border-radius:12px;padding:13px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;">'+(isEdit?'Save changes':(trainer?'Publish template':'Save meal'))+'</button>'
+    +(isEdit?'<button id="mlibSheetDel" style="margin-top:8px;width:100%;background:transparent;color:var(--red);border:1px solid rgba(255,68,85,0.35);border-radius:12px;padding:11px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;">Delete meal</button>':'')
+    +'<button onclick="_mlibCloseSheet()" style="margin-top:8px;width:100%;background:transparent;color:var(--m2);border:1px solid var(--border);border-radius:12px;padding:11px;font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit;">Cancel</button>'
+  +'</div>';
+  document.body.appendChild(ov);
+  document.getElementById('mlibSheetSave').onclick=function(){ if(isEdit){ mlibSaveEdit(d.id); } else { mlibSaveNew(); } };
+  if(isEdit){ var db=document.getElementById('mlibSheetDel'); if(db) db.onclick=function(){ mlibDelete(d.id); }; }
+}
+function _mlibCloseSheet(){
+  var o=document.getElementById('mlibSheetOverlay'); if(o&&o.parentNode) o.parentNode.removeChild(o);
+  _mlibPhotoStage=null; _mlibSheetEst=null;
+}
+function _mlibPhotoPick(input){
+  if(!input.files||!input.files[0]) return;
+  var reader=new FileReader();
+  reader.onload=function(e){
+    downscaleImage(e.target.result, 1440, 0.85).then(function(compact){
+      _mlibPhotoStage=compact;
+      var slot=document.getElementById('mlibPhotoSlot');
+      if(slot){
+        slot.innerHTML='<img src="'+compact+'" style="width:100%;max-height:120px;object-fit:cover;border-radius:9px;" alt=""><input id="mlibPhotoInput" type="file" accept="image/*" onchange="_mlibPhotoPick(this)" style="position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer;">';
+      }
+    });
+  };
+  reader.readAsDataURL(input.files[0]);
+}
+function _mlibReadSheet(){
+  function g(id){ var el=document.getElementById(id); return el?String(el.value||'').trim():''; }
+  return {name:g('mlibName'), protein:g('mlibProtein')||null, veg:g('mlibVeg')||null, carb:g('mlibCarb')||null,
+          extras:g('mlibExtras')||null, note:g('mlibNote')||null};
+}
+async function _mlibInsertWithFallback(row){
+  async function tryIns(payload){
+    try{
+      var res=await fetch(SB_URL+'/rest/v1/meals',{method:'POST',headers:Object.assign({},sbHeaders(),{'Prefer':'return=representation'}),body:JSON.stringify(payload)});
+      if(!res.ok){ var b=''; try{ b=await res.text(); }catch(e){} return {ok:false, body:b}; }
+      var d=null; try{ var arr=await res.json(); d=(Array.isArray(arr)&&arr[0])?arr[0]:null; }catch(e){}
+      return {ok:true, row:d};
+    }catch(e){ return {ok:false}; }
+  }
+  var payload=Object.assign({}, row);
+  var attempt=await tryIns(payload), guard=0;
+  // same degrade as insertFoodLog: drop any column the table doesn't have yet and retry
+  while(!attempt.ok && guard<4){
+    var body=attempt.body||'';
+    var mcol=/column\s+"?([a-z_]+)"?[\s\S]*?does not exist/i.exec(body) || /could not find the '([a-z_]+)' column/i.exec(body);
+    if(!mcol || !(mcol[1] in payload)) break;
+    delete payload[mcol[1]];
+    attempt=await tryIns(payload);
+    guard++;
+  }
+  return attempt;
+}
+async function mlibSaveNew(){
+  if(!cl) return;
+  var v=_mlibReadSheet();
+  if(!v.name){ showToast('Give it a name'); return; }
+  var btn=document.getElementById('mlibSheetSave'); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='Saving…'; }
+  var trainer=_mlibIsTrainer();
+  var photoUrl=null;
+  if(_mlibPhotoStage){
+    try{ var blob=await (await fetch(_mlibPhotoStage)).blob(); photoUrl=await uploadMealPhoto(blob, trainer?'coach':cl.code); }catch(e){}
+  }
+  var est=_mlibSheetEst;
+  var row={client_code:(trainer?null:cl.code), name:v.name, protein:v.protein, veg:v.veg, carb:v.carb,
+           extras:v.extras, note:v.note, photo_url:photoUrl, is_template:trainer,
+           calories:(est?est.calories:null), protein_g:(est?est.protein_g:null),
+           carbs_g:(est?est.carbs_g:null), fat_g:(est?est.fat_g:null), times_logged:0};
+  var attempt=await _mlibInsertWithFallback(row);
+  var saved;
+  if(attempt.ok){
+    saved=attempt.row||Object.assign({},row,{id:'tmp:'+Date.now()});
+  }else{
+    saved=Object.assign({},row,{id:'tmp:'+Date.now()});
+    try{ sqPush('meals', row, 'POST'); }catch(e){}
+  }
+  _mlibMeals.push(saved);
+  _mlibCloseSheet();
+  mlibRenderPicker();
+  showToast(attempt.ok?(trainer?'✓ Template published':'✓ Saved to your meals'):'Saved here — will sync when it can');
+  // The one place macros enter the library: a single silent estimate cached on
+  // the row so every future log is instant. Remove this call to go macro-free.
+  if(!est) _mlibEstimateMacros(saved);
+}
+async function mlibSaveEdit(id){
+  var m=_mlibById(id); if(!m||!cl) return;
+  var v=_mlibReadSheet();
+  if(!v.name){ showToast('Give it a name'); return; }
+  var portionsChanged=(v.protein!==(m.protein||null)||v.veg!==(m.veg||null)||v.carb!==(m.carb||null)||v.extras!==(m.extras||null));
+  var patch={name:v.name, protein:v.protein, veg:v.veg, carb:v.carb, extras:v.extras, note:v.note};
+  if(_mlibPhotoStage){
+    try{ var blob=await (await fetch(_mlibPhotoStage)).blob(); var u=await uploadMealPhoto(blob, m.is_template?'coach':cl.code); if(u) patch.photo_url=u; }catch(e){}
+  }
+  Object.assign(m, patch);
+  _mlibCloseSheet();
+  mlibRenderPicker();
+  // tmp rows sync via their queued insert; edits before that land only locally
+  if(String(m.id).indexOf('tmp:')===0){ showToast('✓ Saved'); return; }
+  try{
+    var res=await fetch(SB_URL+'/rest/v1/meals?id=eq.'+encodeURIComponent(m.id),{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}),body:JSON.stringify(patch)});
+    if(!res.ok) throw new Error('save '+res.status);
+    showToast('✓ Saved');
+  }catch(e){
+    try{ sqPush('meals', _mlibSnapshot(m), 'UPSERT', 'id'); }catch(_q){}
+    showToast('Saved here — will sync when it can');
+  }
+  if(portionsChanged) _mlibEstimateMacros(m);
+}
+async function mlibDelete(id){
+  var m=_mlibById(id); if(!m) return;
+  if(!confirm('Delete “'+(m.name||'this meal')+'” from the library? Past logs stay.')) return;
+  var idx=_mlibMeals.indexOf(m);
+  if(idx>=0) _mlibMeals.splice(idx,1);
+  _mlibCloseSheet();
+  mlibRenderPicker();
+  if(String(m.id).indexOf('tmp:')===0){ showToast('Deleted'); return; }
+  try{
+    var res=await fetch(SB_URL+'/rest/v1/meals?id=eq.'+encodeURIComponent(m.id),{method:'DELETE',headers:sbHeaders()});
+    if(!res.ok) throw new Error('del '+res.status);
+    showToast('Deleted');
+  }catch(e){
+    _mlibMeals.push(m);
+    mlibRenderPicker();
+    showToast('Couldn’t delete — try again');
+  }
+}
+async function _mlibEstimateMacros(m){
+  try{
+    if(!m) return;
+    var txt=_mlibComposeText(m); if(!txt && !m.name) return;
+    var est=await _estimateFood(txt?(m.name+': '+txt):m.name);
+    if(!est) return;
+    m.calories=est.calories; m.protein_g=est.protein; m.carbs_g=est.carbs; m.fat_g=est.fat;
+    if(String(m.id).indexOf('tmp:')===0) return;
+    await fetch(SB_URL+'/rest/v1/meals?id=eq.'+encodeURIComponent(m.id),{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}),body:JSON.stringify({calories:m.calories,protein_g:m.protein_g,carbs_g:m.carbs_g,fat_g:m.fat_g})});
+  }catch(e){}
+}
 // ===== THE PLATE (pattern B) — add a food -> clean line -> tap to edit macros -> log =====
 var _savedFoods = [];
 var _plate = [];
@@ -15462,6 +15852,7 @@ async function smartLogFromText(q){
   try{ _tlInvalidate(); }catch(e){}
   if(btn){ btn.disabled=false; btn.style.opacity='1'; }
   try{ showToast('\u2713 Logged '+(loggedNames.length>1?(loggedNames.length+' items'):(loggedNames[0]||'it'))); }catch(e){}
+  try{ mlibOfferSave({name:(window._mealTitleText||loggedNames.join(', '))}); }catch(e){}
 }
 // Opt-in macros: tap a bare entry to estimate them right there. Adjust anytime via Edit.
 async function addMacrosToEntry(i){
@@ -15506,6 +15897,7 @@ async function logPlateMeal(){
   if(btn){ btn.disabled=false; btn.style.opacity='1'; }
   showToast('✓ '+mealName+' logged');
   try{ _gradePlateMeal(entry, names.join(', ')); }catch(e){}
+  try{ mlibOfferSave({name:mealName, extras:names.join(', '), est:(cal>0?{calories:cal,protein_g:pro,carbs_g:carb,fat_g:fat}:null)}); }catch(e){}
 }
 async function _gradePlateMeal(entry, foodsText){
   try{
@@ -22292,6 +22684,7 @@ function openM(id){
     document.getElementById('aire').classList.remove('show');
     var _rs=document.getElementById('foodRecentsSearch'); if(_rs) _rs.value='';
     try{ renderFoodRecents(); }catch(e){}
+    try{ mlibInit(); }catch(e){}
     try{ _foodSlotDefault(); }catch(e){}
     _foodNormalMode();
   }
