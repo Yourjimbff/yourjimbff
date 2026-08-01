@@ -3029,7 +3029,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v7.158.1'; window.APP_VERSION = APP_VERSION;
+var APP_VERSION = 'v7.158.2'; window.APP_VERSION = APP_VERSION;
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -15288,13 +15288,15 @@ async function mlibLogMeal(m){
   try{
     var meal=(window._mealSlot||_mealSlotNow());
     var eatTime=(function(){ var _t=document.getElementById('foodTime'); var v=_t?String(_t.value||'').trim():''; return v||new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}); })();
+    // log to the day being viewed/typed-into, same as smartLogFromText
+    var logDs=(window._mealLogDs||((typeof _logDayStr==='function')?_logDayStr():todayDateStr));
     var mealText=_mlibComposeText(m);
     var hasMacros=(+m.calories>0);
     var cal=hasMacros?Math.round(+m.calories||0):null, pro=hasMacros?Math.round(+m.protein_g||0):null,
         carb=hasMacros?Math.round(+m.carbs_g||0):null, fat=hasMacros?Math.round(+m.fat_g||0):null;
     var rating=hasMacros?'good':'unknown';
-    var foodRow={client_code:cl.code,name:m.name,emoji:'🍽️',calories:cal,protein:pro,carbs:carb,fat:fat,rating:rating,meal:meal,eat_time:eatTime,graced:false,date_str:todayDateStr,meal_text:(mealText||null),note:(m.note||null)};
-    var entry={name:m.name,emoji:'🍽️',calories:cal,protein:pro,carbs:carb,fat:fat,rating:rating,insight:'',meal:meal,eat_time:eatTime,eatTime:eatTime,graced:false,photo:(m.photo_url||null),date_str:todayDateStr,meal_text:(mealText||''),note:(m.note||'')};
+    var foodRow={client_code:cl.code,name:m.name,emoji:'🍽️',calories:cal,protein:pro,carbs:carb,fat:fat,rating:rating,meal:meal,eat_time:eatTime,graced:false,date_str:logDs,meal_text:(mealText||null),note:(m.note||null)};
+    var entry={name:m.name,emoji:'🍽️',calories:cal,protein:pro,carbs:carb,fat:fat,rating:rating,insight:'',meal:meal,eat_time:eatTime,eatTime:eatTime,graced:false,photo:(m.photo_url||null),date_str:logDs,meal_text:(mealText||''),note:(m.note||'')};
     var _ins=null;
     try{ _ins=await insertFoodLog(foodRow, m.photo_url||null); }catch(e){}
     if(_ins && _ins.duplicate){ _mlibLogBusy=false; return; }
@@ -15552,6 +15554,54 @@ async function _mlibEstimateMacros(m){
     if(String(m.id).indexOf('tmp:')===0) return;
     await fetch(SB_URL+'/rest/v1/meals?id=eq.'+encodeURIComponent(m.id),{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}),body:JSON.stringify({calories:m.calories,protein_g:m.protein_g,carbs_g:m.carbs_g,fat_g:m.fat_g})});
   }catch(e){}
+}
+// --- Meal Library on the Jim bar: typing a saved meal's name IS the one-tap ---
+// Own meals first; coach templates count too (a client tapping one adopts it).
+function _mlibMatchPool(){ return _mlibMine().concat(_mlibTemplates()); }
+// Exact-ish name match ("usual eggs" ≈ "my usual eggs") for match-on-send.
+function _mlibFindExact(txt){
+  if(!txt||typeof makeMealKey!=='function') return null;
+  var key=makeMealKey(txt); if(!key) return null;
+  var pool=_mlibMatchPool();
+  for(var i=0;i<pool.length;i++){ if(makeMealKey(pool[i].name||'')===key) return pool[i]; }
+  return null;
+}
+// Best single candidate while typing: starts-with beats contains, then most-logged.
+function _mlibSuggestFor(txt){
+  var t=String(txt||'').trim().toLowerCase(); if(t.length<2) return null;
+  var pool=_mlibMatchPool(), best=null, bestScore=-1;
+  for(var i=0;i<pool.length;i++){
+    var nm=String(pool[i].name||'').toLowerCase(); if(!nm) continue;
+    var s=-1;
+    if(nm===t) s=3; else if(nm.indexOf(t)===0) s=2; else if(nm.indexOf(t)>0) s=1;
+    if(s<0) continue;
+    s=s*100000+(+pool[i].times_logged||0);
+    if(s>bestScore){ bestScore=s; best=pool[i]; }
+  }
+  return best;
+}
+function _mlibJimHideChip(ds){ var el=document.getElementById('mlibChip_'+(ds||'')); if(el){ el.style.display='none'; el.innerHTML=''; } }
+function _mlibJimSuggest(ds){
+  var host=document.getElementById('mlibChip_'+(ds||'')); if(!host) return;
+  if(window._mlibTableExists===false){ return; }
+  try{ mlibLoad(); }catch(e){}
+  var el=document.getElementById('jimIn_'+(ds||''));
+  var m=_mlibSuggestFor(el?String(el.value||'').trim():'');
+  if(!m){ host.style.display='none'; host.innerHTML=''; return; }
+  var id=String(m.id).replace(/[^a-zA-Z0-9:_-]/g,'');
+  host.innerHTML='<div onclick="_mlibChipTap(\''+escapeHtml(ds||'')+'\',\''+id+'\')" style="display:inline-flex;align-items:center;gap:7px;max-width:100%;background:#1d1c17;border:1px solid rgba(245,197,24,0.4);border-radius:999px;padding:7px 12px;cursor:pointer;">'
+    +'<span style="font-size:12.5px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+_escHtml(m.name)+'</span>'
+    +'<span style="font-size:11px;font-weight:800;color:var(--gold);white-space:nowrap;">tap to log</span>'
+  +'</div>';
+  host.style.display='';
+}
+function _mlibChipTap(ds,id){
+  var m=_mlibById(id); if(!m) return;
+  if(ds){ try{ window._mealLogDs=ds; window._mlDs=ds; }catch(e){} }
+  var el=document.getElementById('jimIn_'+(ds||'')); if(el){ el.value=''; try{ jimGrow(el); }catch(e){} }
+  try{ jimReady(ds); }catch(e){}
+  _mlibJimHideChip(ds);
+  if(m.is_template && !_mlibIsTrainer()){ mlibAdopt(m,{log:true}); } else { mlibLogMeal(m); }
 }
 // ===== THE PLATE (pattern B) — add a food -> clean line -> tap to edit macros -> log =====
 var _savedFoods = [];
@@ -28278,8 +28328,10 @@ function _jimClock(mins) {
 // catching up on yesterday needs no date picker.
 function jimBarHtml(ds) {
   if (!_jimAllowed()) return '';
+  try{ if(typeof mlibLoad==='function') mlibLoad(); }catch(e){} // warm the library so match-on-send works from the first send
   var d = ds || '';
   return '<div class="jimBar" data-ds="' + d + '">'
+    + '<div id="mlibChip_' + d + '" style="display:none;margin:0 0 6px;"></div>'
     + '<div class="jimRow">'
     +   '<textarea class="jimIn" id="jimIn_' + d + '" rows="1" autocomplete="off" placeholder="' + _jimAsk(d) + '" '
     +     'onclick="event.stopPropagation()" oninput="jimReady(\'' + d + '\');jimGrow(this)" '
@@ -28308,6 +28360,19 @@ async function jimSend(ds) {
   if (el) { el.value = ''; el.blur(); try{ jimGrow(el); }catch(e){} }
   try{ jimReady(ds); }catch(e){}
   var said = (p.mins != null ? (' at ' + _jimClock(p.mins)) : '') + (p.meal ? (' \u00b7 ' + p.meal) : '');
+  // A typed library-meal name IS the one-tap: log the saved meal directly \u2014
+  // cached macros, portions text, no AI round trip. A photo means they want
+  // the photo on the log, so that keeps the normal path.
+  if (!window._jimPhoto) {
+    try {
+      var _lm = (typeof _mlibFindExact === 'function') ? _mlibFindExact(p.text) : null;
+      if (_lm) {
+        if (_lm.is_template && !_mlibIsTrainer()) { mlibAdopt(_lm, {log:true}); }
+        else { mlibLogMeal(_lm); }
+        return;
+      }
+    } catch (e) {}
+  }
   // A whole day in one message goes to the planner; a single food takes the
   // fast path, because a round trip for "four eggs" isn't worth the wait.
   if (_jimIsComplex(raw)) {
@@ -28612,6 +28677,7 @@ function jimReady(ds){
     var el=document.getElementById('jimIn_'+d);
     var bar=document.querySelector('.jimBar[data-ds="'+d+'"]');
     if(bar) bar.classList.toggle('ready', !!(el && String(el.value||'').trim()));
+    try{ if(typeof _mlibJimSuggest==='function') _mlibJimSuggest(d); }catch(e){}
   }catch(e){}
 }
 
