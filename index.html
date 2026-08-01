@@ -3604,16 +3604,31 @@ function noteBodyTalk(text){
   var recent=all.filter(function(f){ return new Date(f.at).getTime()>=cutoff && f.part===hit.part; });
   // Only tell the coach once it's a pattern, not the first mention
   if(recent.length===3 || recent.length===6 || recent.length===10){
-    var row={ client_code: cl.code,
+    // This is for the coach's eyes only. It deliberately writes `note` and never
+    // `body`: the client's own notes list (cnRenderMine) renders `body`, so keeping
+    // the text out of that column means no filter bug can ever show a client their
+    // own distress flag. coach_code:'system' is the second, explicit barrier.
+    // Don't "tidy" this into the body/created_at shape — see _cnIsSignal.
+    var row={ client_code: cl.code, coach_code:'system',
               note: 'Body-image signal: brought up "'+hit.part+'" '+recent.length+' times in the last 30 days. Worth a human conversation.',
-              sent_at: new Date().toISOString() };
+              created_at: new Date().toISOString() };
     (async function(){
-      try{
-        var r=await fetch(SB_URL+'/rest/v1/coach_notes',{method:'POST',
+      async function send(r){
+        return fetch(SB_URL+'/rest/v1/coach_notes',{method:'POST',
           headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
-          body:JSON.stringify(row)});
-        if(!r.ok) throw new Error('flag failed');
-      }catch(e){ try{ sqPush('coach_notes', row, 'POST'); }catch(_){} }
+          body:JSON.stringify(r)});
+      }
+      // The marker is a nice-to-have; the flag reaching the coach is not. If
+      // coach_code rejects 'system' (a foreign key would), drop it and send the
+      // rest — _cnIsSignal still recognises the row by its text.
+      var plain={ client_code: row.client_code, note: row.note, created_at: row.created_at };
+      try{
+        var res=await send(row);
+        if(res.ok) return;
+        var res2=await send(plain);
+        if(res2.ok) return;
+        throw new Error('flag failed');
+      }catch(e){ try{ sqPush('coach_notes', plain, 'POST'); }catch(_){} }
     })();
   }
 }
@@ -29589,20 +29604,39 @@ function _logDayStr(d){
 
 window._cnCache = window._cnCache || {};
 
+// Rows in this table come from three eras and don't all carry created_at.
+// Postgres sorts NULLs first on DESC, which parked undated rows at the top of
+// the list forever. Resolve a usable timestamp per row and sort here instead.
+function _cnStamp(n) {
+  var t = Date.parse(n && (n.created_at || n.sent_at || n.date_str));
+  return isNaN(t) ? -Infinity : t;          // undated sorts last, not first
+}
+
+// A flag the app raised, not a note the coach wrote. Historical rows predate the
+// coach_code marker, so fall back to recognising the text they were written with.
+function _cnIsSignal(n) {
+  if (!n) return false;
+  if (n.coach_code === 'system') return true;
+  return /^Body-image signal:/.test(String(n.note || ''));
+}
+
 async function cnLoad(code) {
   try {
     var rows = await sbSelect('coach_notes',
       'client_code=eq.' + encodeURIComponent(code) + '&order=created_at.desc&limit=50');
-    window._cnCache[code] = rows || [];
+    rows = (rows || []).slice().sort(function (a, b) { return _cnStamp(b) - _cnStamp(a); });
+    window._cnCache[code] = rows;
     return window._cnCache[code];
   } catch (e) { return window._cnCache[code] || []; }
 }
 
 function _cnWhen(iso) {
   try {
+    if (!iso) return '';
     var d = new Date(iso), now = new Date();
+    if (isNaN(d.getTime())) return '';       // was rendering the string "Invalid Date"
     var days = Math.floor((now - d) / 86400000);
-    if (days === 0) return 'today';
+    if (days <= 0) return 'today';
     if (days === 1) return 'yesterday';
     if (days < 7) return days + ' days ago';
     return d.toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
@@ -29620,20 +29654,34 @@ function cnSectionHtml(code) {
     + '<textarea id="cnBox_' + code + '" placeholder="What you\u2019re seeing, and what changes next\u2026" '
     +   'style="width:100%;box-sizing:border-box;min-height:74px;background:#1b1b1b;border:1px solid #2d2d2d;border-radius:10px;padding:12px;color:#f0ece4;font-size:14px;line-height:1.5;font-family:inherit;outline:none;resize:vertical;"></textarea>'
     + '<button onclick="cnPost(\'' + code + '\')" style="width:100%;margin-top:7px;background:var(--gold);color:var(--onaccent);border:none;border-radius:10px;padding:12px;font-family:inherit;font-size:13.5px;font-weight:800;cursor:pointer;">Leave the note</button>'
-    + (notes.length ? ('<div style="margin-top:13px;">' + notes.map(_cnCardHtml).join('') + '</div>') : '')
+    + (notes.length ? ('<div style="margin-top:13px;">'
+        + notes.map(function (n, i) { return _cnCardHtml(n, i, true); }).join('') + '</div>') : '')
     + '</div>';
 }
 
-function _cnCardHtml(n, i) {
+// The third argument decides the audience, and it is load-bearing. The coach view
+// falls back to older column shapes so nothing is invisible to them; the client
+// view reads `body` only, which is what keeps app-raised signals off their screen.
+// Both callers pass it explicitly \u2014 never `.map(_cnCardHtml)`, because map's third
+// argument is the array, which is truthy, and every card would go into coach mode.
+function _cnCardHtml(n, i, forCoach) {
   var fresh = (i === 0);
+  var signal = forCoach && _cnIsSignal(n);
+  var text = forCoach ? (n.body || n.note || '') : (n.body || '');
+  var when = _cnWhen(forCoach ? (n.created_at || n.sent_at || n.date_str) : n.created_at);
+  // Gold is for things the coach did. A signal is the app talking, so it gets its
+  // own accent rather than borrowing the one that means "you wrote this".
+  var accent = signal ? '#c2603c' : (fresh ? 'var(--gold)' : 'rgba(245,197,24,0.35)');
+  var meta = (signal ? '<span style="color:#c2603c;font-weight:800;letter-spacing:0.8px;">SIGNAL</span>' : '')
+    + (signal && when ? ' \u00b7 ' : '') + (when || '');
   return '<div style="background:' + (fresh ? '#1a1a1a' : '#161616') + ';border:1px solid ' + (fresh ? '#2a2a2a' : '#262626')
-    + ';border-left:3px solid ' + (fresh ? 'var(--gold)' : 'rgba(245,197,24,0.35)') + ';border-radius:9px;padding:11px 12px;margin-bottom:6px;">'
+    + ';border-left:3px solid ' + accent + ';border-radius:9px;padding:11px 12px;margin-bottom:6px;">'
     + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">'
-    +   '<span style="font-size:11px;color:rgba(240,236,228,0.4);">' + _cnWhen(n.created_at) + '</span>'
+    +   '<span style="font-size:11px;color:rgba(240,236,228,0.4);">' + meta + '</span>'
     +   '<span onclick="cnDelete(' + (n.id || 0) + ',\'' + n.client_code + '\')" style="font-size:15px;color:rgba(240,236,228,0.28);cursor:pointer;line-height:1;">\u00d7</span>'
     + '</div>'
     + '<div style="font-size:' + (fresh ? '13.5' : '13') + 'px;color:' + (fresh ? '#f0ece4' : 'rgba(240,236,228,0.65)')
-    +   ';line-height:1.55;margin-top:5px;white-space:pre-wrap;">' + _escHtml(n.body || '') + '</div>'
+    +   ';line-height:1.55;margin-top:5px;white-space:pre-wrap;">' + _escHtml(text) + '</div>'
     + '</div>';
 }
 
@@ -29699,11 +29747,15 @@ async function cnRenderMine() {
   var host = document.getElementById('cnMine');
   if (!host || !cl) return;
   var notes = await cnLoad(cl.code);
+  // Only what Yusuf actually wrote to them. Requiring `body` keeps app-raised
+  // signals (which write `note`) off this screen even if _cnIsSignal ever misses
+  // one, and it also drops the today-only reply rows they already see up top.
+  notes = notes.filter(function (n) { return n.body && !_cnIsSignal(n); });
   if (!notes.length) { host.innerHTML = ''; return; }
   host.innerHTML = '<div class="tile" style="margin-bottom:12px;">'
     + '<div style="padding:14px 15px;">'
     +   '<div style="font-size:11px;font-weight:800;letter-spacing:1px;color:var(--gold);margin-bottom:10px;">NOTES FROM YUSUF</div>'
-    +   notes.slice(0, 6).map(_cnCardHtml).join('')
+    +   notes.slice(0, 6).map(function (n, i) { return _cnCardHtml(n, i, false); }).join('')
     + '</div></div>';
 }
 
