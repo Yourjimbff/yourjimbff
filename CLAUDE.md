@@ -23,3 +23,8 @@ Real clients use this daily on phones. Never push untested changes to main.
 
 ## Design
 Gold/yellow, black, grey, white. Mobile-first.
+Full design standard lives in [BACKLOG.md](BACKLOG.md) — read it before designing any new screen.
+
+## What's next
+[BACKLOG.md](BACKLOG.md) holds the ordered build backlog. Read it at the start of a session
+when I ask for something new, or ask "what's next" — the top unbuilt item is the answer.
