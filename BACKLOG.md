@@ -13,9 +13,9 @@ Ordered by leverage. Each item is self-contained unless noted.
 - **Portions speak human.** Handfuls, palms, cups, ounces. Never grams unless the client asked for grams.
 - **Mobile-first, always.** Nothing gets designed at desktop width first.
 
-## 1. Muscle inventory
+## 1. Muscle inventory — SHIPPED (strength check)
 
-*Next up — highest leverage, cheapest build.*
+*Shipped as the Strength Check: anatomy chart + Push/Pull/Legs/Core checklist, three states, recurring check-in. Protocol prescription and performance logging were deliberately cut — programming comes from Yusuf, not the app. That code is parked in place, unreachable.*
 
 Makes training feel personal instead of templated, and it's client-reported so it costs me nothing to run.
 
@@ -27,6 +27,21 @@ Makes training feel personal instead of templated, and it's client-reported so i
 - **Output:** the app knows what got missed and what's behind. Next week's programming emphasises it. A weak leg week means legs get priority.
 
 **Design:** this must not feel like a survey. Cards, not a form. One group per screen or a swipeable stack. Big tap targets for the rating. The note field is optional and should feel like talking, not filling in a box.
+
+## 1b. Key lifts checklist
+
+*Parked — do not build yet. Extends the strength check (#1), which has shipped.*
+
+A second checklist alongside the muscle one: am I good or bad at the lifts themselves. Same three-state answer — Strong / Okay / Weak.
+
+- Push-ups, dips, shoulder press, chest press
+- Pull-ups, rows
+- Deadlifts, squats
+- (extend as the list settles)
+
+The point: muscle groups tell me what's behind anatomically; lifts tell me what's behind in practice. They're different answers and both matter.
+
+**Why it's worth waiting for:** this eventually crosses over with what they actually log in training — the app already stores per-exercise performance in `set_logs`, so a client who says "bad at pull-ups" can be checked against whether they've ever logged one. That crossover is the real feature, and it's why this shouldn't ship as just another form.
 
 ## 2. Meal planning
 
