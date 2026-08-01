@@ -3047,7 +3047,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v7.164.1'; window.APP_VERSION = APP_VERSION;
+var APP_VERSION = 'v7.165.0'; window.APP_VERSION = APP_VERSION;
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -5281,7 +5281,20 @@ function _feedDayLabel(d){
   var wk=dd.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
   if(diff===0) return 'Today · '+wk; if(diff===1) return 'Yesterday · '+wk; return wk;
 }
-function _feedTs(r){ try{ if(r.logged_at){ var s=r.logged_at; var d=new Date(/[Z+]/.test(s)?s:s+'Z'); if(!isNaN(d.getTime())) return d.getTime(); } }catch(e){} try{ if(r.date_str){ var d2=new Date(r.date_str); if(!isNaN(d2.getTime())) return d2.getTime(); } }catch(e){} return 0; }
+// A naive Postgres timestamp needs a Z to be read as UTC — but one that already
+// carries an offset must be left alone. The old test only looked for Z or +, so
+// a negative offset ("...-04:00") got a Z stapled on, became NaN, fell through to
+// date_str (local midnight) or 0 — and a 0 fails the recency cut and vanishes.
+function _feedHasTz(s){ return /(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(String(s||'').trim()); }
+function _feedTs(r){ try{ if(r.logged_at){ var s=r.logged_at; var d=new Date(_feedHasTz(s)?s:s+'Z'); if(!isNaN(d.getTime())) return d.getTime(); } }catch(e){} try{ if(r.date_str){ var d2=new Date(r.date_str); if(!isNaN(d2.getTime())) return d2.getTime(); } }catch(e){} return 0; }
+// The feed must bucket days the same way logging stamps them, or a 1am meal is
+// filed under today here and yesterday everywhere else. DAY_ROLLOVER_HR = 3.
+function _feedDayStart(ts){
+  var d=new Date(ts);
+  if(d.getHours() < (typeof DAY_ROLLOVER_HR!=='undefined'?DAY_ROLLOVER_HR:0)) d.setDate(d.getDate()-1);
+  d.setHours(0,0,0,0);
+  return d;
+}
 function _feedTimeStr(ts){ try{ return new Date(ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}); }catch(e){ return ''; } }
 async function loadTrainerFeed(targetId){
   // this tab is client activity for trainers — no journal furniture on it
@@ -5305,9 +5318,16 @@ async function loadTrainerFeed(targetId){
     var lens=window._feedLens||'all';
     var hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
     var _feedCut=Date.now()-3*86400000;
+    // Bound the window server-side too. Fetching the newest 400 rows across the
+    // WHOLE roster and only then trimming to 3 days meant a busy roster could
+    // spend the entire budget on older rows and leave a client who logged today
+    // with nothing on screen. Ask for a little more than the cut so a row sitting
+    // right on the boundary (or with a skewed clock) still makes it in.
+    var _feedSince=new Date(_feedCut-12*3600000).toISOString();
+    var _sinceQ='&logged_at=gte.'+encodeURIComponent(_feedSince);
     // Fire every independent fetch at once instead of one-after-another — this back-to-back chain was the 20s stall.
-    var _foodsP = (lens==='gym'||lens==='checkin') ? Promise.resolve([]) : sbSelect('food_logs','select=id,client_code,name,emoji,calories,protein,carbs,fat,rating,logged_at,date_str,meal,eat_time,meal_text&order=logged_at.desc.nullslast&limit=400').catch(function(){return [];});
-    var _wosP   = (lens==='kitchen'||lens==='checkin') ? Promise.resolve([]) : sbSelect('workout_logs','select=id,client_code,title,intensity,description,notes,logged_at,date_str,photo,performed_at&order=logged_at.desc.nullslast&limit=300').catch(function(){return [];});
+    var _foodsP = (lens==='gym'||lens==='checkin') ? Promise.resolve([]) : sbSelect('food_logs','select=id,client_code,name,emoji,calories,protein,carbs,fat,rating,logged_at,date_str,meal,eat_time,meal_text'+_sinceQ+'&order=logged_at.desc.nullslast&limit=400').catch(function(){return [];});
+    var _wosP   = (lens==='kitchen'||lens==='checkin') ? Promise.resolve([]) : sbSelect('workout_logs','select=id,client_code,title,intensity,description,notes,logged_at,date_str,photo,performed_at'+_sinceQ+'&order=logged_at.desc.nullslast&limit=300').catch(function(){return [];});
     var _weightsP = (lens==='all') ? sbSelect('weight_logs','order=id.desc&limit=150').catch(function(){return [];}) : Promise.resolve([]);
     var _photosP  = (lens==='all'||lens==='caught') ? sbSelect('progress_photos','order=id.desc&limit=90').catch(function(){return [];}) : Promise.resolve([]);
     var _reviewsP = sbSelect('reviews','select=kind,ref_id,reaction,comment,created_at&order=id.asc&limit=3000').catch(function(){return [];});
@@ -5391,7 +5411,7 @@ async function loadTrainerFeed(targetId){
     if(!items.length){ holder.innerHTML=html+'<div style="padding:30px 20px;text-align:center;color:var(--muted);font-size:13px;">Nothing here yet.</div>'; return; }
     // group by day
     var dayKeys=[], dayMap={};
-    items.forEach(function(it){ var d=new Date(it.ts); d.setHours(0,0,0,0); var k=d.getTime(); if(!dayMap[k]){ dayMap[k]=[]; dayKeys.push(k); } dayMap[k].push(it); });
+    items.forEach(function(it){ var d=_feedDayStart(it.ts); var k=d.getTime(); if(!dayMap[k]){ dayMap[k]=[]; dayKeys.push(k); } dayMap[k].push(it); });
     dayKeys.sort(function(a,b){ return b-a; });
     dayKeys.forEach(function(k){
       html+='<div style="font-size:11px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:var(--gold);margin:4px 0 9px;">'+_feedDayLabel(new Date(k))+'</div>';
@@ -5505,7 +5525,7 @@ function _feedVersionHtml(){
 }
 function _feedMetricsHtml(foods,wos,weights,hidden){
   hidden=hidden||{};
-  var t0=new Date(); t0.setHours(0,0,0,0); var t0ms=t0.getTime();
+  var t0=_feedDayStart(Date.now()); var t0ms=t0.getTime();   // same rollover as logging
   function ok(c){ return c && !hidden[c] && CLIENTS[c] && !CLIENTS[c].isTrainer && c!==cl.code; }
   var logged={}, trained={};
   (foods||[]).forEach(function(f){ if(ok(f.client_code) && _feedTs(f)>=t0ms) logged[f.client_code]=1; });
@@ -8591,6 +8611,14 @@ function restoreAllHiddenClients(){
   if(count === 0){ showToast('Nothing hidden'); return; }
   if(!window.confirm('Restore '+count+' hidden client'+(count===1?'':'s')+' to your dashboard?')) return;
   setHiddenClients([]);
+  // Clearing the local list alone leaves the 46 hardcoded INACTIVE_BASELINE codes
+  // hidden forever — getHiddenClientSet re-adds them every call. The only way back
+  // is the reactivated list, so write every currently-hidden code into it.
+  try{
+    var ra=JSON.parse(localStorage.getItem('yjb_reactivated_clients')||'[]');
+    Object.keys(hidden).forEach(function(c){ if(ra.indexOf(c)===-1) ra.push(c); });
+    localStorage.setItem('yjb_reactivated_clients', JSON.stringify(ra));
+  }catch(e){}
   showToast('✓ Restored '+count+' client'+(count===1?'':'s'));
   loadTrainerDashboard();
 }
@@ -13052,7 +13080,40 @@ function _fdFilterBar(){
     + chip('done','Caught up',f==='done')
     + chip('paid','\ud83d\udc8e Paid',f==='paid')
     + chip('new','\ud83c\udd95 New',f==='new')
-    + '</div>';
+    + '</div>'
+    + _fdHiddenNotice();
+}
+// Clients can be filtered out of every trainer surface by INACTIVE_BASELINE (a
+// hardcoded list nobody opted into), by the Hide-inactive button, or by
+// PERMA_HIDE \u2014 and until now none of that showed anywhere. A client could log
+// all day and simply not exist for the coach. Say it out loud instead.
+function _fdHiddenNotice(){
+  try{
+    var h=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
+    var live=Object.keys(h).filter(function(c){
+      var r=(typeof CLIENTS!=='undefined')?CLIENTS[c]:null;
+      return r && r.active!==false;               // only count people who still exist
+    });
+    if(!live.length) return '';
+    var names=live.slice(0,3).map(function(c){ return (CLIENTS[c]&&CLIENTS[c].name)||c; }).join(', ');
+    if(live.length>3) names+=' +'+(live.length-3)+' more';
+    return '<div onclick="_fdShowHidden()" style="display:flex;align-items:center;gap:8px;margin-top:9px;padding:9px 11px;border:1px dashed rgba(245,197,24,0.38);border-radius:10px;cursor:pointer;">'
+      +'<span style="font-size:12.5px;font-weight:800;color:var(--gold);white-space:nowrap;">'+live.length+' hidden</span>'
+      +'<span style="flex:1;min-width:0;font-size:11.5px;color:rgba(240,236,228,0.6);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+_escHtml(names)+'</span>'
+      +'<span style="flex-shrink:0;font-size:11.5px;font-weight:800;color:var(--gold);">Show</span>'
+    +'</div>';
+  }catch(e){ return ''; }
+}
+function _fdShowHidden(){
+  try{
+    var h=getHiddenClientSet();
+    var live=Object.keys(h).filter(function(c){ var r=CLIENTS[c]; return r && r.active!==false; });
+    if(!live.length) return;
+    var names=live.map(function(c){ return '\u00b7 '+((CLIENTS[c]&&CLIENTS[c].name)||c)+'  ('+c+')'; }).join('\n');
+    if(confirm('These '+live.length+' clients are hidden from your feed and lists:\n\n'+names+'\n\nBring them all back?')){
+      if(typeof restoreAllHiddenClients==='function') restoreAllHiddenClients();
+    }
+  }catch(e){}
 }
 function renderDeepTags(code){
   var el=document.getElementById('jvDeepTags'); if(!el) return;
