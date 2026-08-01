@@ -5,10 +5,14 @@ Deployed via GitHub → Netlify on push to main.
 Backend: Supabase.
 
 ## Before every ship
-- Run `node --check`
+- Run `scripts/check.sh` (extracts inline JS from index.html and runs `node --check` on it)
 - Bump APP_VERSION
-- Show me the diff before committing
-- Hold the push if the change affects live client behavior
+
+## Approval flow
+- For non-trivial changes: show me the plan first and get approval.
+- Once I approve a plan: build, commit, and push in one go — don't ask again before pushing.
+- Only hold the push if the build surfaced something I didn't know about when I approved (a schema change, a behavior trade-off, a bug in existing code). Then show me before pushing.
+- For small changes with no plan step: show the diff, then commit and push on my approval.
 
 ## Known landmines
 - Duplicate element IDs silently grab the wrong element. Check for collisions before adding markup.
