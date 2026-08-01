@@ -1135,6 +1135,8 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
     <div class="phero" id="profHero"></div>
     <div id="pgCards"><div id="pgWeightCard"></div><div id="pgPhotoCard"></div></div>
     <div id="cnMine"></div>
+    <!-- JIM BAR for clients without the Calendar timeline (renderJimTodayBar) -->
+    <div id="jimTodayBar" style="display:none;margin:0 0 12px;"></div>
 
     <!-- WEIGHT -->
     <div class="tile" id="tileWeight">
@@ -3029,7 +3031,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v7.158.2'; window.APP_VERSION = APP_VERSION;
+var APP_VERSION = 'v7.158.3'; window.APP_VERSION = APP_VERSION;
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -3766,6 +3768,7 @@ async function _launchAppInner(){ try{ setTimeout(sqInit,600); }catch(e){}
     {var _ll=document.getElementById('lastWeightLabel'); if(_ll) _ll.textContent='';}
   }
   rendTodayFood(); updTots(); updHalo(); updStats();
+  try{ renderJimTodayBar(); }catch(e){}
   try{ updGoalsTileSub(); }catch(e){}
   renderWeightJourney();
   if(typeof loadProgressPhotos==="function") loadProgressPhotos();
@@ -24568,6 +24571,7 @@ async function loadDayView(){
     if(_seq===_dayLoadSeq){
       try{ showLoading(false); }catch(_){}
       _dayLoadBusy=false;
+      try{ renderJimTodayBar(); }catch(_){}   // bar follows the viewed day (hides beyond yesterday for clients)
     }
   }
 }
@@ -28277,10 +28281,11 @@ async function cnRenderMine() {
 // ===== JIM · QUICK LOG =================================================
 // One line above the nav. Say what you ate, in a sentence, with the time and
 // the meal in it if you like. It files it and the card appears in your day.
-// Trainer only for now.
-
 function _jimAllowed() {
-  try { return !!(cl && typeof isTrainer === 'function' && isTrainer(cl.code)); }
+  // Everyone logged in gets the bar. Where it renders differs: trainers and
+  // Calendar clients get one per timeline day, everyone else gets the Today-tab
+  // bar (renderJimTodayBar) — never both, so the per-day element ids stay unique.
+  try { return !!cl; }
   catch (e) { return false; }
 }
 
@@ -28328,6 +28333,12 @@ function _jimClock(mins) {
 // catching up on yesterday needs no date picker.
 function jimBarHtml(ds) {
   if (!_jimAllowed()) return '';
+  // Clients log today and yesterday only — history stays history. Trainers keep the full range.
+  if (!(typeof isTrainer === 'function' && cl && isTrainer(cl.code))) {
+    try{
+      if (ds && ds !== _tlDateStr(new Date()) && ds !== _tlDateStr(new Date(Date.now() - 86400000))) return '';
+    }catch(e){}
+  }
   try{ if(typeof mlibLoad==='function') mlibLoad(); }catch(e){} // warm the library so match-on-send works from the first send
   var d = ds || '';
   return '<div class="jimBar" data-ds="' + d + '">'
@@ -28344,6 +28355,19 @@ function jimBarHtml(ds) {
     + '</div>';
 }
 
+// Clients without the Calendar still get the fast lane: one bar on the Today
+// tab, following the viewed day. Calendar clients and trainers type into the
+// timeline bars instead — never both, so the per-day element ids stay unique.
+function renderJimTodayBar(){
+  var host=document.getElementById('jimTodayBar'); if(!host) return;
+  var show = cl && !(typeof canSeeCalendar==='function' && canSeeCalendar(cl.code));
+  if(!show){ host.style.display='none'; host.innerHTML=''; return; }
+  var d=(typeof viewDate!=='undefined' && viewDate)?viewDate:new Date();
+  var html='';
+  try{ html=jimBarHtml(_tlDateStr(d)); }catch(e){}   // '' when the viewed day is out of the client's range
+  host.innerHTML=html;
+  host.style.display=html?'':'none';
+}
 async function jimSend(ds) {
   var el = document.getElementById('jimIn_' + (ds || ''));
   var raw = el ? String(el.value || '').trim() : '';
@@ -28583,7 +28607,9 @@ async function jimSendSmart(ds, raw) {
     return true;
   }
   var did = await _jimRun(plan, ds);
-  try { window._tlCache = null; await renderDayTimeline(true); } catch (e) {}
+  // Non-calendar clients have no timeline to repaint — repainting it would
+  // splash timeline HTML into their Training tab until its next re-render.
+  try { window._tlCache = null; if (typeof canSeeCalendar !== 'function' || canSeeCalendar(cl.code)) { await renderDayTimeline(true); } } catch (e) {}
   if (did.length) showToast('Logged ' + did.join(' \u00b7 '));
   else showToast('Nothing I could log in that');
   return true;
