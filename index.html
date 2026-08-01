@@ -3007,7 +3007,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v7.157.2'; window.APP_VERSION = APP_VERSION;
+var APP_VERSION = 'v7.157.3'; window.APP_VERSION = APP_VERSION;
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -3538,10 +3538,17 @@ async function _doLoginInner(){
   // before rejecting. This guarantees anyone who exists in the clients table can sign in.
   if(!c){
     try{
-      var _rows = await sbSelect('clients','code=eq.'+encodeURIComponent(entered)+'&select=code,name,initials,phone,coach_code,is_trainer,active&order=code.asc&limit=1');
+      // Only ask for the call columns when we know they exist, so this fallback
+      // never fails login on a table that hasn't been migrated yet.
+      var _cols='code,name,initials,phone,coach_code,is_trainer,active'
+        + (window._callColsExist===false ? '' : ',calls_enabled,call_credits');
+      var _rows = await sbSelect('clients','code=eq.'+encodeURIComponent(entered)+'&select='+_cols+'&order=code.asc&limit=1');
       if(_rows && _rows.length){
         var r=_rows[0];
         c = {name:(r.name||r.code), initials:r.initials||undefined, phone:r.phone||undefined, coach_code:r.coach_code||undefined, active:(r.active!==false)};
+        if(r.calls_enabled!=null) c.calls_enabled=(r.calls_enabled===true);
+        else if(window._callColsExist===false) c.calls_enabled=true; // grandfather until columns exist
+        if(r.call_credits!=null) c.call_credits=(+r.call_credits||0);
         if(r.is_trainer) c.isTrainer=true;
         CLIENTS[entered]=c;  // cache so the rest of the app sees them
       }
@@ -19232,8 +19239,14 @@ function callCreditsLeft(code){
 }
 function canSeeCalendar(code){
   if(isTrainer(code)) return true;
-  if(CALENDAR_FOR_ALL) return true;
+  // The Calendar/booking tab follows the per-client calls_enabled flag: no standing
+  // booking access, no Calendar tab (it falls back to the Training view). One-off call
+  // credits still book through the check-in tile, they just don't open the whole tab.
+  // Toggle this per client from the trainer's "Call access" screen.
   var c = String(code==null?'':code).trim().toLowerCase();
+  var rec = CLIENTS[c];
+  if(!rec || rec.calls_enabled!==true) return false;
+  if(CALENDAR_FOR_ALL) return true;
   for(var i=0;i<CALENDAR_CODES.length;i++){
     if(String(CALENDAR_CODES[i]).trim().toLowerCase()===c) return true;
   }
