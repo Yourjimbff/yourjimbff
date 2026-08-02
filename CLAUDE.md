@@ -18,6 +18,15 @@ instead of stopping the merge:
 
 Skip it and you just get a normal one-line conflict — nothing breaks.
 
+The driver takes the higher version and **bumps it** when both sides moved,
+because the merged tree is newer than either parent. Taking the higher number
+as-is lands on a version that's already deployed, and `checkForUpdate` then
+never pulls the merge.
+
+It can't help when both branches pick the *same* number — git resolves that
+without calling the driver. Bump by two on one side if you're working in
+parallel, or check `VERSION` before you merge.
+
 ## Approval flow
 - For non-trivial changes: show me the plan first and get approval.
 - Once I approve a plan: build, commit, and push in one go — don't ask again before pushing.
