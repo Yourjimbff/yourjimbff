@@ -55,16 +55,18 @@ Right now clients improvise at log time. They should mostly know what they're ea
 
 **Design:** planned meals should look different from logged ones — ghosted or outlined until confirmed, solid once done. The day should visually fill in as it goes.
 
-## 3. Morning walk block
+## 3. Morning walk block — SHIPPED
 
-The day's opener. Gets the operating system running.
+*Was already built when I came to build it: its own sheet, rotating prompts, photo,
+time, free-text reflection and a send-off. The one bullet that genuinely didn't work
+was the duration — the quick-pick chips had CSS, a populate call and a setter, but no
+element to render into, so `getElementById` returned null and every walk logged
+`duration: null`. Fixed by adding the missing container.*
 
-- Mark as done
-- How did you feel this morning — short, free text, genuinely optional
-- Optional photo (themselves or the scenery)
-- Duration, quick-pick chips
-
-**Design:** the softest thing on the page. This is the reflective block, not a task. Don't make it look like the food blocks.
+- Mark as done ✓
+- How did you feel this morning — short, free text, genuinely optional ✓
+- Optional photo (themselves or the scenery) ✓
+- Duration, quick-pick chips ✓ *(was orphaned; now wired)*
 
 ## 4. Free / creative workout mode
 
