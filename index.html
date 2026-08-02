@@ -540,6 +540,14 @@ body.jv-cockpit #jvDayTabs{display:none;}
 .jvDanger{margin:34px 0 6px;padding:11px 14px;border:1px solid rgba(255,68,85,0.30);border-radius:10px;
   font-size:12.5px;font-weight:800;color:var(--red);cursor:pointer;text-align:center;}
 .jvDanger:hover{background:rgba(255,68,85,0.08);border-color:rgba(255,68,85,0.5);}
+/* Off-the-board roster: one row per person, why they're off it, and both ways out. */
+.jvHidRow{display:flex;align-items:center;gap:8px;background:#141414;border:1px solid #212121;border-radius:12px;padding:11px 13px;margin-bottom:8px;}
+.jvHidWho{flex:1;min-width:0;cursor:pointer;}
+.jvHidName{font-size:14px;font-weight:800;color:#f0ece4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.jvHidWhy{font-size:11.5px;color:rgba(240,236,228,0.55);margin-top:2px;}
+.jvHidRow .jvTBtn{flex:0 0 auto;padding:8px 12px;}
+.jvTBtnDanger{color:var(--red);border-color:rgba(255,68,85,0.30);background:transparent;}
+.jvTBtnDanger:hover{background:rgba(255,68,85,0.08);}
 .jvTBtns{display:flex;gap:7px;margin-top:12px;}
 /* Peers. Nothing here is the primary action — texting someone isn't a bigger deal
    than making a note about them, and gold on one of them said otherwise. */
@@ -8884,8 +8892,47 @@ function getHiddenClientSet(){
     var ra = JSON.parse(localStorage.getItem('yjb_reactivated_clients')||'[]');
     ra.forEach(function(c){ delete s[c]; });
   }catch(e){}
+  // Marked inactive on their card: off the roster, every log and photo kept. This one
+  // lives on the clients row, so unlike the local hide list it holds on every device.
+  try{ Object.keys(CLIENTS).forEach(function(c){ if(CLIENTS[c] && CLIENTS[c].active===false) s[c]=true; }); }catch(e){}
   for(var pk in PERMA_HIDE){ s[pk]=true; }
   return s;
+}
+// Why someone isn't on the board — so the roster view can say, rather than just hide.
+function _jvHiddenReason(code){
+  try{
+    if(typeof PERMA_HIDE!=='undefined' && PERMA_HIDE[code]) return 'hidden permanently';
+    if(CLIENTS[code] && CLIENTS[code].active===false) return 'inactive';
+    var arr=JSON.parse(localStorage.getItem('yjb_hidden_clients')||'[]');
+    if(arr.indexOf(code)>=0) return 'hidden on this device';
+    if(typeof INACTIVE_BASELINE!=='undefined' && INACTIVE_BASELINE[code]) return 'parked as inactive';
+  }catch(e){}
+  return 'filtered out';
+}
+// Inactive is not delete. Delete is for people whose data you don't want; this is for
+// the ones who are done but whose history still matters.
+async function jvSetActive(code, makeActive){
+  var r=CLIENTS[code]; if(!r) return;
+  r.active=!!makeActive;
+  try{
+    var hid=JSON.parse(localStorage.getItem('yjb_hidden_clients')||'[]');
+    var re=JSON.parse(localStorage.getItem('yjb_reactivated_clients')||'[]');
+    if(makeActive){
+      // Bringing someone back has to clear every mechanism holding them down, or the
+      // board keeps hiding them and the button looks broken.
+      localStorage.setItem('yjb_hidden_clients', JSON.stringify(hid.filter(function(x){ return x!==code; })));
+      if(typeof INACTIVE_BASELINE!=='undefined' && INACTIVE_BASELINE[code] && re.indexOf(code)<0){
+        re.push(code); localStorage.setItem('yjb_reactivated_clients', JSON.stringify(re));
+      }
+    } else {
+      localStorage.setItem('yjb_reactivated_clients', JSON.stringify(re.filter(function(x){ return x!==code; })));
+    }
+  }catch(e){}
+  var res=await _jvSaveClient(code, {active:!!makeActive});
+  if(!res.ok){ r.active=!makeActive; try{ showToast('Could not save — '+(res.msg||'check the connection')); }catch(e){} return; }
+  try{ showToast((r.name||code)+(makeActive?' is back on your roster':' moved to inactive — nothing deleted')); }catch(e){}
+  try{ if(typeof jvRenderTriage==='function' && jvTriage) jvRenderTriage(); }catch(e){}
+  try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
 }
 
 function setHiddenClients(arr){
@@ -9159,8 +9206,10 @@ function _jvOpenClient(code){
 }
 // Tap a Front Desk stat → see exactly which clients make up that number.
 function _jvStatusLine(code){
-  var p=(jvTriage&&jvTriage.per||{})[code];
-  if(!p||!p.ever) return 'not started yet';
+  var loaded=false; try{ loaded=!!(jvTriage&&jvTriage.per); }catch(e){}
+  if(!loaded) return '';                      // don't guess before the board has loaded
+  var p=jvTriage.per[code];
+  if(!p||!p.ever) return 'never logged';
   var cls=(typeof _jvClassify==='function')?_jvClassify(p, jvTriage.now):null;
   return cls?cls.reason:'active';
 }
@@ -9670,6 +9719,33 @@ function jvRenderTriage(){
   }
 
   var inactiveN=notStarted.length+dormant.length+winback.length;
+  // Everyone the board is filtering out, with the reason and a way to act on it.
+  // These people were simply invisible before — no list, no way back, no way to delete.
+  if(window._jvView==='roster'){
+    var hiddenCodes=Object.keys(_hidden).filter(function(c){ return CLIENTS[c] && !CLIENTS[c].isTrainer; })
+      .sort(function(a,b){ return String(CLIENTS[a].name||a).localeCompare(String(CLIENTS[b].name||b)); });
+    html+='<div class="jvViewBack" onclick="jvSetView(\'roster\')">← Back to the board</div>';
+    html+='<div class="jvBandHead"><span class="jvBandTitle">Off the board</span>'
+      +'<span class="jvBandCount">'+hiddenCodes.length+'</span>'
+      +'<span class="jvBandSay">everything they logged is kept unless you delete them</span></div>';
+    if(!hiddenCodes.length){
+      html+='<div class="jvEmpty">Nobody is filtered out. Your whole roster is on the board.</div>';
+    } else {
+      html+=hiddenCodes.map(function(c){
+        var nm=String(CLIENTS[c].name||c).replace(/</g,'&lt;');
+        return '<div class="jvHidRow">'
+          +'<div class="jvHidWho" onclick="jvOpenDeep(\''+c+'\')">'
+            +'<div class="jvHidName">'+nm+'</div>'
+            +'<div class="jvHidWhy">'+_jvHiddenReason(c)+'</div>'
+          +'</div>'
+          +'<button class="jvTBtn" onclick="jvSetActive(\''+c+'\',true)">Make active</button>'
+          +'<button class="jvTBtn jvTBtnDanger" onclick="jvRemoveClient(\''+c+'\')">Delete</button>'
+        +'</div>';
+      }).join('');
+    }
+    wall.innerHTML=html; _jvReFilter(); return;
+  }
+
   if(window._jvView==='inactive'){
     html+='<div class="jvViewBack" onclick="jvSetView(\'inactive\')">← Back to the board</div>';
     function shelf(title,say,arr,isCode){
@@ -9743,6 +9819,9 @@ function jvRenderTriage(){
 
   html+='<div class="jvViewLink" onclick="jvSetView(\'inactive\')">Not active · '+inactiveN
     +' <span>never started, quiet, or to win back</span> →</div>';
+  var offN=Object.keys(_hidden).filter(function(c){ return CLIENTS[c] && !CLIENTS[c].isTrainer; }).length;
+  html+='<div class="jvViewLink" style="border-top:none;padding-top:0;margin-top:10px;" onclick="jvSetView(\'roster\')">Off the board · '+offN
+    +' <span>hidden or inactive</span> →</div>';
 
   wall.innerHTML=html;
   _jvReFilter();
@@ -9985,6 +10064,10 @@ function jvOpenDeep(code){
       + '<div id="jvDeepDays"><div style="color:rgba(240,236,228,0.78);font-size:13px;padding:10px 0;">Loading recent history…</div></div>'
       + '<div id="jvDeepPhotos"></div>'
       // Bottom of the expanded card, behind More. Nowhere near anything you tap daily.
+      // Inactive first, because it's the one that's almost always the right answer.
+      + '<div class="jvDeepActs" style="margin-top:30px;"><button onclick="jvSetActive(\''+code+'\','+(info.active===false?'true':'false')+')">'
+        + (info.active===false ? 'Put back on the roster' : 'Move to inactive — keeps everything')
+      + '</button></div>'
       + '<div class="jvDanger" onclick="jvRemoveClient(\''+code+'\')">Remove '+String(info.name||code).replace(/</g,'&lt;')+' from YOURJIMBFF</div>')
     : '');
 
@@ -13107,18 +13190,30 @@ function filterClientCards(q){
     results.innerHTML='<div style="padding:18px;text-align:center;color:var(--m2);font-size:13px;">No client matches \u201c'+q.replace(/</g,'&lt;')+'\u201d</div>';
     return;
   }
-  var act = (typeof window!=='undefined' && window._lastActivity) ? window._lastActivity : {};
+  // "Not started yet" used to be the default here, shown whenever _lastActivity was
+  // missing — and it's only ever set by loadTrainerDashboard, which the front desk
+  // never calls. So every search result claimed the client had never logged, however
+  // much they'd logged. Absence of data is not evidence of absence: read the triage
+  // board first (it always loads here), fall back to _lastActivity, and where neither
+  // knows, say nothing rather than guess.
+  var act = (typeof window!=='undefined' && window._lastActivity) ? window._lastActivity : null;
+  var per = null; try{ per=(jvTriage&&jvTriage.per)?jvTriage.per:null; }catch(e){}
   results.innerHTML = matches.map(function(code){
     var info=CLIENTS[code];
     var nm=(info.name||code).replace(/</g,'&lt;');
     var safe=(info.name||'').replace(/\\/g,'').replace(/'/g,"\\'");
-    var dot='#6e6e6e', sub='Not started yet';
-    if(act[code]){
-      var days=(Date.now()-act[code].ts)/86400000;
-      if(days<1){dot='var(--green)';sub='Active today';}
-      else if(days<3){dot='#f5c518';sub=Math.max(1,Math.round(days))+'d ago';}
-      else {dot='#e5484d';sub=Math.round(days)+'d quiet';}
+    var dot='#6e6e6e', sub='';
+    var ts=null, everLogged=null;
+    if(per && per[code]){ everLogged=!!per[code].ever; if(per[code].last) ts=per[code].last; }
+    if(!ts && act && act[code] && act[code].ts){ ts=act[code].ts; everLogged=true; }
+    if(ts){
+      var days=(Date.now()-ts)/86400000;
+      if(days<1){dot='#f0ece4';sub='Logged today';}
+      else if(days<3){dot='#f0ece4';sub=Math.max(1,Math.round(days))+'d ago';}
+      else {dot='#6e6e6e';sub=Math.round(days)+'d since they logged';}
     }
+    else if(everLogged===false && per) sub='Never logged';   // the board loaded and is sure
+    else sub='';                                             // nothing loaded — say nothing
     return '<div onclick="_jvOpenClient(\''+code+'\')" style="display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;margin-bottom:8px;cursor:pointer;background:var(--surface);">'
       +'<span style="width:9px;height:9px;border-radius:50%;background:'+dot+';flex-shrink:0;"></span>'
       +'<div style="flex:1;min-width:0;"><div style="font-weight:800;font-size:14px;color:var(--text);">'+nm+' <span style="font-size:10px;font-weight:600;color:var(--muted);font-family:ui-monospace,Menlo,monospace;background:var(--s2);padding:1px 6px;border-radius:5px;vertical-align:1px;">'+code+'</span></div><div style="font-size:11.5px;color:var(--muted);margin-top:2px;">'+sub+'</div></div>'
