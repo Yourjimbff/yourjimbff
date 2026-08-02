@@ -3062,7 +3062,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v7.172.0'; window.APP_VERSION = APP_VERSION;
+var APP_VERSION = 'v7.173.0'; window.APP_VERSION = APP_VERSION;
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -9422,6 +9422,7 @@ function jvOpenDeep(code){
     + '<div id="jvDeepProgram"></div>'
     + dossier
     + '<div id="jvDeepWeak"></div>'
+    + '<div id="jvDeepFoods"></div>'
     + '<div id="jvDeepDays"><div style="color:rgba(240,236,228,0.78);font-size:13px;padding:10px 0;">Loading recent history\u2026</div></div>'
     + '<div id="jvDeepPhotos"></div>';
   document.body.classList.add('jv-deep-open');
@@ -9434,6 +9435,7 @@ function jvOpenDeep(code){
   _jvLoadDeepWeight(code);
   _jvLoadDeepPhotos(code);
   try{ miDeepBlock(code); }catch(e){}
+  try{ mbDeepBlock(code); }catch(e){}
 }
 // 7-day at-a-glance summary for the client deep-dive: eating quality + training frequency,
 // scored against Yusuf's standard. Green = on standard, amber = slipping, red = off.
@@ -16265,7 +16267,7 @@ var MB_CARB_CUT = 35;                 // net carbs per meal, cutting strictly
 var MB_CARB_TRAIN = 50;               // net carbs in a training window
 var MB_FRUIT_MIN = 20, MB_FRUIT_MAX = 35;
 
-var _mbComponents = [];               // filled by mbLoadComponents()
+var _mbComponents = [], _mbLoadedFor = '';   // filled by mbLoadComponents()
 // window._mbTableExists : undefined unprobed | false migration not run
 
 function mbCarbTarget(mode){ return mode==='training' ? MB_CARB_TRAIN : MB_CARB_CUT; }
@@ -16280,18 +16282,39 @@ function mbProteinRange(gender){
     : {minPalms:1.5, maxPalms:2.5, minOz:5,   maxOz:9, suggested:1.5};
 }
 
+// A component someone added for themselves off a packet, rather than one of
+// Yusuf's. Only the owner ever sees it.
+function mbIsPersonal(c){ return !!(c && String(c.owner_code)!==String(TRAINER_CODE)); }
+function mbCanEdit(c){ return !!(c && cl && String(c.owner_code)===String(cl.code)); }
+
 function mbComponents(kind){
   return (_mbComponents||[])
     .filter(function(c){ return c && !c.is_archived && (!kind || c.kind===kind); })
     .slice()
-    .sort(function(a,b){ return (a.sort||0)-(b.sort||0); });
+    .sort(function(a,b){
+      // the coach's list keeps its taught order; anything personal lands after it
+      var pa=mbIsPersonal(a)?1:0, pb=mbIsPersonal(b)?1:0;
+      if(pa!==pb) return pa-pb;
+      return ((a.sort||0)-(b.sort||0)) || _mbNorm(a.name).localeCompare(_mbNorm(b.name));
+    });
 }
 function _mbNorm(s){ return String(s==null?'':s).trim().toLowerCase().replace(/\s+/g,' '); }
+function mbById(id){
+  for(var i=0;i<(_mbComponents||[]).length;i++){ if(String(_mbComponents[i].id)===String(id)) return _mbComponents[i]; }
+  return null;
+}
+// If a client names their own component "Rice", theirs is the one they meant.
+function _mbPreferMine(list){
+  for(var i=0;i<list.length;i++){ if(mbCanEdit(list[i]) && mbIsPersonal(list[i])) return list[i]; }
+  return list[0]||null;
+}
 function mbFind(kind, name){
   var t=_mbNorm(name); if(!t) return null;
   var pool=mbComponents(kind);
-  for(var i=0;i<pool.length;i++){ if(_mbNorm(pool[i].name)===t) return pool[i]; }
-  for(var j=0;j<pool.length;j++){ if(_mbNorm(pool[j].name).indexOf(t)>=0) return pool[j]; }
+  var exact=pool.filter(function(c){ return _mbNorm(c.name)===t; });
+  if(exact.length) return _mbPreferMine(exact);
+  var part=pool.filter(function(c){ return _mbNorm(c.name).indexOf(t)>=0; });
+  if(part.length) return _mbPreferMine(part);
   return null;
 }
 function _mbPer(c){
@@ -16337,6 +16360,7 @@ function mbFormatQty(q){
 function mbPluralUnit(unit, q){
   var u=String(unit||'');
   if(q===1) return u;
+  if(/[^aeiou]y$/.test(u)) return u.slice(0,-1)+'ies';   // patty -> patties
   if(/h$|s$|x$/.test(u)) return u+'es';
   return u+'s';
 }
@@ -16349,8 +16373,203 @@ function mbFormatPortion(qty, unit){
 function mbFormatExact(component, qty){
   if(!component) return '';
   if(component.unit==='palm') return (Math.round(qty*MB_PALM_OZ*10)/10)+' oz';
+  var g=+component.grams_per_unit||0;
+  if(g>0) return Math.round(g*qty)+'g';
   var per=_mbPer(component);
+  if(component.kind==='protein') return Math.round(per.p*qty)+'g protein';
   return Math.round(per.c*qty)+'g net carbs';
+}
+
+// ===== READING A NUTRITION LABEL ========================================
+// The part that has to be right. A packet says "1 link (85g)" and gives the
+// numbers for ONE link. Another says "2 cookies (30g)" and gives them for
+// TWO. A component stores macros for ONE unit and portionFor multiplies, so
+// a serving containing more than one item has to be divided down first --
+// otherwise every portion built off that component is silently doubled and
+// looks entirely plausible.
+//
+// No DOM in here, same rule as portionFor. Jim Chat will read labels too.
+
+// Measures, not things. "2 tbsp" and "2/3 cup" are amounts you can't count
+// out one of, so they collapse to a serving rather than becoming the unit.
+var MB_MEASURE_WORDS={g:1,gr:1,gm:1,gram:1,grams:1,kg:1,mg:1,oz:1,ounce:1,ounces:1,
+  'fl oz':1,'fluid ounce':1,'fluid ounces':1,ml:1,milliliter:1,milliliters:1,
+  millilitre:1,millilitres:1,l:1,liter:1,liters:1,litre:1,litres:1,
+  lb:1,lbs:1,pound:1,pounds:1,cup:1,cups:1,tbsp:1,tbs:1,tablespoon:1,tablespoons:1,
+  tsp:1,teaspoon:1,teaspoons:1,pint:1,pints:1,quart:1,quarts:1,gallon:1,gallons:1};
+
+var _MB_UNI_FRAC={'½':0.5,'⅓':1/3,'⅔':2/3,'¼':0.25,'¾':0.75,
+  '⅕':0.2,'⅖':0.4,'⅗':0.6,'⅘':0.8,'⅙':1/6,'⅚':5/6,
+  '⅛':0.125,'⅜':0.375,'⅝':0.625,'⅞':0.875};
+
+function _mbRound1(x){ var n=+x; if(!isFinite(n)) return 0; return Math.round(n*10)/10; }
+
+// "1 1/2" -> 1.5 · "2/3" -> 0.667 · "1½" -> 1.5 · "2" -> 2 · anything else -> null
+function mbParseCount(s){
+  var t=String(s==null?'':s).trim();
+  if(!t) return null;
+  var mx=t.match(/^(\d+)\s+(\d+)\s*\/\s*(\d+)/);          // 1 1/2
+  if(mx && +mx[3]) return (+mx[1])+((+mx[2])/(+mx[3]));
+  var fr=t.match(/^(\d+)\s*\/\s*(\d+)/);                  // 2/3
+  if(fr && +fr[2]) return (+fr[1])/(+fr[2]);
+  var wu=t.match(/^(\d+)\s*([¼-¾⅐-⅞])/); // 1½
+  if(wu && _MB_UNI_FRAC[wu[2]]!==undefined) return (+wu[1])+_MB_UNI_FRAC[wu[2]];
+  if(_MB_UNI_FRAC[t.charAt(0)]!==undefined) return _MB_UNI_FRAC[t.charAt(0)];
+  var pn=t.match(/^(\d+(?:\.\d+)?)/);
+  if(pn) return parseFloat(pn[1]);
+  return null;
+}
+
+// Rough, and it only has to be readable -- the client can retype the word on
+// the confirm screen if it comes out odd.
+function mbSingular(w){
+  var s=String(w||'').trim().toLowerCase();
+  if(s.length<4) return s;
+  if(/ies$/.test(s)) return s.slice(0,-1);              // cookies -> cookie
+  if(/(ch|sh|ss|x|z)es$/.test(s)) return s.slice(0,-2); // sandwiches -> sandwich
+  if(/ss$/.test(s)) return s;
+  if(/s$/.test(s)) return s.slice(0,-1);                // links -> link
+  return s;
+}
+
+// The whole conversion, in one place.
+//   "1 link (85g)"    -> {unit:'link',    count:1,   divisor:1, grams:85}
+//   "2 cookies (30g)" -> {unit:'cookie',  count:2,   divisor:2, grams:30}
+//   "2/3 cup (55g)"   -> {unit:'serving', count:2/3, divisor:1, grams:55}
+// divisor is how many `unit`s the label's numbers cover. per_unit = per serving / divisor.
+function mbUnitFromServing(text){
+  var out={unit:'serving', count:1, divisor:1, grams:null, noun:''};
+  var raw=String(text==null?'':text).trim();
+  if(!raw) return out;
+
+  var paren=raw.match(/\(([^)]*)\)/);
+  var gm=(paren?paren[1]:raw).match(/(\d+(?:\.\d+)?)\s*(?:g|gm|gram|grams)\b/i);
+  if(gm) out.grams=parseFloat(gm[1]);
+
+  var head=raw.replace(/\([^)]*\)/g,' ').replace(/\b(about|approx\.?|approximately)\b/gi,' ').trim();
+  var n=mbParseCount(head);
+  if(n!==null && isFinite(n) && n>0) out.count=n;
+
+  var rest=head.replace(/^[\d\s\/.¼-¾⅐-⅞]+/,'').replace(/[,;].*$/,'');
+  var cleaned=rest.toLowerCase().replace(/[^a-z ]+/g,' ').replace(/\s+/g,' ').trim();
+  var last=cleaned?cleaned.split(' ').pop():'';
+  var isMeasure=!!(MB_MEASURE_WORDS[cleaned] || MB_MEASURE_WORDS[mbSingular(cleaned)]);
+  var noun=last?mbSingular(last):'';
+  out.noun=noun;
+
+  var whole=(out.count>0 && Math.abs(out.count-Math.round(out.count))<1e-9) ? Math.round(out.count) : 0;
+  if(!noun){ return out; }                                       // nothing to count
+  if(isMeasure){
+    // one cup is a unit; two-thirds of one is not, and neither is "2 tbsp"
+    if(whole===1){ out.unit=noun; out.divisor=1; }
+    return out;
+  }
+  if(whole>=1){ out.unit=noun; out.divisor=whole; return out; }
+  return out;                                                    // half a package -> serving
+}
+
+// Labels give TOTAL carbs and fibre on separate lines. Everything downstream
+// wants net, so it is derived here and never taken from the model's own
+// subtraction.
+function mbNetCarbs(total, fibre){
+  var t=+total||0, f=+fibre||0;
+  if(!(t>0)) return 0;
+  if(f<0) f=0;
+  if(f>t) f=t;
+  return _mbRound1(t-f);
+}
+
+function _mbLabelName(brand, name){
+  var b=String(brand||'').trim(), n=String(name||'').trim();
+  if(!n) return b.slice(0,60);
+  if(b && n.toLowerCase().indexOf(b.toLowerCase())<0) n=b+' '+n;
+  return n.replace(/\s+/g,' ').slice(0,60);
+}
+// A starting point for the form, not a claim about the food. The client picks.
+function _mbKindFor(k, per){
+  var s=String(k||'').toLowerCase();
+  if(s==='protein'||s==='veg'||s==='carb'||s==='fruit') return s;
+  if(s.indexOf('veg')===0) return 'veg';
+  var p=(per&&+per.p)||0, c=(per&&+per.c)||0;
+  return (p>=c)?'protein':'carb';
+}
+
+// raw = whatever came back off the label (or out of the manual form)
+//   -> {name, kind, unit, per_unit:{cal,p,c,f}, serving_note, grams_per_unit, ...}
+function mbNormaliseLabel(raw){
+  raw=raw||{};
+  var text=String(raw.serving_text||'').trim();
+  if(!text){
+    var c0=(+raw.serving_count>0)?(+raw.serving_count):1;
+    var u0=String(raw.serving_unit||'serving').trim()||'serving';
+    var g0=(+raw.grams>0)?(+raw.grams):0;
+    text=mbFormatQty(c0)+' '+u0+(g0?(' ('+g0+'g)'):'');
+  }
+  var S=mbUnitFromServing(text);
+  if(S.grams==null && +raw.grams>0) S.grams=+raw.grams;
+  var d=S.divisor>0?S.divisor:1;
+
+  var per={
+    cal:_mbRound1((+raw.calories||0)/d),
+    p:  _mbRound1((+raw.protein||0)/d),
+    c:  _mbRound1(mbNetCarbs(raw.carbs, raw.fibre)/d),
+    f:  _mbRound1((+raw.fat||0)/d)
+  };
+  return {
+    name: _mbLabelName(raw.brand, raw.name),
+    kind: _mbKindFor(raw.kind, per),
+    unit: S.unit,
+    per_unit: per,
+    serving_note: text,
+    grams_per_unit: (S.grams!=null && S.grams>0) ? _mbRound1(S.grams/d) : null,
+    carbs_total: _mbRound1((+raw.carbs||0)/d),
+    fibre: _mbRound1((+raw.fibre||0)/d),
+    divisor: d,
+    confidence: raw.confidence||null
+  };
+}
+
+// Enough on the label to be worth showing? Deliberately NOT a calorie test --
+// a zero-calorie product is a real thing and would fail one.
+function mbLabelUsable(raw){
+  if(!raw) return false;
+  var hasServing=!!String(raw.serving_text||raw.serving_unit||'').trim() || +raw.grams>0;
+  var hasMacro=(+raw.calories>0)||(+raw.protein>0)||(+raw.carbs>0)||(+raw.fat>0)||(+raw.fibre>0);
+  var hasName=!!String(raw.name||raw.brand||'').trim();
+  return hasName && (hasServing || hasMacro);
+}
+
+// The inverse of mbNormaliseLabel: take a saved component back to the numbers
+// the packet printed. The form asks for per-serving, the table stores per-unit,
+// and a component whose serving is two of something would otherwise be halved
+// a second time every time its owner opened it.
+function mbLabelFieldsFor(component){
+  if(!component) return null;
+  var per=_mbPer(component);
+  var note=component.serving_note||('1 '+(component.unit||'serving'));
+  var d=mbUnitFromServing(note).divisor||1;
+  return {
+    name: component.name||'', kind: component.kind||'protein', serving_text: note,
+    calories:_mbRound1(per.cal*d), protein:_mbRound1(per.p*d),
+    // only net carbs were ever stored, so it comes back as net with no fibre
+    // to subtract -- the round trip lands on the same number either way
+    carbs:_mbRound1(per.c*d), fibre:0, fat:_mbRound1(per.f*d)
+  };
+}
+
+// The row that goes in the table. Kept here so the shape lives with the maths.
+function mbRowFromLabel(norm, ownerCode, sort){
+  return {
+    owner_code: ownerCode,
+    kind: norm.kind,
+    name: norm.name,
+    unit: norm.unit,
+    per_unit: {cal:norm.per_unit.cal, p:norm.per_unit.p, c:norm.per_unit.c, f:norm.per_unit.f},
+    serving_note: norm.serving_note||null,
+    grams_per_unit: (norm.grams_per_unit!=null)?norm.grams_per_unit:null,
+    sort: (+sort||0),
+    is_archived: false
+  };
 }
 
 // parts = [{component, qty}]
@@ -16394,12 +16613,20 @@ async function mbProbe(){
   }catch(e){ window._mbTableExists=false; }
   return window._mbTableExists;
 }
+// Yusuf's library plus whatever this client has added for themselves. Nobody
+// else's personal rows come back — the filter is the privacy.
+function _mbOwnerFilter(){
+  var mine=cl&&cl.code?String(cl.code):'';
+  if(!mine || mine===String(TRAINER_CODE)) return 'owner_code=eq.'+encodeURIComponent(TRAINER_CODE);
+  return 'or=(owner_code.eq.'+encodeURIComponent(TRAINER_CODE)+',owner_code.eq.'+encodeURIComponent(mine)+')';
+}
 async function mbLoadComponents(force){
   if(!(await mbProbe())) return [];
-  if(!force && _mbComponents.length) return _mbComponents;
+  if(!force && _mbComponents.length && _mbLoadedFor===(cl?cl.code:'')) return _mbComponents;
   try{
     _mbComponents = await sbSelect('meal_components',
-      'owner_code=eq.'+encodeURIComponent(TRAINER_CODE)+'&is_archived=eq.false&order=sort.asc&limit=400') || [];
+      _mbOwnerFilter()+'&is_archived=eq.false&order=sort.asc&limit=400') || [];
+    _mbLoadedFor = cl?cl.code:'';
   }catch(e){}
   return _mbComponents;
 }
@@ -16546,24 +16773,48 @@ function mbRenderPick(){
     +'<div style="font-size:18px;font-weight:800;color:var(--text);">'+_escHtml(meta.label)+'</div>'
     +'<div style="font-size:12.5px;color:var(--m2);line-height:1.5;margin:5px 0 14px;">'+_escHtml(meta.hint)+'</div>'
     +(_mbPickComp ? _mbPalmStep() : '')
-    +(_mbPickComp ? '' : (list.length?list.map(function(c){
-        return '<div onclick="mbChoose(\''+_escAttr(c.name)+'\')" style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:13px 14px;margin-bottom:7px;cursor:pointer;">'
-          +'<div style="font-size:14px;font-weight:700;color:var(--text);">'+_escHtml(c.name)+'</div>'
-          +'<div style="flex-shrink:0;font-size:12px;font-weight:600;color:var(--muted);">'+_escHtml(mbPluralUnit(c.unit,2))+'</div>'
-        +'</div>';
-      }).join(''):_flibEmpty('Nothing here yet.')))
+    +(_mbPickComp ? '' : (list.length?list.map(_mbPickRow).join(''):_flibEmpty('Nothing here yet.')))
+    +(_mbPickComp ? '' : '<div onclick="mbOpenAdd(\''+kind+'\')" style="display:flex;align-items:center;justify-content:space-between;gap:10px;'
+      +'border:1.5px dashed rgba(255,255,255,0.22);border-radius:12px;padding:13px 14px;margin-top:4px;cursor:pointer;">'
+      +'<div style="font-size:14px;font-weight:700;color:var(--m2);">Add something of your own</div>'
+      +'<div style="flex-shrink:0;font-size:15px;font-weight:700;color:var(--muted);">+</div>'
+    +'</div>')
     +'<button class="obtn" onclick="mbClosePick()">Cancel</button>'
   +'</div>';
   document.body.appendChild(o);
 }
+// A row in the picker. The client's own foods sit after Yusuf's, marked, with
+// the packet's own serving line underneath so they can tell two similar
+// products apart.
+function _mbPickRow(c){
+  var mine=mbIsPersonal(c) && mbCanEdit(c);
+  var id=_escAttr(String(c.id));
+  return '<div onclick="mbChooseById(\''+id+'\')" style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:13px 14px;margin-bottom:7px;cursor:pointer;">'
+    +'<div style="flex:1;min-width:0;">'
+      +'<div style="font-size:14px;font-weight:700;color:var(--text);">'+_escHtml(c.name)
+        +(mine?' <span style="font-size:9.5px;font-weight:800;letter-spacing:0.4px;color:var(--muted);border:1px solid var(--border);border-radius:5px;padding:1px 4px;vertical-align:1px;">YOURS</span>':'')
+      +'</div>'
+      +(mine&&c.serving_note?'<div style="font-size:11px;font-weight:600;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+_escHtml(c.serving_note)+'</div>':'')
+    +'</div>'
+    +(mine
+      ? '<div onclick="event.stopPropagation();mbOpenAdd(null,\''+id+'\')" style="flex-shrink:0;font-size:12px;font-weight:600;color:var(--muted);padding:2px 0 2px 6px;cursor:pointer;">Edit</div>'
+      : '<div style="flex-shrink:0;font-size:12px;font-weight:600;color:var(--muted);">'+_escHtml(mbPluralUnit(c.unit,2))+'</div>')
+  +'</div>';
+}
+// Protein is the one amount worth asking about. Palms for Yusuf's cuts of
+// meat; whole ones for anything that comes in a countable packet.
 function _mbPalmStep(){
-  var c=_mbPickComp, R=mbProteinRange(_clientGender());
-  var opts=[1,1.5,2,2.5,3];
+  var c=_mbPickComp, isPalm=((c.unit||'')==='palm');
+  var R=mbProteinRange(_clientGender());
+  var opts=isPalm?[1,1.5,2,2.5,3]:[1,2,3,4];
+  var hint=isPalm
+    ? ('How much? Around '+mbFormatQty(R.minPalms)+' to '+mbFormatQty(R.maxPalms)+' palms suits most people. More is fine.')
+    : ('How many? More is fine.'+(c.serving_note?(' The packet calls one serving '+c.serving_note+'.'):''));
   return '<div style="font-size:14px;font-weight:800;color:var(--text);margin-bottom:4px;">'+_escHtml(c.name)+'</div>'
-    +'<div style="font-size:12.5px;color:var(--m2);margin-bottom:12px;">How much? Around '+mbFormatQty(R.minPalms)+' to '+mbFormatQty(R.maxPalms)+' palms suits most people. More is fine.</div>'
+    +'<div style="font-size:12.5px;color:var(--m2);margin-bottom:12px;">'+_escHtml(hint)+'</div>'
     + opts.map(function(q){
         return '<div onclick="mbPickPalms('+q+')" style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:13px 14px;margin-bottom:7px;cursor:pointer;">'
-          +'<div style="font-size:14px;font-weight:700;color:var(--text);">'+mbFormatQty(q)+' '+mbPluralUnit('palm',q)+'</div>'
+          +'<div style="font-size:14px;font-weight:700;color:var(--text);">'+mbFormatQty(q)+' '+mbPluralUnit(c.unit||'palm',q)+'</div>'
           +'<div style="flex-shrink:0;font-size:12px;font-weight:600;color:var(--muted);">'+mbFormatExact(c,q)+'</div>'
         +'</div>';
       }).join('');
@@ -16574,9 +16825,18 @@ function mbPickPalms(q){
   mbClosePick(); mbRender();
 }
 function mbClosePick(){ var o=document.getElementById('mbPickOv'); if(o&&o.parentNode) o.parentNode.removeChild(o); _mbPick=null; _mbPickComp=null; }
+// The picker passes ids, not names — a client is allowed to call their own
+// component "Rice" and a name lookup would pick nondeterministically between
+// theirs and Yusuf's. mbChoose stays for callers that only have a name.
+function mbChooseById(id){
+  var c=mbById(id); if(c) _mbTake(c);
+}
 function mbChoose(name){
   var kind=_mbPick; if(!kind) return;
-  var c=mbFind(kind,name); if(!c) return;
+  var c=mbFind(kind,name); if(c) _mbTake(c);
+}
+function _mbTake(c){
+  var kind=_mbPick; if(!kind||!c) return;
   // protein is the one amount worth asking about, so it gets a second step in
   // the same sheet. Everything else is decided for them.
   if(kind==='protein'){ _mbPickComp=c; mbRenderPick(); return; }
@@ -16609,6 +16869,295 @@ async function mbSave(){
   closeMealBuilder();
   try{ flibRender(); }catch(e){}
   showToast(attempt.ok?('✓ '+name+' saved'):'Saved here — will sync');
+}
+
+// ===== ADDING YOUR OWN — photograph the packet ==========================
+// Yusuf's library is generic foods. A client buys a particular sausage, and
+// that should become something they can pick every time. They point the
+// camera at the nutrition panel, check what came back, name it, done.
+// Nothing is written until they've seen the numbers.
+
+// Small print is the whole payload, so this reads at a higher resolution and
+// on a stronger model than the app's default. If that model isn't available
+// on the key, it falls back rather than failing.
+var MB_LABEL_MODEL='claude-sonnet-5';
+
+function _mbLabelPrompt(){
+  return 'This is a photograph of the nutrition facts panel on a food package.\n'
+    +'Reply with ONLY compact JSON. No markdown fence, no prose:\n'
+    +'{"name":"","brand":"","serving_text":"","servings_per_container":0,'
+    +'"calories":0,"protein":0,"carbs":0,"fibre":0,"fat":0,"kind":"","confidence":"high"}\n\n'
+    +'serving_text — copy the serving size EXACTLY as printed, including the number, '
+    +'the word and any weight in brackets. "1 link (85g)". "2 cookies (30g)". "2/3 cup (55g)". '
+    +'This is the most important field on the panel: if the serving is two of something, say two, '
+    +'not one. Do not tidy it up or convert it.\n'
+    +'calories — the per-serving figure as printed.\n'
+    +'protein, carbs, fibre, fat — the per-serving figures in grams. carbs is TOTAL carbohydrate; '
+    +'do not subtract the fibre, report both separately.\n'
+    +'name — the food itself, e.g. "Chicken Sausage". brand — the brand if you can see it, else "".\n'
+    +'kind — one of protein, veg, carb, fruit; whichever the food mainly is.\n'
+    +'confidence — "high" or "low".\n\n'
+    +'Read only what is printed. A nutrient printed as 0 is 0. '
+    +'If you cannot read the panel, reply {}.';
+}
+
+async function _mbAskLabel(mediaType, b64, model){
+  var payload={max_tokens:700, temperature:0, messages:[{role:'user', content:[
+    {type:'image', source:{type:'base64', media_type:mediaType, data:b64}},
+    {type:'text', text:_mbLabelPrompt()}
+  ]}]};
+  if(model) payload.model=model;
+  var res=await fetch('/.netlify/functions/analyze',{
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+  return {ok:res.ok, status:res.status, data:await res.json().catch(function(){ return null; })};
+}
+
+// -> a raw label object, or null. Never throws, never writes anything.
+async function mbReadLabel(dataUrl){
+  try{
+    var small=await downscaleImage(dataUrl, 1600, 0.9);
+    var m=String(small).match(/^data:(image\/[a-z]+);base64,(.+)$/i);
+    if(!m) return null;
+    var r=await _mbAskLabel(m[1], m[2], MB_LABEL_MODEL);
+    // a model name this key can't reach shouldn't cost them the feature
+    if(!r.ok) r=await _mbAskLabel(m[1], m[2], null);
+    if(!r.ok || !r.data) return null;
+    var txt='';
+    (r.data.content||[]).forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; });
+    txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
+    var i=txt.indexOf('{'), j=txt.lastIndexOf('}');
+    if(i<0||j<i) return null;
+    var raw=JSON.parse(txt.slice(i,j+1));
+    return mbLabelUsable(raw) ? raw : null;
+  }catch(e){ return null; }
+}
+
+// ---- the sheet ---------------------------------------------------------
+// One form, two ways in. Scanning prefills it; typing starts it empty. It
+// never saves on its own — the client always sees the numbers first.
+var _mbAdd=null, _mbAddBusy=false;
+
+function mbOpenAdd(kind, id){
+  if(!cl) return;
+  var ex=id?mbById(id):null;
+  if(id && !(ex && mbCanEdit(ex))){ showToast('That one’s from your coach'); return; }
+  if(ex){
+    _mbAdd=Object.assign({id:ex.id}, mbLabelFieldsFor(ex));
+  } else {
+    _mbAdd={id:null, name:'', kind:kind||_mbPick||'protein', serving_text:'',
+            calories:'', protein:'', carbs:'', fibre:'', fat:''};
+  }
+  _mbAddRender();
+}
+function mbAddClose(){
+  var o=document.getElementById('mbAddOv'); if(o&&o.parentNode) o.parentNode.removeChild(o);
+  _mbAdd=null;
+}
+function _mbAddField(id,label,val,ph,numeric){
+  return '<div style="flex:1;min-width:0;">'
+    +'<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px;">'+_escHtml(label)+'</div>'
+    +'<input id="'+id+'" type="'+(numeric?'number':'text')+'"'+(numeric?' inputmode="decimal" step="any"':'')
+      +' value="'+_escAttr(String(val==null?'':val))+'" placeholder="'+_escAttr(ph||'')+'" oninput="mbAddPreview()"'
+      +' style="width:100%;box-sizing:border-box;background:var(--s2);border:1px solid var(--border);border-radius:10px;'
+      +'padding:11px 12px;color:var(--text);font-family:inherit;font-size:14.5px;font-weight:600;">'
+  +'</div>';
+}
+var _MB_KINDS=[['protein','Protein'],['veg','Vegetable'],['carb','Carb'],['fruit','Fruit']];
+function _mbAddRender(){
+  if(!_mbAdd) return;
+  var o=document.getElementById('mbAddOv'); if(o&&o.parentNode) o.parentNode.removeChild(o);
+  o=document.createElement('div'); o.id='mbAddOv';
+  o.style.cssText='position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-end;justify-content:center;background:rgba(7,7,9,0.92);';
+  o.onclick=function(e){ if(e.target===o) mbAddClose(); };
+  var d=_mbAdd, editing=!!d.id;
+  o.innerHTML='<div style="width:100%;max-width:430px;max-height:92vh;overflow-y:auto;-webkit-overflow-scrolling:touch;background:#222;border-radius:22px 22px 0 0;padding:16px 18px calc(24px + env(safe-area-inset-bottom,0px));">'
+    +'<div style="width:42px;height:4px;border-radius:2px;background:#3d3d3d;margin:0 auto 15px;"></div>'
+    +'<div style="font-size:18px;font-weight:800;color:var(--text);">'+(editing?'Edit this':'Add your own')+'</div>'
+    +(editing?'':'<div style="font-size:12.5px;color:var(--m2);line-height:1.5;margin:5px 0 0;">Point the camera at the nutrition panel and I’ll read it. The photo isn’t saved — it’s only used to get the numbers.</div>')
+    +(editing?'':'<label style="display:block;position:relative;margin-top:13px;">'
+      +'<input type="file" accept="image/*" capture="environment" onchange="mbAddPhoto(this)" style="position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer;">'
+      +'<div id="mbScanBtn" style="text-align:center;background:var(--gold);color:var(--onaccent);border-radius:12px;padding:14px;font-size:14.5px;font-weight:800;">Scan the label</div>'
+    +'</label>'
+    +'<div style="text-align:center;font-size:11.5px;font-weight:600;color:var(--muted);margin:11px 0 3px;">or fill it in yourself</div>')
+
+    +'<div style="margin-top:12px;">'+_mbAddField('mbaName','Name',d.name,'Chicken sausage',false)+'</div>'
+
+    +'<div style="font-size:11px;font-weight:700;color:var(--muted);margin:14px 0 6px;">What is it?</div>'
+    +'<div style="display:flex;gap:6px;">'
+    + _MB_KINDS.map(function(k){
+        var on=(d.kind===k[0]);
+        return '<div onclick="mbAddSetKind(\''+k[0]+'\')" style="flex:1;text-align:center;padding:10px 2px;border-radius:10px;cursor:pointer;'
+          +'border:1.5px solid '+(on?'var(--gold)':'var(--border)')+';background:'+(on?'var(--gold)':'var(--s2)')+';'
+          +'color:'+(on?'var(--onaccent)':'var(--m2)')+';font-size:12px;font-weight:800;">'+_escHtml(k[1])+'</div>';
+      }).join('')
+    +'</div>'
+
+    +'<div style="margin-top:14px;">'+_mbAddField('mbaServing','Serving size, exactly as the packet says it',d.serving_text,'1 link (85g)',false)+'</div>'
+    +'<div style="font-size:11.5px;font-weight:600;color:var(--muted);margin-top:6px;line-height:1.45;">If the packet says the serving is two of something, write two. That’s how the amounts come out right.</div>'
+
+    +'<div style="font-size:11px;font-weight:700;color:var(--muted);margin:16px 0 6px;">Per serving, as printed</div>'
+    +'<div style="display:flex;gap:8px;">'
+      +_mbAddField('mbaCal','Calories',d.calories,'180',true)
+      +_mbAddField('mbaP','Protein',d.protein,'14',true)
+    +'</div>'
+    +'<div style="display:flex;gap:8px;margin-top:9px;">'
+      +_mbAddField('mbaC','Total carbs',d.carbs,'12',true)
+      +_mbAddField('mbaFib','Fibre',d.fibre,'2',true)
+      +_mbAddField('mbaF','Fat',d.fat,'10',true)
+    +'</div>'
+
+    +'<div id="mbaPreview" style="font-size:12.5px;font-weight:700;color:var(--m2);line-height:1.5;margin-top:15px;min-height:19px;"></div>'
+
+    +'<button class="sbtn" style="margin-top:14px;" onclick="mbAddSave()">'+(editing?'Save changes':'Add it to my list')+'</button>'
+    +(editing?'<button class="obtn" onclick="mbAddDelete()">Delete this</button>':'')
+    +'<button class="obtn" onclick="mbAddClose()">Cancel</button>'
+  +'</div>';
+  document.body.appendChild(o);
+  mbAddPreview();
+}
+function mbAddSetKind(k){ if(!_mbAdd) return; mbAddRead(); _mbAdd.kind=k; _mbAddRender(); }
+// A missing input means the sheet isn't up, not that the field is empty —
+// don't let a stray call wipe the draft.
+function _mbaInto(key, id){ var e=document.getElementById(id); if(e) _mbAdd[key]=e.value; }
+function mbAddRead(){
+  if(!_mbAdd) return _mbAdd;
+  _mbaInto('name','mbaName');   _mbaInto('serving_text','mbaServing');
+  _mbaInto('calories','mbaCal'); _mbaInto('protein','mbaP');
+  _mbaInto('carbs','mbaC');      _mbaInto('fibre','mbaFib');
+  _mbaInto('fat','mbaF');
+  return _mbAdd;
+}
+// The one line that shows the conversion happening. If the packet's serving is
+// two cookies, this says what ONE cookie comes to -- so a doubled portion is
+// visible here rather than three screens later.
+function mbAddPreview(){
+  var el=document.getElementById('mbaPreview'); if(!el||!_mbAdd) return;
+  var n=mbNormaliseLabel(mbAddRead());
+  if(!n.name && !n.per_unit.cal && !n.per_unit.p){ el.textContent=''; return; }
+  var bits=[];
+  if(n.per_unit.cal) bits.push(n.per_unit.cal+' cal');
+  if(n.per_unit.p)   bits.push(n.per_unit.p+'g protein');
+  bits.push(n.per_unit.c+'g net carbs');
+  if(n.per_unit.f)   bits.push(n.per_unit.f+'g fat');
+  el.textContent='One '+n.unit+' — '+bits.join(' · ')
+    + (n.divisor>1 ? (' (the packet counts ' + mbFormatQty(n.divisor) + ' as one serving)') : '');
+}
+function mbAddPhoto(input){
+  if(!input||!input.files||!input.files[0]||!_mbAdd) return;
+  mbAddRead();
+  var btn=document.getElementById('mbScanBtn');
+  if(btn){ btn.textContent='Reading the label…'; btn.style.opacity='0.7'; }
+  var r=new FileReader();
+  r.onload=async function(e){
+    var raw=null;
+    try{ raw=await mbReadLabel(e.target.result); }catch(_){}
+    if(!_mbAdd) return;
+    if(!raw){
+      if(btn){ btn.textContent='Scan the label'; btn.style.opacity=''; }
+      showToast('Couldn’t read that one — type it in instead');
+      return;
+    }
+    var n=mbNormaliseLabel(raw);
+    _mbAdd.name=n.name; _mbAdd.kind=n.kind; _mbAdd.serving_text=n.serving_note;
+    // the form shows per-serving as printed, so put back what the label said
+    var d=n.divisor||1;
+    _mbAdd.calories=_mbRound1(n.per_unit.cal*d);
+    _mbAdd.protein =_mbRound1(n.per_unit.p*d);
+    _mbAdd.carbs   =_mbRound1(n.carbs_total*d);
+    _mbAdd.fibre   =_mbRound1(n.fibre*d);
+    _mbAdd.fat     =_mbRound1(n.per_unit.f*d);
+    _mbAddRender();
+    showToast(raw.confidence==='low' ? 'Got it — worth checking these' : 'Got it — check it matches');
+  };
+  r.onerror=function(){ if(btn){ btn.textContent='Scan the label'; btn.style.opacity=''; } showToast('Couldn’t open that photo'); };
+  r.readAsDataURL(input.files[0]);
+}
+
+// Same degrade as the meal library: if the two label columns aren't there
+// yet, drop them and save the rest rather than losing the component.
+async function _mbWriteWithFallback(row, onConflict, patchId){
+  async function attempt(payload){
+    try{
+      var url=SB_URL+'/rest/v1/meal_components';
+      var headers=Object.assign({},sbHeaders(),{'Content-Type':'application/json'});
+      var method='POST';
+      if(patchId){ method='PATCH'; url+='?id=eq.'+encodeURIComponent(patchId); headers['Prefer']='return=representation'; }
+      else { url+='?on_conflict='+encodeURIComponent(onConflict); headers['Prefer']='resolution=merge-duplicates,return=representation'; }
+      var res=await fetch(url,{method:method, headers:headers, body:JSON.stringify(payload)});
+      if(!res.ok){ var b=''; try{ b=await res.text(); }catch(e){} return {ok:false, body:b}; }
+      var d=null; try{ var arr=await res.json(); d=(Array.isArray(arr)&&arr[0])?arr[0]:null; }catch(e){}
+      return {ok:true, row:d};
+    }catch(e){ return {ok:false}; }
+  }
+  var payload=Object.assign({}, row);
+  var out=await attempt(payload), guard=0;
+  while(!out.ok && guard<4){
+    var mcol=/column\s+"?([a-z_]+)"?[\s\S]*?does not exist/i.exec(out.body||'')
+          || /could not find the '([a-z_]+)' column/i.exec(out.body||'');
+    if(!mcol || !(mcol[1] in payload)) break;
+    delete payload[mcol[1]];
+    out=await attempt(payload); guard++;
+  }
+  out.payload=payload;
+  return out;
+}
+
+async function mbAddSave(){
+  if(_mbAddBusy || !cl || !_mbAdd) return;
+  var d=mbAddRead();
+  var norm=mbNormaliseLabel(d);
+  if(!norm.name){ showToast('Give it a name'); return; }
+  if(!String(d.serving_text||'').trim()){ showToast('What does the packet call one serving?'); return; }
+  var ex=d.id?mbById(d.id):null;
+  if(d.id && !(ex && mbCanEdit(ex))){ showToast('That one’s from your coach'); return; }
+
+  _mbAddBusy=true;
+  var personal=mbComponents().filter(mbIsPersonal).length;
+  var row=mbRowFromLabel(norm, cl.code, ex?(ex.sort||500+personal):(500+personal));
+  var out=await _mbWriteWithFallback(row, 'owner_code,kind,name', ex?ex.id:null);
+
+  if(out.ok && out.row){
+    if(ex){ Object.keys(out.row).forEach(function(k){ ex[k]=out.row[k]; }); }
+    else { _mbComponents.push(out.row); }
+  } else {
+    // offline — paint it now, queue the write, let it land later
+    var queued=Object.assign({}, out.payload||row);
+    if(ex){ queued.id=ex.id; }
+    try{ sqPush('meal_components', queued, 'UPSERT', ex?'id':'owner_code,kind,name'); }catch(e){}
+    if(ex){ Object.keys(row).forEach(function(k){ ex[k]=row[k]; }); }
+    else { _mbComponents.push(Object.assign({id:'tmp:'+miUid()}, row)); }
+  }
+  _mbAddBusy=false;
+  var name=norm.name;
+  mbAddClose();
+  try{ if(_mbPick) mbRenderPick(); }catch(e){}
+  showToast(out.ok ? ('✓ '+name+(ex?' updated':' added')) : 'Saved here — will sync');
+}
+
+async function mbAddDelete(){
+  if(_mbAddBusy || !_mbAdd || !_mbAdd.id) return;
+  var ex=mbById(_mbAdd.id);
+  if(!(ex && mbCanEdit(ex) && mbIsPersonal(ex))){ showToast('That one’s from your coach'); return; }
+  if(!confirm('Remove '+(ex.name||'this')+' from your list?')) return;
+  _mbAddBusy=true;
+  var ok=false;
+  try{
+    var res=await fetch(SB_URL+'/rest/v1/meal_components?id=eq.'+encodeURIComponent(ex.id),
+      {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
+       body:JSON.stringify({is_archived:true})});
+    ok=res.ok;
+  }catch(e){}
+  ex.is_archived=true;
+  _mbComponents=_mbComponents.filter(function(c){ return String(c.id)!==String(ex.id); });
+  // anything already picked in this build that pointed at it steps aside
+  Object.keys(_mbParts).forEach(function(k){
+    if(_mbParts[k] && _mbParts[k].component && String(_mbParts[k].component.id)===String(ex.id)) delete _mbParts[k];
+  });
+  _mbAddBusy=false;
+  mbAddClose();
+  try{ if(_mbPick) mbRenderPick(); }catch(e){}
+  try{ mbRender(); }catch(e){}
+  showToast(ok?'Removed':'Removed here — will sync');
 }
 
 // ===== USUALS — the plan a client makes for themselves ==================
@@ -17492,6 +18041,37 @@ async function miDeepBlock(code){
       + line('Okay:',okay,false)
       + line('Strong:',strong,false)
       + movedHtml
+    +'</div>';
+  }catch(e){ el.innerHTML=''; }
+}
+
+// ---- trainer: the foods this client has added off their own packets ----
+// Read-only, and it's the useful half of the feature for Yusuf: it tells him
+// what they actually buy. He can't edit them — they're the client's.
+async function mbDeepBlock(code){
+  var el=document.getElementById('jvDeepFoods'); if(!el) return;
+  el.innerHTML='';
+  try{
+    if(!(await mbProbe())) return;
+    var rows=await sbSelect('meal_components',
+      'owner_code=eq.'+encodeURIComponent(code)+'&is_archived=eq.false&order=sort.asc&limit=100')||[];
+    if(!rows.length) return;
+    var kindLabel={protein:'Protein',veg:'Veg',carb:'Carb',fruit:'Fruit'};
+    el.innerHTML='<div style="background:#141414;border:1px solid #202020;border-radius:14px;padding:13px 14px;margin-bottom:18px;">'
+      +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:8px;">'
+        +'<div style="font-size:9.5px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:rgba(240,236,228,0.78);">Foods they added</div>'
+        +'<div style="font-size:10.5px;color:rgba(240,236,228,0.78);">'+rows.length+'</div>'
+      +'</div>'
+      + rows.map(function(c){
+          var per=_mbPer(c);
+          var macros=[per.cal+' cal', per.p+'g protein', per.c+'g net carbs'].join(' · ');
+          return '<div style="padding:7px 0;border-top:1px solid #202020;">'
+            +'<div style="font-size:12.5px;font-weight:700;color:#f0ece4;">'+_escHtml(c.name||'')
+              +' <span style="font-weight:600;color:rgba(240,236,228,0.6);">'+_escHtml(kindLabel[c.kind]||c.kind||'')+'</span></div>'
+            +'<div style="font-size:11px;color:rgba(240,236,228,0.6);margin-top:2px;">'
+              +_escHtml((c.serving_note||('1 '+(c.unit||'serving')))+' — '+macros)+'</div>'
+          +'</div>';
+        }).join('')
     +'</div>';
   }catch(e){ el.innerHTML=''; }
 }

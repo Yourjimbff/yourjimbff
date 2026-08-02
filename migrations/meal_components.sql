@@ -12,17 +12,24 @@
 -- ============================================================
 
 create table if not exists meal_components (
-  id          uuid primary key default gen_random_uuid(),
-  owner_code  text not null,
-  kind        text not null,          -- protein | veg | carb | fruit
-  name        text not null,
-  unit        text not null,          -- palm | handful | cup | slice | tbsp | piece | scoop | banana
-  per_unit    jsonb not null,         -- {cal, p, c, f}   c = NET carbs
-  sort        integer not null default 0,
-  is_archived boolean not null default false,
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
+  id             uuid primary key default gen_random_uuid(),
+  owner_code     text not null,       -- 'yusuf1' = the coach library; anything else = that client's own
+  kind           text not null,       -- protein | veg | carb | fruit
+  name           text not null,
+  unit           text not null,       -- palm | handful | cup | slice | tbsp | piece | scoop | banana | link | bar ...
+  per_unit       jsonb not null,      -- {cal, p, c, f}   c = NET carbs, for ONE unit
+  serving_note   text,                -- the packet's own words: "1 link (85g)". null on coach rows.
+  grams_per_unit numeric,             -- parsed out of the bracket, for a future weigh-it feature
+  sort           integer not null default 0,
+  is_archived    boolean not null default false,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now()
 );
+
+-- clients add their own by photographing a nutrition panel; these two carry
+-- what the packet said so the conversion stays checkable
+alter table meal_components add column if not exists serving_note   text;
+alter table meal_components add column if not exists grams_per_unit numeric;
 
 create index if not exists meal_components_kind_idx
   on meal_components (owner_code, kind, is_archived, sort);
