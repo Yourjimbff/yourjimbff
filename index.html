@@ -3063,6 +3063,29 @@ async function sbInsertReturning(table, data){
   }catch(e){ console.error('sbInsertReturning failed',e); return null; }
 }
 
+// Nothing in here had a timeout, so when Supabase stopped answering the app didn't
+// fail — it waited, forever, on a dead sign-in screen. A read that hasn't come back
+// in this long isn't coming back.
+var SB_READ_MS = 20000;
+function _sbTimeout(ms){
+  try{ if(AbortSignal && AbortSignal.timeout) return AbortSignal.timeout(ms||SB_READ_MS); }catch(e){}
+  try{ var c=new AbortController(); setTimeout(function(){ try{ c.abort(); }catch(e){} }, ms||SB_READ_MS); return c.signal; }catch(e){}
+  return undefined;
+}
+// The roster is a convenience at sign-in, not a gate — this file already carries a
+// baked-in CLIENTS map. If the server is slow or down, carry on with that rather than
+// blocking login on a network call. A late response still lands and updates CLIENTS.
+var ROSTER_WAIT_MS = 8000;
+var _rosterOffline = false;
+async function loadRosterOrCarryOn(){
+  var how = await Promise.race([
+    loadRosterFromDB().then(function(){ return 'ok'; }).catch(function(){ return 'fail'; }),
+    new Promise(function(r){ setTimeout(function(){ r('slow'); }, ROSTER_WAIT_MS); })
+  ]);
+  _rosterOffline = (how !== 'ok') || !window._rosterFromDB;
+  try{ window._rosterOffline = _rosterOffline; }catch(e){}
+  return _rosterOffline;
+}
 async function sbSelect(table, filter){
   try{
     // Pick the right order column per table — not every table has logged_at
@@ -3082,7 +3105,7 @@ async function sbSelect(table, filter){
     var orderCol = orderColMap[table] || 'logged_at';
     var url = SB_URL+'/rest/v1/'+table+'?'+filter;
     if(!/(^|[?&])order=/.test(filter)) url += '&order='+orderCol+'.desc';
-    var res = await fetch(url, {method:'GET', headers:sbHeaders()});
+    var res = await fetch(url, {method:'GET', headers:sbHeaders(), signal:_sbTimeout(SB_READ_MS)});
     if(res.ok){
       var data = await res.json();
       return data;
@@ -3139,7 +3162,7 @@ window.addEventListener('load', function(){
   try{ if(location.search.indexOf('debug=1')>-1){ window._followDebug=true; } }catch(e){}
   checkForUpdate(); // fire-and-forget; reloads only if a newer version is live
   setTimeout(async function(){
-    await loadRosterFromDB();
+    await loadRosterOrCarryOn();
     var savedCode = localStorage.getItem('yjb_logged_in');
     if(savedCode && CLIENTS[savedCode]){
       document.getElementById('lcode').value = savedCode;
@@ -3868,7 +3891,28 @@ function noteBodyTalk(text){
   }
 }
 
-function showLoading(show){ document.getElementById('loadingOverlay').className = 'loading-overlay'+(show?' show':''); }
+// A spinner that outlives the thing it's waiting for is just a broken screen — which
+// is what a client saw when Supabase stopped answering: signed in, then held here
+// forever. launchApp already clears it on a throw, but a hang never throws. The reads
+// underneath keep going and paint when they land; this only stops the waiting.
+var LOAD_WATCHDOG_MS = 8000;   // same "waited long enough" threshold as the roster
+var _loadWatchdog = null;
+function showLoading(show){
+  var el=document.getElementById('loadingOverlay');
+  if(el) el.className = 'loading-overlay'+(show?' show':'');
+  try{ clearTimeout(_loadWatchdog); _loadWatchdog=null; }catch(e){}
+  if(show){
+    _loadWatchdog=setTimeout(function(){
+      try{
+        var o=document.getElementById('loadingOverlay');
+        if(o && /show/.test(o.className)){
+          o.className='loading-overlay';
+          if(typeof showToast==='function') showToast('Server’s slow — showing what’s saved on this device');
+        }
+      }catch(e){}
+    }, LOAD_WATCHDOG_MS);
+  }
+}
 
 // ===== LOGIN =====
 async function doLogin(){
@@ -3881,8 +3925,11 @@ async function doLogin(){
 }
 async function _doLoginInner(){
   var entered = document.getElementById('lcode').value.trim().toLowerCase();
-  // Make sure the DB roster is merged in before we validate (no-op if already loaded)
-  await loadRosterFromDB();
+  // If this file already knows the code, sign in now and let the roster land behind
+  // us — waiting on the network to confirm something we already know is why a slow
+  // server felt like a broken app. Only an unknown code actually needs the lookup.
+  if(CLIENTS[entered]) { loadRosterOrCarryOn(); }
+  else { await loadRosterOrCarryOn(); }
   // First check the CLIENTS map (now includes anyone from the DB)
   var c = CLIENTS[entered];
   // Then check custom trainer access codes (set via changeAccessCode)
@@ -3896,7 +3943,10 @@ async function _doLoginInner(){
   // Direct DB fallback: if the roster load missed this code for any reason (RLS timing,
   // coach_code quirks, a client added on another device), look the exact code up in Supabase
   // before rejecting. This guarantees anyone who exists in the clients table can sign in.
-  if(!c){
+  // Skip the lookup when the roster call we just made didn't come back — a second
+  // query to the same table will time out the same way, and stacking the two waits
+  // is how an unknown code took half a minute to be told anything.
+  if(!c && !_rosterOffline){
     try{
       // Only ask for the call columns when we know they exist, so this fallback
       // never fails login on a table that hasn't been migrated yet.
@@ -3914,7 +3964,18 @@ async function _doLoginInner(){
       }
     }catch(e){}
   }
-  if(!c){ document.getElementById('lerr').classList.add('show'); return; }
+  if(!c){
+    // "Wrong code" is a lie when the server never answered. Their code may be fine.
+    var _le=document.getElementById('lerr');
+    if(_le){
+      _le.textContent = _rosterOffline
+        ? 'Can’t reach the server right now — your code may be fine. Try again in a few minutes.'
+        : 'Wrong code. Check with Yusuf.';
+      _le.classList.add('show');
+    }
+    try{ showLoading(false); }catch(e){}
+    return;
+  }
   // Block hidden clients from logging in (trainer trimmed them)
   if(!c.isTrainer){
     var hiddenSet = {};
