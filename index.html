@@ -535,6 +535,11 @@ body.jv-cockpit #jvDayTabs{display:none;}
 .jvLogIn{width:100%;box-sizing:border-box;background:#1b1b1b;border:1px solid #2d2d2d;border-radius:10px;padding:11px 13px;font-size:14px;color:#f0ece4;font-family:'Plus Jakarta Sans',sans-serif;outline:none;margin-top:8px;}
 .jvLogNo{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12.5px;color:rgba(240,236,228,0.78);cursor:pointer;}
 .jvLogNo input{width:16px;height:16px;accent-color:#f0ece4;cursor:pointer;}
+/* Last thing on the expanded card. Red is the one alarm colour the palette has, and
+   deleting someone permanently is the one thing on this screen that earns it. */
+.jvDanger{margin:34px 0 6px;padding:11px 14px;border:1px solid rgba(255,68,85,0.30);border-radius:10px;
+  font-size:12.5px;font-weight:800;color:var(--red);cursor:pointer;text-align:center;}
+.jvDanger:hover{background:rgba(255,68,85,0.08);border-color:rgba(255,68,85,0.5);}
 .jvTBtns{display:flex;gap:7px;margin-top:12px;}
 /* Peers. Nothing here is the primary action — texting someone isn't a bigger deal
    than making a note about them, and gold on one of them said otherwise. */
@@ -9978,7 +9983,9 @@ function jvOpenDeep(code){
       + '<div id="jvDeepWeak"></div>'
       + '<div id="jvDeepFoods"></div>'
       + '<div id="jvDeepDays"><div style="color:rgba(240,236,228,0.78);font-size:13px;padding:10px 0;">Loading recent history…</div></div>'
-      + '<div id="jvDeepPhotos"></div>')
+      + '<div id="jvDeepPhotos"></div>'
+      // Bottom of the expanded card, behind More. Nowhere near anything you tap daily.
+      + '<div class="jvDanger" onclick="jvRemoveClient(\''+code+'\')">Remove '+String(info.name||code).replace(/</g,'&lt;')+' from YOURJIMBFF</div>')
     : '');
 
   document.body.classList.add('jv-deep-open');
@@ -10384,6 +10391,92 @@ async function _jvDeepHistory(code, showAll){
     }
     el.innerHTML=html;
   }catch(e){ el.innerHTML='<div style="color:rgba(240,236,228,0.78);font-size:13px;padding:10px 0;">Couldn\u2019t load history \u2014 try Refresh.</div>'; }
+}
+// ===== REMOVE A CLIENT =====
+// Every table that keys on client_code, with the name to show a human. Adding a new
+// client-keyed table? Add it here, or its rows outlive the client they belong to.
+var JV_CLIENT_TABLES=[
+  ['food_logs','meals logged'], ['workout_logs','workouts'], ['weight_logs','weigh-ins'],
+  ['step_logs','step days'], ['sleep_logs','sleep entries'], ['progress_photos','progress photos'],
+  ['journal_entries','journal entries'], ['energy_checkins','check-ins'], ['chat_messages','chat messages'],
+  ['client_notes','private notes'], ['coach_notes','notes you sent them'], ['client_contacts','contact records'],
+  ['reviews','likes and comments'], ['bookings','bookings'], ['availability','availability'],
+  ['set_logs','set logs'], ['exercise_notes','exercise notes'], ['session_notes','session notes'],
+  ['training_plans','training plans'], ['programs','programs'], ['menu_items','menu items'],
+  ['meals','saved meals'], ['saved_foods','saved foods'], ['mi_checkins','strength checks'],
+  ['mi_attempts','strength attempts'], ['mi_assignments','strength assignments'],
+  ['coach_reposts','reposts'], ['jv_handled','board clears'], ['profiles','profile']
+];
+// Exact count via PostgREST's Content-Range. null means the table isn't there or
+// doesn't key on client_code — either way there's nothing of theirs in it.
+async function _jvCountRows(table, code){
+  try{
+    var res=await fetch(SB_URL+'/rest/v1/'+table+'?client_code=eq.'+encodeURIComponent(code)+'&select=client_code',
+      {method:'HEAD', headers:Object.assign({},sbHeaders(),{'Prefer':'count=exact','Range-Unit':'items','Range':'0-0'})});
+    if(!res.ok) return null;
+    var cr=res.headers.get('content-range')||'';        // "0-0/412"
+    var n=parseInt(String(cr).split('/')[1],10);
+    return isNaN(n)?null:n;
+  }catch(e){ return null; }
+}
+async function _jvDeleteRows(table, code){
+  try{
+    var res=await fetch(SB_URL+'/rest/v1/'+table+'?client_code=eq.'+encodeURIComponent(code),
+      {method:'DELETE', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'})});
+    return res.ok || res.status===404;                   // 404 = no such table, nothing to remove
+  }catch(e){ return false; }
+}
+async function jvRemoveClient(code){
+  var info=CLIENTS[code]||{}; var name=info.name||code;
+  if(window._jvRemoving) return; window._jvRemoving=true;
+  try{
+    try{ showToast('Counting what’s attached to '+name+'…'); }catch(e){}
+    var counts=await Promise.all(JV_CLIENT_TABLES.map(function(t){
+      return _jvCountRows(t[0], code).then(function(n){ return {label:t[1], n:(n||0)}; });
+    }));
+    var found=counts.filter(function(c){ return c.n>0; }).sort(function(a,b){ return b.n-a.n; });
+    var total=found.reduce(function(s,c){ return s+c.n; },0);
+    // Say what's actually going, item by item. "Are you sure?" isn't a confirmation.
+    var lines=found.map(function(c){ return '  • '+c.n+' '+c.label; });
+    var msg='Delete '+name+' from YOURJIMBFF?\n\n'
+      + (found.length ? ('This permanently deletes:\n'+lines.join('\n')+'\n\n'+total+' rows in total, plus their account.\n\n')
+                      : 'They have nothing logged. This deletes their account.\n\n')
+      + 'It cannot be undone.';
+    if(!confirm(msg)){ window._jvRemoving=false; return; }
+    try{ showToast('Deleting '+name+'…'); }catch(e){}
+    var failed=[];
+    for(var i=0;i<JV_CLIENT_TABLES.length;i++){
+      var ok=await _jvDeleteRows(JV_CLIENT_TABLES[i][0], code);
+      if(!ok) failed.push(JV_CLIENT_TABLES[i][0]);
+    }
+    // The account row goes last, so a half-finished delete still leaves them findable.
+    var accOk=false;
+    try{
+      var r=await fetch(SB_URL+'/rest/v1/clients?code=eq.'+encodeURIComponent(code),
+        {method:'DELETE', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'})});
+      accOk=r.ok;
+    }catch(e){}
+    if(!accOk){
+      try{ showToast('Their data is gone but the account row wouldn’t delete — check Supabase'); }catch(e){}
+      window._jvRemoving=false; return;
+    }
+    // Local caches keyed on the code, so they don't reappear on this device.
+    try{
+      var m=jvContacts(); delete m[code]; _ccSave(m);
+      var h=jvHandledMap(); delete h[code]; localStorage.setItem('yjb_jv_handled', JSON.stringify(h));
+      ['yjb_hidden_clients','yjb_reactivated_clients'].forEach(function(k){
+        var a=[]; try{ a=JSON.parse(localStorage.getItem(k)||'[]'); }catch(e){}
+        localStorage.setItem(k, JSON.stringify(a.filter(function(x){ return x!==code; })));
+      });
+      var tags=getClientTags(); delete tags[code]; localStorage.setItem('yjb_client_tags', JSON.stringify(tags));
+    }catch(e){}
+    try{ delete CLIENTS[code]; }catch(e){}
+    try{ jvCloseDeep(); }catch(e){}
+    try{ if(typeof jvLoadTriage==='function') jvLoadTriage(true); }catch(e){}
+    try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+    if(failed.length) showToast(name+' removed — but '+failed.length+' table'+(failed.length===1?'':'s')+' refused: '+failed.join(', '));
+    else showToast(name+' and all '+total+' rows deleted');
+  } finally { window._jvRemoving=false; }
 }
 function jvCloseDeep(){
   document.body.classList.remove('jv-deep-open');
