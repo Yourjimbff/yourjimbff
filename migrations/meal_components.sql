@@ -110,7 +110,13 @@ insert into meal_components (owner_code, kind, name, unit, per_unit, sort) value
   ('yusuf1','protein','Deli Turkey','palm','{"cal":100,"p":19,"c":1,"f":2}'::jsonb,108),
   ('yusuf1','protein','Turkey Bacon','piece','{"cal":35,"p":3,"c":0,"f":3}'::jsonb,109),
   ('yusuf1','protein','Sardines','palm','{"cal":190,"p":23,"c":0,"f":11}'::jsonb,110),
-  ('yusuf1','fruit','Mixed Berries','handful','{"cal":35,"p":1,"c":6,"f":0}'::jsonb,111)
+  ('yusuf1','fruit','Mixed Berries','handful','{"cal":35,"p":1,"c":6,"f":0}'::jsonb,111),
+  -- added for the dessert builds. 'fat' is a kind in its own right so these
+  -- don't get portioned against the 35g meal carb cap -- eight tablespoons of
+  -- nut butter is what that would ask for.
+  ('yusuf1','fat','Nut Butter','tbsp','{"cal":95,"p":3.5,"c":2.5,"f":8}'::jsonb,120),
+  ('yusuf1','fat','Dark Chocolate','square','{"cal":58,"p":1,"c":3.5,"f":4}'::jsonb,121),
+  ('yusuf1','fruit','Kiwi','kiwi','{"cal":42,"p":1,"c":8,"f":0}'::jsonb,122)
 on conflict (owner_code, kind, name) do nothing;
 
 notify pgrst, 'reload schema';
