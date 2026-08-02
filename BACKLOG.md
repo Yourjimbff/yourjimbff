@@ -68,15 +68,23 @@ element to render into, so `getElementById` returned null and every walk logged
 - Optional photo (themselves or the scenery) ✓
 - Duration, quick-pick chips ✓ *(was orphaned; now wired)*
 
-## 4. Free / creative workout mode
+## 4. Free / creative workout mode — SHIPPED
 
-Not every session is programmed.
+*Already built, and built well: `openFreestyleWorkout` opens one box — "What did
+you do?" — with voice input and a photo. Free text goes through
+`looseFormatWorkout`, which structures it, and falls back to the raw words if that
+fails, so nothing they wrote is ever lost. Duration, notes, steps and intensity are
+deliberately hidden inputs; the sheet was cut back to one field on purpose, which is
+the design this item asked for. Programs default off, so freestyle IS the path.*
 
-- Log that you trained, pick a few exercises or name a class, done
-- No program required
-- All that matters is you trained today
+*One real fault found: that tidy-up call had no timeout, and it runs with the save
+button disabled. On a bad connection someone stood at "Sorting it out…" forever with
+their workout unsaved — the fallback existed but was unreachable while the request
+never returned. Capped at six seconds.*
 
-**Design:** one screen, minimal fields. This exists for the person who's already at the gym on their phone.
+- Log that you trained, pick a few exercises or name a class, done ✓
+- No program required ✓
+- All that matters is you trained today ✓
 
 ## 5. Goals — own tab
 
