@@ -116,12 +116,38 @@ insert into meal_components (owner_code, kind, name, unit, per_unit, sort) value
   -- nut butter is what that would ask for.
   ('yusuf1','fat','Nut Butter','tbsp','{"cal":95,"p":3.5,"c":2.5,"f":8}'::jsonb,120),
   ('yusuf1','fat','Dark Chocolate','square','{"cal":58,"p":1,"c":3.5,"f":4}'::jsonb,121),
-  ('yusuf1','fruit','Kiwi','kiwi','{"cal":42,"p":1,"c":8,"f":0}'::jsonb,122)
+  ('yusuf1','fruit','Kiwi','kiwi','{"cal":42,"p":1,"c":8,"f":0}'::jsonb,122),
+  ('yusuf1','fat','Avocado','avocado','{"cal":240,"p":3,"c":3,"f":22}'::jsonb,123)
 on conflict (owner_code, kind, name) do nothing;
 
 -- "piece" is not a word anyone uses about food. The app says "3 eggs" and
 -- "3 slices", so the unit has to carry that.
 update meal_components set unit='egg'   where owner_code='yusuf1' and name='Eggs'         and unit='piece';
 update meal_components set unit='slice' where owner_code='yusuf1' and name='Turkey Bacon' and unit='piece';
+
+-- The picker lists a kind in `sort` order, so `sort` IS the ranking. These are
+-- the vegetables people reach for first; the rest keep their original order
+-- below them.
+update meal_components set sort=0  where owner_code='yusuf1' and kind='veg' and name='Spinach';
+update meal_components set sort=1  where owner_code='yusuf1' and kind='veg' and name='Cucumbers';
+update meal_components set sort=2  where owner_code='yusuf1' and kind='veg' and name='Tomatoes';
+update meal_components set sort=3  where owner_code='yusuf1' and kind='veg' and name='Onions';
+update meal_components set sort=4  where owner_code='yusuf1' and kind='veg' and name='Mushrooms';
+update meal_components set sort=5  where owner_code='yusuf1' and kind='veg' and name='Bell Peppers';
+update meal_components set sort=6  where owner_code='yusuf1' and kind='veg' and name='Sauerkraut';
+update meal_components set sort=7  where owner_code='yusuf1' and kind='veg' and name='Broccoli';
+update meal_components set sort=8  where owner_code='yusuf1' and kind='veg' and name='Green Beans';
+update meal_components set sort=9  where owner_code='yusuf1' and kind='veg' and name='Asparagus';
+update meal_components set sort=10 where owner_code='yusuf1' and kind='veg' and name='Leafy Greens';
+update meal_components set sort=11 where owner_code='yusuf1' and kind='veg' and name='Salad Mix';
+-- and the proteins people actually pick, ahead of the long tail of cuts
+update meal_components set sort=0 where owner_code='yusuf1' and kind='protein' and name='Chicken Breast';
+update meal_components set sort=1 where owner_code='yusuf1' and kind='protein' and name='Steak';
+update meal_components set sort=2 where owner_code='yusuf1' and kind='protein' and name='Ground Beef';
+update meal_components set sort=3 where owner_code='yusuf1' and kind='protein' and name='Ground Turkey';
+update meal_components set sort=4 where owner_code='yusuf1' and kind='protein' and name='Salmon';
+update meal_components set sort=5 where owner_code='yusuf1' and kind='protein' and name='Tuna';
+update meal_components set sort=6 where owner_code='yusuf1' and kind='protein' and name='Shrimp';
+update meal_components set sort=7 where owner_code='yusuf1' and kind='protein' and name='Eggs';
 
 notify pgrst, 'reload schema';
