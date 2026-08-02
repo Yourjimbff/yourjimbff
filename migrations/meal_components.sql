@@ -119,4 +119,9 @@ insert into meal_components (owner_code, kind, name, unit, per_unit, sort) value
   ('yusuf1','fruit','Kiwi','kiwi','{"cal":42,"p":1,"c":8,"f":0}'::jsonb,122)
 on conflict (owner_code, kind, name) do nothing;
 
+-- "piece" is not a word anyone uses about food. The app says "3 eggs" and
+-- "3 slices", so the unit has to carry that.
+update meal_components set unit='egg'   where owner_code='yusuf1' and name='Eggs'         and unit='piece';
+update meal_components set unit='slice' where owner_code='yusuf1' and name='Turkey Bacon' and unit='piece';
+
 notify pgrst, 'reload schema';

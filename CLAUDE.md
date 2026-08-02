@@ -6,7 +6,17 @@ Backend: Supabase.
 
 ## Before every ship
 - Run `scripts/check.sh` (extracts inline JS from index.html and runs `node --check` on it)
-- Bump APP_VERSION
+- Bump the version in `VERSION` (not `APP_VERSION` in index.html — that line is a
+  `__APP_VERSION__` placeholder now, stamped at deploy time by `scripts/stamp-version.sh`).
+  Keeping it out of index.html is what stops parallel branches colliding on every merge.
+
+## Parallel branches
+One-time setup per clone, so VERSION bumps auto-resolve to the higher version
+instead of stopping the merge:
+
+    git config merge.maxversion.driver 'scripts/merge-version.sh %O %A %B'
+
+Skip it and you just get a normal one-line conflict — nothing breaks.
 
 ## Approval flow
 - For non-trivial changes: show me the plan first and get approval.

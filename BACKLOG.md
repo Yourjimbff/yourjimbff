@@ -132,11 +132,74 @@ Client uploads a screenshot from another app — a Strava run, a workout, a food
 
 Currently just my log — what I did. Should be what I did *and how I'm doing*. How the workouts felt, how the food's going, what's actually going on with me. Something they follow along with rather than observe.
 
+## 12. Split index.html into concatenated source files
+
+*Not ES modules. See "what we're not doing" at the bottom.*
+
+Today index.html is 30,400 lines: one `<style>` block (1,038), ~1,640 lines of markup,
+and **one `<script>` block of 27,700 lines**. Parallel branches can't avoid each other
+inside it.
+
+Tier 0 already shipped the cheap half: the `APP_VERSION` bump used to be the one line
+every single commit touched, so any two branches conflicted 100% of the time regardless
+of anything else. That's gone — version lives in `VERSION` now.
+
+This item is the other half: carve the script block into `src/*.js` and have a build
+step concatenate them back into index.html between markers. **Not modules — a literal
+join.** Output is semantically identical to today: globals stay global, load order is
+preserved, the 745 inline `onclick=` handlers keep working, still one HTTP request.
+
+**Roughly 1–2 days.** The easy domains lift straight out — they're already physically
+contiguous:
+
+| prefix | fns | contiguity |
+|---|---|---|
+| `slog` | 9 | 100% |
+| `mp` | 10 | 99% |
+| `mi` | 87 | 94% |
+| `feed` / `pp` | 15 / 15 | 94% |
+| `tp` | 62 | 93% |
+
+The work is the scattered ones, which need physically moving — and that's where bugs
+get in: `tl` (64 fns spread over lines 8248–29071, 18% contiguity), `ml` (27%),
+`food` (38%), `jv` (114 fns spanning 3110–29304).
+
+CSS and markup split first, at near-zero risk. Markup is already delineated by screen
+(`sLogin`, `sSetup`, `sApp`, the tab divs, the modal views).
+
+Also needed: `scripts/check.sh` switches to running on `src/*.js` directly (simpler
+than today's HTML parsing), and netlify.toml's build command grows the concat step
+alongside the version stamp.
+
+**Watch for:** 8 duplicate element IDs already exist today — `aviDot`, `cfbtn`,
+`foodPhotoInput`, `jCallback`, `jNewLock`, `jPageComposer`, `mlibPhotoInput`,
+`woPhotoInput`. Splitting markup across files makes these *harder* to spot, not easier.
+Worth fixing before or during, not after.
+
+**No safety net.** There are no tests — check.sh only verifies syntax. A 27k-line
+reshuffle rests entirely on manual device testing, against clients using this daily.
+Do it in slices that each ship independently, not one big-bang commit.
+
+### What we're not doing: real ES modules
+
+Scoped and rejected. The blockers:
+
+- **745 inline handlers.** `type="module"` scopes everything; every `onclick="closeM(…)"`
+  breaks unless re-exported to `window`. Runtime-only failures — check.sh catches none of them.
+- **The self-update mechanism.** `checkForUpdate()` fetches index.html and regexes
+  `/var APP_VERSION = '([^']+)'/`. Break that and every client on a phone silently stops
+  receiving updates — no error, they just keep running cached code forever.
+- **273 mutable globals**, `cl` alone referenced 600 times. You can't assign to an imported
+  binding. (Mitigating: only 3–6 reassignments each, so setters would be tractable.)
+- **1,144 cross-domain call edges / 2,581 calls.** Circular imports become real.
+
+It's a rewrite of the app's wiring for no user-visible gain.
+
 ## Standing rules for every item
 
 - Plan before writing. Show the plan, get approval, then build, commit and push in one go.
 - Only hold the push if something surfaces mid-build that I didn't know when I approved.
-- `scripts/check.sh` before every ship. Bump `APP_VERSION`.
+- `scripts/check.sh` before every ship. Bump `VERSION` (not the line in index.html).
 - Additive by default. Existing logging flows keep working untouched.
 - Watch for duplicate element IDs — grep the prefix before writing markup.
 - `sbInsert` returns a boolean on failure, not an error. Check the return.
