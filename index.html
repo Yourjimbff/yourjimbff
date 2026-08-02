@@ -1575,9 +1575,9 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
   <div id="mbView" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;width:100%;height:100%;background:#131313;z-index:9000;flex-direction:column;">
     <div style="flex-shrink:0;padding:calc(env(safe-area-inset-top) + 12px) 16px 12px;border-bottom:1px solid #232323;background:#131313;">
       <div style="display:flex;align-items:center;gap:12px;">
-        <span onclick="closeMealBuilder()" style="flex-shrink:0;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--m2);"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></span>
+        <span onclick="mbBack()" style="flex-shrink:0;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--m2);"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></span>
         <div style="flex:1;min-width:0;">
-          <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:20px;font-weight:800;color:var(--text);letter-spacing:-0.3px;line-height:1.15;">Build a meal</div>
+          <div id="mbTitle" style="font-family:'Plus Jakarta Sans',sans-serif;font-size:20px;font-weight:800;color:var(--text);letter-spacing:-0.3px;line-height:1.15;">Build a meal</div>
           <div id="mbSubtitle" style="font-size:11.5px;color:var(--muted);margin-top:2px;">This is the shape of a meal.</div>
         </div>
       </div>
@@ -3062,7 +3062,7 @@ async function loadRosterFromDB(){
   return _rosterLoadPromise;
 }
 
-var APP_VERSION = 'v7.173.0'; window.APP_VERSION = APP_VERSION;
+var APP_VERSION = 'v7.174.0'; window.APP_VERSION = APP_VERSION;
 var APP_BUILD = "Jul 8 — Big restructure: (1) NEW Feed tab — a perpetual stream of every meal Yusuf reposts, newest first, showing when the client logged it, with likes + comments. (2) Profile + Journal merged into one page — collapsible Profile/Goals up top, Journal below. (3) Yusuf tab is now purely Yusuf's day. Repost lives in the client feed action row next to Like/Comment.";
 
 var cl=null, profile=null;
@@ -15756,7 +15756,7 @@ async function openFoodLibrary(){
   v.style.display='flex';
   try{ document.body.style.overflow='hidden'; }catch(e){}
   flibRender();                                     // instant paint from cache
-  try{ await Promise.all([loadSavedFoods(), mlibLoad()]); }catch(e){}
+  try{ await Promise.all([loadSavedFoods(), mlibLoad(), mbProbe()]); }catch(e){}
   flibRender();
   try{ await _backfillFoodLibrary(); flibRender(); }catch(e){}
 }
@@ -15837,14 +15837,26 @@ function flibRender(){
   var trainer=_mlibIsTrainer();
   var html='';
 
+  // BUILD A MEAL — the front door, one tap straight into a build
+  if(window._mbTableExists!==false && !q){
+    html+=_flibHeader('BUILD A MEAL');
+    html+='<div style="display:flex;gap:8px;margin-bottom:4px;">'
+      + MB_BUILDS.map(function(b){
+          return '<div onclick="openMealBuilder(\''+b.key+'\')" style="flex:1;text-align:center;background:var(--surface);'
+            +'border:1px solid var(--border);border-radius:14px;padding:15px 6px;cursor:pointer;'
+            +'font-size:13.5px;font-weight:800;color:var(--text);">'+_escHtml(b.label)+'</div>';
+        }).join('')
+    +'</div>';
+    html+='<div style="height:18px;"></div>';
+  }
+
   // MY MEALS
   var mine=_mlibMine().filter(function(m){ return match(m.name); }).sort(function(a,b){
     var d=(+b.times_logged||0)-(+a.times_logged||0);
     if(d) return d;
     return String(b.last_logged_at||b.created_at||'').localeCompare(String(a.last_logged_at||a.created_at||''));
   });
-  html+=_flibHeader('MY MEALS',
-    '<div onclick="openMealBuilder()" style="font-size:12px;font-weight:800;color:var(--onaccent);background:var(--gold);border-radius:9px;padding:7px 11px;cursor:pointer;">+ Build a meal</div>');
+  html+=_flibHeader('MY MEALS');
   if(window._mlibTableExists===false){
     html+=_flibEmpty(trainer?'Run the <b>meals</b> migration to switch this on.':'Meals are coming soon.');
   } else if(!mine.length){
@@ -16359,7 +16371,7 @@ function mbFormatQty(q){
 }
 function mbPluralUnit(unit, q){
   var u=String(unit||'');
-  if(q===1) return u;
+  if(q<=1) return u;                                     // half a banana, not half a bananas
   if(/[^aeiou]y$/.test(u)) return u.slice(0,-1)+'ies';   // patty -> patties
   if(/h$|s$|x$/.test(u)) return u+'es';
   return u+'s';
@@ -16589,7 +16601,12 @@ function mbCompose(parts){
   var extras=[];
   (parts||[]).forEach(function(x){
     if(!x||!x.component) return;
-    var line=mbFormatQty(x.qty)+' '+mbPluralUnit(x.component.unit,x.qty)+' '+x.component.name.toLowerCase();
+    var nm=String(x.component.name||'').toLowerCase();
+    var un=mbPluralUnit(x.component.unit, x.qty);
+    // "½ banana", not "½ bananas banana" — some foods are their own unit
+    var line=_mbNorm(x.component.unit)===_mbNorm(x.component.name)
+      ? (mbFormatQty(x.qty)+' '+un)
+      : (mbFormatQty(x.qty)+' '+un+' '+nm);
     var k=x.component.kind;
     if(k==='protein' && !out.protein) out.protein=line;
     else if(k==='veg' && !out.veg)    out.veg=line;
@@ -16636,28 +16653,116 @@ async function mbLoadComponents(force){
 // frame is the lesson -- the client sees what a meal is made of before they
 // see any food. Filling it is two decisions: what protein, and how much.
 
+// A framework is the SHAPE of a meal — which slots it has.
 var MB_FRAMEWORKS={
   breakfast_sweet:  {label:'Breakfast', note:'Sweet build',  slot:'Breakfast', parts:['protein','carb','fruit']},
   breakfast_savoury:{label:'Breakfast', note:'Savoury build',slot:'Breakfast', parts:['protein','veg','carb']},
   lunch:            {label:'Lunch',     note:'',             slot:'Lunch',     parts:['protein','veg','carb']},
   dinner:           {label:'Dinner',    note:'',             slot:'Dinner',    parts:['protein','veg','carb']}
 };
+// A build is what the CLIENT picks. Breakfast is one build with two possible
+// shapes -- asking "sweet or savoury?" up front is the same question the mood
+// step already asks, so it only gets asked when someone skips inspiration.
+var MB_BUILDS=[
+  {key:'breakfast', label:'Breakfast', frameworks:['breakfast_savoury','breakfast_sweet']},
+  {key:'lunch',     label:'Lunch',     frameworks:['lunch']},
+  {key:'dinner',    label:'Dinner',    frameworks:['dinner']}
+];
 var MB_PART_META={
   protein:{label:'Protein',       hint:'Be generous. More is fine.'},
   veg:    {label:'Vegetables',    hint:'Free. Don’t think about it.'},
   carb:   {label:'Carbohydrate',  hint:'Optional. The amount is worked out for you.'},
   fruit:  {label:'Fruit',         hint:'Portioned for you.'}
 };
-var _mbScrollY=0, _mbFramework=null, _mbParts={}, _mbPick=null, _mbPickComp=null, _mbMode='cut', _mbSaving=false;
+
+// ---- INSPIRATION -------------------------------------------------------
+// The front door. A framing question, then maybe one more, and you're holding
+// a whole portioned meal without having typed anything or read a list of
+// forty proteins. A build with nothing written here goes straight to the
+// picker -- nobody ever meets an empty door.
+//
+// picks name a component and, where no portion rule exists, a quantity.
+// Everything else is worked out by mbDefaultQty.
+// A side is a side. The fruit rule targets a whole fruit portion (20-35g net
+// carbs), which is four handfuls of berries -- right for a fruit slot, far too
+// much alongside eggs. So these two carry their own amounts.
+var _MB_SIDE={
+  q:'Want a side?',
+  a:[
+    {label:'Berries',        picks:[{kind:'fruit',name:'Mixed Berries', qty:1}]},
+    {label:'Half a banana',  picks:[{kind:'fruit',name:'Banana', qty:0.5}]},
+    {label:'No thanks',      picks:[]}
+  ]
+};
+var MB_INSPO={
+  breakfast:{
+    q:'What are you in the mood for?',
+    a:[
+      {label:'Protein-focused', sub:'Eggs and turkey bacon', framework:'breakfast_savoury',
+       picks:[{kind:'protein',name:'Eggs',qty:3},{kind:'protein',name:'Turkey Bacon',qty:3}],
+       next:_MB_SIDE},
+      {label:'Sweet', sub:'Greek yogurt and berries', framework:'breakfast_sweet',
+       picks:[{kind:'protein',name:'Greek Yogurt',qty:1},{kind:'fruit',name:'Mixed Berries'}]},
+      {label:'Well-rounded', sub:'A bit of everything', framework:'breakfast_savoury',
+       next:{q:'Which way?', a:[
+         {label:'Eggs, meat and vegetables',
+          picks:[{kind:'protein',name:'Eggs',qty:3},{kind:'protein',name:'Sausage'},{kind:'veg',name:'Spinach'}],
+          next:_MB_SIDE},
+         {label:'An omelette', sub:'Eggs with vegetables through it',
+          picks:[{kind:'protein',name:'Eggs',qty:3},{kind:'veg',name:'Spinach'},{kind:'veg',name:'Mushrooms'}],
+          next:_MB_SIDE}
+       ]}}
+    ]
+  }
+};
+
+// _mbParts is a LIST, not one-per-slot: a real breakfast is eggs AND bacon.
+var _mbScrollY=0, _mbBuild=null, _mbFramework=null, _mbParts=[], _mbPick=null, _mbPickComp=null,
+    _mbMode='cut', _mbSaving=false, _mbStep=null, _mbHistory=[];
+
+function mbBuild(k){ for(var i=0;i<MB_BUILDS.length;i++){ if(MB_BUILDS[i].key===k) return MB_BUILDS[i]; } return null; }
+// "Breakfast, savoury" — what the header calls the build you're inside.
+function mbFrameworkName(k){
+  var F=MB_FRAMEWORKS[k]; if(!F) return 'Build a meal';
+  return F.label + (F.note ? (', '+F.note.replace(/\s*build$/i,'').toLowerCase()) : '');
+}
+
+// How much of this, absent anyone saying otherwise. Pure, so inspiration and
+// the picker can never drift apart -- and Jim Chat gets the same answer.
+function mbDefaultQty(component, mode, gender){
+  if(!component) return 1;
+  var k=component.kind;
+  if(k==='veg')   return 1;
+  if(k==='fruit') return portionFor(component, Math.round((MB_FRUIT_MIN+MB_FRUIT_MAX)/2)).qty;
+  if(k==='carb')  return portionFor(component, mbCarbTarget(mode||'cut')).qty;
+  if((component.unit||'')==='palm') return mbProteinRange(gender).suggested;
+  return 1;   // one of whatever it comes in
+}
+// -> [{component, qty}] for a step's picks. Anything the library doesn't have
+// is skipped rather than faked.
+function mbResolvePicks(picks, mode, gender){
+  return (picks||[]).map(function(p){
+    var c=mbFind(p.kind, p.name); if(!c) return null;
+    return {component:c, qty:(p.qty!=null?p.qty:mbDefaultQty(c, mode, gender))};
+  }).filter(Boolean);
+}
+function _mbItems(kind){
+  return _mbParts.filter(function(x){ return x && x.component && x.component.kind===kind; });
+}
 
 function _mbIsOpen(){ var v=document.getElementById('mbView'); return !!(v && v.style.display==='flex'); }
-async function openMealBuilder(){
+function _mbReset(){
+  _mbBuild=null; _mbFramework=null; _mbParts=[]; _mbPick=null; _mbMode='cut';
+  _mbStep=null; _mbHistory=[];
+}
+// buildKey lets My Food open straight into a build -- one tap, no landing list.
+async function openMealBuilder(buildKey){
   var v=document.getElementById('mbView'); if(!v||!cl) return;
   _mbScrollY=window.scrollY||0;
-  _mbFramework=null; _mbParts={}; _mbPick=null; _mbMode='cut';
+  _mbReset();
   v.style.display='flex';
   try{ document.body.style.overflow='hidden'; }catch(e){}
-  mbRender();
+  if(buildKey && mbBuild(buildKey)) mbSetBuild(buildKey); else mbRender();
   try{ await mbLoadComponents(); }catch(e){}
   mbRender();
 }
@@ -16665,6 +16770,50 @@ window.openMealBuilder=openMealBuilder;
 function closeMealBuilder(){
   var v=document.getElementById('mbView'); if(v) v.style.display='none';
   try{ document.body.style.overflow=''; window.scrollTo(0,_mbScrollY); }catch(e){}
+}
+// Back goes up exactly one screen, never two. Through inspiration that means
+// un-asking the last question and taking its food back off the meal.
+function mbBack(){
+  if(_mbHistory.length){
+    var h=_mbHistory.pop();
+    _mbParts=_mbParts.slice(0, h.partsLen);
+    _mbStep=h.step; _mbFramework=h.framework;
+    mbRender(); return;
+  }
+  if(_mbFramework){ _mbFramework=null; _mbParts=[]; mbRender(); return; }
+  if(_mbBuild){ mbSetBuild(null); return; }
+  closeMealBuilder();
+}
+
+// ---- moving between screens -------------------------------------------
+function mbSetBuild(k){
+  _mbBuild=k; _mbFramework=null; _mbParts=[]; _mbStep=null; _mbHistory=[];
+  var B=k?mbBuild(k):null;
+  if(B){
+    var inspo=MB_INSPO[k];
+    if(inspo) _mbStep=inspo;                                   // the front door
+    else if(B.frameworks.length===1) _mbFramework=B.frameworks[0];
+  }
+  mbRender();
+}
+// The fallback door. Skips inspiration; asks for a shape only when the build
+// has more than one.
+function mbBuildMyself(){
+  var B=mbBuild(_mbBuild); if(!B) return;
+  _mbHistory.push({step:_mbStep, framework:_mbFramework, partsLen:_mbParts.length});
+  _mbStep=null;
+  if(B.frameworks.length===1) _mbFramework=B.frameworks[0];
+  mbRender();
+}
+function mbAnswer(i){
+  var step=_mbStep; if(!step) return;
+  var ans=(step.a||[])[i]; if(!ans) return;
+  _mbHistory.push({step:step, framework:_mbFramework, partsLen:_mbParts.length});
+  if(ans.framework) _mbFramework=ans.framework;
+  var got=mbResolvePicks(ans.picks, _mbMode, _clientGender());
+  got.forEach(function(x){ _mbParts.push(x); });
+  _mbStep=ans.next||null;      // no next step means the meal is made
+  mbRender();
 }
 function _mbCard(inner, tappable, onclick){
   return '<div'+(onclick?(' onclick="'+onclick+'"'):'')
@@ -16680,9 +16829,8 @@ function _mbHead(label, right){
 }
 // The empty slot IS the teaching. Same card, same size as a filled one --
 // only the content differs.
-function _mbPartCard(kind){
+function _mbPartCard(kind, chosen, idx){
   var meta=MB_PART_META[kind]||{label:kind,hint:''};
-  var chosen=_mbParts[kind];
   if(!chosen){
     return _mbCard(
       _mbHead(meta.label,'<span style="flex-shrink:0;font-size:15px;font-weight:700;color:var(--muted);line-height:1.2;">+</span>')
@@ -16693,23 +16841,10 @@ function _mbPartCard(kind){
   // a TARGET (grams of net carb), not a quantity, and would re-derive from 1.5g
   var amount=mbFormatPortion(chosen.qty, chosen.component.unit);
   return _mbCard(
-    _mbHead(meta.label,'<span onclick="event.stopPropagation();mbClearPart(\''+kind+'\')" style="flex-shrink:0;font-size:13px;color:var(--muted);cursor:pointer;">Change</span>')
+    _mbHead(meta.label,'<span onclick="event.stopPropagation();mbClearPart('+idx+')" style="flex-shrink:0;font-size:13px;color:var(--muted);cursor:pointer;">Change</span>')
     +'<div style="font-size:13.5px;font-weight:700;color:var(--m2);margin-top:4px;">'+_escHtml(chosen.component.name)+'</div>'
     +'<div style="font-size:12px;font-weight:600;color:var(--muted);margin-top:3px;">'+_escHtml(amount)+'</div>'
     , false, '');
-}
-// Appetite, not numbers. One palm, two palms, more -- and never a warning.
-function _mbPalmRow(chosen){
-  var opts=[1,1.5,2,2.5,3];
-  return '<div style="display:flex;gap:6px;margin-top:10px;">'
-    + opts.map(function(q){
-        var on=(Math.abs((+chosen.qty||0)-q)<0.01);
-        return '<div onclick="event.stopPropagation();mbSetQty(\'protein\','+q+')" style="flex:1;text-align:center;padding:9px 2px;border-radius:9px;'
-          +'border:1.5px solid '+(on?'var(--gold)':'var(--border)')+';background:'+(on?'var(--gold)':'var(--s2)')+';'
-          +'color:'+(on?'var(--onaccent)':'var(--m2)')+';font-size:12px;font-weight:800;cursor:pointer;">'+mbFormatQty(q)+'</div>';
-      }).join('')
-  +'</div>'
-  +'<div style="font-size:11.5px;font-weight:600;color:var(--muted);margin-top:6px;">palms · more is fine</div>';
 }
 function mbRender(){
   var host=document.getElementById('mbBody'); if(!host||!cl||!_mbIsOpen()) return;
@@ -16720,22 +16855,74 @@ function mbRender(){
     return;
   }
   var sub=document.getElementById('mbSubtitle');
-  // step one: which meal
-  if(!_mbFramework){
+  // the header says where you are, so the build you picked is never a guess
+  var ttl=document.getElementById('mbTitle');
+  var B=mbBuild(_mbBuild);
+  if(ttl) ttl.textContent = _mbFramework ? mbFrameworkName(_mbFramework)
+                          : (B ? B.label : 'Build a meal');
+
+  // screen one: which meal (only reached by opening the builder cold)
+  if(!_mbBuild){
     if(sub) sub.textContent='Which meal are you building?';
-    host.innerHTML=Object.keys(MB_FRAMEWORKS).map(function(k){
+    host.innerHTML=MB_BUILDS.map(function(b){
+      return _mbCard(_mbHead(b.label,'<span style="flex-shrink:0;font-size:15px;font-weight:700;color:var(--muted);">›</span>'),
+        true, 'mbSetBuild(\''+b.key+'\')');
+    }).join('');
+    return;
+  }
+
+  // screen two: inspiration — a question, and a handful of good answers
+  if(_mbStep){
+    if(sub) sub.textContent=_mbStep.q||'';
+    host.innerHTML=(_mbStep.a||[]).map(function(ans,i){
+      return _mbCard(_mbHead(ans.label,'<span style="flex-shrink:0;font-size:15px;font-weight:700;color:var(--muted);">›</span>')
+        + (ans.sub?'<div style="font-size:12px;font-weight:600;color:var(--muted);margin-top:4px;">'+_escHtml(ans.sub)+'</div>':''),
+        true, 'mbAnswer('+i+')');
+    }).join('')
+    + '<div onclick="mbBuildMyself()" style="text-align:center;font-size:12.5px;font-weight:700;color:var(--muted);padding:16px 0 4px;cursor:pointer;">Build it myself</div>';
+    return;
+  }
+
+  // screen three: only when someone skipped inspiration on a build that has
+  // more than one shape
+  if(!_mbFramework){
+    if(sub) sub.textContent='Which way are you building it?';
+    host.innerHTML=(B.frameworks||[]).map(function(k){
       var F=MB_FRAMEWORKS[k];
-      return _mbCard(_mbHead(F.label,'<span style="flex-shrink:0;font-size:15px;font-weight:700;color:var(--muted);">›</span>')
-        + (F.note?'<div style="font-size:12px;font-weight:600;color:var(--muted);margin-top:4px;">'+_escHtml(F.note)+'</div>':''),
+      return _mbCard(_mbHead(F.note?F.note.replace(/\s*build$/i,''):F.label,
+          '<span style="flex-shrink:0;font-size:15px;font-weight:700;color:var(--muted);">›</span>')
+        +'<div style="font-size:12px;font-weight:600;color:var(--muted);margin-top:4px;">'
+          +_escHtml(F.parts.map(function(p){ return (MB_PART_META[p]||{}).label||p; }).join(' · '))+'</div>',
         true, 'mbSetFramework(\''+k+'\')');
     }).join('');
     return;
   }
-  // step two: the shape, then filling it
+
+  // screen four: the shape, then filling it. The framework's slots come first
+  // as the teaching frame; anything past them (a second protein) follows on.
   var F=MB_FRAMEWORKS[_mbFramework];
   if(sub) sub.textContent='This is the shape of a '+F.label.toLowerCase()+'.';
-  var html=F.parts.map(_mbPartCard).join('');
-  var parts=F.parts.map(function(k){ return _mbParts[k]; }).filter(Boolean);
+  var seen={}, html='';
+  // every item of a kind sits together under that heading -- eggs and bacon
+  // are both protein and belong next to each other, not either side of an
+  // empty vegetable slot
+  F.parts.forEach(function(k){
+    var any=false;
+    _mbParts.forEach(function(x,i){
+      if(seen[i] || !x || !x.component || x.component.kind!==k) return;
+      seen[i]=1; any=true;
+      html+=_mbPartCard(k, x, i);
+    });
+    if(!any) html+=_mbPartCard(k, null, null);
+  });
+  // anything the framework has no slot for at all, e.g. a fruit side on a
+  // savoury build
+  _mbParts.forEach(function(x,i){
+    if(seen[i] || !x || !x.component) return;
+    seen[i]=1;
+    html+=_mbPartCard(x.component.kind, x, i);
+  });
+  var parts=_mbParts.filter(function(x){ return x && x.component; });
   if(parts.length){
     var t=mbMealTotals(parts);
     html+='<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:14px 2px 0;">'
@@ -16744,14 +16931,17 @@ function mbRender(){
   }
   html+='<button class="sbtn" style="margin-top:16px;'+(parts.length?'':'opacity:0.5;')+'" '
     +(parts.length?'onclick="mbSave()"':'disabled')+'>Save to my meals</button>'
-    +'<button class="obtn" onclick="mbSetFramework(null)">Pick a different meal</button>';
+    +'<button class="obtn" onclick="mbSetBuild(null)">Pick a different meal</button>';
   host.innerHTML=html;
 }
-function mbSetFramework(k){ _mbFramework=k; _mbParts={}; mbRender(); }
-function mbClearPart(kind){ delete _mbParts[kind]; mbRender(); }
-function mbSetQty(kind,q){
-  if(!_mbParts[kind]) return;
-  _mbParts[kind].qty=q;
+function mbSetFramework(k){
+  _mbHistory.push({step:_mbStep, framework:_mbFramework, partsLen:_mbParts.length});
+  _mbFramework=k; _mbStep=null; mbRender();
+}
+function mbClearPart(i){ if(i!=null && _mbParts[i]) _mbParts.splice(i,1); mbRender(); }
+function mbSetQty(i,q){
+  if(!_mbParts[i]) return;
+  _mbParts[i].qty=q;
   mbRender();
 }
 // Picking the food. Amount is decided FOR them on carbs and veg; only protein
@@ -16821,7 +17011,7 @@ function _mbPalmStep(){
 }
 function mbPickPalms(q){
   if(!_mbPickComp) return;
-  _mbParts['protein']={component:_mbPickComp, qty:q};
+  _mbParts.push({component:_mbPickComp, qty:q});
   mbClosePick(); mbRender();
 }
 function mbClosePick(){ var o=document.getElementById('mbPickOv'); if(o&&o.parentNode) o.parentNode.removeChild(o); _mbPick=null; _mbPickComp=null; }
@@ -16840,18 +17030,13 @@ function _mbTake(c){
   // protein is the one amount worth asking about, so it gets a second step in
   // the same sheet. Everything else is decided for them.
   if(kind==='protein'){ _mbPickComp=c; mbRenderPick(); return; }
-  var qty;
-  if(kind==='veg'){ qty=1; }
-  else if(kind==='fruit'){ qty=portionFor(c, Math.round((MB_FRUIT_MIN+MB_FRUIT_MAX)/2)).qty; }
-  else { qty=portionFor(c, mbCarbTarget(_mbMode)).qty; }
-  _mbParts[kind]={component:c, qty:qty};
+  _mbParts.push({component:c, qty:mbDefaultQty(c, _mbMode, _clientGender())});
   mbClosePick();
   mbRender();
 }
 async function mbSave(){
   if(_mbSaving || !cl || !_mbFramework) return;
-  var F=MB_FRAMEWORKS[_mbFramework];
-  var parts=F.parts.map(function(k){ return _mbParts[k]; }).filter(Boolean);
+  var parts=_mbParts.filter(function(x){ return x && x.component; });
   if(!parts.length) return;
   _mbSaving=true;
   var text=mbCompose(parts), t=mbMealTotals(parts);
@@ -17150,8 +17335,8 @@ async function mbAddDelete(){
   ex.is_archived=true;
   _mbComponents=_mbComponents.filter(function(c){ return String(c.id)!==String(ex.id); });
   // anything already picked in this build that pointed at it steps aside
-  Object.keys(_mbParts).forEach(function(k){
-    if(_mbParts[k] && _mbParts[k].component && String(_mbParts[k].component.id)===String(ex.id)) delete _mbParts[k];
+  _mbParts=_mbParts.filter(function(x){
+    return !(x && x.component && String(x.component.id)===String(ex.id));
   });
   _mbAddBusy=false;
   mbAddClose();
