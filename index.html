@@ -510,8 +510,11 @@ body.jv-cockpit #jvDayTabs{display:none;}
 .jvMoveName{font-size:24px;font-weight:800;color:#f0ece4;letter-spacing:-0.4px;line-height:1.1;}
 .jvMoveWhy{font-size:13.5px;font-weight:600;color:#f0ece4;margin-top:7px;line-height:1.45;}
 .jvMoveBtns{display:flex;gap:8px;margin-top:15px;max-width:440px;}
-.jvMoreLink{margin-top:14px;font-size:12.5px;font-weight:700;color:rgba(240,236,228,0.78);cursor:pointer;}
-.jvMoreLink:hover{color:#f0ece4;}
+.jvMoveAbout{font-size:12.5px;color:rgba(240,236,228,0.78);margin-top:8px;line-height:1.5;}
+.jvTAbout{font-size:12px;color:rgba(240,236,228,0.78);margin-top:6px;line-height:1.45;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}
+.jvEmpty{padding:30px 20px;color:rgba(240,236,228,0.78);font-size:13px;}
+.jvSetup{background:#141414;border:1px solid rgba(245,197,24,0.32);border-radius:11px;padding:11px 13px;margin-bottom:14px;font-size:12.5px;color:#f0ece4;line-height:1.5;}
+.jvSetup button{margin-left:6px;background:var(--gold);border:none;border-radius:7px;padding:5px 10px;font-size:11.5px;font-weight:800;color:var(--onaccent);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;}
 .jvViewLink{margin:28px 0 12px;font-size:13px;font-weight:800;color:#f0ece4;cursor:pointer;border-top:1px solid #1c1c1c;padding-top:18px;}
 .jvViewLink span{font-weight:600;color:rgba(240,236,228,0.78);}
 .jvViewLink:hover span{color:#f0ece4;}
@@ -9223,10 +9226,12 @@ async function jvLoadTriage(silent){
       if(pr && pr.client_code && pr.goal_weight!=null) goals[pr.client_code]=parseFloat(pr.goal_weight);
     });
     var per={};
-    function ensure(c){ if(!per[c]) per[c]={cnt:[0,0,0,0,0,0,0],weighed:{},stepped:{},last:0,ever:false}; return per[c]; }
+    // days[i] carries WHAT happened, not just how much — a fraction hides the shape
+    // of a week, and three days on then four off reads nothing like every other day.
+    function ensure(c){ if(!per[c]) per[c]={cnt:[0,0,0,0,0,0,0],days:[{},{},{},{},{},{},{}],weighed:{},stepped:{},last:0,ever:false}; return per[c]; }
     function touch(c,ts){ var p=ensure(c); p.ever=true; if(ts>p.last) p.last=ts; return p; }
-    foods.forEach(function(f){ var t=f.logged_at||f.created_at; var p=touch(f.client_code, tsOf(f.date_str,t)); var i=dayOf(f.date_str,t); if(i!=null) p.cnt[i]+=1; if(!p.lastFood){ p.lastFood={name:(f.name||'meal'), emoji:(f.emoji||'🍽️'), ts:tsOf(f.date_str,t)}; } });
-    wos.forEach(function(w){ var t=w.logged_at||w.created_at; var p=touch(w.client_code, tsOf(w.date_str,t)); var i=dayOf(w.date_str,t); if(i!=null) p.cnt[i]+=1; if(!p.lastWo){ p.lastWo={title:(w.title||'Workout'), ts:tsOf(w.date_str,t)}; } });
+    foods.forEach(function(f){ var t=f.logged_at||f.created_at; var p=touch(f.client_code, tsOf(f.date_str,t)); var i=dayOf(f.date_str,t); if(i!=null){ p.cnt[i]+=1; p.days[i].f=1; } if(!p.lastFood){ p.lastFood={name:(f.name||'meal'), emoji:(f.emoji||'🍽️'), ts:tsOf(f.date_str,t)}; } });
+    wos.forEach(function(w){ var t=w.logged_at||w.created_at; var p=touch(w.client_code, tsOf(w.date_str,t)); var i=dayOf(w.date_str,t); if(i!=null){ p.cnt[i]+=1; p.days[i].w=1; } if(!p.lastWo){ p.lastWo={title:(w.title||'Workout'), ts:tsOf(w.date_str,t)}; } });
     weights.forEach(function(w){ var t=w.logged_at||w.created_at||w.updated_at; var p=touch(w.client_code, tsOf(w.date_str,t)); var i=dayOf(w.date_str,t); if(i!=null && !p.weighed[i]){ p.weighed[i]=1; p.cnt[i]+=1; } if(w.weight!=null && !isNaN(parseFloat(w.weight))){
         var _wv=parseFloat(w.weight), _wt=tsOf(w.date_str,t);
         if(!p.lastWeight) p.lastWeight={val:_wv, ts:_wt};   // rows arrive newest-first
@@ -9241,6 +9246,7 @@ async function jvLoadTriage(silent){
     jvData={foodsByClient:foodsByClient, woByClient:woByClient};
     jvTriage={per:per, days:days, now:nowMs, goals:goals};
     await jvSyncHandledFromServer();
+    await jvSyncContacts();
     jvRenderTriage();
     try{ renderWeekCaughtUp(); }catch(e){}
   }catch(e){ wall.innerHTML='<div class="jvLoading">Could not load. Try Refresh.</div>'; }
@@ -9265,6 +9271,98 @@ function _jvClassify(p, nowMs){
 }
 function _jvTodayKey(){ return _jvDayKey(new Date()); }
 function jvHandledMap(){ try{ return JSON.parse(localStorage.getItem('yjb_jv_handled')||'{}'); }catch(e){ return {}; } }
+
+// ===== CONTACT =====
+// When you last actually spoke to someone. Not when they last logged — those are
+// different things and only one of them is the coach's job. Recorded deliberately:
+// nothing here is inferred from a tap on Text or from their activity.
+// Local first, server when the table exists (same shape as jv_handled).
+function jvContacts(){ try{ return JSON.parse(localStorage.getItem('yjb_client_contacts')||'{}')||{}; }catch(e){ return {}; } }
+function _ccSave(m){ try{ localStorage.setItem('yjb_client_contacts', JSON.stringify(m)); }catch(e){} }
+function _ccFor(code){ var a=(jvContacts()[code])||[]; return a.slice().sort(function(x,y){ return (y.t||0)-(x.t||0); }); }
+function _ccLast(code){ return _ccFor(code)[0]||null; }
+function _ccDaysSince(code){
+  var l=_ccLast(code); if(!l||!l.t) return null;
+  return Math.floor((Date.now()-l.t)/86400000);
+}
+// How many times in a row you've reached out since they last came back to you.
+// This is the number that stops silence reading as your failure.
+function _ccUnanswered(code){
+  var a=_ccFor(code), n=0;
+  for(var i=0;i<a.length;i++){ if(a[i].r) break; n++; }
+  return n;
+}
+var _CC_KIND={text:'text', call:'call'};
+async function jvLogContact(code, kind, about, replied){
+  if(!code) return false;
+  kind=_CC_KIND[kind]?kind:'text';
+  var row={t:Date.now(), k:kind, a:String(about||'').trim().slice(0,300), r:(replied!==false)};
+  var m=jvContacts(); (m[code]=m[code]||[]).unshift(row); if(m[code].length>200) m[code].length=200;
+  _ccSave(m);
+  // Speaking to someone clears them off today's board too — one action, not two.
+  try{ jvMarkHandled(code); }catch(e){}
+  try{
+    if(cl){
+      var res=await fetch(SB_URL+'/rest/v1/client_contacts', {
+        method:'POST', headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
+        body:JSON.stringify({coach_code:cl.code, client_code:code, kind:kind, about:row.a, replied:row.r,
+                             contacted_at:new Date(row.t).toISOString()})
+      });
+      if(res.status===404||res.status===400) window._ccSrv='missing'; else if(res.ok) window._ccSrv='ok';
+    }
+  }catch(e){}
+  return true;
+}
+async function jvSyncContacts(){
+  try{
+    if(!cl) return;
+    var res=await fetch(SB_URL+'/rest/v1/client_contacts?coach_code=eq.'+encodeURIComponent(cl.code)+'&order=contacted_at.desc&limit=2000', {headers:sbHeaders()});
+    if(res.status===404||res.status===400){ window._ccSrv='missing'; return; }
+    window._ccSrv='ok';
+    var rows=await res.json(); if(!rows||!rows.length) return;
+    // Server is the record; local is the cache. Merge on timestamp so a contact
+    // logged on the phone shows up here without clobbering one logged offline.
+    var m=jvContacts();
+    rows.forEach(function(r){
+      if(!r.client_code) return;
+      var t=0; try{ t=new Date(r.contacted_at).getTime(); }catch(e){}
+      if(!t||isNaN(t)) return;
+      var a=(m[r.client_code]=m[r.client_code]||[]);
+      for(var i=0;i<a.length;i++){ if(Math.abs((a[i].t||0)-t)<2000) return; }   // already have it
+      a.push({t:t, k:(r.kind||'text'), a:(r.about||''), r:(r.replied!==false)});
+    });
+    Object.keys(m).forEach(function(c){ m[c].sort(function(x,y){ return (y.t||0)-(x.t||0); }); if(m[c].length>200) m[c].length=200; });
+    _ccSave(m);
+  }catch(e){}
+}
+function jvCopyContactsSQL(){
+  var sql="CREATE TABLE IF NOT EXISTS client_contacts (\n"
+    +"  id BIGSERIAL PRIMARY KEY,\n"
+    +"  coach_code TEXT NOT NULL,\n"
+    +"  client_code TEXT NOT NULL,\n"
+    +"  kind TEXT NOT NULL DEFAULT 'text',\n"
+    +"  about TEXT,\n"
+    +"  replied BOOLEAN NOT NULL DEFAULT true,\n"
+    +"  contacted_at TIMESTAMPTZ NOT NULL DEFAULT now()\n"
+    +");\n"
+    +"ALTER TABLE client_contacts ENABLE ROW LEVEL SECURITY;\n"
+    +"CREATE POLICY open_all ON client_contacts FOR ALL USING (true) WITH CHECK (true);\n"
+    +"CREATE INDEX IF NOT EXISTS client_contacts_lookup ON client_contacts (coach_code, client_code, contacted_at DESC);";
+  try{ navigator.clipboard.writeText(sql); showToast('SQL copied — Supabase → SQL Editor → paste → Run'); }
+  catch(e){ showToast('Copy failed — open the Supabase SQL editor and create client_contacts'); }
+}
+// Always says what it knows and nothing more. Never falls back to their last log.
+function _ccLine(code){
+  var l=_ccLast(code);
+  if(!l) return 'No contact logged';
+  var un=_ccUnanswered(code);
+  var d=_ccDaysSince(code);
+  var when=(d<=0?'today':(d===1?'yesterday':d+' days ago'));
+  if(un>=2) return 'Reached out '+(un===2?'twice':un+' times')+', no reply · last '+when;
+  if(un===1) return 'Reached out '+when+', no reply yet';
+  return 'Last contact '+when+' · '+(l.k==='call'?'call':'text');
+}
+function _ccAbout(code){ var l=_ccLast(code); return (l&&l.a)?l.a:''; }
 function _jvGotStartedSet(){ try{ return JSON.parse(localStorage.getItem('yjb_jv_started')||'{}')||{}; }catch(e){ return {}; } }
 function _jvDismissStarted(code){
   try{ var s=_jvGotStartedSet(); s[code]=1; localStorage.setItem('yjb_jv_started',JSON.stringify(s)); }catch(e){}
@@ -9330,27 +9428,94 @@ function jvToggleHandled(){ var l=document.getElementById('jvHandledList'),c=doc
 var _JV_ACTIVE_MS=14*86400000;
 function _jvIsActive(p, nowMs){ return !!(p && p.ever && p.last && (nowMs-p.last) <= _JV_ACTIVE_MS); }
 // What a good week looks like, said in days rather than a score.
-// Just the days. The trend line sits directly underneath and says the direction,
-// so naming it here too printed "moving" twice on every card.
-function _jvWeekLine(o){
-  var days=(o.cnt||[]).filter(function(x){ return x>0; }).length;
-  return days+' of 7 days';
+// The actual seven days, not a fraction. A fraction has a denominator, and the
+// denominator reads as a target you fell short of. Top half of each cell is trained,
+// bottom half is food logged. Nothing on a day just looks like nothing on a day.
+function _jvDaysStrip(p, big){
+  var days=(p&&p.days)||[];
+  var on='#f0ece4', off='rgba(240,236,228,0.09)';
+  var h=big?26:20, cells='';
+  for(var i=6;i>=0;i--){                       // days[0] is today, so walk it backwards
+    var d=days[i]||{};
+    var dt=new Date(); dt.setDate(dt.getDate()-i);
+    cells+='<div style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:4px;">'
+      +'<div style="width:100%;height:'+h+'px;border-radius:4px;overflow:hidden;border:1px solid rgba(240,236,228,0.16);display:flex;flex-direction:column;">'
+        +'<div style="flex:1;background:'+(d.w?on:off)+';"></div>'
+        +'<div style="flex:1;background:'+(d.f?on:off)+';border-top:1px solid rgba(7,7,7,0.85);"></div>'
+      +'</div>'
+      +'<div style="font-size:9px;font-weight:700;color:rgba(240,236,228,0.55);line-height:1;">'+dt.toLocaleDateString('en-US',{weekday:'narrow'})+'</div>'
+    +'</div>';
+  }
+  return '<div style="display:flex;gap:4px;margin-top:9px;">'+cells+'</div>';
 }
-function _jvWeekRank(o){
-  var days=(o.cnt||[]).filter(function(x){ return x>0; }).length;
-  var bonus={working:2, hit:2, stalled:0, wrongway:-1, nogoal:0}[(o.trend&&o.trend.state)||'nogoal']||0;
-  return days*2+bonus;
+// Recording contact is deliberate — nothing here fires from tapping Text. But it has
+// to be fast, because at forty clients a form is a thing you stop doing.
+function _jvContactBlock(code){
+  var last=_ccLast(code), about=_ccAbout(code);
+  return '<div id="ccHost_'+code+'" style="background:#141414;border:1px solid #202020;border-radius:14px;padding:13px 15px;margin-bottom:16px;">'
+    + _jvContactInner(code, last, about) + '</div>';
 }
-// The single most valuable person to reach right now: furthest gone among people
-// whose term is still running, worst trajectory breaking the tie.
-function _jvTopMove(chase){
-  if(!chase.length) return null;
-  var rank={wrongway:3, stalled:2, nogoal:1, working:0, hit:0};
-  return chase.slice().sort(function(a,b){
-    var ta=rank[(a.trend&&a.trend.state)||'nogoal']||0, tb=rank[(b.trend&&b.trend.state)||'nogoal']||0;
-    if(ta!==tb) return tb-ta;
-    return (b.cls.urg||0)-(a.cls.urg||0);
-  })[0];
+// The line itself sits above the actions, where you read it before deciding to act.
+// Down here is where you record one, so this only carries what you last talked about.
+function _jvContactInner(code, last, about){
+  return '<div style="font-size:10px;font-weight:800;letter-spacing:1.4px;text-transform:uppercase;color:rgba(240,236,228,0.78);margin-bottom:7px;">Record a contact</div>'
+    + (about ? '<div style="font-size:12.5px;color:rgba(240,236,228,0.78);line-height:1.5;">Last time: “'+String(about).replace(/</g,'&lt;')+'”</div>' : '')
+    + '<div style="display:flex;gap:7px;margin-top:'+(about?'11px':'2px')+';">'
+      + '<button onclick="jvContactStart(\''+code+'\',\'text\')" style="flex:1;background:#1b1b1b;border:1px solid #2d2d2d;border-radius:9px;padding:9px 6px;font-size:12.5px;font-weight:800;color:#f0ece4;cursor:pointer;font-family:inherit;">Texted</button>'
+      + '<button onclick="jvContactStart(\''+code+'\',\'call\')" style="flex:1;background:#1b1b1b;border:1px solid #2d2d2d;border-radius:9px;padding:9px 6px;font-size:12.5px;font-weight:800;color:#f0ece4;cursor:pointer;font-family:inherit;">Called</button>'
+    + '</div>';
+}
+// Seven days with a legend, on the card. No fraction, no verdict — just what happened.
+function _jvWeekBlock(code){
+  var p=null; try{ p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null; }catch(e){}
+  if(!p) return '';
+  function key(lit,label){
+    return '<span style="display:inline-flex;align-items:center;gap:5px;">'
+      +'<span style="width:9px;height:9px;border-radius:2px;background:'+(lit?'#f0ece4':'rgba(240,236,228,0.09)')+';border:1px solid rgba(240,236,228,0.16);"></span>'
+      +'<span>'+label+'</span></span>';
+  }
+  return '<div style="background:#141414;border:1px solid #202020;border-radius:14px;padding:13px 15px;margin-bottom:16px;">'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:1.4px;text-transform:uppercase;color:rgba(240,236,228,0.78);">Last seven days</div>'
+    + _jvDaysStrip(p, true)
+    +'<div style="display:flex;gap:14px;margin-top:10px;font-size:10.5px;color:rgba(240,236,228,0.55);font-weight:600;">'
+      + key(true,'top: trained') + key(true,'bottom: food logged')
+    +'</div>'
+    +'<div style="font-size:11px;color:rgba(240,236,228,0.55);margin-top:8px;line-height:1.5;">Logging is how much they use the app. It isn’t how they’re doing.</div>'
+  +'</div>';
+}
+// Same phone number the Text button uses; a call is just the other thing you do with it.
+function callClient(code){
+  try{ _jvHydratePhones(); }catch(e){}
+  var info=CLIENTS[code]||{};
+  var phone=info.phone||'';
+  if(!phone){ showToast('No number saved for '+(info.name||'this client')+' yet'); return; }
+  try{ window.location.href='tel:'+String(phone).replace(/[^0-9+]/g,''); }catch(e){}
+}
+function jvContactStart(code, kind){
+  var host=document.getElementById('ccHost_'+code); if(!host) return;
+  host.innerHTML='<div style="font-size:10px;font-weight:800;letter-spacing:1.4px;text-transform:uppercase;color:rgba(240,236,228,0.78);margin-bottom:9px;">'+(kind==='call'?'Called':'Texted')+' — what about?</div>'
+    + '<input id="ccIn_'+code+'" type="text" placeholder="a few words" autocomplete="off"'
+    + ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();jvContactSave(\''+code+'\',\''+kind+'\');}if(event.key===\'Escape\'){jvContactCancel(\''+code+'\');}"'
+    + ' style="width:100%;box-sizing:border-box;background:#1b1b1b;border:1px solid #2d2d2d;border-radius:10px;padding:11px 13px;font-size:14px;color:#f0ece4;font-family:inherit;outline:none;">'
+    + '<label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12.5px;color:rgba(240,236,228,0.78);cursor:pointer;">'
+      + '<input id="ccNo_'+code+'" type="checkbox" style="width:16px;height:16px;accent-color:#f5c518;cursor:pointer;">No reply yet</label>'
+    + '<div style="display:flex;gap:7px;margin-top:11px;">'
+      + '<button onclick="jvContactSave(\''+code+'\',\''+kind+'\')" style="flex:1;background:var(--gold);border:none;border-radius:9px;padding:10px 6px;font-size:12.5px;font-weight:800;color:var(--onaccent);cursor:pointer;font-family:inherit;">Save</button>'
+      + '<button onclick="jvContactCancel(\''+code+'\')" style="flex:0 0 auto;background:transparent;border:1px solid #2d2d2d;border-radius:9px;padding:10px 14px;font-size:12.5px;font-weight:800;color:rgba(240,236,228,0.78);cursor:pointer;font-family:inherit;">Cancel</button>'
+    + '</div>';
+  try{ var i=document.getElementById('ccIn_'+code); if(i) i.focus(); }catch(e){}
+}
+function jvContactCancel(code){
+  var host=document.getElementById('ccHost_'+code); if(host) host.innerHTML=_jvContactInner(code, _ccLast(code), _ccAbout(code));
+}
+async function jvContactSave(code, kind){
+  var i=document.getElementById('ccIn_'+code), n=document.getElementById('ccNo_'+code);
+  var about=i?String(i.value||'').trim():'';
+  var replied=!(n&&n.checked);
+  await jvLogContact(code, kind, about, replied);
+  jvContactCancel(code);
+  try{ showToast(replied ? ('Logged — '+(kind==='call'?'call':'text')) : 'Logged — no reply yet'); }catch(e){}
+  try{ if(jvTriage) jvRenderTriage(); }catch(e){}
 }
 function jvSetView(v){ window._jvView=(window._jvView===v?null:v); jvRenderTriage(); }
 function jvShowAllChase(){ window._jvChaseOpen=!window._jvChaseOpen; jvRenderTriage(); }
@@ -9361,132 +9526,123 @@ function jvRenderTriage(){
   var nowMs=jvTriage.now||Date.now();
   var _hidden=getHiddenClientSet();
   var codes=Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer && !_hidden[k]; });
-  var good=[], chase=[], dormant=[], winback=[], notStarted=[], activeN=0;
+  var live=[], dormant=[], winback=[], notStarted=[], activeN=0, spokeToday=0;
   codes.forEach(function(code){
     var p=per[code];
     var term=_jvTermState(code,p);
     var cls=_jvClassify(p, nowMs);
     if(!cls){ notStarted.push(code); return; }
-    var trend=null; try{ trend=_jvTrend(p, (jvTriage.goals||{})[code]); }catch(e){}
-    var o={code:code, cls:cls, cnt:p.cnt, trend:trend, term:term};
+    var since=_ccDaysSince(code);
+    var o={code:code, cls:cls, cnt:p.cnt, p:p, term:term,
+           since:since, unanswered:_ccUnanswered(code)};
     if(_jvIsActive(p, nowMs)) activeN++;
+    if(since===0) spokeToday++;
     if(cls.band==='winback'){ winback.push(o); return; }
     if(cls.band==='dormant'){ dormant.push(o); return; }
-    if(cls.band==='green'){ good.push(o); return; }
-    // red + yellow are the chase list. Someone whose term has ended isn't a to-do —
-    // "6 days quiet" on an expired client is noise, and it's most of why this said 21.
-    if(term.active) chase.push(o); else winback.push(o);
+    // Someone whose term has ended isn't a to-do — that's a win-back conversation.
+    if(term.active) live.push(o); else winback.push(o);
   });
-  good.sort(function(a,b){ return _jvWeekRank(b)-_jvWeekRank(a); });
-  chase.sort(function(a,b){ return (b.cls.urg||0)-(a.cls.urg||0); });
-  // Anyone handled today drops off the board and collapses into one shelf, so it
-  // clears down as you work and stays cleared for the day.
+  // Longest since you spoke, first. Never-contacted sorts to the top, because that's
+  // the biggest gap there is.
+  function gap(o){ return (o.since==null) ? 99999 : o.since; }
+  live.sort(function(a,b){ return gap(b)-gap(a); });
   var handled=[];
-  good=good.filter(function(o){ if(jvIsHandled(o.code)){ handled.push(o); return false; } return true; });
-  chase=chase.filter(function(o){ if(jvIsHandled(o.code)){ handled.push(o); return false; } return true; });
+  live=live.filter(function(o){ if(jvIsHandled(o.code)){ handled.push(o); return false; } return true; });
 
-  function card(o,kind){
+  function card(o){
     var info=CLIENTS[o.code]||{}; var nm=(info.name||'').replace(/</g,'&lt;');
     var safe=(info.name||'').replace(/'/g,"\\'");
-    var line=(kind==='good') ? _jvWeekLine(o) : o.cls.reason;
-    var s='<div class="jvTCard '+kind+'" data-name="'+(info.name||'').toLowerCase().replace(/"/g,'')+'" onclick="jvOpenDeep(\''+o.code+'\')">'
+    var about=_ccAbout(o.code);
+    return '<div class="jvTCard" data-name="'+(info.name||'').toLowerCase().replace(/"/g,'')+'" onclick="jvOpenDeep(\''+o.code+'\')">'
       +'<div class="jvTName">'+nm+'</div>'
       +'<div class="jvTTerm">'+_jvTermPill(o.term)+'</div>'
-      +'<div class="jvTState">'+line+'</div>'
-      + _jvTrendHtml(o.trend);
-    if(kind==='chase'){
-      s+='<div class="jvTBtns" onclick="event.stopPropagation();">'
-        +'<button class="jvTBtn gold" title="Text '+(info.name||'').replace(/"/g,'')+'" onclick="jvTextAndHandle(\''+o.code+'\')">💬 Text</button>'
-        +'<button class="jvTBtn icon" title="Notes" onclick="openClientNotes(\''+o.code+'\',\''+safe+'\')">📝</button>'
+      +'<div class="jvTState">'+_ccLine(o.code)+'</div>'
+      +(about?'<div class="jvTAbout">“'+String(about).replace(/</g,'&lt;')+'”</div>':'')
+      + _jvDaysStrip(o.p)
+      +'<div class="jvTBtns" onclick="event.stopPropagation();">'
+        +'<button class="jvTBtn gold" title="Text '+(info.name||'').replace(/"/g,'')+'" onclick="textClient(\''+o.code+'\')">Text</button>'
+        +'<button class="jvTBtn icon" title="Notes" onclick="openClientNotes(\''+o.code+'\',\''+safe+'\')">Note</button>'
         +'<button class="jvTBtn icon done" title="Clear — handled today" onclick="jvMarkHandled(\''+o.code+'\')">✓</button>'
-        +'</div>';
-    } else {
-      s+='<div class="jvTBtns" onclick="event.stopPropagation();">'
-        +'<button class="jvTBtn icon done" title="Clear — handled today" onclick="jvMarkHandled(\''+o.code+'\')">✓</button>'
-        +'</div>';
-    }
-    return s+'</div>';
+      +'</div>'
+    +'</div>';
   }
-  function grid(arr,kind){ return '<div class="jvBandGrid">'+arr.map(function(o){ return card(o,kind); }).join('')+'</div>'; }
+  function grid(arr){ return '<div class="jvBandGrid">'+arr.map(card).join('')+'</div>'; }
 
   var html='';
   if(window._jvHandledSrv==='missing'){
-    html+='<div style="background:rgba(231,181,82,0.10);border:1px solid rgba(231,181,82,0.40);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:12.5px;color:#f5c518;line-height:1.5;">Your ✓ clears are saving on this device only — they won’t survive incognito or sync to your phone until the <b>jv_handled</b> table exists. Create it once and this goes away. <button onclick="jvCopyHandledSQL()" style="margin-left:4px;background:#f5c518;border:none;border-radius:7px;padding:5px 10px;font-size:11.5px;font-weight:800;color:#000;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">Copy the SQL</button></div>';
+    html+='<div class="jvSetup">Your ✓ clears are saving on this device only — they won’t survive incognito or sync to your phone until the <b>jv_handled</b> table exists. <button onclick="jvCopyHandledSQL()">Copy the SQL</button></div>';
+  }
+  if(window._ccSrv==='missing'){
+    html+='<div class="jvSetup">Contact records are saving on this device only until the <b>client_contacts</b> table exists. Create it once and they sync everywhere. <button onclick="jvCopyContactsSQL()">Copy the SQL</button></div>';
   }
 
-  // ---- the separate view you go to deliberately ----
   var inactiveN=notStarted.length+dormant.length+winback.length;
   if(window._jvView==='inactive'){
     html+='<div class="jvViewBack" onclick="jvSetView(\'inactive\')">← Back to the board</div>';
     function shelf(title,say,arr,isCode){
       if(!arr.length) return '';
       return '<div class="jvBand"><div class="jvBandHead">'
-        +'<span class="jvBandTitle" style="color:#f0ece4;">'+title+'</span>'
+        +'<span class="jvBandTitle">'+title+'</span>'
         +'<span class="jvBandCount">'+arr.length+'</span>'
         +'<span class="jvBandSay">'+say+'</span></div>'
         +'<div class="jvDormGrid">'+arr.map(function(x){
-            var code=isCode?x:x.code; var info=CLIENTS[code]||{};
-            var term=isCode?_jvTermState(code):x.term;
-            return '<div class="jvDormChip" data-name="'+(info.name||'').toLowerCase().replace(/"/g,'')+'" onclick="jvOpenDeep(\''+code+'\')">'
-              +(info.name||code).replace(/</g,'&lt;')
+            var c=isCode?x:x.code; var info=CLIENTS[c]||{};
+            var term=isCode?_jvTermState(c):x.term;
+            return '<div class="jvDormChip" data-name="'+(info.name||'').toLowerCase().replace(/"/g,'')+'" onclick="jvOpenDeep(\''+c+'\')">'
+              +(info.name||c).replace(/</g,'&lt;')
               +'<span class="jvChipTerm">'+(term?term.label:'')+'</span></div>';
           }).join('')+'</div></div>';
     }
     html+=shelf('To win back','term ended or two weeks quiet',winback,false);
-    html+=shelf('Quiet a week or more','still in term, gone quiet',dormant,false);
+    html+=shelf('Quiet a week or more','still in term',dormant,false);
     html+=shelf('Never started','signed up, never logged',notStarted,true);
-    if(!inactiveN) html+='<div style="padding:30px 20px;color:rgba(240,236,228,0.78);font-size:13px;">Nobody sitting here. Everyone on your roster is active.</div>';
+    if(!inactiveN) html+='<div class="jvEmpty">Nobody sitting here. Everyone on your roster is active.</div>';
     wall.innerHTML=html; _jvReFilter(); return;
   }
 
-  // ---- the numbers ----
   var _logT=0; codes.forEach(function(c){ if(per[c]&&per[c].cnt[0]>=1) _logT++; });
   var _woT=0; Object.keys((jvData&&jvData.woByClient)||{}).forEach(function(c){ if(!_hidden[c]&&CLIENTS[c]&&!CLIENTS[c].isTrainer&&((jvData.woByClient[c]||[]).length>=1)) _woT++; });
-  var _hmap=jvHandledMap(), _tk=_jvTodayKey(), _clrT=0;
-  Object.keys(_hmap).forEach(function(c){ if(_hmap[c]===_tk && CLIENTS[c] && !CLIENTS[c].isTrainer && !_hidden[c]) _clrT++; });
   html+='<div class="jvStats">'
     +'<div class="jvStat"><div class="jvStatN">'+activeN+'</div><div class="jvStatL">active clients</div></div>'
+    +'<div class="jvStat"><div class="jvStatN">'+spokeToday+'</div><div class="jvStatL">spoke to today</div></div>'
     +'<div class="jvStat jvTap" onclick="jvStatList(\'checkedin\')"><div class="jvStatN">'+_logT+'</div><div class="jvStatL">logged today</div></div>'
     +'<div class="jvStat jvTap" onclick="jvStatList(\'workedout\')"><div class="jvStatN">'+_woT+'</div><div class="jvStatL">trained today</div></div>'
-    +'<div class="jvStat jvTap" onclick="jvStatList(\'caughtup\')"><div class="jvStatN">'+_clrT+'</div><div class="jvStatL">caught up</div></div>'
     +'</div>';
 
-  // ---- who's doing well, first ----
-  if(good.length){
-    html+='<div class="jvBand"><div class="jvBandHead">'
-      +'<span class="jvBandTitle" style="color:#f0ece4;">Had a good week</span>'
-      +'<span class="jvBandCount">'+good.length+'</span>'
-      +'<span class="jvBandSay">these are working — tell them</span></div>'
-      +grid(good,'good')+'</div>';
-  }
-
-  // ---- one move, not twenty-one ----
-  var top=_jvTopMove(chase);
+  // One name. Longest since you spoke — but someone you've already chased and who
+  // hasn't come back isn't your move, it's theirs, so they drop down the list.
+  var pool=live.filter(function(o){ return o.unanswered<2; });
+  var top=pool.length?pool[0]:null;
   if(top){
     var tn=(CLIENTS[top.code].name||'').replace(/</g,'&lt;');
-    var tsafe=(CLIENTS[top.code].name||'').replace(/'/g,"\\'");
-    var why=top.cls.reason+(top.trend&&top.trend.state==='wrongway'?' · going the wrong way':(top.trend&&top.trend.state==='stalled'?' · not moving':''));
+    var first=String(CLIENTS[top.code].name||'').split(' ')[0].replace(/</g,'&lt;');
+    var ab=_ccAbout(top.code);
     html+='<div class="jvMove">'
       +'<div class="jvMoveTag">Your move</div>'
       +'<div class="jvMoveName">'+tn+'</div>'
-      +'<div class="jvMoveWhy">'+why+'</div>'
+      +'<div class="jvMoveWhy">'+_ccLine(top.code)+'</div>'
+      +(ab?'<div class="jvMoveAbout">Last time: “'+String(ab).replace(/</g,'&lt;')+'”</div>':'')
       +'<div class="jvMoveBtns">'
-        +'<button class="jvTBtn gold" onclick="jvTextAndHandle(\''+top.code+'\')">💬 Text '+String(CLIENTS[top.code].name||'').split(' ')[0].replace(/</g,'&lt;')+'</button>'
+        +'<button class="jvTBtn gold" onclick="textClient(\''+top.code+'\')">Text '+first+'</button>'
         +'<button class="jvTBtn icon" onclick="jvOpenDeep(\''+top.code+'\')">Open</button>'
-        +'<button class="jvTBtn icon done" onclick="jvMarkHandled(\''+top.code+'\')">✓ Done</button>'
       +'</div>'
-      +(chase.length>1 ? '<div class="jvMoreLink" onclick="jvShowAllChase()">'+(window._jvChaseOpen?'Hide the other '+(chase.length-1):'Show the other '+(chase.length-1)+' who could use a nudge')+'</div>' : '')
     +'</div>';
-    if(window._jvChaseOpen && chase.length>1){
-      html+='<div class="jvBand">'+grid(chase.slice(1),'chase')+'</div>';
-    }
-  } else if(chase.length===0 && good.length){
-    html+='<div class="jvMove"><div class="jvMoveTag">Your move</div><div class="jvMoveName">Nothing to chase</div><div class="jvMoveWhy">Everyone in term is logging. Pull content from the wins.</div></div>';
+  } else if(!live.length){
+    html+='<div class="jvMove"><div class="jvMoveTag">Your move</div><div class="jvMoveName">You’re on top of it</div>'
+      +'<div class="jvMoveWhy">Everyone in term has heard from you. Good day to make something.</div></div>';
+  }
+
+  if(live.length){
+    html+='<div class="jvBand"><div class="jvBandHead">'
+      +'<span class="jvBandTitle">Haven’t spoken to</span>'
+      +'<span class="jvBandCount">'+live.length+'</span>'
+      +'<span class="jvBandSay">longest first</span></div>'
+      +grid(live)+'</div>';
   }
 
   if(handled.length){
     handled.sort(function(a,b){ return (CLIENTS[a.code].name||'').localeCompare(CLIENTS[b.code].name||''); });
-    html+='<div class="jvBand"><div class="jvDormToggle" onclick="jvToggleHandled()">✓ '+handled.length+' caught up today — tap to undo <span id="jvHandledCaret">▾</span></div>'
+    html+='<div class="jvBand"><div class="jvDormToggle" onclick="jvToggleHandled()">✓ '+handled.length+' cleared today — tap to undo <span id="jvHandledCaret">▾</span></div>'
       +'<div id="jvHandledList" style="display:none;"><div class="jvDormGrid">'
       +handled.map(function(o){ var nm=(CLIENTS[o.code].name||'').replace(/</g,'&lt;'); return '<div class="jvDormChip" data-name="'+(CLIENTS[o.code].name||'').toLowerCase().replace(/"/g,'')+'" title="Undo" onclick="jvUnhandle(\''+o.code+'\')">'+nm+' ✕</div>'; }).join('')
       +'</div></div></div>';
@@ -9695,11 +9851,14 @@ function jvOpenDeep(code){
     + '<div data-contract>' + _jvContractStrip(code) + '</div>'
     + _jvHonestLine(code)
     + '<div style="display:flex;gap:7px;margin:14px 0 16px;">'
-    +   '<button onclick="textClient(\'CODE\')" style="flex:1.4;background:var(--gold);border:none;border-radius:10px;padding:11px 6px;font-weight:800;font-size:13px;color:var(--onaccent);cursor:pointer;font-family:inherit;">Text</button>'
-    +   '<button id="jvDeepCaughtBtn" onclick="jvDeepToggleCaught(\'CODE\')" style="flex:1;border-radius:10px;padding:11px 6px;font-weight:800;font-size:12.5px;cursor:pointer;font-family:inherit;'+( (jvHandledMap()[code]===_jvTodayKey()) ? 'background:rgba(245,197,24,0.14);border:1px solid #f5c518;color:#f5c518;' : 'background:#1b1b1b;border:1px solid #2d2d2d;color:#f0ece4;' )+'">\u2713 Caught up</button>'
+    +   '<button onclick="textClient(\'CODE\')" style="flex:1;background:var(--gold);border:none;border-radius:10px;padding:11px 6px;font-weight:800;font-size:13px;color:var(--onaccent);cursor:pointer;font-family:inherit;">Text</button>'
+    +   '<button onclick="callClient(\'CODE\')" style="flex:1;background:#1b1b1b;border:1px solid #2d2d2d;border-radius:10px;padding:11px 6px;font-weight:800;font-size:12.5px;color:#f0ece4;cursor:pointer;font-family:inherit;">Call</button>'
+    +   '<button onclick="openClientNotes(\'CODE\',\''+safeName+'\')" style="flex:1;background:#1b1b1b;border:1px solid #2d2d2d;border-radius:10px;padding:11px 6px;font-weight:800;font-size:12.5px;color:#f0ece4;cursor:pointer;font-family:inherit;">Note</button>'
     +   '<button onclick="jvAssignProgram(\'CODE\')" style="flex:1;background:#1b1b1b;border:1px solid #2d2d2d;border-radius:10px;padding:11px 6px;font-weight:800;font-size:12.5px;color:#f0ece4;cursor:pointer;font-family:inherit;">Program</button>'
     + '</div>'
     + '<div id="jvDeepNotes" style="display:none;margin-bottom:18px;"></div>'
+    + _jvContactBlock(code)
+    + _jvWeekBlock(code)
     + _jvSayBlock(code)
     + '<div id="cnHost_'+code+'"></div>'
     + '<div id="jvDeepWeight"></div>'
@@ -9719,31 +9878,11 @@ function jvOpenDeep(code){
   try{ miDeepBlock(code); }catch(e){}
   try{ mbDeepBlock(code); }catch(e){}
 }
-// The one honest line. Replaces the old 7-day tiles — a "78%" eating score, a
-// "2 good · 1 ok · 0 heavy" breakdown and verdicts like "could train more". You can
-// read 4/7 yourself; what you can't see at a glance is whether they're actually
-// getting where they said they wanted to go.
+// When you last actually spoke to them. The line this replaces read "Going the wrong
+// way · +6.1 lb in 53d" — a verdict the app assigned off two weigh-ins. The weight
+// numbers still live in What to say, where they're facts you draw a conclusion from.
 function _jvHonestLine(code){
-  var p=null; try{ p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null; }catch(e){}
-  var bits=[];
-  var trend=null; try{ trend=_jvTrend(p, (jvTriage&&jvTriage.goals)?jvTriage.goals[code]:null); }catch(e){}
-  var col='#f0ece4';
-  if(trend){
-    var m=({working:'Moving', hit:'At target', stalled:'Not moving', wrongway:'Going the wrong way', nogoal:'No target set'})[trend.state];
-    if(trend.state==='wrongway') col='#e0705f';
-    var amt=(Math.abs(trend.delta)<0.6) ? 'flat'
-          : ((trend.delta>0?'+':'−')+(Math.round(Math.abs(trend.delta)*10)/10)+' lb');
-    bits.push(m+(trend.state==='hit'?'':' · '+amt+' in '+trend.days+'d'));
-  } else {
-    bits.push('Not enough weigh-ins to call it');
-  }
-  if(p && p.last){
-    var d=Math.floor((Date.now()-p.last)/86400000);
-    bits.push(d<=0?'logged today':(d===1?'logged yesterday':'logged '+d+' days ago'));
-  } else {
-    bits.push('never logged');
-  }
-  return '<div style="font-size:14px;font-weight:700;color:'+col+';margin-top:12px;line-height:1.45;">'+bits.join(' · ')+'</div>';
+  return '<div style="font-size:14px;font-weight:700;color:#f0ece4;margin-top:12px;line-height:1.45;">'+_ccLine(code)+'</div>';
 }
 // What to say. This is why the card gets opened — a message is about to get written,
 // and these are the facts worth having in your head before writing it. Assembled from
@@ -13494,6 +13633,7 @@ async function renderMobFrontDesk(){
   var _woT=Object.keys(wb).filter(function(c){ return !_hidden[c]&&CLIENTS[c]&&!CLIENTS[c].isTrainer&&(wb[c]||[]).length>=1; }).length;
   var hmap=jvHandledMap(), tk=_jvTodayKey();
   var _clrT=Object.keys(hmap).filter(function(c){ return hmap[c]===tk && CLIENTS[c] && !CLIENTS[c].isTrainer && !_hidden[c]; }).length;
+  var _spokeT=codes.filter(function(c){ return _ccDaysSince(c)===0; }).length;
   function statCard(n,label,kind){
     return '<div '+(kind?'onclick="jvStatList(\''+kind+'\')" ':'')+'style="background:#161616;border:1px solid #272727;border-radius:13px;padding:11px 13px;'+(kind?'cursor:pointer;':'')+'">'
       +'<div style="font-family:\'Plus Jakarta Sans\',sans-serif;font-size:21px;font-weight:800;line-height:1;color:#f0ece4;">'+n+'</div>'
@@ -13502,7 +13642,7 @@ async function renderMobFrontDesk(){
   var html=_clFrontSearchHtml()+'<div id="fdCheckins"></div>'+'<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;">'
     +statCard(_activeN,'active clients',null)
     +statCard(_logT,'logged today','checkedin')
-    +statCard(_clrT,'caught up today','caughtup')
+    +statCard(_spokeT,'spoke to today',null)
     +statCard(_woT,'trained today','workedout')
     +'</div>';
   html+=_fdFilterBar();
@@ -13541,7 +13681,7 @@ async function renderMobFrontDesk(){
       +'<div style="min-width:0;flex:1;">'
       +'<div style="font-size:15px;font-weight:800;color:#f0ece4;display:flex;align-items:center;gap:7px;"><span style="width:8px;height:8px;border-radius:50%;background:'+dot+';flex-shrink:0;"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+nm+'</span></div>'
       +'<div style="margin:5px 0 0 15px;">'+_jvTermPill(o.term||_jvTermState(o.code))+'</div>'
-      +'<div style="font-size:12px;color:rgba(240,236,228,0.78);margin-top:3px;margin-left:15px;">'+(o.cls.reason||'')+'</div>'+(_prev?'<div style="font-size:12px;color:#f5c518;margin-top:4px;margin-left:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+_prev+'</div>':'')+'</div>'
+      +'<div style="font-size:12px;color:#f0ece4;font-weight:700;margin-top:3px;margin-left:15px;">'+_ccLine(o.code)+'</div>'+(_prev?'<div style="font-size:12px;color:#f5c518;margin-top:4px;margin-left:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+_prev+'</div>':'')+'</div>'
       +'<div style="display:flex;gap:6px;flex-shrink:0;">'+btns+'</div>'
       +'</div></div>';
   }
@@ -13562,14 +13702,9 @@ async function renderMobFrontDesk(){
 } else {
 html+=msection('\ud83d\udc8e Paid \u00b7 in term', paidPin,'green','var(--gold)','protect these');
 
-  // Doing everything asked and not getting the result. They never surfaced before,
-  // because a daily logger reads as one of the good ones. This is the coaching list.
-  var _judg=[], _rest=[];
-  bands.green.forEach(function(o){
-    (_jvNeedsJudgment('green', o.trend) ? _judg : _rest).push(o);
-  });
-  if(_judg.length) html+=msection('Working hard, not moving', _judg,'green','#e0705f','your call, not their effort');
-  html+=msection('Logging strong', _rest,'green','#f5c518','your good ones');
+  // "Working hard, not moving" was the app grading someone off two weigh-ins.
+  // Whether their effort is paying off is a coaching call, not a computed one.
+  html+=msection('Logging', bands.green,'green','#f5c518','');
   html+=msection('Needs you', bands.red,'red','#f5c518','reach out today');
   html+=msection('On the bubble', bands.yellow,'yellow','#f5c518','a nudge keeps them');
   html+=msection('Quiet a week or more', bands.dormant,'dormant','#9a9a9a','');
@@ -29927,61 +30062,10 @@ async function woOrganize(ds) {
 // Logging every day and moving nowhere is the case the board never surfaced,
 // because a daily logger reads as one of the good ones.
 
-function _jvTrend(p, goal) {
-  if (!p || !p.firstWeight || !p.lastWeight) return null;
-  if ((p.wCount || 0) < 2) return null;
 
-  var days = Math.round((p.lastWeight.ts - p.firstWeight.ts) / 86400000);
-  if (days < 10) return null;                       // too short to mean anything
 
-  var delta = p.lastWeight.val - p.firstWeight.val; // negative = lost weight
-  var perWeek = delta / (days / 7);
-
-  // No goal on file is its own finding — you can't tell if it's working.
-  if (goal == null || isNaN(goal)) {
-    return {state: 'nogoal', delta: delta, days: days, perWeek: perWeek};
-  }
-
-  var want = (goal < p.firstWeight.val) ? -1 : (goal > p.firstWeight.val ? 1 : 0);
-  var gap = Math.abs(p.lastWeight.val - goal);
-  if (gap <= 1.5) return {state: 'hit', delta: delta, days: days, perWeek: perWeek};
-  if (want === 0) return {state: 'nogoal', delta: delta, days: days, perWeek: perWeek};
-
-  var moving = delta * want;                        // positive = heading the right way
-  if (moving >= 1.0) return {state: 'working', delta: delta, days: days, perWeek: perWeek};
-  if (moving <= -1.0) return {state: 'wrongway', delta: delta, days: days, perWeek: perWeek};
-  return {state: 'stalled', delta: delta, days: days, perWeek: perWeek};
-}
-
-// Palette, not a traffic light: on-track is full-strength, drifting is muted, and the
-// one genuine alarm gets the one alarm colour the app already has. Gold stays for actions.
-var _JV_TREND = {
-  working:  {label: 'moving',      col: '#f0ece4'},
-  hit:      {label: 'at target',   col: '#f0ece4'},
-  stalled:  {label: 'not moving',  col: 'rgba(240,236,228,0.78)'},
-  wrongway: {label: 'wrong way',   col: 'var(--red)'},
-  nogoal:   {label: 'no target',   col: 'rgba(240,236,228,0.55)'}
-};
-
-// The line that goes on a client's card.
-function _jvTrendHtml(t) {
-  if (!t) return '';
-  var m = _JV_TREND[t.state]; if (!m) return '';
-  var d = t.delta;
-  var amt = (Math.abs(d) < 0.6) ? 'flat'
-          : ((d > 0 ? '+' : '\u2212') + (Math.round(Math.abs(d) * 10) / 10) + ' lb');
-  var wk = Math.round(Math.abs(t.perWeek) * 10) / 10;
-  var rate = (t.state === 'working' && wk >= 0.2) ? (' \u00b7 ' + wk + '/wk') : '';
-  return '<div style="font-size:11px;color:' + m.col + ';margin-top:2px;">'
-    + m.label + ' \u00b7 ' + amt + ' in ' + t.days + 'd' + rate + '</div>';
-}
 
 // Logging hard and going nowhere is the one worth interrupting your day for.
-function _jvNeedsJudgment(band, t) {
-  if (!t) return false;
-  if (band !== 'green') return false;
-  return (t.state === 'stalled' || t.state === 'wrongway');
-}
 
 
 // ---- editing what the organizer read ----
