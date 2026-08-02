@@ -119,7 +119,10 @@ insert into meal_components (owner_code, kind, name, unit, per_unit, sort) value
   ('yusuf1','fruit','Kiwi','kiwi','{"cal":42,"p":1,"c":8,"f":0}'::jsonb,122),
   ('yusuf1','fat','Avocado','avocado','{"cal":240,"p":3,"c":3,"f":22}'::jsonb,123),
   ('yusuf1','protein','Chicken Sausage','palm','{"cal":140,"p":15,"c":1,"f":8}'::jsonb,124),
-  ('yusuf1','protein','Turkey Sausage','palm','{"cal":150,"p":16,"c":1,"f":9}'::jsonb,125)
+  ('yusuf1','protein','Turkey Sausage','palm','{"cal":150,"p":16,"c":1,"f":9}'::jsonb,125),
+  -- the dessert bowls: milk as an oat base, nuts as a topping
+  ('yusuf1','protein','Milk','cup','{"cal":120,"p":8,"c":12,"f":5}'::jsonb,126),
+  ('yusuf1','fat','Nuts','handful','{"cal":170,"p":6,"c":3,"f":15}'::jsonb,127)
 on conflict (owner_code, kind, name) do nothing;
 
 -- "piece" is not a word anyone uses about food. The app says "3 eggs" and
