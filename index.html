@@ -16925,6 +16925,95 @@ function mbRowFromLabel(norm, ownerCode, sort){
   };
 }
 
+// ===== READING A PLATE BACK =============================================
+// A collapsed meal line has to answer one question: was the plate built right?
+// "Chicken Breast 164g, Chicken Thigh Meat 4oz and 2 more" answers nothing —
+// it names two proteins and hides exactly the parts that would tell you.
+// So the line is ordered by the SHAPE of a meal, and when something has to go
+// it's a second protein, never the vegetable or the carb.
+
+// "Banana (Medium, 118g)" -> "banana" · "Pomegranate, 1/2 Cup" -> "pomegranate"
+function mbCleanFoodName(s){
+  var t=String(s==null?'':s).trim();
+  t=t.replace(/\([^)]*\)/g,' ');                       // (Medium, 118g)
+  t=t.replace(/,\s*[\d/.]+\s*[a-z.]*\s*$/i,' ');       // ", 1/2 cup"  ", 100g"
+  t=t.replace(/\b[\d/.]+\s*(g|kg|oz|ozs|ml|l|lb|lbs|cups?|tbsps?|tsps?|pieces?|slices?|servings?|handfuls?|palms?|scoops?|links?|squares?)\b\.?/gi,' ');
+  t=t.replace(/\b[\d/.]+\b/g,' ');
+  t=t.replace(/^\s*(of|a|an|the)\s+/i,' ');          // "0.5 cup of rice" -> "rice"
+  return t.replace(/\s{2,}/g,' ').replace(/^[\s,]+|[\s,]+$/g,'').trim();
+}
+
+// Longest match wins, so "cottage cheese" beats "cheese" and "green bean"
+// beats "bean". Order within a list doesn't matter; length does.
+var MB_PART_WORDS={
+  protein:['chicken','beef','steak','ribeye','sirloin','filet','turkey','pork','lamb','fish','salmon',
+    'tuna','cod','tilapia','haddock','shrimp','prawn','egg','yogurt','yoghurt','cottage cheese','whey',
+    'protein powder','protein bar','protein shake','tofu','tempeh','seitan','bacon','sausage','ham','meatball',
+    'jerky','sardine','anchovy','venison','bison','elk','duck','wing','thigh','breast','mince','patty','deli meat'],
+  veg:['vegetable','veggies','veg','salad','spinach','kale','broccolini','broccoli','cauliflower','lettuce',
+    'cucumber','tomato','onion','pepper','mushroom','zucchini','courgette','squash','asparagus','green bean',
+    'brussels','sprout','cabbage','carrot','celery','eggplant','aubergine','olive','kimchi','sauerkraut',
+    'arugula','rocket','romaine','greens','pickle','leek','artichoke'],
+  carb:['rice','potato','pasta','spaghetti','penne','bread','sourdough','toast','oat','porridge','quinoa',
+    'couscous','tortilla','wrap','bagel','noodle','ramen','cereal','granola','barley','corn','bun','roll',
+    'cracker','fries','honey','maple','lentil','chickpea','falafel','hummus','black bean','pinto','beans','tater'],
+  fruit:['berry','berries','strawberr','blueberr','blackberr','raspberr','banana','apple','orange','kiwi',
+    'mango','grape','melon','watermelon','peach','pear','plum','pineapple','date','pomegranate','cherry',
+    'apricot','fig','papaya','raisin','cantaloupe','honeydew','fruit'],
+  fat:['avocado','peanut butter','almond butter','nut butter','almond','walnut','cashew','pecan','pistachio',
+    'macadamia','olive oil','oil','butter','cheese','chocolate','tahini','seed','coconut','cream']
+};
+var _MB_PART_INDEX=(function(){
+  var out=[];
+  Object.keys(MB_PART_WORDS).forEach(function(kind){
+    MB_PART_WORDS[kind].forEach(function(w){ out.push({w:w, kind:kind}); });
+  });
+  return out.sort(function(a,b){ return b.w.length-a.w.length; });   // longest first
+})();
+
+// -> 'protein' | 'veg' | 'carb' | 'fruit' | 'fat' | ''
+function mbFoodPart(name){
+  var t=mbCleanFoodName(name).toLowerCase();
+  if(!t) return '';
+  // the curated library knows its own foods best; keywords cover the rest
+  try{
+    if(typeof mbFind==='function'){ var c=mbFind(null, t); if(c && c.kind) return c.kind; }
+  }catch(e){}
+  for(var i=0;i<_MB_PART_INDEX.length;i++){
+    if(t.indexOf(_MB_PART_INDEX[i].w)>=0) return _MB_PART_INDEX[i].kind;
+  }
+  return '';
+}
+
+// The shape of a meal, in the order you'd build it.
+var MB_SHAPE_ORDER=['protein','veg','carb','fruit','fat',''];
+// What gets cut first when the line is too long. A second protein goes before
+// the vegetable or the carb, because those are what say the plate was complete.
+var MB_CUT_ORDER=['','fat','protein','fruit','carb','veg'];
+
+// -> "chicken breast, chicken thigh · mixed vegetables · potato"
+// max is a soft budget: the first item of every part is always kept, because
+// that IS the shape. Only extras beyond the first are ever dropped.
+function mbShapeLine(names, max){
+  var groups={}, n=0;
+  (names||[]).forEach(function(raw){
+    var clean=mbCleanFoodName(raw); if(!clean) return;
+    var part=mbFoodPart(raw);
+    (groups[part]=groups[part]||[]).push(clean.toLowerCase());
+    n++;
+  });
+  var budget=(+max||4), dropped=0;
+  MB_CUT_ORDER.forEach(function(part){
+    while(n>budget && groups[part] && groups[part].length>1){
+      groups[part].pop(); n--; dropped++;
+    }
+  });
+  var out=MB_SHAPE_ORDER.map(function(part){
+    return groups[part] ? groups[part].join(', ') : '';
+  }).filter(Boolean).join(' · ');
+  return dropped ? (out+' +'+dropped+' more') : out;
+}
+
 // parts = [{component, qty, qtyMax?}]. Ranges collapse to their midpoint here,
 // because everything downstream of this -- the saved row, the timeline -- wants
 // one number. mbMealRange is for the screens that can show two.
@@ -19462,8 +19551,10 @@ async function addMacrosToEntry(i){
 async function logPlateMeal(){
   if(!_plate.length){ showToast('Add a food first'); return; }
   var T=_plateTotals();
-  var names=_plate.map(function(it){ return _tcase(it.name); }).filter(Boolean);
-  var mealName = names.length===1 ? names[0] : (names.slice(0,3).join(', ')+(names.length>3?'…':''));
+  var names=_plate.map(function(it){ return String(it.name||'').trim(); }).filter(Boolean);
+  // the trainer reads this in the feed without expanding it, so it carries the
+  // shape too rather than the first three things that happened to be added
+  var mealName = names.length===1 ? _tcase(names[0]) : _tcase(mbShapeLine(names, 4));
   var meal=(window._mealSlot||((typeof _mealSlotNow==='function')?_mealSlotNow():'Meal'));
   var eatTime=(function(){ var _t=document.getElementById('foodTime'); var v=_t?String(_t.value||'').trim():''; return v || new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}); })();
   var cal=Math.round(T.cal),pro=Math.round(T.protein),carb=Math.round(T.carbs),fat=Math.round(T.fat);
@@ -28279,8 +28370,10 @@ function _tlMealCard(key, label, items, ds){
               var t=''; rows.forEach(function(r){ if(!t && r.meal_text) t=r.meal_text; });
               if(!t){
                 // no sentence on file, so read the plate back to them
-                var ns=rows.map(function(r){ return _tcase(String(r.name||'').trim()); }).filter(Boolean);
-                t = ns.length>2 ? (ns.slice(0,2).join(', ')+' and '+(ns.length-2)+' more') : ns.join(' and ');
+                // ordered by the shape of a meal, and a second protein is cut
+                // long before the vegetable or the carb
+                var ns=rows.map(function(r){ return String(r.name||'').trim(); }).filter(Boolean);
+                t = _tcase(mbShapeLine(ns, 4));
               }
               return t ? ('<div style="font-size:13.5px;font-weight:700;color:var(--m2);margin-top:5px;line-height:1.35;">'+_escHtml(t)+'</div>') : '';
             })()
@@ -29771,10 +29864,14 @@ async function tlTapTime(id, ds, cur){
   var v=prompt('What time was this?', cur||'');
   if(v===null) return;
   v=String(v).trim(); if(!v) return;
-  var mins=null;
-  try{ mins=_parseClock(v); }catch(e){}
-  if(mins==null){ showToast("Couldn't read that time \u2014 try 7:05 AM"); return; }
-  var hh=Math.floor(mins/60), mm=mins%60;
+  // _parseClock returns {h,m}, NOT minutes. Dividing the object by 60 gave NaN,
+  // the null guard never fired because an object isn't null, the stamp came out
+  // "NaN:NaN PM", and _timeToISO fell back to the CURRENT clock \u2014 so typing a
+  // time silently saved whatever time it was instead.
+  var t=null;
+  try{ t=_parseClock(v); }catch(e){}
+  if(!t){ showToast("Couldn't read that time \u2014 try 7:05 AM"); return; }
+  var hh=t.h, mm=t.m;
   var h12=hh%12; if(h12===0) h12=12;
   var stamp=h12+':'+String(mm).padStart(2,'0')+' '+(hh<12?'AM':'PM');
   var iso=null;
