@@ -389,6 +389,8 @@ body.m-soft{overflow:hidden;}
 .jvDayTab.jvActive{background:var(--gold);color:#000;border-color:var(--gold);}
 #jvRefresh{margin-left:auto;background:#1b1b1b;border:1px solid #2d2d2d;color:#f0ece4;font-size:12.5px;font-weight:700;padding:8px 16px;border-radius:9px;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;}
 #jvRefresh{margin-left:10px;}
+#jvCopyRoster{margin-left:10px;background:#1b1b1b;border:1px solid #2d2d2d;color:#f0ece4;font-size:12.5px;font-weight:700;padding:8px 16px;border-radius:9px;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;}
+#jvCopyRoster:disabled{opacity:0.6;cursor:default;}
 #jvSearch{margin-left:16px;background:#1b1b1b;border:1px solid #2d2d2d;color:#f0ece4;font-size:13px;font-weight:600;padding:8px 14px;border-radius:9px;width:200px;font-family:'Plus Jakarta Sans',sans-serif;outline:none;transition:border-color .15s,width .15s;}
 #jvSearch:focus{border-color:rgba(224,196,152,0.5);width:240px;}
 #jvSearch::placeholder{color:rgba(240,236,228,0.78);}
@@ -1586,6 +1588,7 @@ body.hasnav #tToday{padding-bottom:150px;}
     </div>
     <input id="jvSearch" type="text" placeholder="Search clients…" oninput="jvFilter(this.value)" autocomplete="off" spellcheck="false">
     <button id="jvBroadcast" onclick="openBroadcastCompose()">📣 Broadcast</button>
+    <button id="jvCopyRoster" onclick="jvCopyRoster(this)">Copy roster</button>
     <button id="jvRefresh" onclick="jvRefresh()">↻ Refresh</button>
     <button id="jvSignout" onclick="jvSignOut()">Sign out</button>
   </div>
@@ -10710,6 +10713,186 @@ function _jvProgress(code, size){
     +metaHtml
   +'</div>';
 }
+// ===== CLIENT EXPORT =====
+// A plain-text read of a client, for pasting into a chat where the thinking happens.
+// Everything in it is either a number or something a person actually wrote. No
+// markdown, no scores, no adjectives the app assigned — those get argued with, and
+// the whole point is to hand over what's true and let the reader draw the line.
+function _xDate(v){
+  if(!v) return '';
+  try{ var d=new Date(/^\d{4}-\d{2}-\d{2}$/.test(String(v))?(String(v)+'T12:00:00'):v);
+       return isNaN(d.getTime())?String(v):d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
+  catch(e){ return String(v); }
+}
+function _xClean(s){ return String(s==null?'':s).replace(/\r/g,'').replace(/[ \t]+$/gm,'').trim(); }
+// One query per table for the whole set. Twenty clients must not mean a hundred and
+// twenty requests — that's the shape that turned a short outage into eight hours.
+async function _jvExportGather(codes){
+  var inList='('+codes.map(function(c){ return String(c).replace(/[(),]/g,''); }).join(',')+')';
+  var since=new Date(Date.now()-14*86400000).toISOString();
+  var r=await Promise.all([
+    sbSelect('food_logs','select=client_code,name,date_str,logged_at,calories,protein&client_code=in.'+inList+'&logged_at=gte.'+since+'&order=logged_at.desc&limit=4000'),
+    sbSelect('workout_logs','select=client_code,title,date_str,logged_at&client_code=in.'+inList+'&logged_at=gte.'+since+'&order=logged_at.desc&limit=2000'),
+    sbSelect('client_notes','select=client_code,note,logged_at&client_code=in.'+inList+'&order=logged_at.desc&limit=1500'),
+    sbSelect('coach_notes','select=client_code,body,created_at&client_code=in.'+inList+'&order=created_at.desc&limit=1500'),
+    sbSelect('mi_checkins','client_code=in.'+inList+'&order=checked_at.desc&limit=1500'),
+    sbSelect('journal_entries','select=client_code,body,logged_at,date_str,shared&client_code=in.'+inList+'&shared=is.true&order=logged_at.desc&limit=1500')
+  ]);
+  var by=function(rows){ var m={}; (rows||[]).forEach(function(x){ if(x&&x.client_code) (m[x.client_code]=m[x.client_code]||[]).push(x); }); return m; };
+  return {food:by(r[0]), wo:by(r[1]), notes:by(r[2]), coach:by(r[3]), mi:by(r[4]), checkins:by(r[5])};
+}
+function _jvExportOne(code, D){
+  var info=CLIENTS[code]||{};
+  var p=null, goal=null;
+  try{ p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null; goal=(jvTriage&&jvTriage.goals)?jvTriage.goals[code]:null; }catch(e){}
+  var L=[];
+  L.push(String(info.name||code).toUpperCase());
+
+  // --- who they are ---
+  var idBits=[];
+  try{ var t=_jvTermState(code,p); if(t&&t.label) idBits.push(t.label); }catch(e){}
+  if(info.tier){ try{ idBits.push(_jvTierLabel(info.tier)); }catch(e){ idBits.push(String(info.tier)); } }
+  try{
+    var paid=clientPaidTotal(code), owed=clientOwedTotal(code);
+    if(paid!=null) idBits.push('$'+Math.round(paid).toLocaleString()+(owed>0?(' of $'+Math.round(paid+owed).toLocaleString()):''));
+  }catch(e){}
+  if(idBits.length) L.push(idBits.join(' | '));
+
+  // --- weight ---
+  L.push(''); L.push('WEIGHT');
+  var lw=p&&p.lastWeight, fw=p&&p.firstWeight;
+  if(!lw || isNaN(+lw.val)){ L.push('No weigh-ins recorded.'); }
+  else {
+    var cw=+lw.val, sw=(fw&&!isNaN(+fw.val))?+fw.val:cw, n=(p&&p.wCount)||1;
+    var moved=Math.round((cw-sw)*10)/10;
+    var wl='Started '+wToDisp(sw)+' '+wUnit()+', now '+wToDisp(cw)+' '+wUnit();
+    if(goal!=null && !isNaN(+goal)) wl+=', goal '+wToDisp(+goal)+' '+wUnit();
+    L.push(wl);
+    if(Math.abs(moved)>=0.1) L.push((moved>0?'Up ':'Down ')+wToDisp(Math.abs(moved))+' '+wUnit()+' over '+n+' weigh-in'+(n===1?'':'s'));
+    else L.push('No net change over '+n+' weigh-in'+(n===1?'':'s'));
+    var mv=null; try{ mv=_jvMovement(p); }catch(e){}
+    if(mv) L.push(mv.text);
+    if(lw.ts) L.push('Last weigh-in '+_xDate(lw.ts));
+  }
+
+  // --- contact ---
+  L.push(''); L.push('CONTACT');
+  var cc=[]; try{ cc=_ccFor(code)||[]; }catch(e){}
+  if(!cc.length) L.push('No contact logged.');
+  else {
+    var un=0; try{ un=_ccUnanswered(code); }catch(e){}
+    cc.slice(0,6).forEach(function(x){
+      L.push(_xDate(x.t)+'  '+(x.k==='call'?'call':'text')+(x.r?'':' (no reply)')+(x.a?('  - '+_xClean(x.a)):''));
+    });
+    if(un>=1) L.push('Reached out '+(un===1?'once':(un===2?'twice':un+' times'))+' since they last came back.');
+  }
+
+  // --- what they've logged ---
+  L.push(''); L.push('LAST 14 DAYS');
+  var acts=[];
+  (D.wo[code]||[]).forEach(function(w){ acts.push({ts:new Date(w.logged_at).getTime()||0, ds:(w.date_str||w.logged_at), s:'trained: '+_xClean(w.title||'Workout')}); });
+  (D.food[code]||[]).forEach(function(f){
+    var macros=[];
+    if(f.calories) macros.push(Math.round(f.calories)+' cal');
+    if(f.protein) macros.push(Math.round(f.protein)+'g protein');
+    acts.push({ts:new Date(f.logged_at).getTime()||0, ds:(f.date_str||f.logged_at), s:'ate: '+_xClean(f.name||'meal')+(macros.length?(' ('+macros.join(', ')+')'):'')});
+  });
+  if(!acts.length) L.push('Nothing logged in the last 14 days.');
+  else {
+    acts.sort(function(a,b){ return b.ts-a.ts; });
+    acts.slice(0,60).forEach(function(a){ L.push(_xDate(a.ds)+'  '+a.s); });
+  }
+
+  // --- notes ---
+  // Slice C hasn't split client_notes into coaching and private yet, so everything in
+  // that table is still the private log it was written into. Labelled as what it is.
+  var pn=(D.notes[code]||[]);
+  L.push(''); L.push('PRIVATE NOTES');
+  if(!pn.length) L.push('None.');
+  else pn.slice(0,30).forEach(function(x){ L.push(_xDate(x.logged_at)+'  '+_xClean(x.note)); });
+
+  var cn=(D.coach[code]||[]);
+  L.push(''); L.push('NOTES SENT TO THEM');
+  if(!cn.length) L.push('None.');
+  else cn.slice(0,30).forEach(function(x){ L.push(_xDate(x.created_at)+'  '+_xClean(x.body)); });
+
+  // --- strength check ---
+  L.push(''); L.push('STRENGTH CHECK');
+  var mrows=(D.mi[code]||[]);
+  if(!mrows.length) L.push('Not filled in.');
+  else {
+    var map={}; try{ map=miFold(mrows); }catch(e){}
+    var weak=[], okay=[], strong=[];
+    try{
+      MI_MUSCLES.forEach(function(m){
+        var e=map[m.k]; if(!e) return;
+        if(e.r==='weak') weak.push(miMuscleLabel(m.k));
+        else if(e.r==='strong') strong.push(miMuscleLabel(m.k));
+        else if(e.r==='okay') okay.push(miMuscleLabel(m.k));
+      });
+    }catch(e){}
+    var latest=mrows[0];
+    if(latest && latest.checked_at) L.push('Last filled in '+_xDate(latest.checked_at));
+    if(weak.length)   L.push('Weak: '+weak.join(', '));
+    if(okay.length)   L.push('Okay: '+okay.join(', '));
+    if(strong.length) L.push('Strong: '+strong.join(', '));
+    mrows.slice(0,6).forEach(function(r){
+      var note=_xClean(r.note); if(note) L.push(_xDate(r.checked_at)+'  note: '+note);
+    });
+  }
+
+  // --- what they've written to him ---
+  var ci=(D.checkins[code]||[]);
+  L.push(''); L.push('CHECK-INS THEY WROTE');
+  if(!ci.length) L.push('None.');
+  else ci.slice(0,20).forEach(function(x){ L.push(_xDate(x.logged_at||x.date_str)+'  '+_xClean(x.body)); });
+
+  return L.join('\n');
+}
+function _jvCopyText(txt, okMsg){
+  var done=function(){ try{ showToast(okMsg||'Copied'); }catch(e){} };
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(txt).then(done, function(){ _jCopyFallback(txt, done); });
+    } else { _jCopyFallback(txt, done); }
+  }catch(e){ _jCopyFallback(txt, done); }
+}
+async function jvCopyClient(code, btn){
+  var label=btn?btn.textContent:'';
+  if(btn){ btn.disabled=true; btn.textContent='Gathering…'; }
+  try{
+    var D=await _jvExportGather([code]);
+    var txt=_jvExportOne(code, D);
+    _jvCopyText(txt, 'Copied '+String((CLIENTS[code]||{}).name||code).split(' ')[0]+' — paste it anywhere');
+  }catch(e){ console.error('jvCopyClient', e); try{ showToast('Could not build that export'); }catch(_){} }
+  if(btn){ btn.disabled=false; btn.textContent=label||'Copy for chat'; }
+}
+// Everyone in term, in one paste. Same per-client format, so a roster read and a
+// single read never disagree about what a client looks like.
+async function jvCopyRoster(btn){
+  var label=btn?btn.textContent:'';
+  if(btn){ btn.disabled=true; btn.textContent='Gathering…'; }
+  try{
+    if(!jvTriage){ if(typeof jvLoadTriage==='function') await jvLoadTriage(true); }
+    var hidden={}; try{ hidden=getHiddenClientSet(); }catch(e){}
+    var codes=Object.keys(CLIENTS).filter(function(k){
+      if(CLIENTS[k].isTrainer || hidden[k]) return false;
+      var p=null; try{ p=(jvTriage&&jvTriage.per)?jvTriage.per[k]:null; }catch(e){}
+      var t=null; try{ t=_jvTermState(k,p); }catch(e){}
+      return !!(t && t.active);
+    }).sort(function(a,b){ return String((CLIENTS[a]||{}).name||a).localeCompare(String((CLIENTS[b]||{}).name||b)); });
+    if(!codes.length){ try{ showToast('Nobody is in term right now'); }catch(e){} }
+    else {
+      var D=await _jvExportGather(codes);
+      var head='ROSTER - '+codes.length+' clients in term\n'
+              +'Generated '+_xDate(Date.now())+'\n';
+      var body=codes.map(function(c){ return _jvExportOne(c, D); })
+                    .join('\n\n'+new Array(61).join('=')+'\n\n');
+      _jvCopyText(head+'\n'+new Array(61).join('=')+'\n\n'+body, 'Copied '+codes.length+' clients — paste it anywhere');
+    }
+  }catch(e){ console.error('jvCopyRoster', e); try{ showToast('Could not build that export'); }catch(_){} }
+  if(btn){ btn.disabled=false; btn.textContent=label||'Copy roster'; }
+}
 // Contract sits directly under the name, because "no term set" is the thing most
 // often needing a fix and it used to be the furthest thing from where you're looking —
 // read-only at the top, editable only after scrolling past everything else.
@@ -10900,6 +11083,7 @@ function jvOpenDeep(code){
     + '<div class="jvActs jvActsQuiet">'
       + '<button class="jvAct jvActTertiary" onclick="openClientNotes(\''+code+'\',\''+safeName+'\')">Private note</button>'
       + '<button class="jvAct jvActTertiary" onclick="jvAssignProgram(\''+code+'\')">Program</button>'
+      + '<button class="jvAct jvActTertiary" onclick="jvCopyClient(\''+code+'\',this)">Copy for chat</button>'
     + '</div>'
     + '<div class="jvDeepMore" onclick="jvDeepToggleMore(\''+code+'\')">'+(open?'Show less':'Everything else')+'</div>';
 
@@ -14752,6 +14936,11 @@ async function renderMobFrontDesk(){
     +statCard(_spokeT,'spoke to today',null)
     +statCard(_woT,'trained today','workedout')
     +'</div>';
+  // Same export the cockpit header carries. Shipping this to one surface only is how
+  // the hidden-clients view and the search status line ended up reading as unshipped.
+  html+='<button onclick="jvCopyRoster(this)" style="width:100%;margin-top:12px;background:#1b1b1b;border:1px solid #2d2d2d;'
+    +'border-radius:11px;padding:11px;font-size:12.5px;font-weight:700;color:#f0ece4;cursor:pointer;'
+    +'font-family:\'Plus Jakarta Sans\',sans-serif;">Copy roster</button>';
   html+=_fdFilterBar();
   // --- Full Front Desk triage bands on mobile ---
   var bands={red:[],yellow:[],green:[],dormant:[],winback:[]}; 
