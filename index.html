@@ -1146,6 +1146,9 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
 .cuBtn{flex-shrink:0;border:none;border-radius:10px;background:var(--gold);color:#141008;
   padding:10px 14px;font-family:'Plus Jakarta Sans',sans-serif;font-size:12.5px;font-weight:800;cursor:pointer;}
 .cuBtn:disabled{background:#2e2e2e;color:rgba(240,236,228,0.55);cursor:default;}
+/* Missing one isn't a failure and shouldn't look like a second offer. Quiet, equal
+   in size so it's as easy to hit, but the gold stays on the one that logs something. */
+.cuMiss{background:transparent;border:1px solid #333;color:rgba(240,236,228,0.72);}
 
 /* Reorder controls sit on the row, quiet until you look for them. */
 .gpMove{margin-left:auto;flex-shrink:0;display:flex;gap:4px;}
@@ -11854,7 +11857,9 @@ async function renderDayTimeline(soft){
       if(_u) rows.push({k:_k, lbl:_lbl, it:null, plannedMeal:_u, m:_slotMins(_k)});
       else   rows.push({k:_k, lbl:_lbl, it:null, empty:true, m:_slotMins(_k)});
     });
-    if(!(jByDay[ds]||[]).length)      rows.push({k:'journal', lbl:'Journal', it:null, empty:true, m:_slotMins('journal')});
+    // The empty Journal slot used to close out every single day at 21:00, whether or
+    // not journalling was any part of what that day was for. An entry they actually
+    // wrote still appears above, at the time they wrote it.
 
     if(isToday){
       try{
@@ -22252,6 +22257,19 @@ function _wrapAllowed(){
 // back to yesterday to admit it. Outstanding sessions from the last few days surface
 // on today, and logging one lands it on ITS date — not the day you happened to tap.
 var CATCHUP_DAYS = 4;                 // how far back is still worth catching up on
+// "Missed it" has to stick, because the list is derived from the plan and would
+// otherwise regrow the row on the next render. Per client, and pruned past the
+// catch-up window so it can't accumulate. Nothing is written to the server and
+// nothing is asked: a missed session is not a conversation.
+function _cuSkipKey(){ return 'yjb_cu_skip_'+((cl&&cl.code)||'x'); }
+function _cuSkipped(){ try{ return JSON.parse(localStorage.getItem(_cuSkipKey())||'{}')||{}; }catch(e){ return {}; } }
+function _cuSkip(ds, type){
+  var m=_cuSkipped();
+  m[ds+'::'+type]=Date.now();
+  var cut=Date.now()-(CATCHUP_DAYS+7)*86400000;
+  Object.keys(m).forEach(function(k){ if(!m[k] || m[k]<cut) delete m[k]; });
+  try{ localStorage.setItem(_cuSkipKey(), JSON.stringify(m)); }catch(e){}
+}
 function _catchupList(){
   var out=[];
   var week=null; try{ week=_clientWeek(); }catch(e){}
@@ -22264,6 +22282,7 @@ function _catchupList(){
       (logged[w.date_str]=logged[w.date_str]||[]).push(String(w.title||'').toLowerCase());
     });
   }catch(e){}
+  var skipped=_cuSkipped();
   var d=new Date(); d.setHours(0,0,0,0);
   for(var back=1; back<=CATCHUP_DAYS; back++){
     var day=new Date(d); day.setDate(day.getDate()-back);
@@ -22273,6 +22292,7 @@ function _catchupList(){
     var ds=_tlDateStr(day);
     var titles=logged[ds]||[];
     if(titles.indexOf(String(type).toLowerCase())>=0) continue;   // already done
+    if(skipped[ds+'::'+type]) continue;                           // said they missed it
     out.push({ds:ds, type:type, label:_tlDayLabel(day), back:back});
   }
   return out;
@@ -22281,16 +22301,29 @@ function _catchupHtml(){
   var list=[];
   try{ list=_catchupList(); }catch(e){ list=[]; }
   if(!list.length) return '';                          // nothing outstanding: say nothing
-  return '<div class="cuBox">'
+  return '<div class="cuBox" id="cuBox">'
     +'<div class="cuHead">Still outstanding</div>'
     + list.map(function(x){
-        return '<div class="cuRow">'
+        var ds=_escHtml(x.ds).replace(/'/g,"\\'"), ty=String(x.type).replace(/'/g,"\\'");
+        return '<div class="cuRow" id="cuRow_'+_cuRowId(x.ds,x.type)+'">'
           +'<div class="cuWhat"><span class="cuType">'+x.type+'</span>'
             +'<span class="cuWhen">'+x.label+'</span></div>'
-          +'<button class="cuBtn" onclick="catchUpLog(\''+_escHtml(x.ds).replace(/'/g,"\\'")+'\',\''+x.type+'\',this)">I did this</button>'
+          +'<button class="cuBtn cuMiss" onclick="catchUpMiss(\''+ds+'\',\''+ty+'\',this)">Missed it</button>'
+          +'<button class="cuBtn" onclick="catchUpLog(\''+ds+'\',\''+ty+'\',this)">I did it</button>'
         +'</div>';
       }).join('')
   +'</div>';
+}
+function _cuRowId(ds, type){ return String(ds+'_'+type).replace(/[^A-Za-z0-9]/g,''); }
+// Missed it. That's the whole interaction — no follow-up, no "what happened", no
+// rescheduling prompt, no reassurance. Clearing four of these should cost four taps
+// and nothing else, so the row goes and the schedule carries on.
+function catchUpMiss(ds, type){
+  _cuSkip(ds, type);
+  var row=document.getElementById('cuRow_'+_cuRowId(ds,type));
+  if(row && row.parentNode) row.parentNode.removeChild(row);
+  var box=document.getElementById('cuBox');
+  if(box && !box.querySelector('.cuRow') && box.parentNode) box.parentNode.removeChild(box);
 }
 // Logs to the day it was missed, not today. logged_at is anchored to noon of that
 // date so it can't drift across a timezone boundary into the wrong day.
@@ -22307,10 +22340,10 @@ async function catchUpLog(ds, type, btn){
   if(ex.length) row.exercises=ex.map(function(e){ return {name:e.n, sets:e.s, detail:e.r}; });
   var r={ok:false};
   try{ r=await insertWorkoutLog(row); }catch(e){}
-  if(r && r.duplicate){ if(btn){ btn.disabled=false; btn.textContent='I did this'; } return; }
+  if(r && r.duplicate){ if(btn){ btn.disabled=false; btn.textContent='I did it'; } return; }
   if(!r || !r.ok){
     showToast('Couldn\u2019t save that \u2014 try again');
-    if(btn){ btn.disabled=false; btn.textContent='I did this'; }
+    if(btn){ btn.disabled=false; btn.textContent='I did it'; }
     return;
   }
   showToast('\u2713 '+type+' logged to '+ds);
