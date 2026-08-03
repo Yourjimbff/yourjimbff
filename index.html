@@ -554,6 +554,8 @@ body.jv-cockpit #jvDayTabs{display:none;}
 .jvCtLine{display:flex;align-items:center;gap:10px;margin-top:9px;cursor:pointer;}
 .jvCtBits{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0;flex:1;}
 .jvCtVal{font-size:14px;font-weight:700;color:#f0ece4;}
+/* The "of $2,600" half of a split — present, but quieter than what they've paid. */
+.jvCtOf{font-weight:700;color:rgba(240,236,228,0.62);}
 .jvCtDot{color:rgba(240,236,228,0.34);}
 .jvCtEdit{flex-shrink:0;font-size:13px;font-weight:800;color:rgba(240,236,228,0.70);text-decoration:underline;text-underline-offset:3px;}
 .jvCtLine:hover .jvCtEdit{color:#f0ece4;}
@@ -1091,6 +1093,9 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
   font-size:12.5px;color:rgba(240,236,228,0.76);line-height:1.6;}
 .ovMeta b{color:var(--text);font-weight:800;}
 .ovSep{padding:0 7px;color:rgba(240,236,228,0.34);}
+/* Are they moving NOW. Full strength, because it's the line worth reading — flat for
+   six weeks is a different conversation from moving steadily, whichever way they aim. */
+.ovMove{margin-top:7px;color:rgba(240,236,228,0.95);font-weight:700;}
 /* Same card on the trainer's side of a client, scaled down to sit inside the panel. */
 .ovSm{border-radius:16px;padding:16px 16px 15px;box-shadow:0 8px 22px rgba(0,0,0,0.34);}
 .ovSm .ovBig{font-size:32px;letter-spacing:-1.2px;}
@@ -1112,6 +1117,8 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
 .ovXs .ovMeta{margin-top:10px;padding-top:9px;font-size:10.5px;line-height:1.5;}
 .ovXs .ovSep{padding:0 5px;}
 .ovXs .ovMetaTop{font-size:11.5px;line-height:1.5;}
+.ovXs .ovMove{margin-top:5px;}
+.ovSm .ovMove{margin-top:6px;}
 .ovMetaTop{position:relative;font-size:12.5px;color:rgba(240,236,228,0.76);line-height:1.55;}
 
 /* The banner borrows the overview's material — that card is the visual language for
@@ -9876,6 +9883,11 @@ async function jvLoadTriage(silent){
         if(!p.lastWeight) p.lastWeight={val:_wv, ts:_wt};   // rows arrive newest-first
         p.firstWeight={val:_wv, ts:_wt};                    // so the last seen is the oldest
         p.wCount=(p.wCount||0)+1;
+        // First-to-last is a lifetime figure: someone who lost 30 lbs last year and has
+        // not moved since still reads "Down 30 lbs". Keep the recent run so the card can
+        // say whether they're moving NOW, which is the different conversation.
+        if(!p.wSeries) p.wSeries=[];
+        if(p.wSeries.length<60) p.wSeries.push({val:_wv, ts:_wt});
       } });
     steps.forEach(function(s){ if((Number(s.steps)||0)<=0) return; var t=s.updated_at||s.created_at||s.logged_at; var p=touch(s.client_code, tsOf(s.date_str,t)); var i=dayOf(s.date_str,t); if(i!=null && !p.stepped[i]){ p.stepped[i]=1; p.cnt[i]+=1; } });
     // today's food/workouts for the deep dive + Jarvis chat
@@ -10591,6 +10603,31 @@ function _jvWhenDay(ts){
 }
 // size: 'ovSm' on the client card (default), 'ovXs' on a board card. One function so
 // the four states can't drift apart between the two places they're drawn.
+// Whether they're moving at all, and which way — read off the recent run rather than
+// first-versus-last, and independent of whether a goal exists. The words stay neutral:
+// for someone gaining, up is winning, so this states the number and stops.
+function _jvMovement(p){
+  var s=((p&&p.wSeries)||[]).slice().sort(function(a,b){ return (b.ts||0)-(a.ts||0); });
+  if(s.length<2) return null;
+  var now=s[0];
+  // Look back six weeks. Where the history is shorter, measure against the oldest
+  // weigh-in there is and name the span actually measured — never imply six weeks of
+  // data we haven't got.
+  var cutoff=now.ts-42*86400000, ref=s[s.length-1];
+  for(var i=1;i<s.length;i++){ if(s[i].ts<=cutoff){ ref=s[i]; break; } }
+  var days=Math.round((now.ts-ref.ts)/86400000);
+  if(days<7) return null;                       // too short a run to call it anything
+  var diff=Math.round((now.val-ref.val)*10)/10;
+  var weeks=Math.round(days/7);
+  var span=(weeks>=2)?(weeks+' weeks'):(days+' days');
+  var flat=Math.abs(diff)<1;                    // under a pound is scale noise, not change
+  var shown=wToDisp(Math.abs(diff));
+  var unit=wUnit(); if(unit==='lbs' && shown===1) unit='lb';
+  return {flat:flat, diff:diff, span:span,
+    dir:(flat?'hold':(diff<0?'lose':'gain')),
+    text:(flat ? ('No change in the last '+span)
+               : ((diff<0?'Down ':'Up ')+shown+' '+unit+' in the last '+span))};
+}
 function _jvProgress(code, size){
   var sz=(size===undefined)?'ovSm':size;
   var cls='ovCard'+(sz?(' '+sz):'');
@@ -10613,16 +10650,34 @@ function _jvProgress(code, size){
   var n=(p&&p.wCount)||1;
   var moved=Math.round((cw-sw)*10)/10;
   var meta=[];
-  if(Math.abs(moved)>=0.1) meta.push('<b>'+(moved>0?'Up ':'Down ')+wToDisp(Math.abs(moved))+' '+wUnit()+'</b>');
-  else if(n>1) meta.push('<b>Flat</b>');
-  if(n>1) meta.push('<b>'+n+'</b> weigh-ins');
+  // "Down 6 lbs over 5 weigh-ins" — the lifetime figure, said as one phrase so the
+  // count reads as the sample behind the number rather than as a separate fact.
+  var lifeTxt='';
+  if(Math.abs(moved)>=0.1) lifeTxt='<b>'+(moved>0?'Up ':'Down ')+wToDisp(Math.abs(moved))+' '+wUnit()+'</b>';
+  else if(n>1) lifeTxt='<b>No net change</b>';
+  if(lifeTxt) meta.push(lifeTxt+(n>1?(' over <b>'+n+'</b> weigh-ins'):''));
+  else if(n>1) meta.push('<b>'+n+'</b> weigh-ins');
   var when=_jvWhenDay(lw.ts); if(when) meta.push('last one '+when);
-  var metaHtml=meta.length?('<div class="ovMeta">'+meta.join('<span class="ovSep">·</span>')+'</div>'):'';
+  var mv=_jvMovement(p);
+  // When their whole history fits inside the six-week window, the recent line repeats
+  // the lifetime one word for word. Say it once.
+  var mvSame=(mv && Math.abs(mv.diff-moved)<0.05);
+  var mvHtml=(mv && !mvSame) ? ('<div class="ovMove">'+mv.text+'</div>') : '';
+  var metaHtml=(meta.length||mvHtml)
+    ? ('<div class="ovMeta">'
+        +(meta.length?meta.join('<span class="ovSep">·</span>'):'')
+        +mvHtml
+      +'</div>')
+    : '';
 
   // No goal on file is its own finding — you can't tell whether it's working.
   if(goal==null || isNaN(+goal)){
+    // Direction doesn't need a goal to exist — the trend gives it. Neutral words only:
+    // "Gaining" is a fact about the numbers, not a verdict on whether it's going well.
+    var noGoalEy=mv ? ({lose:'Losing', gain:'Gaining', hold:'Flat'}[mv.dir]+' · no goal set')
+                    : 'No goal weight set';
     return '<div class="'+cls+'">'
-      +'<div class="ovEy">No goal weight set</div>'
+      +'<div class="ovEy">'+noGoalEy+'</div>'
       +'<div class="ovHead"><span class="ovBig">'+wToDisp(cw)+'</span><span class="ovUnit">'+wUnit()+' now</span></div>'
       +metaHtml
     +'</div>';
@@ -10663,7 +10718,14 @@ function _jvContractLine(code){
   bits.push(_jvTermPill(t));
   if(r.tier) bits.push('<span class="jvCtVal">'+_jvTierLabel(r.tier)+'</span>');
   var paid=(typeof clientPaidTotal==='function')?clientPaidTotal(code):null;
-  if(paid!=null) bits.push('<span class="jvCtVal">$'+Math.round(paid).toLocaleString()+'</span>');
+  // On a split, one figure can't say where they are. Paid alone reads as the whole fee
+  // and makes every instalment client look like a mismatch against their sale row.
+  var owedNow=(typeof clientOwedTotal==='function')?clientOwedTotal(code):0;
+  if(paid!=null){
+    bits.push('<span class="jvCtVal">$'+Math.round(paid).toLocaleString()
+      +(owedNow>0 ? (' <span class="jvCtOf">of $'+Math.round(paid+owedNow).toLocaleString()+'</span>') : '')
+    +'</span>');
+  }
   var gaps=[];
   if(t.state==='expired'||t.state==='noterm') gaps.push('term');
   if(paid==null) gaps.push('fee');
@@ -10695,8 +10757,10 @@ function jvOpenContract(code){
   }).join('');
   // The fee is derived from their sales wherever there are any, so editing it here would
   // put the two back out of step. Where there are none, this is the only record of it.
+  var _owed=(typeof clientOwedTotal==='function')?clientOwedTotal(code):0;
   var feeField = sales.length
     ? '<div class="jvCtRead">'+(paid!=null?('$'+Math.round(paid).toLocaleString()):'—')
+        +(_owed>0?(' <span class="jvCtOf">of $'+Math.round((paid||0)+_owed).toLocaleString()+' · $'+Math.round(_owed).toLocaleString()+' still owed</span>'):'')
         +' from '+sales.length+' sale'+(sales.length===1?'':'s')
         +' <span class="jvCtLink" onclick="jvCloseContract();openEditSale(\''+sales[0].id+'\')">Edit in sales</span></div>'
     : '<input id="jvCtFee" type="number" inputmode="decimal" class="jvCtInput" placeholder="2400" value="'
