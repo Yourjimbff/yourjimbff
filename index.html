@@ -1584,7 +1584,6 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
       </div>
     </div>
 
-    <div id="jimInlineHost"></div>
 
     <!-- PROGRESS READ (trainer-only) replaces the Jim hero on Today -->
     <div id="progressReadHost"></div>
@@ -3590,66 +3589,12 @@ function rotateJimInvite(){
   try{ localStorage.removeItem('yjb_jiminvite_' + (cl ? cl.code : 'anon')); }catch(e){}
 }
 
-// ===== SMART LOGGER — lives on Today, never navigates away =====
-var _jimInlineOpen=false, _jimThread=[];
-function openJimFromInvite(){ toggleJimInline(true); }
-function toggleJimInline(force){
-  _jimInlineOpen = (force===undefined) ? !_jimInlineOpen : force;
-  renderJimInline();
-  if(_jimInlineOpen){
-    setTimeout(function(){
-      var i=document.getElementById('jimInlineInput');
-      if(i){ try{ i.focus(); }catch(e){} }
-      var h=document.getElementById('jimInlineHost');
-      if(h && h.scrollIntoView) try{ h.scrollIntoView({behavior:'smooth',block:'nearest'}); }catch(e){}
-    },90);
-  }
-}
-function renderJimInline(){
-  var host=document.getElementById('jimInlineHost'); if(!host) return;
-  if(!_jimInlineOpen){ host.innerHTML=''; return; }
-  var thread=_jimThread.map(function(m){
-    if(m.role==='user'){
-      return '<div style="display:flex;justify-content:flex-end;margin-bottom:8px;"><div style="max-width:82%;background:var(--gold);color:#000;border-radius:14px 14px 4px 14px;padding:9px 12px;font-size:13.5px;font-weight:600;line-height:1.45;">'+_escHtml(m.text)+'</div></div>';
-    }
-    var tone = m.ok===false ? '#3a2020' : '#1e1e1e';
-    return '<div style="display:flex;justify-content:flex-start;margin-bottom:8px;"><div style="max-width:86%;background:'+tone+';border:1px solid #2a2a2a;color:#f0ece4;border-radius:14px 14px 14px 4px;padding:9px 12px;font-size:13.5px;line-height:1.5;">'+m.text+'</div></div>';
-  }).join('');
-  host.innerHTML='<div style="background:var(--surface);border:1px solid #2d2d2d;border-radius:18px;padding:14px;margin-bottom:22px;">'
-    +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:'+(thread?'12px':'10px')+';">'
-      +'<span style="font-size:10px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:var(--gold);">Tell Jim</span>'
-      +'<span onclick="toggleJimInline(false)" style="cursor:pointer;color:rgba(240,236,228,0.78);font-size:17px;line-height:1;padding:2px 4px;">\u00d7</span>'
-    +'</div>'
-    +(thread?'<div id="jimInlineThread" style="max-height:260px;overflow-y:auto;-webkit-overflow-scrolling:touch;margin-bottom:11px;">'+thread+'</div>':'')
-    +'<div style="display:flex;gap:8px;align-items:flex-end;">'
-      +'<textarea id="jimInlineInput" rows="1" onkeydown="jimInlineKey(event)" oninput="jimInlineGrow(this)" style="flex:1;min-width:0;background:#191919;border:1px solid #2d2d2d;border-radius:12px;color:#f0ece4;font-size:14px;padding:11px 12px;font-family:inherit;resize:none;max-height:110px;line-height:1.45;outline:none;"></textarea>'
-      +'<button onclick="jimInlineMic()" id="jimInlineMicBtn" style="flex-shrink:0;width:42px;height:42px;border-radius:12px;background:#191919;border:1px solid #2d2d2d;color:rgba(240,236,228,0.82);font-size:16px;cursor:pointer;">\ud83c\udf99\ufe0f</button>'
-      +'<button onclick="jimInlineSend()" id="jimInlineSendBtn" style="flex-shrink:0;width:42px;height:42px;border-radius:12px;background:var(--gold);border:none;color:#000;font-size:17px;font-weight:800;cursor:pointer;">\u2191</button>'
-    +'</div>'
-  +'</div>';
-}
-function jimInlineGrow(el){ el.style.height='auto'; el.style.height=Math.min(110, el.scrollHeight)+'px'; }
-function jimInlineKey(e){ if(e && e.key==='Enter' && !e.shiftKey){ e.preventDefault(); jimInlineSend(); } }
-function jimInlineMic(){
-  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if(!SR){ showToast('Voice not supported here'); return; }
-  var btn=document.getElementById('jimInlineMicBtn');
-  try{
-    var r=new SR(); r.lang='en-US'; r.interimResults=false; r.maxAlternatives=1;
-    if(btn){ btn.style.background='var(--gold)'; btn.style.color='#000'; }
-    r.onresult=function(ev){
-      var t=ev.results[0][0].transcript;
-      var i=document.getElementById('jimInlineInput');
-      if(i){ i.value=(i.value?i.value+' ':'')+t; jimInlineGrow(i); }
-    };
-    r.onend=function(){ if(btn){ btn.style.background='#191919'; btn.style.color='#a8a399'; } };
-    r.onerror=function(){ if(btn){ btn.style.background='#191919'; btn.style.color='#a8a399'; } };
-    r.start();
-  }catch(e){ if(btn){ btn.style.background='#191919'; btn.style.color='#a8a399'; } }
-}
 // ===== SMART LOG — the front door to logging, opens the Jim conversation =====
-var _slogThread=[];   // {role:'me'|'jim', text, ts}
-var _slogLoaded=false;
+// The gold bar is a second window on the SAME conversation as the Jim tab —
+// same chat_messages rows, same jimTurn engine. It used to run its own weaker
+// parser and its own thread array while writing to the same table, so the two
+// Jims quietly fed each other their history.
+var _slogPending=false, _slogBusy=false;
 function _slogKey(){ return 'yjb_slogdraft_'+(cl?cl.code:'x'); }
 function showSmartLogBar(){
   var bar=document.getElementById('smartLogBar');
@@ -3681,8 +3626,10 @@ function openSmartLog(){
   _openSmartLogAsync();
 }
 async function _openSmartLogAsync(){
-  if(!_slogLoaded){ await _loadSlogHistory(); }
-  else renderSlogBody();
+  // Shared loader — same 500-message window the Jim tab uses, so opening either
+  // surface first makes no difference to what the other one knows.
+  try{ await loadChatHistory(); }catch(e){}
+  renderSlogBody();
   _slogFit();
 }
 function closeSmartLog(){
@@ -3698,21 +3645,6 @@ function closeSmartLog(){
   }catch(e){}
   try{ document.body.style.overflow=''; }catch(e){}
 }
-// Pull the running conversation so "I ate that again" has context.
-async function _loadSlogHistory(){
-  _slogThread=[];
-  try{
-    var rows=await sbSelect('chat_messages','client_code=eq.'+encodeURIComponent(cl.code)+'&order=logged_at.asc&limit=200')||[];
-    rows.forEach(function(r){
-      _slogThread.push({role: (r.role==='assistant'||r.role==='jim')?'jim':'me', text:String(r.content||r.text||''), ts:r.logged_at});
-    });
-  }catch(e){}
-  _slogLoaded=true;
-  renderSlogBody();
-}
-async function _saveSlogMsg(role, text){
-  try{ await sbInsert('chat_messages', {client_code:cl.code, role:(role==='jim'?'assistant':'user'), content:text, date_str:todayDateStr}); }catch(e){}
-}
 function _slogDayLabel(ts){
   try{
     var d=new Date(ts); if(isNaN(d.getTime())) return '';
@@ -3725,64 +3657,72 @@ function _slogDayLabel(ts){
 }
 function renderSlogBody(){
   var host=document.getElementById('slogBody'); if(!host) return;
-  if(!_slogThread.length){
+  var thread=(typeof chatHistory!=='undefined' && chatHistory) ? chatHistory : [];
+  if(!thread.length && !_slogPending){
     host.style.justifyContent='center';   // greeting sits centered when there's nothing yet
-    host.innerHTML='<div style="text-align:center;color:rgba(240,236,228,0.82);font-size:15px;line-height:1.7;padding:34px 18px;">Tell me what you ate, trained, or did today and I\u2019ll sort it into your logs.<br><br><span style="color:rgba(240,236,228,0.78);">Talk to me like a person \u2014 \u201cchicken and rice for lunch, then legs for an hour.\u201d</span></div>';
+    host.innerHTML='<div style="text-align:center;color:rgba(240,236,228,0.82);font-size:15px;line-height:1.7;padding:34px 18px;">Tell me what you ate, trained, or did today and I’ll sort it into your logs.<br><br><span style="color:rgba(240,236,228,0.78);">Talk to me like a person — “chicken and rice for lunch, then legs for an hour.”</span></div>';
     return;
   }
   host.style.justifyContent='flex-end';   // once there are messages, stack them up from the input
   var out='', lastDay='';
-  _slogThread.forEach(function(m, idx){
-    var day=m.ts?_slogDayLabel(m.ts):'';
+  thread.forEach(function(m, idx){
+    var day=m.logged_at?_slogDayLabel(m.logged_at):'';
     if(day && day!==lastDay){ out+='<div style="text-align:center;font-size:10.5px;color:rgba(240,236,228,0.78);font-weight:700;letter-spacing:0.5px;margin:14px 0 12px;">'+day+'</div>'; lastDay=day; }
-    if(m.role==='jim'){
-      out+='<div id="slogMsg'+idx+'" style="font-size:15px;color:#f0ece4;line-height:1.7;margin:4px 2px 20px;white-space:pre-wrap;">'+_escHtml(m.text)+'</div>';
+    if(m.role==='assistant'){
+      out+='<div id="slogMsg'+idx+'" style="font-size:15px;color:#f0ece4;line-height:1.7;margin:4px 2px 20px;white-space:pre-wrap;">'+_escHtml(m.content||'')+'</div>';
     } else {
-      out+='<div style="display:flex;justify-content:flex-end;margin-bottom:16px;"><div style="max-width:86%;background:#222222;border-radius:16px;padding:12px 14px;font-size:15px;color:#f0ece4;line-height:1.6;white-space:pre-wrap;">'+_escHtml(m.text)+'</div></div>';
+      out+='<div style="display:flex;justify-content:flex-end;margin-bottom:16px;"><div style="max-width:86%;background:#222222;border-radius:16px;padding:12px 14px;font-size:15px;color:#f0ece4;line-height:1.6;white-space:pre-wrap;">'+_escHtml(m.content||'')+'</div></div>';
     }
   });
+  if(_slogPending){
+    out+='<div style="font-size:15px;color:rgba(240,236,228,0.6);line-height:1.7;margin:4px 2px 20px;">…</div>';
+  }
   host.innerHTML=out;
   try{ host.scrollTop=host.scrollHeight; }catch(e){}
 }
 function slogGrow(el){ el.style.height='auto'; el.style.height=Math.min(120, el.scrollHeight)+'px'; }
 function slogKey(e){ if(e && e.key==='Enter' && !e.shiftKey){ e.preventDefault(); slogSend(); } }
 async function slogSend(){
+  if(_slogBusy) return;
   var el=document.getElementById('slogInput'); if(!el) return;
   var text=String(el.value||'').trim(); if(!text) return;
+  if(!cl){ showToast('Not logged in'); return; }
   el.value=''; slogGrow(el);
   try{ localStorage.removeItem(_slogKey()); }catch(e){}
-  _slogThread.push({role:'me', text:text, ts:new Date().toISOString()});
-  _slogThread.push({role:'jim', text:'\u2026', ts:new Date().toISOString(), pending:true});
+  _slogBusy=true;
+  // Same shape the DB stores and the Jim tab renders — one thread, two windows.
+  var userMsg={role:'user', content:text, logged_at:new Date().toISOString()};
+  chatHistory.push(userMsg);
+  if(chatFullHistoryCache) chatFullHistoryCache.push(userMsg);
+  _slogPending=true;
   renderSlogBody();
-  _saveSlogMsg('me', text);
-  var replyHtml='', ok=true;
+  jimSaveMsg('user', text, false);
+  var reply='';
   try{
-    var out=await _jimParseLog(text);
-    if(out && out.kind==='food' && out.items && out.items.length){
-      var total={cal:0,p:0,c:0,f:0}, names=[];
-      for(var i=0;i<out.items.length;i++){
-        var it=out.items[i];
-        await logFoodFromChat({name:it.name, emoji:it.emoji||'\ud83c\udf7d\ufe0f', calories:it.calories, protein:it.protein, carbs:it.carbs, fat:it.fat, meal:out.meal, insight:''}, null);
-        total.cal+=it.calories||0; total.p+=it.protein||0; total.c+=it.carbs||0; total.f+=it.fat||0; names.push(it.name);
-      }
-      replyHtml='Logged '+_escHtml(names.join(', '))+'.\n'+Math.round(total.cal)+' cal \u00b7 '+Math.round(total.p)+'P \u00b7 '+Math.round(total.c)+'C \u00b7 '+Math.round(total.f)+'F';
-    } else if(out && out.kind==='workout'){
-      await _jimLogWorkout(out);
-      replyHtml='Logged '+_escHtml(out.title||'your session')+(out.minutes?' \u00b7 '+out.minutes+' min':'')+'.';
-    } else {
-      replyHtml=(out && out.say) ? out.say : 'I couldn\u2019t tell what to log there. Try naming the food and rough portion, or the exercise.';
-      ok=false;
-    }
-  }catch(e){ replyHtml='That didn\u2019t go through. Try again in a second.'; ok=false; }
-  var ix=_slogThread.length-1;
-  _slogThread[ix]={role:'jim', text:replyHtml, ts:new Date().toISOString()};
+    reply=await jimTurn(text, []);
+  }catch(e){
+    console.error('gold bar send failed', e);
+    _slogPending=false; renderSlogBody();
+    // Leave their message standing and say so out loud, rather than persisting an
+    // error as something Jim said — that would come back as memory next turn.
+    showToast(_jimIsTimeout(e) ? 'That took too long — try again' : 'Connection error — try again');
+    _slogBusy=false;
+    return;
+  }
+  _slogPending=false;
+  var aMsg={role:'assistant', content:reply, logged_at:new Date().toISOString()};
+  chatHistory.push(aMsg);
+  if(chatFullHistoryCache) chatFullHistoryCache.push(aMsg);
   renderSlogBody();
   // stream it in at reading pace
+  var ix=chatHistory.length-1;
   var target=document.getElementById('slogMsg'+ix);
-  if(target){ target.textContent=''; await new Promise(function(res){ _typeInto(function(){ return document.getElementById('slogMsg'+ix); }, replyHtml, function(){ var b=document.getElementById('slogBody'); if(b) b.scrollTop=b.scrollHeight; }, res); }); }
-  _saveSlogMsg('jim', replyHtml);
+  if(target){ target.textContent=''; await new Promise(function(res){ _typeInto(function(){ return document.getElementById('slogMsg'+ix); }, reply, function(){ var b=document.getElementById('slogBody'); if(b) b.scrollTop=b.scrollHeight; }, res); }); }
+  jimSaveMsg('assistant', reply, false);
+  try{ if(typeof renderChatMessages==='function') renderChatMessages(); }catch(e){}
   try{ updTots(); rendTodayFood(); updHalo(); updStats(); }catch(e){}
   try{ renderDailyStrip(); }catch(e){}
+  _slogBusy=false;
 }
 // voice
 var _slogRec=null, _slogOn=false, _slogBase='';
@@ -3809,63 +3749,6 @@ function slogVoice(){
 function slogStopVoice(){ _slogOn=false; try{ if(_slogRec){ _slogRec.onend=null; _slogRec.stop(); } }catch(e){} _slogRec=null; slogVoiceUI(false); }
 function slogVoiceUI(on){ var b=document.getElementById('slogMic'); if(b) b.style.color = on ? 'var(--gold)' : '#7d7d7d'; }
 
-async function jimInlineSend(){
-  var el=document.getElementById('jimInlineInput'); if(!el) return;
-  var text=String(el.value||'').trim(); if(!text) return;
-  el.value=''; jimInlineGrow(el);
-  _jimThread.push({role:'user', text:text});
-  _jimThread.push({role:'jim', text:'<span style="opacity:0.6;">Logging that\u2026</span>'});
-  renderJimInline();
-  var reply, ok=true;
-  try{
-    var out=await _jimParseLog(text);
-    if(out && out.kind==='food' && out.items && out.items.length){
-      var total={cal:0,p:0,c:0,f:0}, names=[];
-      for(var i=0;i<out.items.length;i++){
-        var it=out.items[i];
-        await logFoodFromChat({name:it.name, emoji:it.emoji||'\ud83c\udf7d\ufe0f', calories:it.calories, protein:it.protein, carbs:it.carbs, fat:it.fat, meal:out.meal, insight:''}, null);
-        total.cal+=it.calories||0; total.p+=it.protein||0; total.c+=it.carbs||0; total.f+=it.fat||0;
-        names.push(it.name);
-      }
-      reply='Logged <b>'+_escHtml(names.join(', '))+'</b><br><span style="color:rgba(240,236,228,0.78);">'+Math.round(total.cal)+' cal \u00b7 '+Math.round(total.p)+'P \u00b7 '+Math.round(total.c)+'C \u00b7 '+Math.round(total.f)+'F</span>';
-    } else if(out && out.kind==='workout'){
-      await _jimLogWorkout(out);
-      reply='Logged <b>'+_escHtml(out.title||'your session')+'</b>';
-    } else {
-      reply=(out && out.say) ? _escHtml(out.say) : 'I couldn\u2019t tell what to log there. Try naming the food and the portion.';
-      ok=false;
-    }
-  }catch(e){ reply='That didn\u2019t go through. Try again in a second.'; ok=false; }
-  _jimThread[_jimThread.length-1]={role:'jim', text:reply, ok:ok};
-  renderJimInline();
-  try{ updTots(); rendTodayFood(); updHalo(); updStats(); }catch(e){}
-  try{ renderDailyStrip(); }catch(e){}
-}
-// Ask the model what this is and get it back structured.
-async function _jimParseLog(text){
-  var sys='You are Jim, a logging assistant for a fitness app. The user said what they ate or did. '
-    +'Decide if it is FOOD or a WORKOUT and return ONLY JSON.\\n'
-    +'FOOD: {"kind":"food","meal":"Breakfast|Lunch|Dinner|Snack","items":[{"name":"one food incl. portion","emoji":"","calories":0,"protein":0,"carbs":0,"fat":0}]}\\n'
-    +'One row per food they named. Estimate by hand-portion (palm of protein, fist of carbs, handful, thumb of fat). Respect any portion they stated.\\n'
-    +'WORKOUT: {"kind":"workout","title":"e.g. Push Day","description":"what they did","minutes":0}\\n'
-    +'If it is neither or you cannot tell: {"kind":"none","say":"one short line asking for what you need"}\\n'
-    +'No preamble, no markdown, JSON only.';
-  var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({messages:[{role:'user',content:sys+'\\n\\nTHEY SAID: '+text}], max_tokens:900})});
-  var data=await res.json();
-  var raw=(data.content||[]).map(function(b){ return b.text||''; }).join('').trim();
-  raw=raw.replace(/```json|```/g,'').trim();
-  var s=raw.indexOf('{'), e=raw.lastIndexOf('}');
-  if(s<0||e<0) return null;
-  return JSON.parse(raw.slice(s,e+1));
-}
-async function _jimLogWorkout(out){
-  var row={client_code:cl.code, title:out.title||'Workout', description:out.description||'',
-           duration:parseInt(out.minutes,10)||null, date_str:todayDateStr};
-  await insertWorkoutLog(row);
-  try{ if(typeof loadTodayWorkouts==='function') await loadTodayWorkouts(); }catch(e){}
-  try{ if(typeof rendTodayWo==='function') rendTodayWo(); }catch(e){}
-}
 
 var WHATSNEW_VERSION = '2026-05-29';
 
@@ -25680,7 +25563,7 @@ function _retireTodayTiles(){
   try{ _syncSetupState(); }catch(e){}
   try{ renderProfilePage(); }catch(e){}
   ['tileEntry','tileFood','tileWorkout','todayWorkoutCard','dayCardTile','logAnotherWo','dailyStrip',
-   'pastDayHint','jimInviteCard','smartLogBar','mealBoard','sqBadge','progressReadHost','jimInlineHost']
+   'pastDayHint','jimInviteCard','smartLogBar','mealBoard','sqBadge','progressReadHost']
     .forEach(function(id){ try{ var e=document.getElementById(id); if(e) e.style.setProperty('display','none','important'); }catch(err){} });
 }
 function renderDailyStrip(){
@@ -28043,6 +27926,246 @@ async function patchWorkoutIntensity(workoutId, intensity){
   }
 }
 
+// ===== THE ONE JIM =========================================================
+// Both surfaces call this: the Ask tab and the gold-bar overlay. It owns the
+// context, the model call, the markers and every write. Callers own only their
+// own input box and how they paint the thread.
+//
+// There used to be three of these — a full one here, a much weaker one behind
+// the gold bar with no context and no edits, and a third that nothing called.
+// Two of them wrote to the same chat_messages table, so the weaker Jim's turns
+// were being replayed as this one's memory.
+//
+// CONTRACT: call it AFTER the user's turn is already on chatHistory. The replay
+// below drops the last entry and re-adds it with any images attached.
+var JIM_TURN_TIMEOUT_MS = 45000;
+
+// An aborted fetch and a dead connection want different words on screen.
+function _jimIsTimeout(e){ return !!(e && (e.name==='AbortError' || String(e.message||'').indexOf('abort')>=0)); }
+
+async function jimTurn(text, photos){
+  photos = (photos||[]).filter(Boolean);
+  var hasPhoto = photos.length > 0;
+  var photoSnapshot = photos[0] || null;
+  try{ noteBodyTalk(text); }catch(e){}
+
+  // A workout from the prior turn may still be waiting on an intensity rating.
+  // They can type "7", "7/10", "intense 8", "skip", or just move on.
+  var intensityWasJustPatched = false;
+  if(pendingIntensityForId && !hasPhoto){
+    if(isRatingSkip(text)){
+      pendingIntensityForId = null;
+    } else {
+      var rating = parseIntensityFromText(text);
+      if(rating){
+        var okRate = await patchWorkoutIntensity(pendingIntensityForId, rating);
+        if(okRate){
+          intensityWasJustPatched = true;
+          showToast('✓ Rated '+rating+'/10');
+          if(typeof todayWo !== 'undefined'){
+            var lastWo = todayWo[todayWo.length-1];
+            if(lastWo && !lastWo.intensity) lastWo.intensity = rating;
+            if(typeof rendTodayWo === 'function') rendTodayWo();
+          }
+        }
+        pendingIntensityForId = null;
+      }
+      // Anything else: leave it pending. The prompt re-asks if it still matters.
+    }
+  }
+
+  var ctx=await buildChatContext();
+  var systemBlock=buildCoachVoice();
+  if(ctx && ctx.length>0){
+    systemBlock+='\n=== CLIENT DATA AVAILABLE ===\n'+ctx;
+  }else{
+    systemBlock+='\n=== CLIENT DATA AVAILABLE ===\nNo profile or food data available for this client yet. Answer their questions using general nutrition knowledge. Do not claim to know their personal stats, goals, or history.';
+  }
+
+  // Replay the thread so the model has the conversation. Use the FULL cache (not
+  // just the visible 7-day window) so Jim has memory across days.
+  var msgs=[];
+  var contextSource = (chatFullHistoryCache && chatFullHistoryCache.length > chatHistory.length) ? chatFullHistoryCache : chatHistory;
+  var historic = contextSource.slice(0,-1).slice(-30);
+  historic.forEach(function(m){
+    msgs.push({role:m.role, content:m.content});
+  });
+  // The new user turn, with image(s) if present
+  var newContent=[];
+  photos.forEach(function(snap){
+    var b64=snap.split(',')[1];
+    var mt=(snap.split(';')[0].split(':')[1])||'image/jpeg';
+    newContent.push({type:'image',source:{type:'base64',media_type:mt,data:b64}});
+  });
+  var _imgNote = photos.length>1
+    ? '(I sent '+photos.length+' photos — they may be one workout split across screenshots, or a workout plus a separate cardio/activity. Read them all and combine into one log where it makes sense.)'
+    : '(I sent a photo — read it and respond)';
+  newContent.push({type:'text',text:(text||_imgNote)});
+  msgs.push({role:'user',content:newContent});
+
+  // Prepend the system context as a synthetic first user turn so we don't need to change the Netlify function signature
+  msgs.unshift({role:'user',content:systemBlock+'\n\nAcknowledge with "Got it." Then I\'ll start asking.'});
+  msgs.splice(1,0,{role:'assistant',content:'Got it.'});
+
+  // A hung request used to leave the thread on the typing dots with the send
+  // button disabled and no way out. Bound it and let the caller say so.
+  var _ac = (typeof AbortController!=='undefined') ? new AbortController() : null;
+  var _to = setTimeout(function(){ try{ if(_ac) _ac.abort(); }catch(e){} }, JIM_TURN_TIMEOUT_MS);
+  var res;
+  try{
+    res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:msgs}), signal:(_ac?_ac.signal:undefined)});
+  } finally { clearTimeout(_to); }
+  var data=await res.json();
+  var reply='';
+  if(data && data.content){
+    data.content.forEach(function(b){ if(b.type==='text' && b.text) reply+=b.text; });
+  }
+  reply=(reply||'').trim();
+  if(!reply){ throw new Error('Empty reply'); }
+
+  // Extract WORKOUT_LOG marker (new workout) AND WORKOUT_NOTE marker (append to existing)
+  var extractedLog = extractWorkoutLog(reply);
+  reply = extractedLog.cleanText;
+  var extractedNote = extractWorkoutNote(reply);
+  reply = extractedNote.cleanText;
+  var extractedEdit = extractWorkoutEdit(reply);
+  reply = extractedEdit.cleanText;
+  var foodAdds = extractAllMarkers(reply, 'FOOD_LOG'); reply = foodAdds.cleanText;
+  var foodEdits = extractAllMarkers(reply, 'FOOD_EDIT'); reply = foodEdits.cleanText;
+  var foodDeletes = extractAllMarkers(reply, 'FOOD_DELETE'); reply = foodDeletes.cleanText;
+  var workoutPhotos = extractAllMarkers(reply, 'WORKOUT_PHOTO'); reply = workoutPhotos.cleanText;
+  var stepsLogs = extractAllMarkers(reply, 'STEPS_LOG'); reply = stepsLogs.cleanText;
+
+  // Handle STEPS_LOG: client told Jim their step total — save it (upsert per day, same as the tile).
+  if(stepsLogs.items.length){
+    var stepVal = parseInt(stepsLogs.items[stepsLogs.items.length-1].steps, 10);
+    if(!isNaN(stepVal) && stepVal>=0){
+      try{
+        var sOk = await sbUpsert('step_logs', {client_code:cl.code, steps:stepVal, date_str:todayDateStr, updated_at:new Date().toISOString()}, 'client_code,date_str');
+        if(sOk){
+          if(typeof updSteps==='function') updSteps(stepVal);
+          var _se=document.getElementById('stepsExact'); if(_se) _se.value=stepVal;
+          if(typeof markTileDone==='function') markTileDone('Steps');
+          showToast('👟 '+stepVal.toLocaleString()+' steps logged');
+        }
+      }catch(e){ console.error('steps log from chat failed', e); }
+    }
+  }
+
+  // Handle WORKOUT_LOG: log a fresh workout. Use Jim's commentary (the visible reply) as the notes.
+  if(extractedLog.log){
+    // Use Jim's coaching commentary as the workout's note — but ONLY if it's substantive.
+    // Skip throwaway confirmations ("Got it. Logged.") so simple logs (e.g. a walk) stay clean.
+    if(!extractedLog.log.notes && reply){
+      var commentaryOnly = reply.split(/(?:Quick one|What intensity|How hard|How would you rate|Rate that|On a scale)/i)[0].trim();
+      var _stripped = commentaryOnly.replace(/[✓✅👍.!\s]/g,'').toLowerCase();
+      var _isThrowaway = /^(gotit|gotitlogged|logged|donelogged|done|noted|locked?in|✓)$/.test(_stripped) || commentaryOnly.length < 25;
+      if(commentaryOnly && !_isThrowaway) extractedLog.log.notes = commentaryOnly;
+    }
+    var newId = await logWorkoutFromOffer(extractedLog.log);
+    if(newId==='dup'){
+      // the same workout landed moments ago — stay quiet rather than log it twice
+    } else if(newId){
+      showToast('✓ Workout logged');
+      if(!extractedLog.log.intensity){
+        pendingIntensityForId = newId;
+      }
+    } else {
+      console.error('workout save failed for offer', extractedLog.log);
+      showToast('Could not save workout — try the manual log button');
+    }
+  }
+
+  // Handle WORKOUT_NOTE: append commentary to existing workout (no new log)
+  if(extractedNote.note && extractedNote.note.id){
+    var noteText = extractedNote.note.note || extractedNote.note.text || '';
+    if(noteText){
+      var okNote = await appendWorkoutNote(extractedNote.note.id, noteText);
+      if(okNote) showToast('✓ Note added to workout');
+    }
+  }
+
+  // Handle WORKOUT_EDIT: apply an in-chat correction to today's logged workout
+  if(extractedEdit.edit && extractedEdit.edit.id){
+    var editOk = await applyWorkoutEdit(extractedEdit.edit);
+    if(editOk){ showToast('✓ Workout updated'); if(typeof rendTodayWo==='function') rendTodayWo(); }
+  }
+
+  // Handle food reconciliation: deletes first, then edits, then adds (so totals settle cleanly).
+  var _foodToasts = 0;
+  if(foodDeletes.items.length){
+    for(var fd=0; fd<foodDeletes.items.length; fd++){
+      var delId = foodDeletes.items[fd].id;
+      if(delId!=null){ var dOk = await applyFoodDelete(delId); if(dOk) _foodToasts++; }
+    }
+  }
+  if(foodEdits.items.length){
+    for(var fe=0; fe<foodEdits.items.length; fe++){
+      var ed = foodEdits.items[fe];
+      if(ed && ed.id!=null){ var eOk = await applyFoodEdit(ed.id, ed); if(eOk) _foodToasts++; }
+    }
+  }
+  if(foodAdds.items.length){
+    // Attach the chat photo only when there's exactly one add (a single meal being logged with a pic).
+    for(var fa=0; fa<foodAdds.items.length; fa++){
+      var addOffer = foodAdds.items[fa];
+      var addPhoto = (foodAdds.items.length===1) ? photoSnapshot : null;
+      if(addOffer && addOffer.name){
+        var _sig=((addOffer.name||'').toLowerCase().trim())+'|'+Math.round(addOffer.calories||0)+'|'+((addOffer.meal||'').toLowerCase());
+        var _nowFa=Date.now(); window.__chatFoodSig=window.__chatFoodSig||{};
+        if(window.__chatFoodSig[_sig] && (_nowFa-window.__chatFoodSig[_sig])<600000){ continue; } // identical meal within 10 min -> skip duplicate insert
+        var aOk = await logFoodFromChat(addOffer, addPhoto); if(aOk){ _foodToasts++; window.__chatFoodSig[_sig]=_nowFa; }
+      }
+    }
+  }
+  if(_foodToasts>0) showToast('✓ Food log updated');
+
+  // Attach a gym/workout photo to the referenced workout (id from RECENT WORKOUTS).
+  if(workoutPhotos.items.length && photoSnapshot){
+    for(var wp=0; wp<workoutPhotos.items.length; wp++){
+      var wpItem = workoutPhotos.items[wp];
+      if(wpItem && wpItem.id!=null){ await attachWorkoutPhoto(wpItem.id, photoSnapshot); }
+    }
+  }
+
+  // If we just patched intensity from the prior turn, add a small confirmation prefix
+  if(intensityWasJustPatched){
+    reply = '✓ Got it — rated.\n\n' + reply;
+  }
+
+  // SAFETY NET: if a FOOD_LOG marker survived strict extraction (model drift), salvage a single add so the meal still logs.
+  if(!foodAdds.items.length && !foodEdits.items.length && !foodDeletes.items.length){
+    var _salvage = reply.match(/\[FOOD_LOG\]([\s\S]*?)\[\/FOOD_LOG\]/);
+    if(_salvage){
+      try{ var _sObj = JSON.parse(_salvage[1].trim()); if(_sObj && _sObj.name){ var _sOk = await logFoodFromChat(_sObj, photoSnapshot); if(_sOk) showToast('✓ '+(_sObj.name||'Meal')+' logged'); } }catch(e){ console.error('food salvage parse failed', e); }
+    }
+  }
+  // Scrub any leftover or partial marker text so raw JSON / tags never reach the screen.
+  reply = reply
+    .replace(/\[FOOD_LOG\][\s\S]*?\[\/FOOD_LOG\]/g,'')
+    .replace(/\[FOOD_EDIT\][\s\S]*?\[\/FOOD_EDIT\]/g,'')
+    .replace(/\[FOOD_DELETE\][\s\S]*?\[\/FOOD_DELETE\]/g,'')
+    .replace(/\[WORKOUT_LOG\][\s\S]*?\[\/WORKOUT_LOG\]/g,'')
+    .replace(/\[WORKOUT_NOTE\][\s\S]*?\[\/WORKOUT_NOTE\]/g,'')
+    .replace(/\[\/?(FOOD_LOG|FOOD_EDIT|FOOD_DELETE|WORKOUT_LOG|WORKOUT_NOTE)\]/g,'')
+    .replace(/\s*\(?\bid\s*[:=]\s*[A-Za-z0-9_-]+\)?/gi,'')
+    .replace(/\n{3,}/g,'\n\n')
+    .trim();
+  if(!reply) reply = 'Done. ✓';
+  return reply;
+}
+
+// Persist one turn. sbInsert returns FALSE on failure rather than throwing, so a
+// dropped message used to vanish silently — and a dropped message is a hole in
+// Jim's memory, not just a missing bubble.
+async function jimSaveMsg(role, content, hasImage){
+  try{
+    var ok = await sbInsert('chat_messages', {client_code:cl.code, role:role, content:content, has_image:!!hasImage});
+    if(!ok) console.error('chat_messages insert failed — this turn is missing from Jim\'s memory', role);
+    return ok;
+  }catch(e){ console.error('chat_messages insert threw', e); return false; }
+}
+
 async function sendChatMessage(){
   if(chatBusy) return;
   var input=document.getElementById('chatInput');
@@ -28070,33 +28193,6 @@ async function sendChatMessage(){
   sendBtn.classList.add('loading');
   sendBtn.disabled=true;
 
-  // If a workout is awaiting an intensity rating from the prior turn, try to read it.
-  // User can type "7", "7/10", "intense 8", "skip", etc.
-  var intensityWasJustPatched = false;
-  if(pendingIntensityForId && !hasPhoto){
-    if(isRatingSkip(text)){
-      pendingIntensityForId = null;
-    } else {
-      var rating = parseIntensityFromText(text);
-      if(rating){
-        var ok = await patchWorkoutIntensity(pendingIntensityForId, rating);
-        if(ok){
-          intensityWasJustPatched = true;
-          showToast('✓ Rated '+rating+'/10');
-          // Also patch the local copy if it exists
-          if(typeof todayWo !== 'undefined'){
-            var last = todayWo[todayWo.length-1];
-            if(last && !last.intensity) last.intensity = rating;
-            if(typeof rendTodayWo === 'function') rendTodayWo();
-          }
-        }
-        pendingIntensityForId = null;
-      }
-      // If they wrote something else (not a rating, not a skip), just leave pendingIntensityForId.
-      // Jim's prompt will handle re-asking if appropriate, or let it drop naturally.
-    }
-  }
-
   // Add user message to UI immediately
   var userMsg={role:'user',content:text||'(photo)',logged_at:new Date().toISOString()};
   if(hasPhoto) userMsg.image_data=chatPhotoData; // local only, not persisted as base64
@@ -28112,8 +28208,7 @@ async function sendChatMessage(){
   clearChatPhoto();
 
   // Persist user message to Supabase (text only, no image bytes)
-  sbInsert('chat_messages',{client_code:cl.code, role:'user', content:text||'(sent a photo)', has_image:hasPhoto});
-  try{ noteBodyTalk(text); }catch(e){}
+  jimSaveMsg('user', text||'(sent a photo)', hasPhoto);
 
   // Show typing indicator
   var box=document.getElementById('chatScroll');
@@ -28125,180 +28220,8 @@ async function sendChatMessage(){
   setTimeout(scrollChatToBottom,30);
 
   try{
-    var ctx=await buildChatContext();
-    var systemBlock=buildCoachVoice();
-    if(ctx && ctx.length>0){
-      systemBlock+='\n=== CLIENT DATA AVAILABLE ===\n'+ctx;
-    }else{
-      systemBlock+='\n=== CLIENT DATA AVAILABLE ===\nNo profile or food data available for this client yet. Answer their questions using general nutrition knowledge. Do not claim to know their personal stats, goals, or history.';
-    }
-
-    // Build the messages array for the Netlify function (Claude API format)
-    // We replay chat history so the model has the conversation thread.
-    // Use the FULL cache (not just the visible 7-day window) so Jim has memory across days.
-    var msgs=[];
-    var contextSource = (chatFullHistoryCache && chatFullHistoryCache.length > chatHistory.length) ? chatFullHistoryCache : chatHistory;
-    var historic = contextSource.slice(0,-1).slice(-30);
-    historic.forEach(function(m){
-      msgs.push({role:m.role, content:m.content});
-    });
-    // Add the new user turn (with image(s) if present)
-    var newContent=[];
     var _imgs = (photoSnapshots && photoSnapshots.length) ? photoSnapshots : (photoSnapshot?[photoSnapshot]:[]);
-    _imgs.forEach(function(snap){
-      if(!snap) return;
-      var b64=snap.split(',')[1];
-      var mt=(snap.split(';')[0].split(':')[1])||'image/jpeg';
-      newContent.push({type:'image',source:{type:'base64',media_type:mt,data:b64}});
-    });
-    var _imgNote = _imgs.length>1
-      ? '(I sent '+_imgs.length+' photos \u2014 they may be one workout split across screenshots, or a workout plus a separate cardio/activity. Read them all and combine into one log where it makes sense.)'
-      : '(I sent a photo \u2014 read it and respond)';
-    newContent.push({type:'text',text:(text||_imgNote)});
-    msgs.push({role:'user',content:newContent});
-
-    // Prepend the system context as a synthetic first user turn so we don't need to change the Netlify function signature
-    msgs.unshift({role:'user',content:systemBlock+'\n\nAcknowledge with "Got it." Then I\'ll start asking.'});
-    msgs.splice(1,0,{role:'assistant',content:'Got it.'});
-
-    var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:msgs})});
-    var data=await res.json();
-    var reply='';
-    if(data && data.content){
-      data.content.forEach(function(b){ if(b.type==='text' && b.text) reply+=b.text; });
-    }
-    reply=(reply||'').trim();
-    if(!reply){ throw new Error('Empty reply'); }
-
-    // Extract WORKOUT_LOG marker (new workout) AND WORKOUT_NOTE marker (append to existing)
-    var extractedLog = extractWorkoutLog(reply);
-    reply = extractedLog.cleanText;
-    var extractedNote = extractWorkoutNote(reply);
-    reply = extractedNote.cleanText;
-    var extractedEdit = extractWorkoutEdit(reply);
-    reply = extractedEdit.cleanText;
-    var foodAdds = extractAllMarkers(reply, 'FOOD_LOG'); reply = foodAdds.cleanText;
-    var foodEdits = extractAllMarkers(reply, 'FOOD_EDIT'); reply = foodEdits.cleanText;
-    var foodDeletes = extractAllMarkers(reply, 'FOOD_DELETE'); reply = foodDeletes.cleanText;
-    var workoutPhotos = extractAllMarkers(reply, 'WORKOUT_PHOTO'); reply = workoutPhotos.cleanText;
-    var stepsLogs = extractAllMarkers(reply, 'STEPS_LOG'); reply = stepsLogs.cleanText;
-
-    // Handle STEPS_LOG: client told Jim their step total — save it (upsert per day, same as the tile).
-    if(stepsLogs.items.length){
-      var stepVal = parseInt(stepsLogs.items[stepsLogs.items.length-1].steps, 10);
-      if(!isNaN(stepVal) && stepVal>=0){
-        try{
-          var sOk = await sbUpsert('step_logs', {client_code:cl.code, steps:stepVal, date_str:todayDateStr, updated_at:new Date().toISOString()}, 'client_code,date_str');
-          if(sOk){
-            if(typeof updSteps==='function') updSteps(stepVal);
-            var _se=document.getElementById('stepsExact'); if(_se) _se.value=stepVal;
-            if(typeof markTileDone==='function') markTileDone('Steps');
-            showToast('👟 '+stepVal.toLocaleString()+' steps logged');
-          }
-        }catch(e){ console.error('steps log from chat failed', e); }
-      }
-    }
-
-    // Handle WORKOUT_LOG: log a fresh workout. Use Jim's commentary (the visible reply) as the notes.
-    if(extractedLog.log){
-      // Use Jim's coaching commentary as the workout's note — but ONLY if it's substantive.
-      // Skip throwaway confirmations ("Got it. Logged.") so simple logs (e.g. a walk) stay clean.
-      if(!extractedLog.log.notes && reply){
-        var commentaryOnly = reply.split(/(?:Quick one|What intensity|How hard|How would you rate|Rate that|On a scale)/i)[0].trim();
-        var _stripped = commentaryOnly.replace(/[✓✅👍.!\s]/g,'').toLowerCase();
-        var _isThrowaway = /^(gotit|gotitlogged|logged|donelogged|done|noted|locked?in|✓)$/.test(_stripped) || commentaryOnly.length < 25;
-        if(commentaryOnly && !_isThrowaway) extractedLog.log.notes = commentaryOnly;
-      }
-      var newId = await logWorkoutFromOffer(extractedLog.log);
-      if(newId==='dup'){
-        // the same workout landed moments ago — stay quiet rather than log it twice
-      } else if(newId){
-        showToast('✓ Workout logged');
-        if(!extractedLog.log.intensity){
-          pendingIntensityForId = newId;
-        }
-      } else {
-        console.error('workout save failed for offer', extractedLog.log);
-        showToast('Could not save workout — try the manual log button');
-      }
-    }
-
-    // Handle WORKOUT_NOTE: append commentary to existing workout (no new log)
-    if(extractedNote.note && extractedNote.note.id){
-      var noteText = extractedNote.note.note || extractedNote.note.text || '';
-      if(noteText){
-        var ok = await appendWorkoutNote(extractedNote.note.id, noteText);
-        if(ok) showToast('✓ Note added to workout');
-      }
-    }
-
-    // Handle WORKOUT_EDIT: apply an in-chat correction to today's logged workout
-    if(extractedEdit.edit && extractedEdit.edit.id){
-      var editOk = await applyWorkoutEdit(extractedEdit.edit);
-      if(editOk){ showToast('✓ Workout updated'); if(typeof rendTodayWo==='function') rendTodayWo(); }
-    }
-
-    // Handle food reconciliation: deletes first, then edits, then adds (so totals settle cleanly).
-    var _foodToasts = 0;
-    if(foodDeletes.items.length){
-      for(var fd=0; fd<foodDeletes.items.length; fd++){
-        var delId = foodDeletes.items[fd].id;
-        if(delId!=null){ var dOk = await applyFoodDelete(delId); if(dOk) _foodToasts++; }
-      }
-    }
-    if(foodEdits.items.length){
-      for(var fe=0; fe<foodEdits.items.length; fe++){
-        var ed = foodEdits.items[fe];
-        if(ed && ed.id!=null){ var eOk = await applyFoodEdit(ed.id, ed); if(eOk) _foodToasts++; }
-      }
-    }
-    if(foodAdds.items.length){
-      // Attach the chat photo only when there's exactly one add (a single meal being logged with a pic).
-      for(var fa=0; fa<foodAdds.items.length; fa++){
-        var addOffer = foodAdds.items[fa];
-        var addPhoto = (foodAdds.items.length===1) ? photoSnapshot : null;
-        if(addOffer && addOffer.name){
-          var _sig=((addOffer.name||'').toLowerCase().trim())+'|'+Math.round(addOffer.calories||0)+'|'+((addOffer.meal||'').toLowerCase());
-          var _nowFa=Date.now(); window.__chatFoodSig=window.__chatFoodSig||{};
-          if(window.__chatFoodSig[_sig] && (_nowFa-window.__chatFoodSig[_sig])<600000){ continue; } // identical meal within 10 min -> skip duplicate insert
-          var aOk = await logFoodFromChat(addOffer, addPhoto); if(aOk){ _foodToasts++; window.__chatFoodSig[_sig]=_nowFa; }
-        }
-      }
-    }
-    if(_foodToasts>0) showToast('✓ Food log updated');
-
-    // Attach a gym/workout photo to the referenced workout (id from RECENT WORKOUTS).
-    if(workoutPhotos.items.length && photoSnapshot){
-      for(var wp=0; wp<workoutPhotos.items.length; wp++){
-        var wpItem = workoutPhotos.items[wp];
-        if(wpItem && wpItem.id!=null){ await attachWorkoutPhoto(wpItem.id, photoSnapshot); }
-      }
-    }
-
-    // If we just patched intensity from the prior turn, add a small confirmation prefix
-    if(intensityWasJustPatched){
-      reply = '✓ Got it — rated.\n\n' + reply;
-    }
-
-    // SAFETY NET: if a FOOD_LOG marker survived strict extraction (model drift), salvage a single add so the meal still logs.
-    if(!foodAdds.items.length && !foodEdits.items.length && !foodDeletes.items.length){
-      var _salvage = reply.match(/\[FOOD_LOG\]([\s\S]*?)\[\/FOOD_LOG\]/);
-      if(_salvage){
-        try{ var _sObj = JSON.parse(_salvage[1].trim()); if(_sObj && _sObj.name){ var _sOk = await logFoodFromChat(_sObj, photoSnapshot); if(_sOk) showToast('✓ '+(_sObj.name||'Meal')+' logged'); } }catch(e){ console.error('food salvage parse failed', e); }
-      }
-    }
-    // Scrub any leftover or partial marker text so raw JSON / tags never reach the screen.
-    reply = reply
-      .replace(/\[FOOD_LOG\][\s\S]*?\[\/FOOD_LOG\]/g,'')
-      .replace(/\[FOOD_EDIT\][\s\S]*?\[\/FOOD_EDIT\]/g,'')
-      .replace(/\[FOOD_DELETE\][\s\S]*?\[\/FOOD_DELETE\]/g,'')
-      .replace(/\[WORKOUT_LOG\][\s\S]*?\[\/WORKOUT_LOG\]/g,'')
-      .replace(/\[WORKOUT_NOTE\][\s\S]*?\[\/WORKOUT_NOTE\]/g,'')
-      .replace(/\[\/?(FOOD_LOG|FOOD_EDIT|FOOD_DELETE|WORKOUT_LOG|WORKOUT_NOTE)\]/g,'')
-      .replace(/\s*\(?\bid\s*[:=]\s*[A-Za-z0-9_-]+\)?/gi,'')
-      .replace(/\n{3,}/g,'\n\n')
-      .trim();
-    if(!reply) reply = 'Done. ✓';
+    var reply = await jimTurn(text, _imgs);
 
     // Remove typing, append assistant message
     var tr=document.getElementById('chatTypingRow');
@@ -28310,13 +28233,13 @@ async function sendChatMessage(){
     setTimeout(scrollChatToBottom,30);
 
     // Persist
-    sbInsert('chat_messages',{client_code:cl.code, role:'assistant', content:reply, has_image:false});
+    jimSaveMsg('assistant', reply, false);
 
   }catch(e){
     console.error('chat send failed',e);
     var tr2=document.getElementById('chatTypingRow');
     if(tr2) tr2.parentNode.removeChild(tr2);
-    showToast('Connection error — try again');
+    showToast(_jimIsTimeout(e) ? 'That took too long — try again' : 'Connection error — try again');
     // Remove the optimistic user bubble's photo preview note? Leave the user msg, just no reply.
   }finally{
     chatBusy=false;
