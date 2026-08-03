@@ -12370,10 +12370,11 @@ function tlSaveActivity(){
       var _multiOk = !_looksLikeMultipleItems(_qtyParse(title).name);
       var pr=_qtyParse(title); var hist=_matchHistory(_multiOk ? pr.name : title);
       if(hist){
-        var mult=_multiOk ? (pr.qty||1) : 1;
+        var _hm=_histMultiplier(hist, pr, _multiOk), mult=_hm.mult;
         cal=Math.round((+hist.calories||0)*mult); pro=Math.round((+hist.protein||0)*mult);
         carb=Math.round((+hist.carbs||0)*mult); fat=Math.round((+hist.fat||0)*mult);
         nm=_tcase(hist.name)+(mult!==1?(' \u00d7'+mult):''); rating=(hist.rating||'good');
+        if(_hm.declined){ try{ showToast(_tcase(hist.name)+' logged as saved \u2014 not \u00d7'+_hm.asked); }catch(e){} }
       }
     }
     row={client_code:cl.code,name:nm,emoji:'\ud83c\udf7d\ufe0f',calories:cal,protein:pro,carbs:carb,fat:fat,
@@ -17888,12 +17889,19 @@ function mbRowFromLabel(norm, ownerCode, sort){
 // "Banana (Medium, 118g)" -> "banana" · "Pomegranate, 1/2 Cup" -> "pomegranate"
 function mbCleanFoodName(s){
   var t=String(s==null?'':s).trim();
+  // A trailing "×4" is a quantity the APP put in the name, not one the client
+  // typed into it. Every stripper below exists to remove the latter and none of
+  // them can tell the difference, so "Eggs ×4" came out as "Eggs ×" — the sign
+  // survives, the number doesn't. Hold it aside and give it back at the end.
+  var mult='';
+  var mm=t.match(/\s*[×x]\s*(\d+(?:\.\d+)?)\s*$/i);
+  if(mm){ mult=' ×'+mm[1]; t=t.slice(0, mm.index); }
   t=t.replace(/\([^)]*\)/g,' ');                       // (Medium, 118g)
   t=t.replace(/,\s*[\d/.]+\s*[a-z.]*\s*$/i,' ');       // ", 1/2 cup"  ", 100g"
   t=t.replace(/\b[\d/.]+\s*(g|kg|oz|ozs|ml|l|lb|lbs|cups?|tbsps?|tsps?|pieces?|slices?|servings?|handfuls?|palms?|scoops?|links?|squares?)\b\.?/gi,' ');
   t=t.replace(/\b[\d/.]+\b/g,' ');
   t=t.replace(/^\s*(of|a|an|the)\s+/i,' ');          // "0.5 cup of rice" -> "rice"
-  return t.replace(/\s{2,}/g,' ').replace(/^[\s,]+|[\s,]+$/g,'').trim();
+  return (t.replace(/\s{2,}/g,' ').replace(/^[\s,]+|[\s,]+$/g,'').trim()+mult).trim();
 }
 
 // Longest match wins, so "cottage cheese" beats "cheese" and "green bean"
@@ -20411,6 +20419,22 @@ function _matchHistory(name){
 function _looksLikeMultipleItems(s){
   return /\band\b|\bwith\b|,|\+/.test(String(s||'')) || (String(s||'').match(/\d/g)||[]).length>0;
 }
+// A saved food's portion is OPAQUE unless its own name says what the portion is.
+// A saved "Eggs" at 280 cal / 24g protein is this person's usual four eggs, not
+// one — so "four eggs" multiplied it to 1,120 and 96g. Multiply only when the
+// saved name states its own count and can therefore be scaled meaningfully.
+function _histCountIsExplicit(name){
+  var n=String(name||'');
+  if(/\d/.test(n)) return true;
+  return /\b(one|two|three|four|five|six|seven|eight|nine|ten|half|single|per|each)\b/i.test(n);
+}
+// The quantity we're honouring, and whether we quietly declined to scale.
+function _histMultiplier(hist, pr, multiOk){
+  var asked=(multiOk ? (pr.qty||1) : 1);
+  if(asked===1) return {mult:1, declined:false, asked:asked};
+  if(_histCountIsExplicit(hist && hist.name)) return {mult:asked, declined:false, asked:asked};
+  return {mult:1, declined:true, asked:asked};
+}
 // The heart of it: write what you ate. Match your own history and scale by quantity.
 // No match -> log it plain with no numbers. Macros stay a tap away on the entry.
 // Pull stated macros out of a sentence: "2 pancakes, 60g carbs, 40g protein, 28g fat"
@@ -20474,14 +20498,18 @@ async function smartLogFromText(q){
     var multiOk = !_looksLikeMultipleItems(pr.name);
     var hist=_matchHistory(multiOk ? pr.name : parts[i]);
     if(hist){
-      var mult=multiOk ? (pr.qty||1) : 1;
+      var _hm=_histMultiplier(hist, pr, multiOk), mult=_hm.mult;
       var cal=Math.round((+hist.calories||0)*mult), pro=Math.round((+hist.protein||0)*mult), carb=Math.round((+hist.carbs||0)*mult), fat=Math.round((+hist.fat||0)*mult);
-      var nm=_tcase(hist.name)+(mult!==1?(' \u00d7'+mult):'');
+      var nm=_tcase(hist.name)+(mult!==1?(' ×'+mult):'');
+      // They said a count and we did NOT apply it. Say so on the entry rather
+      // than letting them assume it was counted.
+      var _hins=_hm.declined ? ('Saved portion used as-is, not ×'+_hm.asked+'.') : '';
       await _push(
-        {client_code:cl.code,name:nm,emoji:'🍽️',calories:cal,protein:pro,carbs:carb,fat:fat,rating:(hist.rating||'good'),meal:meal,eat_time:eatTime,graced:false,date_str:logDs},
-        {name:nm,emoji:'🍽️',calories:cal,protein:pro,carbs:carb,fat:fat,rating:(hist.rating||'good'),insight:'',meal:meal,eat_time:eatTime,eatTime:eatTime,graced:false,photo:null,date_str:logDs,note:''},
+        {client_code:cl.code,name:nm,emoji:'🍽️',calories:cal,protein:pro,carbs:carb,fat:fat,rating:(hist.rating||'good'),insight:_hins,meal:meal,eat_time:eatTime,graced:false,date_str:logDs},
+        {name:nm,emoji:'🍽️',calories:cal,protein:pro,carbs:carb,fat:fat,rating:(hist.rating||'good'),insight:_hins,meal:meal,eat_time:eatTime,eatTime:eatTime,graced:false,photo:null,date_str:logDs,note:''},
         false
       );
+      if(_hm.declined){ try{ showToast(_tcase(hist.name)+' logged as saved — not ×'+_hm.asked); }catch(e){} }
     } else {
       // No history for it, so estimate. Logging a null was called "honest" but a
       // food with no numbers is worse than a good guess you can correct — and the
@@ -27745,7 +27773,10 @@ async function logFoodFromChat(offer, photo){
   if(!offer || !offer.name || !cl) return false;
   var meal = offer.meal || guessMealByTime();
   var _daysAgo = Math.max(0, Math.min(60, parseInt(offer.daysAgo||offer.days_ago||0,10)||0));
-  var _targetDate = _daysAgo>0 ? _dateStrDaysAgo(_daysAgo) : todayDateStr;
+  // A day bar says which day it writes to outright, and that beats anything the
+  // model inferred — you're typing ON Tuesday's row, so it means Tuesday.
+  var _targetDate = offer.dateStr || (_daysAgo>0 ? _dateStrDaysAgo(_daysAgo) : todayDateStr);
+  _daysAgo = (_targetDate===todayDateStr) ? 0 : (_daysAgo||1);
   var eatTime = (offer.eat_time ? String(offer.eat_time) : new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}));
   var r = {
     name: offer.name,
@@ -27961,7 +27992,9 @@ function isRatingSkip(text){
 async function logWorkoutFromOffer(offer){
   if(!offer || !cl) return null;
   var _woDaysAgo = Math.max(0, Math.min(60, parseInt(offer.daysAgo||offer.days_ago||0,10)||0));
-  var _woDate = _woDaysAgo>0 ? _dateStrDaysAgo(_woDaysAgo) : todayDateStr;
+  // Same rule as food: a pinned day bar wins over an inferred daysAgo.
+  var _woDate = offer.dateStr || (_woDaysAgo>0 ? _dateStrDaysAgo(_woDaysAgo) : todayDateStr);
+  _woDaysAgo = (_woDate===todayDateStr) ? 0 : (_woDaysAgo||1);
   var row = {
     client_code: cl.code,
     date_str: _woDate,
@@ -28276,7 +28309,13 @@ function jimCancelPending(){
   _jimSay('Left it. Tell me what to change and I’ll redo it.');
 }
 
-async function jimTurn(text, photos){
+// What the last turn actually did. The day bars have no thread to read, so they
+// need to know whether anything was written before deciding what to say.
+var _jimLastTurn = {wrote:0, pending:false};
+
+async function jimTurn(text, photos, opts){
+  opts = opts || {};
+  _jimLastTurn = {wrote:0, pending:false};
   photos = (photos||[]).filter(Boolean);
   var hasPhoto = photos.length > 0;
   var photoSnapshot = photos[0] || null;
@@ -28407,13 +28446,23 @@ async function jimTurn(text, photos){
     foodDeletes: foodDeletes.items,
     workoutPhotos: workoutPhotos.items,
     steps: stepsLogs.items,
-    photo: photoSnapshot
+    photo: photoSnapshot,
+    dateStr: opts.dateStr || null
   };
+  // A pinned day rides on every write in the batch.
+  if(batch.dateStr){
+    batch.foodAdds.forEach(function(f){ if(f) f.dateStr=batch.dateStr; });
+    batch.workoutLogs.forEach(function(w){ if(w) w.dateStr=batch.dateStr; });
+  }
 
   if(intensityWasJustPatched){
     reply = '✓ Got it — rated.\n\n' + reply;
   }
   reply = _jimScrub(reply);
+
+  _jimLastTurn.wrote = batch.foodAdds.length + batch.workoutLogs.length
+    + batch.foodEdits.length + batch.foodDeletes.length + batch.steps.length
+    + (batch.workoutNote?1:0) + (batch.workoutEdit?1:0);
 
   // Cheap and obvious writes go straight in. Anything where being wrong is
   // expensive — several logs at once, a back-date, an edit, a delete — gets shown
@@ -28421,6 +28470,7 @@ async function jimTurn(text, photos){
   // the whole reason the bar exists.
   if(_jimBatchNeedsConfirm(batch)){
     _jimSetPending(batch);
+    _jimLastTurn.pending = true;
     return reply;
   }
   _jimClearPending();
@@ -31921,8 +31971,7 @@ async function jimSend(ds) {
   if (ds) { try{ window._mealLogDs = ds; window._mlDs = ds; }catch(e){} }
   if (el) { el.value = ''; el.blur(); try{ jimGrow(el); }catch(e){} }
   try{ jimReady(ds); }catch(e){}
-  var said = (p.mins != null ? (' at ' + _jimClock(p.mins)) : '') + (p.meal ? (' \u00b7 ' + p.meal) : '');
-  // A typed library-meal name IS the one-tap: log the saved meal directly \u2014
+  // A typed library-meal name IS the one-tap: log the saved meal directly —
   // cached macros, portions text, no AI round trip. A photo means they want
   // the photo on the log, so that keeps the normal path.
   if (!window._jimPhoto) {
@@ -31935,17 +31984,49 @@ async function jimSend(ds) {
       }
     } catch (e) {}
   }
-  // A whole day in one message goes to the planner; a single food takes the
-  // fast path, because a round trip for "four eggs" isn't worth the wait.
-  if (_jimIsComplex(raw)) {
-    var handled = false;
-    try { handled = await jimSendSmart(ds, raw); } catch (e) {}
-    if (handled) { window._jimPhoto = null; _jimPaintPhoto(ds); return; }
-  }
+
+  // Everything else goes to the ONE engine — same context, same markers, same
+  // confirm gate, same library as the chat. This bar used to run its own pair of
+  // loggers: a "planner" for complex messages and smartLogFromText for simple
+  // ones. That second path is what multiplied a saved "Eggs" (which already
+  // meant four) by a stated count and logged 1,120 calories. The bar only pins
+  // WHICH DAY it writes to; it no longer decides how.
+  var photos = window._jimPhoto ? [window._jimPhoto] : [];
+  var userMsg = {role:'user', content: raw || '(sent a photo)', logged_at:new Date().toISOString()};
+  try{ chatHistory.push(userMsg); if(chatFullHistoryCache) chatFullHistoryCache.push(userMsg); }catch(e){}
+  jimSaveMsg('user', raw || '(sent a photo)', photos.length>0);
+  showToast('Reading that…');
+
+  var reply = '';
   try {
-    smartLogFromText(p.text || 'Meal');
-    if (said) showToast('Logged' + said);
-  } catch (e) { showToast("Couldn't log that"); }
+    reply = await jimTurn(raw, photos, {dateStr: ds || null});
+  } catch (e) {
+    console.error('jimSend', e);
+    showToast(_jimIsTimeout(e) ? 'That took too long — try again' : "Couldn't log that");
+    window._jimPhoto = null; _jimPaintPhoto(ds);
+    return;
+  }
+
+  var aMsg = {role:'assistant', content:reply, logged_at:new Date().toISOString()};
+  try{ chatHistory.push(aMsg); if(chatFullHistoryCache) chatFullHistoryCache.push(aMsg); }catch(e){}
+  jimSaveMsg('assistant', reply, false);
+  try{ if(typeof renderChatMessages==='function') renderChatMessages(); }catch(e){}
+  try{ if(typeof renderSlogBody==='function') renderSlogBody(); }catch(e){}
+
+  if (_jimLastTurn.pending) {
+    // There's a card to tap and this bar has nowhere to show one. Open the
+    // conversation so the proposal is in front of them.
+    showToast('Check what I got');
+    try{ openSmartLog(); }catch(e){}
+  } else if (!_jimLastTurn.wrote) {
+    // Nothing loggable in it. That usually means they were reflecting, not
+    // logging — so offer to keep it rather than telling them it failed.
+    try{ _jimJournalAsk(raw, ds); }catch(e){ showToast(reply.split('\n')[0].slice(0,90)); }
+  } else {
+    showToast(reply.split('\n')[0].slice(0,90));
+  }
+
+  try{ window._tlCache = null; if (typeof canSeeCalendar !== 'function' || canSeeCalendar(cl.code)) { await renderDayTimeline(true); } }catch(e){}
   window._jimPhoto = null;
   _jimPaintPhoto(ds);
 }
@@ -32042,44 +32123,6 @@ function jimMic(ds) {
 var JIM_DEFAULT_TIMES = {breakfast: '9:00 AM', lunch: '1:00 PM', dinner: '7:00 PM', snack: '3:30 PM'};
 
 // Worth the round trip only when there's more than one thing in the sentence.
-function _jimIsComplex(s) {
-  var t = String(s || '').toLowerCase();
-  // Anything that isn't food goes to the planner on its own. Sending "15,000
-  // steps" down the food path is how it became a 0-calorie lunch.
-  if (/\b(steps?|walked|walking)\b/.test(t)) return true;
-  if (/\b(push|pull|legs|arms|workout|worked out|trained|training|lifted|lifting|gym|ran|run|cardio|pilates|yoga|swim)\b/.test(t)) return true;
-  var meals = (t.match(/\b(breakfast|lunch|dinner|snack)\b/g) || []).length;
-  if (meals > 1) return true;
-  // A meal plus anything that smells like a time goes to the planner. My regex
-  // only knew digits, so "at noon" survived into the food name.
-  var timeish = /\b(noon|midday|midnight|morning|afternoon|evening|tonight|earlier|before|after|around|at\s+\d)\b/.test(t)
-             || /\b\d{1,2}\s*(am|pm)\b/.test(t) || /\b\d{1,2}:\d{2}\b/.test(t);
-  if (meals >= 1 && timeish) return true;
-  if (meals >= 1 && t.length > 45) return true;
-  return t.length > 90;
-}
-
-async function _jimPlan(raw) {
-  var sys = 'You turn a spoken daily log into actions. Reply with ONLY a compact JSON array, no markdown, no prose.\n'
-    + 'Each element is one of:\n'
-    + '{"type":"food","meal":"breakfast|lunch|dinner|snack","time":"9:00 AM","items":"the foods, comma separated","calories":number|null}\n'
-    + '{"type":"steps","count":number}\n'
-    + '{"type":"workout","title":"Push","detail":"what they did, or empty"}\n'
-    + 'Rules: keep the order they said it. If they say a time in any form \u2014 "at noon", "7pm", "half seven", '
-    + '"this morning", "before the gym" \u2014 convert it and put it in "time" as "9:00 AM". Never leave a time '
-    + 'phrase inside "items"; strip it out. '
-    + 'Only include what they actually mentioned. If they give a calorie total for a meal, put it in "calories". '
-    + 'Do not invent foods, steps or exercises.';
-  var res = await fetch('/.netlify/functions/analyze', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({messages: [{role: 'user', content: sys + '\n\nLog: ' + raw}]})
-  });
-  var data = await res.json(), txt = '';
-  if (data && data.content) data.content.forEach(function (b) { if (b && b.type === 'text' && b.text) txt += b.text; });
-  txt = (txt || '').replace(/```json/gi, '').replace(/```/g, '').trim();
-  var plan = JSON.parse(txt);
-  return Array.isArray(plan) ? plan : [];
-}
 
 async function _jimRun(plan, ds) {
   var did = [];
@@ -32134,24 +32177,6 @@ async function _jimRun(plan, ds) {
   return did;
 }
 
-async function jimSendSmart(ds, raw) {
-  showToast('Reading your day\u2026');
-  var plan = [];
-  try { plan = await _jimPlan(raw); } catch (e) { console.error('jimPlan', e); }
-  if (!plan.length) {
-    // Nothing loggable in it. That usually means they were reflecting, not
-    // logging — so offer to keep it rather than telling them it failed.
-    _jimJournalAsk(raw, ds);
-    return true;
-  }
-  var did = await _jimRun(plan, ds);
-  // Non-calendar clients have no timeline to repaint — repainting it would
-  // splash timeline HTML into their Training tab until its next re-render.
-  try { window._tlCache = null; if (typeof canSeeCalendar !== 'function' || canSeeCalendar(cl.code)) { await renderDayTimeline(true); } } catch (e) {}
-  if (did.length) showToast('Logged ' + did.join(' \u00b7 '));
-  else showToast('Nothing I could log in that');
-  return true;
-}
 
 
 var _CAMSVG='<svg class="camIco" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>';
