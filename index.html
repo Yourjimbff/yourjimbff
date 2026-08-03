@@ -3677,6 +3677,7 @@ function renderSlogBody(){
   if(_slogPending){
     out+='<div style="font-size:15px;color:rgba(240,236,228,0.6);line-height:1.7;margin:4px 2px 20px;">…</div>';
   }
+  out+=_jimConfirmHtml();
   host.innerHTML=out;
   try{ host.scrollTop=host.scrollHeight; }catch(e){}
 }
@@ -4754,12 +4755,50 @@ function selectTrainingDay(dateStr){
   }
 }
 
-// JOURNAL — the client's unified record: each day, training + eating interleaved by time. Last 14 days.
-function _journalMin(r){
-  try{ if(r.eat_time){ var t=_parseClock(r.eat_time); if(t) return t.h*60+t.m; } }catch(e){}
-  try{ if(r.logged_at){ var s=r.logged_at; var d=new Date(/[Z+]/.test(s)?s:s+'Z'); if(!isNaN(d.getTime())) return d.getHours()*60+d.getMinutes(); } }catch(e){}
+// ===== WHEN DID THIS ACTUALLY HAPPEN =======================================
+// logged_at is a `timestamp`, not `timestamptz`, so Postgres hands it back with
+// no zone on it. We write UTC, so a bare string has to be read as UTC — parse it
+// as local (which a plain `new Date()` does) and every time on screen shifts by
+// the client's offset. _tsMs is the one place that gets that right.
+function _tsMs(s){
+  if(!s) return null;
+  try{
+    var t=String(s);
+    if(!/(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(t.trim())) t=t.replace(' ','T')+'Z';
+    var d=new Date(t);
+    return isNaN(d.getTime()) ? null : d.getTime();
+  }catch(e){ return null; }
+}
+// Minutes into the day the thing HAPPENED. eat_time is what the client told us
+// ("I had it at 8"); logged_at is only when the row got written, which can be
+// hours later. eat_time wins wherever we have it.
+function _eventMin(r){
+  try{ if(r && r.eat_time){ var t=_parseClock(r.eat_time); if(t) return t.h*60+t.m; } }catch(e){}
+  var ms=_tsMs(r && r.logged_at);
+  if(ms!=null){ var d=new Date(ms); return d.getHours()*60+d.getMinutes(); }
   return 0;
 }
+// Absolute ms for ordering ACROSS days — the day it belongs to, plus the time it
+// happened within that day. The Feed used to sort on logged_at alone while the
+// Journal sorted on eat_time, so the same two meals came out in different orders
+// on the two screens.
+function _eventTs(r){
+  if(!r) return 0;
+  try{
+    if(r.date_str){
+      var base=new Date(r.date_str);
+      if(!isNaN(base.getTime())){
+        base.setHours(0,0,0,0);
+        return base.getTime() + _eventMin(r)*60000;
+      }
+    }
+  }catch(e){}
+  var ms=_tsMs(r.logged_at);
+  return ms!=null ? ms : 0;
+}
+
+// JOURNAL — the client's unified record: each day, training + eating interleaved by time. Last 14 days.
+function _journalMin(r){ return _eventMin(r); }
 function _journalDayLabel(d, ds){
   if(!d) return ds;
   var now=new Date(); now.setHours(0,0,0,0); var dd=new Date(d); dd.setHours(0,0,0,0);
@@ -5724,7 +5763,8 @@ function _feedDayLabel(d){
 // a negative offset ("...-04:00") got a Z stapled on, became NaN, fell through to
 // date_str (local midnight) or 0 — and a 0 fails the recency cut and vanishes.
 function _feedHasTz(s){ return /(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(String(s||'').trim()); }
-function _feedTs(r){ try{ if(r.logged_at){ var s=r.logged_at; var d=new Date(_feedHasTz(s)?s:s+'Z'); if(!isNaN(d.getTime())) return d.getTime(); } }catch(e){} try{ if(r.date_str){ var d2=new Date(r.date_str); if(!isNaN(d2.getTime())) return d2.getTime(); } }catch(e){} return 0; }
+// Same ordering the Journal uses, so a meal sits in the same place on both.
+function _feedTs(r){ return _eventTs(r); }
 // The feed must bucket days the same way logging stamps them, or a 1am meal is
 // filed under today here and yesterday everywhere else. DAY_ROLLOVER_HR = 3.
 function _feedDayStart(ts){
@@ -26612,7 +26652,7 @@ function renderChatMessages(){
   var box=document.getElementById('chatScroll');
   if(!box)return;
   var empty=document.getElementById('chatEmpty');
-  if(chatHistory.length===0){
+  if(chatHistory.length===0 && !_jimPending){
     box.innerHTML='';
     box.appendChild(buildEmpty());
     return;
@@ -26637,7 +26677,8 @@ function renderChatMessages(){
   // Date separator on first message
   var lastDate='';
   chatHistory.forEach(function(m){
-    var d=m.logged_at?new Date(m.logged_at):new Date();
+    var _ms=_tsMs(m.logged_at);
+    var d=_ms!=null?new Date(_ms):new Date();
     var dateKey=d.toDateString();
     if(dateKey!==lastDate){
       var sep=document.createElement('div');
@@ -26650,6 +26691,12 @@ function renderChatMessages(){
     }
     box.appendChild(buildBubble(m));
   });
+
+  if(_jimPending){
+    var card=document.createElement('div');
+    card.innerHTML=_jimConfirmHtml();
+    if(card.firstChild) box.appendChild(card.firstChild);
+  }
 }
 
 function jimDispatch(){
@@ -26917,8 +26964,12 @@ async function buildDayContext(){
     tBits.push('Running totals: '+Math.round(tots.cal)+' cal · '+Math.round(tots.protein)+'g P · '+Math.round(tots.carbs)+'g C · '+Math.round(tots.fat)+'g F');
     tBits.push('Meals:');
     todayFood.forEach(function(e){
-      var t=e.logged_at?new Date(e.logged_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}):(e.eat_time||e.eatTime||'');
-      var ageH = e.logged_at ? Math.floor((Date.now()-new Date(e.logged_at).getTime())/3600000) : null;
+      // What they said, not when the row landed — and read as UTC, or Jim quotes
+      // every meal time shifted by the client's offset.
+      var t=(e.eat_time||e.eatTime||'');
+      if(!t){ var _tm=_tsMs(e.logged_at); if(_tm!=null) t=new Date(_tm).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }
+      var _am=_tsMs(e.logged_at);
+      var ageH = _am!=null ? Math.floor((Date.now()-_am)/3600000) : null;
       var feltTag = e.felt ? ' · how it sat: "'+String(e.felt).replace(/"/g,'\\"').slice(0,60)+'"' : '';
       tBits.push('  - '+(e.id!=null?'(id:'+e.id+') ':'')+(t?'['+t+'] ':'')+(ageH!=null?'('+ageH+'h ago) ':'')+e.name+' ('+(e.rating||'—')+', '+(e.calories||0)+' cal, '+(e.protein||0)+'g P)'+feltTag);
     });
@@ -27289,6 +27340,14 @@ function buildCoachVoice(){
     'If the user describes a workout that is NOT already in today\'s logs, emit a [WORKOUT_LOG] marker. Format:\n'+
     '[WORKOUT_LOG]{"title":"Pull Day","description":"itemized list","exercises":[{"name":"Machine rows","sets":2},{"name":"Barbell bent-over rows","sets":4,"detail":"135 lbs"}],"daysAgo":0}[/WORKOUT_LOG]\n'+
     'WHICH DAY: workouts default to TODAY. If they say they trained on an earlier day ("trained yesterday but forgot to log it", "did legs on Tuesday", "two days ago"), add "daysAgo" (1=yesterday, 2=two days ago, etc.). Never refuse a back-date or send them to edit it manually — just stamp the right day and confirm ("Logged your pull day for yesterday").\n\n'+
+
+    'CATCHING UP A WHOLE WEEK — MULTIPLE WORKOUTS IN ONE MESSAGE:\n'+
+    'Clients often come back after a quiet spell and dump the week in one go: "Monday was push, Tuesday legs, Wednesday chest and back plus 20 min stairmaster, Friday arms." Handle this properly — it is one of the most useful things you do.\n'+
+    '- Emit a SEPARATE [WORKOUT_LOG] marker for EACH day they named, each with its own correct "daysAgo". Four days named = four markers. Never collapse them into one log, and never log only the first and ask about the rest.\n'+
+    '- Work out daysAgo from the CURRENT DATE & TIME you were given above. "Monday" means the most recent Monday that has already happened. Count back at most 7 days — a named weekday always resolves to within the last week.\n'+
+    '- If a day has two things in it ("chest and back plus 20 min stairmaster"), that is ONE session — put the cardio in the description/exercises of that day\'s log, not a separate day.\n'+
+    '- Do NOT ask for intensity on a catch-up. They are reconstructing a week from memory; a 1-10 on Tuesday is noise. Ask only when a single fresh session is being logged.\n'+
+    '- If they name a day with no detail ("Thursday I trained"), log it with what they gave you rather than interrogating them. Something on the right day beats nothing.\n\n'+
     'Then your VISIBLE reply must:\n'+
     '1. Itemize what you logged, one exercise per line, with sets and any weight they gave — exactly as you understood it. Format like:\n'+
     '   "Logged your Pull Day:\\n• Machine rows — 2 sets\\n• Barbell bent-over rows — 4 sets @ 135 lbs\\n• Lat pulldown — 4 sets\\n• Hanging leg raises — 2 sets\\n• Rear delt flys — 4 sets\\n• Shrugs — 4 sets"\n'+
@@ -27370,6 +27429,10 @@ function buildCoachVoice(){
     'Emit the marker on its OWN LINE with nothing else on that line. Exact format:\n'+
     '[FOOD_LOG]{"name":"Chicken, rice & broccoli","emoji":"🍗","calories":1029,"protein":103,"carbs":54,"fat":25,"sugar":6,"rating":"good","insight":"","meal":"Lunch","eat_time":"1:15 PM","daysAgo":0}[/FOOD_LOG]\n'+
     'CRITICAL — "LOGGED" REQUIRES THE MARKER. The [FOOD_LOG] marker is the ONLY thing that actually logs a meal; your words just confirm it. NEVER tell the client something is "logged", "done", "live", or "saved" unless you have emitted the matching [FOOD_LOG] marker in that SAME message. A confirmation with no marker logs nothing and is a broken promise — the single worst thing you can do here. For a named food with an amount ("1/3 cup vanilla ice cream", "two eggs", "a banana"), you can ALWAYS estimate the macros — so emit the marker and confirm. Only withhold the marker if you genuinely cannot identify the food at all, and then say exactly what you need instead of pretending it is logged.\n'+
+
+    'THE ONE EXCEPTION — WHEN THE APP ASKS THEM FIRST: some batches are shown to the client for a one-tap confirm before anything is written. That happens automatically when your message contains MORE THAN ONE log marker, ANY marker with daysAgo above 0, or any [FOOD_EDIT] / [FOOD_DELETE] / [WORKOUT_EDIT]. You still emit the markers exactly as normal — the app holds them, shows the client the list, and writes on the tap.\n'+
+    'In THOSE messages ONLY, do not say it is already done. Say what you have got and let them confirm: "Here\'s your week — tap to put them in." / "That\'s four sessions across Mon, Tue, Wed and Fri. Confirm and they\'re in." / "I can move that meal to 2pm — confirm and it\'s done." Never "logged", "saved", "done" for those, because at that moment it genuinely is not.\n'+
+    'For a SINGLE new log on TODAY with no edit or delete, nothing changes: it writes immediately and you confirm it in the past tense exactly as before. That speed is the point — do not turn a one-liner into a question.\n'+
     'FIELD RULES:\n'+
     '- name: short meal name in Title Case (capitalize the main words), so it sits cleanly next to other meals. e.g. "Chicken, Rice, Broccoli, Peppers & Onions" — not all-lowercase, not ALL CAPS. emoji: one fitting food emoji.\n'+
     'PHOTO — READ THE LABEL BEFORE YOU ESTIMATE (most important): When the user sends a photo, first decide if it shows food or hints at food (a plate, a meal-prep container, a wrapper, a menu, a screen showing a meal). Then SCAN FOR PRINTED NUMBERS FIRST. Meal-prep brands (e.g. Nutrition Solutions), packaged foods, menus, and apps print the exact Calories, Protein, Carbs, Fat and Sugar right on the label or screen. If those numbers are visible and legible, READ THEM AND USE THEM VERBATIM — do not estimate over them, do not round them away, do not average them with a guess. The printed number always wins. Match the serving stated and the quantity shown (two containers = double it). ONLY estimate when a value is genuinely not printed anywhere in the image.\n'+
@@ -27943,10 +28006,123 @@ var JIM_TURN_TIMEOUT_MS = 45000;
 // An aborted fetch and a dead connection want different words on screen.
 function _jimIsTimeout(e){ return !!(e && (e.name==='AbortError' || String(e.message||'').indexOf('abort')>=0)); }
 
+// ===== CONFIRM BEFORE WRITING ==============================================
+// A batch that's been read but not yet written. Lives in memory only — a stale
+// proposal from an hour ago shouldn't be sitting there waiting to be tapped.
+var _jimPending = null;
+
+// "Monday", "Yesterday", "Today" — how a person says which day.
+function _jimDayLabel(daysAgo){
+  var n = Math.max(0, parseInt(daysAgo,10)||0);
+  if(n===0) return 'today';
+  if(n===1) return 'yesterday';
+  var d=new Date(); d.setDate(d.getDate()-n);
+  if(n<7) return d.toLocaleDateString('en-US',{weekday:'long'});
+  return d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+}
+function _jimDaysAgoOf(x){ return Math.max(0, parseInt((x&&(x.daysAgo||x.days_ago))||0,10)||0); }
+// Edits and deletes arrive as ids. Find the meal's name so the card can say
+// "Remove the porridge" rather than "Remove #4812".
+function _jimFoodName(id){
+  try{
+    var pools=[(typeof todayFood!=='undefined'?todayFood:[]), (typeof allFood!=='undefined'?allFood:[])];
+    for(var p=0;p<pools.length;p++){
+      var arr=pools[p]||[];
+      for(var i=0;i<arr.length;i++){ if(String(arr[i].id)===String(id) && arr[i].name) return arr[i].name; }
+    }
+  }catch(e){}
+  return null;
+}
+// One line per thing about to happen, in the client's language.
+function _jimPendingLines(b){
+  var out=[];
+  (b.workoutLogs||[]).forEach(function(w){
+    var what=w.title||w.description||'Workout';
+    out.push({what:String(what), when:_jimDayLabel(_jimDaysAgoOf(w))});
+  });
+  (b.foodAdds||[]).forEach(function(f){
+    var bits=[];
+    if(f.meal) bits.push(String(f.meal).toLowerCase());
+    var when=_jimDayLabel(_jimDaysAgoOf(f));
+    if(f.eat_time) bits.push(String(f.eat_time));
+    out.push({what:String(f.name||'Meal'), when:(bits.length?bits.join(' · ')+' · ':'')+when});
+  });
+  (b.foodEdits||[]).forEach(function(e){
+    var nm=_jimFoodName(e.id);
+    out.push({what:'Fix '+(nm||e.name||'that meal'), when:'correction'});
+  });
+  (b.foodDeletes||[]).forEach(function(d){
+    var nm=_jimFoodName(d.id);
+    out.push({what:'Remove '+(nm||'that meal'), when:'deletes it'});
+  });
+  if(b.workoutEdit) out.push({what:'Update that session', when:'correction'});
+  return out;
+}
+function _jimConfirmHtml(){
+  if(!_jimPending) return '';
+  var lines=_jimPendingLines(_jimPending);
+  if(!lines.length) return '';
+  var rows=lines.map(function(l){
+    return '<div style="display:flex;gap:10px;align-items:baseline;padding:9px 0;border-top:1px solid #242424;">'
+      +'<div style="flex:1;min-width:0;font-size:14px;color:#f0ece4;line-height:1.45;">'+_escHtml(l.what)+'</div>'
+      +'<div style="flex-shrink:0;font-size:11.5px;color:rgba(240,236,228,0.6);">'+_escHtml(l.when)+'</div>'
+    +'</div>';
+  }).join('');
+  var n=lines.length;
+  // No id on the card: both threads paint it, so an id here would be a duplicate
+  // in the DOM the moment the overlay and the tab are both mounted.
+  return '<div style="background:var(--surface);border:1px solid rgba(224,196,152,0.3);border-radius:18px;padding:16px 16px 14px;margin:6px 2px 18px;">'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:var(--gold);margin-bottom:4px;">Before I write it</div>'
+    +rows
+    +'<button onclick="jimConfirmPending()" style="width:100%;margin-top:14px;padding:14px;border:none;border-radius:13px;background:var(--gold);color:#000;font-size:14.5px;font-weight:800;cursor:pointer;font-family:inherit;">'+(n===1?'Log it':'Log all '+n)+'</button>'
+    +'<div onclick="jimCancelPending()" style="text-align:center;margin-top:11px;font-size:12.5px;color:rgba(240,236,228,0.6);cursor:pointer;padding:4px;">Not right</div>'
+  +'</div>';
+}
+// Both surfaces paint the same card — it's one proposal, not one per window.
+function _jimRepaintThreads(){
+  try{ if(typeof renderChatMessages==='function') renderChatMessages(); }catch(e){}
+  try{ if(typeof renderSlogBody==='function') renderSlogBody(); }catch(e){}
+}
+// Append Jim's own line about what just happened, on both surfaces and in the DB.
+function _jimSay(line){
+  var msg={role:'assistant', content:line, logged_at:new Date().toISOString()};
+  try{ chatHistory.push(msg); }catch(e){}
+  try{ if(chatFullHistoryCache) chatFullHistoryCache.push(msg); }catch(e){}
+  _jimRepaintThreads();
+  jimSaveMsg('assistant', line, false);
+}
+async function jimConfirmPending(){
+  var b=_jimPending;
+  if(!b) return;
+  _jimPending=null;
+  var lines=_jimPendingLines(b);
+  _jimRepaintThreads();   // card goes as soon as they tap — the write is already theirs
+  try{
+    await jimApplyBatch(b);
+  }catch(e){
+    console.error('confirm apply failed', e);
+    _jimSay('That didn’t save. Say it again and I’ll have another go.');
+    return;
+  }
+  _jimSay(lines.length===1 ? 'Done — it’s in.' : 'Done — all '+lines.length+' are in.');
+  try{ updTots(); rendTodayFood(); updHalo(); updStats(); }catch(e){}
+  try{ renderDailyStrip(); }catch(e){}
+}
+function jimCancelPending(){
+  if(!_jimPending) return;
+  _jimPending=null;
+  _jimRepaintThreads();
+  _jimSay('Left it. Tell me what to change and I’ll redo it.');
+}
+
 async function jimTurn(text, photos){
   photos = (photos||[]).filter(Boolean);
   var hasPhoto = photos.length > 0;
   var photoSnapshot = photos[0] || null;
+  // A new message supersedes an unanswered proposal — they're clarifying, not
+  // ignoring it. Leaving it up would let an old batch be tapped into the log
+  // after the correction that replaced it.
+  _jimPending = null;
   try{ noteBodyTalk(text); }catch(e){}
 
   // A workout from the prior turn may still be waiting on an intensity rating.
@@ -28023,22 +28199,94 @@ async function jimTurn(text, photos){
   reply=(reply||'').trim();
   if(!reply){ throw new Error('Empty reply'); }
 
-  // Extract WORKOUT_LOG marker (new workout) AND WORKOUT_NOTE marker (append to existing)
-  var extractedLog = extractWorkoutLog(reply);
-  reply = extractedLog.cleanText;
-  var extractedNote = extractWorkoutNote(reply);
-  reply = extractedNote.cleanText;
-  var extractedEdit = extractWorkoutEdit(reply);
-  reply = extractedEdit.cleanText;
+  // Pull every marker out of the reply. Workouts go through the SAME multi-marker
+  // extractor the food path uses, so "Monday push, Tuesday legs, Wednesday chest
+  // and back, Friday arms" comes back as four separate logs rather than the first
+  // one and a shrug.
+  var workoutLogs = extractAllMarkers(reply, 'WORKOUT_LOG'); reply = workoutLogs.cleanText;
+  var extractedNote = extractWorkoutNote(reply); reply = extractedNote.cleanText;
+  var extractedEdit = extractWorkoutEdit(reply); reply = extractedEdit.cleanText;
   var foodAdds = extractAllMarkers(reply, 'FOOD_LOG'); reply = foodAdds.cleanText;
   var foodEdits = extractAllMarkers(reply, 'FOOD_EDIT'); reply = foodEdits.cleanText;
   var foodDeletes = extractAllMarkers(reply, 'FOOD_DELETE'); reply = foodDeletes.cleanText;
   var workoutPhotos = extractAllMarkers(reply, 'WORKOUT_PHOTO'); reply = workoutPhotos.cleanText;
   var stepsLogs = extractAllMarkers(reply, 'STEPS_LOG'); reply = stepsLogs.cleanText;
 
-  // Handle STEPS_LOG: client told Jim their step total — save it (upsert per day, same as the tile).
-  if(stepsLogs.items.length){
-    var stepVal = parseInt(stepsLogs.items[stepsLogs.items.length-1].steps, 10);
+  // SAFETY NET: if a FOOD_LOG marker survived strict extraction (model drift),
+  // salvage a single add so the meal still reaches the batch.
+  if(!foodAdds.items.length && !foodEdits.items.length && !foodDeletes.items.length){
+    var _salvage = reply.match(/\[FOOD_LOG\]([\s\S]*?)\[\/FOOD_LOG\]/);
+    if(_salvage){
+      try{ var _sObj = JSON.parse(_salvage[1].trim()); if(_sObj && _sObj.name){ foodAdds.items.push(_sObj); reply = reply.replace(_salvage[0],'').trim(); } }catch(e){ console.error('food salvage parse failed', e); }
+    }
+  }
+
+  var batch = {
+    workoutLogs: workoutLogs.items,
+    workoutNote: extractedNote.note,
+    workoutEdit: extractedEdit.edit,
+    foodAdds: foodAdds.items,
+    foodEdits: foodEdits.items,
+    foodDeletes: foodDeletes.items,
+    workoutPhotos: workoutPhotos.items,
+    steps: stepsLogs.items,
+    photo: photoSnapshot
+  };
+
+  if(intensityWasJustPatched){
+    reply = '✓ Got it — rated.\n\n' + reply;
+  }
+  reply = _jimScrub(reply);
+
+  // Cheap and obvious writes go straight in. Anything where being wrong is
+  // expensive — several logs at once, a back-date, an edit, a delete — gets shown
+  // first and waits for a tap. One clear item stays a straight shot; that speed is
+  // the whole reason the bar exists.
+  if(_jimBatchNeedsConfirm(batch)){
+    _jimPending = batch;
+    return reply;
+  }
+  _jimPending = null;
+  await jimApplyBatch(batch);
+  return reply;
+}
+
+// Deletes and edits are destructive, back-dates are easy to get subtly wrong, and
+// a batch is several chances to be wrong at once. Those wait. Steps alone don't —
+// a step count is one number and visibly right or wrong on the tile.
+function _jimBatchNeedsConfirm(b){
+  if(!b) return false;
+  if(b.foodEdits.length || b.foodDeletes.length || b.workoutEdit) return true;
+  var writes = b.foodAdds.length + b.workoutLogs.length;
+  if(writes > 1) return true;
+  var backdated = b.foodAdds.concat(b.workoutLogs).some(function(x){
+    return x && (parseInt(x.daysAgo||x.days_ago||0,10)||0) > 0;
+  });
+  return backdated;
+}
+
+// Scrub any leftover or partial marker text so raw JSON / tags never reach the screen.
+function _jimScrub(reply){
+  return String(reply||'')
+    .replace(/\[FOOD_LOG\][\s\S]*?\[\/FOOD_LOG\]/g,'')
+    .replace(/\[FOOD_EDIT\][\s\S]*?\[\/FOOD_EDIT\]/g,'')
+    .replace(/\[FOOD_DELETE\][\s\S]*?\[\/FOOD_DELETE\]/g,'')
+    .replace(/\[WORKOUT_LOG\][\s\S]*?\[\/WORKOUT_LOG\]/g,'')
+    .replace(/\[WORKOUT_NOTE\][\s\S]*?\[\/WORKOUT_NOTE\]/g,'')
+    .replace(/\[\/?(FOOD_LOG|FOOD_EDIT|FOOD_DELETE|WORKOUT_LOG|WORKOUT_NOTE|WORKOUT_PHOTO|STEPS_LOG)\]/g,'')
+    .replace(/\s*\(?\bid\s*[:=]\s*[A-Za-z0-9_-]+\)?/gi,'')
+    .replace(/\n{3,}/g,'\n\n')
+    .trim() || 'Done. ✓';
+}
+
+// Everything the markers asked for, actually written. Order matters: deletes,
+// then edits, then adds, so the day's totals settle cleanly.
+async function jimApplyBatch(b){
+  if(!b) return;
+
+  // STEPS_LOG: client told Jim their step total — upsert per day, same as the tile.
+  if(b.steps && b.steps.length){
+    var stepVal = parseInt(b.steps[b.steps.length-1].steps, 10);
     if(!isNaN(stepVal) && stepVal>=0){
       try{
         var sOk = await sbUpsert('step_logs', {client_code:cl.code, steps:stepVal, date_str:todayDateStr, updated_at:new Date().toISOString()}, 'client_code,date_str');
@@ -28052,107 +28300,75 @@ async function jimTurn(text, photos){
     }
   }
 
-  // Handle WORKOUT_LOG: log a fresh workout. Use Jim's commentary (the visible reply) as the notes.
-  if(extractedLog.log){
-    // Use Jim's coaching commentary as the workout's note — but ONLY if it's substantive.
-    // Skip throwaway confirmations ("Got it. Logged.") so simple logs (e.g. a walk) stay clean.
-    if(!extractedLog.log.notes && reply){
-      var commentaryOnly = reply.split(/(?:Quick one|What intensity|How hard|How would you rate|Rate that|On a scale)/i)[0].trim();
-      var _stripped = commentaryOnly.replace(/[✓✅👍.!\s]/g,'').toLowerCase();
-      var _isThrowaway = /^(gotit|gotitlogged|logged|donelogged|done|noted|locked?in|✓)$/.test(_stripped) || commentaryOnly.length < 25;
-      if(commentaryOnly && !_isThrowaway) extractedLog.log.notes = commentaryOnly;
-    }
-    var newId = await logWorkoutFromOffer(extractedLog.log);
+  // WORKOUT_LOG: one row per marker, each on its own day.
+  var woSaved = 0;
+  for(var wl=0; wl<b.workoutLogs.length; wl++){
+    var offer = b.workoutLogs[wl];
+    if(!offer) continue;
+    var newId = await logWorkoutFromOffer(offer);
     if(newId==='dup'){
       // the same workout landed moments ago — stay quiet rather than log it twice
     } else if(newId){
-      showToast('✓ Workout logged');
-      if(!extractedLog.log.intensity){
+      woSaved++;
+      // Only chase intensity when there's a single session in play. Asking "how hard
+      // was it, 1-10?" after a four-day catch-up has no obvious answer.
+      if(b.workoutLogs.length===1 && !offer.intensity && !(parseInt(offer.daysAgo||offer.days_ago||0,10)||0)){
         pendingIntensityForId = newId;
       }
     } else {
-      console.error('workout save failed for offer', extractedLog.log);
+      console.error('workout save failed for offer', offer);
       showToast('Could not save workout — try the manual log button');
     }
   }
+  if(woSaved===1) showToast('✓ Workout logged');
+  else if(woSaved>1) showToast('✓ '+woSaved+' workouts logged');
 
-  // Handle WORKOUT_NOTE: append commentary to existing workout (no new log)
-  if(extractedNote.note && extractedNote.note.id){
-    var noteText = extractedNote.note.note || extractedNote.note.text || '';
+  // WORKOUT_NOTE: append commentary to an existing workout (no new log)
+  if(b.workoutNote && b.workoutNote.id){
+    var noteText = b.workoutNote.note || b.workoutNote.text || '';
     if(noteText){
-      var okNote = await appendWorkoutNote(extractedNote.note.id, noteText);
+      var okNote = await appendWorkoutNote(b.workoutNote.id, noteText);
       if(okNote) showToast('✓ Note added to workout');
     }
   }
 
-  // Handle WORKOUT_EDIT: apply an in-chat correction to today's logged workout
-  if(extractedEdit.edit && extractedEdit.edit.id){
-    var editOk = await applyWorkoutEdit(extractedEdit.edit);
+  // WORKOUT_EDIT: an in-chat correction to a logged workout
+  if(b.workoutEdit && b.workoutEdit.id){
+    var editOk = await applyWorkoutEdit(b.workoutEdit);
     if(editOk){ showToast('✓ Workout updated'); if(typeof rendTodayWo==='function') rendTodayWo(); }
   }
 
-  // Handle food reconciliation: deletes first, then edits, then adds (so totals settle cleanly).
+  // Food reconciliation: deletes, then edits, then adds.
   var _foodToasts = 0;
-  if(foodDeletes.items.length){
-    for(var fd=0; fd<foodDeletes.items.length; fd++){
-      var delId = foodDeletes.items[fd].id;
-      if(delId!=null){ var dOk = await applyFoodDelete(delId); if(dOk) _foodToasts++; }
-    }
+  for(var fd=0; fd<b.foodDeletes.length; fd++){
+    var delId = b.foodDeletes[fd].id;
+    if(delId!=null){ var dOk = await applyFoodDelete(delId); if(dOk) _foodToasts++; }
   }
-  if(foodEdits.items.length){
-    for(var fe=0; fe<foodEdits.items.length; fe++){
-      var ed = foodEdits.items[fe];
-      if(ed && ed.id!=null){ var eOk = await applyFoodEdit(ed.id, ed); if(eOk) _foodToasts++; }
-    }
+  for(var fe=0; fe<b.foodEdits.length; fe++){
+    var ed = b.foodEdits[fe];
+    if(ed && ed.id!=null){ var eOk = await applyFoodEdit(ed.id, ed); if(eOk) _foodToasts++; }
   }
-  if(foodAdds.items.length){
-    // Attach the chat photo only when there's exactly one add (a single meal being logged with a pic).
-    for(var fa=0; fa<foodAdds.items.length; fa++){
-      var addOffer = foodAdds.items[fa];
-      var addPhoto = (foodAdds.items.length===1) ? photoSnapshot : null;
-      if(addOffer && addOffer.name){
-        var _sig=((addOffer.name||'').toLowerCase().trim())+'|'+Math.round(addOffer.calories||0)+'|'+((addOffer.meal||'').toLowerCase());
-        var _nowFa=Date.now(); window.__chatFoodSig=window.__chatFoodSig||{};
-        if(window.__chatFoodSig[_sig] && (_nowFa-window.__chatFoodSig[_sig])<600000){ continue; } // identical meal within 10 min -> skip duplicate insert
-        var aOk = await logFoodFromChat(addOffer, addPhoto); if(aOk){ _foodToasts++; window.__chatFoodSig[_sig]=_nowFa; }
-      }
+  for(var fa=0; fa<b.foodAdds.length; fa++){
+    var addOffer = b.foodAdds[fa];
+    // Attach the chat photo only when there's exactly one add (a single meal with a pic).
+    var addPhoto = (b.foodAdds.length===1) ? b.photo : null;
+    if(addOffer && addOffer.name){
+      var _sig=((addOffer.name||'').toLowerCase().trim())+'|'+Math.round(addOffer.calories||0)+'|'+((addOffer.meal||'').toLowerCase());
+      var _nowFa=Date.now(); window.__chatFoodSig=window.__chatFoodSig||{};
+      if(window.__chatFoodSig[_sig] && (_nowFa-window.__chatFoodSig[_sig])<600000){ continue; } // identical meal within 10 min -> skip duplicate insert
+      var aOk = await logFoodFromChat(addOffer, addPhoto); if(aOk){ _foodToasts++; window.__chatFoodSig[_sig]=_nowFa; }
     }
   }
   if(_foodToasts>0) showToast('✓ Food log updated');
 
   // Attach a gym/workout photo to the referenced workout (id from RECENT WORKOUTS).
-  if(workoutPhotos.items.length && photoSnapshot){
-    for(var wp=0; wp<workoutPhotos.items.length; wp++){
-      var wpItem = workoutPhotos.items[wp];
-      if(wpItem && wpItem.id!=null){ await attachWorkoutPhoto(wpItem.id, photoSnapshot); }
+  if(b.workoutPhotos.length && b.photo){
+    for(var wp=0; wp<b.workoutPhotos.length; wp++){
+      var wpItem = b.workoutPhotos[wp];
+      if(wpItem && wpItem.id!=null){ await attachWorkoutPhoto(wpItem.id, b.photo); }
     }
   }
-
-  // If we just patched intensity from the prior turn, add a small confirmation prefix
-  if(intensityWasJustPatched){
-    reply = '✓ Got it — rated.\n\n' + reply;
-  }
-
-  // SAFETY NET: if a FOOD_LOG marker survived strict extraction (model drift), salvage a single add so the meal still logs.
-  if(!foodAdds.items.length && !foodEdits.items.length && !foodDeletes.items.length){
-    var _salvage = reply.match(/\[FOOD_LOG\]([\s\S]*?)\[\/FOOD_LOG\]/);
-    if(_salvage){
-      try{ var _sObj = JSON.parse(_salvage[1].trim()); if(_sObj && _sObj.name){ var _sOk = await logFoodFromChat(_sObj, photoSnapshot); if(_sOk) showToast('✓ '+(_sObj.name||'Meal')+' logged'); } }catch(e){ console.error('food salvage parse failed', e); }
-    }
-  }
-  // Scrub any leftover or partial marker text so raw JSON / tags never reach the screen.
-  reply = reply
-    .replace(/\[FOOD_LOG\][\s\S]*?\[\/FOOD_LOG\]/g,'')
-    .replace(/\[FOOD_EDIT\][\s\S]*?\[\/FOOD_EDIT\]/g,'')
-    .replace(/\[FOOD_DELETE\][\s\S]*?\[\/FOOD_DELETE\]/g,'')
-    .replace(/\[WORKOUT_LOG\][\s\S]*?\[\/WORKOUT_LOG\]/g,'')
-    .replace(/\[WORKOUT_NOTE\][\s\S]*?\[\/WORKOUT_NOTE\]/g,'')
-    .replace(/\[\/?(FOOD_LOG|FOOD_EDIT|FOOD_DELETE|WORKOUT_LOG|WORKOUT_NOTE)\]/g,'')
-    .replace(/\s*\(?\bid\s*[:=]\s*[A-Za-z0-9_-]+\)?/gi,'')
-    .replace(/\n{3,}/g,'\n\n')
-    .trim();
-  if(!reply) reply = 'Done. ✓';
-  return reply;
+  try{ _tlInvalidate(); }catch(e){}
 }
 
 // Persist one turn. sbInsert returns FALSE on failure rather than throwing, so a
