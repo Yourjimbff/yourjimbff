@@ -3658,7 +3658,7 @@ function _slogDayLabel(ts){
 function renderSlogBody(){
   var host=document.getElementById('slogBody'); if(!host) return;
   var thread=(typeof chatHistory!=='undefined' && chatHistory) ? chatHistory : [];
-  if(!thread.length && !_slogPending){
+  if(!thread.length && !_slogPending && !_jimPending){
     host.style.justifyContent='center';   // greeting sits centered when there's nothing yet
     host.innerHTML='<div style="text-align:center;color:rgba(240,236,228,0.82);font-size:15px;line-height:1.7;padding:34px 18px;">Tell me what you ate, trained, or did today and I’ll sort it into your logs.<br><br><span style="color:rgba(240,236,228,0.78);">Talk to me like a person — “chicken and rice for lunch, then legs for an hour.”</span></div>';
     return;
@@ -26628,6 +26628,9 @@ async function loadChatHistory(){
       });
     }
   }catch(e){ chatHistory=[]; chatFullHistoryCache=[]; }
+  // Jim's "confirm and they're in" is persisted like any other turn, so the card
+  // has to come back with it or those words point at nothing.
+  _jimRestorePending();
   renderChatMessages();
   setTimeout(scrollChatToBottom, 50);
 }
@@ -28110,6 +28113,33 @@ async function _jimLogFromLibrary(hit){
 // proposal from an hour ago shouldn't be sitting there waiting to be tapped.
 var _jimPending = null;
 
+// A proposal outlives a reload. Jim's message saying "confirm and they're in" is
+// persisted like any other turn, so without this the client comes back to those
+// words and no card — a promise with no button. Kept per client, and only for a
+// day: a proposal from last week is not something to silently write.
+var _JIM_PENDING_TTL_MS = 24*60*60*1000;
+function _jimPendingKey(){ return 'yjb_jimpending_'+(cl?cl.code:'x'); }
+function _jimSetPending(b){
+  _jimPending=b;
+  try{
+    if(!b){ localStorage.removeItem(_jimPendingKey()); return; }
+    // The photo is base64 and far too big for localStorage. A restored proposal
+    // logs the food without its picture rather than not restoring at all.
+    var slim=Object.assign({}, b, {photo:null});
+    localStorage.setItem(_jimPendingKey(), JSON.stringify({at:Date.now(), batch:slim}));
+  }catch(e){ /* private mode / quota — the in-memory copy still works this session */ }
+}
+function _jimClearPending(){ _jimSetPending(null); }
+function _jimRestorePending(){
+  if(_jimPending) return;
+  try{
+    var raw=localStorage.getItem(_jimPendingKey()); if(!raw) return;
+    var o=JSON.parse(raw);
+    if(!o || !o.batch || !o.at || (Date.now()-o.at)>_JIM_PENDING_TTL_MS){ localStorage.removeItem(_jimPendingKey()); return; }
+    _jimPending=o.batch;
+  }catch(e){ try{ localStorage.removeItem(_jimPendingKey()); }catch(e2){} }
+}
+
 // "Monday", "Yesterday", "Today" — how a person says which day.
 function _jimDayLabel(daysAgo){
   var n = Math.max(0, parseInt(daysAgo,10)||0);
@@ -28132,46 +28162,77 @@ function _jimFoodName(id){
   }catch(e){}
   return null;
 }
-// One line per thing about to happen, in the client's language.
+function _jimMacroLine(f){
+  var c=Math.round(+f.calories||0), p=Math.round(+f.protein||0), cb=Math.round(+f.carbs||0), ft=Math.round(+f.fat||0);
+  if(!c && !p && !cb && !ft) return '';
+  return c+' cal · '+p+'P · '+cb+'C · '+ft+'F';
+}
+// One line per thing about to happen, in the client's language. Each carries
+// which list it came from so a single line can be dropped without the others.
 function _jimPendingLines(b){
   var out=[];
-  (b.workoutLogs||[]).forEach(function(w){
-    var what=w.title||w.description||'Workout';
-    out.push({what:String(what), when:_jimDayLabel(_jimDaysAgoOf(w))});
+  (b.workoutLogs||[]).forEach(function(w,i){
+    out.push({kind:'workoutLogs', idx:i,
+      what:String(w.title||w.description||'Workout'),
+      sub:(w.title && w.description && w.description!==w.title) ? String(w.description) : '',
+      when:_jimDayLabel(_jimDaysAgoOf(w))});
   });
-  (b.foodAdds||[]).forEach(function(f){
+  (b.foodAdds||[]).forEach(function(f,i){
     var bits=[];
     if(f.meal) bits.push(String(f.meal).toLowerCase());
-    var when=_jimDayLabel(_jimDaysAgoOf(f));
     if(f.eat_time) bits.push(String(f.eat_time));
-    out.push({what:String(f.name||'Meal'), when:(bits.length?bits.join(' · ')+' · ':'')+when});
+    bits.push(_jimDayLabel(_jimDaysAgoOf(f)));
+    out.push({kind:'foodAdds', idx:i, what:String(f.name||'Meal'), sub:_jimMacroLine(f), when:bits.join(' · ')});
   });
-  (b.foodEdits||[]).forEach(function(e){
+  (b.foodEdits||[]).forEach(function(e,i){
     var nm=_jimFoodName(e.id);
-    out.push({what:'Fix '+(nm||e.name||'that meal'), when:'correction'});
+    out.push({kind:'foodEdits', idx:i, what:'Fix '+(nm||e.name||'that meal'), sub:_jimMacroLine(e), when:'correction'});
   });
-  (b.foodDeletes||[]).forEach(function(d){
+  (b.foodDeletes||[]).forEach(function(d,i){
     var nm=_jimFoodName(d.id);
-    out.push({what:'Remove '+(nm||'that meal'), when:'deletes it'});
+    out.push({kind:'foodDeletes', idx:i, what:'Remove '+(nm||'that meal'), sub:'', when:'deletes it'});
   });
-  if(b.workoutEdit) out.push({what:'Update that session', when:'correction'});
+  if(b.workoutEdit) out.push({kind:'workoutEdit', idx:0, what:'Update that session', sub:'', when:'correction'});
   return out;
+}
+// Drop one line without throwing away the rest. Four sessions where one day is
+// wrong should cost that day, not the week.
+function jimDropPendingLine(i){
+  if(!_jimPending) return;
+  var lines=_jimPendingLines(_jimPending);
+  var line=lines[i]; if(!line) return;
+  if(line.kind==='workoutEdit') _jimPending.workoutEdit=null;
+  else if(_jimPending[line.kind]) _jimPending[line.kind].splice(line.idx,1);
+  if(!_jimPendingLines(_jimPending).length){
+    _jimClearPending();
+    _jimRepaintThreads();
+    _jimSay('All right — nothing logged. Tell me what it should be.');
+    return;
+  }
+  _jimSetPending(_jimPending);
+  _jimRepaintThreads();
 }
 function _jimConfirmHtml(){
   if(!_jimPending) return '';
   var lines=_jimPendingLines(_jimPending);
   if(!lines.length) return '';
-  var rows=lines.map(function(l){
-    return '<div style="display:flex;gap:10px;align-items:baseline;padding:9px 0;border-top:1px solid #242424;">'
-      +'<div style="flex:1;min-width:0;font-size:14px;color:#f0ece4;line-height:1.45;">'+_escHtml(l.what)+'</div>'
-      +'<div style="flex-shrink:0;font-size:11.5px;color:rgba(240,236,228,0.6);">'+_escHtml(l.when)+'</div>'
+  var rows=lines.map(function(l,i){
+    return '<div style="padding:11px 0;border-top:1px solid #242424;">'
+      +'<div style="display:flex;gap:10px;align-items:baseline;">'
+        +'<div style="flex:1;min-width:0;font-size:14px;color:#f0ece4;line-height:1.45;">'+_escHtml(l.what)+'</div>'
+        +'<div style="flex-shrink:0;font-size:11.5px;color:rgba(240,236,228,0.6);">'+_escHtml(l.when)+'</div>'
+        // Glyph stays small, the tap target does not — negative margins keep the
+        // row visually tight while the touchable area is a real 40px.
+        +'<div onclick="jimDropPendingLine('+i+')" title="Leave this one out" style="flex-shrink:0;cursor:pointer;color:rgba(240,236,228,0.45);font-size:17px;line-height:1;width:40px;height:40px;margin:-12px -13px -12px 0;display:flex;align-items:center;justify-content:center;">×</div>'
+      +'</div>'
+      +(l.sub?'<div style="font-size:11.5px;color:rgba(240,236,228,0.55);margin-top:3px;line-height:1.45;padding-right:26px;">'+_escHtml(l.sub)+'</div>':'')
     +'</div>';
   }).join('');
   var n=lines.length;
   // No id on the card: both threads paint it, so an id here would be a duplicate
   // in the DOM the moment the overlay and the tab are both mounted.
   return '<div style="background:var(--surface);border:1px solid rgba(224,196,152,0.3);border-radius:18px;padding:16px 16px 14px;margin:6px 2px 18px;">'
-    +'<div style="font-size:10px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:var(--gold);margin-bottom:4px;">Before I write it</div>'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:var(--gold);margin-bottom:2px;">Before I write it</div>'
     +rows
     +'<button onclick="jimConfirmPending()" style="width:100%;margin-top:14px;padding:14px;border:none;border-radius:13px;background:var(--gold);color:#000;font-size:14.5px;font-weight:800;cursor:pointer;font-family:inherit;">'+(n===1?'Log it':'Log all '+n)+'</button>'
     +'<div onclick="jimCancelPending()" style="text-align:center;margin-top:11px;font-size:12.5px;color:rgba(240,236,228,0.6);cursor:pointer;padding:4px;">Not right</div>'
@@ -28193,8 +28254,8 @@ function _jimSay(line){
 async function jimConfirmPending(){
   var b=_jimPending;
   if(!b) return;
-  _jimPending=null;
   var lines=_jimPendingLines(b);
+  _jimClearPending();
   _jimRepaintThreads();   // card goes as soon as they tap — the write is already theirs
   try{
     await jimApplyBatch(b);
@@ -28209,7 +28270,7 @@ async function jimConfirmPending(){
 }
 function jimCancelPending(){
   if(!_jimPending) return;
-  _jimPending=null;
+  _jimClearPending();
   _jimRepaintThreads();
   _jimSay('Left it. Tell me what to change and I’ll redo it.');
 }
@@ -28221,7 +28282,7 @@ async function jimTurn(text, photos){
   // A new message supersedes an unanswered proposal — they're clarifying, not
   // ignoring it. Leaving it up would let an old batch be tapped into the log
   // after the correction that replaced it.
-  _jimPending = null;
+  _jimClearPending();
   try{ noteBodyTalk(text); }catch(e){}
 
   // A workout from the prior turn may still be waiting on an intensity rating.
@@ -28358,10 +28419,10 @@ async function jimTurn(text, photos){
   // first and waits for a tap. One clear item stays a straight shot; that speed is
   // the whole reason the bar exists.
   if(_jimBatchNeedsConfirm(batch)){
-    _jimPending = batch;
+    _jimSetPending(batch);
     return reply;
   }
-  _jimPending = null;
+  _jimClearPending();
   await jimApplyBatch(batch);
   return reply;
 }
