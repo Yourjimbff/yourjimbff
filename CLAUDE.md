@@ -32,6 +32,7 @@ parallel, or check `VERSION` before you merge.
 - Once I approve a plan: build, commit, and push in one go — don't ask again before pushing.
 - Only hold the push if the build surfaced something I didn't know about when I approved (a schema change, a behavior trade-off, a bug in existing code). Then show me before pushing.
 - For small changes with no plan step: show the diff, then commit and push on my approval.
+- Ask decision questions as plain text I can copy, never as an interactive picker.
 
 ## Known landmines
 - Duplicate element IDs silently grab the wrong element. Check for collisions before adding markup.
