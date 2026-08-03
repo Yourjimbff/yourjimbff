@@ -17553,6 +17553,140 @@ function portionFor(component, target, unit){
   };
 }
 
+// ===== "I have these things — how do I hit my numbers?" ==================
+// The question nobody can answer for you online: you have ground turkey,
+// lettuce, tomatoes, Greek yogurt and berries, and you want 50g protein and
+// 35g carbs. This works out how much of each.
+//
+// Pure, like everything else in this core — no DOM, no fetch — so Jim Chat can
+// call it to answer the same question in a sentence.
+
+// The smallest amount worth moving by. Palms and handfuls come in halves; an
+// egg does not.
+function mbStepFor(component){
+  // vegetables move in whole handfuls — "half a handful of lettuce" is not an
+  // instruction anyone can follow
+  if(component && component.kind==='veg') return 1;
+  var u=String((component&&component.unit)||'').toLowerCase();
+  return (u==='palm'||u==='handful'||u==='cup'||u==='tbsp'||u==='avocado') ? 0.5 : 1;
+}
+// A ceiling per food, so the answer is never "eat nine palms of turkey".
+function mbMaxFor(component){
+  var k=component&&component.kind;
+  if(k==='veg') return 3;
+  if(k==='fat') return 3;
+  return (mbStepFor(component)===0.5) ? 4 : 8;
+}
+// Relative error, so being 5g out on a 50g protein target and 5g out on a 35g
+// carb target weigh the same.
+// Missing protein is a real miss; going over it is Yusuf's own advice ("be
+// generous, more is fine"), so overshoot is penalised at a third of the weight.
+// Carbs are the capped macro, so over and under count the same.
+function mbSolveCost(totals, targets){
+  var e=0;
+  if(+targets.protein>0){
+    var dp=totals.p - targets.protein;
+    e += (dp>=0 ? dp*0.35 : -dp) / targets.protein;
+  }
+  if(+targets.carb>0) e += Math.abs(totals.c - targets.carb)/targets.carb;
+  return e;
+}
+function _mbSolveTotals(parts){
+  var t={cal:0,p:0,c:0,f:0};
+  parts.forEach(function(x){
+    var per=_mbPer(x.component);
+    t.cal+=per.cal*x.qty; t.p+=per.p*x.qty; t.c+=per.c*x.qty; t.f+=per.f*x.qty;
+  });
+  return t;
+}
+function _mbSnap(q, step, max){
+  var v=Math.round(q/step)*step;
+  if(v<step) v=step;
+  if(v>max) v=max;
+  return Math.round(v*100)/100;
+}
+
+// available: components they actually have. targets: {protein, carb}.
+// -> {parts, totals, hit:{protein,carb}, short:{protein,carb}, notes}
+function mbSolveMeal(available, targets, opts){
+  var T={protein:+((targets||{}).protein)||0, carb:+((targets||{}).carb)||0};
+  var pool=(available||[]).filter(function(c){ return c && c.per_unit; });
+  var notes=[];
+  if(!pool.length) return {parts:[], totals:{cal:0,p:0,c:0,f:0}, hit:{protein:false,carb:false},
+                           short:{protein:T.protein,carb:T.carb}, notes:['Nothing to work with.']};
+
+  var proteins=pool.filter(function(c){ return c.kind==='protein'; });
+  var carbs   =pool.filter(function(c){ return c.kind==='carb' || c.kind==='fruit'; });
+  var veg     =pool.filter(function(c){ return c.kind==='veg'; });
+  var fats    =pool.filter(function(c){ return c.kind==='fat'; });
+
+  if(!proteins.length && T.protein>0) notes.push('No protein in what you listed, so the protein target can’t be reached.');
+  if(!carbs.length && T.carb>0)       notes.push('No carbohydrate in what you listed, so that target comes from whatever else is there.');
+
+  // --- a first pass, then let the search tidy it up ---
+  var parts=[];
+  veg.forEach(function(c){ parts.push({component:c, qty:1}); });          // vegetables are free
+  fats.forEach(function(c){ parts.push({component:c, qty:mbStepFor(c)}); });
+  if(carbs.length){
+    var share=T.carb/carbs.length;
+    carbs.forEach(function(c){
+      var per=_mbPer(c);
+      parts.push({component:c, qty:_mbSnap(per.c>0?(share/per.c):1, mbStepFor(c), mbMaxFor(c))});
+    });
+  }
+  if(proteins.length){
+    var already=_mbSolveTotals(parts).p;
+    var need=Math.max(0, T.protein-already), pshare=need/proteins.length;
+    proteins.forEach(function(c){
+      var per=_mbPer(c);
+      parts.push({component:c, qty:_mbSnap(per.p>0?(pshare/per.p):1, mbStepFor(c), mbMaxFor(c))});
+    });
+  }
+
+  // --- local search: nudge one food a step at a time, keep what helps ---
+  var best=mbSolveCost(_mbSolveTotals(parts), T), guard=0;
+  while(guard++ < 240){
+    var improved=false;
+    for(var i=0;i<parts.length;i++){
+      var it=parts[i], step=mbStepFor(it.component), max=mbMaxFor(it.component);
+      var floor=(it.component.kind==='veg') ? 0 : step;   // a vegetable can drop out; the protein can't
+      [step,-step].forEach(function(d){
+        var was=it.qty, next=Math.round((was+d)*100)/100;
+        if(next<floor || next>max) return;
+        it.qty=next;
+        var cost=mbSolveCost(_mbSolveTotals(parts), T);
+        if(cost < best - 1e-9){ best=cost; improved=true; } else { it.qty=was; }
+      });
+    }
+    if(!improved) break;
+  }
+
+  parts=parts.filter(function(x){ return x.qty>0; });
+  var totals=_mbSolveTotals(parts);
+  // hitting the protein target means reaching it, not landing exactly on it
+  var okP = T.protein<=0 || totals.p >= T.protein - Math.max(3, T.protein*0.06);
+  var okC = T.carb<=0    || Math.abs(totals.c-T.carb)    <= Math.max(4, T.carb*0.10);
+  if(T.protein>0 && !okP && totals.p<T.protein)
+    notes.push('That’s as much protein as these get you — '+Math.round(totals.p)+'g of '+T.protein+'g.');
+  if(T.carb>0 && !okC && totals.c<T.carb)
+    notes.push('Carbs land at '+Math.round(totals.c)+'g rather than '+T.carb+'g.');
+  return {
+    parts:parts,
+    totals:{cal:Math.round(totals.cal), p:Math.round(totals.p), c:Math.round(totals.c), f:Math.round(totals.f)},
+    hit:{protein:okP, carb:okC},
+    short:{protein:Math.max(0,Math.round(T.protein-totals.p)), carb:Math.max(0,Math.round(T.carb-totals.c))},
+    notes:notes
+  };
+}
+// The answer as a person would say it.
+function mbSolveSentence(sol){
+  if(!sol || !sol.parts.length) return 'Nothing to work with.';
+  var foods=sol.parts.map(function(p){ return mbItemLine(p); });
+  var last=foods.pop();
+  return (foods.length ? (foods.join(', ')+' and '+last) : last)
+    + ' — ' + sol.totals.p + 'g protein, ' + sol.totals.c + 'g carbs, ' + sol.totals.cal + ' cal.';
+}
+
 var _MB_FRAC={0.25:'¼',0.5:'½',0.75:'¾'};
 function mbFormatQty(q){
   q=+q||0;
