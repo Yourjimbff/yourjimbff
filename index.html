@@ -26958,6 +26958,28 @@ async function buildDayContext(){
     }
   }
 
+  // THEIR SAVED MEALS — the numbers they already signed off on. An exact one-liner
+  // never reaches the model at all (jimTurn logs those straight from the library),
+  // but a saved meal mentioned inside a bigger sentence still should not be
+  // re-estimated from scratch every time.
+  try{
+    await mlibLoad();
+    var _lib=(typeof _mlibMine==='function') ? _mlibMine() : [];
+    _lib=_lib.filter(function(m){ return m && m.name && +m.calories>0; })
+             .sort(function(a,b){ return (+b.times_logged||0)-(+a.times_logged||0); })
+             .slice(0,25);
+    if(_lib.length){
+      var libBits=['=== THEIR SAVED MEALS ===',
+        'These are meals this client has already built and agreed the numbers for. If what they describe IS one of these, reuse THESE macros exactly — do not re-estimate. If they describe one of these PLUS something else, use these numbers for this part and estimate only the extra.'];
+      _lib.forEach(function(m){
+        var t=(+m.times_logged||0);
+        libBits.push('  - '+m.name+' — '+Math.round(+m.calories||0)+' cal, '+Math.round(+m.protein_g||0)+'g P, '
+          +Math.round(+m.carbs_g||0)+'g C, '+Math.round(+m.fat_g||0)+'g F'+(t>0?(' (logged '+t+'×)'):''));
+      });
+      sections.push(libBits.join('\n'));
+    }
+  }catch(e){ /* meals migration may not have run — the rest of the context still stands */ }
+
   // TODAY — FOOD
   if(todayFood && todayFood.length>0){
     var tBits=['=== TODAY\'S FOOD ('+todayDateStr+') ==='];
@@ -28006,6 +28028,83 @@ var JIM_TURN_TIMEOUT_MS = 45000;
 // An aborted fetch and a dead connection want different words on screen.
 function _jimIsTimeout(e){ return !!(e && (e.name==='AbortError' || String(e.message||'').indexOf('abort')>=0)); }
 
+// ===== LIBRARY FIRST =======================================================
+// A meal they've already saved doesn't need a model to identify it. If what they
+// typed IS one of their saved meals, log it from the cached macros — instant, no
+// round trip, and the numbers are the ones they already agreed to rather than a
+// fresh estimate that drifts a little every time.
+//
+// The bar for a match is deliberately high: the words have to reduce to exactly
+// the meal's name. A fuzzy match here would log the wrong macros silently, which
+// is worse than the half-second the model costs.
+function _jimNorm(s){
+  return String(s||'').toLowerCase()
+    .replace(/&/g,' and ')
+    .replace(/\+/g,' and ')
+    .replace(/[^a-z0-9 ]/g,' ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+function _jimLibMatch(text){
+  if(!text || !cl) return null;
+  if(!(typeof _mlibMeals!=='undefined' && _mlibMeals && _mlibMeals.length)) return null;
+  var raw=String(text).trim();
+  if(!raw || raw.length>120) return null;      // a paragraph isn't a one-liner
+  if(raw.indexOf('?')>=0) return null;         // a question is never a log
+  var low=raw.toLowerCase();
+
+  // Pull the time and the slot out before normalising, since normalising eats
+  // the punctuation they live in.
+  var eatTime=null, slot=null;
+  var mt=low.match(/\bat\s+(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)|\d{1,2}:\d{2})\b/);
+  if(mt){ eatTime=mt[1].replace(/\s+/g,'').toUpperCase().replace(/\./g,''); low=low.replace(mt[0],' '); }
+  var ms=low.match(/\b(breakfast|lunch|dinner|snack)\b/);
+  if(ms){ slot=ms[1].charAt(0).toUpperCase()+ms[1].slice(1); low=low.replace(/\bfor\s+/,' ').replace(ms[0],' '); }
+
+  low=low
+    .replace(/^\s*(?:i\s+)?(?:just\s+)?(?:had|ate|have|having|log|logged|eating)\s+/,' ')
+    .replace(/\b(?:just now|today|this morning|this afternoon|this evening|tonight)\b/g,' ')
+    .replace(/^\s*(?:a|an|the|my|some)\s+/,' ');
+
+  var want=_jimNorm(low);
+  if(!want) return null;
+
+  var mine=[];
+  try{ mine=_mlibMine(); }catch(e){ return null; }
+  var hits=mine.filter(function(m){
+    if(!m || !m.name) return false;
+    if(!(+m.calories>0)) return false;          // no cached macros = nothing to save
+    var n=_jimNorm(m.name);
+    if(!n) return false;
+    // Compare the SAVED NAME against what they TYPED — both as-is and with a
+    // leading "the/my" off the saved name, so "Overnight oats" still matches
+    // a meal someone saved as "My overnight oats".
+    var bare=_jimNorm(String(m.name).replace(/^(?:the|my)\s+/i,''));
+    return n===want || bare===want;
+  });
+  if(hits.length!==1) return null;              // ambiguous is the same as no match
+  return {meal:hits[0], slot:slot, eatTime:eatTime};
+}
+// Log a library hit through the ordinary chat food path, so it lands in food_logs
+// exactly like every other meal, then bump the counter the picker sorts on.
+async function _jimLogFromLibrary(hit){
+  var m=hit.meal;
+  var ok=await logFoodFromChat({
+    name:m.name, emoji:'🍽️',
+    calories:Math.round(+m.calories||0), protein:Math.round(+m.protein_g||0),
+    carbs:Math.round(+m.carbs_g||0), fat:Math.round(+m.fat_g||0),
+    rating:'good', insight:'',
+    meal:hit.slot||guessMealByTime(),
+    eat_time:hit.eatTime||null
+  }, null);
+  if(!ok) return null;
+  try{ mlibBumpUsage(m); }catch(e){}
+  var times=(+m.times_logged||0);
+  var head=(times>=4 ? 'The usual — logged.' : 'Logged — '+m.name+'.');
+  return head+'\n'+Math.round(+m.calories||0)+' cal · '+Math.round(+m.protein_g||0)+'P · '
+    +Math.round(+m.carbs_g||0)+'C · '+Math.round(+m.fat_g||0)+'F';
+}
+
 // ===== CONFIRM BEFORE WRITING ==============================================
 // A batch that's been read but not yet written. Lives in memory only — a stale
 // proposal from an hour ago shouldn't be sitting there waiting to be tapped.
@@ -28147,6 +28246,22 @@ async function jimTurn(text, photos){
         pendingIntensityForId = null;
       }
       // Anything else: leave it pending. The prompt re-asks if it still matters.
+    }
+  }
+
+  // Library first. If they just named a meal they've already saved, there is
+  // nothing for a model to work out — log it from the macros they agreed to and
+  // answer immediately. No photo case: a picture needs looking at.
+  if(!hasPhoto){
+    try{ await mlibLoad(); }catch(e){}
+    var _hit=_jimLibMatch(text);
+    if(_hit){
+      var _libReply=await _jimLogFromLibrary(_hit);
+      if(_libReply){
+        try{ renderDailyStrip(); }catch(e){}
+        return _libReply;
+      }
+      // Insert failed — fall through and let the normal path have a go.
     }
   }
 
