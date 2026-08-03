@@ -1637,7 +1637,7 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
 
     <!-- MY GOALS -->
     <div class="tile" id="tileGoals">
-      <div class="thead" onclick="openProfileGoals()">
+      <div class="thead" onclick="openGoals()">
         <div class="tic tigl"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/></svg></div>
         <div class="tinfo"><div class="tname">My Goals</div><div class="tsub" id="goalsSub" style="display:none;"></div></div>
         <div class="tr"><div class="tchev">›</div></div>
@@ -1872,6 +1872,20 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
       <button onclick="jConvoVoice()" id="jConvoMic" style="flex:0 0 auto;width:34px;height:34px;display:flex;align-items:center;justify-content:center;background:transparent;border:none;color:rgba(240,236,228,0.78);cursor:pointer;padding:0;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 19v3"/></svg></button>
       <button onclick="jConvoSend()" style="flex:0 0 auto;width:34px;height:34px;display:flex;align-items:center;justify-content:center;background:var(--gold);border:none;border-radius:10px;color:#000;cursor:pointer;padding:0;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
     </div>
+  </div>
+
+  <!-- MY GOALS — a real destination, not a sheet behind the avatar (openGoals) -->
+  <div id="goalsView" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;width:100%;height:100%;background:#131313;z-index:9000;flex-direction:column;">
+    <div style="flex-shrink:0;padding:calc(env(safe-area-inset-top) + 12px) 16px 12px;border-bottom:1px solid #232323;background:#131313;">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span onclick="closeGoals()" style="flex-shrink:0;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--m2);"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></span>
+        <div style="flex:1;min-width:0;">
+          <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:27px;font-weight:800;color:var(--text);letter-spacing:-0.6px;line-height:1.1;">My Goals</div>
+          <div style="font-size:11.5px;color:var(--muted);margin-top:3px;">What you're aiming at, and how you want to get there.</div>
+        </div>
+      </div>
+    </div>
+    <div id="goalsBody" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px 16px calc(env(safe-area-inset-bottom) + 28px);"></div>
   </div>
 
   <!-- FOOD LIBRARY — fullscreen browse-and-manage home for meals + foods (openFoodLibrary) -->
@@ -3150,14 +3164,37 @@ async function uploadMealPhoto(blob, clientCode){
   }catch(e){ console.error('uploadMealPhoto error', e); return null; }
 }
 
+// Both write helpers return a BOOLEAN, and roughly twenty-five callers await
+// them and throw it away — so a failed write has been indistinguishable from a
+// good one. Editing every call site is the risky fix; making the helpers stop
+// swallowing the failure is the safe one, and it covers callers I haven't read.
+//
+// Two things happen on failure now: the server's actual answer is logged, and
+// for tables that hold a client's own work the row goes into the sync queue so
+// a discarded boolean no longer means lost data.
+//
+// Deliberately NOT queued: chat_messages (replaying a conversation later is
+// worse than losing a line) and daily_scores (derived — it recomputes).
+var SB_QUEUE_TABLES={saved_foods:1, weight_logs:1, step_logs:1, food_logs:1,
+                     meals:1, meal_components:1, journal_entries:1, workout_logs:1};
+function _sbWriteFailed(table, status, body, row, method, matchCol){
+  try{ console.error('write to '+table+' failed', status||'(threw)', String(body||'').slice(0,300)); }catch(e){}
+  if(SB_QUEUE_TABLES[table] && row){
+    try{ sqPush(table, row, method||'POST', matchCol||null); }catch(e){}
+  }
+}
 async function sbInsert(table, data){
   try{
     var res = await fetch(SB_URL+'/rest/v1/'+table, {
       method:'POST', headers:sbHeaders(),
       body:JSON.stringify(data)
     });
+    if(!res.ok){
+      var b=''; try{ b=await res.text(); }catch(e){}
+      _sbWriteFailed(table, res.status, b, data, 'POST');
+    }
     return res.ok;
-  }catch(e){ console.error('sbInsert failed',e); return false; }
+  }catch(e){ _sbWriteFailed(table, 0, e&&e.message, data, 'POST'); return false; }
 }
 
 // sbInsert returns a boolean and swallows the reason. For anything where a silent
@@ -3253,10 +3290,10 @@ async function sbUpsert(table, data, onConflict){
     });
     if(!res.ok){
       var bodyText = ''; try{ bodyText = await res.text(); }catch(e){}
-      console.error('sbUpsert '+table+' failed: '+res.status, bodyText);
+      _sbWriteFailed(table, res.status, bodyText, data, 'UPSERT', onConflict);
     }
     return res.ok;
-  }catch(e){ console.error('sbUpsert failed',e); return false; }
+  }catch(e){ _sbWriteFailed(table, 0, e&&e.message, data, 'UPSERT', onConflict); return false; }
 }
 
 // ===== CLIENTS =====
@@ -12049,7 +12086,7 @@ async function sbPatchGraceful(table, id, patch){
   var OPTIONAL=['note','insight','emoji','graced','rating','photo'];
   while(!r.ok && guard<7){
     lastErr=(r.body||'')+' [http '+(r.status||0)+']';
-    var m=/column\s+"?([a-z_]+)"?[\s\S]*?does not exist/i.exec(r.body||'')
+    var m=/column\s+\\?"?([a-z_][a-z0-9_]*)\\?"?[\s\S]*?does not exist/i.exec(r.body||'')
        || /could not find the '([a-z_]+)' column/i.exec(r.body||'')
        || /'([a-z_]+)' column of/i.exec(r.body||'');
     var col=m && m[1];
@@ -15989,17 +16026,27 @@ async function insertFoodLog(row, photo){
   var attempt = await tryInsert(payload);
   // Gracefully drop any column the DB doesn't have yet (e.g. photo or sugar not migrated) and retry,
   // so a meal always saves even if an optional column is missing.
-  var guard = 0;
+  var guard = 0, dropped = [];
   while(!attempt.ok && guard < 4){
     var body = attempt.body || '';
-    var mcol = /column\s+"?([a-z_]+)"?[\s\S]*?does not exist/i.exec(body) || /could not find the '([a-z_]+)' column/i.exec(body);
+    var mcol = /column\s+\\?"?([a-z_][a-z0-9_]*)\\?"?[\s\S]*?does not exist/i.exec(body) || /could not find the '([a-z_]+)' column/i.exec(body);
     if(!mcol || !(mcol[1] in payload)) break;
+    dropped.push(mcol[1]);
     delete payload[mcol[1]];
     attempt = await tryInsert(payload);
     guard++;
   }
+  // The meal saving is the point, so dropping an unmigrated column is right —
+  // doing it in total silence was not. eat_time going missing this way is
+  // exactly how "my times aren't saving" happens with nothing in the console.
+  if(attempt.ok && dropped.length){
+    try{ console.warn('food_logs: saved without '+dropped.join(', ')+' — column(s) missing from the table'); }catch(e){}
+    if(dropped.indexOf('eat_time')>=0){
+      try{ showToast('Saved — but the time needs a DB column'); }catch(e){}
+    }
+  }
   try{ window.__foodInsertBusy=false; if(!attempt.ok){ window.__lastFoodSig=null; } }catch(e){}
-  return {ok: attempt.ok, id: (attempt.id!=null?attempt.id:null)};
+  return {ok: attempt.ok, id: (attempt.id!=null?attempt.id:null), dropped: dropped};
 }
 
 // Insert a workout log. Meals have had a double-tap guard for a while; workouts had
@@ -16559,6 +16606,14 @@ async function mlibLogMeal(m){
     try{ _ins=await insertFoodLog(foodRow, m.photo_url||null); }catch(e){}
     if(_ins && _ins.duplicate){ _mlibLogBusy=false; return; }
     if(_ins && _ins.id!=null) entry.id=_ins.id;
+    // A failed insert used to reach the same "✓ logged" as a good one, with the
+    // row neither written nor queued — it looked logged until the next reload,
+    // then it was simply gone. The write either lands or goes in the queue.
+    var _landed=!!(_ins && _ins.ok);
+    if(!_landed){
+      try{ sqPush('food_logs', foodRow, 'POST'); }catch(e){}
+      entry._pending=true;
+    }
     allFood.push(entry); todayFood.push(entry);
     if(hasMacros){
       tots.cal+=cal; tots.protein+=pro; tots.carbs+=carb; tots.fat+=fat;
@@ -16572,7 +16627,7 @@ async function mlibLogMeal(m){
     try{ markTileDone('Food'); }catch(e){}
     try{ _tlInvalidate(); }catch(e){}
     closeM('mFood');
-    showToast('✓ '+m.name+' logged');
+    showToast(_landed ? ('✓ '+m.name+' logged') : (m.name+' saved here — will sync'));
     mlibBumpUsage(m);
   }catch(e){ console.error('mlibLogMeal', e); }
   _mlibLogBusy=false;
@@ -16730,7 +16785,7 @@ async function _mlibInsertWithFallback(row){
   // same degrade as insertFoodLog: drop any column the table doesn't have yet and retry
   while(!attempt.ok && guard<4){
     var body=attempt.body||'';
-    var mcol=/column\s+"?([a-z_]+)"?[\s\S]*?does not exist/i.exec(body) || /could not find the '([a-z_]+)' column/i.exec(body);
+    var mcol=/column\s+\\?"?([a-z_][a-z0-9_]*)\\?"?[\s\S]*?does not exist/i.exec(body) || /could not find the '([a-z_]+)' column/i.exec(body);
     if(!mcol || !(mcol[1] in payload)) break;
     delete payload[mcol[1]];
     attempt=await tryIns(payload);
@@ -16949,7 +17004,12 @@ function _flibFoodRow(f){
       +'</div>'
     +'</div>';
   }
-  var mac=Math.round(f.calories||0)+' cal · '+Math.round(f.protein||0)+'P · '+Math.round(f.carbs||0)+'C · '+Math.round(f.fat||0)+'F';
+  // every macro null/absent = never estimated. Rendering that as 0 cal · 0P
+  // told people the food was free, which is how the zeroes got trusted.
+  var _known=[f.calories,f.protein,f.carbs,f.fat].some(function(v){ return v!=null && v!==''; });
+  var mac=_known
+    ? (Math.round(f.calories||0)+' cal · '+Math.round(f.protein||0)+'P · '+Math.round(f.carbs||0)+'C · '+Math.round(f.fat||0)+'F')
+    : 'No numbers yet — tap to add them';
   return '<div onclick="flibFoodEdit(\''+id+'\')" class="flFood">'
     +'<div style="flex:1;min-width:0;">'
       +'<div class="flFoodN">'+_escHtml(_tcase(f.name||''))+'</div>'
@@ -19107,7 +19167,7 @@ async function _mbWriteWithFallback(row, onConflict, patchId){
   var payload=Object.assign({}, row);
   var out=await attempt(payload), guard=0;
   while(!out.ok && guard<4){
-    var mcol=/column\s+"?([a-z_]+)"?[\s\S]*?does not exist/i.exec(out.body||'')
+    var mcol=/column\s+\\?"?([a-z_][a-z0-9_]*)\\?"?[\s\S]*?does not exist/i.exec(out.body||'')
           || /could not find the '([a-z_]+)' column/i.exec(out.body||'');
     if(!mcol || !(mcol[1] in payload)) break;
     delete payload[mcol[1]];
@@ -24967,14 +25027,16 @@ async function changeAccessCode(){
   }
 }
 
-// My Goals lives on the Today page. We relocate the existing panel into a modal
-// the first time it's opened, so all its field IDs and save logic keep working.
-function openProfileGoals(){
+// My Goals is its own page now, not a sheet behind the avatar. The panel is
+// RELOCATED rather than rebuilt — every field id and saveProfileTab's read of
+// them keeps working untouched, so nothing about how goals persist changes.
+var _goalsScrollY=0;
+function openGoals(){
   var panel=document.getElementById('profilePanelWrap');
-  var host=document.getElementById('profileGoalsHost');
+  var host=document.getElementById('goalsBody');
   if(panel && host && panel.parentNode!==host){
     try{ host.appendChild(panel); }catch(e){}
-    // inside the modal the collapsible header is redundant
+    // on its own page the collapsible header and the trainer-only boxes are noise
     var hd=document.getElementById('profilePanelHead'); if(hd) hd.style.display='none';
     var mc=document.getElementById('manageClientsBox'); if(mc) mc.style.display='none';
     var ac=document.getElementById('changeAccessCard'); if(ac) ac.style.display='none';
@@ -24985,8 +25047,17 @@ function openProfileGoals(){
   _pGoalOpen=null;
   try{ if(typeof loadProfileTab==='function') loadProfileTab(); }catch(e){}
   try{ renderPhaseUI(); }catch(e){}
-  try{ openM('mProfileGoals'); }catch(e){}
+  _goalsScrollY=window.scrollY||0;
+  var v=document.getElementById('goalsView');
+  if(v){ v.style.display='flex'; try{ document.body.style.overflow='hidden'; }catch(e){} }
 }
+function closeGoals(){
+  var v=document.getElementById('goalsView'); if(v) v.style.display='none';
+  try{ document.body.style.overflow=''; window.scrollTo(0,_goalsScrollY); }catch(e){}
+}
+// The avatar route still works and lands on the same page — the panel is a
+// single live node, so both entrances have to target one host or it ping-pongs.
+function openProfileGoals(){ openGoals(); }
 // Keep the Today tile's subtitle showing the targets actually in effect.
 function updGoalsTileSub(){ try{ renderProfileSubs(); }catch(e){} }
 
@@ -25469,8 +25540,8 @@ function _retireTodayTiles(){
   }catch(e){ return; }
   // the day navigator belongs to the Calendar, not a profile page
   try{ var dr=document.querySelector('#tToday .dayrow'); if(dr) dr.style.display='none'; }catch(e){}
-  // Configuration belongs behind the avatar. This page is for looking, not setting.
-  try{ var _g=document.getElementById('tileGoals');   if(_g) _g.style.display='none'; }catch(e){}
+  // Goals has its own destination now, so the tile is the way in rather than
+  // something you have to find behind the avatar.
   try{ var _c=document.getElementById('tileCheckin'); if(_c) _c.style.display='none'; }catch(e){}
   try{ _syncSetupState(); }catch(e){}
   try{ renderProfilePage(); }catch(e){}
@@ -28673,8 +28744,10 @@ async function mlAddFromInput(){
 
   if(!items){
     // no estimate available: keep the food, leave the numbers blank and editable
+    // zeros here meant "unknown", and once saved they were indistinguishable
+    // from a real zero-calorie food. The flag keeps the difference.
     window._mlItems.push({name:_tcase(q), qty:1, base:{cal:0,pro:0,carb:0,fat:0},
-      src:'unknown', rating:'unknown'});
+      src:'unknown', rating:'unknown', noMacros:true});
     _mlRecalc(window._mlItems[window._mlItems.length-1]);
     try{ showToast('Saved the food, add the numbers yourself'); }catch(e){}
   } else {
@@ -28800,8 +28873,12 @@ async function mlSaveToLibrary(i){
   mlCommitEdit(i);
   var it=(window._mlItems||[])[i]; if(!it) return;
   var nm = it.name + (it.qtyText ? (' (' + it.qtyText + ')') : '');
-  var row={client_code:cl.code, name:nm, calories:it.cal, protein:it.pro,
-           carbs:it.carb, fat:it.fat, rating:(it.rating||'good')};
+  // null is "nobody knows yet"; 0 is a claim that it has no calories
+  var _blank=!!it.noMacros && !(+it.cal||+it.pro||+it.carb||+it.fat);
+  var row={client_code:cl.code, name:nm,
+           calories:_blank?null:it.cal, protein:_blank?null:it.pro,
+           carbs:_blank?null:it.carb,   fat:_blank?null:it.fat,
+           rating:(_blank?'unknown':(it.rating||'good'))};
   try{
     (window._savedFoods=window._savedFoods||[]).push(row);
     await sbInsert('saved_foods', row);

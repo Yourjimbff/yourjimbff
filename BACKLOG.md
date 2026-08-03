@@ -86,11 +86,21 @@ never returned. Capped at six seconds.*
 - No program required ✓
 - All that matters is you trained today ✓
 
-## 5. Goals — own tab
+## 5. Goals — own tab — SHIPPED
 
-Currently buried under the profile name in the top corner. Deserves a real destination.
+*It had drifted the other way: the Goals tile was deliberately hidden with the note
+"Configuration belongs behind the avatar. This page is for looking, not setting," and
+goals lived in a sheet. Now a full page (`openGoals`), with the tile back as the way
+in and the avatar route landing on the same place.*
 
-Functions as a preferences page: macro and portion targets, training intensity, session frequency and structure, food goals.
+*The panel is relocated, not rebuilt — every field id and `saveProfileTab`'s read of
+them is untouched, so nothing about how goals persist changed.*
+
+**Still open, and it needs the database:** `bedtime` and `waketime` never reach the
+server. `_pSaveSleep` calls `saveProfile()`, which doesn't exist — only
+`saveProfileTab` does — and the call is guarded by `typeof`, so it fails silently.
+Neither field appears in any upsert payload. Sleep schedules are device-local and
+invisible to the trainer.
 
 ## 6. Progress → Profile rebuild
 
