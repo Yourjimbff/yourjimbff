@@ -3192,6 +3192,9 @@ async function sbInsertReturning(table, data){
 // fail — it waited, forever, on a dead sign-in screen. A read that hasn't come back
 // in this long isn't coming back.
 var SB_READ_MS = 20000;
+// The workout tidy-up is optional and blocks the save button, so it waits far
+// less than a read the app actually needs.
+var WO_TIDY_MS = 6000;
 function _sbTimeout(ms){
   try{ if(AbortSignal && AbortSignal.timeout) return AbortSignal.timeout(ms||SB_READ_MS); }catch(e){}
   try{ var c=new AbortController(); setTimeout(function(){ try{ c.abort(); }catch(e){} }, ms||SB_READ_MS); return c.signal; }catch(e){}
@@ -23926,7 +23929,14 @@ function _woOnInput(){
 async function looseFormatWorkout(text){
   try{
     var sys='You convert a workout someone describes (typed or spoken) into a loose, clean structured log. Return ONLY valid JSON, no prose, no markdown. Shape: {"title":"short workout name like Push Day, Leg Day, Run, Basketball, or empty string","exercises":[{"name":"Exercise or activity","did":"what they did IF they said it, e.g. 3x8 @155lb or 3 miles — else empty string"}]}. Capture the 80% that matters. Do NOT invent sets, reps, weights, or distances they did not say. Keep names clean and capitalized. Cardio or a sport can be a single entry (e.g. {"name":"Run","did":"3 miles"}). If you truly cannot parse it, return {"title":"","exercises":[]}.';
-    var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:sys+'\n\nWORKOUT:\n'+text+'\n\nReturn the JSON now.'}]})});
+    // This runs with the save button disabled, and it's tidying that's already
+    // optional — the caller falls back to the raw text. On gym wifi an
+    // unbounded fetch left someone staring at "Sorting it out…" forever with
+    // their workout unsaved, so the tidy-up gets a few seconds and no more.
+    // _sbTimeout is the same helper the Supabase reads use.
+    var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({messages:[{role:'user',content:sys+'\n\nWORKOUT:\n'+text+'\n\nReturn the JSON now.'}]}),
+      signal:_sbTimeout(WO_TIDY_MS)});
     var data=await res.json();
     var raw=''; if(data&&data.content){ data.content.forEach(function(b){ if(b.type==='text'&&b.text) raw+=b.text; }); }
     raw=raw.replace(/```json/gi,'').replace(/```/g,'').trim();
