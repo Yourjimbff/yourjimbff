@@ -3073,14 +3073,37 @@ async function uploadMealPhoto(blob, clientCode){
   }catch(e){ console.error('uploadMealPhoto error', e); return null; }
 }
 
+// Both write helpers return a BOOLEAN, and roughly twenty-five callers await
+// them and throw it away — so a failed write has been indistinguishable from a
+// good one. Editing every call site is the risky fix; making the helpers stop
+// swallowing the failure is the safe one, and it covers callers I haven't read.
+//
+// Two things happen on failure now: the server's actual answer is logged, and
+// for tables that hold a client's own work the row goes into the sync queue so
+// a discarded boolean no longer means lost data.
+//
+// Deliberately NOT queued: chat_messages (replaying a conversation later is
+// worse than losing a line) and daily_scores (derived — it recomputes).
+var SB_QUEUE_TABLES={saved_foods:1, weight_logs:1, step_logs:1, food_logs:1,
+                     meals:1, meal_components:1, journal_entries:1, workout_logs:1};
+function _sbWriteFailed(table, status, body, row, method, matchCol){
+  try{ console.error('write to '+table+' failed', status||'(threw)', String(body||'').slice(0,300)); }catch(e){}
+  if(SB_QUEUE_TABLES[table] && row){
+    try{ sqPush(table, row, method||'POST', matchCol||null); }catch(e){}
+  }
+}
 async function sbInsert(table, data){
   try{
     var res = await fetch(SB_URL+'/rest/v1/'+table, {
       method:'POST', headers:sbHeaders(),
       body:JSON.stringify(data)
     });
+    if(!res.ok){
+      var b=''; try{ b=await res.text(); }catch(e){}
+      _sbWriteFailed(table, res.status, b, data, 'POST');
+    }
     return res.ok;
-  }catch(e){ console.error('sbInsert failed',e); return false; }
+  }catch(e){ _sbWriteFailed(table, 0, e&&e.message, data, 'POST'); return false; }
 }
 
 // sbInsert returns a boolean and swallows the reason. For anything where a silent
@@ -3176,10 +3199,10 @@ async function sbUpsert(table, data, onConflict){
     });
     if(!res.ok){
       var bodyText = ''; try{ bodyText = await res.text(); }catch(e){}
-      console.error('sbUpsert '+table+' failed: '+res.status, bodyText);
+      _sbWriteFailed(table, res.status, bodyText, data, 'UPSERT', onConflict);
     }
     return res.ok;
-  }catch(e){ console.error('sbUpsert failed',e); return false; }
+  }catch(e){ _sbWriteFailed(table, 0, e&&e.message, data, 'UPSERT', onConflict); return false; }
 }
 
 // ===== CLIENTS =====
@@ -11968,7 +11991,7 @@ async function sbPatchGraceful(table, id, patch){
   var OPTIONAL=['note','insight','emoji','graced','rating','photo'];
   while(!r.ok && guard<7){
     lastErr=(r.body||'')+' [http '+(r.status||0)+']';
-    var m=/column\s+"?([a-z_]+)"?[\s\S]*?does not exist/i.exec(r.body||'')
+    var m=/column\s+\\?"?([a-z_][a-z0-9_]*)\\?"?[\s\S]*?does not exist/i.exec(r.body||'')
        || /could not find the '([a-z_]+)' column/i.exec(r.body||'')
        || /'([a-z_]+)' column of/i.exec(r.body||'');
     var col=m && m[1];
@@ -15903,17 +15926,27 @@ async function insertFoodLog(row, photo){
   var attempt = await tryInsert(payload);
   // Gracefully drop any column the DB doesn't have yet (e.g. photo or sugar not migrated) and retry,
   // so a meal always saves even if an optional column is missing.
-  var guard = 0;
+  var guard = 0, dropped = [];
   while(!attempt.ok && guard < 4){
     var body = attempt.body || '';
-    var mcol = /column\s+"?([a-z_]+)"?[\s\S]*?does not exist/i.exec(body) || /could not find the '([a-z_]+)' column/i.exec(body);
+    var mcol = /column\s+\\?"?([a-z_][a-z0-9_]*)\\?"?[\s\S]*?does not exist/i.exec(body) || /could not find the '([a-z_]+)' column/i.exec(body);
     if(!mcol || !(mcol[1] in payload)) break;
+    dropped.push(mcol[1]);
     delete payload[mcol[1]];
     attempt = await tryInsert(payload);
     guard++;
   }
+  // The meal saving is the point, so dropping an unmigrated column is right —
+  // doing it in total silence was not. eat_time going missing this way is
+  // exactly how "my times aren't saving" happens with nothing in the console.
+  if(attempt.ok && dropped.length){
+    try{ console.warn('food_logs: saved without '+dropped.join(', ')+' — column(s) missing from the table'); }catch(e){}
+    if(dropped.indexOf('eat_time')>=0){
+      try{ showToast('Saved — but the time needs a DB column'); }catch(e){}
+    }
+  }
   try{ window.__foodInsertBusy=false; if(!attempt.ok){ window.__lastFoodSig=null; } }catch(e){}
-  return {ok: attempt.ok, id: (attempt.id!=null?attempt.id:null)};
+  return {ok: attempt.ok, id: (attempt.id!=null?attempt.id:null), dropped: dropped};
 }
 
 // Insert a workout log. Meals have had a double-tap guard for a while; workouts had
@@ -16473,6 +16506,14 @@ async function mlibLogMeal(m){
     try{ _ins=await insertFoodLog(foodRow, m.photo_url||null); }catch(e){}
     if(_ins && _ins.duplicate){ _mlibLogBusy=false; return; }
     if(_ins && _ins.id!=null) entry.id=_ins.id;
+    // A failed insert used to reach the same "✓ logged" as a good one, with the
+    // row neither written nor queued — it looked logged until the next reload,
+    // then it was simply gone. The write either lands or goes in the queue.
+    var _landed=!!(_ins && _ins.ok);
+    if(!_landed){
+      try{ sqPush('food_logs', foodRow, 'POST'); }catch(e){}
+      entry._pending=true;
+    }
     allFood.push(entry); todayFood.push(entry);
     if(hasMacros){
       tots.cal+=cal; tots.protein+=pro; tots.carbs+=carb; tots.fat+=fat;
@@ -16486,7 +16527,7 @@ async function mlibLogMeal(m){
     try{ markTileDone('Food'); }catch(e){}
     try{ _tlInvalidate(); }catch(e){}
     closeM('mFood');
-    showToast('✓ '+m.name+' logged');
+    showToast(_landed ? ('✓ '+m.name+' logged') : (m.name+' saved here — will sync'));
     mlibBumpUsage(m);
   }catch(e){ console.error('mlibLogMeal', e); }
   _mlibLogBusy=false;
@@ -16644,7 +16685,7 @@ async function _mlibInsertWithFallback(row){
   // same degrade as insertFoodLog: drop any column the table doesn't have yet and retry
   while(!attempt.ok && guard<4){
     var body=attempt.body||'';
-    var mcol=/column\s+"?([a-z_]+)"?[\s\S]*?does not exist/i.exec(body) || /could not find the '([a-z_]+)' column/i.exec(body);
+    var mcol=/column\s+\\?"?([a-z_][a-z0-9_]*)\\?"?[\s\S]*?does not exist/i.exec(body) || /could not find the '([a-z_]+)' column/i.exec(body);
     if(!mcol || !(mcol[1] in payload)) break;
     delete payload[mcol[1]];
     attempt=await tryIns(payload);
@@ -16863,7 +16904,12 @@ function _flibFoodRow(f){
       +'</div>'
     +'</div>';
   }
-  var mac=Math.round(f.calories||0)+' cal · '+Math.round(f.protein||0)+'P · '+Math.round(f.carbs||0)+'C · '+Math.round(f.fat||0)+'F';
+  // every macro null/absent = never estimated. Rendering that as 0 cal · 0P
+  // told people the food was free, which is how the zeroes got trusted.
+  var _known=[f.calories,f.protein,f.carbs,f.fat].some(function(v){ return v!=null && v!==''; });
+  var mac=_known
+    ? (Math.round(f.calories||0)+' cal · '+Math.round(f.protein||0)+'P · '+Math.round(f.carbs||0)+'C · '+Math.round(f.fat||0)+'F')
+    : 'No numbers yet — tap to add them';
   return '<div onclick="flibFoodEdit(\''+id+'\')" class="flFood">'
     +'<div style="flex:1;min-width:0;">'
       +'<div class="flFoodN">'+_escHtml(_tcase(f.name||''))+'</div>'
@@ -19021,7 +19067,7 @@ async function _mbWriteWithFallback(row, onConflict, patchId){
   var payload=Object.assign({}, row);
   var out=await attempt(payload), guard=0;
   while(!out.ok && guard<4){
-    var mcol=/column\s+"?([a-z_]+)"?[\s\S]*?does not exist/i.exec(out.body||'')
+    var mcol=/column\s+\\?"?([a-z_][a-z0-9_]*)\\?"?[\s\S]*?does not exist/i.exec(out.body||'')
           || /could not find the '([a-z_]+)' column/i.exec(out.body||'');
     if(!mcol || !(mcol[1] in payload)) break;
     delete payload[mcol[1]];
@@ -28598,8 +28644,10 @@ async function mlAddFromInput(){
 
   if(!items){
     // no estimate available: keep the food, leave the numbers blank and editable
+    // zeros here meant "unknown", and once saved they were indistinguishable
+    // from a real zero-calorie food. The flag keeps the difference.
     window._mlItems.push({name:_tcase(q), qty:1, base:{cal:0,pro:0,carb:0,fat:0},
-      src:'unknown', rating:'unknown'});
+      src:'unknown', rating:'unknown', noMacros:true});
     _mlRecalc(window._mlItems[window._mlItems.length-1]);
     try{ showToast('Saved the food, add the numbers yourself'); }catch(e){}
   } else {
@@ -28725,8 +28773,12 @@ async function mlSaveToLibrary(i){
   mlCommitEdit(i);
   var it=(window._mlItems||[])[i]; if(!it) return;
   var nm = it.name + (it.qtyText ? (' (' + it.qtyText + ')') : '');
-  var row={client_code:cl.code, name:nm, calories:it.cal, protein:it.pro,
-           carbs:it.carb, fat:it.fat, rating:(it.rating||'good')};
+  // null is "nobody knows yet"; 0 is a claim that it has no calories
+  var _blank=!!it.noMacros && !(+it.cal||+it.pro||+it.carb||+it.fat);
+  var row={client_code:cl.code, name:nm,
+           calories:_blank?null:it.cal, protein:_blank?null:it.pro,
+           carbs:_blank?null:it.carb,   fat:_blank?null:it.fat,
+           rating:(_blank?'unknown':(it.rating||'good'))};
   try{
     (window._savedFoods=window._savedFoods||[]).push(row);
     await sbInsert('saved_foods', row);
