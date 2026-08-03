@@ -1099,6 +1099,19 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
 .ovSm .ovEy{font-size:10px;margin-bottom:8px;}
 .ovSm .ovMeta{margin-top:14px;padding-top:12px;font-size:12px;}
 .ovSm .ovEnds{font-size:11px;margin-top:9px;}
+/* Third size: inside a board card, where it answers "are they moving" at a glance.
+   Same card, scaled again — not a second design. */
+.ovXs{border-radius:13px;padding:12px 13px;margin-top:10px;box-shadow:0 6px 16px rgba(0,0,0,0.30);}
+.ovXs .ovEy{font-size:9px;letter-spacing:1.3px;margin-bottom:6px;}
+.ovXs .ovBig{font-size:25px;letter-spacing:-0.9px;}
+.ovXs .ovUnit{font-size:11.5px;}
+.ovXs .ovHead{margin-bottom:11px;gap:6px;}
+.ovXs .ovTrack{height:5px;}
+.ovXs .ovDot{width:10px;height:10px;margin:-5px 0 0 -5px;border-width:2px;}
+.ovXs .ovEnds{font-size:10px;margin-top:8px;}
+.ovXs .ovMeta{margin-top:10px;padding-top:9px;font-size:10.5px;line-height:1.5;}
+.ovXs .ovSep{padding:0 5px;}
+.ovXs .ovMetaTop{font-size:11.5px;line-height:1.5;}
 .ovMetaTop{position:relative;font-size:12.5px;color:rgba(240,236,228,0.76);line-height:1.55;}
 
 /* The banner borrows the overview's material — that card is the visual language for
@@ -3313,6 +3326,12 @@ async function loadRosterOrCarryOn(){
   try{ window._rosterOffline = _rosterOffline; }catch(e){}
   return _rosterOffline;
 }
+// Tables with no time column at all — verified against the live schema, not guessed.
+// sbSelect's default order is logged_at, which 400s every one of these. Send no order
+// clause; callers that want one already pass their own.
+var _SB_NO_ORDER = {availability:1, bookings:1, broadcasts:1, clients:1, coach_moments:1,
+  coach_reposts:1, jv_handled:1, menu_items:1, profiles:1, sales:1, saved_foods:1,
+  session_notes:1, trainer_blocks:1};
 async function sbSelect(table, filter){
   try{
     // Pick the right order column per table — not every table has logged_at
@@ -3337,8 +3356,21 @@ async function sbSelect(table, filter){
     };
     var orderCol = orderColMap[table] || 'logged_at';
     var url = SB_URL+'/rest/v1/'+table+'?'+filter;
-    if(!/(^|[?&])order=/.test(filter)) url += '&order='+orderCol+'.desc';
+    var addedOrder = false;
+    if(!_SB_NO_ORDER[table] && !/(^|[?&])order=/.test(filter)){ url += '&order='+orderCol+'.desc'; addedOrder = true; }
     var res = await fetch(url, {method:'GET', headers:sbHeaders(), signal:_sbTimeout(SB_READ_MS)});
+    // An order column the table doesn't have 400s the WHOLE query, and returning []
+    // makes a schema mistake look exactly like an empty table. That's how goal weights
+    // silently vanished off the trainer board for 51 clients. If the order we added is
+    // what it objected to, drop it and ask again — so a new table can't repeat this.
+    if(res.status===400 && addedOrder){
+      var why=''; try{ why = await res.text(); }catch(e){}
+      if(/does not exist/i.test(why)){
+        console.warn('sbSelect: '+table+' has no '+orderCol+' — retrying unordered');
+        res = await fetch(SB_URL+'/rest/v1/'+table+'?'+filter,
+                          {method:'GET', headers:sbHeaders(), signal:_sbTimeout(SB_READ_MS)});
+      }
+    }
     if(res.ok){
       var data = await res.json();
       return data;
@@ -9980,27 +10012,6 @@ function _jvQuietDays(p, nowMs){
   return Math.max(0, Math.floor(((nowMs||Date.now()) - p.last)/86400000));
 }
 function _jvIsActive(p, nowMs){ return !!(p && p.ever && p.last && (nowMs-p.last) <= _JV_ACTIVE_MS); }
-// What a good week looks like, said in days rather than a score.
-// The actual seven days, not a fraction. A fraction has a denominator, and the
-// denominator reads as a target you fell short of. Top half of each cell is trained,
-// bottom half is food logged. Nothing on a day just looks like nothing on a day.
-function _jvDaysStrip(p, big){
-  var days=(p&&p.days)||[];
-  var on='#f0ece4', off='rgba(240,236,228,0.09)';
-  var h=big?26:20, cells='';
-  for(var i=6;i>=0;i--){                       // days[0] is today, so walk it backwards
-    var d=days[i]||{};
-    var dt=new Date(); dt.setDate(dt.getDate()-i);
-    cells+='<div style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:4px;">'
-      +'<div style="width:100%;height:'+h+'px;border-radius:4px;overflow:hidden;border:1px solid rgba(240,236,228,0.16);display:flex;flex-direction:column;">'
-        +'<div style="flex:1;background:'+(d.w?on:off)+';"></div>'
-        +'<div style="flex:1;background:'+(d.f?on:off)+';border-top:1px solid rgba(7,7,7,0.85);"></div>'
-      +'</div>'
-      +'<div style="font-size:9px;font-weight:700;color:rgba(240,236,228,0.55);line-height:1;">'+dt.toLocaleDateString('en-US',{weekday:'narrow'})+'</div>'
-    +'</div>';
-  }
-  return '<div style="display:flex;gap:4px;margin-top:9px;">'+cells+'</div>';
-}
 // Same phone number the Text button uses; a call is just the other thing you do with it.
 function callClient(code){
   try{ _jvHydratePhones(); }catch(e){}
@@ -10105,11 +10116,11 @@ function jvRenderTriage(){
       +'<div class="jvTTerm">'+_jvTermPill(o.term)+'</div>'
       +'<div class="jvTState">'+_ccLine(o.code)+'</div>'
       +(about?'<div class="jvTAbout">“'+String(about).replace(/</g,'&lt;')+'”</div>':'')
-      // The strip only reaches back seven days, so past that it just looks empty. Say
-      // the number instead of leaving it to be counted.
       +(o.quiet==null ? '<div class="jvTQuiet">No logs yet</div>'
         : (o.quiet>=JV_GONE_QUIET_DAYS ? '<div class="jvTQuiet">'+o.quiet+' days without a log</div>' : ''))
-      + _jvDaysStrip(o.p)
+      // Whether they logged food on Tuesday isn't the glance question — whether they're
+      // moving is. Same overview card as the client card, scaled again.
+      + _jvProgress(o.code,'ovXs')
       // Three peers, same width, each saying what it does. The last one used to be a
       // bare ✓ whose meaning lived in a tooltip nobody hovers on a touchscreen.
       +'<div class="jvTBtns" onclick="event.stopPropagation();">'
@@ -10528,16 +10539,23 @@ function _jvWhenDay(ts){
   if(days<7) return d.toLocaleDateString('en-US',{weekday:'long'});
   return d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
 }
-function _jvProgress(code){
+// size: 'ovSm' on the client card (default), 'ovXs' on a board card. One function so
+// the four states can't drift apart between the two places they're drawn.
+function _jvProgress(code, size){
+  var sz=(size===undefined)?'ovSm':size;
+  var cls='ovCard'+(sz?(' '+sz):'');
+  var tiny=(sz==='ovXs');
   var p=null, goal=null;
   try{ p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null; goal=(jvTriage&&jvTriage.goals)?jvTriage.goals[code]:null; }catch(e){}
   var lw=p&&p.lastWeight, fw=p&&p.firstWeight;
 
   // Say it plainly rather than drawing an empty bar, which reads as "flat".
   if(!lw || isNaN(+lw.val)){
-    return '<div class="ovCard ovSm">'
+    return '<div class="'+cls+'">'
       +'<div class="ovEy">No weigh-ins yet</div>'
-      +'<div class="ovMetaTop">Nothing to measure against. Worth chasing — without a weight there is no progress to show them.</div>'
+      +'<div class="ovMetaTop">'+(tiny
+          ? 'Nothing to measure against yet.'
+          : 'Nothing to measure against. Worth chasing — without a weight there is no progress to show them.')+'</div>'
     +'</div>';
   }
 
@@ -10553,7 +10571,7 @@ function _jvProgress(code){
 
   // No goal on file is its own finding — you can't tell whether it's working.
   if(goal==null || isNaN(+goal)){
-    return '<div class="ovCard ovSm">'
+    return '<div class="'+cls+'">'
       +'<div class="ovEy">No goal weight set</div>'
       +'<div class="ovHead"><span class="ovBig">'+wToDisp(cw)+'</span><span class="ovUnit">'+wUnit()+' now</span></div>'
       +metaHtml
@@ -10575,7 +10593,7 @@ function _jvProgress(code){
     ? '<span class="ovBig">'+wToDisp(cw)+'</span><span class="ovUnit">'+wUnit()+'</span>'
     : '<span class="ovBig">'+wToDisp(togo)+'</span><span class="ovUnit">'+wUnit()+' to go</span>';
 
-  return '<div class="ovCard ovSm">'
+  return '<div class="'+cls+'">'
     +'<div class="ovEy">'+eyebrow+'</div>'
     +'<div class="ovHead">'+head+'</div>'
     +'<div class="ovTrack"><div class="ovFill" style="width:'+pct+'%;"></div>'
@@ -14497,7 +14515,9 @@ function _jvPreviewLine(p){
   var items=[];
   if(p.lastFood&&p.lastFood.ts) items.push({e:(p.lastFood.emoji||'🍽️'), t:p.lastFood.name, ts:p.lastFood.ts});
   if(p.lastWo&&p.lastWo.ts) items.push({e:'🏋️', t:p.lastWo.title, ts:p.lastWo.ts});
-  if(p.lastWeight&&p.lastWeight.ts&&!isNaN(p.lastWeight.val)) items.push({e:'⚖️', t:(Math.round(p.lastWeight.val)+' lbs'), ts:p.lastWeight.ts});
+  // Weight used to be a candidate here. The progress card directly below now says the
+  // weight, the movement and when it was taken, so listing it twice just crowded the
+  // card. This line answers "what did they last log", which is food or training.
   if(!items.length) return '';
   items.sort(function(a,b){return b.ts-a.ts;});
   var it=items[0];
@@ -14654,7 +14674,11 @@ async function renderMobFrontDesk(){
       +'<div style="margin:5px 0 0 15px;">'+_jvTermPill(o.term||_jvTermState(o.code))+'</div>'
       +'<div style="font-size:12px;color:#f0ece4;font-weight:700;margin-top:3px;margin-left:15px;">'+_ccLine(o.code)+'</div>'+(_prev?'<div style="font-size:12px;color:#f5c518;margin-top:4px;margin-left:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+_prev+'</div>':'')+'</div>'
       +'<div style="display:flex;gap:6px;flex-shrink:0;">'+btns+'</div>'
-      +'</div></div>';
+      +'</div>'
+      // Same overview card the cockpit board and the client card use. The front desk
+      // never had the strip this replaces, so this is also the parity fix.
+      + _jvProgress(o.code,'ovXs')
+      +'</div>';
   }
   function msection(title,arr,band,color,say){
     if(!arr.length) return '';
