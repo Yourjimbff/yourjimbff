@@ -498,8 +498,16 @@ body.jv-cockpit #jvDayTabs{display:none;}
 .jvBandSay{font-size:12px;color:rgba(240,236,228,0.78);font-weight:600;letter-spacing:0.2px;}
 /* One card size for everyone. The old grid gave the quiet ones 264px and the good
    ones 184px, so the board literally rendered your failures biggest. */
-.jvBandGrid{display:grid;gap:12px;align-items:start;grid-template-columns:repeat(auto-fill,minmax(224px,1fr));}
-.jvTCard{border-radius:16px;padding:14px 15px;cursor:pointer;transition:transform .12s,border-color .18s;border:1px solid #212121;background:#141414;}
+.jvBandGrid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(224px,1fr));}
+/* One container, whatever's in it. A client with a goal, a bar and a movement line ran
+   117px taller than one without, which lets the grid grade people before you've read a
+   word. The body is fixed and clips; the actions sit below it and can never be cut off. */
+.jvTCard{border-radius:16px;padding:14px 15px;cursor:pointer;transition:transform .12s,border-color .18s;border:1px solid #212121;background:#141414;
+  height:344px;display:flex;flex-direction:column;box-sizing:border-box;}
+.jvTBody{flex:1;min-height:0;overflow:hidden;}
+/* The front desk gets the same treatment — a quiet client's card must not be visibly
+   smaller than an active one there either. Its own height: more width, less wrapping. */
+.fdCard{height:332px;display:flex;flex-direction:column;box-sizing:border-box;}
 .jvTCard:hover{transform:translateY(-2px);border-color:rgba(224,196,152,0.35);}
 .jvTName{font-size:15px;font-weight:800;color:#f0ece4;display:flex;align-items:center;gap:8px;letter-spacing:-0.2px;}
 .jvTTerm{margin-top:7px;}
@@ -620,7 +628,10 @@ body.jv-cockpit #jvDayTabs{display:none;}
 .sMeta{font-size:11px;color:rgba(240,236,228,0.78);margin-top:2px;}
 .sOwed{font-size:11.5px;font-weight:800;color:var(--gold);margin-top:3px;}
 .sAmt{font-size:14px;font-weight:800;color:#f0ece4;flex-shrink:0;}
-.jvTBtns{display:flex;gap:7px;margin-top:12px;}
+.jvTBtns{display:flex;gap:7px;margin-top:12px;flex-shrink:0;}
+/* The action you're on the board to take. Emphasised by contrast, not by gold —
+   sixteen gold buttons in a grid is the same as none. */
+.jvTBtnGo{background:#2b2b2b;border-color:#3b3b3b;}
 /* Peers. Nothing here is the primary action — texting someone isn't a bigger deal
    than making a note about them, and gold on one of them said otherwise. */
 .jvTBtn{flex:1;border-radius:9px;padding:9px 6px;font-size:12px;font-weight:800;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;border:1px solid #2d2d2d;background:#1d1d1d;color:#f0ece4;white-space:nowrap;}
@@ -10105,6 +10116,30 @@ function callClient(code){
 }
 // Opens off the contact line itself — no standing panel. Text or call, a few words,
 // enter. The kind is switchable here so Log is a single entry point.
+// The same one-tap log, from a board card. Anchored off the clicked button rather
+// than an id: the cockpit board and the front desk are both in the DOM at once, so
+// any id here would collide and getElementById would grab whichever came first.
+function jvBoardTalk(el, code){
+  var row=(el&&el.closest)?el.closest('.jvTBtns, .fdBtns'):null; if(!row) return;
+  if(row.getAttribute('data-prev')==null) row.setAttribute('data-prev', row.innerHTML);
+  row.innerHTML='<input type="text" class="jvLogIn" style="margin-top:0;" placeholder="what did you talk about?" autocomplete="off"'
+    +' onclick="event.stopPropagation();"'
+    +' onkeydown="event.stopPropagation();if(event.key===\'Enter\'){event.preventDefault();jvBoardTalkSave(this,\''+code+'\');}'
+    +               'if(event.key===\'Escape\'){jvBoardTalkCancel(this);}">';
+  try{ var i=row.querySelector('input'); if(i) i.focus(); }catch(e){}
+}
+function jvBoardTalkCancel(el){
+  var row=(el&&el.closest)?el.closest('.jvTBtns, .fdBtns'):null; if(!row) return;
+  var prev=row.getAttribute('data-prev'); if(prev!=null){ row.innerHTML=prev; row.removeAttribute('data-prev'); }
+}
+async function jvBoardTalkSave(el, code){
+  var about=el?String(el.value||'').trim():'';
+  jvBoardTalkCancel(el);
+  await jvLogContact(code, 'talk', about, true);
+  try{ showToast('Logged'); }catch(e){}
+  try{ if(jvTriage) jvRenderTriage(); }catch(e){}
+  try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+}
 // The fast path: one tap, an empty box, type what you talked about, enter. Anything
 // that isn't the words themselves is a decision you shouldn't have to make at 40 clients.
 function jvTalkedTo(code){
@@ -10188,6 +10223,10 @@ function jvRenderTriage(){
     var safe=(info.name||'').replace(/'/g,"\\'");
     var about=_ccAbout(o.code);
     return '<div class="jvTCard" data-name="'+(info.name||'').toLowerCase().replace(/"/g,'')+'" onclick="jvOpenDeep(\''+o.code+'\')">'
+      // Fixed-height body, actions pinned below it. A card that reads "no goal set"
+      // and one carrying a bar plus a movement line differed by 117px, and a grid
+      // where the quiet clients are visibly smaller is passing judgment by layout.
+      +'<div class="jvTBody">'
       +'<div class="jvTName">'+nm+'</div>'
       +'<div class="jvTTerm">'+_jvTermPill(o.term)+'</div>'
       +'<div class="jvTState">'+_ccLine(o.code)+'</div>'
@@ -10197,11 +10236,13 @@ function jvRenderTriage(){
       // Whether they logged food on Tuesday isn't the glance question — whether they're
       // moving is. Same overview card as the client card, scaled again.
       + _jvProgress(o.code,'ovXs')
-      // Three peers, same width, each saying what it does. The last one used to be a
-      // bare ✓ whose meaning lived in a tooltip nobody hovers on a touchscreen.
+      +'</div>'
+      // Scanning sixteen people to decide who to reach: the three things you do from
+      // here are talk to them, text them, or clear them. Note opened a modal on top of
+      // the board and is on the client card, where a longer thought belongs.
       +'<div class="jvTBtns" onclick="event.stopPropagation();">'
+        +'<button class="jvTBtn jvTBtnGo" onclick="jvBoardTalk(this,\''+o.code+'\')">Talked to</button>'
         +'<button class="jvTBtn" onclick="textClient(\''+o.code+'\')">Text</button>'
-        +'<button class="jvTBtn" onclick="openClientNotes(\''+o.code+'\',\''+safe+'\')">Note</button>'
         +'<button class="jvTBtn" onclick="jvMarkHandled(\''+o.code+'\')">Clear</button>'
       +'</div>'
     +'</div>';
@@ -14984,25 +15025,25 @@ async function renderMobFrontDesk(){
     var _prev=_jvPreviewLine(per[o.code]);
     var dot={red:'#f5c518',yellow:'#f5c518',green:'#f5c518',dormant:'#6e6e6e',winback:'#5a5a5a'}[band]||'#6e6e6e';
     var safe=(info.name||'').replace(/'/g,"\\'");
-    var btns='';
-    if(band==='red'||band==='yellow'){
-      btns='<button onclick="event.stopPropagation();jvTextAndHandle(\''+o.code+'\')" title="Text" style="background:var(--gold);border:none;border-radius:8px;padding:7px 10px;font-size:13px;color:#000;cursor:pointer;font-family:inherit;line-height:1;">\ud83d\udcac</button>'
-        +'<button onclick="event.stopPropagation();openClientNotes(\''+o.code+'\',\''+safe+'\')" title="Note" style="background:transparent;border:1px solid #282828;border-radius:8px;padding:7px 8px;font-size:11px;color:rgba(240,236,228,0.78);cursor:pointer;line-height:1;opacity:0.7;">\ud83d\udcdd</button>'
-        +'<button onclick="event.stopPropagation();jvMarkHandled(\''+o.code+'\')" title="Caught up" style="background:#1e1e1e;border:1px solid #2d2d2d;border-radius:8px;padding:7px 10px;font-size:12px;color:#f5c518;cursor:pointer;line-height:1;">\u2713</button>';
-    } else {
-      btns='<button onclick="event.stopPropagation();jvMarkHandled(\''+o.code+'\')" title="Caught up" style="background:#1e1e1e;border:1px solid #2d2d2d;border-radius:8px;padding:7px 10px;font-size:12px;color:#f5c518;cursor:pointer;line-height:1;">\u2713</button>';
-    }
-    return '<div onclick="_jvOpenClient(\''+o.code+'\')" style="background:#161616;border:1px solid #272727;border-radius:13px;padding:12px 13px;margin-bottom:8px;cursor:pointer;">'
+    return '<div class="fdCard" onclick="_jvOpenClient(\''+o.code+'\')" style="background:#161616;border:1px solid #272727;border-radius:13px;padding:12px 13px;margin-bottom:8px;cursor:pointer;">'
+      +'<div class="jvTBody">'
       +'<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">'
       +'<div style="min-width:0;flex:1;">'
       +'<div style="font-size:15px;font-weight:800;color:#f0ece4;display:flex;align-items:center;gap:7px;"><span style="width:8px;height:8px;border-radius:50%;background:'+dot+';flex-shrink:0;"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+nm+'</span></div>'
       +'<div style="margin:5px 0 0 15px;">'+_jvTermPill(o.term||_jvTermState(o.code))+'</div>'
       +'<div style="font-size:12px;color:#f0ece4;font-weight:700;margin-top:3px;margin-left:15px;">'+_ccLine(o.code)+'</div>'+(_prev?'<div style="font-size:12px;color:#f5c518;margin-top:4px;margin-left:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+_prev+'</div>':'')+'</div>'
-      +'<div style="display:flex;gap:6px;flex-shrink:0;">'+btns+'</div>'
       +'</div>'
       // Same overview card the cockpit board and the client card use. The front desk
       // never had the strip this replaces, so this is also the parity fix.
       + _jvProgress(o.code,'ovXs')
+      +'</div>'
+      // Same three actions as the cockpit board, in the same words. The icon cluster
+      // said 💬 📝 ✓ with the meaning in a title attribute, which a thumb never sees.
+      +'<div class="jvTBtns fdBtns" onclick="event.stopPropagation();">'
+        +'<button class="jvTBtn jvTBtnGo" onclick="jvBoardTalk(this,\''+o.code+'\')">Talked to</button>'
+        +'<button class="jvTBtn" onclick="textClient(\''+o.code+'\')">Text</button>'
+        +'<button class="jvTBtn" onclick="jvMarkHandled(\''+o.code+'\')">Clear</button>'
+      +'</div>'
       +'</div>';
   }
   function msection(title,arr,band,color,say){
