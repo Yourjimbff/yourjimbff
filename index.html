@@ -22052,6 +22052,71 @@ function _gpDirLine(){
   if(gw<cw-1) return 'You\u2019re leaning down \u2014 <span class="gpVal">'+wToDisp(cw-gw)+' '+u+'</span> to go.';
   return 'You\u2019re holding steady.';
 }
+// ===== THE SECOND PHASE =====
+// A real client is often cutting first and building after. goal_weight stays the
+// CURRENT target — everything that reads a goal (the overview, the banner, the
+// direction, the fuel maths) keeps reading exactly one number and needs no changes.
+// next_goal_weight is the phase after, and it is optional: most people set one goal
+// and should never feel they've left a field blank, so it hides behind a small link
+// until asked for. Two phases, one active. No more.
+var _gpNextOpen=false;
+function gpToggleNext(){ _gpNextOpen=!_gpNextOpen; renderGoalsPage(); }
+function gpSetNextGoal(v){
+  var lb=wToLb(parseFloat(v));
+  profile.next_goal_weight=isNaN(lb)?null:Math.round(lb*10)/10;
+  _gpSave(); renderGoalsPage();
+}
+function gpClearNextGoal(){ profile.next_goal_weight=null; _gpNextOpen=false; _gpSave(); renderGoalsPage(); }
+// Reached when they've got to the target from whichever side they approached it.
+function _gpHitTarget(cw,gw){
+  if(!(cw>0)||!(gw>0)) return false;
+  var base=parseFloat(profile&&(profile.phase_start_weight||profile.start_weight));
+  if(!(base>0)) return Math.abs(cw-gw)<=0.5;
+  return (gw<base) ? (cw<=gw+0.5) : (cw>=gw-0.5);
+}
+// Moving on is a tap, never automatic — hitting a number shouldn't silently rewrite
+// what someone is working toward. The phase baseline resets so the next bar measures
+// from where this phase actually begins; start_weight keeps meaning the true origin.
+function gpAdvancePhase(){
+  var nx=parseFloat(profile&&profile.next_goal_weight);
+  if(!(nx>0)) return;
+  profile.phase_start_weight=parseFloat(profile.weight)||profile.phase_start_weight||profile.start_weight||null;
+  profile.goal_weight=nx; profile.goalWeight=nx;
+  profile.next_goal_weight=null;
+  _gpNextOpen=false;
+  _gpReconcilePhase();
+  _gpSave(); renderGoalsPage();
+  try{ showToast('On to your next goal \u2014 '+wToDisp(nx)+' '+wUnit()); }catch(e){}
+}
+function _gpNextPhase(cw,gw){
+  var p=profile||{};
+  var nx=parseFloat(p.next_goal_weight);
+  var hit=_gpHitTarget(cw,gw);
+
+  // Target reached and somewhere to go next: the whole point of having set it.
+  if(nx>0 && hit){
+    return '<div class="gpDiv"></div>'
+      +'<div class="gpSubH">You\u2019ve hit it.</div>'
+      +'<div class="gpNote" style="margin-top:0;">Next up was <span class="gpVal">'+wToDisp(nx)+' '+wUnit()+'</span>.</div>'
+      +'<div style="margin-top:12px;"><button class="gpBuildB" onclick="gpAdvancePhase()">Start that phase</button></div>';
+  }
+  if(nx>0){
+    return '<div class="gpNote">After that: <span class="gpVal">'+wToDisp(nx)+' '+wUnit()+'</span>. '
+      +'<span onclick="gpToggleNext()" class="gpLink">Change</span></div>'
+      +(_gpNextOpen?('<div style="margin-top:10px;"><label class="gpLbl">Then ('+wUnit()+')</label>'
+        +'<input class="gpIn" type="number" inputmode="decimal" value="'+wToDisp(nx)+'" onchange="gpSetNextGoal(this.value)">'
+        +'<div style="margin-top:10px;"><span onclick="gpClearNextGoal()" class="gpLink">Remove it</span></div></div>'):'');
+  }
+  if(!(gw>0)) return '';                       // nothing to come after nothing
+  if(!_gpNextOpen){
+    // Deliberately a link, not a field. One goal is a complete answer.
+    return '<div class="gpNote"><span onclick="gpToggleNext()" class="gpLink">Add what\u2019s after this</span> \u2014 optional.</div>';
+  }
+  return '<div style="margin-top:12px;"><label class="gpLbl">Then ('+wUnit()+')</label>'
+    +'<input class="gpIn" type="number" inputmode="decimal" value="" placeholder="" onchange="gpSetNextGoal(this.value)">'
+    +'<div class="gpNote">Where you\u2019re heading after this one. Only this phase shows on your cards.</div></div>';
+}
+
 function _gpSecGoal(n){
   var p=profile||{};
   var cw=parseFloat(p.weight), gw=parseFloat(p.goal_weight||p.goalWeight), sw=parseFloat(p.start_weight);
@@ -22066,7 +22131,8 @@ function _gpSecGoal(n){
     +(sw>0?('<div class="gpNote">Started at <span class="gpVal">'+wToDisp(sw)+' '+wUnit()+'</span>. '
         +'<span onclick="try{tlWeighIn(todayDateStr)}catch(e){}" class="gpLink">Log a weigh-in</span> to keep this current.</div>')
       :('<div class="gpNote"><span onclick="try{tlWeighIn(todayDateStr)}catch(e){}" class="gpLink">Log a weigh-in</span> and this keeps itself current.</div>'))
-    +(line?('<div class="gpRead">'+line+'</div>'):'');
+    +(line?('<div class="gpRead">'+line+'</div>'):'')
+    + _gpNextPhase(cw,gw);
 
   // Intensity only makes sense once both numbers exist — direction comes from them.
   var intensity='';
@@ -22629,7 +22695,7 @@ function _wrapBannerHtml(){
 function _gpOverview(){
   var p=profile||{};
   var cw=parseFloat(p.weight), gw=parseFloat(p.goal_weight||p.goalWeight);
-  var sw=parseFloat(p.start_weight);
+  var sw=parseFloat(p.phase_start_weight)||parseFloat(p.start_weight);
   if(!(cw>0)) return '';                       // nothing to say without a weight
   var moved = (sw>0) ? Math.round((cw-sw)*10)/10 : 0;
 
@@ -22748,6 +22814,8 @@ async function gpPersist(){
     start_weight:profile.start_weight||null,
     bed_time:profile.bedtime||null, wake_time:profile.waketime||null,
     coach_style:profile.coach_style||null,
+    next_goal_weight:(profile.next_goal_weight||null),
+    phase_start_weight:(profile.phase_start_weight||null),
     // The client's own day order, when they've moved one. Null means the standard week.
     split_week:(profile.split_week?JSON.stringify(profile.split_week):null),
     // The client's own typed macros. localStorage-only until now, which meant one
@@ -22761,7 +22829,8 @@ async function gpPersist(){
   // Same shape as saveProfileTab's ladder: shed the newest columns rather than lose
   // the whole row. sbUpsert RESOLVES false on an HTTP error, so branch on the value.
   var mid=Object.assign({},full);
-  ['coach_style','split_week','setup_done','bed_time','wake_time','cal_manual','pro_manual',
+  ['coach_style','split_week','setup_done','bed_time','wake_time','next_goal_weight',
+   'phase_start_weight','cal_manual','pro_manual',
    'carb_manual','fat_manual','train_days_manual','cardio_manual','cardio_mode']
     .forEach(function(k){ delete mid[k]; });
   var core={client_code:cl.code, name:cl.name, weight:profile.weight, goal_weight:profile.goal_weight,
