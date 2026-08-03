@@ -3018,6 +3018,97 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
 var SB_URL = 'https://frxptalfyutukmnsvysg.supabase.co';
 var SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZyeHB0YWxmeXV0dWttbnN2eXNnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4NDQzNTksImV4cCI6MjA5NTQyMDM1OX0.NjSM-7wF80oo2ypfRSf2TDRE9NFdT2w8-EjUdago5wk';
 
+// ===== SUPABASE BACKOFF + CIRCUIT BREAKER =====
+// There are 163 raw fetch(SB_URL…) calls and 220 more through the sb* helpers. Patching
+// each one isn't feasible, so this wraps fetch itself and gates anything pointed at
+// Supabase. Everything else — the analyze function, the version check — passes straight
+// through untouched.
+//
+// What this is for: when the database went down, nothing in the app slowed down. Every
+// screen kept firing reads, and the sync queue re-sent every queued row every 60 seconds,
+// forever. Multiply by every client with the app open and a database trying to recover
+// never got the I/O to do it. Failure has to make the app quieter, not equally loud.
+var SB_FAIL_LIMIT = 5;          // consecutive failures before we stop trying altogether
+var SB_BACKOFF_BASE = 1000;
+var SB_BACKOFF_MAX = 30000;
+var SB_PROBE_AFTER_MS = 120000; // once open, how long before one probe is allowed through
+var SB_CB = {fails:0, nextAllowed:0, open:false, trips:0, lastStatus:''};
+
+function _sbBackoffMs(){
+  var n = Math.min(SB_CB.fails, 6);
+  var ms = Math.min(SB_BACKOFF_BASE * Math.pow(2, n - 1), SB_BACKOFF_MAX);
+  // Jitter, because every client backs off on the same clock otherwise and they all
+  // come back at the same instant — which is its own thundering herd.
+  return Math.round(ms * (0.7 + Math.random() * 0.6));
+}
+function _sbIsDown(status){
+  // A 4xx is the server answering — that's not an outage, it's our request being wrong.
+  return !status || status === 429 || status >= 500;
+}
+function _sbNoted(status){
+  SB_CB.fails++; SB_CB.lastStatus = String(status || 'network');
+  SB_CB.nextAllowed = Date.now() + _sbBackoffMs();
+  if(SB_CB.fails >= SB_FAIL_LIMIT && !SB_CB.open){
+    SB_CB.open = true; SB_CB.trips++;
+    SB_CB.nextAllowed = Date.now() + SB_PROBE_AFTER_MS;
+    try{ _sbRenderDown(); }catch(e){}
+  }
+}
+function _sbRecovered(){
+  var was = SB_CB.open;
+  SB_CB.fails = 0; SB_CB.open = false; SB_CB.nextAllowed = 0; SB_CB.trips = 0;
+  if(was){ try{ _sbRenderDown(); }catch(e){} try{ showToast('Back online'); }catch(e){} }
+}
+function sbBlocked(){ return SB_CB.open || Date.now() < SB_CB.nextAllowed; }
+// Manual retry: the client asked, so let exactly one request through and see.
+function sbRetryNow(){
+  SB_CB.open = false; SB_CB.nextAllowed = 0; SB_CB.fails = SB_FAIL_LIMIT - 1;
+  try{ _sbRenderDown(); }catch(e){}
+  try{ showToast('Trying again…'); }catch(e){}
+  try{ if(typeof sqFlush === 'function' && sqCount()) sqFlush(false); }catch(e){}
+  try{ if(typeof loadRosterFromDB === 'function'){ _rosterLoadPromise = null; loadRosterFromDB(); } }catch(e){}
+}
+function _sbRenderDown(){
+  var id = 'sbDownBar', el = document.getElementById(id);
+  if(!SB_CB.open){ if(el) el.remove(); return; }
+  if(!el){
+    el = document.createElement('div'); el.id = id;
+    el.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99998;background:#141414;'
+      + 'border-top:1px solid rgba(240,236,228,0.20);padding:13px 16px calc(13px + env(safe-area-inset-bottom,0px));'
+      + 'display:flex;align-items:center;gap:12px;font-family:\'Plus Jakarta Sans\',sans-serif;';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = '<div style="flex:1;min-width:0;">'
+    + '<div style="font-size:14px;font-weight:800;color:#f0ece4;">Can’t reach the server</div>'
+    + '<div style="font-size:12.5px;color:rgba(240,236,228,0.70);margin-top:2px;line-height:1.45;">'
+      + 'Anything you log is saved on this device and will sync when it’s back.</div></div>'
+    + '<button onclick="sbRetryNow()" style="flex-shrink:0;background:var(--gold);border:none;border-radius:10px;'
+      + 'padding:11px 18px;font-size:13.5px;font-weight:800;color:var(--onaccent);cursor:pointer;'
+      + 'font-family:\'Plus Jakarta Sans\',sans-serif;">Try again</button>';
+}
+(function(){
+  if(typeof window === 'undefined' || !window.fetch) return;
+  var _rawFetch = window.fetch.bind(window);
+  window.fetch = function(input, opts){
+    var u = '';
+    try{ u = (typeof input === 'string') ? input : (input && input.url) || ''; }catch(e){}
+    if(!u || u.indexOf(SB_URL) !== 0) return _rawFetch(input, opts);
+    if(sbBlocked()){
+      // Rejected without touching the network. Callers already treat a rejection as a
+      // failure — they return [] or false — so they degrade exactly as they would have,
+      // just instantly and without adding to the pile.
+      return Promise.reject(new Error('supabase-unreachable'));
+    }
+    return _rawFetch(input, opts).then(function(res){
+      if(_sbIsDown(res && res.status)) _sbNoted(res && res.status); else _sbRecovered();
+      return res;
+    }, function(err){
+      _sbNoted((err && err.name) || 'network');
+      throw err;
+    });
+  };
+})();
+
 function sbHeaders(){
   return {
     'Content-Type':'application/json',
@@ -3844,6 +3935,10 @@ function _sqPermanent(status){ return status===400 || status===422; }
 // server has told us it will never accept it.
 async function sqFlush(manual){
   var q=_sqAll(); if(!q.length){ if(manual) showToast('Nothing waiting'); return; }
+  // Don't spend the queue's retry budget while the breaker is open. Every blocked
+  // attempt would still count toward tries<40, and forty quiet minutes would throw
+  // away rows that never actually reached the server.
+  if(!manual && typeof sbBlocked==='function' && sbBlocked()) return;
   var left=[], sent=0, dropped=0;
   for(var i=0;i<q.length;i++){
     var item=q[i];
@@ -13343,7 +13438,12 @@ function _sDay(v){ try{ var d=new Date(String(v).slice(0,10)+'T12:00:00'); retur
 function _sDateLabel(v){ var d=_sDay(v); return d?d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'no date'; }
 function _sDueLabel(v){
   var d=_sDay(v); if(!d) return '';
-  var days=Math.round((d-new Date())/86400000);
+  // due_date is a calendar date, so compare calendar days. Measuring elapsed
+  // milliseconds made the same balance read "due in 3d" in the morning and
+  // "due in 2d" after lunch.
+  var a=new Date(); a.setHours(0,0,0,0);
+  var b=new Date(d); b.setHours(0,0,0,0);
+  var days=Math.round((b-a)/86400000);
   if(days<0) return 'overdue by '+Math.abs(days)+'d';
   if(days===0) return 'due today';
   if(days===1) return 'due tomorrow';
