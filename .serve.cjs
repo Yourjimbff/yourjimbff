@@ -9,4 +9,4 @@ http.createServer((req,res)=>{
   const type=ext==='.html'?'text/html':ext==='.js'?'text/javascript':ext==='.json'?'application/json':'text/plain';
   res.writeHead(200,{'Content-Type':type+'; charset=utf-8'});
   fs.createReadStream(f).pipe(res);
-}).listen(8899,()=>console.log('serving on http://localhost:8899'));
+}).listen(process.env.PORT||8899,function(){ console.log('serving on '+(process.env.PORT||8899)); });
