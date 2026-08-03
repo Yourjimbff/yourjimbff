@@ -512,6 +512,7 @@ body.jv-cockpit #jvDayTabs{display:none;}
 .jvMoveBtns{display:flex;gap:8px;margin-top:15px;max-width:440px;}
 .jvMoveAbout{font-size:12.5px;color:rgba(240,236,228,0.78);margin-top:8px;line-height:1.5;}
 .jvTAbout{font-size:12px;color:rgba(240,236,228,0.78);margin-top:6px;line-height:1.45;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}
+.jvTQuiet{font-size:12px;font-weight:800;color:#f0ece4;margin-top:6px;}
 .jvEmpty{padding:30px 20px;color:rgba(240,236,228,0.78);font-size:13px;}
 .jvSetup{background:#141414;border:1px solid rgba(245,197,24,0.32);border-radius:11px;padding:11px 13px;margin-bottom:14px;font-size:12.5px;color:#f0ece4;line-height:1.5;}
 .jvSetup button{margin-left:6px;background:var(--gold);border:none;border-radius:7px;padding:5px 10px;font-size:11.5px;font-weight:800;color:var(--onaccent);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;}
@@ -9666,10 +9667,9 @@ function _jvAgoLabel(months){
 function _jvTermState(code, p){
   var r=(typeof CLIENTS!=='undefined')?CLIENTS[code]:null;
   if(!r) return {state:'expired', label:'no term set', active:false};
-  // Only claim "never started" when the board has actually loaded and can say so.
-  var knowActivity=false; try{ knowActivity=!!(jvTriage&&jvTriage.per); }catch(e){}
-  if(p===undefined && knowActivity){ try{ p=jvTriage.per[code]; }catch(e){} }
-  if(knowActivity && !(p&&p.ever)) return {state:'nostart', label:'never started', active:false};
+  // The term is checked before activity, always. This ran the other way round, so a
+  // client with a term and no logs came back "never started" — activity hiding the
+  // fact that they're paying, which is the one thing it must never do.
   var months=(r.term_months!=null&&!isNaN(+r.term_months))?+r.term_months:null;
   var since=_jvMonthsSince(r.started_at);
   if(months && since!=null){
@@ -9679,9 +9679,10 @@ function _jvTermState(code, p){
     }
     return {state:'expired', label:'term ended '+_jvAgoLabel(since-months), active:false, monthsTotal:months};
   }
-  // No dates on file. PAID_INTERM used to stand in here and tier==='vip' used to
-  // force in-term; both are retired — a VIP whose term ended is still out of term,
-  // and the hardcoded list can't expire. Set a term and this answers properly.
+  // No term on file — only now can activity say anything.
+  var knowActivity=false; try{ knowActivity=!!(jvTriage&&jvTriage.per); }catch(e){}
+  if(p===undefined && knowActivity){ try{ p=jvTriage.per[code]; }catch(e){} }
+  if(knowActivity && !(p&&p.ever)) return {state:'nostart', label:'never started', active:false};
   return {state:'expired', label:'no term set', active:false};
 }
 var _JV_TERM_STYLE={
@@ -9921,6 +9922,13 @@ function jvToggleHandled(){ var l=document.getElementById('jvHandledList'),c=doc
 // Active = logged in the last 14 days. That's the business — not the roster count,
 // which was 110 and mostly people who never started or went cold a year ago.
 var _JV_ACTIVE_MS=14*86400000;
+var JV_GONE_QUIET_DAYS=14;      // the same "long stretch" either side of the term line
+// Days since their last log of any kind. Null when they have never logged — which is a
+// different thing from zero and must not collapse into it.
+function _jvQuietDays(p, nowMs){
+  if(!p || !p.ever || !p.last) return null;
+  return Math.max(0, Math.floor(((nowMs||Date.now()) - p.last)/86400000));
+}
 function _jvIsActive(p, nowMs){ return !!(p && p.ever && p.last && (nowMs-p.last) <= _JV_ACTIVE_MS); }
 // What a good week looks like, said in days rather than a score.
 // The actual seven days, not a fraction. A fraction has a denominator, and the
@@ -10002,22 +10010,35 @@ function jvRenderTriage(){
   var nowMs=jvTriage.now||Date.now();
   var _hidden=getHiddenClientSet();
   var codes=Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer && !_hidden[k]; });
-  var live=[], dormant=[], winback=[], notStarted=[], activeN=0, spokeToday=0;
+  // Term decides the bucket; activity only sorts within it. It used to run the other
+  // way — the activity band claimed people first and the term was never consulted — so
+  // a client in month 10 of 12 who went quiet for a fortnight landed in win-backs.
+  var live=[], notOnboarded=[], goneQuiet=[], lapsed=[], winback=[], notStarted=[];
+  var intermN=0, spokeToday=0;
   codes.forEach(function(code){
     var p=per[code];
     var term=_jvTermState(code,p);
-    var cls=_jvClassify(p, nowMs);
-    if(!cls){ notStarted.push(code); return; }
+    var everLogged=!!(p&&p.ever);
+    var quiet=_jvQuietDays(p, nowMs);
     var since=_ccDaysSince(code);
-    var o={code:code, cls:cls, cnt:p.cnt, p:p, term:term,
-           since:since, unanswered:_ccUnanswered(code)};
-    if(_jvIsActive(p, nowMs)) activeN++;
+    var o={code:code, cls:_jvClassify(p, nowMs)||{band:'none',reason:''}, cnt:(p&&p.cnt)||[0,0,0,0,0,0,0],
+           p:p, term:term, quiet:quiet, since:since, unanswered:_ccUnanswered(code)};
     if(since===0) spokeToday++;
-    if(cls.band==='winback'){ winback.push(o); return; }
-    if(cls.band==='dormant'){ dormant.push(o); return; }
-    // Someone whose term has ended isn't a to-do — that's a win-back conversation.
-    if(term.active) live.push(o); else winback.push(o);
+    if(term.active){
+      intermN++;
+      // Being paid for someone you haven't onboarded is the most valuable thing on
+      // this screen, and it used to read as "never started" alongside people who
+      // signed up for nothing and vanished.
+      if(!everLogged){ notOnboarded.push(o); return; }
+      if(quiet!=null && quiet>=JV_GONE_QUIET_DAYS){ goneQuiet.push(o); return; }
+      live.push(o); return;
+    }
+    // Out of term. Now — and only now — activity decides.
+    if(!everLogged){ notStarted.push(code); return; }
+    if(quiet!=null && quiet>=JV_GONE_QUIET_DAYS) winback.push(o); else lapsed.push(o);
   });
+  var byQuiet=function(a,b){ return (b.quiet||0)-(a.quiet||0); };
+  notOnboarded.sort(byQuiet); goneQuiet.sort(byQuiet); lapsed.sort(byQuiet);
   // Longest since you spoke, first. Never-contacted sorts to the top, because that's
   // the biggest gap there is.
   function gap(o){ return (o.since==null) ? 99999 : o.since; }
@@ -10034,6 +10055,10 @@ function jvRenderTriage(){
       +'<div class="jvTTerm">'+_jvTermPill(o.term)+'</div>'
       +'<div class="jvTState">'+_ccLine(o.code)+'</div>'
       +(about?'<div class="jvTAbout">“'+String(about).replace(/</g,'&lt;')+'”</div>':'')
+      // The strip only reaches back seven days, so past that it just looks empty. Say
+      // the number instead of leaving it to be counted.
+      +(o.quiet==null ? '<div class="jvTQuiet">No logs yet</div>'
+        : (o.quiet>=JV_GONE_QUIET_DAYS ? '<div class="jvTQuiet">'+o.quiet+' days without a log</div>' : ''))
       + _jvDaysStrip(o.p)
       // Three peers, same width, each saying what it does. The last one used to be a
       // bare ✓ whose meaning lived in a tooltip nobody hovers on a touchscreen.
@@ -10054,7 +10079,7 @@ function jvRenderTriage(){
     html+='<div class="jvSetup">Contact records are saving on this device only until the <b>client_contacts</b> table exists. Create it once and they sync everywhere. <button onclick="jvCopyContactsSQL()">Copy the SQL</button></div>';
   }
 
-  var inactiveN=notStarted.length+dormant.length+winback.length;
+  var inactiveN=notStarted.length+lapsed.length+winback.length;
   // Everyone the board is filtering out, with the reason and a way to act on it.
   // These people were simply invisible before — no list, no way back, no way to delete.
   if(window._jvView==='roster'){
@@ -10078,9 +10103,9 @@ function jvRenderTriage(){
               +'<span class="jvChipTerm">'+(term?term.label:'')+'</span></div>';
           }).join('')+'</div></div>';
     }
-    html+=shelf('To win back','term ended or two weeks quiet',winback,false);
-    html+=shelf('Quiet a week or more','still in term',dormant,false);
-    html+=shelf('Never started','signed up, never logged',notStarted,true);
+    html+=shelf('Lapsed, still logging','term ended but they haven’t stopped — a renewal',lapsed,false);
+    html+=shelf('To win back','term ended and quiet two weeks or more',winback,false);
+    html+=shelf('Never started','no term, never logged',notStarted,true);
     if(!inactiveN) html+='<div class="jvEmpty">Nobody sitting here. Everyone on your roster is active.</div>';
     wall.innerHTML=html; _jvReFilter(); return;
   }
@@ -10088,11 +10113,21 @@ function jvRenderTriage(){
   var _logT=0; codes.forEach(function(c){ if(per[c]&&per[c].cnt[0]>=1) _logT++; });
   var _woT=0; Object.keys((jvData&&jvData.woByClient)||{}).forEach(function(c){ if(!_hidden[c]&&CLIENTS[c]&&!CLIENTS[c].isTrainer&&((jvData.woByClient[c]||[]).length>=1)) _woT++; });
   html+='<div class="jvStats">'
-    +'<div class="jvStat"><div class="jvStatN">'+activeN+'</div><div class="jvStatL">active clients</div></div>'
+    +'<div class="jvStat"><div class="jvStatN">'+intermN+'</div><div class="jvStatL">clients in term</div></div>'
     +'<div class="jvStat"><div class="jvStatN">'+spokeToday+'</div><div class="jvStatL">spoke to today</div></div>'
     +'<div class="jvStat jvTap" onclick="jvStatList(\'checkedin\')"><div class="jvStatN">'+_logT+'</div><div class="jvStatL">logged today</div></div>'
     +'<div class="jvStat jvTap" onclick="jvStatList(\'workedout\')"><div class="jvStatN">'+_woT+'</div><div class="jvStatL">trained today</div></div>'
     +'</div>';
+
+  // Being paid for someone who has never logged is the most valuable thing here, so
+  // it sits above everything, including Your move.
+  if(notOnboarded.length){
+    html+='<div class="jvBand"><div class="jvBandHead">'
+      +'<span class="jvBandTitle">In term, hasn’t started yet</span>'
+      +'<span class="jvBandCount">'+notOnboarded.length+'</span>'
+      +'<span class="jvBandSay">you’re being paid — get them going</span></div>'
+      +grid(notOnboarded)+'</div>';
+  }
 
   // One name. Longest since you spoke — but someone you've already chased and who
   // hasn't come back isn't your move, it's theirs, so they drop down the list.
@@ -10123,6 +10158,16 @@ function jvRenderTriage(){
       +'<span class="jvBandCount">'+live.length+'</span>'
       +'<span class="jvBandSay">longest first</span></div>'
       +grid(live)+'</div>';
+  }
+
+  // Still paying, gone dark. On the board, not in win-backs — that's a coaching
+  // problem, not a sales one.
+  if(goneQuiet.length){
+    html+='<div class="jvBand"><div class="jvBandHead">'
+      +'<span class="jvBandTitle">In term, gone quiet</span>'
+      +'<span class="jvBandCount">'+goneQuiet.length+'</span>'
+      +'<span class="jvBandSay">'+JV_GONE_QUIET_DAYS+'+ days without a log</span></div>'
+      +grid(goneQuiet)+'</div>';
   }
 
   if(handled.length){
@@ -14446,13 +14491,22 @@ async function renderMobFrontDesk(){
   // --- Full Front Desk triage bands on mobile ---
   var bands={red:[],yellow:[],green:[],dormant:[],winback:[]}; 
   codes.forEach(function(code){
-    var p=per[code]; var cls=(typeof _jvClassify==='function')?_jvClassify(p, jvTriage.now):null; if(!cls) return;
+    var p=per[code];
     var term=_jvTermState(code,p);
-    var o={code:code,cls:cls,cnt:p.cnt,term:term};
-    // Same rule as the desktop board: a quiet client whose term has ended is a
-    // win-back, not something to chase this morning.
-    if((cls.band==='red'||cls.band==='yellow') && !term.active){ bands.winback.push(o); return; }
-    bands[cls.band].push(o);
+    var everLogged=!!(p&&p.ever);
+    var quiet=_jvQuietDays(p, jvTriage.now);
+    var cls=(typeof _jvClassify==='function')?_jvClassify(p, jvTriage.now):null;
+    // Same rule as the desktop board, in the same order: the term decides the bucket
+    // and activity only sorts inside it. An in-term client never lands in win-backs.
+    var o={code:code, cls:cls||{band:'green',reason:''}, cnt:(p&&p.cnt)||[0,0,0,0,0,0,0], term:term, quiet:quiet};
+    if(term.active){
+      if(!everLogged){ o.cls={band:'red', reason:'hasn’t started yet', urg:99}; bands.red.push(o); return; }
+      if(quiet!=null && quiet>=JV_GONE_QUIET_DAYS){ o.cls={band:'red', reason:quiet+' days without a log', urg:quiet}; bands.red.push(o); return; }
+      bands[o.cls.band].push(o); return;
+    }
+    if(!everLogged) return;                       // no term, never logged — off the board
+    if(quiet!=null && quiet>=JV_GONE_QUIET_DAYS){ bands.winback.push(o); return; }
+    bands.dormant.push(o);                        // lapsed but still logging
   });
   bands.red.sort(function(a,b){return (b.cls.urg||0)-(a.cls.urg||0);});
   bands.yellow.sort(function(a,b){return b.cnt[0]-a.cnt[0];});
@@ -14504,7 +14558,7 @@ html+=msection('\ud83d\udc8e Paid \u00b7 in term', paidPin,'green','var(--gold)'
   html+=msection('Logging', bands.green,'green','#f5c518','');
   html+=msection('Needs you', bands.red,'red','#f5c518','reach out today');
   html+=msection('On the bubble', bands.yellow,'yellow','#f5c518','a nudge keeps them');
-  html+=msection('Quiet a week or more', bands.dormant,'dormant','#9a9a9a','');
+  html+=msection('Lapsed, still logging', bands.dormant,'dormant','#9a9a9a','term ended, still using the app');
 
   // Get-them-started batch (just-added clients who haven't logged yet) — minus ones you've cleared.
   var _started=_jvGotStartedSet();
