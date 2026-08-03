@@ -536,6 +536,9 @@ body.jv-cockpit #jvDayTabs{display:none;}
 .jvBlockMuted{font-size:13px;color:rgba(240,236,228,0.70);padding:10px 0;}
 .jvContactLine{font-size:16px;font-weight:700;color:#f0ece4;line-height:1.4;}
 .jvContactAbout{font-size:14px;color:rgba(240,236,228,0.70);margin-top:6px;line-height:1.5;}
+/* An attempt with no answer is a fact worth one tap, and no more prominence than that. */
+.jvNoReply{margin-top:10px;font-size:13px;font-weight:700;color:rgba(240,236,228,0.62);
+  cursor:pointer;display:inline-block;border-bottom:1px solid rgba(240,236,228,0.22);padding-bottom:1px;}
 .jvStripKey{font-size:12px;color:rgba(240,236,228,0.70);margin-top:10px;line-height:1.5;}
 /* Text is the thing you came to do. Call is the other way to reach them. The rest are
    things you might do — they used to all render identically. */
@@ -9958,7 +9961,9 @@ function _ccUnanswered(code){
   for(var i=0;i<a.length;i++){ if(a[i].r) break; n++; }
   return n;
 }
-var _CC_KIND={text:'text', call:'call'};
+// 'talk' is a conversation that happened, with no channel worth recording — the fast
+// path off the card. text/call stay for anything logged deliberately as one or the other.
+var _CC_KIND={text:'text', call:'call', talk:'talk'};
 async function jvLogContact(code, kind, about, replied){
   if(!code) return false;
   kind=_CC_KIND[kind]?kind:'text';
@@ -10026,6 +10031,7 @@ function _ccLine(code){
   var when=(d<=0?'today':(d===1?'yesterday':d+' days ago'));
   if(un>=2) return 'Reached out '+(un===2?'twice':un+' times')+', no reply · last '+when;
   if(un===1) return 'Reached out '+when+', no reply yet';
+  if(l.k==='talk') return 'Last contact '+when;
   return 'Last contact '+when+' · '+(l.k==='call'?'call':'text');
 }
 function _ccAbout(code){ var l=_ccLast(code); return (l&&l.a)?l.a:''; }
@@ -10099,45 +10105,38 @@ function callClient(code){
 }
 // Opens off the contact line itself — no standing panel. Text or call, a few words,
 // enter. The kind is switchable here so Log is a single entry point.
-function jvContactStart(code, kind){
+// The fast path: one tap, an empty box, type what you talked about, enter. Anything
+// that isn't the words themselves is a decision you shouldn't have to make at 40 clients.
+function jvTalkedTo(code){
   var host=document.getElementById('ccHost_'+code); if(!host) return;
-  window._ccKind=window._ccKind||{}; window._ccKind[code]=(kind==='call'?'call':'text');
-  function seg(k,label){
-    var on=(window._ccKind[code]===k);
-    return '<button onclick="jvContactKind(\''+code+'\',\''+k+'\')" class="jvSeg'+(on?' on':'')+'">'+label+'</button>';
-  }
-  host.innerHTML='<div class="jvLogRow">'+seg('text','Texted')+seg('call','Called')+'</div>'
-    + '<input id="ccIn_'+code+'" type="text" placeholder="what was it about" autocomplete="off"'
-    + ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();jvContactSave(\''+code+'\');}if(event.key===\'Escape\'){jvContactCancel(\''+code+'\');}"'
+  host.innerHTML='<div class="jvBlockLabel">Talked to</div>'
+    + '<input id="ccIn_'+code+'" type="text" placeholder="what did you talk about?" autocomplete="off"'
+    + ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();jvTalkedSave(\''+code+'\');}'
+    +             'if(event.key===\'Escape\'){jvContactCancel(\''+code+'\');}"'
     + ' class="jvLogIn">'
-    + '<label class="jvLogNo"><input id="ccNo_'+code+'" type="checkbox">No reply yet</label>'
-    + '<div class="jvLogRow" style="margin-top:11px;">'
-      + '<button onclick="jvContactSave(\''+code+'\')" class="jvSeg on">Save</button>'
-      + '<button onclick="jvContactCancel(\''+code+'\')" class="jvSeg">Cancel</button>'
-    + '</div>';
+    + '<div class="jvNoReply" onclick="jvContactCancel(\''+code+'\')">Cancel</div>';
   try{ var el=document.getElementById('ccIn_'+code); if(el) el.focus(); }catch(e){}
 }
-function jvContactKind(code,k){
-  window._ccKind=window._ccKind||{};
-  var el=document.getElementById('ccIn_'+code), keep=el?el.value:'';
-  var no=document.getElementById('ccNo_'+code), noChecked=!!(no&&no.checked);
-  jvContactStart(code,k);
-  try{ var e2=document.getElementById('ccIn_'+code); if(e2){ e2.value=keep; e2.focus(); } }catch(e){}
-  try{ var n2=document.getElementById('ccNo_'+code); if(n2) n2.checked=noChecked; }catch(e){}
+async function jvTalkedSave(code){
+  var i=document.getElementById('ccIn_'+code);
+  var about=i?String(i.value||'').trim():'';
+  await jvLogContact(code, 'talk', about, true);
+  jvContactCancel(code);
+  try{ showToast('Logged'); }catch(e){}
+  try{ if(jvTriage) jvRenderTriage(); }catch(e){}
+  try{ if(window.innerWidth<1024 && typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+}
+// No box: there is nothing to write down about a message that got no answer.
+async function jvNoReply(code){
+  await jvLogContact(code, 'text', '', false);
+  jvContactCancel(code);
+  try{ showToast('Logged — no reply yet'); }catch(e){}
+  try{ if(jvTriage) jvRenderTriage(); }catch(e){}
+  try{ if(window.innerWidth<1024 && typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
 }
 function jvContactCancel(code){
   var host=document.getElementById('ccHost_'+code); if(!host) return;
   host.innerHTML=_jvContactInner(code, _ccAbout(code));
-}
-async function jvContactSave(code){
-  var kind=(window._ccKind&&window._ccKind[code])||'text';
-  var i=document.getElementById('ccIn_'+code), n=document.getElementById('ccNo_'+code);
-  var about=i?String(i.value||'').trim():'';
-  var replied=!(n&&n.checked);
-  await jvLogContact(code, kind, about, replied);
-  jvContactCancel(code);
-  try{ showToast(replied ? ('Logged — '+(kind==='call'?'call':'text')) : 'Logged — no reply yet'); }catch(e){}
-  try{ if(jvTriage) jvRenderTriage(); }catch(e){}
 }
 function jvSetView(v){ window._jvView=(window._jvView===v?null:v); jvRenderTriage(); }
 function jvShowAllChase(){ window._jvChaseOpen=!window._jvChaseOpen; jvRenderTriage(); }
@@ -10556,20 +10555,9 @@ function _jvSayBlock(code){
     } else { row('Their why', why); }
   }
 
-  // Where the number actually is, in their words: from, to, and what they asked for.
-  var goal=null; try{ goal=(jvTriage&&jvTriage.goals)?jvTriage.goals[code]:null; }catch(e){}
-  if(p && p.firstWeight && p.lastWeight){
-    var w='Started '+Math.round(p.firstWeight.val)+' lb · now '+Math.round(p.lastWeight.val)+' lb';
-    if(goal!=null && !isNaN(goal)) w+=' · target '+Math.round(goal)+' lb';
-    row('Weight', w);
-  } else if(goal!=null && !isNaN(goal)){
-    row('Weight','Target '+Math.round(goal)+' lb — no weigh-ins to compare yet');
-  }
-
-  var last=[];
-  if(p && p.lastWo && p.lastWo.ts) last.push((p.lastWo.title||'Workout').replace(/</g,'&lt;')+' · '+_jvRelAgo(p.lastWo.ts));
-  if(p && p.lastFood && p.lastFood.ts) last.push((p.lastFood.name||'a meal').replace(/</g,'&lt;')+' · '+_jvRelAgo(p.lastFood.ts));
-  if(last.length) row('Last logged', last.join('<br>'));
+  // Weight and "last logged" used to live here. The progress card above now says the
+  // weight, the goal and the movement, and the recent history below says what they
+  // logged and when — said twice, they just pushed the useful rows down the card.
 
   if(d && d.bookings){
     var calls=d.bookings+' call'+(d.bookings===1?'':'s');
@@ -11044,14 +11032,19 @@ function _jvContactHead(code){
   return '<div id="ccHost_'+code+'" class="jvBlock">'+_jvContactInner(code, about)+'</div>';
 }
 function _jvContactInner(code, about){
-  return '<div class="jvBlockLabel">Contact</div>'
+  return '<div class="jvBlockLabel">Talked to</div>'
     + '<div class="jvContactLine">'+_ccLine(code)+'</div>'
     + (about ? '<div class="jvContactAbout">Last time: “'+String(about).replace(/</g,'&lt;')+'”</div>' : '')
+    // One tap to a box, type what you talked about, enter. No kind picker, no reply
+    // toggle, no save button — those were four decisions to record one conversation.
     + '<div class="jvActs">'
-      + '<button class="jvAct jvActPrimary" onclick="textClient(\''+code+'\')">Text</button>'
+      + '<button class="jvAct jvActPrimary" onclick="jvTalkedTo(\''+code+'\')">Talked to</button>'
+      + '<button class="jvAct jvActSecondary" onclick="textClient(\''+code+'\')">Text</button>'
       + '<button class="jvAct jvActSecondary" onclick="callClient(\''+code+'\')">Call</button>'
-      + '<button class="jvAct jvActTertiary" onclick="jvContactStart(\''+code+'\',\'text\')">Log a contact</button>'
-    + '</div>';
+    + '</div>'
+    // Reached out and heard nothing is its own fact, and it's what stops silence
+    // reading as your failure. One tap, no box — there's nothing to type.
+    + '<div class="jvNoReply" onclick="jvNoReply(\''+code+'\')">Reached out, no reply</div>';
 }
 // How this client asked to be coached. Saves inert on their side for this ship —
 // this is the whole reason Turbo Roast went out as a placeholder, so it has to be
@@ -11076,18 +11069,25 @@ function jvOpenDeep(code){
   var open=!!window._jvDeepExpanded;
   var p=null; try{ p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null; }catch(e){}
 
+  // Order is what you need in the first two seconds: who, whether you've spoken,
+  // how they're tracking, where they are in the term, then what they've actually been
+  // doing. Recent food and training used to sit behind "Everything else" — it's the
+  // main thing the card gets opened for, so it's in the card now.
   var head=
     '<div class="jvIdRow">'
     + '<div class="jvIdWho">' + _jvIdentity(code) + '</div>'
     + '<div class="jvIdClose" onclick="jvCloseDeep()">×</div>'
     + '</div>'
-    + _jvContractLine(code)
-    + _jvCoachStyle(code)
     + _jvContactHead(code)
-    + _jvSayBlock(code)
     + '<div class="jvBlock">'
       + '<div class="jvBlockLabel">Progress</div>'
       + _jvProgress(code)
+    + '</div>'
+    + _jvContractLine(code)
+    + _jvSayBlock(code)
+    + '<div class="jvBlock">'
+      + '<div class="jvBlockLabel">Recent food and training</div>'
+      + '<div id="jvDeepDays"><div class="jvBlockMuted">Loading…</div></div>'
     + '</div>'
     + '<div class="jvActs jvActsQuiet">'
       + '<button class="jvAct jvActTertiary" onclick="openClientNotes(\''+code+'\',\''+safeName+'\')">Private note</button>'
@@ -11097,12 +11097,12 @@ function jvOpenDeep(code){
     + '<div class="jvDeepMore" onclick="jvDeepToggleMore(\''+code+'\')">'+(open?'Show less':'Everything else')+'</div>';
 
   document.getElementById('jvDeepInner').innerHTML = head + (open
-    ? ('<div id="cnHost_'+code+'"></div>'
+    ? (_jvCoachStyle(code)
+      + '<div id="cnHost_'+code+'"></div>'
       + '<div id="jvDeepWeight"></div>'
       + '<div id="jvDeepProgram"></div>'
       + '<div id="jvDeepWeak"></div>'
       + '<div id="jvDeepFoods"></div>'
-      + '<div id="jvDeepDays"><div class="jvBlockMuted">Loading recent history…</div></div>'
       + '<div id="jvDeepPhotos"></div>'
       + _jvSalesBlock(code)
       + '<div class="jvActs jvActsQuiet" style="margin-top:30px;"><button class="jvAct jvActTertiary" onclick="jvSetActive(\''+code+'\','+(info.active===false?'true':'false')+')">'
@@ -11114,9 +11114,11 @@ function jvOpenDeep(code){
   document.body.classList.add('jv-deep-open');
   window._jvDeepCode=code; window._jvDeepOpenAt=Date.now();
   window._jvDeepMode=jvMode;
+  // Recent history is in the card itself now, so it loads whether or not the rest
+  // is expanded — it's the thing being looked for, not an extra.
+  _jvDeepHistory(code);
   if(open){
     try{ cnLoad(code).then(function(){ _cnRepaint(code); }); }catch(e){}
-    _jvDeepHistory(code);
     _jvLoadDeepProgram(code);
     _jvLoadDeepWeight(code);
     _jvLoadDeepPhotos(code);
