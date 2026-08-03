@@ -547,6 +547,34 @@ body.jv-cockpit #jvDayTabs{display:none;}
 .jvActTertiary:hover{color:#f0ece4;}
 .jvNoteLabel{font-size:12px;font-weight:700;color:rgba(240,236,228,0.70);}
 .jvNoteLabel b{color:#f0ece4;font-weight:800;}
+/* Contract sits under the name. The whole line opens one editor holding all of it —
+   start date, term, tier, fee, phone — because "no term set" is the state most often
+   needing a fix and it used to be read-only at the top and editable only at the bottom. */
+.jvCtLine{display:flex;align-items:center;gap:10px;margin-top:9px;cursor:pointer;}
+.jvCtBits{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0;flex:1;}
+.jvCtVal{font-size:14px;font-weight:700;color:#f0ece4;}
+.jvCtDot{color:rgba(240,236,228,0.34);}
+.jvCtEdit{flex-shrink:0;font-size:13px;font-weight:800;color:rgba(240,236,228,0.70);text-decoration:underline;text-underline-offset:3px;}
+.jvCtLine:hover .jvCtEdit{color:#f0ece4;}
+.jvCtSheet{background:#141414;border-top:1px solid #2a2a2a;border-radius:18px 18px 0 0;width:100%;max-width:520px;
+  max-height:92vh;overflow-y:auto;padding:20px 20px calc(24px + env(safe-area-inset-bottom,0px));
+  font-family:'Plus Jakarta Sans',sans-serif;box-sizing:border-box;}
+.jvCtHead{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:20px;}
+.jvCtTitle{font-size:20px;font-weight:800;color:#f0ece4;}
+.jvCtX{font-size:26px;line-height:1;color:rgba(240,236,228,0.70);cursor:pointer;padding:0 6px;}
+.jvCtField{margin-bottom:18px;}
+.jvCtLabel{font-size:13px;font-weight:700;color:rgba(240,236,228,0.70);margin-bottom:8px;}
+.jvCtRow{display:flex;gap:8px;}
+.jvCtInput{width:100%;box-sizing:border-box;background:#1b1b1b;border:1px solid #2d2d2d;border-radius:11px;
+  padding:13px 14px;font-size:15px;color:#f0ece4;font-family:inherit;outline:none;}
+.jvCtInput:focus{border-color:rgba(240,236,228,0.40);}
+.jvCtRead{font-size:15px;font-weight:700;color:#f0ece4;padding:4px 0;}
+.jvCtLink{font-size:13px;font-weight:800;color:rgba(240,236,228,0.70);text-decoration:underline;
+  text-underline-offset:3px;cursor:pointer;margin-left:8px;}
+.jvCtNote{font-size:12.5px;color:rgba(240,236,228,0.70);margin-top:8px;}
+.jvCtSave{width:100%;background:var(--gold);border:none;border-radius:12px;padding:15px;font-size:15px;
+  font-weight:800;color:var(--onaccent);cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;margin-top:4px;}
+.jvCtSheet .jvDanger{margin:22px 0 0;}
 /* The client card: four lines and a strip. What used to be here was four boxes
    stacked on each other, none of which earned the space. */
 .jvDeepLine{font-size:13.5px;font-weight:700;color:#f0ece4;line-height:1.45;margin-top:9px;}
@@ -10277,18 +10305,6 @@ function _jvSavePhone(code,num){
   // Write to the clients roster table too — that's where the feed/Text button now reads phones from.
   try{ fetch(SB_URL+'/rest/v1/clients?code=eq.'+encodeURIComponent(code), {method:'PATCH', headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}), body: JSON.stringify({phone: num||null})}); }catch(e){}
 }
-function jvEditPhone(code){
-  var info=CLIENTS[code]||{}; var cur=info.phone||'';
-  var v=prompt('Phone number for '+(info.name||code)+'\nInclude country code, e.g. +15551234567:', cur);
-  if(v===null) return;
-  v=String(v).trim();
-  if(v && !/[0-9]/.test(v)){ if(window.showToast) showToast('That does not look like a number'); return; }
-  _jvSavePhone(code,v);
-  if(window.showToast) showToast(v?'Number saved':'Number cleared');
-  try{ jvOpenDeep(code); }catch(e){}
-  if(v){ try{ textClient(code); }catch(e){} }
-}
-
 // What this client has paid, and what they still owe. Reads the same sales rows the
 // revenue card does, so the two can never disagree.
 function _jvSalesBlock(code){
@@ -10379,16 +10395,126 @@ function jvDeepToggleMore(code){
   window._jvDeepExpanded=!window._jvDeepExpanded;
   jvOpenDeep(code);
 }
+// Contract sits directly under the name, because "no term set" is the thing most
+// often needing a fix and it used to be the furthest thing from where you're looking —
+// read-only at the top, editable only after scrolling past everything else.
+// The whole line opens one editor holding all of it.
+function _jvContractLine(code){
+  var r=CLIENTS[code]||{};
+  var t=_jvTermState(code);
+  var bits=[];
+  bits.push(_jvTermPill(t));
+  if(r.tier) bits.push('<span class="jvCtVal">'+_jvTierLabel(r.tier)+'</span>');
+  var paid=(typeof clientPaidTotal==='function')?clientPaidTotal(code):null;
+  if(paid!=null) bits.push('<span class="jvCtVal">$'+Math.round(paid).toLocaleString()+'</span>');
+  var gaps=[];
+  if(t.state==='expired'||t.state==='noterm') gaps.push('term');
+  if(paid==null) gaps.push('fee');
+  if(!r.phone) gaps.push('number');
+  return '<div class="jvCtLine" onclick="jvOpenContract(\''+code+'\')">'
+    + '<div class="jvCtBits">'+bits.join('<span class="jvCtDot">·</span>')+'</div>'
+    + '<div class="jvCtEdit">'+(gaps.length ? ('Set '+gaps.join(', ')) : 'Edit')+'</div>'
+  + '</div>';
+}
+function jvCloseContract(){ var o=document.getElementById('jvContractOverlay'); if(o) o.style.display='none'; }
+function jvOpenContract(code){
+  var r=CLIENTS[code]||{}; if(!CLIENTS[code]) return;
+  window._jvCtCode=code;
+  var t=_jvTermState(code);
+  var start=(r.started_at?String(r.started_at).slice(0,10):'');
+  var cur=(r.term_months!=null)?+r.term_months:null;
+  var sales=(typeof salesForClient==='function')?salesForClient(code):[];
+  var paid=(typeof clientPaidTotal==='function')?clientPaidTotal(code):null;
+  var ov=document.getElementById('jvContractOverlay');
+  if(!ov){
+    ov=document.createElement('div'); ov.id='jvContractOverlay';
+    ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.82);z-index:99999;display:flex;'
+      +'align-items:flex-end;justify-content:center;';
+    ov.onclick=function(e){ if(e.target===ov) jvCloseContract(); };
+    document.body.appendChild(ov);
+  }
+  var termBtns=JV_TERM_LENGTHS.map(function(m){
+    return '<button onclick="jvCtSetTerm('+m+')" id="jvCtTerm'+m+'" class="jvSeg'+(cur===m?' on':'')+'">'+m+' mo</button>';
+  }).join('');
+  // The fee is derived from their sales wherever there are any, so editing it here would
+  // put the two back out of step. Where there are none, this is the only record of it.
+  var feeField = sales.length
+    ? '<div class="jvCtRead">'+(paid!=null?('$'+Math.round(paid).toLocaleString()):'—')
+        +' from '+sales.length+' sale'+(sales.length===1?'':'s')
+        +' <span class="jvCtLink" onclick="jvCloseContract();openEditSale(\''+sales[0].id+'\')">Edit in sales</span></div>'
+    : '<input id="jvCtFee" type="number" inputmode="decimal" class="jvCtInput" placeholder="2400" value="'
+        +(r.paid!=null&&r.paid!==''?r.paid:'')+'">';
+
+  ov.innerHTML='<div class="jvCtSheet">'
+    + '<div class="jvCtHead"><div class="jvCtTitle">'+String(r.name||code).replace(/</g,'&lt;')+'</div>'
+      + '<div class="jvCtX" onclick="jvCloseContract()">×</div></div>'
+    + '<div class="jvCtField"><div class="jvCtLabel">Roughly when they started</div>'
+      + '<input id="jvCtStart" type="date" class="jvCtInput" value="'+start+'"></div>'
+    + '<div class="jvCtField"><div class="jvCtLabel">Term length</div>'
+      + '<div class="jvCtRow">'+termBtns+'</div>'
+      + '<div class="jvCtNote" id="jvCtTermNote">'+(t.state==='interm'||t.state==='expired'?t.label:'No term set yet')+'</div></div>'
+    + '<div class="jvCtField"><div class="jvCtLabel">Tier</div>'
+      + '<div class="jvCtRow">'
+        + '<button onclick="jvCtSetTier(\'1on1\')" id="jvCtTier1on1" class="jvSeg'+(r.tier!=='vip'?' on':'')+'">1:1</button>'
+        + '<button onclick="jvCtSetTier(\'vip\')" id="jvCtTiervip" class="jvSeg'+(r.tier==='vip'?' on':'')+'">VIP</button>'
+      + '</div></div>'
+    + '<div class="jvCtField"><div class="jvCtLabel">Fee</div>'+feeField+'</div>'
+    + '<div class="jvCtField"><div class="jvCtLabel">Phone</div>'
+      + '<input id="jvCtPhone" type="tel" class="jvCtInput" placeholder="+1…" value="'+String(r.phone||'').replace(/"/g,'&quot;')+'"></div>'
+    + '<button class="jvCtSave" onclick="jvSaveContract()">Save</button>'
+    + '<div class="jvDanger" onclick="jvCloseContract();jvRemoveClient(\''+code+'\')">Remove '
+      + String(r.name||code).replace(/</g,'&lt;')+' from YOURJIMBFF</div>'
+  + '</div>';
+  window._jvCtTerm=cur; window._jvCtTier=(r.tier==='vip'?'vip':'1on1');
+  ov.style.display='flex';
+}
+function jvCtSetTerm(m){
+  window._jvCtTerm=m;
+  JV_TERM_LENGTHS.forEach(function(x){ var b=document.getElementById('jvCtTerm'+x); if(b) b.className='jvSeg'+(x===m?' on':''); });
+}
+function jvCtSetTier(k){
+  window._jvCtTier=k;
+  ['1on1','vip'].forEach(function(x){ var b=document.getElementById('jvCtTier'+x); if(b) b.className='jvSeg'+(x===k?' on':''); });
+}
+async function jvSaveContract(){
+  var code=window._jvCtCode, r=CLIENTS[code]; if(!r) return;
+  var el=function(id){ return document.getElementById(id); };
+  var patch={}, before={};
+  var start=(el('jvCtStart')||{}).value||'';
+  if(start && start!==String(r.started_at||'').slice(0,10)){ before.started_at=r.started_at; patch.started_at=start; }
+  if(window._jvCtTerm && window._jvCtTerm!==r.term_months){ before.term_months=r.term_months; patch.term_months=window._jvCtTerm; }
+  var tier=window._jvCtTier==='vip'?'vip':'1on1';
+  if(tier!==(r.tier==='vip'?'vip':'1on1')){ before.tier=r.tier; patch.tier=tier; }
+  var feeEl=el('jvCtFee');
+  if(feeEl){
+    var fee=parseFloat(String(feeEl.value||'').replace(/[^0-9.]/g,''));
+    if(!isNaN(fee) && fee!==r.paid){ before.paid=r.paid; patch.paid=fee; }
+  }
+  var ph=String((el('jvCtPhone')||{}).value||'').trim();
+  if(ph!==String(r.phone||'')){ before.phone=r.phone; patch.phone=(ph||null); }
+  if(!Object.keys(patch).length){ jvCloseContract(); return; }
+  // Paint it immediately, then put it back if the server refuses — an optimistic write
+  // that silently loses is how a term you thought you'd set reads as "no term set" again.
+  Object.keys(patch).forEach(function(k){ r[k]=patch[k]; });
+  jvCloseContract();
+  try{ jvOpenDeep(code); }catch(e){}
+  var res=await _jvSaveClient(code, patch);
+  if(!res.ok){
+    Object.keys(before).forEach(function(k){ r[k]=before[k]; });
+    try{ jvOpenDeep(code); }catch(e){}
+    try{ showToast('Could not save — '+(res.msg||'check the connection')); }catch(e){}
+    return;
+  }
+  try{ showToast(_jvTermState(code).label); }catch(e){}
+  try{ if(typeof jvRenderTriage==='function' && jvTriage) jvRenderTriage(); }catch(e){}
+  try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+}
 // Who they are, big enough to read at a glance. Term and tier get their own line at
 // full strength — this is the context most needed and it used to be the smallest thing
 // on the card, crammed in beside the fee and the phone number.
 function _jvIdentity(code){
   var r=CLIENTS[code]||{};
-  var t=_jvTermState(code);
-  var bits=[t.label];
-  if(r.tier) bits.push(_jvTierLabel(r.tier));
-  return '<div class="jvIdName">'+String(r.name||code).replace(/</g,'&lt;')+'</div>'
-    + '<div class="jvIdMeta">'+bits.join(' · ')+'</div>';
+  return '<div class="jvIdName">'+String(r.name||code).replace(/</g,'&lt;')+'</div>';
 }
 // One contact surface. The line, what it was about, and the way to record a new one all
 // live here — logging used to be a second panel with its own pair of buttons.
@@ -10418,6 +10544,7 @@ function jvOpenDeep(code){
     + '<div class="jvIdWho">' + _jvIdentity(code) + '</div>'
     + '<div class="jvIdClose" onclick="jvCloseDeep()">×</div>'
     + '</div>'
+    + _jvContractLine(code)
     + _jvContactHead(code)
     + _jvSayBlock(code)
     + '<div class="jvBlock">'
@@ -10432,8 +10559,7 @@ function jvOpenDeep(code){
     + '<div class="jvDeepMore" onclick="jvDeepToggleMore(\''+code+'\')">'+(open?'Show less':'Everything else')+'</div>';
 
   document.getElementById('jvDeepInner').innerHTML = head + (open
-    ? ('<div class="jvBlock"><div class="jvBlockLabel">Contract</div><div data-contract>'+_jvContractStrip(code)+'</div></div>'
-      + '<div id="cnHost_'+code+'"></div>'
+    ? ('<div id="cnHost_'+code+'"></div>'
       + '<div id="jvDeepWeight"></div>'
       + '<div id="jvDeepProgram"></div>'
       + '<div id="jvDeepWeak"></div>'
@@ -10444,7 +10570,7 @@ function jvOpenDeep(code){
       + '<div class="jvActs jvActsQuiet" style="margin-top:30px;"><button class="jvAct jvActTertiary" onclick="jvSetActive(\''+code+'\','+(info.active===false?'true':'false')+')">'
         + (info.active===false ? 'Put back on the roster' : 'Move to inactive — keeps everything')
       + '</button></div>'
-      + '<div class="jvDanger" onclick="jvRemoveClient(\''+code+'\')">Remove '+String(info.name||code).replace(/</g,'&lt;')+' from YOURJIMBFF</div>')
+      )
     : '');
 
   document.body.classList.add('jv-deep-open');
@@ -30504,128 +30630,6 @@ function _jvTierLabel(t) { return t === "vip" ? "VIP" : "1:1"; }
 
 
 // Who they are and where they are in the term, on one line. This used to be three
-// stacked boxes plus a phone row \u2014 four things to read before getting to the point.
-// Every segment is still tappable to edit; none of it is gold, because none of it is
-// the action you came here to take.
-function _jvContractStrip(code) {
-  var r = CLIENTS[code] || {};
-  var t = _jvTermState(code);
-  function seg(text, onclick, dim) {
-    return '<span onclick="' + onclick + '" style="cursor:pointer;color:'
-      + (dim ? "rgba(240,236,228,0.55)" : "#f0ece4") + ';font-weight:700;">' + text + '</span>';
-  }
-  var bits = [];
-  bits.push('<span onclick="jvEditTerm(\'' + code + '\')" style="cursor:pointer;">' + _jvTermPill(t) + '</span>');
-  bits.push(seg(_jvTierLabel(r.tier), "jvCycleTier('" + code + "')", false));
-  // Derived from their sales where there are any, so the figure here and the revenue
-  // card are the same number. Falls back to clients.paid until the backfill runs.
-  var _p = (typeof clientPaidTotal === "function") ? clientPaidTotal(code) : null;
-  bits.push(seg(_p != null ? ("$" + Math.round(_p).toLocaleString()) : "set fee",
-    "jvEditPaid('" + code + "')", _p == null));
-  // A missing number is the one thing here that blocks you, so it's the one thing in gold.
-  bits.push(r.phone
-    ? seg(String(r.phone).replace(/</g, "&lt;"), "jvEditPhone('" + code + "')", true)
-    : '<span onclick="jvEditPhone(\'' + code + '\')" style="cursor:pointer;color:var(--gold);font-weight:800;">add number</span>');
-
-  return '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:9px;margin-top:11px;font-size:12.5px;">'
-    + bits.join('<span style="color:rgba(240,236,228,0.30);">\u00b7</span>') + '</div>';
-}
-
-function _jvRepaintStrip(code) {
-  // redraw just the strip, so the page doesn't scroll back to the top
-  var inner = document.getElementById("jvDeepInner");
-  if (!inner) return;
-  var strip = inner.querySelector('[data-contract]');
-  if (strip) { strip.outerHTML = '<div data-contract>' + _jvContractStrip(code) + '</div>'; return; }
-  if (window._jvDeepCode === code) jvOpenDeep(code);
-}
-
-async function jvCycleTier(code) {
-  var r = CLIENTS[code]; if (!r) return;
-  var next = (r.tier === "vip") ? "1on1" : "vip";
-  var acc = acAccessFor(next);
-  r.tier = next;
-  r.calls_enabled = acc.calls_enabled;
-  // VIP ignores credits, so leave them alone rather than zeroing — otherwise a
-  // promote-then-demote quietly costs them whatever they'd banked
-  if (next !== "vip" && !(+r.call_credits > 0)) r.call_credits = acc.call_credits;
-
-  _jvRepaintStrip(code);
-  try { if (typeof renderCallAccess === "function") renderCallAccess(); } catch (e) {}
-  var r2 = await _jvSaveClient(code, {tier: next, calls_enabled: r.calls_enabled, call_credits: r.call_credits});
-  showToast(r2.ok
-    ? ((r.name || code) + " \u2192 " + (next === "vip" ? "VIP \u00b7 books anytime, top of your feed" : "1:1 \u00b7 2 calls"))
-    : _saveErr(r2, "tier"));
-}
-
-// Two fields, no arithmetic: roughly when they started, and how long the term runs.
-// Where they are in it is worked out everywhere else from these two.
-function jvEditTerm(code) {
-  var r = CLIENTS[code]; if (!r) return;
-  var start = (r.started_at ? String(r.started_at).slice(0, 10) : new Date().toISOString().slice(0, 10));
-  var cur = (r.term_months != null) ? +r.term_months : null;
-  var ov = document.getElementById('jvTermOverlay');
-  if (!ov) {
-    ov = document.createElement('div'); ov.id = 'jvTermOverlay';
-    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.80);z-index:99999;display:flex;align-items:center;justify-content:center;padding:24px;';
-    ov.onclick = function (e) { if (e.target === ov) jvCloseTerm(); };
-    document.body.appendChild(ov);
-  }
-  var btns = JV_TERM_LENGTHS.map(function (m) {
-    var on = (cur === m);
-    return '<button onclick="jvPickTerm(\'' + code + '\',' + m + ')" style="flex:1;border-radius:11px;padding:14px 6px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;'
-      + (on ? 'background:var(--gold);border:1px solid var(--gold);color:var(--onaccent);' : 'background:#1b1b1b;border:1px solid #2d2d2d;color:#f0ece4;')
-      + '">' + m + ' mo</button>';
-  }).join('');
-  ov.innerHTML = '<div style="background:#141414;border:1px solid #2a2a2a;border-radius:16px;width:100%;max-width:390px;padding:20px;font-family:\'Plus Jakarta Sans\',sans-serif;">'
-    + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">'
-      + '<div style="font-size:16px;font-weight:800;color:#f0ece4;">' + String(r.name || code).replace(/</g, '&lt;') + '</div>'
-      + '<div onclick="jvCloseTerm()" style="cursor:pointer;color:rgba(240,236,228,0.78);font-size:24px;line-height:1;padding:0 6px;">\u00d7</div>'
-    + '</div>'
-    + '<div style="font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:rgba(240,236,228,0.78);margin-bottom:8px;">Roughly when they started</div>'
-    + '<input id="jvTermStart" type="date" value="' + start + '" style="width:100%;box-sizing:border-box;background:#1b1b1b;border:1px solid #2d2d2d;border-radius:11px;padding:13px 14px;font-size:15px;color:#f0ece4;font-family:inherit;outline:none;margin-bottom:18px;">'
-    + '<div style="font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:rgba(240,236,228,0.78);margin-bottom:8px;">How long is the term</div>'
-    + '<div style="display:flex;gap:8px;">' + btns + '</div>'
-  + '</div>';
-  ov.style.display = 'flex';
-}
-function jvCloseTerm() { var ov = document.getElementById('jvTermOverlay'); if (ov) ov.style.display = 'none'; }
-async function jvPickTerm(code, months) {
-  var r = CLIENTS[code]; if (!r) return;
-  var el = document.getElementById('jvTermStart');
-  var start = (el && el.value) ? el.value : new Date().toISOString().slice(0, 10);
-  r.term_months = months; r.started_at = start;
-  jvCloseTerm();
-  _jvRepaintStrip(code);
-  try { if (typeof jvRenderTriage === 'function' && jvTriage) jvRenderTriage(); } catch (e) {}
-  var r2 = await _jvSaveClient(code, {term_months: months, started_at: start});
-  if (r2.ok) {
-    var t = _jvTermState(code);
-    showToast((r.name || code) + ' \u00b7 ' + months + ' month term \u00b7 ' + t.label);
-  } else {
-    showToast(_saveErr(r2, 'term'));
-  }
-}
-
-// A fee is a sale. Editing it writes a dated row rather than a standing number that
-// nothing else can see — that split is what made the revenue total wrong.
-function jvEditPaid(code) {
-  var existing = (typeof salesForClient === "function") ? salesForClient(code) : [];
-  if (existing.length === 1) { openEditSale(existing[0].id); return; }
-  openLogSale(code);
-}
-async function jvEditPaidLegacy(code) {
-  var r = CLIENTS[code]; if (!r) return;
-  var v = prompt("What did " + (r.name || code) + " pay?", r.paid != null ? r.paid : "");
-  if (v === null) return;
-  var n = parseFloat(String(v).replace(/[^0-9.]/g, ""));
-  if (isNaN(n)) { showToast("Enter an amount"); return; }
-  r.paid = n;
-  _jvRepaintStrip(code);
-  var r2 = await _jvSaveClient(code, {paid: n});
-  showToast(r2.ok ? ((r.name || code) + " \u00b7 $" + n.toLocaleString()) : _saveErr(r2, "amount"));
-}
-
 // one honest write path, so a missing column shows up as a failed toast
 async function _jvSaveClient(code, patch) {
   // report what Supabase actually said, rather than guessing at the cause
