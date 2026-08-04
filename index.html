@@ -2802,7 +2802,7 @@ body.hasnav #tToday{padding-bottom:96px;}
 
     <div class="mlTotal" id="mlTotal"></div>
 
-    <button class="sbtn" style="margin-top:16px;" onclick="mlSave()">Save</button>
+    <button class="sbtn" id="mlLogBtn" style="margin-top:16px;" onclick="mlSave()">Save</button>
     <button class="obtn" onclick="closeM('mMealLog')">Cancel</button>
   </div>
 </div>
@@ -31524,8 +31524,46 @@ async function mlSaveToLibrary(i){
 }
 
 // ---------- save the meal ----------
-function mlSave(){
+async function mlSave(){
   var its=(window._mlItems||[]).slice();
+  // A photo of a printed nutrition panel is a whole meal entry on its own. The
+  // label reader was wired into the OTHER photo-meal surface (onLogMeal) and not
+  // this one, so attaching a Nutrition Solutions pack here and hitting Log just
+  // said "add at least one food" — with the numbers sitting readable in the photo.
+  // Same reader, same rules: printed numbers as printed, nothing logs unseen.
+  if(!its.length && window._mlPhoto){
+    if(_mlLabelTriedFor!==window._mlPhoto){
+      _mlLabelTriedFor=window._mlPhoto;
+      var _b=document.getElementById('mlLogBtn'), _t=_b?_b.textContent:'';
+      if(_b){ _b.disabled=true; _b.style.opacity='0.6'; _b.textContent='Reading the label…'; }
+      var lbl=null;
+      try{ lbl=await mbReadLabel(window._mlPhoto); }catch(e){ lbl=null; }
+      if(_b){ _b.disabled=false; _b.style.opacity='1'; _b.textContent=_t||'Save'; }
+      if(lbl && mbLabelUsable(lbl)){
+        var m=_labelMacros(lbl,1), nm=_labelName(lbl)||'Meal', serv=_labelServingText(lbl);
+        window._mlItems=(window._mlItems||[]);
+        window._mlItems.push({
+          name:_tcase(nm), qty:1,
+          // _labelMacros returns calories/protein/carbs/fat; the item wants cal/pro/carb/fat
+          base:{cal:+m.calories||0, pro:+m.protein||0, carb:+m.carbs||0, fat:+m.fat||0},
+          src:'label', qtyText:(serv||''), rating:'good'
+        });
+        // Every other push into _mlItems does this: base is the per-serving figure,
+        // cal/pro/carb/fat are what the row actually saves. Without it the meal
+        // logs with no numbers at all.
+        try{ _mlRecalc(window._mlItems[window._mlItems.length-1]); }catch(e){}
+        try{ mlRender(); }catch(e){}
+        // Seen before it's saved — the numbers are on screen to check or edit.
+        showToast('Read the label: '+nm+' · '+Math.round(+m.calories||0)+' cal'+(serv?(' per '+serv):'' ));
+        return;
+      }
+      // It tried and genuinely couldn't. Say so; never guess from how food looks.
+      showToast('No nutrition panel I could read — type what it was');
+      return;
+    }
+    showToast('Type what it was and I\u2019ll log it with the photo');
+    return;
+  }
   if(!its.length){ try{ showToast('Add at least one food'); }catch(e){} return; }
   var tmRaw=((document.getElementById('mlTime')||{}).value||'').trim();
   var tmP=_parseClock(tmRaw);
@@ -31741,6 +31779,7 @@ function _wkSetMins(n){
 
 // Photo attach on a meal. This was in the old sheet and I dropped it in v5.900.
 window._mlPhoto=null;
+var _mlLabelTriedFor=null;   // don't re-scan the same photo on a second tap
 function mlPhoto(inp){
   try{
     var f=inp.files&&inp.files[0]; if(!f) return;
@@ -31766,6 +31805,7 @@ function mlPhoto(inp){
 }
 function mlClearPhoto(){
   window._mlPhoto=null;
+  _mlLabelTriedFor=null;      // a different photo gets its own attempt
   try{
     var t=document.getElementById('mlThumb');
     if(t){ t.classList.remove('has'); t.innerHTML='<span>Attach photo</span>'; }
