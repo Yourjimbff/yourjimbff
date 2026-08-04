@@ -13249,8 +13249,17 @@ function _tlBindTaps(){
     }
   });
 }
+// Deleting a food and adding the identical one straight back is a correction, not
+// a double-tap. insertFoodLog blocks an identical row within 10 seconds to stop
+// double-taps, and it had no idea the first one had just been removed — so the
+// re-add was silently refused and the macros appeared to vanish.
+function _foodDupReset(){
+  try{ window.__lastFoodSig=null; window.__lastFoodAt=0; window.__foodInsertBusy=false; }catch(e){}
+  try{ if(window.__chatFoodSig) window.__chatFoodSig={}; }catch(e){}
+}
 async function tlDelFood(id){
   if(!id) return;
+  _foodDupReset();
   try{
     await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id), {method:'DELETE', headers:sbHeaders()});
     try{ if(window._tlCache&&window._tlCache.foods) window._tlCache.foods=window._tlCache.foods.filter(function(r){ return String(r.id)!==String(id); }); }catch(e){}
@@ -20315,8 +20324,16 @@ function _mbLabelPrompt(){
     +'  · numbers written by hand\n'
     +'Read whatever is printed, wherever it sits in the photo.\n\n'
     +'Reply with ONLY compact JSON. No markdown fence, no prose:\n'
-    +'{"name":"","brand":"","serving_text":"","servings_per_container":0,'
-    +'"calories":0,"protein":0,"carbs":0,"fibre":0,"fat":0,"kind":"","confidence":"high"}\n\n'
+    +'{"seen":"","name":"","brand":"","serving_text":"","servings_per_container":null,'
+    +'"calories":null,"protein":null,"carbs":null,"fibre":null,"fat":null,"kind":"","confidence":"high"}\n\n'
+    +'seen — FILL THIS FIRST, before any other field. Transcribe the macro text exactly as it '
+    +'appears in the photo, e.g. "570 CALORIES  66 PROTEIN  50 CARBS  10 FAT  3 FIBER". '
+    +'Copying the numbers out before you assign them is what stops them being guessed. If you '
+    +'genuinely cannot make out any macro text, put "".\n'
+    +'NUMBERS — the example above uses null, and null is what you send when you cannot read a '
+    +'figure confidently. NEVER write 0 for a number you could not read. 0 means the label '
+    +'itself prints zero. A zero you did not read off the packet is worse than no answer at '
+    +'all, because it is stored as fact.\n\n'
     +'name — the name of the meal or product as printed, e.g. "Honey BBQ Chicken". On a '
     +'meal-prep sleeve this is usually on its own band or strip, separate from the macros. '
     +'Never invent one from how the food looks; if nothing is printed, use "".\n'
@@ -25848,6 +25865,7 @@ function toggleMealMenu(i){
 }
 
 async function rmMeal(i){
+  _foodDupReset();
   var e=_orderedTodayFood()[i];
   if(!e) return;
   tots.cal-=e.calories||0;tots.protein-=e.protein||0;tots.carbs-=e.carbs||0;tots.fat-=e.fat||0;
@@ -30360,6 +30378,7 @@ async function applyFoodEdit(id, fields){
 
 // Delete an existing food log by id (DELETE). Updates in-memory + UI when it's a today entry.
 async function applyFoodDelete(id){
+  _foodDupReset();
   if(id==null) return false;
   try{
     var res=await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id),{
@@ -31811,6 +31830,11 @@ async function _mlTryLabel(){
   var r=await readLabelPhoto(window._mlPhoto);
   if(t) t.classList.remove('reading');
   if(!r.ok){
+    // The "one read per photo" marker was set before the attempt, so a failure
+    // locked the photo out of ever being retried — tapping again did nothing and
+    // the only way through was to detach and re-attach. A failed read is not a
+    // read: let the next tap have another go.
+    window._mlLabelFor=null;
     // A panel with a name but no numbers is NOT a logged meal. Say which happened.
     if(r.reason==='no-numbers'){
       try{ showToast('I read "'+(r.name||'the label')+'" but not its numbers — type them or retake closer'); }catch(e){}
