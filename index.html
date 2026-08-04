@@ -19117,12 +19117,19 @@ function mbRowFromLabel(norm, ownerCode, sort){
 // "Banana (Medium, 118g)" -> "banana" · "Pomegranate, 1/2 Cup" -> "pomegranate"
 function mbCleanFoodName(s){
   var t=String(s==null?'':s).trim();
+  // A trailing "×4" is a quantity the APP wrote into the name, not one the client
+  // typed into it. Every stripper below exists to remove the latter and none can
+  // tell them apart, so "Eggs ×4" came out as "Eggs ×" — sign kept, number gone.
+  // Hold it aside and give it back at the end.
+  var mult='';
+  var mm=t.match(/\s*[×x]\s*(\d+(?:\.\d+)?)\s*$/i);
+  if(mm){ mult=' ×'+mm[1]; t=t.slice(0, mm.index); }
   t=t.replace(/\([^)]*\)/g,' ');                       // (Medium, 118g)
   t=t.replace(/,\s*[\d/.]+\s*[a-z.]*\s*$/i,' ');       // ", 1/2 cup"  ", 100g"
   t=t.replace(/\b[\d/.]+\s*(g|kg|oz|ozs|ml|l|lb|lbs|cups?|tbsps?|tsps?|pieces?|slices?|servings?|handfuls?|palms?|scoops?|links?|squares?)\b\.?/gi,' ');
   t=t.replace(/\b[\d/.]+\b/g,' ');
   t=t.replace(/^\s*(of|a|an|the)\s+/i,' ');          // "0.5 cup of rice" -> "rice"
-  return t.replace(/\s{2,}/g,' ').replace(/^[\s,]+|[\s,]+$/g,'').trim();
+  return (t.replace(/\s{2,}/g,' ').replace(/^[\s,]+|[\s,]+$/g,'').trim()+mult).trim();
 }
 
 // Longest match wins, so "cottage cheese" beats "cheese" and "green bean"
@@ -21970,15 +21977,42 @@ async function _gradePlateMeal(entry, foodsText){
     if(typeof rendTodayFood==='function') rendTodayFood();
   }catch(e){ if(entry.rating==='unknown'){ entry.rating='good'; if(typeof rendTodayFood==='function') rendTodayFood(); } }
 }
+// THE RULE: a saved food stores ONE unit. One egg, one ounce, one handful.
+// Multiplication happens at log time and is never baked into the stored amount.
+//
+// Break it and the error compounds silently: "Eggs" was saved holding the
+// calories for four eggs, so logging "four eggs" multiplied four by four and
+// recorded sixteen. The count was never wrong — the stored amount was.
+//
+// So anything arriving with a count in its name is divided down before it's kept.
+function _toSingleUnit(name, macros){
+  var pr=_qtyParse(name||'');
+  var n=+pr.qty;
+  if(!(n>1) || !isFinite(n) || !pr.name) return {name:name, macros:macros, divided:0};
+  return {
+    name: pr.name,
+    macros: {
+      calories: Math.round((+macros.calories||0)/n),
+      protein:  Math.round((+macros.protein ||0)/n),
+      carbs:    Math.round((+macros.carbs   ||0)/n),
+      fat:      Math.round((+macros.fat     ||0)/n)
+    },
+    divided: n
+  };
+}
 async function _rememberFood(it){
   if(!it || !cl) return;
   var nm=_tcase(it.name||''); if(!nm.trim()) return;
+  var one=_toSingleUnit(nm, {calories:it.calories, protein:it.protein, carbs:it.carbs, fat:it.fat});
+  nm=_tcase(one.name); if(!nm.trim()) return;
+  var m=one.macros;
+  if(one.divided) console.info('[saved_foods] "'+one.name+'" stored as one unit — divided by '+one.divided);
   try{
     var existing=(_savedFoods||[]).find(function(f){ return (f.name||'').toLowerCase()===nm.toLowerCase(); });
     if(existing && existing.id!=null){
-      await fetch(SB_URL+'/rest/v1/saved_foods?id=eq.'+existing.id,{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}),body:JSON.stringify({calories:Math.round(it.calories||0),protein:Math.round(it.protein||0),carbs:Math.round(it.carbs||0),fat:Math.round(it.fat||0),updated_at:new Date().toISOString()})});
+      await fetch(SB_URL+'/rest/v1/saved_foods?id=eq.'+existing.id,{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}),body:JSON.stringify({calories:Math.round(m.calories||0),protein:Math.round(m.protein||0),carbs:Math.round(m.carbs||0),fat:Math.round(m.fat||0),updated_at:new Date().toISOString()})});
     } else {
-      await sbInsert('saved_foods',{client_code:cl.code,name:nm,emoji:'🍽️',calories:Math.round(it.calories||0),protein:Math.round(it.protein||0),carbs:Math.round(it.carbs||0),fat:Math.round(it.fat||0)});
+      await sbInsert('saved_foods',{client_code:cl.code,name:nm,emoji:'🍽️',calories:Math.round(m.calories||0),protein:Math.round(m.protein||0),carbs:Math.round(m.carbs||0),fat:Math.round(m.fat||0)});
     }
   }catch(e){}
 }
