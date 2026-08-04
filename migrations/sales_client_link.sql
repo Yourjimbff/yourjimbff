@@ -63,7 +63,7 @@ UPDATE sales SET client_code = 'alridag1' WHERE id = 2 AND client_code IS NULL;
 
 INSERT INTO sales (client_code, client_name, program, total_amount, paid_amount,
                    sale_date, created_at)
-SELECT c.code, c.name, 'Fee recorded on client card', c.paid, c.paid,
+SELECT c.code, c.name, NULL, c.paid, c.paid,
        COALESCE(c.started_at::date, CURRENT_DATE), now()
 FROM clients c
 WHERE c.code IN ('anthonyp1','billm1','blakeb1','johnp1','leandram1',
