@@ -1,5 +1,10 @@
 -- ============================================================================
 -- Two columns on `clients`, so a Stripe payment can become a client safely.
+--
+-- I could not run this myself. PostgREST (the only database door the app has)
+-- does CRUD, not DDL; the anon key's role has no schema grants; there are no
+-- RPCs exposed; and no Supabase CLI, psql or service key exists on this
+-- machine. It needs the SQL editor, which needs your login.
 -- Run this BEFORE pointing the Stripe webhook at the site. Without it every
 -- payment logs "client insert failed" and Stripe retries forever.
 --

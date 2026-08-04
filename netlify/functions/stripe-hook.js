@@ -12,8 +12,17 @@
 //   SUPABASE_URL            https://frxptalfyutukmnsvysg.supabase.co
 //   SUPABASE_SERVICE_KEY    the service_role key — NEVER the anon key, and never
 //                           anywhere near index.html
+//   STRIPE_SECRET_KEY       sk_live_... — needed to STOP a split subscription. See below.
 //
-// Without all three this returns 500 and writes nothing. It never half-creates.
+// Without the first three this returns 500 and writes nothing. It never half-creates.
+//
+// WHY THE SECRET KEY MATTERS. The two split links are Stripe SUBSCRIPTIONS billed
+// monthly with no end: checked against the live checkout pages, they read "$550.00 per
+// month · Billed monthly" and "charge you according to the terms until you cancel".
+// Nothing in Stripe stops them at two payments. A 3-month client on the split owes
+// $1,100 and would be charged $550 every month forever. So once the contract total has
+// been collected, this cancels the subscription. Without STRIPE_SECRET_KEY it can't,
+// and every split has to be cancelled by hand in Stripe on the right day.
 
 const crypto = require('crypto');
 
@@ -85,6 +94,22 @@ async function makeCode(name) {
   return base + Date.now().toString().slice(-5);
 }
 
+// Stop a split subscription once its contract is paid. Loud on failure: silently
+// leaving it running means charging someone who has finished paying, which is the
+// worst thing this file could do.
+async function stopSubscription(subId) {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) { console.error('CANCEL NEEDED, no STRIPE_SECRET_KEY set — cancel ' + subId + ' by hand'); return false; }
+  try {
+    const res = await fetch('https://api.stripe.com/v1/subscriptions/' + encodeURIComponent(subId), {
+      method: 'DELETE', headers: {'Authorization': 'Bearer ' + key}
+    });
+    if (!res.ok) { console.error('cancel failed', subId, res.status, await res.text()); return false; }
+    console.log('cancelled subscription', subId);
+    return true;
+  } catch (e) { console.error('cancel threw', subId, e); return false; }
+}
+
 exports.handler = async function (event) {
   if (event.httpMethod !== 'POST') return {statusCode: 405, body: 'Method Not Allowed'};
 
@@ -123,10 +148,21 @@ exports.handler = async function (event) {
       if (!sales.length) return {statusCode: 200, body: 'no sale row'};
       const s = sales[0];
       // Idempotent: Stripe retries, and paying twice must not bank the money twice.
-      const next = Math.min(Number(s.total_amount) || 0, (Number(s.paid_amount) || 0) + paid);
+      const total = Number(s.total_amount) || 0;
+      const next = Math.min(total, (Number(s.paid_amount) || 0) + paid);
       if (next === Number(s.paid_amount)) return {statusCode: 200, body: 'already applied'};
       await sb('sales?id=eq.' + s.id, {method: 'PATCH', headers: {'Prefer': 'return=minimal'},
         body: JSON.stringify({paid_amount: next})});
+
+      // The contract is settled, so the subscription has to stop. Stripe will otherwise
+      // keep billing monthly forever — these links have no iteration limit — and a
+      // client who has paid their $1,100 in full would be charged again next month.
+      // Capping paid_amount above keeps the books right; only this keeps the card right.
+      if (next >= total && obj.subscription) {
+        const cancelled = await stopSubscription(obj.subscription);
+        return {statusCode: 200, body: cancelled ? 'paid in full, subscription cancelled'
+                                                 : 'paid in full, CANCEL FAILED — cancel it in Stripe'};
+      }
       return {statusCode: 200, body: 'instalment applied'};
     }
 
