@@ -19095,7 +19095,14 @@ function mbLabelUsable(raw){
   var hasServing=!!String(raw.serving_text||raw.serving_unit||'').trim() || +raw.grams>0;
   var hasMacro=(+raw.calories>0)||(+raw.protein>0)||(+raw.carbs>0)||(+raw.fat>0)||(+raw.fibre>0);
   var hasName=!!String(raw.name||raw.brand||'').trim();
-  return hasName && (hasServing || hasMacro);
+  // Printed numbers are the whole test. A branded sleeve can carry the macros clearly and
+  // still give nothing the reader recognises as a product name — requiring one threw away
+  // a perfectly good read. A nameless label falls back to "Packaged food", which is
+  // editable; a nameless GUESS can't happen here because nothing is read but print.
+  if(hasMacro) return true;
+  // No numbers: only worth keeping if it at least names a thing and its serving, which is
+  // the manual-entry case the component sheet prefills.
+  return hasName && hasServing;
 }
 
 // The inverse of mbNormaliseLabel: take a saved component back to the numbers
@@ -20275,22 +20282,41 @@ async function mbSave(){
 var MB_LABEL_MODEL='claude-sonnet-5';
 
 function _mbLabelPrompt(){
-  return 'This is a photograph of the nutrition facts panel on a food package.\n'
+  // Deliberately NOT "find the nutrition facts panel". Asking for an FDA box is why a
+  // Nutrition Solutions sleeve — five coloured circles reading 570 / 66 / 50 / 10 / 3 —
+  // came back as "no label", with the numbers perfectly legible in the photo.
+  // Any printed pairing of a number with calories/protein/carbs/fat counts.
+  return 'This photograph shows printed nutrition information for a food.\n'
+    +'It may be in ANY format. All of these count:\n'
+    +'  · a standard nutrition facts panel\n'
+    +'  · macros printed on a branded sleeve or box, often as coloured CIRCLES or badges, '
+    +'each holding a number with its word underneath (CALORIES, PROTEIN, CARBS, FAT, FIBER)\n'
+    +'  · a stuck-on macro sticker from a meal-prep company\n'
+    +'  · a menu card, shelf label, receipt, or screenshot listing macros\n'
+    +'  · numbers written by hand\n'
+    +'Read whatever is printed, wherever it sits in the photo.\n\n'
     +'Reply with ONLY compact JSON. No markdown fence, no prose:\n'
     +'{"name":"","brand":"","serving_text":"","servings_per_container":0,'
     +'"calories":0,"protein":0,"carbs":0,"fibre":0,"fat":0,"kind":"","confidence":"high"}\n\n'
-    +'serving_text — copy the serving size EXACTLY as printed, including the number, '
-    +'the word and any weight in brackets. "1 link (85g)". "2 cookies (30g)". "2/3 cup (55g)". '
-    +'This is the most important field on the panel: if the serving is two of something, say two, '
-    +'not one. Do not tidy it up or convert it.\n'
-    +'calories — the per-serving figure as printed.\n'
-    +'protein, carbs, fibre, fat — the per-serving figures in grams. carbs is TOTAL carbohydrate; '
-    +'do not subtract the fibre, report both separately.\n'
-    +'name — the food itself, e.g. "Chicken Sausage". brand — the brand if you can see it, else "".\n'
+    +'name — the name of the meal or product as printed, e.g. "Honey BBQ Chicken". On a '
+    +'meal-prep sleeve this is usually on its own band or strip, separate from the macros. '
+    +'Never invent one from how the food looks; if nothing is printed, use "".\n'
+    +'brand — the brand if visible, e.g. "Nutrition Solutions", else "".\n'
+    +'serving_text — copy the serving size EXACTLY as printed: the number, the word, and any '
+    +'weight in brackets. "1 link (85g)". "2 cookies (30g)". "2/3 cup (55g)". If the serving is '
+    +'two of something, say two, not one. Do not tidy it up or convert it.\n'
+    +'  If the only wording is something like "Per Serving" with no size given, use "1 serving".\n'
+    +'  A NET WEIGHT printed elsewhere on the pack (e.g. "NET WT 12 OZ") is the weight of the '
+    +'whole container, NOT the serving size. Do not copy it into serving_text.\n'
+    +'calories — the figure as printed for one serving.\n'
+    +'protein, carbs, fibre, fat — grams, for one serving. carbs is TOTAL carbohydrate: do not '
+    +'subtract the fibre, report both separately. If fibre is shown as its own circle or line, '
+    +'that is fibre, not carbs.\n'
     +'kind — one of protein, veg, carb, fruit; whichever the food mainly is.\n'
     +'confidence — "high" or "low".\n\n'
-    +'Read only what is printed. A nutrient printed as 0 is 0. '
-    +'If you cannot read the panel, reply {}.';
+    +'Read only what is printed — never estimate from what the food looks like. A nutrient '
+    +'printed as 0 is 0; a nutrient not shown at all is 0.\n'
+    +'Reply {} ONLY if the photo contains no printed nutrition numbers anywhere.';
 }
 
 async function _mbAskLabel(mediaType, b64, model){
@@ -20305,23 +20331,38 @@ async function _mbAskLabel(mediaType, b64, model){
 }
 
 // -> a raw label object, or null. Never throws, never writes anything.
+// Every failure here used to look identical from the outside — "no label on that photo" —
+// whether the request errored, the model refused, or the read came back but got rejected.
+// That made a real miss impossible to diagnose without the original photo. Each exit now
+// says WHY, and the last one is left on window._mbLastLabelFail for inspection.
+function _mbLabelFail(why, detail){
+  try{
+    window._mbLastLabelFail={why:why, detail:String(detail==null?'':detail).slice(0,400), at:new Date().toISOString()};
+    console.warn('[mbReadLabel] '+why+(detail?(' — '+String(detail).slice(0,300)):''));
+  }catch(e){}
+  return null;
+}
 async function mbReadLabel(dataUrl){
   try{
+    window._mbLastLabelFail=null;
     var small=await downscaleImage(dataUrl, 1600, 0.9);
     var m=String(small).match(/^data:(image\/[a-z]+);base64,(.+)$/i);
-    if(!m) return null;
+    if(!m) return _mbLabelFail('the photo was not readable image data');
     var r=await _mbAskLabel(m[1], m[2], MB_LABEL_MODEL);
     // a model name this key can't reach shouldn't cost them the feature
     if(!r.ok) r=await _mbAskLabel(m[1], m[2], null);
-    if(!r.ok || !r.data) return null;
+    if(!r.ok || !r.data) return _mbLabelFail('the reader could not be reached', r&&r.status);
     var txt='';
     (r.data.content||[]).forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; });
     txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
     var i=txt.indexOf('{'), j=txt.lastIndexOf('}');
-    if(i<0||j<i) return null;
-    var raw=JSON.parse(txt.slice(i,j+1));
-    return mbLabelUsable(raw) ? raw : null;
-  }catch(e){ return null; }
+    if(i<0||j<i) return _mbLabelFail('the reader replied with no JSON', txt);
+    var raw;
+    try{ raw=JSON.parse(txt.slice(i,j+1)); }
+    catch(pe){ return _mbLabelFail('the reader replied with broken JSON', txt); }
+    if(!mbLabelUsable(raw)) return _mbLabelFail('read the photo but found no printed numbers', JSON.stringify(raw));
+    return raw;
+  }catch(e){ return _mbLabelFail('the read threw', e&&e.message); }
 }
 
 // ---- the sheet ---------------------------------------------------------
