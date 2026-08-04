@@ -12406,6 +12406,13 @@ function _tlPlanForDate(d){
   }catch(e){ return null; }
 }
 async function renderDayTimeline(soft){
+  // Never redraw the day while someone is typing into it. A redraw rebuilds the whole
+  // list, which destroys the focused textarea — taking the pin, and their half-written
+  // draft, with it. That is why the bar kept dropping back into the day mid-sentence.
+  // Hold the redraw and run it once they're done.
+  try{
+    if(document.body.classList.contains('jim-typing')){ window.__tlRedrawPending=true; return; }
+  }catch(e){}
   // Nothing should carry an inline height into a fresh render. One stuck value
   // plus overflow:hidden is how the card clipped into a black bar.
   try{
@@ -34800,13 +34807,60 @@ function jimPinStart(el){
 function jimPinEnd(){
   var foot=_jimPinned; _jimPinned=null;
   document.body.classList.remove('jim-typing');
+  // Anything the day wanted to redraw while they were typing happens now.
+  try{
+    if(window.__tlRedrawPending){
+      window.__tlRedrawPending=false;
+      setTimeout(function(){ try{ renderDayTimeline(true); }catch(e){} }, 120);
+    }
+  }catch(e){}
   try{ var sc=document.getElementById('tlScroll'); if(sc) sc.style.paddingBottom=''; }catch(e){}
   if(!foot) return;
   foot.classList.remove('jimPinned');
   foot.style.bottom='';
   var bar=foot.querySelector('.jimBar'); if(bar) bar.style.bottom='';
 }
+// The timeline redraws for a dozen reasons, and a redraw swaps the node we pinned for
+// a fresh one that has no pinned class — while body.jim-typing survives, so the nav
+// stays hidden and the bar drops back into the day. Rather than chase every redraw,
+// re-assert the state from whatever is focused right now.
+function _jimGuard(){
+  if(!document.body.classList.contains('jim-typing')) return;
+  var a=document.activeElement;
+  var foot=(a && a.closest) ? a.closest('.tlJimFoot') : null;
+  if(!foot){ jimPinEnd(); return; }
+  if(foot!==_jimPinned || !foot.classList.contains('jimPinned')){
+    if(_jimPinned && _jimPinned!==foot){
+      _jimPinned.classList.remove('jimPinned'); _jimPinned.style.bottom='';
+    }
+    _jimPinned=foot;
+    foot.classList.add('jimPinned');
+  }
+  _jimPlace();
+  if(window.__jimDebug) _jimDebugPaint();
+}
+// ?jimdebug=1 puts the real numbers on the screen. There is no way to read a phone's
+// layout from here, and inferring it from a screenshot has been wrong twice.
+function _jimDebugPaint(){
+  var el=document.getElementById('__jimDbg');
+  if(!el){ el=document.createElement('div'); el.id='__jimDbg';
+    el.style.cssText='position:fixed;left:6px;top:6px;z-index:99999;background:rgba(0,0,0,0.86);'
+      +'color:#0f0;font:11px/1.35 ui-monospace,monospace;padding:7px 9px;border-radius:7px;'
+      +'pointer-events:none;white-space:pre;max-width:92vw;';
+    document.body.appendChild(el); }
+  var vv=window.visualViewport, f=_jimPinned;
+  var fr=f?f.getBoundingClientRect():null;
+  el.textContent=
+    'baseH '+_jimBaseH+'  innerH '+window.innerHeight+'\n'+
+    'vv.h '+(vv?Math.round(vv.height):'-')+'  vv.top '+(vv?Math.round(vv.offsetTop):'-')+'\n'+
+    'inset '+_jimKbInset()+'  pinned '+(!!f)+'\n'+
+    (f?('pos '+getComputedStyle(f).position+'  bottom '+(f.style.bottom||'-')+'\n'+
+        'barTop '+Math.round(fr.top)+'  barBot '+Math.round(fr.bottom)+'\n'+
+        'gapBelow '+Math.round(window.innerHeight-fr.bottom)):'');
+}
 (function(){
+  try{ if(/[?&]jimdebug=1/.test(location.search)) window.__jimDebug=true; }catch(e){}
+  setInterval(_jimGuard, 250);
   document.addEventListener('focusin', function(e){
     var t=e.target;
     if(t && t.classList && t.classList.contains('jimIn') && t.closest && t.closest('.tlJimFoot')) jimPinStart(t);
