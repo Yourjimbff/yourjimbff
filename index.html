@@ -1765,18 +1765,12 @@ body.hasnav #tToday{padding-bottom:96px;}
       <div class="tbody" id="bodyWeight">
         <div style="font-size:13px;color:var(--muted);margin-bottom:10px;" id="lastWeightLabel"></div>
 
-        <!-- WEIGHT JOURNEY GRAPH (renders when 2+ entries exist) -->
-        <div id="weightJourney" style="display:none;background:var(--s2);border-radius:12px;padding:12px;margin-bottom:14px;">
-          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
-            <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:1px;text-transform:uppercase;">Your Journey</div>
-            <div style="font-size:11px;font-weight:700;" id="journeyDelta"></div>
-          </div>
-          <div id="weightGraph"></div>
-          <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:10px;color:var(--muted);">
-            <span id="journeyStart"></span>
-            <span id="journeyEnd"></span>
-          </div>
-        </div>
+        <!-- The "Your Journey" graph used to sit here. It duplicated the weight card at
+             the top of this page (#pgWeightCard), so the card is now the only weight
+             visual. renderWeightJourney() deliberately survives it: that function is also
+             the loader for window._wtAll, which the card reads, and it paints the weigh-in
+             list below. Removing its host would starve the card, so it detects the missing
+             host and skips only the drawing. -->
 
         <div style="display:flex;align-items:center;justify-content:center;gap:18px;margin:6px 0 0;">
           <button type="button" onclick="nudgeW(-0.2)" style="width:44px;height:44px;border-radius:50%;background:var(--s2);border:1px solid var(--border);color:var(--text);font-size:26px;font-weight:300;line-height:1;cursor:pointer;flex-shrink:0;">−</button>
@@ -4437,7 +4431,9 @@ async function saveSetup(){
   var heightEl=document.getElementById('setupHeight');
   var height=heightEl?heightEl.value.trim():'';
   var genderEl=document.querySelector('.gr-btn.sel');
-  var gender=genderEl?genderEl.textContent.toLowerCase():'male';
+  // No selection is not a vote for male. Null here, and the upsert below leaves the
+  // column out entirely — a missing field keeps whatever is stored, 'male' overwrites it.
+  var gender=genderEl?genderEl.textContent.toLowerCase():null;
   var goalEl=document.querySelector('.gt-btn.sel');
   var goal=goalEl?goalEl.textContent.replace(/\n.*/,'').toLowerCase():'maintain';
   if(!weight||!goalWeight||!age){showToast('Fill in all fields first');return;}
@@ -4451,7 +4447,9 @@ async function saveSetup(){
   localStorage.setItem('yjb_profile_'+cl.code, JSON.stringify(profile));
   showLoading(true);
   try{
-    await sbUpsert('profiles', {client_code:cl.code, name:cl.name, weight:weight, goal_weight:goalWeight, age:age, height:height, gender:gender, goal:goal, cal_target:calTarget, protein_target:proteinTarget}, 'client_code');
+    var _row={client_code:cl.code, name:cl.name, weight:weight, goal_weight:goalWeight, age:age, height:height, goal:goal, cal_target:calTarget, protein_target:proteinTarget};
+    if(gender) _row.gender=gender;   // omitted when unpicked, so it can't clobber a set value
+    await sbUpsert('profiles', _row, 'client_code');
   }catch(e){ console.error('Profile save to Supabase failed', e); }
   showLoading(false);
   document.getElementById('sSetup').style.display='none';
@@ -4502,7 +4500,7 @@ async function _launchAppInner(){ try{ setTimeout(sqInit,600); }catch(e){}
   if(typeof refreshFoodStreak==='function') refreshFoodStreak(true);
   // Land on Calendar BEFORE the shell is visible, or Profile flashes first.
   try{
-    if(typeof canSeeCalendar==='function' && canSeeCalendar(cl.code)){
+    if(typeof hasDayTimeline==='function' && hasDayTimeline(cl.code)){
       var _tf=document.getElementById('tFeed'), _tt=document.getElementById('tToday');
       if(_tf && _tt){ _tt.classList.remove('active'); _tf.classList.add('active'); }
       var _bf=document.getElementById('bnFeed'), _bt=document.getElementById('bnToday');
@@ -4545,7 +4543,7 @@ async function _launchAppInner(){ try{ setTimeout(sqInit,600); }catch(e){}
   if(_bnf) _bnf.style.display = 'flex';
   try{
     var _bfl=document.getElementById('bnFeedLabel');
-    if(_bfl) _bfl.textContent = canSeeCalendar(cl.code) ? 'Day' : 'Training';
+    if(_bfl) _bfl.textContent = hasDayTimeline(cl.code) ? 'Day' : 'Training';
   }catch(e){}
   document.getElementById('uname').textContent=cl.name;
   try{ _syncHeaderAvatar(); }catch(e){}
@@ -4586,12 +4584,17 @@ async function _launchAppInner(){ try{ setTimeout(sqInit,600); }catch(e){}
   // Trainer/program extras can finish in the background (not on the home screen)
   loadTrainerPrograms();
   loadClientAssignedProgram();
+  // Where a client lands is not a permission. This used to be gated on
+  // canSeeCalendar(), i.e. on calls_enabled, so the 76 clients without standing
+  // booking access opened on the Journal tab instead of Day — men and women alike.
+  // canSeeCalendar still guards the Calendar/booking tab itself; it just no longer
+  // decides the landing tab. Every non-trainer gets 'Feed' (labelled "Day"), full stop.
   try{
-    if(typeof canSeeCalendar==='function' && canSeeCalendar(cl.code)){
+    if(typeof isTrainer==='function' && isTrainer(cl.code)) switchTab('Today');
+    else {
       switchTab('Feed');
       setTimeout(function(){ try{ tlScrollToToday(false); }catch(e){} }, 120);
     }
-    else if(typeof isTrainer==='function' && isTrainer(cl.code)) switchTab('Today');
   }catch(e){}
 }
 
@@ -4613,10 +4616,10 @@ function openAddClient(){
     +'<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.4;">Lowercase letters and numbers. This is what they type to log in.</div>'
     +'<div style="font-size:11px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--muted);margin-top:16px;">Gender</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;">'
-      +'<div id="acSexM" onclick="acSetSex(\'male\')" style="padding:13px;border-radius:11px;border:1px solid var(--gold);background:rgba(245,197,24,0.07);text-align:center;font-size:14.5px;font-weight:700;color:var(--gold);cursor:pointer;">Male</div>'
+      +'<div id="acSexM" onclick="acSetSex(\'male\')" style="padding:13px;border-radius:11px;border:1px solid var(--border);background:#191919;text-align:center;font-size:14.5px;font-weight:700;color:rgba(240,236,228,0.78);cursor:pointer;">Male</div>'
       +'<div id="acSexF" onclick="acSetSex(\'female\')" style="padding:13px;border-radius:11px;border:1px solid var(--border);background:#191919;text-align:center;font-size:14.5px;font-weight:700;color:rgba(240,236,228,0.78);cursor:pointer;">Female</div>'
     +'</div>'
-    +'<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.4;">Sets their starting split so you can assign a program right away.</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.4;">Sets their starting split so you can assign a program right away. Pick one — this used to default to Male, which is how women ended up on the men’s week.</div>'
     +'<div style="font-size:11px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--muted);margin-top:18px;">Tier</div>'
     +'<div id="acTierRow" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;"></div>'
     +'<div style="font-size:11px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--muted);margin-top:16px;">Term</div>'
@@ -4624,11 +4627,13 @@ function openAddClient(){
     +'<div style="font-size:11px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--muted);margin-top:16px;">Paid</div>'
     +'<input id="acPaid" type="text" inputmode="decimal" placeholder="1500" style="'+ist+'">'
     +'<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.4;">What they actually paid. VIP books calls whenever; 1:1 starts with two.</div>'
-    +'<button id="acCreateBtn" onclick="addClientToDb()" style="margin-top:18px;width:100%;background:var(--gold);color:#000;border:none;border-radius:12px;padding:14px;font-family:\'Plus Jakarta Sans\',sans-serif;font-weight:800;font-size:15px;cursor:pointer;">Create client</button>'
+    +'<button id="acCreateBtn" onclick="addClientToDb()" disabled style="margin-top:18px;width:100%;background:var(--gold);color:#000;border:none;border-radius:12px;padding:14px;font-family:\'Plus Jakarta Sans\',sans-serif;font-weight:800;font-size:15px;cursor:pointer;opacity:0.5;">Pick a gender first</button>'
     +'<button onclick="_closeAddClient()" style="margin-top:9px;width:100%;background:transparent;color:var(--m2);border:none;padding:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;">Cancel</button>'
     +'</div>';
   document.body.appendChild(ov);
-  window._acSex='male';
+  // Nothing preselected. A pre-lit Male chip was being accepted as an answer and written
+  // into profiles.gender on create, so 'male' in that table never meant anyone chose it.
+  window._acSex=null;
   window._acTier='1on1';
   window._acTerm=6;
   try{ acRenderTier(); }catch(e){}
@@ -4649,6 +4654,7 @@ async function addClientToDb(){
   if(!name){ showToast('Enter a name'); return; }
   if(!code){ showToast('Enter a login code'); return; }
   if(CLIENTS[code]){ showToast('That code is taken — pick another'); return; }
+  if(!window._acSex){ showToast('Pick a gender — it sets their split'); return; }
   var initials=(name.split(/\s+/).map(function(w){return w[0]||'';}).join('').slice(0,2)||name.slice(0,2)).toUpperCase();
   var btn=document.getElementById('acCreateBtn'); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='Creating\u2026'; }
   // Full row first. If the table is missing a newer column Postgres rejects the whole
@@ -4678,10 +4684,14 @@ async function addClientToDb(){
       +(_tier==='vip' ? 'VIP, books anytime' : '1:1, 2 calls')+' \u00b7 '+_term+' mo');
     // Seed a profile with the gender so a split can be assigned before they log in.
     try{
-      var _sex=window._acSex||'male';
+      // No fallback: the button is gated on a real choice, and a guess here is what
+      // seeded 40 rows of 'male' that nobody picked. Unset means the field stays out.
+      var _sex=window._acSex||null;
       var _pd=PHASES && PHASES.comp;
       var _days=(_pd && _pd.days && _pd.days[_sex]) || 5;
-      await sbUpsert('profiles',{client_code:code,name:name,gender:_sex,train_days:_days},'client_code');
+      var _seed={client_code:code,name:name,train_days:_days};
+      if(_sex) _seed.gender=_sex;
+      await sbUpsert('profiles',_seed,'client_code');
     }catch(e){ console.warn('profile seed', e); }
     _rosterLoadPromise=null;
     try{ await loadRosterFromDB(); }catch(e){}
@@ -11216,6 +11226,8 @@ function jvOpenDeep(code){
     // the name. Floating unlabelled between two headed blocks it read as an orphan.
     + _jvContractLine(code)
     + _jvContactHead(code)
+    // Fills in only when the saved week contradicts the sex on file. Silent otherwise.
+    + '<div id="jvSplitFlag"></div>'
     + '<div class="jvBlock">'
       + '<div class="jvBlockLabel">Progress</div>'
       + _jvProgress(code)
@@ -11253,6 +11265,7 @@ function jvOpenDeep(code){
   // Recent history is in the card itself now, so it loads whether or not the rest
   // is expanded — it's the thing being looked for, not an extra.
   _jvDeepHistory(code);
+  _jvLoadSplitFlag(code);
   if(open){
     try{ cnLoad(code).then(function(){ _cnRepaint(code); }); }catch(e){}
     _jvLoadDeepProgram(code);
@@ -11262,6 +11275,58 @@ function jvOpenDeep(code){
     try{ mbDeepBlock(code); }catch(e){}
   }
 }
+// ===== STALE SPLIT FLAG =====
+// Correcting someone's sex does NOT rebuild a calendar that's already saved:
+// loadTrainingPlan sets _tpPlan from training_plans, and _tpDefaultPlan() only runs
+// when there isn't one. So a client whose sex was fixed after their week was built
+// keeps training off the old programme indefinitely, and nothing anywhere says so.
+// This says so, on the card, and leaves the rebuild to Yusuf.
+//
+// Classify by the day types that exist in only one vocabulary (see DAY_TYPES_MALE /
+// DAY_TYPES_FEMALE): Legs and Arms are men's-only, Glutes and Full Body are women's-only.
+// Push/Pull/Lower/Rest appear in both, so a week made only of those is not evidence
+// either way and returns null rather than a guess.
+function _jvSplitStyle(plan){
+  var types={};
+  try{
+    for(var k in plan){
+      var t=plan[k] && plan[k].type;
+      if(t) types[String(t).toLowerCase().trim()]=1;
+    }
+  }catch(e){}
+  var men   = types['legs']   || types['arms'];
+  var women = types['glutes'] || types['full body'];
+  if(men && !women) return 'male';
+  if(women && !men) return 'female';
+  return null;
+}
+async function _jvLoadSplitFlag(code){
+  var el=document.getElementById('jvSplitFlag'); if(!el) return;
+  try{
+    var rows=await sbSelect('training_plans','client_code=eq.'+encodeURIComponent(code)+'&limit=1');
+    // No saved week is the healthy case — it regenerates from the profile every load.
+    if(!rows || !rows.length) return;
+    var plan=rows[0].plan;
+    if(typeof plan==='string'){ try{ plan=JSON.parse(plan); }catch(e){ return; } }
+    var style=_jvSplitStyle(plan); if(!style) return;
+    // profiles isn't in orderColMap, so pass an order it actually has rather than eat
+    // the 400-and-retry that the default logged_at would cause.
+    var prof=await sbSelect('profiles','client_code=eq.'+encodeURIComponent(code)+'&select=gender&order=id.desc&limit=1');
+    var g=(prof && prof[0] && prof[0].gender) ? String(prof[0].gender).toLowerCase().trim() : '';
+    if(g!=='male' && g!=='female') g='';
+    if(g && g===style) return;                       // week and profile agree: say nothing
+    var wk=(style==='male' ? 'men' : 'women')+'’s';
+    var msg = g
+      ? ('Set to '+g+', but their saved calendar is the '+wk+' week.')
+      : ('No gender on file, and their saved calendar is the '+wk+' week.');
+    el.innerHTML='<div style="background:rgba(245,197,24,0.07);border:1px solid rgba(245,197,24,0.45);'
+      +'border-radius:12px;padding:12px 14px;margin-bottom:16px;font-size:12.5px;line-height:1.5;color:#f0ece4;">'
+      +'<span style="font-weight:800;color:var(--gold);">Split doesn’t match the profile.</span> '
+      +_escHtml(msg)+' Changing the field won’t rebuild it — they stay on this programme until the week is rebuilt.'
+      +'</div>';
+  }catch(e){}
+}
+
 // Client progress photos in the Jarvis client view — view them without logging in as the client.
 async function _jvLoadDeepPhotos(code){
   var el=document.getElementById('jvDeepPhotos'); if(!el) return;
@@ -12635,7 +12700,7 @@ async function _tlRefreshQuiet(){
 function _tlInvalidate(){
   try{ window._tlCache=null; }catch(e){}
   try{
-    if(cl && typeof canSeeCalendar==='function' && canSeeCalendar(cl.code)
+    if(cl && typeof hasDayTimeline==='function' && hasDayTimeline(cl.code)
        && document.getElementById('tlScroll') && typeof renderDayTimeline==='function'){
       renderDayTimeline();
     }
@@ -13487,7 +13552,7 @@ async function tlComplete(dateStr, title){
 async function loadFeedTab(){
   var body=document.getElementById('feedTabBody'); if(!body) return;
   var head=document.getElementById('feedTabHeading');
-  if(cl && typeof canSeeCalendar==='function' && canSeeCalendar(cl.code)){
+  if(cl && typeof hasDayTimeline==='function' && hasDayTimeline(cl.code)){
     // Calendar view (trainers + the clients on the calendar list)
     _tlViewDate=new Date();
     if(window._tlCache){
@@ -22144,7 +22209,23 @@ function gpBdayType(el){
   if(digits.length>4) out+='/'+digits.slice(4,8);
   el.value=out;
 }
-function gpSetSex(g){ profile.gender=g; _gpSave(); renderGoalsPage(); }
+async function gpSetSex(g){
+  profile.gender=g; _gpSave(); renderGoalsPage();
+  // _gpSave writes localStorage and nothing else. On the next load the background merge
+  // in loadClient() reapplies the server's row over the top, so an unsaved change is
+  // silently reverted — which is exactly how adrianap1 stayed 'male' after being set to
+  // female. The only thing that used to push sex to the server was "Rebuild my calendar".
+  //
+  // Two columns, not gpPersist(): on conflict PostgREST updates only the columns present,
+  // so this can't disturb the other 25 fields. sbUpsert RESOLVES false on an HTTP error
+  // rather than throwing, so branch on the value — a bare await would look like success.
+  var row={client_code:cl.code, gender:g}, ok=false;
+  try{ ok=await sbUpsert('profiles', row, 'client_code'); }catch(e){ ok=false; }
+  if(!ok){
+    try{ sqPush('profiles', row, 'UPSERT', 'client_code'); }catch(e){}
+    showToast('Saved on this device — we’ll sync it when the server’s back');
+  }
+}
 function gpSetBday(v){
   var d=_gpDateVal(v);
   // A half-typed date isn't an instruction to erase the one already saved.
@@ -22739,7 +22820,7 @@ function _catchupHtml(){
   try{ list=_catchupList(); }catch(e){ list=[]; }
   if(!list.length) return '';                          // nothing outstanding: say nothing
   return '<div class="cuBox" id="cuBox">'
-    +'<div class="cuHead">Still outstanding</div>'
+    +'<div class="cuHead">Catch up</div>'
     + list.map(function(x){
         var ds=_escHtml(x.ds).replace(/'/g,"\\'"), ty=String(x.type).replace(/'/g,"\\'");
         return '<div class="cuRow" id="cuRow_'+_cuRowId(x.ds,x.type)+'">'
@@ -25539,6 +25620,14 @@ function canSeeCalendar(code){
   return false;
 }
 
+// Which home screen a client gets. This used to be canSeeCalendar() — i.e. calls_enabled —
+// which quietly made booking access decide the whole client experience: the 76 clients
+// without standing call access got the old week-grid instead of the Day timeline, their
+// tab was labelled "Training" rather than "Day", and their programme never rendered inline.
+// Whether someone can book a call and which home screen they see are different questions.
+// canSeeCalendar still answers the first; this answers the second, for everyone.
+function hasDayTimeline(code){ return true; }
+
 function getTrainerDisplayName(code){
   if(code === 'yusuf1' || code === 'yourjimbff1') return 'Yusuf';
   return code;
@@ -26840,8 +26929,10 @@ async function logWeight(){
 // ===== WEIGHT JOURNEY GRAPH =====
 async function renderWeightJourney(){
   if(!cl) return;
+  // The graph host is gone from Profile & Goals, but this is still the only loader for
+  // window._wtAll (read by renderWeightCard) and the weigh-in list. So do NOT bail here —
+  // fetch, publish the data, then skip the drawing further down if there's nowhere to draw.
   var box = document.getElementById('weightJourney');
-  if(!box) return;
 
   try{
     // Pull all weight logs sorted ascending by created_at (or fall back to id)
@@ -26853,6 +26944,7 @@ async function renderWeightJourney(){
     syncWeightUnitUI();
     _renderWeighList(weights);
     try{ renderProgressCards(); }catch(e){}
+    if(!box) return;                 // data is published; there's no graph to paint
     if(!weights || weights.length < 2){
       box.style.display = 'none';
       return;
@@ -26917,7 +27009,9 @@ async function renderWeightJourney(){
     box.style.display = 'block';
   } catch(e){
     console.error('Journey render failed', e);
-    box.style.display = 'none';
+    // A throw before the box check (e.g. the fetch failing) lands here with box possibly
+    // null. Dereferencing it would turn a handled error into an unhandled one.
+    if(box) box.style.display = 'none';
   }
 }
 
@@ -27261,7 +27355,7 @@ function renderProfileHero(){
   var host=document.getElementById('profHero'); if(!host) return;
   if(!cl){ host.style.display='none'; return; }
   var onCal=true;
-  try{ onCal=(typeof canSeeCalendar==='function') ? !!canSeeCalendar(cl.code) : true; }catch(e){}
+  try{ onCal=(typeof hasDayTimeline==='function') ? !!hasDayTimeline(cl.code) : true; }catch(e){}
   if(!onCal){ host.style.display='none'; return; }   // no-calendar clients keep the old Today screen
   host.style.display='flex';
 
@@ -27299,7 +27393,7 @@ function renderProfileHero(){
 async function renderProfileSubs(){
   if(!cl) return;
   var onCal=true;
-  try{ onCal=(typeof canSeeCalendar==='function') ? !!canSeeCalendar(cl.code) : true; }catch(e){}
+  try{ onCal=(typeof hasDayTimeline==='function') ? !!hasDayTimeline(cl.code) : true; }catch(e){}
   if(!onCal) return;
   var seq=++_pRunSeq, q=[];
 
@@ -27688,7 +27782,7 @@ function _daIsToday(){
 function _retireTodayTiles(){
   // Hidden in CSS by default so they never flash. A client without the calendar gets them back.
   try{
-    var onCal = (cl && typeof canSeeCalendar==='function' && canSeeCalendar(cl.code));
+    var onCal = (cl && typeof hasDayTimeline==='function' && hasDayTimeline(cl.code));
     document.documentElement.classList.toggle('no-cal', !onCal);
     if(!onCal) return;
   }catch(e){ return; }
@@ -31558,7 +31652,7 @@ async function sendReply(){
 }
 
 
-window._acSex='male';
+window._acSex=null;
 function acSetSex(s){
   window._acSex=s;
   try{
@@ -31569,6 +31663,10 @@ function acSetSex(s){
       o[0].style.background  = o[1] ? 'rgba(245,197,24,0.07)' : '#191919';
       o[0].style.color       = o[1] ? 'var(--gold)' : 'rgba(240,236,228,0.6)';
     });
+    // Creating is blocked until this has been answered, so releasing the button is
+    // part of answering it.
+    var b=document.getElementById('acCreateBtn');
+    if(b){ b.disabled=false; b.style.opacity='1'; b.textContent='Create client'; }
   }catch(e){}
 }
 
@@ -33424,7 +33522,7 @@ function jimBarHtml(ds) {
 // timeline bars instead — never both, so the per-day element ids stay unique.
 function renderJimTodayBar(){
   var host=document.getElementById('jimTodayBar'); if(!host) return;
-  var show = cl && !(typeof canSeeCalendar==='function' && canSeeCalendar(cl.code));
+  var show = cl && !(typeof hasDayTimeline==='function' && hasDayTimeline(cl.code));
   if(!show){ host.style.display='none'; host.innerHTML=''; return; }
   var d=(typeof viewDate!=='undefined' && viewDate)?viewDate:new Date();
   var html='';
@@ -33673,7 +33771,7 @@ async function jimSendSmart(ds, raw) {
   var did = await _jimRun(plan, ds);
   // Non-calendar clients have no timeline to repaint — repainting it would
   // splash timeline HTML into their Training tab until its next re-render.
-  try { window._tlCache = null; if (typeof canSeeCalendar !== 'function' || canSeeCalendar(cl.code)) { await renderDayTimeline(true); } } catch (e) {}
+  try { window._tlCache = null; if (typeof hasDayTimeline !== 'function' || hasDayTimeline(cl.code)) { await renderDayTimeline(true); } } catch (e) {}
   if (did.length) showToast('Logged ' + did.join(' \u00b7 '));
   else showToast('Nothing I could log in that');
   return true;
