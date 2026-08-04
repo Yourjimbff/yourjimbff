@@ -26,10 +26,7 @@
 
 const crypto = require('crypto');
 
-// The same table as SELL_PLANS in index.html. `first` is what Stripe charges today,
-// and it's the match key: every first-charge amount across the whole matrix is
-// unique, so the amount alone identifies the plan. Metadata wins when it's set —
-// add plan=solo_6_x2 to a Payment Link in Stripe and a coupon can never confuse this.
+// The same table as SELL_PLANS in index.html.
 const PLANS = {
   solo_3_full:  {tier: '1on1', term: 3,  first: 997,  total: 997,  parts: 1},
   solo_3_x2:    {tier: '1on1', term: 3,  first: 550,  total: 1100, parts: 2},
@@ -38,13 +35,59 @@ const PLANS = {
   solo_12_full: {tier: '1on1', term: 12, first: 2000, total: 2000, parts: 1}
 };
 
-function planFor(metaPlan, amountDollars) {
-  if (metaPlan && PLANS[metaPlan]) return Object.assign({key: metaPlan}, PLANS[metaPlan]);
+// HOW A PAYMENT BECOMES A PLAN.
+//
+// Stripe's dashboard has no metadata field on Payment Links, so tagging them by hand
+// isn't available. Reading Stripe's own product is better than tagging anyway: the
+// product says what was bought, and unlike the amount it doesn't move when a discount
+// is applied. Three ways in, best first:
+//
+//   1. metadata.plan   — if it's ever set by API, it wins outright.
+//   2. the product     — name and recurrence, fetched from Stripe at payment time.
+//                        "1:1 Coaching - 6 Months" + recurring = solo_6_x2.
+//   3. the amount      — last resort, and only when it matches exactly one plan.
+//
+// Every payment logs the price and product ids it saw, so the exact ids can be pinned
+// here later without guessing at them now.
+function planFromName(name, recurring) {
+  const n = String(name || '').toLowerCase();
+  if (!n) return null;
+  const term = /\b12\b|twelve/.test(n) ? 12 : /\b6\b|six/.test(n) ? 6 : /\b3\b|three/.test(n) ? 3 : null;
+  if (!term) return null;
+  const tier = /vip/.test(n) ? 'vip' : '1on1';
+  // Recurring means it's being paid off in instalments; one-time means paid in full.
+  const want = (tier === 'vip' ? 'vip_' : 'solo_') + term + (recurring ? '_x2' : '_full');
+  return PLANS[want] ? Object.assign({key: want}, PLANS[want]) : null;
+}
+function planFromAmount(amountDollars) {
   const hit = Object.keys(PLANS).filter(k => PLANS[k].first === amountDollars);
-  // Two plans matching one amount means the table drifted. Refuse rather than guess
-  // a term — a wrong term is a wrong renewal date and a wrong card for months.
+  // Two plans on one amount means the table drifted. Refuse rather than guess a term —
+  // a wrong term is a wrong renewal date and a wrong card for months.
   if (hit.length !== 1) return null;
   return Object.assign({key: hit[0]}, PLANS[hit[0]]);
+}
+// Ask Stripe what was actually bought. Needs the secret key; without it this returns
+// null and the amount fallback carries the payment.
+async function lineItemOf(sessionId) {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) return null;
+  try {
+    const res = await fetch('https://api.stripe.com/v1/checkout/sessions/'
+      + encodeURIComponent(sessionId) + '/line_items?limit=1&expand[]=data.price.product',
+      {headers: {'Authorization': 'Bearer ' + key}});
+    if (!res.ok) { console.error('line_items failed', res.status, await res.text()); return null; }
+    const j = await res.json();
+    const li = (j.data || [])[0];
+    if (!li) return null;
+    const price = li.price || {};
+    const product = price.product || {};
+    return {
+      name: product.name || li.description || '',
+      recurring: !!price.recurring,
+      priceId: price.id || '',
+      productId: (typeof product === 'string') ? product : (product.id || '')
+    };
+  } catch (e) { console.error('line_items threw', e); return null; }
 }
 
 // Stripe signs the RAW body. Any re-serialising breaks this, which is why the handler
@@ -174,8 +217,19 @@ exports.handler = async function (event) {
     const email = String(details.email || obj.customer_email || '').trim().toLowerCase();
     const name = String(details.name || '').trim() || (email ? email.split('@')[0] : 'New client');
     const amount = Math.round((obj.amount_total || 0)) / 100;
-    const plan = planFor((obj.metadata || {}).plan, amount);
-    if (!plan) { console.error('no plan for amount', amount, obj.metadata); return {statusCode: 200, body: 'unmapped amount'}; }
+    const meta = (obj.metadata || {}).plan;
+    const li = await lineItemOf(obj.id);
+    // Logged on every payment so the exact ids can be pinned later without guessing.
+    console.log('bought:', JSON.stringify({amount: amount, meta: meta || null, item: li}));
+    let plan = (meta && PLANS[meta]) ? Object.assign({key: meta}, PLANS[meta]) : null;
+    let via = plan ? 'metadata' : '';
+    if (!plan && li) { plan = planFromName(li.name, li.recurring); if (plan) via = 'product'; }
+    if (!plan) { plan = planFromAmount(amount); if (plan) via = 'amount'; }
+    if (!plan) {
+      console.error('UNMAPPED PAYMENT', amount, meta, li);
+      return {statusCode: 200, body: 'unmapped payment'};
+    }
+    console.log('matched', plan.key, 'via', via);
 
     // Stripe retries on any non-2xx, and it retries successes it didn't hear about.
     // Keyed on the session so a retry finds the client it already made.
@@ -196,7 +250,9 @@ exports.handler = async function (event) {
       ? {calls_enabled: true,  call_credits: 0}
       : {calls_enabled: false, call_credits: 2};
     const row = Object.assign({
-      code: code, name: name, initials: initials, email: email,
+      // null, not '' — "no email on file" has to be one thing, or the roster count of
+      // who still needs chasing quietly misses everyone stored as an empty string.
+      code: code, name: name, initials: initials, email: (email || null),
       coach_code: 'yusuf1', is_trainer: false, active: true,
       tier: plan.tier, term_months: plan.term,
       paid: plan.first, started_at: today,
