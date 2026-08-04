@@ -3757,12 +3757,12 @@ async function loadRosterFromDB(){
     try{
       var rows=null, _hasCallCols=true;
       try{
-        rows = await sbSelect('clients','select=code,name,initials,phone,coach_code,is_trainer,active,calls_enabled,call_credits,tier,term_months,paid,term_ends,started_at&order=code.asc&limit=2000');
+        rows = await sbSelect('clients','select=code,name,initials,phone,email,coach_code,is_trainer,active,calls_enabled,call_credits,tier,term_months,paid,term_ends,started_at&order=code.asc&limit=2000');
       }catch(_e1){ rows=null; }
       if(!rows || !rows.length){
         // table hasn't got the call columns yet — fall back and grandfather instead
         _hasCallCols=false;
-        rows = await sbSelect('clients','select=code,name,initials,phone,coach_code,is_trainer,active&order=code.asc&limit=2000');
+        rows = await sbSelect('clients','select=code,name,initials,phone,email,coach_code,is_trainer,active&order=code.asc&limit=2000');
       }
       window._callColsExist = _hasCallCols;
       if(rows && rows.length){
@@ -3773,6 +3773,7 @@ async function loadRosterFromDB(){
           e.name = r.name || e.name || r.code;
           if(r.initials) e.initials = r.initials;
           if(r.phone) e.phone = r.phone;
+          e.email = r.email || null;   // null, not undefined: 'no email' is one state
           if(r.coach_code) e.coach_code = r.coach_code;
           if(r.is_trainer) e.isTrainer = true;
           e.active = (r.active !== false);
@@ -10373,6 +10374,8 @@ function jvRenderTriage(){
   function grid(arr){ return '<div class="jvBandGrid">'+arr.map(card).join('')+'</div>'; }
 
   var html='';
+  // Chasing email addresses ahead of real logins — same block as the front desk carries.
+  try{ html+=_emailCoverageHtml(); }catch(e){}
   if(window._jvHandledSrv==='missing'){
     html+='<div class="jvSetup">Your ✓ clears are saving on this device only — they won’t survive incognito or sync to your phone until the <b>jv_handled</b> table exists. <button onclick="jvCopyHandledSQL()">Copy the SQL</button></div>';
   }
@@ -15342,6 +15345,9 @@ async function renderMobFrontDesk(){
     +statCard(_spokeT,'spoke to today',null)
     +statCard(_woT,'trained today','workedout')
     +'</div>';
+  // Chasing email addresses ahead of real logins. On BOTH surfaces, for the same
+  // reason the export is.
+  try{ html+=_emailCoverageHtml(); }catch(e){}
   // Same export the cockpit header carries. Shipping this to one surface only is how
   // the hidden-clients view and the search status line ended up reading as unshipped.
   html+='<button onclick="jvCopyRoster(this)" style="width:100%;margin-top:12px;background:#1b1b1b;border:1px solid #2d2d2d;'
@@ -33742,6 +33748,63 @@ function _cnWhen(iso) {
 }
 
 // ---- trainer: on a client's page ----
+// ===== EMAIL COVERAGE ==================================================
+// Real logins need somewhere to send a setup link, and collecting ~80 addresses is the
+// slow part of that job — slower than the code. This is the running count, on both
+// trainer surfaces, so it can be chipped away at instead of discovered at cutover.
+// Counts only ACTIVE, non-trainer clients: an archived client is not someone to chase.
+function _emailMissing(){
+  var hidden={}; try{ hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{}; }catch(e){}
+  var miss=[], have=0;
+  Object.keys(CLIENTS||{}).forEach(function(c){
+    var r=CLIENTS[c]||{};
+    if(r.isTrainer || r.active===false || hidden[c]) return;
+    if(String(r.email||'').trim()) have++; else miss.push(c);
+  });
+  miss.sort(function(a,b){
+    var an=String((CLIENTS[a]||{}).name||a).toLowerCase(), bn=String((CLIENTS[b]||{}).name||b).toLowerCase();
+    return an<bn?-1:an>bn?1:0;
+  });
+  return {missing:miss, have:have, total:miss.length+have};
+}
+function _emailCoverageHtml(){
+  var m=_emailMissing();
+  if(!m.total) return '';
+  if(!m.missing.length){
+    return '<div style="background:rgba(120,200,120,0.07);border:1px solid rgba(120,200,120,0.4);border-radius:12px;'
+      +'padding:11px 13px;margin-bottom:14px;font-size:12.5px;color:#f0ece4;">'
+      +'<b>Every client has an email on file.</b> Ready for logins whenever you are.</div>';
+  }
+  var open=!!window._emailListOpen;
+  var names=m.missing.map(function(c){
+    var n=String((CLIENTS[c]||{}).name||c);
+    return '<span onclick="jvOpenDeep(\''+c+'\')" style="display:inline-block;background:#1b1b1b;border:1px solid #313131;'
+      +'border-radius:8px;padding:5px 9px;margin:0 5px 5px 0;font-size:12px;font-weight:700;color:#f0ece4;cursor:pointer;">'
+      +_escHtml(n)+'</span>';
+  }).join('');
+  var pct=Math.round((m.have/m.total)*100);
+  return '<div style="background:rgba(245,197,24,0.07);border:1px solid rgba(245,197,24,0.45);border-radius:12px;'
+    +'padding:12px 13px;margin-bottom:14px;">'
+    +'<div style="display:flex;align-items:baseline;gap:8px;">'
+      +'<span style="font-size:11px;font-weight:800;letter-spacing:0.8px;color:var(--gold);">EMAIL ON FILE</span>'
+      +'<span style="font-size:12.5px;color:#f0ece4;font-weight:700;">'+m.have+' of '+m.total+'</span>'
+      +'<span style="flex:1;"></span>'
+      +'<span onclick="jvToggleEmailList()" style="font-size:12px;font-weight:700;color:rgba(240,236,228,0.75);cursor:pointer;text-decoration:underline;text-underline-offset:3px;">'
+        +(open?'Hide':(m.missing.length+' missing'))+'</span>'
+    +'</div>'
+    +'<div style="height:6px;border-radius:99px;background:#2b2b2b;margin-top:9px;overflow:hidden;">'
+      +'<div style="height:100%;width:'+pct+'%;background:var(--gold);"></div></div>'
+    +'<div style="font-size:11.5px;color:rgba(240,236,228,0.72);margin-top:7px;line-height:1.45;">'
+      +'Needed to send each client a login link. Tap a name to open their card and add it.</div>'
+    +(open?('<div style="margin-top:10px;">'+names+'</div>'):'')
+  +'</div>';
+}
+function jvToggleEmailList(){
+  window._emailListOpen=!window._emailListOpen;
+  try{ if(typeof jvRenderTriage==='function' && jvTriage) jvRenderTriage(); }catch(e){}
+  try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+}
+
 function cnSectionHtml(code) {
   var notes = window._cnCache[code] || [];
   return '<div style="margin-top:18px;padding-top:15px;border-top:1px solid #272727;">'

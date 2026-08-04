@@ -250,7 +250,9 @@ exports.handler = async function (event) {
       ? {calls_enabled: true,  call_credits: 0}
       : {calls_enabled: false, call_credits: 2};
     const row = Object.assign({
-      code: code, name: name, initials: initials, email: email,
+      // null, not '' — "no email on file" has to be one thing, or the roster count of
+      // who still needs chasing quietly misses everyone stored as an empty string.
+      code: code, name: name, initials: initials, email: (email || null),
       coach_code: 'yusuf1', is_trainer: false, active: true,
       tier: plan.tier, term_months: plan.term,
       paid: plan.first, started_at: today,
