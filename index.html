@@ -12755,8 +12755,21 @@ function _tlSlot(key, label, filled, ds, plan){
       }
       var editing = !!(window._tlEditTxt && window._tlEditTxt[uid]);
       var acts='';
+      // Tapping a logged meal opened Edit and Delete and never showed what was
+      // actually recorded. A label read stores all four numbers; there was nowhere
+      // on the entry to see them, so a meal read from a photo looked like it had
+      // captured nothing at all.
+      if(isFood && (it.calories!=null || it.protein!=null || it.carbs!=null || it.fat!=null)){
+        var _mk=function(lb,v,u){ return '<div style="flex:1;min-width:0;text-align:center;">'
+          +'<div style="font-size:15px;font-weight:800;color:var(--text);line-height:1.1;">'+(v!=null?Math.round(v):'\u2014')+(v!=null&&u?u:'')+'</div>'
+          +'<div style="font-size:9px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:var(--muted);margin-top:3px;">'+lb+'</div></div>'; };
+        acts+='<div style="display:flex;gap:6px;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:11px;padding:10px 8px;margin-bottom:8px;">'
+          +_mk('cal', it.calories, '')+_mk('protein', it.protein, 'g')
+          +_mk('carbs', it.carbs, 'g')+_mk('fat', it.fat, 'g')
+        +'</div>';
+      }
       if(isFood && it.id && !window._tlRO){
-        acts='<div style="display:flex;justify-content:flex-end;gap:4px;margin-bottom:8px;">'
+        acts+='<div style="display:flex;justify-content:flex-end;gap:4px;margin-bottom:8px;">'
           +'<span data-tl="edit" data-id="'+it.id+'" style="font-size:10.5px;font-weight:700;color:rgba(240,236,228,0.78);padding:3px 8px;cursor:pointer;">Edit</span>'
           +'<span data-tl="delfood" data-id="'+it.id+'" style="font-size:10.5px;font-weight:700;color:rgba(255,120,110,0.9);padding:3px 8px;cursor:pointer;">Delete</span>'
         +'</div>';
@@ -22609,11 +22622,9 @@ function _applyCardio(plan, c){
   return plan;
 }
 
-// ===== BUILD MY CALENDAR — the commit =====
-// Everything before this is input. This is the moment the week appears on the Day
-// tab, so it is the one place in the flow that must not lie. PostgREST returning
-// 2xx is not evidence the row is there; we read it back and compare signatures
-// before telling anyone it worked.
+// ===== WRITING THE WEEK =====
+// There is no commit button any more; the page saves as you change it. The read-back
+// stays because a 2xx from PostgREST is still not evidence the row is there.
 async function _writeCalendar(plan){
   var sig=_splitSig(plan);
   var body={client_code:cl.code, name:(_tpName||''), weeks:(_tpWeeks||4),
@@ -22697,10 +22708,33 @@ function _gpExpanded(n){
 }
 function gpToggle(n){ _gpOpenSet[n]=!_gpExpanded(n); renderGoalsPage(); }
 function gpEdit(n){ gpToggle(n); }      // old name, same door
-function _gpSave(){
+// Every control on this page calls _gpSave. It used to write localStorage only,
+// because the Build my calendar button carried the trip to the server. That button is
+// gone, so without this the page saved to the phone and nowhere else.
+//
+// Debounced rather than fired per keystroke: changing days re-renders and saves, and a
+// sex chip plus a birthday plus a height is three writes in five seconds otherwise.
+var _gpSyncTimer=null;
+function _gpSave(opts){
   try{ localStorage.setItem('yjb_profile_'+cl.code, JSON.stringify(profile)); }catch(e){}
+  try{
+    if(_gpSyncTimer) clearTimeout(_gpSyncTimer);
+    _gpSyncTimer=setTimeout(function(){
+      _gpSyncTimer=null;
+      try{ gpPersist(); }catch(e){}
+      try{ _gpSyncWeek(); }catch(e){}
+    }, (opts&&opts.now)?0:1500);
+  }catch(e){}
 }
-function _gpSet(k,v){ if(!profile) return; profile[k]=v; _gpSave(); renderGoalsPage(); }
+// The week the Day tab reads. Same reasoning: it used to ride along with the commit.
+async function _gpSyncWeek(){
+  try{
+    var plan=_tpPlanForClient(); if(!plan) return;
+    _tpPlan=plan;
+    await _writeCalendar(plan);        // read-back inside; failure just leaves the old row
+    try{ window._tlCache=null; }catch(e){}
+  }catch(e){}
+}
 
 function _gpCard(n, title, sub, inner, summary){
   var open=_gpExpanded(n), done=_gpDone(n);
@@ -22998,16 +23032,6 @@ function gpSetDays(n){
   _gpSave(); renderGoalsPage();
 }
 
-// Seven rows, in order: weekday and what you do. Rest days included — they're part of
-// the shape of the week, and hiding them makes the sequence harder to read, not easier.
-function _gpWeekRows(week){
-  return (week||[]).map(function(t,i){
-    var rest=(t==='Rest');
-    return '<div class="gpWeekRow'+(rest?' rest':'')+'">'
-      +'<span class="gpWeekD">'+WEEKDAYS[i]+'</span>'
-      +'<span class="gpWeekT">'+(rest?'Rest':t)+'</span></div>';
-  }).join('');
-}
 // Reordering swaps two days rather than shuffling the rest along — moving Thursday up
 // should trade with Wednesday, not push every later day down one.
 function gpMoveDay(i,dir){
@@ -23021,28 +23045,6 @@ function gpResetWeek(){ profile.split_week=null; _gpSave(); renderGoalsPage(); }
 // gpSetSplit is gone with the picker: the week comes from the day count, and the
 // only thing the client changes about it is the order.
 
-// Compose + commit. Returns a result object; the caller owns the messaging.
-async function buildMyCalendar(){
-  if(!cl) return {ok:false, why:'no client'};
-  // No chosen split, no calendar. We narrow the list by days; we never pick from it
-  // on the client's behalf, and we don't quietly substitute a default here either.
-  var plan=_splitFromWeek(_clientWeek());
-  if(!plan) return {ok:false, why:'no week'};
-  var c=_cardioPlan(plan, profile&&profile.cardio_min,
-                    (profile&&profile.cardio_mode)||'own',
-                    profile&&profile.cardio_days);
-  _applyCardio(plan, c);
-  var r=await _writeCalendar(plan);
-  if(r.ok){
-    _tpPlan=plan;
-    profile.split_sig=r.sig;                    // provenance, for the hand-edit check
-    profile.split_days=parseInt(profile.train_days,10)||null;
-    try{ localStorage.setItem('yjb_profile_'+cl.code, JSON.stringify(profile)); }catch(e){}
-    try{ window._tlCache=null; }catch(e){}      // force the Day tab to redraw from the new week
-  }
-  r.cardio=c;
-  return r;
-}
 
 // ---- 6. Cardio
 function _gpSecCardio(n){
@@ -23200,98 +23202,6 @@ function gpSetBed(v){ profile.bedtime=String(v||'').trim()||null; _gpSave(); ren
 function gpSetWake(v){ profile.waketime=String(v||'').trim()||null; _gpSave(); renderGoalsPage(); }
 
 
-// ---- the page
-// ===== THE BANNER — only when something real happened =====
-// The rule that makes this worth anything: it appears ONLY when there is a genuine
-// streak or a genuine trend. No encouragement, no nudge, no consolation line. A client
-// who is gaining weight and falling off sees an empty space, because a banner that
-// always says something is wallpaper, and then seeing it means nothing.
-//
-// "Real" means sustained. Three weigh-ins moving the right way, or several days in a
-// row of training or logging. Never one good morning. Never a single weigh-in — that
-// is water, not progress.
-//
-// If you add a signal here, it has to pass the same bar: would a client be right to
-// feel good about this, or is it just a number that moved?
-function _wrapNum(n){
-  try{ if(n>=1 && n<=10 && typeof _MI_NUM!=='undefined' && _MI_NUM[n]) return _MI_NUM[n].charAt(0).toUpperCase()+_MI_NUM[n].slice(1); }catch(e){}
-  return String(n);
-}
-function _wrapDayKey(d){ try{ return _tlDateStr(d); }catch(e){ return null; } }
-// Consecutive days ending today, or ending yesterday if today hasn't happened yet.
-// Not having trained by 9am isn't a broken streak.
-function _wrapRun(set){
-  var d=new Date(); d.setHours(0,0,0,0);
-  if(!set[_wrapDayKey(d)]) d.setDate(d.getDate()-1);
-  var run=0, guard=0;
-  while(set[_wrapDayKey(d)] && guard++<400){ run++; d.setDate(d.getDate()-1); }
-  return run;
-}
-function _wrapDaySet(rows, pred){
-  var set={};
-  (rows||[]).forEach(function(r){
-    if(!r) return;
-    if(pred && !pred(r)) return;
-    var k=r.date_str; if(k) set[k]=1;
-  });
-  return set;
-}
-// Weight only counts as movement with at least three readings AND a recent leg that
-// still agrees with the direction. Two readings is noise; a good morning is water.
-function _wrapWeight(){
-  var W=(window._wtAll||[]).filter(function(r){ return r && r.weight!=null; });
-  if(W.length<3) return null;
-  var gw=parseFloat(profile&&(profile.goal_weight||profile.goalWeight));
-  var start=parseFloat(profile&&profile.start_weight);
-  if(!(start>0)) start=parseFloat(W[0].weight);
-  var now=parseFloat(W[W.length-1].weight);
-  if(!(gw>0)||!(start>0)||!(now>0)) return null;
-  var want = (gw>start) ? 1 : (gw<start ? -1 : 0);
-  if(!want) return null;                                  // holding: nothing to celebrate
-  var moved=(now-start)*want;                             // positive = toward the goal
-  if(moved<2) return null;                                // under two pounds isn't a trend
-  var three=parseFloat(W[W.length-3].weight);
-  if((now-three)*want<=0) return null;                    // stalled or reversed lately
-  var amt=Math.round(moved*10)/10;
-  return {score:100+amt, line:(want<0?'Down ':'Up ')+wToDisp(amt)+' '+wUnit()+' since you started'};
-}
-function _wrapSignals(){
-  var out=[], C=null;
-  try{ C=window._tlCache||null; }catch(e){}
-  var w=_wrapWeight(); if(w) out.push(w);
-  if(C){
-    var tr=_wrapRun(_wrapDaySet(C.workouts));
-    if(tr>=3) out.push({score:60+tr, line:_wrapNum(tr)+' days trained in a row'});
-    var lg=_wrapRun(_wrapDaySet(C.foods));
-    if(lg>=7) out.push({score:55+lg, line:'Logged every day this week'});
-    else if(lg>=5) out.push({score:50+lg, line:_wrapNum(lg)+' days logged in a row'});
-    // Protein needs a target to be measured against, and a day only counts once it's
-    // actually met — not "close".
-    try{
-      var target=_fuelTargets().prot;
-      if(target>0){
-        var byDay={};
-        (C.foods||[]).forEach(function(f){
-          if(!f||!f.date_str) return;
-          byDay[f.date_str]=(byDay[f.date_str]||0)+(parseFloat(f.protein)||0);
-        });
-        var hit={}; for(var k in byDay){ if(byDay[k]>=target) hit[k]=1; }
-        var pr=_wrapRun(hit);
-        if(pr>=3) out.push({score:70+pr, line:'Hit your protein '+_wrapNum(pr).toLowerCase()+' days running'});
-      }
-    }catch(e){}
-  }
-  out.sort(function(a,b){ return b.score-a.score; });
-  return out;
-}
-var _wrapTop=null;                 // what the banner is currently leading with
-// Trainer-only while it's being lived with. Flip WRAP_TRAINER_ONLY to false to open
-// it up to clients — nothing else needs to change.
-var WRAP_TRAINER_ONLY = true;
-function _wrapAllowed(){
-  if(!WRAP_TRAINER_ONLY) return true;
-  try{ return !!(cl && typeof isTrainer==='function' && isTrainer(cl.code)); }catch(e){ return false; }
-}
 // ===== CATCH-UP — say you trained on the day you actually trained =====
 // Missing a session and opening the app the next morning shouldn't mean navigating
 // back to yesterday to admit it. Outstanding sessions from the last few days surface
@@ -23390,8 +23300,6 @@ async function catchUpLog(ds, type, btn){
   try{ window._tlCache=null; await renderDayTimeline(); }catch(e){}
 }
 
-// The gold "this week" banner is gone from the Day page. _wrapSignals below is left
-// in place — it's the only thing that knows what counts as real movement.
 
 // ===== CURRENT STATUS =====
 // Just the heading. The editable line that lived here is gone — it was never clear
@@ -23584,35 +23492,6 @@ async function gpPersist(){
   return false;
 }
 
-// The commit. Confirm the calendar write actually landed before saying it did.
-async function gpCommit(){
-  if(!_gpDone(GP_DAYS)){ showToast('Pick your days first'); return; }
-  // Never replace a week the client has customised without asking first.
-  if(_tpPlan && !_splitIsPristine(_tpPlan, profile&&profile.split_sig)){
-    var okToReplace=false;
-    try{ okToReplace=window.confirm('Your week has changes you made by hand. Replace it with the split you picked?'); }catch(e){ okToReplace=false; }
-    if(!okToReplace) return;
-  }
-  var btn=document.querySelector('#goalsPage .gpBuildB');
-  if(btn){ btn.disabled=true; btn.textContent='Building…'; }
-  var synced=await gpPersist();
-  var r=await buildMyCalendar();
-  if(r.ok){
-    profile.setup_done=true; _gpSave();
-    showToast(synced?'Your week is on the Day tab ✓':'Week built — profile will sync when it can');
-    try{ window._tlCache=null; }catch(e){}
-    // A commit should take you somewhere. Land on the week you just built.
-    try{ switchTab('Feed'); }catch(e){}
-    return;
-  }else if(r.why==='no split chosen'||r.why==='bad split'){
-    showToast('Pick a split first');
-  }else{
-    // Not "saved". The row was never confirmed, so say that.
-    showToast('Couldn’t confirm your week saved — try again in a moment');
-  }
-  _gpOpen=null;
-  renderGoalsPage();
-}
 function openTrainingBuilder(){ try{ switchTab('Feed'); }catch(e){} }
 async function loadTrainingPlan(){
   try{
