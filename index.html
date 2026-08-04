@@ -21386,8 +21386,151 @@ async function researchAndAdd(q){
     _foodQtyReset();
   }catch(e){ console.error('researchAndAdd',e); if(box){ box.innerHTML='<div style="padding:14px;text-align:center;color:var(--muted);font-size:12.5px;">Couldn\u2019t estimate that — try rephrasing.</div>'; } }
 }
-function onLogMeal(){
+// ===== PHOTO → LABEL ===================================================
+// General photo reading was removed because guessing a plate from its appearance
+// was unreliable. This is the narrow job it IS good at: reading printed nutrition
+// information. Nothing here looks at how the food LOOKS — mbReadLabel asks only for
+// the panel, mbLabelUsable decides whether one was really found, and when it wasn't
+// we say so and stop. There is deliberately no fall-back to estimating from a picture.
+//
+// mbReadLabel/mbLabelUsable/mbFormatQty are the pair the component scanner already
+// uses, fixture-tested on real packaging.
+var _foodLabelRaw=null;      // the panel behind the confirm sheet, null when there isn't one
+var _foodLabelServings=1;
+var _foodLabelTriedFor=null; // the photo we've already attempted, so re-tapping Log doesn't re-scan
+
+// A panel's numbers describe ONE serving. This is the text that says what one is.
+function _labelServingText(raw){
+  var t=String((raw&&raw.serving_text)||'').trim();
+  if(t) return t;
+  var c=(+(raw&&raw.serving_count)>0)?(+raw.serving_count):1;
+  var u=String((raw&&raw.serving_unit)||'serving').trim()||'serving';
+  var g=(+(raw&&raw.grams)>0)?(+raw.grams):0;
+  try{ return mbFormatQty(c)+' '+u+(g?(' ('+g+'g)'):''); }catch(e){ return c+' '+u; }
+}
+function _labelName(raw){
+  var nm='';
+  try{ nm=_mbLabelName(raw.brand, raw.name)||''; }catch(e){}
+  return (nm||String((raw&&raw.name)||'').trim()||'Packaged food').slice(0,55);
+}
+// Multiply, never re-derive. Printed calories legitimately disagree with 4/4/9
+// (fibre, sugar alcohols, rounding) and the brief is to use what's printed.
+// Carbs are TOTAL as printed: food_logs stores total carbs everywhere else, and the
+// component library's net-carb rule answers a different question than a log does.
+function _labelMacros(raw, servings){
+  var n=(+servings>0)?(+servings):1;
+  function v(x){ var f=parseFloat(x); return isFinite(f)?Math.round(f*n):0; }
+  return {calories:v(raw.calories), protein:v(raw.protein), carbs:v(raw.carbs), fat:v(raw.fat)};
+}
+
+// It never logs on its own — the numbers are shown first, same as the component scanner.
+function _foodLabelPanel(){
+  var host=document.getElementById('foodResultInline');
+  if(!host){
+    var ia=document.getElementById('foodInputArea');
+    if(ia && ia.parentNode){ host=document.createElement('div'); host.id='foodResultInline'; ia.parentNode.insertBefore(host, ia.nextSibling); }
+  }
+  if(!host) return;
+  if(!_foodLabelRaw){ host.innerHTML=''; return; }
+  var m=_labelMacros(_foodLabelRaw, _foodLabelServings);
+  var serv=_labelServingText(_foodLabelRaw);
+  var stepBtn='background:#1b1b1b;border:1px solid #333;border-radius:9px;width:34px;height:34px;'
+             +'color:#f0ece4;font-size:19px;font-weight:700;cursor:pointer;font-family:inherit;line-height:1;';
+  function cell(lb,val){
+    return '<div style="flex:1;min-width:0;text-align:center;">'
+      +'<div style="font-size:8.5px;font-weight:800;letter-spacing:0.7px;text-transform:uppercase;color:rgba(240,236,228,0.78);margin-bottom:3px;">'+lb+'</div>'
+      +'<div style="font-size:16px;font-weight:800;color:#f0ece4;">'+val+'</div></div>';
+  }
+  host.innerHTML='<div style="background:rgba(245,197,24,0.07);border:1px solid rgba(245,197,24,0.45);border-radius:14px;padding:13px 14px;">'
+    +'<div style="font-size:11px;font-weight:800;color:var(--gold);letter-spacing:0.8px;">FROM THE LABEL</div>'
+    +'<div style="font-size:14.5px;font-weight:800;color:#f0ece4;margin-top:5px;">'+_escHtml(_labelName(_foodLabelRaw))+'</div>'
+    +'<div style="font-size:12.5px;color:rgba(240,236,228,0.78);margin-top:3px;line-height:1.45;">'
+      +'These are the printed numbers, not an estimate.'+(serv?(' One serving is <b>'+_escHtml(serv)+'</b>.'):'')+'</div>'
+    +'<div style="display:flex;align-items:center;gap:10px;margin:12px 0 4px;">'
+      +'<span style="font-size:12.5px;font-weight:700;color:#f0ece4;flex:1;">How many servings?</span>'
+      +'<button onclick="foodLabelServings(-1)" style="'+stepBtn+'">−</button>'
+      +'<span id="foodLabelServN" style="min-width:26px;text-align:center;font-size:15px;font-weight:800;color:#f0ece4;">'+_foodLabelServings+'</span>'
+      +'<button onclick="foodLabelServings(1)" style="'+stepBtn+'">+</button>'
+    +'</div>'
+    +'<div style="display:flex;gap:6px;background:#151515;border-radius:10px;padding:10px 6px;margin-top:8px;">'
+      +cell('Cal',m.calories)+cell('Protein',m.protein+'g')+cell('Carbs',m.carbs+'g')+cell('Fat',m.fat+'g')
+    +'</div>'
+    +'<button class="sbtn" style="margin-top:12px;" onclick="foodLabelLogIt()">Log it</button>'
+    +'<div style="text-align:center;margin-top:9px;"><span onclick="foodLabelDiscard()" style="font-size:12.5px;font-weight:700;color:rgba(240,236,228,0.7);cursor:pointer;text-decoration:underline;text-underline-offset:3px;">That’s not right — let me type it</span></div>'
+  +'</div>';
+}
+function foodLabelServings(delta){
+  if(!_foodLabelRaw) return;
+  var n=_foodLabelServings+(+delta||0);
+  if(n<1) n=1; if(n>20) n=20;
+  _foodLabelServings=n;
+  _foodLabelPanel();
+}
+function foodLabelDiscard(){
+  _foodLabelRaw=null; _foodLabelServings=1;
+  var host=document.getElementById('foodResultInline'); if(host) host.innerHTML='';
+  try{ var fa=document.getElementById('foodAdd'); if(fa) fa.focus({preventScroll:true}); }catch(e){}
+  showToast('Type what you ate and tap Log it');
+}
+function foodLabelLogIt(){
+  if(!_foodLabelRaw) return;
+  var raw=_foodLabelRaw, n=_foodLabelServings;
+  var m=_labelMacros(raw, n), serv=_labelServingText(raw);
+  var qty=''; try{ qty=mbFormatQty(n); }catch(e){ qty=String(n); }
+  // Hand smartLogFromText an exact-numbers row. It owns the insert, the day/time
+  // stamping and the whole refresh tail — duplicating that here is how paths drift.
+  window._foodLabelConfirmed={
+    // an em-dash, not parens: serving text usually contains its own "(85g)" and
+    // wrapping it gives "Waffles (2 × 2 waffles (85g))"
+    name:_labelName(raw)+(serv?(' — '+(n===1?serv:(qty+' × '+serv))):''),
+    calories:m.calories, protein:m.protein, carbs:m.carbs, fat:m.fat,
+    insight:'Numbers read from the product label'+(serv?(' — one serving is '+serv+'.'):'.')
+  };
+  _foodLabelRaw=null; _foodLabelServings=1;
+  var host=document.getElementById('foodResultInline'); if(host) host.innerHTML='';
+  smartLogFromText('');
+}
+
+// No panel found. Say that, and stop — not guessing is the whole point.
+function _foodNoLabel(){
+  var host=document.getElementById('foodResultInline');
+  if(!host){
+    var ia=document.getElementById('foodInputArea');
+    if(ia && ia.parentNode){ host=document.createElement('div'); host.id='foodResultInline'; ia.parentNode.insertBefore(host, ia.nextSibling); }
+  }
+  if(host) host.innerHTML='<div style="background:#191919;border:1px solid #2b2b2b;border-radius:12px;padding:13px 14px;">'
+    +'<div style="font-size:13.5px;font-weight:800;color:#f0ece4;">I couldn’t read a label on that photo</div>'
+    +'<div style="font-size:12.5px;color:rgba(240,236,228,0.78);margin-top:5px;line-height:1.5;">'
+    +'Nothing in it looked like printed nutrition information, and I won’t guess macros from how food looks. '
+    +'Type what you ate and I’ll take it from there — or take the photo again with the panel in frame.</div></div>';
+  showToast('No label found — type what you ate');
+  try{ var fa=document.getElementById('foodAdd'); if(fa) fa.focus({preventScroll:true}); }catch(e){}
+}
+
+async function onLogMeal(){
+  // The confirm panel carries its own Log it, but the sheet's main button is still on
+  // screen above it. Both have to mean the same thing — otherwise tapping the top one
+  // falls through and logs an empty "Meal" row, silently throwing the label away.
+  if(_foodLabelRaw){ foodLabelLogIt(); return; }
   var typed=((document.getElementById('foodAdd')||{}).value||'').trim();
+  // A photo with a readable label is enough on its own, so the label attempt comes
+  // before the "write what you ate" gate — and before the estimator, because printed
+  // numbers beat anything derived from a sentence.
+  if(typeof photoData!=='undefined' && photoData && _foodLabelTriedFor!==photoData){
+    _foodLabelTriedFor=photoData;
+    var btn=document.getElementById('plateLogBtn'), _orig=btn?btn.textContent:'';
+    if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='Reading the label…'; }
+    var lbl=null;
+    try{ lbl=await mbReadLabel(photoData); }catch(e){ lbl=null; }
+    if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent=_orig||'Log it'; }
+    if(lbl && mbLabelUsable(lbl)){
+      _foodLabelRaw=lbl; _foodLabelServings=1;
+      _foodLabelPanel();
+      return;                       // nothing is logged until the numbers are confirmed
+    }
+    if(!typed && !_plate.length){ _foodNoLabel(); return; }
+    showToast('No label found — using what you typed');
+  }
   if(typed){ smartLogFromText(typed); return; }
   if(_plate.length){ logPlateMeal(); return; }
   if(typeof photoData!=='undefined' && photoData){ smartLogFromText(''); return; } // photo is proof only — log it, don't read it
@@ -21451,12 +21594,15 @@ function _parseInlineMacros(q){
 async function smartLogFromText(q){
   var _photo=(typeof photoData!=='undefined')?(photoData||null):null;
   var raw=String(q||'').trim();
-  var mm=_parseInlineMacros(raw);
-  var parts = mm.hasMacro ? [] : _splitFoods(raw);
+  // A confirmed label is exact numbers, the same as macros stated inline — so it takes
+  // the same path and skips the estimator entirely.
+  var _lbl=window._foodLabelConfirmed||null; window._foodLabelConfirmed=null;
+  var mm=_lbl?{hasMacro:false}:_parseInlineMacros(raw);
+  var parts = (_lbl||mm.hasMacro) ? [] : _splitFoods(raw);
   // Their sentence IS the meal. The split parts are its breakdown, so hold on to
   // the original — it used to be discarded the moment we split it.
   window._mealTitleText = (parts.length > 1) ? raw : '';
-  if(!mm.hasMacro && !parts.length){ if(_photo){ parts=['Meal']; } else { showToast('Write what you ate'); return; } }
+  if(!_lbl && !mm.hasMacro && !parts.length){ if(_photo){ parts=['Meal']; } else { showToast('Write what you ate'); return; } }
   var meal=(window._mealSlot||((typeof _mealSlotNow==='function')?_mealSlotNow():'Meal'));
   var eatTime=(function(){ var _t=document.getElementById('foodTime'); var v=_t?String(_t.value||'').trim():''; return v||_defaultMealTime(window._mealSlot, window._mealLogDs); })();
   var logDs=(window._mealLogDs||_logDayStr());
@@ -21475,7 +21621,14 @@ async function smartLogFromText(q){
     if(remember){ try{ _rememberFood(entry); }catch(e){} }
     loggedNames.push(entry.name);
   }
-  if(mm.hasMacro){
+  if(_lbl){
+    // straight off the panel: printed numbers, logged as given, provenance in insight
+    await _push(
+      {client_code:cl.code,name:_lbl.name,emoji:'🍽️',calories:_lbl.calories,protein:_lbl.protein,carbs:_lbl.carbs,fat:_lbl.fat,rating:'good',insight:_lbl.insight,meal:meal,eat_time:eatTime,graced:false,date_str:logDs},
+      {name:_lbl.name,emoji:'🍽️',calories:_lbl.calories,protein:_lbl.protein,carbs:_lbl.carbs,fat:_lbl.fat,rating:'good',insight:_lbl.insight,meal:meal,eat_time:eatTime,eatTime:eatTime,graced:false,photo:null,date_str:logDs,note:''},
+      true          // worth remembering: it's a real product with real numbers
+    );
+  } else if(mm.hasMacro){
     // they stated the macros inline -> one food, their exact numbers
     var nm=_tcase(mm.rest||'Meal');
     var P=mm.macros;
