@@ -31270,6 +31270,7 @@ function _mlQtyLabel(q){
 // ---------- open ----------
 function mlOpen(ds, tag){
   window._mlItems = [];
+  window._mlLabelFor = null;
   window._mlDs = ds || todayDateStr;
   window._mlTag = _tcase(tag||'Dinner');
   window._mlEdit = -1;
@@ -31559,7 +31560,13 @@ async function mlSaveToLibrary(i){
 // ---------- save the meal ----------
 function mlSave(){
   var its=(window._mlItems||[]).slice();
-  if(!its.length){ try{ showToast('Add at least one food'); }catch(e){} return; }
+  if(!its.length){
+    // A photo that carried no readable panel is not a meal on its own — say which of
+    // the two situations they're in rather than the same line for both.
+    var _hasPh=!!window._mlPhoto;
+    try{ showToast(_hasPh ? 'No label on that photo — type what you ate' : 'Add at least one food'); }catch(e){}
+    return;
+  }
   var tmRaw=((document.getElementById('mlTime')||{}).value||'').trim();
   var tmP=_parseClock(tmRaw);
   // store it in one canonical shape so the row sorts and reads the same as it was typed
@@ -31774,6 +31781,45 @@ function _wkSetMins(n){
 
 // Photo attach on a meal. This was in the old sheet and I dropped it in v5.900.
 window._mlPhoto=null;
+// Photo → label, for the "Log A Meal" sheet.
+//
+// The label reader was wired into the other food sheet first, which is why attaching a
+// photo here and hitting Save still said "Add at least one food": this screen saves from
+// window._mlItems, and a photo never put anything in it. Reading the panel and pushing a
+// food is what makes the photo count as the meal.
+//
+// base holds ONE serving exactly as printed; qty is servings, so the sheet's existing
+// quantity control gives "I ate two of these" for free and _mlRecalc does the maths.
+// Printed calories are kept as-is — a panel legitimately disagrees with 4/4/9 once fibre
+// and rounding are in, and the brief is to use what's printed.
+async function _mlTryLabel(){
+  if(!window._mlPhoto) return;
+  if(window._mlLabelFor===window._mlPhoto) return;   // one read per photo, not per tap
+  window._mlLabelFor=window._mlPhoto;
+  var t=document.getElementById('mlThumb');
+  if(t) t.classList.add('reading');
+  try{ showToast('Reading the label…'); }catch(e){}
+  var raw=null;
+  try{ raw=await mbReadLabel(window._mlPhoto); }catch(e){ raw=null; }
+  if(t) t.classList.remove('reading');
+  if(!raw || !mbLabelUsable(raw)){
+    // No panel found. Say so and stop — this is the whole reason photo reading came back.
+    try{ showToast('No label found — type what you ate'); }catch(e){}
+    return;
+  }
+  var m=_labelMacros(raw, 1), serv=_labelServingText(raw);
+  window._mlItems=window._mlItems||[];
+  window._mlItems.push({
+    name:_labelName(raw)+(serv?(' — '+serv):''),
+    qty:1,
+    base:{cal:m.calories, pro:m.protein, carb:m.carbs, fat:m.fat},
+    src:'label', rating:'good'
+  });
+  _mlRecalc(window._mlItems[window._mlItems.length-1]);
+  try{ mlRender(); }catch(e){}
+  try{ showToast('✓ Read the label — check the servings'); }catch(e){}
+}
+
 function mlPhoto(inp){
   try{
     var f=inp.files&&inp.files[0]; if(!f) return;
@@ -31790,6 +31836,10 @@ function mlPhoto(inp){
           var t=document.getElementById('mlThumb');
           if(t){ t.classList.add('has'); t.innerHTML='<img src="'+window._mlPhoto+'" alt="">'
             +'<span class="mlX" onclick="event.preventDefault();event.stopPropagation();mlClearPhoto();">&times;</span>'; }
+          // Read the panel HERE rather than at save time: it turns the photo into a food
+          // in the list, so a photo of a label is a complete meal on its own and Save
+          // stops asking for typed text. Label only — never a guess from appearance.
+          try{ _mlTryLabel(); }catch(e){}
         }catch(e){}
       };
       img.src=ev.target.result;
@@ -31799,6 +31849,7 @@ function mlPhoto(inp){
 }
 function mlClearPhoto(){
   window._mlPhoto=null;
+  window._mlLabelFor=null;   // a new photo must be read again
   try{
     var t=document.getElementById('mlThumb');
     if(t){ t.classList.remove('has'); t.innerHTML='<span>Attach photo</span>'; }
