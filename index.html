@@ -16625,7 +16625,11 @@ function downscaleImage(dataUrl, maxDim, quality){
   return new Promise(function(resolve){
     try{
       var img = new Image();
-      img.onload = function(){
+      // A photo straight off the camera can fire onload before the bitmap is decoded,
+      // and drawImage then paints nothing — a blank frame the label reader dutifully
+      // reports as "no label". decode() waits for pixels, which is why the second
+      // attempt on the same photo always worked.
+      var _draw = function(){
         var w = img.width, h = img.height;
         if(w >= h){ if(w > maxDim){ h = Math.round(h * maxDim / w); w = maxDim; } }
         else { if(h > maxDim){ w = Math.round(w * maxDim / h); h = maxDim; } }
@@ -16635,6 +16639,12 @@ function downscaleImage(dataUrl, maxDim, quality){
           canvas.getContext('2d').drawImage(img, 0, 0, w, h);
           resolve(canvas.toDataURL('image/jpeg', quality || 0.7));
         }catch(e){ resolve(dataUrl); }
+      };
+      img.onload = function(){
+        // decode() resolves once the pixels are actually there. Where it isn't supported,
+        // onload is the best signal available and behaves as before.
+        if(img.decode){ img.decode().then(_draw).catch(_draw); }
+        else _draw();
       };
       img.onerror = function(){ resolve(dataUrl); };
       img.src = dataUrl;
@@ -19223,7 +19233,10 @@ function mbShapeLine(names, max){
   (names||[]).forEach(function(raw){
     var clean=mbCleanFoodName(raw); if(!clean) return;
     var part=mbFoodPart(raw);
-    (groups[part]=groups[part]||[]).push(clean.toLowerCase());
+    // Lowercasing here so the joined line reads as a sentence, then title-casing it on
+    // the way out, is what turned "Honey BBQ Chicken" into "Honey Bbq Chicken" on the
+    // meal card. Leave the casing alone and let _tcase decide at the point of display.
+    (groups[part]=groups[part]||[]).push(clean);
     n++;
   });
   var budget=(+max||4), dropped=0;
@@ -20352,10 +20365,18 @@ async function mbReadLabel(dataUrl){
     var small=await downscaleImage(dataUrl, 1600, 0.9);
     var m=String(small).match(/^data:(image\/[a-z]+);base64,(.+)$/i);
     if(!m) return _mbLabelFail('the photo was not readable image data');
-    var r=await _mbAskLabel(m[1], m[2], MB_LABEL_MODEL);
-    // a model name this key can't reach shouldn't cost them the feature
-    if(!r.ok) r=await _mbAskLabel(m[1], m[2], null);
-    if(!r.ok || !r.data) return _mbLabelFail('the reader could not be reached', r&&r.status);
+    // Three goes before giving up. A cold serverless function or a dropped connection is
+    // a transient miss, not a photo without a label — and telling someone "no label" then
+    // succeeding on the identical photo when they tap again is the worst of both.
+    var r=null;
+    for(var _try=0; _try<3; _try++){
+      r=await _mbAskLabel(m[1], m[2], MB_LABEL_MODEL);
+      // a model name this key can't reach shouldn't cost them the feature
+      if(!r.ok) r=await _mbAskLabel(m[1], m[2], null);
+      if(r.ok && r.data) break;
+      if(_try<2) await new Promise(function(res){ setTimeout(res, 600*(_try+1)); });
+    }
+    if(!r || !r.ok || !r.data) return _mbLabelFail('the reader could not be reached after 3 tries', r&&r.status);
     var txt='';
     (r.data.content||[]).forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; });
     txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
@@ -21516,8 +21537,20 @@ async function mbDeepBlock(code){
 var _savedFoods = [];
 var _plate = [];
 function _tcase(s){
-  s=String(s==null?'':s).toLowerCase();
-  return s.replace(/(^|[\s\-\/&(,.])([a-z])/g, function(m,pre,c){ return pre+c.toUpperCase(); });
+  // Title case that doesn't flatten acronyms. It used to lowercase the whole string first,
+  // so "Honey BBQ Chicken" came back "Honey Bbq Chicken" — and because the timeline
+  // re-titles every name on render, fixing it at the point of storage wasn't enough.
+  var src=String(s==null?'':s);
+  return src.split(/([\s\-\/&(,.])/).map(function(tok){
+    if(!tok || /^[\s\-\/&(,.]$/.test(tok)) return tok;
+    var bare=tok.replace(/[^A-Za-z0-9]/g,'');
+    if(bare && /[A-Z]/.test(bare) && bare===bare.toUpperCase()){
+      try{ if(typeof _LABEL_KEEP_CAPS!=='undefined' && _LABEL_KEEP_CAPS[bare.toUpperCase()]) return tok; }catch(e){}
+      // short and vowel-less reads as an initialism: BBQ, BLT, PB
+      if(bare.length>1 && bare.length<=4 && !/[AEIOU]/i.test(bare)) return tok;
+    }
+    return tok.charAt(0).toUpperCase()+tok.slice(1).toLowerCase();
+  }).join('');
 }
 async function loadSavedFoods(){
   try{
@@ -21695,10 +21728,29 @@ function _labelServingText(raw){
   var g=(+(raw&&raw.grams)>0)?(+raw.grams):0;
   try{ return mbFormatQty(c)+' '+u+(g?(' ('+g+'g)'):''); }catch(e){ return c+' '+u; }
 }
+// Packaging shouts. "HONEY BBQ CHICKEN" is how it's printed, but it reads as shouting in
+// a log, so convert it — without flattening the acronyms plain title case would ruin
+// ("Bbq"). Only touches text that is actually all-caps; a label already printed
+// "Honey BBQ Chicken" is left exactly as it is.
+var _LABEL_KEEP_CAPS={BBQ:1,BLT:1,PB:1,PBJ:1,IPA:1,XL:1,XXL:1,MCT:1,BCAA:1,DHA:1,EPA:1,GF:1,LB:1,OZ:1,II:1,III:1};
+function _labelTitleCase(s){
+  var t=String(s==null?'':s).trim();
+  if(!t) return '';
+  if(/[a-z]/.test(t)) return t;                 // already mixed case — leave it alone
+  return t.split(/(\s+)/).map(function(w){
+    if(/^\s+$/.test(w) || !w) return w;
+    var bare=w.replace(/[^A-Za-z0-9]/g,'');
+    // keep it shouting if it's a known acronym, or short with no vowels (BBQ, BLT)
+    if(_LABEL_KEEP_CAPS[bare.toUpperCase()]) return w.toUpperCase();
+    if(bare.length<=4 && bare.length>1 && !/[AEIOU]/i.test(bare)) return w.toUpperCase();
+    return w.charAt(0).toUpperCase()+w.slice(1).toLowerCase();
+  }).join('');
+}
 function _labelName(raw){
   var nm='';
   try{ nm=_mbLabelName(raw.brand, raw.name)||''; }catch(e){}
-  return (nm||String((raw&&raw.name)||'').trim()||'Packaged food').slice(0,55);
+  nm=nm||String((raw&&raw.name)||'').trim();
+  return (_labelTitleCase(nm)||'Packaged food').slice(0,55);
 }
 // Multiply, never re-derive. Printed calories legitimately disagree with 4/4/9
 // (fibre, sugar alcohols, rounding) and the brief is to use what's printed.
@@ -21763,6 +21815,13 @@ function foodLabelLogIt(){
   if(!_foodLabelRaw) return;
   var raw=_foodLabelRaw, n=_foodLabelServings;
   var m=_labelMacros(raw, n), serv=_labelServingText(raw);
+  // Same guard as the other sheet: a read can carry a name and a serving and no numbers.
+  // Logging that writes 0/0/0/0 and claims success.
+  if(!(m.calories>0||m.protein>0||m.carbs>0||m.fat>0)){
+    try{ showToast('Read the name but not the numbers — type them in'); }catch(e){}
+    foodLabelDiscard();
+    return;
+  }
   var qty=''; try{ qty=mbFormatQty(n); }catch(e){ qty=String(n); }
   // Hand smartLogFromText an exact-numbers row. It owns the insert, the day/time
   // stamping and the whole refresh tail — duplicating that here is how paths drift.
@@ -31637,7 +31696,8 @@ async function mlSave(){
   its.forEach(function(it, idx){
     var nm = it.name + _mlQtyLabel(it.qty);
     var row={client_code:cl.code, name:nm, emoji:'\ud83c\udf7d\ufe0f',
-      calories:it.cal, protein:it.pro, carbs:it.carb, fat:it.fat,
+      calories:(it.noMacros?null:it.cal), protein:(it.noMacros?null:it.pro),
+      carbs:(it.noMacros?null:it.carb), fat:(it.noMacros?null:it.fat),
       rating:(it.rating||'unknown'), meal:tag, eat_time:tm, graced:false,
       date_str:ds, note:'', logged_at:iso};
     _tlCacheAdd('foods', row);
@@ -31860,12 +31920,31 @@ async function _mlTryLabel(){
   try{ raw=await mbReadLabel(window._mlPhoto); }catch(e){ raw=null; }
   if(t) t.classList.remove('reading');
   if(!raw || !mbLabelUsable(raw)){
+    // Let the same photo be tried again. Marking it "already read" on a FAILURE meant a
+    // transient miss locked the photo out until it was removed and re-attached.
+    window._mlLabelFor=null;
     // No panel found. Say so and stop — this is the whole reason photo reading came back.
     try{ showToast('No label found — type what you ate'); }catch(e){}
     return;
   }
   var m=_labelMacros(raw, 1), serv=_labelServingText(raw);
   window._mlItems=window._mlItems||[];
+  // A read can come back with the product name and the serving and NO numbers — that is
+  // what happened to a Honey BBQ Chicken lunch, which logged 0 cal / 0P / 0C / 0F and
+  // said it had worked. Zeros are worse than blanks: they claim the meal was free and
+  // they count toward the day. Keep the name, mark the numbers unknown, and say so.
+  var _got=(m.calories>0||m.protein>0||m.carbs>0||m.fat>0);
+  if(!_got){
+    window._mlItems.push({
+      name:_labelName(raw)+(serv?(' — '+serv):''),
+      qty:1, base:{cal:0,pro:0,carb:0,fat:0},
+      src:'unknown', rating:'unknown', noMacros:true
+    });
+    _mlRecalc(window._mlItems[window._mlItems.length-1]);
+    try{ mlRender(); }catch(e){}
+    try{ showToast('Read the name but not the numbers — tap the food to add them'); }catch(e){}
+    return;
+  }
   window._mlItems.push({
     name:_labelName(raw)+(serv?(' — '+serv):''),
     qty:1,
@@ -32094,10 +32173,27 @@ function _tlMealCard(key, label, items, ds){
               }
               return t ? ('<div style="font-size:13.5px;font-weight:700;color:var(--m2);margin-top:5px;line-height:1.35;">'+_escHtml(t)+'</div>') : '';
             })()
-          +'<div style="font-size:12px;font-weight:600;color:var(--muted);margin-top:4px;">'
-            +(clock||'')+((!open && tot.cal) ? (' \u00b7 '+Math.round(tot.cal)+' cal') : '')+'</div>'
+          // The macros are the reason to log a meal, and they used to live only inside
+          // the expanded view \u2014 a collapsed card showed a calorie count and nothing else,
+          // so the numbers were effectively invisible. They're on the row now, whether
+          // it's open or not, and the chevron says the breakdown is a tap away.
+          + (function(){
+              var bits=[];
+              if(clock) bits.push(_escHtml(clock));
+              var known=(tot.cal||tot.pro||tot.carb||tot.fat);
+              if(known){
+                bits.push('<span style="color:#f0ece4;font-weight:800;">'+Math.round(tot.cal)+' cal</span>');
+                bits.push(Math.round(tot.pro)+'P \u00b7 '+Math.round(tot.carb)+'C \u00b7 '+Math.round(tot.fat)+'F');
+              } else {
+                bits.push('<span style="color:rgba(240,236,228,0.6);">No numbers yet</span>');
+              }
+              return '<div style="font-size:12px;font-weight:600;color:var(--muted);margin-top:5px;line-height:1.4;">'
+                +bits.join(' \u00b7 ')+'</div>';
+            })()
         +'</div>'
         +thumb
+        +'<div style="flex-shrink:0;align-self:center;margin-left:8px;color:rgba(240,236,228,0.55);font-size:15px;'
+          +'transform:rotate('+(open?'90':'0')+'deg);transition:transform 0.15s;">\u203a</div>'
         + ((!window._tlRO) ? ('<div data-tl="addmore" data-key="'+key+'" data-ds="'+_escHtml(ds)+'" data-at="'+_escHtml(clock||'')+'" style="flex-shrink:0;margin-left:10px;align-self:center;width:30px;height:30px;border-radius:8px;border:1px solid rgba(245,197,24,0.34);color:var(--gold);display:flex;align-items:center;justify-content:center;font-size:19px;line-height:1;cursor:pointer;">+</div>') : '')
       +'</div>'
 
