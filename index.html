@@ -18331,8 +18331,11 @@ function mbCarbTarget(mode){ return mode==='training' ? MB_CARB_TRAIN : MB_CARB_
 // Generous, and never capped. A woman lands around one to one-and-a-half
 // palms, a man one-and-a-half to two-and-a-half. These are starting points
 // the client can push past -- nothing in the builder flags going over.
+// Unknown takes the lower range on purpose: over-prescribing protein to someone
+// we haven't met is the worse of the two errors.
 function mbProteinRange(gender){
-  var female = String(gender||'').toLowerCase().indexOf('f')===0;
+  var g=String(gender||'').toLowerCase();
+  var female = (g!=='male');
   return female
     ? {minPalms:1,   maxPalms:1.5, minOz:3.5, maxOz:6, suggested:1}
     : {minPalms:1.5, maxPalms:2.5, minOz:5,   maxOz:9, suggested:1.5};
@@ -21804,20 +21807,33 @@ var DAY_TEMPLATES = {
 var DAY_TYPES=['Push','Pull','Legs','Arms','Lower','Glutes','Full Body','Rest'];
 var DAY_TYPES_MALE=['Push','Pull','Legs','Arms','Upper','Lower','Rest'];
 var DAY_TYPES_FEMALE=['Lower','Push','Pull','Glutes','Full Body','Rest'];
-function _tpDayTypes(){ return _clientGender()==='female' ? DAY_TYPES_FEMALE : DAY_TYPES_MALE; }
+function _tpDayTypes(){ return _clientGender()==='male' ? DAY_TYPES_MALE : DAY_TYPES_FEMALE; }
 var WEEKDAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 var _tpPlan=null, _tpWeeks=4, _tpName='', _tpPickDay=null;
 function _exFind(name){
   for(var k in EX_LIB){ for(var i=0;i<EX_LIB[k].length;i++){ if(EX_LIB[k][i].n===name) return EX_LIB[k][i]; } }
   return null;
 }
+// Unset is UNSET. This used to return 'male', which put every woman who hadn't
+// been through profile setup on the men's split without anyone choosing it.
+// 'unknown' is a real answer and the callers below handle it explicitly.
 function _clientGender(){
-  try{ if(typeof profile==='object' && profile && profile.gender) return String(profile.gender).toLowerCase(); }catch(e){}
-  return 'male';
+  try{
+    if(profile && profile.gender){
+      var g=String(profile.gender).toLowerCase().trim();
+      if(g==='male'||g==='female') return g;      // 'unknown' stored in a profile is still unset
+    }
+  }catch(e){}
+  return 'unknown';
 }
+function _sexKnown(){ return _clientGender()!=='unknown'; }
 function _tpDefaultPlan(g){
   g = g || _clientGender();
-  if(g==='female'){
+  // Unknown gets the balanced week, NOT the men's — and it's flagged provisional
+  // so the training screen asks instead of pretending this was chosen. A plan
+  // object always comes back; callers assign it straight to _tpPlan and read
+  // .Mon off it, so returning null here would throw rather than ask.
+  if(g!=='male'){
     // Lower · Push · rest · Pull · Lower · Full-Body · rest
     return {
       Mon:{type:'Lower',     ex:_tpFromTemplate('Lower')},
@@ -21826,7 +21842,8 @@ function _tpDefaultPlan(g){
       Thu:{type:'Pull',      ex:_tpFromTemplate('Pull')},
       Fri:{type:'Lower',     ex:_tpFromTemplate('Lower')},
       Sat:{type:'Full Body', ex:_tpFromTemplate('Full Body')},
-      Sun:{type:'Rest',      ex:[]}
+      Sun:{type:'Rest',      ex:[]},
+      _provisional:(g!=='female')
     };
   }
   // Men: Push · Pull · Legs · Push · Pull · Arms · Legs
@@ -23271,7 +23288,7 @@ function tpSessVoice(day){
   try{ _tpSessRec.start(); }catch(e){}
 }
 function _tpRestBlock(day){
-  var female = _clientGender()==='female';
+  var female = _clientGender()!=='male';   // unknown sits with the balanced week
   var target = female
     ? '<div style="background:rgba(224,196,152,0.06);border:1px solid rgba(224,196,152,0.25);border-radius:12px;padding:12px 13px;margin:4px 0 12px;">'
         +'<div style="font-size:11px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:var(--gold);margin-bottom:6px;">Active recovery</div>'
@@ -23485,6 +23502,22 @@ async function tpHistAppend(id){
     showToast('\u2713 Added to that workout');
   }catch(e){ showToast('Could not save'); }
 }
+// Shown when we've never been told, so a provisional week is visibly provisional
+// rather than a programme the client appears to have chosen.
+function _tpSexPrompt(){
+  if(_sexKnown()) return '';
+  return '<div style="margin-bottom:14px;padding:14px 16px;border-radius:16px;'
+    +'background:linear-gradient(155deg,rgba(245,197,24,0.11),rgba(255,255,255,0.045));'
+    +'border:1px solid rgba(245,197,24,0.24);">'
+    +'<div style="font-size:14.5px;font-weight:800;color:var(--text);">We haven’t set your split yet</div>'
+    +'<div style="font-size:12.5px;color:var(--m2);line-height:1.5;margin-top:4px;">'
+      +'This week is a starting point, not your programme. Tell us in your goals '
+      +'and we’ll set the right one.</div>'
+    +'<div onclick="try{openGoals()}catch(e){}" style="display:inline-block;margin-top:11px;'
+      +'font-size:12.5px;font-weight:800;color:var(--onaccent);background:var(--gold);'
+      +'border-radius:10px;padding:9px 15px;cursor:pointer;">Set it in my goals</div>'
+  +'</div>';
+}
 function renderTrainingBuilder(){
   var el=document.getElementById('tpBody');
   if(!el){
@@ -23493,7 +23526,7 @@ function renderTrainingBuilder(){
     return;
   }
   var _y=window.scrollY;
-  var header=_tpWeekHeader();
+  var header=_tpSexPrompt()+_tpWeekHeader();
   if(_tpWeekOffset<0){
     el.innerHTML = header + _tpHistoryView();
   } else {
@@ -27508,7 +27541,9 @@ function pSetCond(k){
   for(var i=0;i<COND_LEVELS.length;i++){ if(COND_LEVELS[i].key===k){ profile.cardio_min=COND_LEVELS[i].min; profile.cardio_manual=1; } }
   renderPhaseUI();
 }
-function _pGender(){ try{ return (profile&&profile.gender==='female')?'female':'male'; }catch(e){ return 'male'; } }
+// Indexes P.days{male,female}, so it has to answer one of those two — but an
+// unset client gets the lower session count rather than the higher one.
+function _pGender(){ return _clientGender()==='male' ? 'male' : 'female'; }
 function _pDayRange(){ return {min:3,max:7}; }   // fewer days is a real choice, not a failure
 function _curPhase(){
   var k=(profile&&profile.phase)||'';

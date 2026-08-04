@@ -13,6 +13,51 @@ Ordered by leverage. Each item is self-contained unless noted.
 - **Portions speak human.** Handfuls, palms, cups, ounces. Never grams unless the client asked for grams.
 - **Mobile-first, always.** Nothing gets designed at desktop width first.
 
+## 0. Per-client auth + row-level security — BIGGEST OPEN RISK
+
+*Not started. Own project, own date. Agreed: not before the reactivation.*
+
+**The state today:** there is no authentication. A client types a code, the app
+looks it up in the `clients` table, and that's it — no password, no token, no
+session. The anon key ships in the HTML, as it must, and every table answers it.
+The `client_code=eq.` filters throughout the app are the app being polite; the
+database enforces nothing. Anyone who opens devtools can read any row of any
+table — every client's food, weights, journals and chat.
+
+Nothing has leaked. The report on 3 Aug was a false alarm (the Yusuf tab doing
+its job). But the exposure is real and it is the largest unmitigated risk in the
+product.
+
+**Size:** 42 tables, all open. 382 call sites (165 raw fetches, 217 through the
+sb* helpers). Zero existing use of Supabase Auth — this is greenfield, not a
+migration.
+
+**Order of work:**
+1. Choose the credential — email+password, magic link, or phone OTP. This one
+   decision drives everything else.
+2. Create an auth user per client and map it to their code. ~80 people.
+3. Route every request through a session token instead of the anon key. The
+   helpers cover 217 sites; the raw fetches go through the wrapper that already
+   exists for the circuit breaker.
+4. Write policies on all 42 tables. Three shapes: own-rows, trainer-sees-all,
+   and deliberately-shared (coach templates, the Yusuf tab, shared check-ins).
+5. Enable RLS table by table, watching for what goes blank.
+
+**What breaks:**
+- Everyone is signed out at once and needs onboarding to the new credential.
+  That's the real cost, and it is Yusuf's, not the code's.
+- Surfaces that cross client boundaries on purpose go dark without an explicit
+  policy: the Yusuf tab, coach templates, shared check-ins.
+- Trainer surfaces read unfiltered by design (feed, dashboard, cockpit) and need
+  a trainer role or they return one row.
+- The offline sync queue replays writes later; those replays need a token that's
+  still valid, which a localStorage-held session may not be.
+- Anything keyed on a code rather than an identity — custom trainer access
+  codes, the hidden-clients list — needs rethinking.
+
+**Estimate:** days, not hours. The largest piece isn't code, it's moving ~80
+people onto real credentials without losing them.
+
 ## 1. Muscle inventory — SHIPPED (strength check)
 
 *Shipped as the Strength Check: anatomy chart + Push/Pull/Legs/Core checklist, three states, recurring check-in. Protocol prescription and performance logging were deliberately cut — programming comes from Yusuf, not the app. That code is parked in place, unreachable.*
