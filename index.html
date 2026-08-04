@@ -1515,18 +1515,9 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
       <div class="tbody" id="bodyWeight">
         <div style="font-size:13px;color:var(--muted);margin-bottom:10px;" id="lastWeightLabel"></div>
 
-        <!-- WEIGHT JOURNEY GRAPH (renders when 2+ entries exist) -->
-        <div id="weightJourney" style="display:none;background:var(--s2);border-radius:12px;padding:12px;margin-bottom:14px;">
-          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
-            <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:1px;text-transform:uppercase;">Your Journey</div>
-            <div style="font-size:11px;font-weight:700;" id="journeyDelta"></div>
-          </div>
-          <div id="weightGraph"></div>
-          <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:10px;color:var(--muted);">
-            <span id="journeyStart"></span>
-            <span id="journeyEnd"></span>
-          </div>
-        </div>
+        <!-- The Journey graph is gone. Profile & Goals showed two weight charts:
+             this one and the sparkline on the summary card above. The card keeps
+             the picture; this tile is for logging a weigh-in, nothing else. -->
 
         <div style="display:flex;align-items:center;justify-content:center;gap:18px;margin:6px 0 0;">
           <button type="button" onclick="nudgeW(-0.2)" style="width:44px;height:44px;border-radius:50%;background:var(--s2);border:1px solid var(--border);color:var(--text);font-size:26px;font-weight:300;line-height:1;cursor:pointer;flex-shrink:0;">−</button>
@@ -3182,17 +3173,33 @@ function _sbWriteFailed(table, status, body, row, method, matchCol){
     try{ sqPush(table, row, method||'POST', matchCol||null); }catch(e){}
   }
 }
+// Same rule as reads: one column the table hasn't got should cost that column,
+// not the whole row. insertFoodLog has done this for meals for a while — a chat
+// turn or a check-in deserves it just as much. Losing a message because a
+// migration hasn't run yet is losing it for good; nothing replays it.
 async function sbInsert(table, data){
+  var payload = Object.assign({}, data), dropped = [];
   try{
-    var res = await fetch(SB_URL+'/rest/v1/'+table, {
-      method:'POST', headers:sbHeaders(),
-      body:JSON.stringify(data)
-    });
-    if(!res.ok){
+    for(var attempt=0; attempt<5; attempt++){
+      var res = await fetch(SB_URL+'/rest/v1/'+table, {
+        method:'POST', headers:sbHeaders(),
+        body:JSON.stringify(payload)
+      });
+      if(res.ok){
+        if(dropped.length) _sbNoteDegraded(table, dropped.join(', '));
+        return true;
+      }
       var b=''; try{ b=await res.text(); }catch(e){}
-      _sbWriteFailed(table, res.status, b, data, 'POST');
+      var col = _sbMissingCol(b);
+      if(!col || !(col in payload)){
+        _sbWriteFailed(table, res.status, b, data, 'POST');
+        return false;
+      }
+      dropped.push(col);
+      delete payload[col];
     }
-    return res.ok;
+    _sbWriteFailed(table, 0, 'too many missing columns', data, 'POST');
+    return false;
   }catch(e){ _sbWriteFailed(table, 0, e&&e.message, data, 'POST'); return false; }
 }
 
@@ -3250,6 +3257,46 @@ async function loadRosterOrCarryOn(){
   try{ window._rosterOffline = _rosterOffline; }catch(e){}
   return _rosterOffline;
 }
+// ===== DEGRADED, NOT EMPTY =================================================
+// A read that names one column the table doesn't have comes back 400, and the
+// old sbSelect turned that into []. One missing column and a whole screen reads
+// as "nothing logged" — indistinguishable from a client who genuinely logged
+// nothing. Everything below exists to make that failure loud and survivable:
+// drop the offending column, ask again, and say out loud what was dropped.
+window.__sbDegraded = window.__sbDegraded || {};
+function _sbMissingCol(body){
+  var b = String(body||'');
+  var m = /column\s+(?:[a-z_][a-z0-9_]*\.)?\\?"?([a-z_][a-z0-9_]*)\\?"?\s+does not exist/i.exec(b)
+       || /could not find the '([a-z_]+)' column/i.exec(b)
+       || /column\s+\\?"([a-z_][a-z0-9_]*)\\?"\s+does not exist/i.exec(b);
+  return m ? m[1] : null;
+}
+// Remember it so a degraded screen can be seen for what it is, not guessed at.
+function _sbNoteDegraded(table, col){
+  try{
+    var t = (window.__sbDegraded[table] = window.__sbDegraded[table] || []);
+    if(t.indexOf(col)<0) t.push(col);
+    console.warn('[schema] '+table+' is missing "'+col+'" — reading without it. '
+      + 'This screen is DEGRADED, not empty. Run the migration to restore it.');
+  }catch(e){}
+}
+// Take one column out of a PostgREST select= list. Returns null when it isn't
+// in the list, which means dropping it wouldn't help and we should stop.
+function _sbDropCol(filter, col){
+  var m = /(^|&)select=([^&]*)/.exec(filter||'');
+  if(!m) return null;
+  var cols = decodeURIComponent(m[2]).split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+  var kept = cols.filter(function(c){ return c!==col && c.split('.')[0]!==col; });
+  if(kept.length===cols.length || !kept.length) return null;
+  return filter.replace(/(^|&)select=[^&]*/, function(all, pre){ return pre+'select='+encodeURIComponent(kept.join(',')); });
+}
+// The order column can be the thing that doesn't exist. Ordering is a nicety;
+// the rows are the point.
+function _sbDropOrder(filter, col){
+  if(!new RegExp('(^|[?&])order='+col+'\\b').test(filter||'')) return null;
+  return String(filter).replace(new RegExp('(^|&)order=' + col + '[^&]*'), '').replace(/^&/,'');
+}
+
 async function sbSelect(table, filter){
   try{
     // Pick the right order column per table — not every table has logged_at
@@ -3267,14 +3314,34 @@ async function sbSelect(table, filter){
       // mi_attempts has logged_at — the default is already right
     };
     var orderCol = orderColMap[table] || 'logged_at';
-    var url = SB_URL+'/rest/v1/'+table+'?'+filter;
-    if(!/(^|[?&])order=/.test(filter)) url += '&order='+orderCol+'.desc';
-    var res = await fetch(url, {method:'GET', headers:sbHeaders(), signal:_sbTimeout(SB_READ_MS)});
-    if(res.ok){
-      var data = await res.json();
-      return data;
+    var q = String(filter||'');
+    if(!/(^|[?&])order=/.test(q)) q += '&order='+orderCol+'.desc';
+
+    // Up to four goes: each one drops whichever column the server named and asks
+    // again. Four is plenty — a table missing five columns needs the migration,
+    // not another retry.
+    for(var attempt=0; attempt<5; attempt++){
+      var res = await fetch(SB_URL+'/rest/v1/'+table+'?'+q, {method:'GET', headers:sbHeaders(), signal:_sbTimeout(SB_READ_MS)});
+      if(res.ok) return await res.json();
+
+      var body=''; try{ body = await res.text(); }catch(e){}
+      var col = _sbMissingCol(body);
+      if(!col){
+        console.error('[schema] sbSelect '+table+' failed '+res.status+' — '+String(body).slice(0,200));
+        return [];
+      }
+      var next = _sbDropCol(q, col) || _sbDropOrder(q, col);
+      if(!next){
+        // Named a column we aren't asking for, so there's nothing to drop —
+        // usually a filter on a column that doesn't exist. Say so plainly.
+        console.error('[schema] '+table+' is missing "'+col+'" and it is being filtered on, '
+          + 'so this read cannot be salvaged. Run the migration.');
+        return [];
+      }
+      _sbNoteDegraded(table, col);
+      q = next;
     }
-    console.error('sbSelect bad status:', res.status, table);
+    console.error('[schema] sbSelect '+table+' gave up after repeated missing columns');
     return [];
   }catch(e){ console.error('sbSelect failed',table,e); return []; }
 }
@@ -4249,12 +4316,12 @@ async function _launchAppInner(){ try{ setTimeout(sqInit,600); }catch(e){}
   // Trainer/program extras can finish in the background (not on the home screen)
   loadTrainerPrograms();
   loadClientAssignedProgram();
+  // Everyone opens on the Day. Trainers used to be sent to 'Today', which is the
+  // tab that became Profile & Goals — so the app opened on a settings screen
+  // rather than on the day you're actually living. One home screen means one.
   try{
-    if(typeof canSeeCalendar==='function' && canSeeCalendar(cl.code)){
-      switchTab('Feed');
-      setTimeout(function(){ try{ tlScrollToToday(false); }catch(e){} }, 120);
-    }
-    else if(typeof isTrainer==='function' && isTrainer(cl.code)) switchTab('Today');
+    switchTab('Feed');
+    setTimeout(function(){ try{ tlScrollToToday(false); }catch(e){} }, 120);
   }catch(e){}
 }
 
@@ -24764,8 +24831,11 @@ async function logWeight(){
 // ===== WEIGHT JOURNEY GRAPH =====
 async function renderWeightJourney(){
   if(!cl) return;
+  // The Journey graph was removed from Profile & Goals (two weight charts on one
+  // page). This function still owns _wtAll, the weigh-in list and the summary
+  // cards, so it must keep running with no box to paint into — bailing on a
+  // missing element would take the summary card's numbers down with it.
   var box = document.getElementById('weightJourney');
-  if(!box) return;
 
   try{
     // Pull all weight logs sorted ascending by created_at (or fall back to id)
@@ -24777,6 +24847,7 @@ async function renderWeightJourney(){
     syncWeightUnitUI();
     _renderWeighList(weights);
     try{ renderProgressCards(); }catch(e){}
+    if(!box) return;                       // graph retired — the data work above is the point
     if(!weights || weights.length < 2){
       box.style.display = 'none';
       return;
@@ -24806,8 +24877,8 @@ async function renderWeightJourney(){
       try{ var dt = new Date(d); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
       catch(e){ return ''; }
     }
-    document.getElementById('journeyStart').textContent = fmtShort(first.logged_at);
-    document.getElementById('journeyEnd').textContent = fmtShort(last.logged_at);
+    var _js=document.getElementById('journeyStart'); if(_js) _js.textContent = fmtShort(first.logged_at);
+    var _je=document.getElementById('journeyEnd'); if(_je) _je.textContent = fmtShort(last.logged_at);
 
     // Build SVG sparkline
     var w = 280, h = 70, pad = 6;
@@ -24837,11 +24908,11 @@ async function renderWeightJourney(){
       '<circle cx="'+pts[0].x+'" cy="'+pts[0].y+'" r="3" fill="'+trendColor+'" />'+
       '<circle cx="'+pts[pts.length-1].x+'" cy="'+pts[pts.length-1].y+'" r="4" fill="'+trendColor+'" stroke="var(--surface)" stroke-width="2" />'+
     '</svg>';
-    document.getElementById('weightGraph').innerHTML = svg;
+    var _wg=document.getElementById('weightGraph'); if(_wg) _wg.innerHTML = svg;
     box.style.display = 'block';
   } catch(e){
     console.error('Journey render failed', e);
-    box.style.display = 'none';
+    if(box) box.style.display = 'none';
   }
 }
 
@@ -25326,6 +25397,16 @@ function renderProfilePage(){
   try{ renderProfileSubs(); }catch(e){}
   try{ renderProgressCards(); }catch(e){}
   try{ _syncHeaderAvatar(); }catch(e){}
+  try{ _profileCollapseAll(); }catch(e){}
+}
+// Every section on this page arrives closed. It's a page you come to in order to
+// change one thing; opening it with everything already unfolded buries the one
+// thing under all the others.
+function _profileCollapseAll(){
+  var page=document.getElementById('tToday'); if(!page) return;
+  page.querySelectorAll('.tbody.open').forEach(function(b){ b.classList.remove('open'); });
+  page.querySelectorAll('.tchev').forEach(function(c){ c.classList.remove('open'); c.textContent='›'; });
+  page.querySelectorAll('.tile.ot').forEach(function(t){ t.classList.remove('ot'); });
 }
 function toggleProfilePanel(){
   var b=document.getElementById("profilePanelBody"), c=document.getElementById("profilePanelCaret");
@@ -26643,18 +26724,17 @@ async function loadChatHistory(){
   // Pull a wider window from the DB so we have both recent + full history available
   // 500 messages is plenty for active users — older lives in DB but isn't fetched
   try{
-    var url=SB_URL+'/rest/v1/chat_messages?client_code=eq.'+cl.code+'&order=logged_at.asc&limit=500';
-    var res=await fetch(url,{method:'GET',headers:sbHeaders()});
-    if(res.ok){
-      var data=await res.json();
-      chatFullHistoryCache = (data||[]).map(function(m){return {role:m.role,content:m.content,logged_at:m.logged_at,has_image:!!m.has_image};});
-      // Default visible window: last 7 days
-      var cutoff=Date.now()-7*24*60*60*1000;
-      chatHistory = chatFullHistoryCache.filter(function(m){
-        var t=m.logged_at?new Date(m.logged_at).getTime():0;
-        return t>=cutoff;
-      });
-    }
+    // Was a bare fetch, so a 400 meant the whole conversation silently read as
+    // empty — and an empty thread is indistinguishable from a client who never
+    // wrote anything. Through sbSelect it degrades a column at a time and says so.
+    var data=await sbSelect('chat_messages','client_code=eq.'+encodeURIComponent(cl.code)+'&order=logged_at.asc&limit=500');
+    chatFullHistoryCache = (data||[]).map(function(m){return {role:m.role,content:m.content,logged_at:m.logged_at,has_image:!!m.has_image};});
+    // Default visible window: last 7 days
+    var cutoff=Date.now()-7*24*60*60*1000;
+    chatHistory = chatFullHistoryCache.filter(function(m){
+      var t=_tsMs(m.logged_at);
+      return t!=null && t>=cutoff;
+    });
   }catch(e){ chatHistory=[]; chatFullHistoryCache=[]; }
   // Jim's "confirm and they're in" is persisted like any other turn, so the card
   // has to come back with it or those words point at nothing.
