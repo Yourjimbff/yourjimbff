@@ -508,7 +508,7 @@ body.jv-cockpit #jvDayTabs{display:none;}
 .jvTBody{flex:1;min-height:0;overflow:hidden;}
 /* The front desk gets the same treatment — a quiet client's card must not be visibly
    smaller than an active one there either. Its own height: more width, less wrapping. */
-.fdCard{height:188px;display:flex;flex-direction:column;box-sizing:border-box;}
+.fdCard{height:212px;display:flex;flex-direction:column;box-sizing:border-box;}
 .jvTCard:hover{transform:translateY(-2px);border-color:rgba(224,196,152,0.35);}
 .jvTName{font-size:15px;font-weight:800;color:#f0ece4;display:flex;align-items:center;gap:8px;letter-spacing:-0.2px;}
 .jvTTerm{margin-top:7px;}
@@ -526,6 +526,16 @@ body.jv-cockpit #jvDayTabs{display:none;}
 .jvTQuiet{font-size:12px;font-weight:800;color:#f0ece4;margin-top:6px;}
 /* Which way, roughly how much, when they last weighed. Everything else is on the card. */
 .jvTWeight{font-size:12px;color:rgba(240,236,228,0.78);margin-top:8px;line-height:1.45;}
+/* What they're working on, one line, on the board. Clipped rather than wrapped so
+   every card stays the one height. */
+.jvTNote{font-size:12px;color:var(--gold);margin-top:6px;line-height:1.4;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+/* Coaching notes on the client card. */
+.cnRow{padding:9px 0;border-top:1px solid #1c1c1c;}
+.cnRow:first-of-type{border-top:none;padding-top:2px;}
+.cnTxt{font-size:14px;color:#f0ece4;line-height:1.5;}
+.cnWhen{font-size:11px;color:rgba(240,236,228,0.55);margin-top:3px;}
+.jvNoteAdd{margin-top:11px;font-size:13px;font-weight:700;color:var(--gold);cursor:pointer;display:inline-block;}
 .jvTWeight b{color:#f0ece4;font-weight:800;}
 .jvEmpty{padding:30px 20px;color:rgba(240,236,228,0.78);font-size:13px;}
 .jvSetup{background:#141414;border:1px solid rgba(245,197,24,0.32);border-radius:11px;padding:11px 13px;margin-bottom:14px;font-size:12.5px;color:#f0ece4;line-height:1.5;}
@@ -9985,13 +9995,24 @@ async function jvLoadTriage(silent){
       sbSelect('workout_logs','select=client_code,date_str,logged_at,title&order=logged_at.desc&limit=3000'),
       sbSelect('weight_logs','order=logged_at.desc&limit=3000'),
       sbSelect('step_logs','order=updated_at.desc&limit=4000'),
-      sbSelect('profiles','select=client_code,goal_weight&limit=2000')
+      sbSelect('profiles','select=client_code,goal_weight&limit=2000'),
+      // Coaching notes for the whole board in one go. Per-card this would be forty
+      // requests to put one line on forty cards, and load already fires around 25.
+      sbSelect('client_notes','select=id,client_code,note,logged_at&order=logged_at.desc&limit=1500')
     ]);
     var foods=res[0]||[], wos=res[1]||[], weights=res[2]||[], steps=res[3]||[];
     var goals={};
     (res[4]||[]).forEach(function(pr){
       if(pr && pr.client_code && pr.goal_weight!=null) goals[pr.client_code]=parseFloat(pr.goal_weight);
     });
+    try{
+      var _cn={};
+      (res[5]||[]).forEach(function(n){
+        if(!n || !n.client_code || !_cnIsCoaching(n.note)) return;
+        (_cn[n.client_code]=_cn[n.client_code]||[]).push({id:n.id, body:_cnBody(n.note), ts:n.logged_at});
+      });
+      window._cnCoach=_cn;
+    }catch(e){}
     var per={};
     // days[i] carries WHAT happened, not just how much — a fraction hides the shape
     // of a week, and three days on then four off reads nothing like every other day.
@@ -10337,6 +10358,7 @@ function jvRenderTriage(){
       // Whether they logged food on Tuesday isn't the glance question — whether they're
       // moving is. One line of it here; the card carries the rest.
       +'<div class="jvTWeight">'+_jvWeightLine(o.code)+'</div>'
+      +_cnSnippet(o.code)
       +'</div>'
       // Scanning sixteen people to decide who to reach: the three things you do from
       // here are talk to them, text them, or clear them. Note opened a modal on top of
@@ -11025,12 +11047,19 @@ function _jvExportOne(code, D){
   }
 
   // --- notes ---
-  // Slice C hasn't split client_notes into coaching and private yet, so everything in
-  // that table is still the private log it was written into. Labelled as what it is.
-  var pn=(D.notes[code]||[]);
+  // Two headings, because they're two different things. Coaching notes are what's
+  // going on with someone and could be handed to a trainer working for you; the
+  // private ones are your read and stay yours.
+  var all=(D.notes[code]||[]);
+  var coach=all.filter(function(x){ return _cnIsCoaching(x.note); });
+  var pn=all.filter(function(x){ return !_cnIsCoaching(x.note); });
+  L.push(''); L.push('WORKING ON');
+  if(!coach.length) L.push('Nothing noted.');
+  else coach.slice(0,30).forEach(function(x){ L.push(_xDate(x.logged_at)+'  '+_xClean(_cnBody(x.note))); });
+
   L.push(''); L.push('PRIVATE NOTES');
   if(!pn.length) L.push('None.');
-  else pn.slice(0,30).forEach(function(x){ L.push(_xDate(x.logged_at)+'  '+_xClean(x.note)); });
+  else pn.slice(0,30).forEach(function(x){ L.push(_xDate(x.logged_at)+'  '+_xClean(_cnBody(x.note))); });
 
   var cn=(D.coach[code]||[]);
   L.push(''); L.push('NOTES SENT TO THEM');
@@ -11312,6 +11341,9 @@ function jvOpenDeep(code){
     // the name. Floating unlabelled between two headed blocks it read as an orphan.
     + _jvContractLine(code)
     + _jvContactHead(code)
+    // What they're actually working on, next to when you last spoke — the two things
+    // you need in your head before writing to someone.
+    + '<div id="cnHostC_'+code+'" class="jvBlock">'+_cnCoachHtml(code)+'</div>'
     // Fills in only when the saved week contradicts the sex on file. Silent otherwise.
     + '<div id="jvSplitFlag"></div>'
     + '<div class="jvBlock">'
@@ -11352,6 +11384,8 @@ function jvOpenDeep(code){
   // is expanded — it's the thing being looked for, not an extra.
   _jvDeepHistory(code);
   _jvLoadSplitFlag(code);
+  // Re-read on open so a note added on the phone shows up here, then repaint in place.
+  try{ cnLoadCoaching(code).then(function(){ cnAddCancel(code); }); }catch(e){}
   if(open){
     try{ cnLoad(code).then(function(){ _cnRepaint(code); }); }catch(e){}
     _jvLoadDeepProgram(code);
@@ -14949,6 +14983,82 @@ function textClient(code){
 }
 
 // ===== PER-CLIENT VERBATIM NOTES =====
+// ===== COACHING NOTES vs PRIVATE NOTES =====
+// Two kinds of thing get written about a client and they are not the same. What's
+// going on with them — Sicily in two weeks, family will push food — is the material
+// that makes a message land, and a trainer working for Yusuf could use it. His read on
+// how they're doing is his alone.
+//
+// The split rides on a marker in the text rather than a new column, because this table
+// already speaks that language: [Jarvis] and [MEMORY] rows have been in it for months.
+// It also fails the safe way round. An unmarked note is PRIVATE, so a marker that goes
+// missing keeps something back rather than exposing it — the opposite mistake would be
+// showing a trainer the coach's read on a client.
+var _CN_MARK='[COACHING] ';
+function _cnIsCoaching(note){ return String(note||'').indexOf(_CN_MARK)===0; }
+function _cnKindOf(note){ return _cnIsCoaching(note) ? 'coaching' : 'private'; }
+// Strip whichever marker is on the front so the text reads as it was typed.
+function _cnBody(note){
+  var s=String(note||'');
+  if(_cnIsCoaching(s)) return s.slice(_CN_MARK.length).trim();
+  var m=/^\[(Jarvis|MEMORY)\]\s*/.exec(s);
+  return m ? s.slice(m[0].length) : s;
+}
+function _cnMark(txt, kind){ return (kind==='coaching' ? _CN_MARK : '') + String(txt||'').trim(); }
+window._cnCoach = window._cnCoach || {};        // code -> [{id, body, ts}], newest first
+async function cnLoadCoaching(code){
+  try{
+    var rows=await sbSelect('client_notes','select=id,note,logged_at&client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=60')||[];
+    window._cnCoach[code]=rows.filter(function(r){ return _cnIsCoaching(r.note); })
+      .map(function(r){ return {id:r.id, body:_cnBody(r.note), ts:r.logged_at}; });
+  }catch(e){ window._cnCoach[code]=window._cnCoach[code]||[]; }
+  return window._cnCoach[code];
+}
+function _cnCoachHtml(code){
+  var list=(window._cnCoach[code]||[]);
+  var rows=list.slice(0,4).map(function(n){
+    var when=''; try{ when=_jvWhenDay(new Date(n.ts).getTime()); }catch(e){}
+    return '<div class="cnRow"><div class="cnTxt">'+String(n.body||'').replace(/</g,'&lt;')+'</div>'
+      +(when?('<div class="cnWhen">'+when+'</div>'):'')+'</div>';
+  }).join('');
+  return '<div class="jvBlockLabel">Working on</div>'
+    + (rows || '<div class="jvBlockMuted">Nothing noted yet — what are they actually working on?</div>')
+    + '<div class="jvNoteAdd" onclick="cnAddStart(\''+code+'\')">＋ Add</div>';
+}
+function cnAddStart(code){
+  var host=document.getElementById('cnHostC_'+code); if(!host) return;
+  host.innerHTML='<div class="jvBlockLabel">Working on</div>'
+    + '<input id="cnIn_'+code+'" type="text" class="jvLogIn" autocomplete="off"'
+    + ' placeholder="what are they working on?"'
+    + ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();cnAddSave(\''+code+'\');}'
+    +             'if(event.key===\'Escape\'){cnAddCancel(\''+code+'\');}">'
+    + '<div class="jvLogFoot"><span onclick="cnAddCancel(\''+code+'\')">Cancel</span></div>';
+  try{ var el=document.getElementById('cnIn_'+code); if(el) el.focus(); }catch(e){}
+}
+function cnAddCancel(code){
+  var host=document.getElementById('cnHostC_'+code); if(host) host.innerHTML=_cnCoachHtml(code);
+}
+async function cnAddSave(code){
+  var el=document.getElementById('cnIn_'+code);
+  var txt=el?String(el.value||'').trim():'';
+  if(!txt){ cnAddCancel(code); return; }
+  var saved=await sbInsertReturning('client_notes',
+    {client_code:code, note:_cnMark(txt,'coaching'), logged_at:new Date().toISOString()});
+  if(saved){
+    (window._cnCoach[code]=window._cnCoach[code]||[]).unshift({id:(saved&&saved.id)||null, body:txt, ts:new Date().toISOString()});
+    try{ showToast('Noted'); }catch(e){}
+  } else { try{ showToast('Could not save that note'); }catch(e){} }
+  cnAddCancel(code);
+  try{ if(jvTriage) jvRenderTriage(); }catch(e){}
+  try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+}
+// One line of it on a board card — what they're working on is the thing that makes a
+// message sound like you know them, and the board is where messages get started.
+function _cnSnippet(code){
+  var list=(window._cnCoach[code]||[]);
+  if(!list.length) return '';
+  return '<div class="jvTNote">'+String(list[0].body||'').replace(/</g,'&lt;')+'</div>';
+}
 // Your private running log about a client. Saved verbatim + timestamped to client_notes.
 var _notesClientCode = null;
 async function openClientNotes(code, name){
@@ -14979,12 +15089,15 @@ async function loadClientNotes(code){
   var list = document.getElementById('notesList'); if(!list) return;
   try{
     var rows = await sbSelect('client_notes','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=200');
-    if(!rows || !rows.length){ list.innerHTML='<div style="color:var(--muted);font-size:12px;padding:10px 0;">No notes yet. Add your first below.</div>'; return; }
+    // Coaching notes belong on the card, where they're usable when writing to someone.
+    // This list is the other kind — the read that never leaves your side.
+    rows = (rows||[]).filter(function(n){ return !_cnIsCoaching(n.note); });
+    if(!rows.length){ list.innerHTML='<div style="color:var(--muted);font-size:12px;padding:10px 0;">No private notes yet. Anything you write here is only ever seen by you.</div>'; return; }
     list.innerHTML = rows.map(function(n){
       var when=''; try{ when=new Date(n.logged_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})+' \u00b7 '+new Date(n.logged_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }catch(e){}
       return '<div style="background:#1e1e1e;border:1px solid #2d2d2d;border-radius:11px;padding:11px 12px;margin-bottom:8px;">'
         + '<div style="font-size:10px;color:var(--muted);letter-spacing:0.4px;margin-bottom:5px;">'+when+'</div>'
-        + '<div style="font-size:13.5px;color:var(--text);line-height:1.5;white-space:pre-wrap;">'+(n.note||'').replace(/</g,'&lt;')+'</div>'
+        + '<div style="font-size:13.5px;color:var(--text);line-height:1.5;white-space:pre-wrap;">'+_cnBody(n.note).replace(/</g,'&lt;')+'</div>'
         + '<button onclick="deleteClientNote(\''+n.id+'\')" style="margin-top:7px;background:transparent;border:none;color:#f5c518;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;padding:0;">Delete</button>'
         + '</div>';
     }).join('');
@@ -15290,6 +15403,7 @@ async function renderMobFrontDesk(){
       +'</div>'
       // Same one line as the cockpit board.
       +'<div class="jvTWeight">'+_jvWeightLine(o.code)+'</div>'
+      +_cnSnippet(o.code)
       +'</div>'
       // Same three actions as the cockpit board, in the same words. The icon cluster
       // said 💬 📝 ✓ with the meaning in a title attribute, which a thumb never sees.
