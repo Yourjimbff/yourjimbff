@@ -14995,16 +14995,29 @@ function textClient(code){
 // missing keeps something back rather than exposing it — the opposite mistake would be
 // showing a trainer the coach's read on a client.
 var _CN_MARK='[COACHING] ';
-function _cnIsCoaching(note){ return String(note||'').indexOf(_CN_MARK)===0; }
+var _CN_PRIV='[PRIVATE] ';
+// Both kinds carry a marker, and only the FIRST one counts. That's what stops a note
+// from being reclassified by its own contents: type "[COACHING] she's struggling" into
+// the private box and it's stored as "[PRIVATE] [COACHING] she's struggling", which
+// reads private. The reverse is equally safe. Without the private marker, that exact
+// sentence would have walked onto the card and onto every board card.
+function _cnIsCoaching(note){
+  var s=String(note||'');
+  if(s.indexOf(_CN_PRIV)===0) return false;      // explicitly private, whatever follows
+  return s.indexOf(_CN_MARK)===0;
+}
 function _cnKindOf(note){ return _cnIsCoaching(note) ? 'coaching' : 'private'; }
 // Strip whichever marker is on the front so the text reads as it was typed.
 function _cnBody(note){
   var s=String(note||'');
-  if(_cnIsCoaching(s)) return s.slice(_CN_MARK.length).trim();
+  if(s.indexOf(_CN_PRIV)===0) return s.slice(_CN_PRIV.length).trim();
+  if(s.indexOf(_CN_MARK)===0) return s.slice(_CN_MARK.length).trim();
   var m=/^\[(Jarvis|MEMORY)\]\s*/.exec(s);
   return m ? s.slice(m[0].length) : s;
 }
-function _cnMark(txt, kind){ return (kind==='coaching' ? _CN_MARK : '') + String(txt||'').trim(); }
+function _cnMark(txt, kind){
+  return (kind==='coaching' ? _CN_MARK : _CN_PRIV) + String(txt||'').trim();
+}
 window._cnCoach = window._cnCoach || {};        // code -> [{id, body, ts}], newest first
 async function cnLoadCoaching(code){
   try{
@@ -15107,7 +15120,7 @@ async function saveClientNote(){
   var ta=document.getElementById('newNoteInput'); if(!ta) return;
   var txt=ta.value.trim(); if(!txt){ showToast('Type a note first'); return; }
   if(!_notesClientCode) return;
-  var saved = await sbInsertReturning('client_notes', { client_code:_notesClientCode, note:txt, logged_at:new Date().toISOString() });
+  var saved = await sbInsertReturning('client_notes', { client_code:_notesClientCode, note:_cnMark(txt,'private'), logged_at:new Date().toISOString() });
   if(saved){ ta.value=''; loadClientNotes(_notesClientCode); showToast('\u2713 Note saved'); }
   else { showToast('\u26a0\ufe0f Could not save \u2014 the client_notes table may need to be created'); }
 }
@@ -15116,35 +15129,8 @@ async function deleteClientNote(id){
   try{ await fetch(SB_URL+'/rest/v1/client_notes?id=eq.'+encodeURIComponent(id), {method:'DELETE', headers:sbHeaders()}); }catch(e){}
   if(_notesClientCode) loadClientNotes(_notesClientCode);
 }
-// Inline notes for the Front Desk deep-dive — expands under the buttons instead of a bottom sheet.
 
-async function jvLoadDeepNotes(code){
-  var list=document.getElementById('jvNotesList'); if(!list) return;
-  try{
-    var rows=await sbSelect('client_notes','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=200');
-    if(!rows||!rows.length){ list.innerHTML='<div style="color:rgba(240,236,228,0.78);font-size:12px;padding:6px 0;">No notes yet. Add your first below.</div>'; return; }
-    list.innerHTML=rows.map(function(n){
-      var when=''; try{ when=new Date(n.logged_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})+' \u00b7 '+new Date(n.logged_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }catch(e){}
-      return '<div style="background:#1e1e1e;border:1px solid #2d2d2d;border-radius:11px;padding:11px 12px;margin-bottom:8px;">'
-        +'<div style="font-size:10px;color:rgba(240,236,228,0.78);letter-spacing:0.4px;margin-bottom:5px;">'+when+'</div>'
-        +'<div style="font-size:13.5px;color:#f0ece4;line-height:1.5;white-space:pre-wrap;">'+(n.note||'').replace(/</g,'&lt;')+'</div>'
-        +'<button onclick="jvDelDeepNote(\''+n.id+'\',\''+code+'\')" style="margin-top:7px;background:transparent;border:none;color:#f5c518;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;padding:0;">Delete</button>'
-        +'</div>';
-    }).join('');
-  }catch(e){ list.innerHTML='<div style="color:rgba(240,236,228,0.78);font-size:12px;padding:6px 0;">Could not load notes.</div>'; }
-}
-async function jvSaveDeepNote(code){
-  var ta=document.getElementById('jvNewNoteInput'); if(!ta) return;
-  var txt=ta.value.trim(); if(!txt){ showToast('Type a note first'); return; }
-  var saved=await sbInsertReturning('client_notes',{client_code:code,note:txt,logged_at:new Date().toISOString()});
-  if(saved){ ta.value=''; jvLoadDeepNotes(code); showToast('\u2713 Note saved'); }
-  else { showToast('\u26a0\ufe0f Could not save note'); }
-}
-async function jvDelDeepNote(id, code){
-  if(!confirm('Delete this note?')) return;
-  try{ await fetch(SB_URL+'/rest/v1/client_notes?id=eq.'+encodeURIComponent(id), {method:'DELETE', headers:sbHeaders()}); }catch(e){}
-  jvLoadDeepNotes(code);
-}
+
 
 // Build the coach-comment block shown under each meal on the trainer dashboard.
 // Shows an existing comment (the client sees this too) + a tap-to-add/edit box.
@@ -32494,7 +32480,10 @@ window._evMins=null;
 
 async function _evLastDuration(kind){
   try{
-    var rows=await sbSelect('journal_entries',
+    // Walks and activities save to workout_logs, which has carried a duration all
+    // along — this was reading journal_entries, where no walk has ever been written
+    // and no such column existed. So the chips never once pre-filled with your usual.
+    var rows=await sbSelect('workout_logs',
       'client_code=eq.'+encodeURIComponent(cl.code)+'&select=title,duration&order=id.desc&limit=60') || [];
     var k=String(kind||'').toLowerCase(), hits=[];
     rows.forEach(function(r){
