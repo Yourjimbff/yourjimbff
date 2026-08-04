@@ -12706,7 +12706,9 @@ function _tlSlot(key, label, filled, ds, plan){
 
   // A meal is one meal. Four foods logged to breakfast is a plate, not four breakfasts.
   var _isFoodSlot=(key==='breakfast'||key==='lunch'||key==='dinner');
-  if(_isFoodSlot && items.length>1 && !window._tlRO){
+  // Was >1, so one food fell through to a card whose only delete was hidden behind
+  // a tap. A meal of one is still a meal: same card, same per-food remove.
+  if(_isFoodSlot && items.length>=1 && !window._tlRO){
     return _tlMealCard(key, label, items, ds);
   }
 
@@ -31807,6 +31809,30 @@ window._mlPhoto=null;
 // quantity control gives "I ate two of these" for free and _mlRecalc does the maths.
 // Printed calories are kept as-is — a panel legitimately disagrees with 4/4/9 once fibre
 // and rounding are in, and the brief is to use what's printed.
+// ===== ONE LABEL READ ======================================================
+// Both meal screens used to orchestrate this separately, which is how the reader
+// worked on one and not the other. This is the single path; callers only decide
+// what to do with the answer.
+//
+// mbLabelUsable() says yes to a panel with NO NUMBERS as long as it got a name
+// and a serving — that branch exists for the component sheet, which prefills a
+// manual form from it. A MEAL is different: numbers are the entire point. A read
+// with no macros logged a meal of zeros and reported success, which is exactly
+// how a lunch came to say "1 serving" and nothing else.
+async function readLabelPhoto(dataUrl){
+  if(!dataUrl) return {ok:false, reason:'no-photo'};
+  var raw=null;
+  try{ raw=await mbReadLabel(dataUrl); }catch(e){ return {ok:false, reason:'threw', error:String(e&&e.message||e)}; }
+  if(!raw) return {ok:false, reason:'nothing-returned'};
+  var m=_labelMacros(raw,1);
+  var hasNumbers=(+m.calories>0)||(+m.protein>0)||(+m.carbs>0)||(+m.fat>0);
+  // Always say what came back, so "failed to read" and "failed to store" can be
+  // told apart without guessing.
+  try{ console.info('[label] returned:', JSON.stringify(raw)); }catch(e){}
+  if(!hasNumbers) return {ok:false, reason:'no-numbers', raw:raw, name:_labelName(raw)||'', serving:_labelServingText(raw)||''};
+  return {ok:true, raw:raw, name:_labelName(raw)||'Meal', serving:_labelServingText(raw)||'', macros:m};
+}
+
 async function _mlTryLabel(){
   if(!window._mlPhoto) return;
   if(window._mlLabelFor===window._mlPhoto) return;   // one read per photo, not per tap
@@ -31814,44 +31840,27 @@ async function _mlTryLabel(){
   var t=document.getElementById('mlThumb');
   if(t) t.classList.add('reading');
   try{ showToast('Reading the label…'); }catch(e){}
-  var raw=null;
-  try{ raw=await mbReadLabel(window._mlPhoto); }catch(e){ raw=null; }
+  var r=await readLabelPhoto(window._mlPhoto);
   if(t) t.classList.remove('reading');
-  if(!raw || !mbLabelUsable(raw)){
-    // Let the same photo be tried again. Marking it "already read" on a FAILURE meant a
-    // transient miss locked the photo out until it was removed and re-attached.
-    window._mlLabelFor=null;
-    // No panel found. Say so and stop — this is the whole reason photo reading came back.
-    try{ showToast('No label found — type what you ate'); }catch(e){}
+  if(!r.ok){
+    // A panel with a name but no numbers is NOT a logged meal. Say which happened.
+    if(r.reason==='no-numbers'){
+      try{ showToast('I read "'+(r.name||'the label')+'" but not its numbers — type them or retake closer'); }catch(e){}
+    } else {
+      try{ showToast('No label found — type what you ate'); }catch(e){}
+    }
     return;
   }
-  var m=_labelMacros(raw, 1), serv=_labelServingText(raw);
   window._mlItems=window._mlItems||[];
-  // A read can come back with the product name and the serving and NO numbers — that is
-  // what happened to a Honey BBQ Chicken lunch, which logged 0 cal / 0P / 0C / 0F and
-  // said it had worked. Zeros are worse than blanks: they claim the meal was free and
-  // they count toward the day. Keep the name, mark the numbers unknown, and say so.
-  var _got=(m.calories>0||m.protein>0||m.carbs>0||m.fat>0);
-  if(!_got){
-    window._mlItems.push({
-      name:_labelName(raw)+(serv?(' — '+serv):''),
-      qty:1, base:{cal:0,pro:0,carb:0,fat:0},
-      src:'unknown', rating:'unknown', noMacros:true
-    });
-    _mlRecalc(window._mlItems[window._mlItems.length-1]);
-    try{ mlRender(); }catch(e){}
-    try{ showToast('Read the name but not the numbers — tap the food to add them'); }catch(e){}
-    return;
-  }
   window._mlItems.push({
-    name:_labelName(raw)+(serv?(' — '+serv):''),
+    name:r.name+(r.serving?(' — '+r.serving):''),
     qty:1,
-    base:{cal:m.calories, pro:m.protein, carb:m.carbs, fat:m.fat},
+    base:{cal:r.macros.calories, pro:r.macros.protein, carb:r.macros.carbs, fat:r.macros.fat},
     src:'label', rating:'good'
   });
   _mlRecalc(window._mlItems[window._mlItems.length-1]);
   try{ mlRender(); }catch(e){}
-  try{ showToast('✓ Read the label — check the servings'); }catch(e){}
+  try{ showToast('✓ '+Math.round(r.macros.calories)+' cal from the label — check the servings'); }catch(e){}
 }
 
 function mlPhoto(inp){
