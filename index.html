@@ -3339,8 +3339,42 @@ async function uploadMealPhoto(blob, clientCode){
 //
 // Deliberately NOT queued: chat_messages (replaying a conversation later is
 // worse than losing a line) and daily_scores (derived — it recomputes).
+// chat_messages WAS on the do-not-queue list, on the reasoning that replaying a
+// conversation late is worse than losing a line. That reasoning cost the whole table:
+// one save path was sending a date_str column that doesn't exist, every insert 400'd,
+// the boolean was discarded and nothing was queued — so months of Jim chat amounted to
+// two rows. Losing it outright is plainly worse than a line arriving out of order.
 var SB_QUEUE_TABLES={saved_foods:1, weight_logs:1, step_logs:1, food_logs:1,
-                     meals:1, meal_components:1, journal_entries:1, workout_logs:1};
+                     meals:1, meal_components:1, journal_entries:1, workout_logs:1,
+                     chat_messages:1};
+
+// ===== UNKNOWN-COLUMN RECOVERY =========================================
+// PostgREST rejects the WHOLE request when it's handed a column that isn't there, and
+// the app's habit was to swallow that: reads returned [] (indistinguishable from an
+// empty table) and writes returned false (indistinguishable from a good write). Every
+// silent-data-loss bug this weekend was that shape.
+//
+// So: name the column, say so loudly, drop it and try again. Recovering beats failing,
+// and a console line naming the table AND the field is what turns a silent loss into a
+// five-minute fix.
+//
+// The escaped form matters — PostgREST hands back raw JSON, so the body literally
+// contains  column \"date_str\" ...  backslash and all. Matching only the bare form is
+// why the existing retries never once fired.
+function _sbBadColumn(body){
+  if(!body) return null;
+  var s=String(body);
+  var m=/column\s+\\?"?(?:[a-z_][a-z0-9_]*\.)?\\?"?([a-z_][a-z0-9_]*)\\?"?[\s\S]{0,40}?does not exist/i.exec(s)
+     || /could not find the '([a-z_]+)' column/i.exec(s)
+     || /'([a-z_]+)' column of '[a-z_]+'/i.exec(s);
+  return m ? m[1] : null;
+}
+function _sbDropColumn(table, row, col, where){
+  try{ console.warn('['+where+'] '+table+' has no column "'+col+'" — dropping it and retrying'); }catch(e){}
+  var out={};
+  for(var k in row){ if(k!==col) out[k]=row[k]; }
+  return out;
+}
 function _sbWriteFailed(table, status, body, row, method, matchCol){
   try{ console.error('write to '+table+' failed', status||'(threw)', String(body||'').slice(0,300)); }catch(e){}
   if(SB_QUEUE_TABLES[table] && row){
@@ -3349,15 +3383,21 @@ function _sbWriteFailed(table, status, body, row, method, matchCol){
 }
 async function sbInsert(table, data){
   try{
-    var res = await fetch(SB_URL+'/rest/v1/'+table, {
-      method:'POST', headers:sbHeaders(),
-      body:JSON.stringify(data)
-    });
-    if(!res.ok){
-      var b=''; try{ b=await res.text(); }catch(e){}
-      _sbWriteFailed(table, res.status, b, data, 'POST');
+    var row=data, b='', res=null;
+    // Up to three unknown columns get dropped before we give up. A row that's mostly
+    // right is worth saving; silently losing it because of one stale field is not.
+    for(var attempt=0; attempt<4; attempt++){
+      res = await fetch(SB_URL+'/rest/v1/'+table, {
+        method:'POST', headers:sbHeaders(), body:JSON.stringify(row)
+      });
+      if(res.ok) return true;
+      b=''; try{ b=await res.text(); }catch(e){}
+      var bad=(attempt<3 && !Array.isArray(row)) ? _sbBadColumn(b) : null;
+      if(!bad || !(bad in row)) break;
+      row=_sbDropColumn(table, row, bad, 'sbInsert');
     }
-    return res.ok;
+    _sbWriteFailed(table, res?res.status:0, b, row, 'POST');
+    return false;
   }catch(e){ _sbWriteFailed(table, 0, e&&e.message, data, 'POST'); return false; }
 }
 
@@ -3452,21 +3492,45 @@ async function sbSelect(table, filter){
     // makes a schema mistake look exactly like an empty table. That's how goal weights
     // silently vanished off the trainer board for 51 clients. If the order we added is
     // what it objected to, drop it and ask again — so a new table can't repeat this.
-    if(res.status===400 && addedOrder){
-      var why=''; try{ why = await res.text(); }catch(e){}
-      if(/does not exist/i.test(why)){
-        console.warn('sbSelect: '+table+' has no '+orderCol+' — retrying unordered');
-        res = await fetch(SB_URL+'/rest/v1/'+table+'?'+filter,
-                          {method:'GET', headers:sbHeaders(), signal:_sbTimeout(SB_READ_MS)});
+    // Recover instead of returning []. An empty array is indistinguishable from an empty
+    // table, which is how goal weights vanished off the trainer board for 51 clients.
+    // Drop whatever the server named, say so loudly with the table AND the field, retry.
+    var curFilter=filter, why='';
+    for(var attempt=0; attempt<4 && !res.ok && res.status===400; attempt++){
+      why=''; try{ why = await res.text(); }catch(e){}
+      var bad=_sbBadColumn(why);
+      if(!bad) break;
+      if(addedOrder && bad===orderCol){
+        console.warn('[sbSelect] '+table+' has no column "'+orderCol+'" — retrying unordered');
+        addedOrder=false;
+      } else if(new RegExp('(^|[?&])order='+bad+'\\b').test(curFilter)){
+        // An order the CALLER wrote, not one we added. This is what hid the coach-notes
+        // bug for months: the query asked for created_at, the table has sent_at, and the
+        // 400 came back as an empty list that looked exactly like "no notes yet".
+        console.warn('[sbSelect] '+table+' has no column "'+bad+'" to order by — retrying unordered');
+        curFilter=curFilter.replace(new RegExp('(^|[?&])order='+bad+'(\\.(asc|desc))?(&|$)'),
+                                    function(_m,pre,_d,_dir,tail){ return (pre==='?'||pre==='')?pre:(tail==='&'?pre:''); })
+                           .replace(/&&+/g,'&').replace(/[?&]$/,'');
+      } else if(/(^|[?&])select=/.test(curFilter) && new RegExp('(^|[?&,])'+bad+'(,|&|$)').test(curFilter)){
+        console.warn('[sbSelect] '+table+' has no column "'+bad+'" — dropping it from select and retrying');
+        curFilter=curFilter.replace(new RegExp('(select=[^&]*?)(^|,)'+bad+'(,|(?=&)|$)'),
+                                    function(_m,pre,a,b){ return pre+((a===','&&b===',')?',':''); })
+                           .replace(/select=,/,'select=').replace(/,(&|$)/,'$1');
+      } else {
+        console.error('[sbSelect] '+table+' rejected column "'+bad+'" and it is not one this query can drop');
+        break;
       }
+      var retryUrl=SB_URL+'/rest/v1/'+table+'?'+curFilter+(addedOrder?('&order='+orderCol+'.desc'):'');
+      res = await fetch(retryUrl, {method:'GET', headers:sbHeaders(), signal:_sbTimeout(SB_READ_MS)});
     }
     if(res.ok){
       var data = await res.json();
       return data;
     }
-    console.error('sbSelect bad status:', res.status, table);
+    // Never fail quietly: an empty result and a broken query must not look the same.
+    console.error('[sbSelect] '+table+' returned '+res.status+' — treating as empty. '+String(why||'').slice(0,200));
     return [];
-  }catch(e){ console.error('sbSelect failed',table,e); return []; }
+  }catch(e){ console.error('[sbSelect] '+table+' failed',e); return []; }
 }
 
 async function sbUpsert(table, data, onConflict){
@@ -3474,14 +3538,18 @@ async function sbUpsert(table, data, onConflict){
     var headers = Object.assign({}, sbHeaders(), {'Prefer':'resolution=merge-duplicates,return=minimal','Content-Type':'application/json'});
     // PostgREST needs ?on_conflict=col1,col2 to know which constraint to merge on
     var url = SB_URL+'/rest/v1/'+table + (onConflict ? '?on_conflict='+encodeURIComponent(onConflict) : '');
-    var res = await fetch(url, {
-      method:'POST', headers:headers, body:JSON.stringify(data)
-    });
-    if(!res.ok){
-      var bodyText = ''; try{ bodyText = await res.text(); }catch(e){}
-      _sbWriteFailed(table, res.status, bodyText, data, 'UPSERT', onConflict);
+    var row=data, bodyText='', res=null;
+    for(var attempt=0; attempt<4; attempt++){
+      res = await fetch(url, { method:'POST', headers:headers, body:JSON.stringify(row) });
+      if(res.ok) return true;
+      bodyText=''; try{ bodyText = await res.text(); }catch(e){}
+      var bad=(attempt<3 && !Array.isArray(row)) ? _sbBadColumn(bodyText) : null;
+      // never drop the column we're merging on — without it the upsert isn't an upsert
+      if(!bad || !(bad in row) || (onConflict && String(onConflict).split(',').indexOf(bad)>-1)) break;
+      row=_sbDropColumn(table, row, bad, 'sbUpsert');
     }
-    return res.ok;
+    _sbWriteFailed(table, res?res.status:0, bodyText, row, 'UPSERT', onConflict);
+    return false;
   }catch(e){ _sbWriteFailed(table, 0, e&&e.message, data, 'UPSERT', onConflict); return false; }
 }
 
@@ -3900,7 +3968,12 @@ async function _loadSlogHistory(){
   renderSlogBody();
 }
 async function _saveSlogMsg(role, text){
-  try{ await sbInsert('chat_messages', {client_code:cl.code, role:(role==='jim'?'assistant':'user'), content:text, date_str:todayDateStr}); }catch(e){}
+  // No date_str column on chat_messages — sending one 400'd every insert, and because
+  // the boolean was thrown away and the table wasn't queued, the message just vanished.
+  var _ok=false;
+  try{ _ok=await sbInsert('chat_messages', {client_code:cl.code, role:(role==='jim'?'assistant':'user'), content:text}); }catch(e){}
+  if(!_ok){ try{ console.error('chat message not saved'); }catch(e){} }
+  return _ok;
 }
 function _slogDayLabel(ts){
   try{
@@ -10882,7 +10955,7 @@ async function _jvExportGather(codes){
     sbSelect('food_logs','select=client_code,name,date_str,logged_at,calories,protein&client_code=in.'+inList+'&logged_at=gte.'+since+'&order=logged_at.desc&limit=4000'),
     sbSelect('workout_logs','select=client_code,title,date_str,logged_at&client_code=in.'+inList+'&logged_at=gte.'+since+'&order=logged_at.desc&limit=2000'),
     sbSelect('client_notes','select=client_code,note,logged_at&client_code=in.'+inList+'&order=logged_at.desc&limit=1500'),
-    sbSelect('coach_notes','select=client_code,body,created_at&client_code=in.'+inList+'&order=created_at.desc&limit=1500'),
+    sbSelect('coach_notes','select=client_code,note,sent_at&client_code=in.'+inList+'&order=sent_at.desc&limit=1500'),
     sbSelect('mi_checkins','client_code=in.'+inList+'&order=checked_at.desc&limit=1500'),
     sbSelect('journal_entries','select=client_code,body,logged_at,date_str,shared&client_code=in.'+inList+'&shared=is.true&order=logged_at.desc&limit=1500')
   ]);
@@ -10962,7 +11035,7 @@ function _jvExportOne(code, D){
   var cn=(D.coach[code]||[]);
   L.push(''); L.push('NOTES SENT TO THEM');
   if(!cn.length) L.push('None.');
-  else cn.slice(0,30).forEach(function(x){ L.push(_xDate(x.created_at)+'  '+_xClean(x.body)); });
+  else cn.slice(0,30).forEach(function(x){ L.push(_xDate(x.sent_at)+'  '+_xClean(x.note)); });
 
   // --- strength check ---
   L.push(''); L.push('STRENGTH CHECK');
@@ -11117,6 +11190,12 @@ function jvOpenContract(code){
     + '<div class="jvCtField"><div class="jvCtLabel">Fee</div>'+feeField+'</div>'
     + '<div class="jvCtField"><div class="jvCtLabel">Phone</div>'
       + '<input id="jvCtPhone" type="tel" class="jvCtInput" placeholder="+1…" value="'+String(r.phone||'').replace(/"/g,'&quot;')+'"></div>'
+    // Collected ahead of real logins. Signing in is currently a code with no password,
+    // so per-client accounts need somewhere to send a set-up link — and gathering ~80
+    // addresses is the long pole, not the database work.
+    + '<div class="jvCtField"><div class="jvCtLabel">Email</div>'
+      + '<input id="jvCtEmail" type="email" inputmode="email" autocapitalize="off" autocorrect="off" class="jvCtInput" placeholder="name@example.com" value="'+String(r.email||'').replace(/"/g,'&quot;')+'">'
+      + '<div class="jvCtNote">For their login when accounts go live.</div></div>'
     + '<button class="jvCtSave" onclick="jvSaveContract()">Save</button>'
     + '<div class="jvDanger" onclick="jvCloseContract();jvRemoveClient(\''+code+'\')">Remove '
       + String(r.name||code).replace(/</g,'&lt;')+' from YOURJIMBFF</div>'
@@ -11152,6 +11231,9 @@ async function jvSaveContract(){
   }
   var ph=String((el('jvCtPhone')||{}).value||'').trim();
   if(ph!==String(r.phone||'')){ before.phone=r.phone; patch.phone=(ph||null); }
+  var em=String((el('jvCtEmail')||{}).value||'').trim().toLowerCase();
+  if(em && !/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(em)){ try{ showToast('That email doesn’t look right'); }catch(e){} return; }
+  if(em!==String(r.email||'').toLowerCase()){ before.email=r.email; patch.email=(em||null); }
   if(!Object.keys(patch).length){ jvCloseContract(); return; }
   // Paint it immediately, then put it back if the server refuses — an optimistic write
   // that silently loses is how a term you thought you'd set reads as "no term set" again.
@@ -13494,6 +13576,12 @@ function tlWalkLog(ds){
     if(q) q.innerHTML=[15,20,30,45,60].map(function(n){
       return '<span onclick="_wkSetMins('+n+')">'+n+'</span>';
     }).join('');
+    // Pre-select the length they last used. The chips were always built unselected and
+    // tlWalkMins cleared, so every walk started from nothing even for someone who walks
+    // the same 30 minutes daily — and a walk saved without tapping one logged no duration.
+    var _last=null;
+    try{ _last=parseInt(localStorage.getItem('yjb_walk_mins_'+cl.code),10)||null; }catch(e){}
+    if(_last && [15,20,30,45,60].indexOf(_last)>-1) _wkSetMins(_last);
   }catch(e){}
   try{ _walkReset(); }catch(e){}
   try{ _walkPrompt(); }catch(e){}
@@ -30355,7 +30443,8 @@ async function sendChatMessage(){
   clearChatPhoto();
 
   // Persist user message to Supabase (text only, no image bytes)
-  sbInsert('chat_messages',{client_code:cl.code, role:'user', content:text||'(sent a photo)', has_image:hasPhoto});
+  sbInsert('chat_messages',{client_code:cl.code, role:'user', content:text||'(sent a photo)', has_image:hasPhoto})
+    .then(function(ok){ if(!ok) console.error('chat message (user) not saved — queued'); });
   try{ noteBodyTalk(text); }catch(e){}
 
   // Show typing indicator
@@ -30553,7 +30642,8 @@ async function sendChatMessage(){
     setTimeout(scrollChatToBottom,30);
 
     // Persist
-    sbInsert('chat_messages',{client_code:cl.code, role:'assistant', content:reply, has_image:false});
+    sbInsert('chat_messages',{client_code:cl.code, role:'assistant', content:reply, has_image:false})
+      .then(function(ok){ if(!ok) console.error('chat reply not saved — queued'); });
 
   }catch(e){
     console.error('chat send failed',e);
@@ -31474,6 +31564,8 @@ function _syncHeaderAvatar(){
 function _wkSetMins(n){
   try{
     var m=document.getElementById('tlWalkMins'); if(m) m.value=n;
+    // remembered so the next walk opens with it already chosen
+    try{ if(cl && cl.code) localStorage.setItem('yjb_walk_mins_'+cl.code, String(n)); }catch(e){}
     var q=document.getElementById('wkQuick');
     if(q) Array.prototype.forEach.call(q.children,function(c){ c.classList.toggle('on', +c.textContent===n); });
   }catch(e){}
@@ -33509,7 +33601,7 @@ window._cnCache = window._cnCache || {};
 async function cnLoad(code) {
   try {
     var rows = await sbSelect('coach_notes',
-      'client_code=eq.' + encodeURIComponent(code) + '&order=created_at.desc&limit=50');
+      'client_code=eq.' + encodeURIComponent(code) + '&order=sent_at.desc&limit=50');
     window._cnCache[code] = rows || [];
     return window._cnCache[code];
   } catch (e) { return window._cnCache[code] || []; }
@@ -33546,11 +33638,11 @@ function _cnCardHtml(n, i) {
   return '<div style="background:' + (fresh ? '#1a1a1a' : '#161616') + ';border:1px solid ' + (fresh ? '#2a2a2a' : '#262626')
     + ';border-left:3px solid ' + (fresh ? 'var(--gold)' : 'rgba(245,197,24,0.35)') + ';border-radius:9px;padding:11px 12px;margin-bottom:6px;">'
     + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">'
-    +   '<span style="font-size:11px;color:rgba(240,236,228,0.78);">' + _cnWhen(n.created_at) + '</span>'
+    +   '<span style="font-size:11px;color:rgba(240,236,228,0.78);">' + _cnWhen(n.sent_at) + '</span>'
     +   '<span onclick="cnDelete(' + (n.id || 0) + ',\'' + n.client_code + '\')" style="font-size:15px;color:rgba(240,236,228,0.78);cursor:pointer;line-height:1;">\u00d7</span>'
     + '</div>'
     + '<div style="font-size:' + (fresh ? '13.5' : '13') + 'px;color:' + (fresh ? '#f0ece4' : 'rgba(240,236,228,0.65)')
-    +   ';line-height:1.55;margin-top:5px;white-space:pre-wrap;">' + _escHtml(n.body || '') + '</div>'
+    +   ';line-height:1.55;margin-top:5px;white-space:pre-wrap;">' + _escHtml(n.note || '') + '</div>'
     + '</div>';
 }
 
@@ -33558,8 +33650,12 @@ async function cnPost(code) {
   var el = document.getElementById('cnBox_' + code);
   var body = el ? String(el.value || '').trim() : '';
   if (!body) { showToast('Write the note first'); return; }
-  var row = {client_code: code, coach_code: (cl && cl.code) || null, body: body,
-             created_at: new Date().toISOString()};
+  // Real columns only. body/created_at/coach_code do not exist on this table, so every
+  // note written from this box was rejected — the box has never once saved anything.
+  var _now = new Date();
+  var row = {client_code: code, note: body, sent_at: _now.toISOString(),
+             date_str: (typeof todayDateStr!=='undefined' ? todayDateStr : null),
+             time_str: _now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})};
   (window._cnCache[code] = window._cnCache[code] || []).unshift(row);
   if (el) el.value = '';
   _cnRepaint(code);
