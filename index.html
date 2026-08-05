@@ -1435,8 +1435,11 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
 .pgExList.open{max-height:900px;opacity:1;}
 .pgExIn{padding:2px 15px 14px;border-top:1px solid rgba(255,255,255,0.06);margin-top:0;}
 /* Sets and reps in their own column so they line up down the page. */
-.pgExRow{display:grid;grid-template-columns:1fr auto;align-items:baseline;gap:14px;padding:7px 0;}
+.pgExRow{display:grid;grid-template-columns:1fr auto auto;align-items:baseline;gap:12px;padding:8px 0;}
 .pgExRow + .pgExRow{border-top:1px solid rgba(255,255,255,0.045);}
+.pgExSwap{font-size:13px;color:rgba(240,236,228,0.32);justify-self:end;}
+.pgExRow{cursor:pointer;}
+.pgExRow:active .pgExSwap{color:var(--gold);}
 .pgExName{font-size:13.5px;font-weight:600;color:rgba(240,236,228,0.92);line-height:1.35;}
 .pgExSets{font-size:12.5px;font-weight:800;color:var(--gold);white-space:nowrap;
   font-variant-numeric:tabular-nums;min-width:56px;text-align:right;}
@@ -23627,6 +23630,19 @@ function _gpDaysInner(){
 
   // The week follows from the number — there was never a second decision here.
   var week=(p.train_days_manual?_clientWeek():null);
+  // _tpPlanForClient always recomposes from the templates, so on its own it throws
+  // away every swap the client has saved. Prefer the stored plan — but only while it
+  // still describes this week; changing the day count makes a different week and the
+  // old arrangement can't carry over.
+  try{
+    var _fresh=_tpPlanForClient();
+    var _same=false;
+    try{
+      _same = !!(_tpPlan && _fresh) && WEEKDAYS.every(function(d){
+        return _tpPlan[d] && _fresh[d] && _tpPlan[d].type===_fresh[d].type; });
+    }catch(e){}
+    _pgPlan = _same ? _tpPlan : _fresh;
+  }catch(e){ _pgPlan=null; }
   if(week){
     var canon=_splitWeek(p.train_days,p.gender);
     var moved=canon && week.join('|')!==canon.join('|');
@@ -23641,7 +23657,10 @@ function _gpDaysInner(){
       +'<div class="pgDays">'
         + week.map(function(t,i){
             var rest=(t==='Rest');
-            var ex=(!rest && DAY_TEMPLATES[t]) ? DAY_TEMPLATES[t] : [];
+            // Their plan, not the template. A swapped exercise has to be what shows
+            // here next Monday, which means reading what was saved, not the default.
+            var dk=WEEKDAYS[i];
+            var ex=(!rest && _pgPlan && _pgPlan[dk] && _pgPlan[dk].ex) ? _pgPlan[dk].ex : [];
             var open=(_pgDayOpen===i);
             var meta=rest ? 'Rest day' : (ex.length+' exercise'+(ex.length===1?'':'s'));
             return '<div class="pgDay'+(rest?' rest':'')+(open?' on':'')+'">'
@@ -23650,16 +23669,17 @@ function _gpDaysInner(){
                   +'<div class="pgDayName">'+PG_WEEKDAY_FULL[i]+(rest?'':(' \u00b7 '+_escHtml(t)))+'</div>'
                   +'<div class="pgDayMeta">'+meta+'</div>'
                 +'</div>'
+                // Reordering the split is Yusuf's call, not the client's.
                 +'<span class="pgDayCtl">'
-                  +'<button class="gpMoveB" onclick="event.stopPropagation();gpMoveDay('+i+',-1)" aria-label="Move earlier"'+(i===0?' disabled':'')+'>\u2191</button>'
-                  +'<button class="gpMoveB" onclick="event.stopPropagation();gpMoveDay('+i+',1)" aria-label="Move later"'+(i===6?' disabled':'')+'>\u2193</button>'
                   +(ex.length?('<span class="pgDayChev'+(open?' up':'')+'" aria-hidden="true"></span>'):'')
                 +'</span>'
               +'</div>'
               +(ex.length?('<div class="pgExList'+(open?' open':'')+'"><div class="pgExIn">'
-                 + ex.map(function(e){
-                     return '<div class="pgExRow"><span class="pgExName">'+_escHtml(e[0])+'</span>'
-                       +'<span class="pgExSets">'+e[1]+'\u00d7'+_escHtml(String(e[2]))+'</span></div>';
+                 + ex.map(function(e,xi){
+                     return '<div class="pgExRow" onclick="pgSwap(\''+dk+'\','+xi+')">'
+                       +'<span class="pgExName">'+_escHtml(e.n||'')+'</span>'
+                       +'<span class="pgExSets">'+(e.s||'')+'\u00d7'+_escHtml(String(e.r||''))+'</span>'
+                       +'<span class="pgExSwap">\u21c4</span></div>';
                    }).join('')
                  +'</div></div>'):'')
             +'</div>';
@@ -23675,6 +23695,34 @@ function _gpSecDays(n){
   return _gpCard(n,'Training',d.range,d.inner,sum);
 }
 // ===== THE PROGRAM TAB =====
+var _pgPlan=null;
+// Same picker the Day tab uses — clients already know it. The only difference is
+// where it lands: there it edits one day, here it rewrites the program.
+function pgSwap(dayKey, i){
+  if(!_pgPlan || !_pgPlan[dayKey]) return;
+  _tpPlan=_pgPlan;
+  window._pgSwapping=true;
+  try{ tpSwapOpen(dayKey, i); }catch(e){ window._pgSwapping=false; }
+}
+// _writeCalendar reads the row back and only reports ok when it matches what we sent,
+// so this is a verified write rather than a boolean that means "the request didn't
+// error". A local-only save must never look like a real one.
+async function pgSavePlan(){
+  try{
+    var r=await _writeCalendar(_tpPlan);
+    if(r && r.ok){
+      _pgPlan=_tpPlan;
+      try{ window._tlCache=null; }catch(e){}
+      _gpSetSaveState('ok');
+      try{ showToast('Saved to your program'); }catch(e){}
+    } else {
+      _gpSetSaveState('failed','Your exercise swap didn\u2019t reach the server. This screen is showing the change, but next week will still use the old one.');
+    }
+  }catch(e){
+    _gpSetSaveState('failed','Your exercise swap didn\u2019t reach the server. This screen is showing the change, but next week will still use the old one.');
+  }
+  try{ renderProgramTab(); }catch(e){}
+}
 var PG_WEEKDAY_FULL=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
 var _pgDayOpen=null;      // one day at a time; seven open at once is the wall
 function pgToggleDay(i){ _pgDayOpen=(_pgDayOpen===i)?null:i; renderProgramTab(); }
@@ -24692,6 +24740,13 @@ function tpSwapPick(enc){
   _tpPlan[_tpPickDay].ex[i]={n:x.n,s:old.s,r:old.r,c:x.c,v:x.v};
   window._tpSwapIdx=null;
   closeM('mTpPick');
+  // From the Program editor this is permanent, so it goes to the server and the
+  // toast waits on the write rather than claiming success up front.
+  if(window._pgSwapping){
+    window._pgSwapping=false;
+    try{ pgSavePlan(); }catch(e){}
+    return;
+  }
   renderTrainingBuilder();
   showToast('Swapped to '+x.n);
 }
