@@ -13163,12 +13163,18 @@ async function renderDayTimeline(soft){
       rows.push({k:'call', lbl:'Check-in call', it:{id:b.id, title:'Check-in call', description:'', logged_at:b.starts_at, _call:b}, m:d.getHours()*60+d.getMinutes()});
     });
 
-    // the planned session stays until you actually log THAT session — adding pilates shouldn't hide it
+    // The planned session stays until you log THAT session — adding pilates shouldn't
+    // hide it. The match used to be exact string equality, so "Legs" against a plan
+    // that said "Leg Day" drew both cards; near enough now counts.
     var planLogged = !!(plan && plan.type && (slots.workout||[]).some(function(w){
-      return String(w.title||'').toLowerCase()===String(plan.type).toLowerCase();
+      var a=String(w.title||'').toLowerCase().trim(), b=String(plan.type||'').toLowerCase().trim();
+      return a && b && (a===b || a.indexOf(b)>-1 || b.indexOf(a)>-1);
     }));
-    if(plan && plan.type && !planLogged){
-      rows.push({k:'workout', lbl:'Workout', it:null, planned:true, m:_planMins(ds, plan)});
+    // A rest day is not a thing you do, so it never earns a card with an action on
+    // it. It used to draw one reading "Set a time · rest day", which sat above the
+    // session the client had actually logged and contradicted it.
+    if(plan && plan.type && !plan.rest && !planLogged){
+      rows.push({k:'workout', lbl:(plan.type||'Workout'), it:null, planned:true, m:_planMins(ds, plan)});
     }
     // Empty slots no longer draw anything. A page of boxes for the walk, breakfast,
     // lunch and dinner you haven't had yet is a list of things you owe; the same day
@@ -13405,7 +13411,13 @@ function _tlSlot(key, label, filled, ds, plan){
         +(_drag?'touch-action:pan-y;':'')+'">'
         +'<div data-tl="wo" data-ds="'+_escHtml(ds)+'" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;">'
           +'<div style="flex:1;min-width:0;">'
-            +'<div style="font-size:15px;font-weight:800;letter-spacing:0.3px;color:var(--text);line-height:1.2;">Workout</div>'
+            // The split IS the headline. "Workout" is a category, not a session —
+            // it told a client nothing their own program hadn't already told them,
+            // and hid the one word that matters underneath it.
+            +'<div style="font-size:15px;font-weight:800;letter-spacing:0.3px;color:var(--text);line-height:1.2;">'
+              +_escHtml(_progOn() ? ((plan&&plan.type)||'Workout')
+                                  : (String(dr.ownTitle||'').trim()||'Workout'))
+            +'</div>'
             
             // with the program off the plan's count is meaningless — count what they've actually named
             +'<div style="font-size:12px;font-weight:600;color:var(--muted);margin-top:3px;">'
@@ -13522,8 +13534,10 @@ function _tlSlot(key, label, filled, ds, plan){
       slotName = label;
       title = (it.description||'').split('\n')[0].trim() || (it.title||'Walk');
     } else if(key==='workout'){
-      slotName = 'Workout';
-      title = it.title || label;
+      // The session's own name leads — "Legs", not "Workout" with Legs tucked under
+      // it. What they did goes in the line beneath, where the detail belongs.
+      slotName = String(it.title||'').trim() || 'Workout';
+      title = (it.description||'').split('\n')[0].trim();
     } else if(isCall){
       slotName = 'Check-in call';
       title = (function(){
@@ -13561,7 +13575,9 @@ function _tlSlot(key, label, filled, ds, plan){
       +_revHeart(_rk, it.id)
       +'<div data-tl="xp" data-uid="'+uid+'" style="display:flex;align-items:flex-start;gap:9px;'+(xp?'':'min-height:48px;')+'cursor:pointer;">'
         +'<div style="flex:1;min-width:0;">'
-          +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">'+'<div style="font-size:15px;font-weight:800;letter-spacing:0.3px;color:var(--text);line-height:1.2;">'+slotTap+'</div>'+'<span style="flex-shrink:0;font-size:12px;font-weight:800;color:var(--gold);line-height:1;">\u2713</span>'+'</div>'
+          // No tick. A card carrying a name, a time and what was done already reads
+          // as done; the mark was decoration on top of a fact.
+          +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">'+'<div style="font-size:15px;font-weight:800;letter-spacing:0.3px;color:var(--text);line-height:1.2;">'+slotTap+'</div>'+'</div>'
           // When it's open the full text is already in the field below. Don't print it twice.
           +((xp && isWo)
               ? ''
@@ -13708,20 +13724,20 @@ function _woDraft(ds){
   catch(e){ return {done:{}, note:''}; }
 }
 function _woSaveDraft(ds, d){ try{ localStorage.setItem(_woKey(ds), JSON.stringify(d)); }catch(e){} }
-// Today's session opens itself. Standing in a gym holding a phone, the exercises,
-// the sets and the reps are the thing you came for — a tap to see them is a tap too
-// many. Every other day stays shut until asked. An explicit collapse is remembered,
-// so closing today's card keeps it closed for the session.
+// Closed until asked, every day including today.
+// Today's card DID open itself for a while, on the reasoning that someone in a gym
+// shouldn't have to tap to see their session. That reasoning still holds, but what
+// the card opens onto is still the setup panel — the program switch, the day-type
+// buttons, the finisher picker, a photo box and a note box. Opening all of that
+// automatically is worse than a tap. It goes back to opening by default only once
+// the inside is the session itself.
 function _woDraftOpen(ds){
-  try{
-    if(window._woOpen && Object.prototype.hasOwnProperty.call(window._woOpen, ds)) return !!window._woOpen[ds];
-    return ds === _tlDateStr(new Date());
-  }catch(e){ return false; }
+  try{ return !!(window._woOpen && window._woOpen[ds]); }catch(e){ return false; }
 }
 function tlToggleWorkout(ds){
   window._woOpen=window._woOpen||{};
-  // Read through _woDraftOpen, not the raw map: today starts open with nothing
-  // recorded for it, so !window._woOpen[ds] made the first tap a no-op.
+  // Read through _woDraftOpen rather than the raw map, so this keeps working if the
+  // default ever stops being "closed" again.
   window._woOpen[ds]=!_woDraftOpen(ds);
   renderDayTimeline(true);
 }
