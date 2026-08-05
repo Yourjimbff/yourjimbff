@@ -713,7 +713,10 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
 .chat-htitle{font-family:'Plus Jakarta Sans',sans-serif;font-size:22px;font-weight:800;letter-spacing:-0.3px;line-height:1;}
 .chat-hsub{font-size:11px;color:var(--muted);margin-top:3px;}
 .chat-scroll{flex:1;overflow-y:auto;padding:16px 14px 12px;display:flex;flex-direction:column;gap:10px;background:#131313;}
-.chat-empty{text-align:center;padding:32px 24px;color:var(--muted);font-size:13px;line-height:1.5;}
+.chat-empty{flex:1;display:flex;align-items:center;justify-content:center;padding:24px;}
+/* Quiet enough to be furniture, present enough to be an invitation. */
+.jimWait{max-width:290px;text-align:center;font-size:15px;line-height:1.55;
+  color:rgba(240,236,228,0.42);}
 .chat-empty-ic{font-size:38px;margin-bottom:8px;}
 .chat-empty-title{font-family:'Plus Jakarta Sans',sans-serif;font-size:22px;font-weight:800;letter-spacing:-0.3px;color:var(--text);margin-bottom:6px;}
 .chat-row{display:flex;gap:8px;align-items:flex-end;max-width:100%;}
@@ -18164,6 +18167,27 @@ function mlibTap(id){
   if(m.is_template && !_mlibIsTrainer()){ mlibAdopt(m,{log:true}); return; }
   mlibLogMeal(m);
 }
+// A suggestion with no macros opens the meal sheet pre-loaded with its parts,
+// each waiting on an amount. Nothing is written until they are.
+function mlibOpenForPortions(m){
+  var ds=(window._mealLogDs||((typeof _logDayStr==='function')?_logDayStr():todayDateStr));
+  var slot=(window._mealSlot||_mealSlotNow());
+  mlOpen(ds, slot);
+  var parts=[m.protein, m.veg, m.carb, m.extras]
+    .filter(function(x){ return x && String(x).trim(); })
+    .join(', ')
+    .split(/,\s*/)
+    .map(function(x){ return x.trim(); })
+    .filter(Boolean);
+  window._mlItems = parts.map(function(nm){
+    return {name:_tcase(nm), qty:1, base:{cal:0,pro:0,carb:0,fat:0},
+            src:'unknown', rating:'unknown', noMacros:true};
+  });
+  window._mlItems.forEach(function(it){ try{ _mlRecalc(it); }catch(e){} });
+  try{ mlRender(); }catch(e){}
+  try{ showToast('From ' + m.name + ' — add the amounts and I’ll do the maths'); }catch(e){}
+}
+
 async function mlibLogMeal(m){
   if(!cl||!m) return;
   if(_mlibLogBusy) return; _mlibLogBusy=true;
@@ -18174,6 +18198,16 @@ async function mlibLogMeal(m){
     var logDs=(window._mealLogDs||((typeof _logDayStr==='function')?_logDayStr():todayDateStr));
     var mealText=_mlibComposeText(m);
     var hasMacros=(+m.calories>0);
+    // A composition has no numbers because the portions aren't decided yet.
+    // Writing nulls and calling it logged is the silent-zero problem in another
+    // costume: the row looks logged and contributes nothing to the day. Send them
+    // to the meal sheet with the parts already listed, so all that's left is
+    // saying how much.
+    if(!hasMacros){
+      _mlibLogBusy=false;
+      try{ mlibOpenForPortions(m); }catch(e){ showToast('Add the amounts and I’ll log it'); }
+      return;
+    }
     var cal=hasMacros?Math.round(+m.calories||0):null, pro=hasMacros?Math.round(+m.protein_g||0):null,
         carb=hasMacros?Math.round(+m.carbs_g||0):null, fat=hasMacros?Math.round(+m.fat_g||0):null;
     var rating=hasMacros?'good':'unknown';
@@ -19081,13 +19115,28 @@ function mbCanEdit(c){ return !!(c && cl && String(c.owner_code)===String(cl.cod
 // Named allow-lists, not exclusions: a new component added to the table shouldn't
 // silently appear in breakfast because nobody remembered to ban it.
 var MB_MEAL_SHELF = {
+  // Dinner is the meal where almost everything is legitimate, so this is about
+  // ORDER more than exclusion: the steakhouse and burrito-bowl foods sit first
+  // because those are the templates people actually reach for. The array order
+  // below IS the order they appear in — see _mbShelfRank.
+  dinner: {
+    protein: ['Steak','Ground Beef','Bison','Chicken Breast','Chicken Thigh','Salmon','Turkey',
+              'Ground Turkey','Burger Patties','Elk','Venison','Pork Chop','Shrimp'],
+    veg:     ['Broccoli','Broccolini','Carrots','Asparagus','Green Beans','Spinach','Brussels Sprouts',
+              'Cauliflower','Zucchini','Squash','Onions','Peppers','Mushrooms','Tomatoes',
+              'Lettuce','Cucumber','Salad Greens'],
+    carb:    ['Potatoes','Sweet Potatoes','Rice','Pasta','Lentils','Chickpeas','Corn','Tortillas']
+  },
   // Dessert is a base and what goes on it. Offering steak or broccoli in this
   // picker isn't a judgement call, it's obviously wrong, so it's curated here.
   // Dinner is deliberately absent: which proteins belong at dinner IS a coaching
   // decision, and inventing one would be the same mistake as inventing macros.
+  // Ordered, not just filtered: the base comes before what goes on it, and the
+  // fruit before the honey and chocolate.
   dessert: {
-    protein: ['Greek Yogurt','Protein Powder','Cottage Cheese'],
-    carb:    ['Oats','Honey','Dark Chocolate'],
+    protein: ['Greek Yogurt','Cottage Cheese','Protein Powder'],
+    carb:    ['Oats','Berries','Mixed Berries','Strawberries','Blueberries','Banana',
+              'Honey','Dark Chocolate'],
     veg:     []
   },
   breakfast: {
@@ -19107,6 +19156,14 @@ function _mbShelf(kind){
   var meal=_mbBuild; if(!meal) return null;
   var shelf=MB_MEAL_SHELF[meal]; if(!shelf) return null;
   return shelf[kind]!==undefined ? shelf[kind] : null;
+}
+// Where a meal names its foods explicitly, that list is also the order they're
+// shown in. Alphabetical would bury the steak under the asparagus.
+function _mbShelfRank(c, kind){
+  var rule=_mbShelf(kind);
+  if(!Array.isArray(rule)) return null;
+  for(var i=0;i<rule.length;i++){ if(_mbNorm(rule[i])===_mbNorm(c.name)) return i; }
+  return null;
 }
 function _mbAllowed(c, kind){
   if(!c) return false;
@@ -19136,6 +19193,8 @@ function mbComponents(kind){
       // the coach's list keeps its taught order; anything personal lands after it
       var pa=mbIsPersonal(a)?1:0, pb=mbIsPersonal(b)?1:0;
       if(pa!==pb) return pa-pb;
+      var ra=_mbShelfRank(a,kind), rb=_mbShelfRank(b,kind);
+      if(ra!=null && rb!=null && ra!==rb) return ra-rb;
       return ((a.sort||0)-(b.sort||0)) || _mbNorm(a.name).localeCompare(_mbNorm(b.name));
     });
 }
@@ -30061,14 +30120,32 @@ function _jimCanCard(){
       }).join('')
     + '</div>';
 }
+// One line, centred, waiting. Not a card, not a list, not a headline — a butler
+// standing there. It rotates so opening Jim twice in a day isn't the same room.
+var JIM_WAIT={
+  morning:  ['Morning. What did we start with?','Whenever you’re ready.'],
+  midday:   ['I’m listening.','Anything to add?'],
+  afternoon:['Training today? Tell me how it went.','I’m here if there’s anything to put down.'],
+  evening:  ['Let’s close the day out.','Busy day? Tell me what you ate and I’ll handle the rest.'],
+  can:      ['Send me a photo of a label and I’ll read the numbers off it.',
+             'Behind? Tell me the whole week at once.']
+};
+function _jimWaitBucket(){
+  var h=new Date().getHours();
+  return h<11?'morning':h<15?'midday':h<18?'afternoon':'evening';
+}
 function buildEmpty(){
-  // Genuinely empty. There used to be a greeting card, a three-item capability
-  // card and a labelled note zone stacked above the input — everything a client
-  // had to read and categorise before they'd said anything. The header says what
-  // this is in one line; the rest is the conversation.
   var d=document.createElement('div');
   d.className='chat-empty';
   d.id='chatEmpty';
+  var key='yjb_jimwait_'+(cl?cl.code:'anon');
+  var n=0; try{ n=parseInt(localStorage.getItem(key)||'0',10)||0; }catch(e){}
+  try{ localStorage.setItem(key,String(n+1)); }catch(e){}
+  // every third turn teaches something he can do; the rest suit the hour
+  var isCan=(n%3===2);
+  var pool=isCan?JIM_WAIT.can:(JIM_WAIT[_jimWaitBucket()]||JIM_WAIT.midday);
+  var step=isCan?Math.floor(n/3):(n-Math.floor(n/3));
+  d.innerHTML='<div class="jimWait">'+_escHtml(pool[step%pool.length]||pool[0])+'</div>';
   return d;
 }
 
