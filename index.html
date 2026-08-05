@@ -18815,9 +18815,55 @@ function mbProteinRange(gender){
 function mbIsPersonal(c){ return !!(c && String(c.owner_code)!==String(TRAINER_CODE)); }
 function mbCanEdit(c){ return !!(c && cl && String(c.owner_code)===String(cl.code)); }
 
+// ===== WHAT BELONGS AT THIS MEAL ===========================================
+// The picker used to offer the whole component table at every meal, so breakfast
+// listed broccoli, pasta and six cuts of steak. Nobody eats broccoli at 8am, and
+// a list that long is a list nobody reads.
+//
+// Named allow-lists, not exclusions: a new component added to the table shouldn't
+// silently appear in breakfast because nobody remembered to ban it.
+var MB_MEAL_SHELF = {
+  breakfast: {
+    protein: ['Steak','Ground Beef','Eggs','Bison','Venison','Elk','Sausage','Greek Yogurt',
+              'Protein Powder','Turkey Bacon','Sardines','Chicken Sausage','Turkey Sausage'],
+    veg:     ['Spinach','Cucumbers','Tomatoes','Arugula','Onions','Mushrooms','Sauerkraut'],
+    // Fruit sits inside carbohydrate rather than standing as its own step.
+    carb:    {exclude:['Pasta','Corn','Rice','Lentils','Chickpeas']}   // fruit rides along, capped at 35g
+    // no fats: nobody should be prompted to put nut butter on breakfast
+  }
+};
+// Milk is a drink. It was listed as a protein source, which teaches the wrong
+// thing about where protein comes from.
+var MB_NEVER_PROTEIN = ['Milk','Whole Milk','Skim Milk','2% Milk','Almond Milk','Oat Milk'];
+
+function _mbShelf(kind){
+  var meal=_mbBuild; if(!meal) return null;
+  var shelf=MB_MEAL_SHELF[meal]; if(!shelf) return null;
+  return shelf[kind]!==undefined ? shelf[kind] : null;
+}
+function _mbAllowed(c, kind){
+  if(!c) return false;
+  if(kind==='protein' || c.kind==='protein'){
+    var n=_mbNorm(c.name);
+    for(var i=0;i<MB_NEVER_PROTEIN.length;i++){ if(_mbNorm(MB_NEVER_PROTEIN[i])===n) return false; }
+  }
+  var rule=_mbShelf(kind);
+  if(rule==null) return true;                       // this meal doesn't curate this kind
+  if(Array.isArray(rule)) return rule.some(function(x){ return _mbNorm(x)===_mbNorm(c.name); });
+  if(rule && rule.exclude) return !rule.exclude.some(function(x){ return _mbNorm(x)===_mbNorm(c.name); });
+  return true;
+}
+
 function mbComponents(kind){
   return (_mbComponents||[])
-    .filter(function(c){ return c && !c.is_archived && (!kind || c.kind===kind); })
+    // Fruit IS a carbohydrate — the portion maths has always treated it as one.
+    // Asking for carbs therefore offers fruit too, instead of fruit needing a
+    // step of its own. Its 35g cap (MB_FRUIT_MAX) applies exactly as before.
+    .filter(function(c){
+      if(!c || c.is_archived) return false;
+      var kindOk = !kind || c.kind===kind || (kind==='carb' && c.kind==='fruit');
+      return kindOk && _mbAllowed(c, kind);
+    })
     .slice()
     .sort(function(a,b){
       // the coach's list keeps its taught order; anything personal lands after it
@@ -19468,7 +19514,10 @@ async function mbLoadComponents(force){
 
 // A framework is the SHAPE of a meal — which slots it has.
 var MB_FRAMEWORKS={
-  breakfast_sweet:  {label:'Breakfast', note:'Sweet build',  slot:'Breakfast', parts:['protein','carb','fruit']},
+  // Fruit is a carbohydrate, so it sits inside that step rather than standing as
+  // its own. And breakfast has no fats step at all — nobody needs prompting to
+  // add nut butter or dark chocolate to their breakfast.
+  breakfast_sweet:  {label:'Breakfast', note:'Sweet build',  slot:'Breakfast', parts:['protein','carb']},
   breakfast_savoury:{label:'Breakfast', note:'Savoury build',slot:'Breakfast', parts:['protein','veg','carb']},
   lunch:            {label:'Lunch',     note:'',             slot:'Lunch',     parts:['protein','veg','carb']},
   dinner:           {label:'Dinner',    note:'',             slot:'Dinner',    parts:['protein','veg','carb']},
@@ -19637,11 +19686,14 @@ var MB_INSPO={
          {kind:'protein',name:'Chicken Sausage'},
          {kind:'protein',name:'Turkey Sausage'},
          {kind:'protein',name:'Ground Beef'},
-         {label:'Steak', expand:{q:'Which cut?', a:[{label:'Ribeye',picks:[{kind:'protein',name:'Ribeye'}]},{label:'N.Y. strip',picks:[{kind:'protein',name:'N.Y. Strip'}]},{label:'Filet',picks:[{kind:'protein',name:'Filet'}]},{label:'Sirloin',picks:[{kind:'protein',name:'Sirloin'}]},{label:'Flank steak',picks:[{kind:'protein',name:'Flank Steak'}]},{label:'Top round',picks:[{kind:'protein',name:'Top Round'}]}]}}
+         // "Steak" covers it at breakfast. Six cuts is a decision nobody wants at 7am.
+         {kind:'protein',name:'Steak'},
+         {kind:'protein',name:'Bison'}, {kind:'protein',name:'Venison'},
+         {kind:'protein',name:'Elk'},   {kind:'protein',name:'Sardines'}
        ], next:{q:'Greens. Help yourself.', many:[
          {kind:'veg',name:'Spinach'},   {kind:'veg',name:'Cucumbers'},
-         {kind:'veg',name:'Tomatoes'},  {kind:'veg',name:'Onions'},
-         {kind:'veg',name:'Mushrooms'}, {kind:'veg',name:'Bell Peppers'},
+         {kind:'veg',name:'Tomatoes'},  {kind:'veg',name:'Arugula'},
+         {kind:'veg',name:'Onions'},    {kind:'veg',name:'Mushrooms'},
          {kind:'veg',name:'Sauerkraut'}
        ], next:_MB_SIDE}}},
 
@@ -19662,8 +19714,8 @@ var MB_INSPO={
             {kind:'protein',name:'Ground Beef'}
           ], next:{q:'Greens. Help yourself.', many:[
             {kind:'veg',name:'Spinach'},   {kind:'veg',name:'Cucumbers'},
-            {kind:'veg',name:'Tomatoes'},  {kind:'veg',name:'Onions'},
-            {kind:'veg',name:'Mushrooms'}, {kind:'veg',name:'Bell Peppers'},
+            {kind:'veg',name:'Tomatoes'},  {kind:'veg',name:'Arugula'},
+            {kind:'veg',name:'Onions'},    {kind:'veg',name:'Mushrooms'},
             {kind:'veg',name:'Sauerkraut'}
           ], next:_MB_SIDE}}},
          {label:'An omelette', sub:'Eggs with vegetables through it',
@@ -20112,7 +20164,10 @@ function mbRender(){
     // it belongs on the way in, not halfway through "which protein?"
     var showMine=(offerPicker && !_mbHistory.length);
     var rows=A.map(function(x){ return {i:x.i, a:x.a}; });
-    if(showMine) rows.push({mine:true, a:{label:'Build it myself',
+    // First, not last. Someone sitting down for fifteen minutes to build their
+    // whole routine shouldn't have to scroll past six suggestions to start.
+    // Everything below it is inspiration for people who'd rather not.
+    if(showMine) rows.unshift({mine:true, a:{label:'Build it myself',
       sub:'Start from nothing and add whatever you want.', icon:'blocks'}});
     host.innerHTML='<div class="mbQ">'+_escHtml(_mbStep.q||'')+'</div>'
       + _mbSentence()
@@ -22197,7 +22252,10 @@ async function addMacrosToEntry(i){
     txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
     var obj=JSON.parse(txt);
     e.calories=Math.round(obj.calories||0); e.protein=Math.round(obj.protein||0); e.carbs=Math.round(obj.carbs||0); e.fat=Math.round(obj.fat||0);
-    if(e.rating==='unknown') e.rating='good';
+    // A meal nobody could grade is not a good meal. This rewrote "couldn't tell"
+    // into "good" so the daily score had a number to work with, which quietly
+    // inflated every score built on an unreadable entry. Unknown stays unknown;
+    // it already scores 0.2 rather than 1.0, which is the honest weight.
     try{ if(e.id!=null){ await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(e.id),{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),body:JSON.stringify({calories:e.calories,protein:e.protein,carbs:e.carbs,fat:e.fat,rating:e.rating})}); } }catch(_){}
     try{ tots.cal+=e.calories; tots.protein+=e.protein; tots.carbs+=e.carbs; tots.fat+=e.fat; }catch(_){}
     try{ if(!/^\s*\d/.test(e.name)) _rememberFood(e); }catch(_){}
@@ -22245,7 +22303,7 @@ async function _gradePlateMeal(entry, foodsText){
     entry.rating=rating; entry.insight=(obj.insight&&String(obj.insight).trim())?String(obj.insight).trim():'';
     if(entry.id!=null){ try{ await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+entry.id,{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}),body:JSON.stringify({rating:rating,insight:entry.insight})}); }catch(e){} }
     if(typeof rendTodayFood==='function') rendTodayFood();
-  }catch(e){ if(entry.rating==='unknown'){ entry.rating='good'; if(typeof rendTodayFood==='function') rendTodayFood(); } }
+  }catch(e){ /* leaving a rating as 'unknown' is the truthful outcome; it is not upgraded to 'good' */ }
 }
 // THE RULE: a saved food stores ONE unit. One egg, one ounce, one handful.
 // Multiplication happens at log time and is never baked into the stored amount.
