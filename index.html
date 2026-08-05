@@ -4973,7 +4973,10 @@ async function _doLoginInner(){
   }
   // Always go straight to app - no setup gate
   if(!profile){
-    profile = {client_code:cl.code, name:cl.name, weight:null, goal_weight:null, age:null, gender:null, goal:'maintain', cal_target:1800, calTarget:1800, protein_target:150, proteinTarget:150, goalWeight:null};
+    // cal_target_seeded: this 1800 is the app's stand-in so the rest of the screen
+    // has a number to work with. It is NOT a target anyone chose, and the Day page
+    // must not print it as one. Cleared below the moment a real target turns up.
+    profile = {client_code:cl.code, name:cl.name, weight:null, goal_weight:null, age:null, gender:null, goal:'maintain', cal_target:1800, calTarget:1800, protein_target:150, proteinTarget:150, goalWeight:null, cal_target_seeded:true};
     localStorage.setItem('yjb_profile_'+cl.code, JSON.stringify(profile));
   }
   launchApp();
@@ -4984,6 +4987,11 @@ async function _doLoginInner(){
       var _srv=profiles[0], _clean={};
       for(var _k in _srv){ if(_srv[_k]!==null && _srv[_k]!==undefined && _srv[_k]!=='') _clean[_k]=_srv[_k]; }
       profile = Object.assign(profile, _clean);
+      // The server row is the only thing that knows whether a target was ever set.
+      // The local 1800 survives Object.assign when the column is empty, and without
+      // this an existing client who never set one still read "of 1,800" forever.
+      if(_srv.cal_target===null || _srv.cal_target===undefined || _srv.cal_target==='') profile.cal_target_seeded = true;
+      else delete profile.cal_target_seeded;
       profile.calTarget = profile.cal_target || 1800;
       profile.proteinTarget = profile.protein_target || 150;
       profile.goalWeight = profile.goal_weight;
@@ -4996,7 +5004,8 @@ function skipSetup(){
   // Create a minimal default profile so setup never shows again
   var defCal = 1800;
   var defPro = 150;
-  profile = {client_code:cl.code, name:cl.name, weight:null, goal_weight:null, age:null, gender:'unknown', goal:'maintain', cal_target:defCal, calTarget:defCal, protein_target:defPro, proteinTarget:defPro, goalWeight:null};
+  // They skipped setup, so nothing here was chosen — the same stand-in as above.
+  profile = {client_code:cl.code, name:cl.name, weight:null, goal_weight:null, age:null, gender:'unknown', goal:'maintain', cal_target:defCal, calTarget:defCal, protein_target:defPro, proteinTarget:defPro, goalWeight:null, cal_target_seeded:true};
   localStorage.setItem('yjb_profile_'+cl.code, JSON.stringify(profile));
   document.getElementById('sSetup').style.display='none';
   launchApp();
@@ -12817,6 +12826,22 @@ function _tlPromptCard(key, ds){
   +'</div>';
 }
 
+// Did anyone actually CHOOSE a calorie target, or is this the app's stand-in?
+// A brand-new profile is seeded with 1800 so the rest of the app has a number to
+// work with, and after that the seed is indistinguishable from a real 1800 — which
+// is how the plate came to print "of 1,800" at a client who had never set one. Same
+// mistake as the 5:00 PM workout, in a different place. So the seed is MARKED at the
+// moment it's invented, and the mark is cleared the moment a real target arrives.
+// Returns 0 for "nobody has said", and the plate then shows the total on its own.
+function _calTargetSet(){
+  try{
+    if(!profile) return 0;
+    if(profile.cal_target_seeded) return 0;
+    var v=+(profile.cal_target||profile.calTarget||0);
+    return v>0 ? Math.round(v) : 0;
+  }catch(e){ return 0; }
+}
+
 // ===== TODAY'S PLATE =====================================================
 // The running total. There has never been one on this page: every meal carried
 // its own calories and nothing added them up.
@@ -12837,8 +12862,7 @@ function _tlPlate(ds, slots, isToday){
     if(!t) blank++;
   });
   if(!meals) return '';                            // nothing eaten: nothing to total
-  var target=0;
-  try{ target=Math.round(+(profile&&(profile.calTarget||profile.cal_target))||0); }catch(e){}
+  var target=_calTargetSet();          // 0 unless somebody actually chose one
   var calR=Math.round(cal);
   var pct = target>0 ? Math.max(0, Math.min(100, Math.round(calR/target*100))) : 0;
   return '<div class="tlPlate">'
@@ -24776,6 +24800,7 @@ async function gpPersist(){
   if(!cl||!profile) return false;
   var T=_fuelTargets();
   profile.cal_target=T.cal; profile.calTarget=T.cal;
+  delete profile.cal_target_seeded;         // a real one now — the Day page may show it
   profile.protein_target=T.prot; profile.proteinTarget=T.prot;
   profile.carb_target=T.carb; profile.fat_target=T.fat;
   profile.phase=_curPhase();
