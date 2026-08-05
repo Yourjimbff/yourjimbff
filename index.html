@@ -2864,7 +2864,7 @@ body.hasnav #tToday{padding-bottom:96px;}
     <div style="font-size:11.5px;color:rgba(240,236,228,0.78);line-height:1.45;margin:-3px 0 7px;">One food at a time. Tap a saved one for its exact macros, or type anything and we'll estimate it.</div>
     <div style="position:relative;">
       <div style="display:flex;gap:8px;">
-        <input id="foodAdd" autocomplete="off" oninput="onFoodAddInput()" onkeydown="onFoodAddKey(event)" class="ifield" type="text" placeholder="What you ate, and the portion" style="margin:0;flex:1;min-width:0;">
+        <input id="foodAdd" autocomplete="off" oninput="onFoodAddInput()" onkeydown="onFoodAddKey(event)" class="ifield" type="text" placeholder="What you ate — several foods is fine" style="margin:0;flex:1;min-width:0;">
         <input id="foodQty" type="number" inputmode="decimal" min="0.25" step="0.25" value="1" oninput="onFoodAddInput()" title="How many of it" class="ifield" style="margin:0;width:62px;flex-shrink:0;text-align:center;">
       </div>
       <div id="foodSuggest" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:6;margin-top:6px;background:#1b1b1b;border:1px solid #2d2d2d;border-radius:12px;overflow:hidden;max-height:280px;overflow-y:auto;-webkit-overflow-scrolling:touch;box-shadow:0 14px 44px rgba(0,0,0,0.55);"></div>
@@ -32179,11 +32179,50 @@ async function _mlEstimate(text){
   return (o && Array.isArray(o.items) && o.items.length) ? o.items : null;
 }
 
+// "chicken, rice, broccoli" is one sentence and used to cost three round trips —
+// type, Add, type, Add, type, Add. Jim has always read that sentence whole; this
+// is the meal sheet catching up.
+//
+// It does NOT split when the whole line is a food in its own right. Plenty of
+// saved names carry commas ("Chicken, rice & broccoli", "Eggs, Potatoes & Peppers")
+// and splitting those would turn one saved meal into three unknown foods.
+function _mlSplitLine(q){
+  var line=String(q||'').trim();
+  if(!line) return [];
+  var whole=line.toLowerCase();
+  var isSaved=(window._savedFoods||[]).some(function(f){ return (f.name||'').trim().toLowerCase()===whole; });
+  if(isSaved) return [line];
+  if(typeof _mlibFindExact==='function'){ try{ if(_mlibFindExact(line)) return [line]; }catch(e){} }
+  // macros stated outright ("chicken 40p 10f") are one item however they're punctuated
+  if(typeof _parseInlineMacros==='function'){
+    try{ var mm=_parseInlineMacros(line); if(mm && mm.hasMacro) return [line]; }catch(e){}
+  }
+  var parts=line.split(/\s*,\s*|\s+\+\s+|\s+and\s+/i)
+    .map(function(x){ return x.trim().replace(/^(and|with)\s+/i,''); })
+    .filter(Boolean);
+  return parts.length>1 ? parts : [line];
+}
+
 async function mlAddFromInput(){
   if(window._mlBusy) return;
   var inp=document.getElementById('mlInput');
   var q=((inp||{}).value||'').trim();
   if(!q){ try{ showToast('What did you eat?'); }catch(e){} return; }
+
+  // Several foods in one line: clear the box once, then add each in turn through
+  // the same path a single food takes — library match, stated macros, portion
+  // check, estimate. Nothing about how one food is handled changes.
+  var _parts=_mlSplitLine(q);
+  if(_parts.length>1){
+    if(inp) inp.value='';
+    try{ var _sg0=document.getElementById('mlSuggest'); if(_sg0){ _sg0.style.display='none'; _sg0.innerHTML=''; } }catch(e){}
+    for(var _pi=0;_pi<_parts.length;_pi++){
+      if(inp) inp.value=_parts[_pi];
+      try{ await mlAddFromInput(); }catch(e){}
+    }
+    if(inp){ inp.value=''; try{ inp.focus(); }catch(e){} }
+    return;
+  }
 
   // macros stated outright -> trust them, no round trip
   if(typeof _parseInlineMacros==='function'){
