@@ -1168,10 +1168,22 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
   font-size:11.5px;color:rgba(240,236,228,0.74);line-height:1.5;}
 
 /* Catch-up: quiet, factual, and gone the moment there's nothing outstanding. */
-.cuBox{margin:14px 0 18px;border:1px solid #2e2e2e;border-radius:16px;overflow:hidden;
+/* Collapsed it is one quiet tappable line, not an alert and not a badge — a
+   six-row block here pushed Weigh In, Steps and the Jim bar down the page, and
+   the Jim bar being reachable is the entire reason it sits at the foot. */
+.cuBox{margin:10px 0 14px;border:1px solid #262626;border-radius:14px;overflow:hidden;
+  background:#161616;transition:opacity .5s ease, transform .5s ease;}
+.cuBox.open{border-color:#2e2e2e;
   background:radial-gradient(120% 140% at 0% 0%,#1f1f1f 0%,#181818 55%,#141414 100%);}
-.cuHead{font-size:10.5px;font-weight:800;letter-spacing:1.4px;text-transform:uppercase;
-  color:rgba(240,236,228,0.6);padding:13px 15px 9px;}
+.cuBox.fade{opacity:0;transform:translateY(-4px);}
+.cuLine{display:flex;align-items:center;gap:10px;padding:13px 15px;cursor:pointer;}
+.cuLine:active{background:rgba(255,255,255,0.03);}
+.cuLineT{flex:1;min-width:0;font-size:13.5px;color:rgba(240,236,228,0.82);line-height:1.35;}
+.cuChev{flex-shrink:0;font-size:17px;line-height:1;color:rgba(240,236,228,0.4);
+  transition:transform .18s ease;}
+.cuChev.o{transform:rotate(90deg);}
+.cuThanks{padding:15px;font-size:13.5px;font-weight:700;color:var(--gold);line-height:1.45;}
+.cuThanks span{display:block;font-weight:500;color:rgba(240,236,228,0.72);margin-top:3px;}
 .cuRow{display:flex;align-items:center;gap:12px;padding:10px 15px 12px;
   border-top:1px solid rgba(255,255,255,0.05);}
 .cuWhat{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;}
@@ -23486,22 +23498,55 @@ function _catchupList(){
   }
   return out;
 }
+var _cuOpen=false;   // collapsed by default: six rows pushed the day out of shape
+function _cuWord(n){ return ['no','one','two','three','four','five','six'][n]||String(n); }
+// Never "missed", never "catch up". The session may well have happened — the app
+// simply doesn't know about it yet, and telling someone they missed something
+// they didn't is how you teach them the app is wrong about them.
 function _catchupHtml(){
   var list=[];
   try{ list=_catchupList(); }catch(e){ list=[]; }
   if(!list.length) return '';                          // nothing outstanding: say nothing
-  return '<div class="cuBox" id="cuBox">'
-    +'<div class="cuHead">Catch up</div>'
+  var n=list.length;
+  var line = 'I’ve got '+_cuWord(n)+' open — want to close '+(n===1?'it':'them')+'?';
+  var head = '<div class="cuLine" id="cuLine" onclick="cuToggle()">'
+    +'<span class="cuLineT">'+_escHtml(line)+'</span>'
+    +'<span class="cuChev'+(_cuOpen?' o':'')+'">›</span>'
+  +'</div>';
+  if(!_cuOpen) return '<div class="cuBox" id="cuBox">'+head+'</div>';
+  return '<div class="cuBox open" id="cuBox">'
+    + head
     + list.map(function(x){
         var ds=_escHtml(x.ds).replace(/'/g,"\\'"), ty=String(x.type).replace(/'/g,"\\'");
         return '<div class="cuRow" id="cuRow_'+_cuRowId(x.ds,x.type)+'">'
           +'<div class="cuWhat"><span class="cuType">'+x.type+'</span>'
             +'<span class="cuWhen">'+x.label+'</span></div>'
-          +'<button class="cuBtn cuMiss" onclick="catchUpMiss(\''+ds+'\',\''+ty+'\',this)">Couldn\u2019t make it</button>'
+          +'<button class="cuBtn cuMiss" onclick="catchUpMiss(\''+ds+'\',\''+ty+'\',this)">Couldn’t make it</button>'
           +'<button class="cuBtn" onclick="catchUpLog(\''+ds+'\',\''+ty+'\',this)">I did it</button>'
         +'</div>';
       }).join('')
   +'</div>';
+}
+function cuToggle(){
+  _cuOpen=!_cuOpen;
+  var box=document.getElementById('cuBox');
+  if(!box) return;
+  var holder=document.createElement('div');
+  holder.innerHTML=_catchupHtml();
+  if(holder.firstChild && box.parentNode) box.parentNode.replaceChild(holder.firstChild, box);
+}
+// The manners first, then why it was worth doing. Held long enough to register,
+// because a row that simply vanishes reads as the app losing something.
+function _cuMaybeFinish(){
+  var box=document.getElementById('cuBox');
+  if(!box || box.querySelector('.cuRow')) return;
+  box.classList.add('done');
+  box.innerHTML='<div class="cuThanks">All squared away, thank you.'
+    +'<span>Your numbers just got more accurate.</span></div>';
+  setTimeout(function(){
+    box.classList.add('fade');
+    setTimeout(function(){ try{ if(box.parentNode) box.parentNode.removeChild(box); }catch(e){} }, 520);
+  }, 2100);
 }
 function _cuRowId(ds, type){ return String(ds+'_'+type).replace(/[^A-Za-z0-9]/g,''); }
 // Missed it. That's the whole interaction — no follow-up, no "what happened", no
@@ -23511,8 +23556,7 @@ function catchUpMiss(ds, type){
   _cuSkip(ds, type);
   var row=document.getElementById('cuRow_'+_cuRowId(ds,type));
   if(row && row.parentNode) row.parentNode.removeChild(row);
-  var box=document.getElementById('cuBox');
-  if(box && !box.querySelector('.cuRow') && box.parentNode) box.parentNode.removeChild(box);
+  _cuMaybeFinish();
 }
 // Logs to the day it was missed, not today. logged_at is anchored to noon of that
 // date so it can't drift across a timezone boundary into the wrong day.
@@ -23536,7 +23580,12 @@ async function catchUpLog(ds, type, btn){
     return;
   }
   showToast('\u2713 '+type+' logged to '+ds);
-  try{ window._tlCache=null; await renderDayTimeline(); }catch(e){}
+  // Take the row out and let the thank-you land BEFORE the timeline repaints,
+  // or the repaint wipes it off screen before anyone has read it.
+  var _row=document.getElementById('cuRow_'+_cuRowId(ds,type));
+  if(_row && _row.parentNode) _row.parentNode.removeChild(_row);
+  _cuMaybeFinish();
+  try{ window._tlCache=null; }catch(e){}
 }
 
 
