@@ -15350,7 +15350,7 @@ function tlLogInlineWorkout(ds){
       });
       // The loop closes here: casual voice in, audit language back, the moment
       // the workout ends.
-      try{ _bfClosing(_ratings); }catch(e){}
+      try{ _bfClosing(_ratings, ds); }catch(e){}
     }
   }catch(e){}
   var iso=_timeToISO(dr.time||_tlNowClock(), ds);
@@ -36614,6 +36614,64 @@ async function nlConfirm(){
   try{ _tlRefreshDay(st.ds); }catch(e){}
 }
 
+// ===== WHAT EACH MOVEMENT ACTUALLY HITS ==================================
+// Display vocabulary only. The Connection Map contract stays keyed on muscle
+// GROUPS (Chest, Back, Legs…) and nothing here touches what is banked — this
+// is the finer word to say it in when we have one. An exercise with no entry
+// falls back to its group, so a custom movement or a new library entry reads
+// correctly the day it appears rather than reading blank.
+var EX_MUSCLE = {
+  // Chest
+  'Chest Press':'pec major', 'Incline Chest Press':'upper chest',
+  'Decline Chest Press':'lower chest', 'Cable Chest Fly':'inner chest',
+  'Push-Ups':'chest',
+  // Shoulders
+  'Shoulder Press':'front delt', 'Lateral Raises':'side delt',
+  'Rear Delt Flies':'rear delt',
+  // Triceps
+  'Tricep Extension':'triceps', 'Rope Extension':'triceps',
+  'Overhead Tricep Extension':'triceps long head',
+  'Single-Arm Tricep Extension':'triceps', 'Dips':'triceps and lower chest',
+  // Back
+  'Barbell Row':'mid back', 'Smith Machine Row':'mid back',
+  'Machine Rows':'mid back', 'Cable Row':'mid back',
+  'Pull Downs / Pull Ups':'lats', 'Assisted Pull-Ups':'lats',
+  'Dumbbell Row':'lats', 'Straight-Arm Pulldown':'lats', 'Shrugs':'traps',
+  // Legs
+  'Squat':'quads', 'Leg Press':'quads', 'Leg Extension':'quads',
+  'Romanian Deadlift':'hamstrings', 'Hamstring Curl':'hamstrings',
+  'Barbell Hip Thrust':'glutes', 'Cable Kickback':'glutes',
+  'Reverse Lunges':'glutes', 'Walking Lunges':'quads and glutes',
+  'Bulgarian Split Squat':'quads and glutes', 'Hip Abduction':'glute medius',
+  'Calves':'calves',
+  // Biceps / forearms
+  'Dumbbell Bicep Curls':'biceps', 'Cable Bicep Curls':'biceps',
+  'Straight Bar Curls':'biceps', 'Preacher Curls':'biceps short head',
+  'Hammer Curls':'brachialis', 'Rope Curls':'brachialis',
+  'Reverse Curls':'forearms', 'Forearm Curls':'forearms',
+  // Core
+  'Hanging Leg Raises':'lower abs', 'Decline Crunches':'upper abs',
+  'Decline Sit-Ups':'upper abs', 'Sit-Ups':'abs', 'Ab Workout':'abs',
+  // Neck
+  'Weighted Neck Extension':'neck', 'Neck Bridge':'neck',
+  // Finishers — same dictionary, so a finisher reads like any other movement
+  'Neck extensions':'neck', 'Neck bridges':'neck',
+  'Cross-body sit-ups':'obliques', 'Forearm barbell curls':'forearms',
+  'Dead hangs':'grip and forearms', 'Calf raises, deep stretch':'calves'
+};
+function _bfMuscleOf(name){
+  var n=String(name||'').trim();
+  if(EX_MUSCLE[n]) return EX_MUSCLE[n];
+  // case-insensitive second pass, so "Decline sit-ups" and "Decline Sit-Ups"
+  // are the same movement rather than two entries in the summary
+  try{
+    var lc=n.toLowerCase();
+    for(var k in EX_MUSCLE){ if(k.toLowerCase()===lc) return EX_MUSCLE[k]; }
+  }catch(e){}
+  var g=null; try{ g=_bfGroupOf(n); }catch(e){}
+  return g ? String(g).toLowerCase() : n;
+}
+
 // ===== THE CLOSING MOMENT ================================================
 // A few seconds of payoff after Complete: the session's muscles and what the
 // pills said, with the streak of truth where history exists. No history means
@@ -36622,46 +36680,102 @@ async function nlConfirm(){
 // moderate / high, so this says the same. The STORED words are untouched —
 // mi_checkins still banks felt/partial/nothing, and this map is display only.
 var _BF_AUDIT={felt:'high', partial:'moderate', nothing:'low'};
-async function _bfClosing(ratings){
+// The header is the butler's, and it reads the session before it speaks: a
+// mostly-high session earns something with a bit of swagger, a mixed or quiet
+// one gets the plain line. Rotating so it never goes stale, and never an
+// exclamation mark — he does not shout.
+var _BF_HEAD_HIGH=[
+  'I’d hate to be those weights.',
+  'The weights lost that one.',
+  'That was a proper session.',
+  'Everything showed up today.',
+  'That is the standard, noted.'
+];
+var _BF_HEAD_MID=[
+  'Session complete.',
+  'That is it recorded.',
+  'Logged, and logged honestly.',
+  'Down it goes.'
+];
+function _bfHeadline(states, ds){
+  var felt=states.filter(function(s){ return s==='felt'; }).length;
+  var pool=(states.length && felt/states.length >= 0.6) ? _BF_HEAD_HIGH : _BF_HEAD_MID;
+  // Rotate on the date rather than at random, so one session keeps one line
+  // even if the screen is rebuilt, and consecutive days do not repeat.
+  var seed=0; try{ String(ds||'').split('').forEach(function(c){ seed=(seed*31+c.charCodeAt(0))>>>0; }); }catch(e){}
+  return pool[seed % pool.length];
+}
+async function _bfClosing(ratings, ds){
   var groups=Object.keys(ratings||{}); if(!groups.length) return;
   var hist=[];
   try{
     hist=await sbSelect('mi_checkins','client_code=eq.'+encodeURIComponent(cl.code)
       +'&kind=eq.connection&order=checked_at.desc&limit=40')||[];
   }catch(e){ hist=[]; }
-  var lines=groups.map(function(g){
-    var today=_BF_AUDIT[(ratings[g]||{}).r]||'';
-    var name=(g.indexOf('ex:')===0)?g.slice(3):g;
-    // sessions that actually hit this group, newest first, today's row included
+
+  // Speak per SPECIFIC muscle, not per group: the map banks Chest, the client
+  // hears pec major and upper chest. Two exercises landing on the same muscle
+  // collapse into one line, best signal wins — the same rule the group uses.
+  var _RANKL={felt:3, partial:2, nothing:1};
+  var byMuscle={};
+  groups.forEach(function(g){
+    var R=ratings[g]||{}, by=R.by||{};
+    var names=Object.keys(by);
+    if(!names.length){
+      var gn=(g.indexOf('ex:')===0)?g.slice(3):g;
+      var k0=String(gn).toLowerCase();
+      if(!byMuscle[k0] || _RANKL[R.r]>_RANKL[byMuscle[k0].r]) byMuscle[k0]={r:R.r, group:g};
+      return;
+    }
+    names.forEach(function(exn){
+      var m=_bfMuscleOf(exn), v=by[exn];
+      if(!v) return;
+      if(!byMuscle[m] || _RANKL[v]>_RANKL[byMuscle[m].r]) byMuscle[m]={r:v, group:g};
+    });
+  });
+
+  var muscles=Object.keys(byMuscle);
+  var lines=muscles.map(function(m){
+    var rec=byMuscle[m];
+    var today=_BF_AUDIT[rec.r]||'';
+    // The streak still comes off the GROUP, because that is what history is
+    // keyed on — the specific muscle is this session's word for it.
     var runs=[];
     (hist||[]).forEach(function(row){
-      try{ var R=row.ratings&&row.ratings[g]; if(R&&R.r) runs.push(R.r); }catch(e){}
+      try{ var R=row.ratings&&row.ratings[rec.group]; if(R&&R.r) runs.push(R.r); }catch(e){}
     });
-    var line='<b>'+_escHtml(name)+':</b> '+_escHtml(today);
+    var streak='';
     if(runs.length>1){
-      var window_=runs.slice(0,5);
-      var felt=window_.filter(function(r){ return r==='felt'; }).length;
-      // Named once, at the end — "high — high in 3 of your last 4" stutters.
-      // And a zero run stays off this screen: "high in 0 of your last 4" is a
-      // scoreboard of a bad fortnight on the card that closes a workout. The
-      // full record is banked either way; the map is where it gets read.
-      if(felt>0) line+=' — '+felt+' of your last '+window_.length+' sessions read high';
+      var w=runs.slice(0,5);
+      var felt=w.filter(function(r){ return r==='felt'; }).length;
+      if(felt>0) streak=felt+' of your last '+w.length+' sessions read high';
     }
-    return '<div style="font-size:14px;font-weight:600;color:var(--m2);line-height:1.6;padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.06);">'+line+'</div>';
+    var tone=(rec.r==='felt')?'var(--gold)':(rec.r==='partial'?'var(--text)':'var(--m2)');
+    return '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:13px 0;border-bottom:1px solid rgba(255,255,255,0.07);">'
+      +'<div style="min-width:0;">'
+        +'<div style="font-size:16.5px;font-weight:800;letter-spacing:-0.3px;color:var(--text);">'+_escHtml(m)+'</div>'
+        +(streak?('<div style="font-size:11.5px;color:var(--m2);margin-top:3px;">'+_escHtml(streak)+'</div>'):'')
+      +'</div>'
+      +'<div style="flex-shrink:0;font-size:14px;font-weight:800;color:'+tone+';letter-spacing:0.2px;">'+_escHtml(today)+'</div>'
+    +'</div>';
   }).join('');
+
+  var head=_bfHeadline(muscles.map(function(m){ return byMuscle[m].r; }), ds);
   var ov=document.createElement('div');
   ov.id='bfClosingOv';
-  ov.style.cssText='position:fixed;inset:0;z-index:99996;display:flex;align-items:center;justify-content:center;padding:22px;background:rgba(7,7,9,0.9);-webkit-backdrop-filter:blur(7px);backdrop-filter:blur(7px);';
-  ov.innerHTML='<div style="width:100%;max-width:360px;position:relative;overflow:hidden;border-radius:20px;padding:24px 18px 18px;'
-    +'background:radial-gradient(130% 150% at 0% 0%,#262626 0%,#171717 48%,#101010 100%);border:1px solid #2e2e2e;box-shadow:0 14px 40px rgba(0,0,0,0.5);">'
-    +'<div style="position:absolute;inset:0;pointer-events:none;background:radial-gradient(95% 130% at 100% 0%,rgba(245,197,24,0.13),transparent 58%);"></div>'
-    +'<div style="position:relative;font-size:10px;font-weight:800;letter-spacing:1.6px;text-transform:uppercase;color:var(--gold);margin-bottom:10px;">Session down</div>'
+  ov.style.cssText='position:fixed;inset:0;z-index:99996;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(7,7,9,0.92);-webkit-backdrop-filter:blur(9px);backdrop-filter:blur(9px);';
+  ov.innerHTML='<div style="width:100%;max-width:380px;position:relative;overflow:hidden;border-radius:24px;padding:30px 22px 22px;'
+    +'background:radial-gradient(130% 150% at 0% 0%,#262626 0%,#171717 48%,#101010 100%);border:1px solid #2e2e2e;box-shadow:0 20px 56px rgba(0,0,0,0.6);">'
+    +'<div style="position:absolute;inset:0;pointer-events:none;background:radial-gradient(95% 130% at 100% 0%,rgba(245,197,24,0.15),transparent 58%);"></div>'
+    +'<div style="position:relative;font-size:10px;font-weight:800;letter-spacing:1.8px;text-transform:uppercase;color:var(--gold);">Session complete</div>'
+    +'<div style="position:relative;font-size:27px;font-weight:800;letter-spacing:-0.9px;line-height:1.15;color:var(--text);margin:9px 0 18px;">'+_escHtml(head)+'</div>'
     +'<div style="position:relative;">'+lines+'</div>'
-    +'<button class="sbtn" style="position:relative;margin-top:16px;" onclick="var o=document.getElementById(\'bfClosingOv\'); if(o&&o.parentNode)o.parentNode.removeChild(o);">Done</button>'
+    +'<button class="sbtn" style="position:relative;margin-top:20px;" onclick="var o=document.getElementById(\'bfClosingOv\'); if(o&&o.parentNode)o.parentNode.removeChild(o);">Done</button>'
   +'</div>';
   ov.onclick=function(e){ if(e.target===ov && ov.parentNode) ov.parentNode.removeChild(ov); };
   document.body.appendChild(ov);
-  setTimeout(function(){ try{ if(ov.parentNode) ov.parentNode.removeChild(ov); }catch(e){} }, 9000);
+  // It is a payoff, not a toast — it waits to be dismissed rather than being
+  // yanked away mid-read. (It used to self-destruct after nine seconds.)
 }
 
 // ===== WHAT YUSUF SAID =================================================
