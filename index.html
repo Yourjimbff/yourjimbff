@@ -5808,6 +5808,11 @@ async function _doLoginInner(){
     TRAINER_CODES.push(code);
   }
   localStorage.setItem('yjb_logged_in', code);
+  // Whose device this is. Set once, when a trainer signs in here, and never
+  // cleared by signing in as somebody else — that is the whole point. It is what
+  // lets the app notice that the account being written to is not the person
+  // holding the phone. See _logTarget below.
+  try{ if(isTrainer(code)) localStorage.setItem('yjb_owner_code', code); }catch(e){}
 
   // Hide login screen completely
   document.getElementById('sLogin').style.display='none';
@@ -11057,7 +11062,7 @@ async function tlCompleteWorkout(){
   try{
     var _wr=await insertWorkoutLog({client_code:cl.code, title:(w.title||'Workout'), description:desc, duration:null, date_str:ds, logged_at:new Date().toISOString()});
     if(_wr.ok){ try{ showToast('\u2713 '+(w.title||'Workout')+' logged'); }catch(e){} }
-    else if(!_wr.duplicate){ try{ showToast('Could not save'); }catch(e){} }
+    else if(!_wr.duplicate && !_wr.cancelled){ try{ showToast('Could not save'); }catch(e){} }
   }catch(e){ try{ showToast('Could not save'); }catch(_){} }
   try{ closeM('mTodayWorkout'); }catch(e){}
   try{ _tlInvalidate(); }catch(e){}
@@ -15642,7 +15647,7 @@ function tlLogInlineWorkout(ds){
     (async function(){
       var r=await insertWorkoutLog(oRow);
       if(r.ok){ try{ _syncToday(); }catch(e){} }
-      else if(!r.duplicate){ try{ showToast('Could not save'); window._tlCache=null; renderDayTimeline(); }catch(e){} }
+      else if(!r.duplicate && !r.cancelled){ try{ showToast('Could not save'); window._tlCache=null; renderDayTimeline(); }catch(e){} }
     })();
     try{ window._exReg=null; }catch(e){}
     return;
@@ -15716,7 +15721,7 @@ function tlLogInlineWorkout(ds){
   (async function(){
     var r=await insertWorkoutLog(row);
     if(r.ok){ try{ _syncToday(); }catch(e){} }
-    else if(!r.duplicate){ try{ showToast('Could not save'); window._tlCache=null; renderDayTimeline(); }catch(e){} }
+    else if(!r.duplicate && !r.cancelled){ try{ showToast('Could not save'); window._tlCache=null; renderDayTimeline(); }catch(e){} }
   })();
 }
 // --- Move a logged meal to a different slot (mis-tagged breakfast, etc.) ---
@@ -20538,7 +20543,54 @@ function confirmMeal(){
 }
 
 // Insert a food log; include the photo if the column exists, fall back gracefully if not
+// ===== WHOSE LOG IS THIS =================================================
+// There is no "view as client" in this app — the only way to see a client's
+// account is to sign in as them, and from that moment every write is theirs.
+// That is how a dinner got logged into a client's record while its owner was
+// looking at their unfinished workout. The app cannot tell who is holding the
+// phone, but it CAN remember that a trainer signed in on this device: from then
+// on, writing to any other account asks once, quietly, and one tap goes through.
+// No guard at all when a trainer is in his own account, and none for clients.
+function _logTarget(){
+  var owner=null;
+  try{ owner=localStorage.getItem('yjb_owner_code')||null; }catch(e){}
+  var here=(cl&&cl.code)||null;
+  if(!owner || !here || owner===here) return {ask:false};
+  return {ask:true, name:((cl&&cl.name)||here)};
+}
+var _logTargetOk=null;   // remembered per account, so it asks once, not per meal
+async function _confirmLogTarget(){
+  var t=_logTarget();
+  if(!t.ask) return true;
+  if(_logTargetOk===((cl&&cl.code)||'')) return true;
+  var yes=false;
+  try{ yes=await _askLogTarget(t.name); }catch(e){ yes=false; }
+  if(yes) _logTargetOk=((cl&&cl.code)||'');
+  return yes;
+}
+function _askLogTarget(name){
+  return new Promise(function(resolve){
+    var o=document.getElementById('logTargetOv');
+    if(o&&o.parentNode) o.parentNode.removeChild(o);
+    o=document.createElement('div');
+    o.id='logTargetOv';
+    o.style.cssText='position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-end;justify-content:center;background:rgba(7,7,9,0.9);';
+    o.innerHTML='<div style="width:100%;max-width:430px;background:#222;border-radius:20px 20px 0 0;padding:18px 18px calc(26px + env(safe-area-inset-bottom,0px));">'
+      +'<div style="width:42px;height:4px;border-radius:2px;background:#3d3d3d;margin:0 auto 15px;"></div>'
+      +'<div style="font-size:17px;font-weight:800;color:var(--text);">Logging to '+_escHtml(name)+'?</div>'
+      +'<div style="font-size:13px;color:var(--m2);margin-top:6px;line-height:1.5;">You are signed in as them, so this saves to their record.</div>'
+      +'<button class="sbtn" style="margin-top:14px;" id="_ltYes">Yes, log it</button>'
+      +'<button class="obtn" id="_ltNo">Cancel</button>'
+    +'</div>';
+    function done(v){ try{ if(o.parentNode) o.parentNode.removeChild(o); }catch(e){} resolve(v); }
+    document.body.appendChild(o);
+    try{ document.getElementById('_ltYes').onclick=function(){ done(true); }; }catch(e){}
+    try{ document.getElementById('_ltNo').onclick=function(){ done(false); }; }catch(e){}
+    o.onclick=function(e){ if(e.target===o) done(false); };
+  });
+}
 async function insertFoodLog(row, photo){
+  if(!(await _confirmLogTarget())) return {ok:false, cancelled:true};
   try{ if(row && !row.logged_at) row.logged_at = new Date().toISOString(); }catch(e){}
   // --- duplicate / double-tap guard: block identical meal re-inserts within a short window ---
   try{
@@ -20597,6 +20649,7 @@ async function insertFoodLog(row, photo){
 // landed three rows with a byte-identical timestamp. Every client-side workout write
 // goes through here now, so the guard can't be forgotten at a new call site.
 async function insertWorkoutLog(row){
+  if(!(await _confirmLogTarget())) return {ok:false, cancelled:true};
   try{ if(row && !row.logged_at) row.logged_at = new Date().toISOString(); }catch(e){}
   // --- duplicate / double-tap guard: block identical workout re-inserts within a short window ---
   try{
@@ -34531,6 +34584,7 @@ function buildCoachVoice(){
     'ONE SITTING = ONE MEAL — THIS IS IMPORTANT:\n'+
     'A meal is a SITTING, not a product. If someone eats several things at one sitting — even two separate prepped meals, two containers, or a list of foods — combine them into ONE [FOOD_LOG] entry for that meal slot (Breakfast/Lunch/Dinner/Snack), with the macros SUMMED. Do NOT create one entry per product or per item.\n'+
     '- Name it simply by its food groups, not by brand/product names. "I ate two Nutrition Solutions meals — sweet & sour chicken and romesco chicken with rice, broccoli, peppers, onions" → ONE Lunch entry named like "Chicken, rice, broccoli, peppers & onions" with all macros added together. NOT two entries with product names.\n'+
+    '- ONE EXCEPTION: when a brand and product name are READ OFF a physical label or package in a photo, keep them — "Anabolic Marinara Meatballs · Nutrition Solutions". That is a record of what was actually eaten, not marketing. Never guess a brand, never add one to a plate of food someone described in words; read from the label or leave it out.\n'+
     '- Each meal SLOT gets its own entry, in chronological order across the day: Breakfast, then Lunch, then Dinner, then Snacks build up separately. But within a single slot/sitting, everything is ONE combined entry.\n'+
     '- Only log SEPARATE entries when the foods were genuinely eaten at different TIMES (a real breakfast vs a real lunch), not when they were eaten together.\n'+
     'Emit the marker on its OWN LINE with nothing else on that line. Exact format:\n'+
@@ -36978,14 +37032,61 @@ async function nlSubmit(){
   }catch(e){}
   content.push({type:'text', text: sys+'\n\nThe client says: "'+(line||'(photo only)')+'"'});
   var est=null;
-  try{
-    var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({messages:[{role:'user',content:content}]})});
-    var data=await res.json(), txt='';
-    if(data && data.content) data.content.forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; });
-    txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
-    est=JSON.parse(txt);
-  }catch(e){ est=null; }
+  // PRINTED NUMBERS BEAT GUESSING. A packaged meal with its macros on the sleeve
+  // is not a plate to be estimated — the numbers are right there. This app
+  // already owns a purpose-built label reader (brand, serving text, servings per
+  // container, never-zero-when-unread, temperature 0, three retries); the Day
+  // page just never called it, so a 495-calorie meal came back as 240. Try the
+  // label first; estimation is the fallback for food with no numbers in frame.
+  if(st.photo){
+    try{
+      st.busyMsg='Reading the label…'; nlRender();
+      var _lab=await mbReadLabel(st.photo);
+      if(_lab && (+_lab.calories || +_lab.protein)){
+        var _per=Math.max(1, Math.round(+_lab.servings_per_container||1));
+        // A single prepared meal is eaten as one thing. When the label says the
+        // pack holds more than one serving, log the pack and say so, rather than
+        // silently recording a fraction of what they ate.
+        var _mul=(_per>1)?_per:1;
+        // Calories printed on the label win. When the panel shows macros but the
+        // calorie figure is not legible, DERIVE it from them — that is what 4/4/9
+        // is for. Logging the 0 that "not read" produces would be the silent zero
+        // this app refuses to store as fact.
+        var _pc=+_lab.calories||0;
+        if(!_pc) _pc=Math.round(4*(+_lab.protein||0)+4*(+_lab.carbs||0)+9*(+_lab.fat||0));
+        // Brand credit, in Yusuf's format: the food, then who made it.
+        var _nm=String(_lab.name||'').trim();
+        var _br=String(_lab.brand||'').trim();
+        var _full=_nm ? (_br && _nm.toLowerCase().indexOf(_br.toLowerCase())<0 ? (_nm+' · '+_br) : _nm)
+                      : (_br||'Meal');
+        est={
+          name:_full.slice(0,80),
+          calories:Math.round(_pc*_mul),
+          protein:Math.round((+_lab.protein||0)*_mul),
+          carbs:Math.round((+_lab.carbs||0)*_mul),
+          fat:Math.round((+_lab.fat||0)*_mul),
+          rating:'unknown',
+          fromLabel:true, servings:_per,
+          tidbit:(_per>1)
+            ? ('Logged the whole container — '+_per+' servings off the label. Tap a number to change it.')
+            : 'Straight off the label.'
+        };
+      }
+    }catch(e){ est=null; }
+  }
+  // Estimation only runs when the label did not answer. Guarding with a thrown
+  // sentinel would have been caught by this same catch and wiped the label read.
+  if(!est){
+    st.busyMsg=st.photo?'Reading the plate…':'Working out the numbers…'; nlRender();
+    try{
+      var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({messages:[{role:'user',content:content}]})});
+      var data=await res.json(), txt='';
+      if(data && data.content) data.content.forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; });
+      txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
+      est=JSON.parse(txt);
+    }catch(e){ est=null; }
+  }
   if(!window._nl) return;                       // closed while reading — do nothing
   if(!est || est.error || est.name==null){
     st.stage='cap'; nlRender();
@@ -37014,7 +37115,14 @@ function nlEdit(el, f){
     var v=parseFloat(inp.value);
     if(!isNaN(v)&&v>=0){
       st.est[f]=Math.round(v);
-      st.est.calories=Math.round(4*(+st.est.protein||0)+4*(+st.est.carbs||0)+9*(+st.est.fat||0));
+      // 4/4/9 is how you DERIVE calories you never had. A label prints its own
+      // figure, and packaged food rarely adds up to it exactly (fibre, sugar
+      // alcohols, rounding) — re-deriving would quietly overwrite the truth with
+      // arithmetic. Editing a macro on a label read leaves the printed calories
+      // alone; the calorie tile is editable in its own right if it needs fixing.
+      if(!st.est.fromLabel || f==='calories'){
+        st.est.calories=Math.round(4*(+st.est.protein||0)+4*(+st.est.carbs||0)+9*(+st.est.fat||0));
+      }
     }
     nlRender();
   }
