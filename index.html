@@ -530,6 +530,13 @@ body.jv-on .feedCard .jvActRow > span{flex:1;justify-content:center;padding:9px 
 #jvSearch::placeholder{color:rgba(240,236,228,0.38);}
 #jvSearch:focus{border-color:rgba(245,197,24,0.34);}
 #jvFilters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.jvSexRow{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap;}
+.jvSexK{font-size:11px;font-weight:800;letter-spacing:0.9px;text-transform:uppercase;color:rgba(240,236,228,0.55);margin-right:2px;}
+.jvSexBtn{font-size:12.5px;font-weight:700;color:rgba(240,236,228,0.70);border:1px solid rgba(240,236,228,0.16);
+  border-radius:999px;padding:5px 14px;cursor:pointer;line-height:1.2;}
+.jvSexBtn:hover{border-color:rgba(240,236,228,0.34);color:#f0ece4;}
+.jvSexBtn.on{background:rgba(240,236,228,0.10);border-color:rgba(240,236,228,0.30);color:#f0ece4;font-weight:800;}
+.jvSexNote{font-size:11.5px;color:rgba(240,236,228,0.45);}
 .jvFilGrp{display:flex;gap:2px;background:rgba(0,0,0,0.4);border:1px solid rgba(240,236,228,0.09);
   border-radius:999px;padding:2px;}
 .jvFilOpt{font-size:12px;font-weight:800;color:rgba(240,236,228,0.62);padding:6px 14px;border-radius:999px;
@@ -7503,7 +7510,7 @@ function jvBarMic(){
 // whoever you spoke to — is one more entry here and nothing else changes.
 var JV_FILTERS=[
   {key:'gender', get:function(code){ return _jvGenderOf(code); },
-   opts:[['all','Everyone'],['female','Women'],['male','Men']]}
+   opts:[['all','All'],['male','Male'],['female','Female']]}
 ];
 window._jvFilterState = window._jvFilterState || {gender:'all'};
 window._jvGenderMap = null;
@@ -7523,6 +7530,69 @@ async function _jvLoadGender(){
 function _jvGenderOf(code){
   var m=window._jvGenderMap; if(!m) return null;
   return m[code]||null;
+}
+// ===== SEX, SET BY HAND ON THE CLIENT CARD =================================
+// Never inferred, never guessed, never defaulted. It is blank until Yusuf taps one of
+// the two buttons, and it stays blank if he never does. Trainer surface only — this
+// row is drawn on the client card, which no client can open.
+//
+// 18 of the 77 clients have no profiles row at all, so this has to CREATE the row when
+// there isn't one rather than patching thin air. Both paths read the value back before
+// claiming anything, because a PATCH that matched nothing returns success too.
+function _jvGenderRow(code){
+  var m=window._jvGenderMap;
+  if(!m){ try{ _jvLoadGender().then(function(){ _jvGenderRepaint(code); }); }catch(e){} }
+  var cur=(m&&m[code])||null;
+  function btn(val,label){
+    var on=(cur===val);
+    return '<span class="jvSexBtn'+(on?' on':'')+'" onclick="event.stopPropagation();jvSetGender(\''+code+'\',\''+val+'\')">'+label+'</span>';
+  }
+  return '<div class="jvSexRow" id="jvSexRow_'+code+'">'
+    + '<span class="jvSexK">Sex</span>'
+    + btn('male','Male') + btn('female','Female')
+    + (cur ? '' : '<span class="jvSexNote">Not set</span>')
+  + '</div>';
+}
+function _jvGenderRepaint(code){
+  var host=document.getElementById('jvSexRow_'+code);
+  if(host && host.parentNode){
+    var tmp=document.createElement('div');
+    tmp.innerHTML=_jvGenderRow(code);
+    host.parentNode.replaceChild(tmp.firstChild, host);
+  }
+}
+async function jvSetGender(code, val){
+  if(!code || (val!=='male' && val!=='female')) return;
+  var cur=(window._jvGenderMap||{})[code]||null;
+  var next=(cur===val) ? null : val;          // tapping the set one clears it back to unset
+  var ok=false, landed=null;
+  try{
+    var q='client_code=eq.'+encodeURIComponent(code);
+    var existing=await sbSelect('profiles','select=client_code&'+q+'&limit=1');
+    if(existing && existing.length){
+      var r=await fetch(SB_URL+'/rest/v1/profiles?'+q, {method:'PATCH',
+        headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=representation'}),
+        body:JSON.stringify({gender:next})});
+      if(r.ok){ var rows=await r.json(); if(rows && rows.length){ landed=rows[0].gender||null; ok=true; } }
+    } else {
+      var nm=(CLIENTS[code]&&CLIENTS[code].name)||code;
+      var r2=await fetch(SB_URL+'/rest/v1/profiles', {method:'POST',
+        headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=representation'}),
+        body:JSON.stringify({client_code:code, name:nm, gender:next})});
+      if(r2.ok){ var rows2=await r2.json(); if(rows2 && rows2.length){ landed=rows2[0].gender||null; ok=true; } }
+    }
+  }catch(e){ console.error('jvSetGender',e); }
+  // Read it back off the row rather than trusting the request. If it did not land,
+  // say so and change nothing on screen — a toggle that flips on a failed write is a lie.
+  if(!ok || (landed||null)!==(next||null)){
+    try{ showToast('Could not save that'); }catch(e){}
+    return;
+  }
+  window._jvGenderMap=window._jvGenderMap||{};
+  if(next) window._jvGenderMap[code]=next; else delete window._jvGenderMap[code];
+  _jvGenderRepaint(code);
+  try{ _jvRenderFilters(); }catch(e){}
+  try{ showToast(next ? ((CLIENTS[code]&&CLIENTS[code].name?String(CLIENTS[code].name).split(' ')[0]:'Set')+' · '+next) : 'Cleared'); }catch(e){}
 }
 function jvSetFilter(key, val){
   window._jvFilterState[key]=val;
@@ -7547,7 +7617,7 @@ function _jvRenderFilters(){
         var r=CLIENTS[c]||{}; if(r.isTrainer) return;
         if(!window._jvGenderMap[c]) unknown++;
       });
-      if(unknown) note='<span class="jvFilNote">'+unknown+' with no gender on file are not shown</span>';
+      if(unknown) note='<span class="jvFilNote">'+unknown+' not set — open a card to set it</span>';
     }
   }catch(e){}
   host.innerHTML=html+note;
@@ -12890,6 +12960,7 @@ function jvOpenDeep(code){
     // Month 3 of 6 · VIP · $2,500 is who they are to the business, so it belongs with
     // the name. Floating unlabelled between two headed blocks it read as an orphan.
     + _jvContractLine(code)
+    + _jvGenderRow(code)
     + _jvContactHead(code)
     // What they're actually working on, next to when you last spoke — the two things
     // you need in your head before writing to someone.
