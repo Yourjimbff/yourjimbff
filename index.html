@@ -4477,27 +4477,68 @@ async function sbUpsert(table, data, onConflict){
 
 // ===== CLIENTS =====
 // Auto-login on page load
-async function checkForUpdate(){
-  // Compare the running APP_VERSION against the freshest copy of this file on the server.
-  // If a newer version is live, force ONE hard reload to pull it. sessionStorage guards against loops.
+// ===== WHAT VERSION IS LIVE ============================================
+// This used to fetch index.html — the WHOLE 2.3MB app, with caching explicitly
+// off — on every single app open, to read one line out of it. Two full downloads
+// per open: one to run the app, one to ask what version it was. On 6 Aug 2026 the
+// host cut the site off for exceeding its usage allowance and every client got an
+// error page instead of the app.
+//
+// VERSION is published at the site root and is nine bytes. Same answer, same
+// freshness, about a quarter of a million times less traffic.
+var _VER_RE=/^v\d+\.\d+\.\d+$/;
+// Self-contained on purpose. The version check has to keep working when the rest
+// of the app's plumbing does not, so it borrows nothing from the Supabase helpers.
+function _verAbort(ms){
   try{
-    if(sessionStorage.getItem('yjb_just_updated')){ sessionStorage.removeItem('yjb_just_updated'); return; }
-    var res = await fetch(window.location.pathname + '?v=' + Date.now(), {cache:'no-store'});
-    if(!res.ok) return;
-    var txt = await res.text();
+    var c=new AbortController();
+    setTimeout(function(){ try{ c.abort(); }catch(e){} }, ms);
+    return c.signal;
+  }catch(e){ return undefined; }
+}
+async function _liveVersion(){
+  // Nine bytes.
+  try{
+    var r=await fetch('/VERSION?v='+Date.now(), {cache:'no-store', signal:_verAbort(6000)});
+    if(r && r.ok){
+      var t=String(await r.text()||'').trim();
+      // Only something shaped exactly like a version counts. A host that answers a
+      // missing file with a styled 404 page returns 200 and a body, and comparing
+      // that to APP_VERSION would look like "a new version is live" forever —
+      // every client reloading on every open, which is worse than not checking.
+      if(_VER_RE.test(t)) return t;
+    }
+  }catch(e){}
+  // The old route, kept ONLY for when the cheap one is broken. If VERSION ever
+  // stopped being published, a silent end to auto-updates would strand every phone
+  // on old code with nothing on screen to say so — that failure has to stay
+  // impossible. Expensive, and only ever paid when the nine bytes fail.
+  try{
+    var r2=await fetch(window.location.pathname+'?v='+Date.now(), {cache:'no-store', signal:_verAbort(12000)});
+    if(!r2 || !r2.ok) return null;
     // Anchored to the start of a line, and it has to stay that way: unanchored,
     // this matched THIS line's own regex source further up the file and captured
-    // "([^" every time, so m[1] never equalled APP_VERSION and every fresh
-    // session burned one pointless hard reload while never actually comparing
-    // versions. The declaration is the only APP_VERSION at column zero.
-    var m = txt.match(/^var APP_VERSION = '([^']+)'/m);
-    if(m && m[1] && m[1] !== APP_VERSION){
-      if(typeof _hasActiveWoDraft==='function' && _hasActiveWoDraft()){ return; } // don't yank the page out from under a workout in progress
-      sessionStorage.setItem('yjb_just_updated','1');
-      // reload(true) is ignored by modern browsers (serves cache). Navigate with a cache-bust
-      // query param to GUARANTEE the fresh deploy is fetched from the network.
-      window.location.replace(window.location.pathname + '?v=' + Date.now());
-    }
+    // "([^" every time, so it never equalled APP_VERSION and every fresh session
+    // burned one pointless hard reload while never actually comparing versions.
+    // The declaration is the only APP_VERSION at column zero.
+    var m=String(await r2.text()||'').match(/^var APP_VERSION = '([^']+)'/m);
+    return (m && m[1]) ? m[1] : null;
+  }catch(e){ return null; }
+}
+async function checkForUpdate(){
+  // If a newer version is live, force ONE hard reload to pull it. sessionStorage
+  // guards against loops.
+  try{
+    if(sessionStorage.getItem('yjb_just_updated')){ sessionStorage.removeItem('yjb_just_updated'); return; }
+    var live = await _liveVersion();
+    // No answer means run what's already here. Opening the app must never wait on,
+    // or be prevented by, a question about what version it is.
+    if(!live || live===APP_VERSION) return;
+    if(typeof _hasActiveWoDraft==='function' && _hasActiveWoDraft()){ return; } // don't yank the page out from under a workout in progress
+    sessionStorage.setItem('yjb_just_updated','1');
+    // reload(true) is ignored by modern browsers (serves cache). Navigate with a cache-bust
+    // query param to GUARANTEE the fresh deploy is fetched from the network.
+    window.location.replace(window.location.pathname + '?v=' + Date.now());
   }catch(e){ /* offline or fetch blocked — just run the cached version, no harm */ }
 }
 window.addEventListener('load', function(){
