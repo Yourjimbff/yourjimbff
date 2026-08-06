@@ -1451,7 +1451,16 @@ body.bfEditingToday .tlDaySec.ahead{display:none;}
   padding:15px;font-size:15px;font-weight:800;font-family:inherit;cursor:pointer;
   box-shadow:0 8px 20px rgba(245,197,24,0.22);}
 .nlGo:disabled{opacity:0.45;box-shadow:none;}
-.nlBusy{text-align:center;padding:36px 0 30px;font-size:14px;font-weight:700;color:var(--muted);}
+.nlBusy{text-align:center;padding:36px 0 0;font-size:14px;font-weight:700;color:var(--text);}
+/* Something to read while it works. Held still for the whole wait — a line that
+   changes under your eyes is worse than no line. */
+.nlBusyFact{text-align:center;padding:12px 26px 30px;font-size:12.5px;font-weight:600;
+  line-height:1.5;color:var(--muted);}
+/* A photo this phone couldn't shrink. Stays on screen — a toast would take the
+   reason away with it. */
+.nlPhotoErr{margin:0 0 10px;padding:11px 13px;border:1px solid rgba(255,68,85,0.45);
+  border-radius:11px;background:rgba(255,68,85,0.08);
+  font-size:12.5px;font-weight:700;line-height:1.45;color:#ffb3b8;}
 .nlRes{position:relative;overflow:hidden;border-radius:20px;padding:24px 18px 18px;
   background:radial-gradient(130% 150% at 0% 0%,#262626 0%,#171717 48%,#101010 100%);
   border:1px solid #2e2e2e;box-shadow:0 14px 40px rgba(0,0,0,0.5);}
@@ -20174,9 +20183,27 @@ function toggleFoodVoice(){
   try{ foodRecognition.start(); }catch(e){}
 }
 // Downscale a data-URL image to a compact JPEG so it persists without bloating the DB row
-function downscaleImage(dataUrl, maxDim, quality){
+// onFallback (optional) fires with a reason when this hands back the ORIGINAL file
+// instead of a compact one. That original is the raw camera frame — 3 to 12 MB — and
+// every caller then uploads it. It used to happen silently, and a silent 12 MB upload
+// is exactly what a thirty-second read looks like from the inside. Callers that pass
+// nothing behave as they always did.
+function downscaleImage(dataUrl, maxDim, quality, onFallback){
   return new Promise(function(resolve){
+    function fell(why){
+      try{
+        window._dsFallback={why:why, chars:String(dataUrl||'').length, at:new Date().toISOString()};
+        console.warn('[downscaleImage] handed back the original — '+why);
+      }catch(e){}
+      try{ if(typeof onFallback==='function') onFallback(why); }catch(e){}
+      resolve(dataUrl);
+    }
     try{
+      // Re-encoding a JPEG that is already inside the bounds cannot add detail. At a
+      // HIGHER quality number it actively makes the file bigger for the same pixels —
+      // which is what the label reader was doing: asking for 1600/0.9, being handed a
+      // 1440/0.85 photo, and uploading ~30% more bytes than the picture it was given.
+      var _isJpeg = /^data:image\/jpe?g;/i.test(String(dataUrl||''));
       var img = new Image();
       // A photo straight off the camera can fire onload before the bitmap is decoded,
       // and drawImage then paints nothing — a blank frame the label reader dutifully
@@ -20184,6 +20211,7 @@ function downscaleImage(dataUrl, maxDim, quality){
       // attempt on the same photo always worked.
       var _draw = function(){
         var w = img.width, h = img.height;
+        if(_isJpeg && w <= maxDim && h <= maxDim){ resolve(dataUrl); return; }
         if(w >= h){ if(w > maxDim){ h = Math.round(h * maxDim / w); w = maxDim; } }
         else { if(h > maxDim){ w = Math.round(w * maxDim / h); h = maxDim; } }
         try{
@@ -20191,7 +20219,7 @@ function downscaleImage(dataUrl, maxDim, quality){
           canvas.width = w; canvas.height = h;
           canvas.getContext('2d').drawImage(img, 0, 0, w, h);
           resolve(canvas.toDataURL('image/jpeg', quality || 0.7));
-        }catch(e){ resolve(dataUrl); }
+        }catch(e){ fell('the canvas refused to encode it'); }
       };
       img.onload = function(){
         // decode() resolves once the pixels are actually there. Where it isn't supported,
@@ -20199,9 +20227,9 @@ function downscaleImage(dataUrl, maxDim, quality){
         if(img.decode){ img.decode().then(_draw).catch(_draw); }
         else _draw();
       };
-      img.onerror = function(){ resolve(dataUrl); };
+      img.onerror = function(){ fell('the photo would not decode'); };
       img.src = dataUrl;
-    }catch(e){ resolve(dataUrl); }
+    }catch(e){ fell(String((e&&e.message)||e)); }
   });
 }
 
@@ -24094,14 +24122,15 @@ function _mbLabelPrompt(){
     +'Reply {} ONLY if the photo contains no printed nutrition numbers anywhere.';
 }
 
-async function _mbAskLabel(mediaType, b64, model){
+async function _mbAskLabel(mediaType, b64, model, signal){
   var payload={max_tokens:700, temperature:0, messages:[{role:'user', content:[
     {type:'image', source:{type:'base64', media_type:mediaType, data:b64}},
     {type:'text', text:_mbLabelPrompt()}
   ]}]};
   if(model) payload.model=model;
-  var res=await fetch('/.netlify/functions/analyze',{
-    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+  var _o={method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)};
+  if(signal) _o.signal=signal;
+  var res=await fetch('/.netlify/functions/analyze', _o);
   return {ok:res.ok, status:res.status, data:await res.json().catch(function(){ return null; })};
 }
 
@@ -24117,7 +24146,8 @@ function _mbLabelFail(why, detail){
   }catch(e){}
   return null;
 }
-async function mbReadLabel(dataUrl){
+async function mbReadLabel(dataUrl, opts){
+  var _sig=(opts&&opts.signal)||null;
   try{
     window._mbLastLabelFail=null;
     var small=await downscaleImage(dataUrl, 1600, 0.9);
@@ -24128,10 +24158,12 @@ async function mbReadLabel(dataUrl){
     // succeeding on the identical photo when they tap again is the worst of both.
     var r=null;
     for(var _try=0; _try<3; _try++){
-      r=await _mbAskLabel(m[1], m[2], MB_LABEL_MODEL);
+      if(_sig && _sig.aborted) return _mbLabelFail('the read ran out of time');
+      r=await _mbAskLabel(m[1], m[2], MB_LABEL_MODEL, _sig);
       // a model name this key can't reach shouldn't cost them the feature
-      if(!r.ok) r=await _mbAskLabel(m[1], m[2], null);
+      if(!r.ok) r=await _mbAskLabel(m[1], m[2], null, _sig);
       if(r.ok && r.data) break;
+      if(_sig && _sig.aborted) return _mbLabelFail('the read ran out of time');
       if(_try<2) await new Promise(function(res){ setTimeout(res, 600*(_try+1)); });
     }
     if(!r || !r.ok || !r.data) return _mbLabelFail('the reader could not be reached after 3 tries', r&&r.status);
@@ -37061,6 +37093,7 @@ function nlOpen(ds, slot, opts){
 function nlClose(){
   var ov=document.getElementById('nlOv'); if(ov) ov.classList.remove('on');
   var was=window._nl; window._nl=null;
+  try{ _nlBusyStop(was); }catch(e){}   // an interval left running renders into a dead sheet
   // The day already refreshed in place when the log landed; closing costs nothing.
   try{ if(was && was.logged) _tlPatchDay(was.ds); }catch(e){}
 }
@@ -37089,6 +37122,7 @@ function nlRender(){
   }
   else if(st.stage==='cap'){
     h+='<div class="nlHead"><b>'+_escHtml(st.slot)+'</b><span class="nlTimeTap" onclick="nlTimeOpen()">'+_escHtml(st.at||_tlNowClock())+'</span><div class="nlX" onclick="nlClose()"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1.2 1.2l7.6 7.6M8.8 1.2 1.2 8.8"/></svg></div></div>'
+      +(st.photoErr?('<div class="nlPhotoErr">'+_escHtml(st.photoErr)+'</div>'):'')
       +'<div class="nlPhoto" onclick="document.getElementById(\'nlFile\').click()">'
         +(st.photo?('<img src="'+st.photo+'" alt="">')
                   :('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>'
@@ -37114,7 +37148,8 @@ function nlRender(){
   }
   else if(st.stage==='busy'){
     h+='<div class="nlHead"><b>'+_escHtml(st.slot)+'</b><div class="nlX" onclick="nlClose()"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1.2 1.2l7.6 7.6M8.8 1.2 1.2 8.8"/></svg></div></div>'
-      +'<div class="nlBusy">'+_escHtml(st.busyMsg||'Reading the plate…')+'</div>';
+      +'<div class="nlBusy">'+_escHtml(st.busyMsg||'Reading the plate…')+'</div>'
+      +(st.busyFact?('<div class="nlBusyFact">'+_escHtml(st.busyFact)+'</div>'):'');
   }
   else if(st.stage==='res'){
     var e=st.est||{};
@@ -37140,12 +37175,38 @@ function nlRender(){
   }
 }
 function nlPickSlot(s){ var st=window._nl; if(!st) return; st.slot=s; st.stage='cap'; nlRender(); }
+// A photo this app can't shrink is a photo it shouldn't send. Above this it is the
+// raw camera frame, and uploading one is the thirty-second wait.
+var NL_PHOTO_MAX_CHARS = 1600000;   // ~1.2 MB once base64 is undone
 function nlPhotoPicked(input){
   if(!input.files || !input.files[0] || !window._nl) return;
   var r=new FileReader();
   r.onload=function(e){
-    downscaleImage(e.target.result, 1440, 0.85).then(function(c){
-      if(window._nl){ window._nl.photo=c; nlRender(); }
+    var st=window._nl; if(!st) return;
+    st.photo=null; st.photoHi=null; st.photoErr=''; nlRender();
+    var fell='';
+    // TWO copies, deliberately. The small one is what gets stored and what the
+    // estimator reads — it only has to show portions. The sharper one exists purely
+    // so the label reader can still make out small print: label accuracy never pays
+    // for speed (Yusuf, 6 Aug). Both come off the same original.
+    downscaleImage(e.target.result, 1024, 0.70, function(why){ fell=why; }).then(function(c){
+      if(window._nl!==st) return null;
+      if(fell && String(c||'').length > NL_PHOTO_MAX_CHARS){
+        // Loud and persistent, not a toast that takes the reason with it.
+        st.photoErr='That photo wouldn’t compress on this phone, so sending it would '
+          +'hang. Take it again, or just say what you ate.';
+        nlRender();
+        return null;
+      }
+      st.photo=c; nlRender();
+      return downscaleImage(e.target.result, 1440, 0.85);
+    }).then(function(hi){
+      if(window._nl!==st || !st.photo) return;
+      // If the sharp copy fails, the label reader reads the small one rather than
+      // nothing — a worse read beats no read.
+      st.photoHi=hi||st.photo;
+    }).catch(function(){
+      if(window._nl===st && st.photo) st.photoHi=st.photo;
     });
   };
   r.readAsDataURL(input.files[0]);
@@ -37181,12 +37242,86 @@ var _NL_FACTS=[
   'Carbs around training get used first — timing does count.',
   'A handful of rice is about a cup cooked. Two handfuls, two cups.'
 ];
+// The wait only ever moves FORWARD. It used to say "Reading the plate", then
+// "Reading the label", then "Reading the plate" again — back to a message it had
+// already shown, in the longest stretch of the wait, which reads as a stall.
+var _NL_STEPS_PHOTO=['Reading your photo…','Working out the numbers…','Almost there…'];
+var _NL_STEPS_TEXT =['Working out the numbers…','Almost there…'];
+function _nlBusyStart(st){
+  st.busyStep=0;
+  st.busySteps=st.photo?_NL_STEPS_PHOTO:_NL_STEPS_TEXT;
+  st.busyMsg=st.busySteps[0];
+  // Chosen once, so the line under it holds still and can actually be read.
+  st.busyFact=_NL_FACTS[(new Date().getMinutes())%_NL_FACTS.length];
+  _nlBusyStop(st);
+  st._busyTimer=setInterval(function(){
+    if(window._nl!==st || st.stage!=='busy'){ _nlBusyStop(st); return; }
+    if(st.busyStep >= st.busySteps.length-1) return;   // holds on the last, never wraps
+    st.busyStep++; st.busyMsg=st.busySteps[st.busyStep];
+    try{ nlRender(); }catch(e){}
+  }, 3200);
+}
+function _nlBusyStop(st){
+  try{ if(st&&st._busyTimer){ clearInterval(st._busyTimer); st._busyTimer=null; } }catch(e){}
+}
+// The label read and the estimate are two different questions about one photo, and
+// only one of them can be answered without seeing it first. Running them in sequence
+// meant every plate of food waited out a label read that was never going to answer —
+// two full uploads back to back. They now go at once (Yusuf, 6 Aug: the wait is what
+// a client feels, the extra call is pennies).
+var NL_LABEL_MS=10000, NL_TOTAL_MS=25000;
+function _nlAbortable(ms){
+  var ac=(typeof AbortController!=='undefined')?new AbortController():null;
+  var t=setTimeout(function(){ try{ ac&&ac.abort(); }catch(e){} }, ms);
+  return {ac:ac, signal:ac&&ac.signal, done:function(){ clearTimeout(t); },
+          abort:function(){ clearTimeout(t); try{ ac&&ac.abort(); }catch(e){} }};
+}
+async function _nlEstimate(content, signal){
+  var _o={method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({messages:[{role:'user',content:content}]})};
+  if(signal) _o.signal=signal;
+  var res=await fetch('/.netlify/functions/analyze', _o);
+  var data=await res.json(), txt='';
+  if(data && data.content) data.content.forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; });
+  txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
+  return JSON.parse(txt);
+}
+// A usable label, turned into the same shape estimation produces.
+function _nlFromLabel(_lab){
+  var _per=Math.max(1, Math.round(+_lab.servings_per_container||1));
+  // A single prepared meal is eaten as one thing. When the label says the pack holds
+  // more than one serving, log the pack and say so, rather than silently recording a
+  // fraction of what they ate.
+  var _mul=(_per>1)?_per:1;
+  // Calories printed on the label win. When the panel shows macros but the calorie
+  // figure is not legible, DERIVE it from them — that is what 4/4/9 is for. Logging
+  // the 0 that "not read" produces would be the silent zero this app refuses to store.
+  var _pc=+_lab.calories||0;
+  if(!_pc) _pc=Math.round(4*(+_lab.protein||0)+4*(+_lab.carbs||0)+9*(+_lab.fat||0));
+  // Brand credit, in Yusuf's format: the food, then who made it.
+  var _nm=String(_lab.name||'').trim();
+  var _br=String(_lab.brand||'').trim();
+  var _full=_nm ? (_br && _nm.toLowerCase().indexOf(_br.toLowerCase())<0 ? (_nm+' · '+_br) : _nm)
+                : (_br||'Meal');
+  return {
+    name:_full.slice(0,80),
+    calories:Math.round(_pc*_mul),
+    protein:Math.round((+_lab.protein||0)*_mul),
+    carbs:Math.round((+_lab.carbs||0)*_mul),
+    fat:Math.round((+_lab.fat||0)*_mul),
+    rating:'unknown',
+    fromLabel:true, servings:_per,
+    tidbit:(_per>1)
+      ? ('Logged the whole container — '+_per+' servings off the label. Tap a number to change it.')
+      : 'Straight off the label.'
+  };
+}
 async function nlSubmit(){
   var st=window._nl; if(!st) return;
   var line=String((document.getElementById('nlLine')||{}).value||'').trim();
   st.line=line;
   if(!line && !st.photo){ try{ showToast('A photo or one line — either works'); }catch(e){} return; }
-  st.stage='busy'; st.busyMsg=st.photo?'Reading the plate…':'Working out the numbers…'; nlRender();
+  st.stage='busy'; _nlBusyStart(st); nlRender();
   var sys='You are reading one meal for a fitness coach whose clients measure in ounces for meat and handfuls or palms for everything else. '
     +'Reply with ONLY compact JSON, no markdown: {"name":"short name of the meal","calories":n,"protein":n,"carbs":n,"fat":n,"rating":"nutrient_dense|good|okay|unknown|bad","tidbit":"one line"}. '
     +'The tidbit is either a short genuinely interesting food fact about something on the plate, or — only when the plate has earned it — one genuine specific compliment on the protein, vegetable or carb choice. '
@@ -37200,66 +37335,43 @@ async function nlSubmit(){
     }
   }catch(e){}
   content.push({type:'text', text: sys+'\n\nThe client says: "'+(line||'(photo only)')+'"'});
-  var est=null;
+  var est=null, _timedOut=false;
   // PRINTED NUMBERS BEAT GUESSING. A packaged meal with its macros on the sleeve
-  // is not a plate to be estimated — the numbers are right there. This app
-  // already owns a purpose-built label reader (brand, serving text, servings per
-  // container, never-zero-when-unread, temperature 0, three retries); the Day
-  // page just never called it, so a 495-calorie meal came back as 240. Try the
-  // label first; estimation is the fallback for food with no numbers in frame.
-  if(st.photo){
-    try{
-      st.busyMsg='Reading the label…'; nlRender();
-      var _lab=await mbReadLabel(st.photo);
-      if(_lab && (+_lab.calories || +_lab.protein)){
-        var _per=Math.max(1, Math.round(+_lab.servings_per_container||1));
-        // A single prepared meal is eaten as one thing. When the label says the
-        // pack holds more than one serving, log the pack and say so, rather than
-        // silently recording a fraction of what they ate.
-        var _mul=(_per>1)?_per:1;
-        // Calories printed on the label win. When the panel shows macros but the
-        // calorie figure is not legible, DERIVE it from them — that is what 4/4/9
-        // is for. Logging the 0 that "not read" produces would be the silent zero
-        // this app refuses to store as fact.
-        var _pc=+_lab.calories||0;
-        if(!_pc) _pc=Math.round(4*(+_lab.protein||0)+4*(+_lab.carbs||0)+9*(+_lab.fat||0));
-        // Brand credit, in Yusuf's format: the food, then who made it.
-        var _nm=String(_lab.name||'').trim();
-        var _br=String(_lab.brand||'').trim();
-        var _full=_nm ? (_br && _nm.toLowerCase().indexOf(_br.toLowerCase())<0 ? (_nm+' · '+_br) : _nm)
-                      : (_br||'Meal');
-        est={
-          name:_full.slice(0,80),
-          calories:Math.round(_pc*_mul),
-          protein:Math.round((+_lab.protein||0)*_mul),
-          carbs:Math.round((+_lab.carbs||0)*_mul),
-          fat:Math.round((+_lab.fat||0)*_mul),
-          rating:'unknown',
-          fromLabel:true, servings:_per,
-          tidbit:(_per>1)
-            ? ('Logged the whole container — '+_per+' servings off the label. Tap a number to change it.')
-            : 'Straight off the label.'
-        };
-      }
-    }catch(e){ est=null; }
+  // is not a plate to be estimated — the numbers are right there. The label reader
+  // gets the SHARPER copy so small print stays legible; the estimator reads the
+  // small one, because all it has to see is portions.
+  //
+  // Both go at once. Sequentially, every plate of food paid for a label read that
+  // was never going to answer — two full uploads back to back, which is most of the
+  // wait. The label still WINS whenever it answers, so accuracy is unchanged.
+  var _lt=_nlAbortable(NL_LABEL_MS), _et=_nlAbortable(NL_TOTAL_MS);
+  var _labelP = st.photo
+    ? mbReadLabel(st.photoHi||st.photo, {signal:_lt.signal}).catch(function(){ return null; })
+    : Promise.resolve(null);
+  // The catch goes on now, not after the await: an aborted fetch with nothing
+  // listening yet is an unhandled rejection.
+  var _estP = _nlEstimate(content, _et.signal).catch(function(){ return null; });
+
+  try{
+    var _lab=await _labelP;
+    if(_lab && (+_lab.calories || +_lab.protein)) est=_nlFromLabel(_lab);
+  }catch(e){ est=null; }
+  _lt.done();
+
+  if(est){
+    _et.abort();                 // the label answered; nothing is waiting on the estimate
+  } else {
+    try{ est=await _estP; }catch(e){ est=null; }
+    if(!est && _et.signal && _et.signal.aborted) _timedOut=true;
+    _et.done();
   }
-  // Estimation only runs when the label did not answer. Guarding with a thrown
-  // sentinel would have been caught by this same catch and wiped the label read.
-  if(!est){
-    st.busyMsg=st.photo?'Reading the plate…':'Working out the numbers…'; nlRender();
-    try{
-      var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({messages:[{role:'user',content:content}]})});
-      var data=await res.json(), txt='';
-      if(data && data.content) data.content.forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; });
-      txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
-      est=JSON.parse(txt);
-    }catch(e){ est=null; }
-  }
+  _nlBusyStop(st);
   if(!window._nl) return;                       // closed while reading — do nothing
   if(!est || est.error || est.name==null){
     st.stage='cap'; nlRender();
-    try{ showToast('Couldn’t read that — try a clearer photo, or tell Jim'); }catch(e){}
+    try{ showToast(_timedOut
+      ? 'That took too long — check your signal and try again'
+      : 'Couldn’t read that — try a clearer photo, or tell Jim'); }catch(e){}
     return;
   }
   // Zero all round is a read that FAILED, not a zero-calorie meal. Say so.
