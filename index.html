@@ -1252,6 +1252,9 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
 /* Today's editor open = the scroll stays inside today. The corridor to tomorrow
    closes while you're mid-workout and reopens when the editor does. */
 body.bfEditingToday .tlDaySec.ahead{display:none;}
+/* The finished session wears the same monument treatment, with the gold wash
+   turned up a touch — it earned it. */
+.tlHeroDone::after{opacity:1;}
 .tlDaySec.ahead [style*="border-left:4px solid #f5c518"]{border-left-color:#454545!important;}
 .tlDaySec.ahead [style*="color:#f5c518"]{color:#8a8a8a!important;}
 .tlDaySec.ahead svg{color:#8a8a8a!important;}
@@ -14261,8 +14264,11 @@ var FIN_GROUP={
   'Decline sit-ups':'Core', 'Cross-body sit-ups':'Core', 'Hanging leg raises':'Core',
   'Calf raises, deep stretch':'Legs'
 };
-function _bfGroupOf(name){
-  try{ for(var k in EX_LIB){ for(var i=0;i<EX_LIB[k].length;i++){ if(EX_LIB[k][i].n===name) return k; } } }catch(e){}
+function _bfGroupOf(rawName){
+  // An old row saying "Bench Press" and a new one saying "Chest Press" are the
+  // same movement, so the map hears one voice.
+  var name=_exCanonical(rawName);
+  try{ for(var i0 in EX_LIB){ for(var i=0;i<EX_LIB[i0].length;i++){ if(EX_LIB[i0][i].n===name) return i0; } } }catch(e){}
   if(FIN_GROUP[name]) return FIN_GROUP[name];
   // Same movement, different capitalisation, is the same movement — the finisher
   // list writes "Decline sit-ups" where the library writes "Decline Sit-Ups".
@@ -14339,6 +14345,162 @@ function _bfExCard(day,i,e,ds,dr){
         }).join('')
     +'</div>'
   +'</div>';
+}
+
+// ===== THE FINISHED SESSION, STILL IN CHARGE =============================
+// Completing a workout used to shrink it to a 15px grey line — a peer of a
+// logged breakfast. The session is the day's monument: it keeps the hero, and
+// carries what was actually done.
+//
+// What it can truthfully show, and where each part comes from:
+//   sets/reps   set_logs for that exact date (server), else the numbers frozen
+//               into workout_logs.description at Complete time
+//   connection  the mi_checkins kind=connection row for that date
+//   equipment   baked into the description as "Chest Press · machine"
+//   note        the description's tail, after the blank line
+// The per-day draft is deleted on Complete, so none of this can come from local
+// state — it is read back off the server, per date. That is also why VIEWING is
+// ungated while EDITING stays today-only: reading a past day costs a query,
+// writing to one would corrupt the day it happened on.
+function _woMatchesPlan(w, plan){
+  try{
+    var a=String((w&&w.title)||'').toLowerCase().trim();
+    var b=String((plan&&plan.type)||'').toLowerCase().trim();
+    return !!(a && b && (a===b || a.indexOf(b)>-1 || b.indexOf(a)>-1));
+  }catch(e){ return false; }
+}
+// Per-date record cache. Null means "not fetched yet", so a card can draw its
+// headline immediately and fill the detail in when the read lands.
+window._bfRec = window._bfRec || {};
+async function _bfLoadRecord(ds){
+  if(!cl || !ds || window._bfRec[ds]) return window._bfRec[ds];
+  var rec={sets:{}, conn:null, loaded:true};
+  try{
+    var q='client_code=eq.'+encodeURIComponent(cl.code)+'&date_str=eq.'+encodeURIComponent(ds);
+    var r=await Promise.all([
+      sbSelect('set_logs', q+'&order=set_idx.asc&limit=400').catch(function(){ return []; }),
+      sbSelect('mi_checkins', q+'&kind=eq.connection&order=checked_at.desc&limit=1').catch(function(){ return []; })
+    ]);
+    (r[0]||[]).forEach(function(row){
+      if(!row || !row.exercise) return;
+      var _k=_exCanonical(row.exercise);
+      (rec.sets[_k]=rec.sets[_k]||[]).push({w:row.weight||'', r:row.reps||''});
+    });
+    var c=(r[1]||[])[0];
+    if(c && c.ratings) rec.conn=c.ratings;
+  }catch(e){}
+  window._bfRec[ds]=rec;
+  try{ _tlPatchDay(ds); }catch(e){}
+  return rec;
+}
+// The description is the fallback record and the only place equipment and the
+// note survive. Parse it back into per-exercise lines rather than dumping the
+// blob on screen.
+function _bfParseDesc(desc){
+  var out={items:[], note:''};
+  var s=String(desc||'');
+  var parts=s.split(/\n\s*\n/);
+  if(parts.length>1){ out.note=parts.slice(1).join('\n\n').trim(); s=parts[0]; }
+  // "Chest Press · machine" is one exercise plus the kit it was done on. Split
+  // them, or every lookup that keys on the exercise name — its muscle, its
+  // connection read, its sets — misses and the card echoes the raw line back.
+  function push(name, detail, logged){
+    var eq='';
+    var dot=name.lastIndexOf(' · ');
+    if(dot>-1){
+      var tail=name.slice(dot+3).trim();
+      // Only a plain kit word is equipment. Older free-text sessions use " · "
+      // to separate EXERCISES ("Bench 3x8 · Incline DB 3x10"), so anything with
+      // a digit or a long tail is left alone rather than eaten as equipment.
+      if(/^[A-Za-z][A-Za-z ]{2,11}$/.test(tail)){ eq=tail; name=name.slice(0,dot).trim(); }
+    }
+    out.items.push({name:name, equip:eq, detail:detail, logged:logged});
+  }
+  s.split('\n').forEach(function(ln){
+    ln=ln.trim(); if(!ln) return;
+    var m=ln.match(/^(.+?):\s*(.+)$/);
+    if(m){ push(m[1].trim(), m[2].trim(), true); return; }
+    var m2=ln.match(/^(.+?)\s+—\s*(.+)$/);
+    if(m2){ push(m2[1].trim(), m2[2].trim(), false); return; }
+    push(ln, '', false);
+  });
+  return out;
+}
+function _tlDoneHero(ds, wo, plan){
+  if(!wo) return '';
+  var open=false; try{ open=!!(window._woDone && window._woDone[ds]); }catch(e){}
+  var rec=window._bfRec[ds];
+  if(open && !rec){ try{ _bfLoadRecord(ds); }catch(e){} }
+  var parsed=_bfParseDesc(wo.description);
+  var title=String(wo.title||(plan&&plan.type)||'Workout');
+  var clock=''; try{ clock=_tlClock(_tlMins(wo))||''; }catch(e){}
+  var isToday=false; try{ isToday=(ds===_tlDateStr(new Date())); }catch(e){}
+
+  var body='';
+  if(open){
+    // One block per exercise: what it hit, what was done, how it read.
+    var connBy={};
+    try{
+      var R=(rec&&rec.conn)||{};
+      Object.keys(R).forEach(function(g){ var by=(R[g]||{}).by||{}; Object.keys(by).forEach(function(n){ connBy[n]=by[n]; }); });
+    }catch(e){}
+    body+='<div style="margin-top:15px;">';
+    parsed.items.forEach(function(it){
+      // Real per-set rows when the server has them for this date; otherwise the
+      // line as it was frozen at Complete.
+      var sets=(rec&&rec.sets&&rec.sets[_exCanonical(it.name)])||null;
+      var detail=it.detail;
+      if(sets && sets.length){
+        detail=sets.filter(function(s){ return s.w||s.r; })
+                   .map(function(s){ return s.w?(s.w+' lb × '+(s.r||'')):(s.r+' reps'); }).join(', ');
+      }
+      var st=connBy[_exCanonical(it.name)]||'';
+      var word=_BF_AUDIT[st]||'';
+      var tone=(st==='felt')?'var(--gold)':(st==='partial'?'var(--text)':'var(--m2)');
+      body+='<div style="padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.07);">'
+        +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;">'
+          +'<div style="font-size:15px;font-weight:800;color:var(--text);min-width:0;">'+_escHtml(it.name)
+            +(it.equip?('<span style="font-size:11px;font-weight:700;color:var(--m2);"> · '+_escHtml(it.equip)+'</span>'):'')+'</div>'
+          +(word?('<div style="flex-shrink:0;font-size:12px;font-weight:800;color:'+tone+';">'+_escHtml(word)+'</div>'):'')
+        +'</div>'
+        // _bfMuscleOf answers with the name itself when it knows nothing better —
+        // right for "never blank", wrong here, where it would print the line twice.
+        +(function(){ var mm=_bfMuscleOf(it.name);
+            return (mm && mm.toLowerCase()!==String(it.name).toLowerCase())
+              ? '<div style="font-size:11.5px;color:var(--m2);margin-top:2px;">'+_escHtml(mm)+'</div>' : ''; })()
+        +(detail?('<div style="font-size:13px;color:var(--text);margin-top:5px;letter-spacing:0.1px;">'+_escHtml(detail)
+            +(!it.logged?' <span style="color:var(--m2);font-size:11.5px;">(as prescribed)</span>':'')+'</div>'):'')
+      +'</div>';
+    });
+    body+='</div>';
+    if(parsed.note){
+      body+='<div style="margin-top:14px;padding-top:13px;border-top:1px solid rgba(255,255,255,0.07);">'
+        +'<div style="font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:rgba(240,236,228,0.6);margin-bottom:5px;">The note</div>'
+        +'<div style="font-size:13.5px;color:var(--m2);line-height:1.55;white-space:pre-wrap;">'+_escHtml(parsed.note)+'</div>'
+      +'</div>';
+    }
+    if(!rec){
+      body+='<div style="font-size:11.5px;color:var(--m2);margin-top:10px;">Pulling the rest of the record…</div>';
+    }
+  }
+  var cap=parsed.items.length+' exercise'+(parsed.items.length===1?'':'s');
+  return '<div class="tlHero tlHeroDone" data-wocard="'+_escHtml(ds)+'" data-mins="'+(_tlMins(wo)||0)+'">'
+    +'<div class="tlHeroEy">'+(isToday?'Today’s session':'The session')+'</div>'
+    +'<div data-tl="wodone" data-ds="'+_escHtml(ds)+'" style="position:relative;cursor:pointer;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">'
+      +'<div style="flex:1;min-width:0;">'
+        +'<div class="tlHeroName">'+_escHtml(title)+'</div>'
+        +'<div class="tlHeroMeta">'+_escHtml(cap)+(clock?(' &nbsp;·&nbsp; '+_escHtml(clock)):'')+' &nbsp;·&nbsp; <span style="color:var(--gold);font-weight:800;">Complete</span></div>'
+      +'</div>'
+      +'<div class="tlHeroChev"'+(open?' style="transform:rotate(90deg);"':'')+'>›</div>'
+    +'</div>'
+    +body
+  +'</div>';
+}
+function tlToggleDone(ds){
+  window._woDone=window._woDone||{};
+  window._woDone[ds]=!window._woDone[ds];
+  if(window._woDone[ds] && !window._bfRec[ds]){ try{ _bfLoadRecord(ds); }catch(e){} }
+  try{ _tlPatchDay(ds); }catch(e){}
 }
 
 // The hero with something honest to say instead of a session. Two cases the old
@@ -14550,7 +14712,21 @@ function _tlDaySectionHtml(cur, ctx){
       var mins=Math.min.apply(null, list.map(function(x){ return _tlMins(x); }));
       rows.push({k:pair[0], lbl:pair[1], it:list[0], all:list, m:mins});
     });
-    (slots.workout||[]).forEach(function(it){ rows.push({k:'workout', lbl:'Workout', it:it, m:_tlMins(it)}); });
+    // The session that matches the plan is not a list item — it is the day's
+    // monument, drawn below as a completed hero. Everything else logged (a walk
+    // that wasn't split out, pilates, a second session) stays an ordinary row.
+    var _plannedWo=null;
+    var _woList=(slots.workout||[]).slice();
+    // The session that matches the plan takes the hero. If no plan is competing
+    // for the day — a rest day, a day with no program, any past day the client
+    // simply trained — the first session logged takes it instead, so a finished
+    // session is never a grey line just because it was not on the sheet.
+    _woList.forEach(function(it){ if(!_plannedWo && plan && plan.type && _woMatchesPlan(it, plan)) _plannedWo=it; });
+    if(!_plannedWo && (!plan || !plan.type || plan.rest)) _plannedWo=_woList[0]||null;
+    _woList.forEach(function(it){
+      if(it===_plannedWo) return;
+      rows.push({k:'workout', lbl:'Workout', it:it, m:_tlMins(it)});
+    });
     (jByDay[ds]||[]).forEach(function(it){ rows.push({k:'journal', lbl:'Journal', it:it, m:_tlMins(it)}); });
     ((window._bookByDay&&window._bookByDay[ds])||[]).forEach(function(b){
       var d=new Date(b.starts_at);
@@ -14560,15 +14736,19 @@ function _tlDaySectionHtml(cur, ctx){
     // The planned session stays until you log THAT session — adding pilates shouldn't
     // hide it. The match used to be exact string equality, so "Legs" against a plan
     // that said "Leg Day" drew both cards; near enough now counts.
-    var planLogged = !!(plan && plan.type && (slots.workout||[]).some(function(w){
-      var a=String(w.title||'').toLowerCase().trim(), b=String(plan.type||'').toLowerCase().trim();
-      return a && b && (a===b || a.indexOf(b)>-1 || b.indexOf(a)>-1);
-    }));
+    var planLogged = !!_plannedWo;
     // A rest day is not a thing you do, so it never earns a card with an action on
     // it. It used to draw one reading "Set a time · rest day", which sat above the
     // session the client had actually logged and contradicted it.
     if(plan && plan.type && !plan.rest && !planLogged){
       rows.push({k:'workout', lbl:(plan.type||'Workout'), it:null, planned:true, m:_planMins(ds, plan)});
+    }
+    // Finished, and still the biggest thing on the day. A completed session keeps
+    // the hero — it leads the day exactly as the planned one did, carrying what
+    // was actually done instead of what was going to be.
+    if(_plannedWo){
+      rows.push({k:'workout', lbl:((plan&&plan.type)||_plannedWo.title||'Workout'), it:_plannedWo,
+                 completed:true, planned:true, m:(_tlMins(_plannedWo)||_planMins(ds, plan))});
     }
     // Empty slots no longer draw anything. A page of boxes for the walk, breakfast,
     // lunch and dinner you haven't had yet is a list of things you owe; the same day
@@ -14603,6 +14783,7 @@ function _tlDaySectionHtml(cur, ctx){
     }
     rows.sort(function(a,b){ return (a.m||0)-(b.m||0); });
     function _drawRow(r){
+      if(r.completed)        return _tlDoneHero(ds, r.it, plan);
       if(r.planned)          return _tlSlot('workout','Workout', null, ds, plan);
       if(r.plannedMeal)      return _tlPlannedMeal(r.k, r.lbl, r.plannedMeal, ds);
       if(r.empty)            return _tlSlot(r.k, r.lbl, null, ds, null);
@@ -15698,6 +15879,8 @@ function _tlBindTaps(){
     if(a==='bfrm'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfRemoveSet(el.getAttribute('data-day'), +el.getAttribute('data-i'), +el.getAttribute('data-k')); return; }
     if(a==='bffeel'){ ev.stopPropagation(); bfFeel(el.getAttribute('data-ds'), el.getAttribute('data-ex'), el.getAttribute('data-v')); return; }
     if(a==='bfequip'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfEquip(el.getAttribute('data-ds'), el.getAttribute('data-ex'), el.getAttribute('data-v')); return; }
+    // Opening a finished session is reading, not editing — ungated on every day.
+    if(a==='wodone'){ ev.stopPropagation(); tlToggleDone(el.getAttribute('data-ds')); return; }
     if(a==='freestyle'){ ev.stopPropagation(); try{ openFreestyleWorkout(); }catch(e){} return; }
     if(a==='progtog'){ ev.stopPropagation(); tlToggleProgram(el.getAttribute('data-ds')); return; }
     if(a==='wotimeset'){ ev.stopPropagation(); openWoTime(el.getAttribute('data-ds')); return; }
@@ -27733,7 +27916,9 @@ async function loadSetLogs(){
     _tpLastW={}; _tpToday={}; _tpLastSets={}; var _lastDate={};
     var ds=todayDateStr;
     rows.forEach(function(r){
-      var ex=r.exercise;
+      // Read through the canonical name so a "Bench Press" row logged months ago
+      // pre-fills today's "Chest Press" card. The stored row is untouched.
+      var ex=_exCanonical(r.exercise);
       if(r.date_str===ds){
         (_tpToday[ex]=_tpToday[ex]||[])[r.set_idx]={w:r.weight||'',r:r.reps||''};
       } else {
@@ -36723,8 +36908,49 @@ var EX_MUSCLE = {
   'Cross-body sit-ups':'obliques', 'Forearm barbell curls':'forearms',
   'Dead hangs':'grip and forearms', 'Calf raises, deep stretch':'calves'
 };
-function _bfMuscleOf(name){
+// ===== ONE MOVEMENT, MANY MACHINES =======================================
+// Bench press, dumbbell chest press and machine chest press are the same
+// movement done on different kit, so a client's pressing story belongs in one
+// place instead of four. The roll-up follows the library's own declaration:
+// only families whose v says the equipment is a free choice are merged.
+// Squats stay separate (the library says barbell is the target, not a choice)
+// and rows stay separate (barbell, machine and cable rows are different
+// movements that happen to share a muscle) — both by Yusuf's ruling.
+// READ-TIME ONLY. No stored row is ever rewritten; old names simply resolve.
+var EX_ALIAS={
+  'bench press':'Chest Press','barbell bench press':'Chest Press','dumbbell bench press':'Chest Press',
+  'flat bench press':'Chest Press','barbell chest press':'Chest Press','dumbbell chest press':'Chest Press',
+  'machine chest press':'Chest Press','smith chest press':'Chest Press','chest press machine':'Chest Press',
+  'incline bench press':'Incline Chest Press','incline press':'Incline Chest Press',
+  'incline barbell press':'Incline Chest Press','incline dumbbell press':'Incline Chest Press',
+  'incline machine press':'Incline Chest Press','incline smith press':'Incline Chest Press',
+  'decline bench press':'Decline Chest Press','decline press':'Decline Chest Press',
+  'overhead press':'Shoulder Press','military press':'Shoulder Press','ohp':'Shoulder Press',
+  'seated shoulder press':'Shoulder Press','standing shoulder press':'Shoulder Press',
+  'dumbbell shoulder press':'Shoulder Press','machine shoulder press':'Shoulder Press','smith shoulder press':'Shoulder Press',
+  'side raises':'Lateral Raises','side lateral raise':'Lateral Raises','side lateral raises':'Lateral Raises',
+  'dumbbell lateral raise':'Lateral Raises','cable lateral raise':'Lateral Raises','machine lateral raise':'Lateral Raises',
+  'bent-over row':'Barbell Row','bent over row':'Barbell Row','pendlay row':'Barbell Row','smith machine row':'Barbell Row',
+  'lat pulldown':'Pull Downs / Pull Ups','pulldown':'Pull Downs / Pull Ups','pull downs':'Pull Downs / Pull Ups',
+  'pull-ups':'Pull Downs / Pull Ups','pull ups':'Pull Downs / Pull Ups','chin-ups':'Pull Downs / Pull Ups',
+  'chin ups':'Pull Downs / Pull Ups','assisted pull-ups':'Pull Downs / Pull Ups',
+  'barbell shrugs':'Shrugs','dumbbell shrugs':'Shrugs','trap shrugs':'Shrugs',
+  'tricep pushdown':'Tricep Extension','cable pushdown':'Tricep Extension','pushdown':'Tricep Extension',
+  'straight-bar extension':'Tricep Extension',
+  'bicep curl':'Dumbbell Bicep Curls','bicep curls':'Dumbbell Bicep Curls','db curl':'Dumbbell Bicep Curls',
+  'standing curl':'Dumbbell Bicep Curls',
+  'leg curl':'Hamstring Curl','lying leg curl':'Hamstring Curl','seated leg curl':'Hamstring Curl',
+  'quad extension':'Leg Extension'
+};
+function _exCanonical(name){
   var n=String(name||'').trim();
+  if(!n) return n;
+  var lc=n.toLowerCase();
+  if(EX_ALIAS[lc]) return EX_ALIAS[lc];
+  return n;
+}
+function _bfMuscleOf(name){
+  var n=_exCanonical(name);
   if(EX_MUSCLE[n]) return EX_MUSCLE[n];
   // case-insensitive second pass, so "Decline sit-ups" and "Decline Sit-Ups"
   // are the same movement rather than two entries in the summary
