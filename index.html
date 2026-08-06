@@ -25120,8 +25120,6 @@ async function _pnSend(){
   var now=_pnState();
   if(now.phase===from.phase && now.goal===from.goal) return;              // landed back where they started
   if(_pnLast && _pnLast.phase===now.phase && _pnLast.goal===now.goal) return;   // already told him this
-  // Trainers poking their own profile shouldn't file notes against themselves.
-  try{ if(isTrainer(cl.code)) return; }catch(e){}
   // PRIVATE, not coaching, and that is the whole point of this line.
   //
   // These went out as coaching notes on 2026-08-05 and immediately did damage: the
@@ -25135,14 +25133,24 @@ async function _pnSend(){
   // belongs: it reaches Yusuf's own notes for that client, it can never take the
   // summary slot, and the database's share guard refuses to send a private note to a
   // client, which is right for a line no one wrote for them.
-  var row={client_code:cl.code, note:_cnMark(_pnWord(from,now),'private'),
+  await _pnFile(_pnWord(from,now));
+  _pnLast=now;
+}
+// The one way anything in this app files a note to Yusuf about what a client did.
+// Everything above and below goes through here so the guards can't be forgotten at a
+// new call site: trainers never file against themselves, notes are always PRIVATE,
+// and a write that doesn't land is queued rather than dropped — a note nobody
+// receives is the same as the feature not existing.
+async function _pnFile(text){
+  text=String(text||'').trim();
+  if(!text || !cl) return false;
+  try{ if(isTrainer(cl.code)) return false; }catch(e){}
+  var row={client_code:cl.code, note:_cnMark(text,'private'),
            logged_at:new Date().toISOString()};
   var ok=false;
   try{ ok=!!(await sbInsert('client_notes', row)); }catch(e){ ok=false; }
-  // A false here means Yusuf simply never hears about it, which is the entire point
-  // of the feature. Queue it for replay rather than dropping it on the floor.
   if(!ok){ try{ sqPush('client_notes', row, 'POST'); }catch(e){} }
-  _pnLast=now;
+  return ok;
 }
 
 function gpSetPhase(k){
@@ -25358,6 +25366,8 @@ async function pgRemoveDo(){
   var d=_pgSetsAt.d, i=_pgSetsAt.i;
   if(!_pgPlan || !_pgPlan[d] || !_pgPlan[d].ex || !_pgPlan[d].ex[i]) return;
   _tpPlan=_pgPlan;
+  var _gone=_tpPlan[d].ex[i];
+  var _note='Removed '+((_gone&&_gone.n)||'an exercise')+' from '+_pgDayName(d)+'.';
   _tpPlan[d].ex.splice(i,1);
   _pgSetsAt=null;
   pgRemoveCancel();
@@ -25365,7 +25375,7 @@ async function pgRemoveDo(){
   // An empty training day is allowed — it still opens, and the library is right
   // there inside it. Turning it into a rest day would change the split, which is
   // Yusuf's call and not something a delete should decide on someone's behalf.
-  await pgSavePlan('Taking that exercise out');
+  await pgSavePlan('Taking that exercise out', _note);
 }
 function pgSetsNudge(d){
   var el=document.getElementById('pgSetsN'); if(!el) return;
@@ -25381,11 +25391,14 @@ function pgSetsSave(){
   if(!(ns>0&&ns<=12)){ if(err) err.textContent='Sets needs to be between 1 and 12.'; return; }
   if(!nr){ if(err) err.textContent='Give it a rep target \u2014 a number, a range, or AMRAP.'; return; }
   var e=_pgPlan[_pgSetsAt.d].ex[_pgSetsAt.i];
+  var _was=_pgSetsWord(e), _now=ns+'\u00d7'+nr;
+  var _note=(_was===_now) ? '' :
+    ('Changed '+e.n+' on '+_pgDayName(_pgSetsAt.d)+' from '+_was+' to '+_now+'.');
   _tpPlan=_pgPlan;
   _tpPlan[_pgSetsAt.d].ex[_pgSetsAt.i]={n:e.n, s:ns, r:nr, c:e.c, v:e.v};
   _pgSetsAt=null;
   closeM('mPgSets');
-  pgSavePlan('Your sets and reps change');
+  pgSavePlan('Your sets and reps change', _note);
 }
 // ---- the library. Reading only: nothing in here edits a program. ----
 function pgOpenLib(){ try{ var q=document.getElementById('pgLibSearch'); if(q) q.value=''; }catch(e){} pgLibRender(); openM('mPgLib'); }
@@ -25424,6 +25437,12 @@ function pgLibRender(){
 // Not offered on rest days. Turning a rest day into a training day changes the split,
 // and the split is Yusuf's call — the same reason clients can't reorder their week.
 var _pgAddDay=null;
+// Notes read to a person, so days are named rather than keyed.
+function _pgDayName(dk){
+  try{ var i=WEEKDAYS.indexOf(dk); return (i>-1 && PG_WEEKDAY_FULL[i]) ? PG_WEEKDAY_FULL[i] : String(dk); }
+  catch(e){ return String(dk); }
+}
+function _pgSetsWord(e){ return (e&&e.s?e.s:'')+'\u00d7'+String((e&&e.r)||''); }
 function pgAddOpen(dayKey){
   if(!_pgPlan || !_pgPlan[dayKey]) return;
   if(_pgPlan[dayKey].type==='Rest') return;
@@ -25497,12 +25516,13 @@ async function pgAddPick(enc){
   });
   if(dupe){ _pgAddDay=null; closeM('mTpPick'); return; }
   _tpPlan[dk].ex.push({n:x.n, s:(x.s||3), r:(x.r||'8'), c:x.c, v:x.v});
+  var _note='Added '+x.n+' to '+_pgDayName(dk)+'.';
   _pgAddDay=null;
   closeM('mTpPick');
   // pgSavePlan reads the row back and only reports ok when it matches, so a failure
   // here raises the same standing warning a failed swap does rather than a toast that
   // disappears before anyone reads it.
-  await pgSavePlan('Your new exercise');
+  await pgSavePlan('Your new exercise', _note);
 }
 function pgSwap(dayKey, i){
   if(!_pgPlan || !_pgPlan[dayKey]) return;
@@ -25516,7 +25536,11 @@ function pgSwap(dayKey, i){
 // `what` names the thing that failed, because three different actions save through
 // here and "your exercise swap didn't reach the server" is simply untrue after you
 // added a movement or changed a rep target.
-async function pgSavePlan(what){
+// `note` is what Yusuf gets told, and it is filed ONLY after the write is confirmed.
+// Telling him "they swapped squats for leg press" when the swap never reached the
+// server would put a change on his card that isn't in the program — worse than
+// silence, because he'd coach off it.
+async function pgSavePlan(what, note){
   var why=(what||'That change')+' didn\u2019t reach the server. This screen is showing the '
         + 'change, but next week will still use the old one.';
   try{
@@ -25526,6 +25550,7 @@ async function pgSavePlan(what){
       try{ window._tlCache=null; }catch(e){}
       _gpSetSaveState('ok');
       try{ showToast('Saved to your program'); }catch(e){}
+      try{ if(note) _pnFile(note); }catch(e){}
     } else {
       _gpSetSaveState('failed', why);
     }
@@ -25591,8 +25616,23 @@ function renderProgramTab(){
     if(oldTile) oldTile.style.display='none';
   }catch(e){}
 }
+// The fifth client-initiated program edit. Unlike the other four this one is a row of
+// chips, so tapping 4-5-6 to see what each week looks like is one change of mind, not
+// three — it settles first, the way a phase change does, and reports where they landed.
+var _pnDaysFrom=null, _pnDaysTimer=null;
+function _pnDaysSettle(){
+  _pnDaysTimer=null;
+  var from=_pnDaysFrom; _pnDaysFrom=null;
+  var now=parseInt((profile||{}).train_days,10);
+  if(!(now>0) || from===now) return;               // landed back where they started
+  _pnFile(from>0 ? ('Changed their training week from '+from+' days to '+now+'.')
+                 : ('Set their training week to '+now+' days.'));
+}
 function gpSetDays(n){
   var prev=parseInt(profile.train_days,10);
+  if(_pnDaysFrom===null) _pnDaysFrom=(prev>0?prev:0);   // the count at the START of the burst
+  if(_pnDaysTimer) clearTimeout(_pnDaysTimer);
+  _pnDaysTimer=setTimeout(_pnDaysSettle, 4000);
   profile.train_days=n; profile.train_days_manual=1;
   // Changing days changes which splits fit, so a key from the old count can't stand.
   // A different number of days is a different week; the old arrangement can't carry over.
@@ -26583,6 +26623,7 @@ function tpSwapPick(enc){
   var i=window._tpSwapIdx;
   if(_tpPickDay==null||i==null||!x) return;
   var old=_tpPlan[_tpPickDay].ex[i];
+  var _note='Swapped '+old.n+' for '+x.n+' on '+_pgDayName(_tpPickDay)+'.';
   _tpPlan[_tpPickDay].ex[i]={n:x.n,s:old.s,r:old.r,c:x.c,v:x.v};
   window._tpSwapIdx=null;
   closeM('mTpPick');
@@ -26590,7 +26631,7 @@ function tpSwapPick(enc){
   // toast waits on the write rather than claiming success up front.
   if(window._pgSwapping){
     window._pgSwapping=false;
-    try{ pgSavePlan('Your exercise swap'); }catch(e){}
+    try{ pgSavePlan('Your exercise swap', _note); }catch(e){}
     return;
   }
   renderTrainingBuilder();
