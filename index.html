@@ -1419,6 +1419,12 @@ body.bfTyping #jimFab{display:none !important;}
 .bfAdd{font-size:12.5px;font-weight:700;color:var(--muted);padding:9px 0 3px;cursor:pointer;}
 /* The pill row's own label, twin of Working sets — it carries the divider now
    so the question and its answers read as one block. */
+/* Which one you actually used. Small, quiet, optional — a record, not a control
+   the card leans on. Selected fills gold because a tap is an action taken. */
+.bfEquip{display:flex;gap:6px;flex-wrap:wrap;row-gap:6px;margin-top:5px;}
+.bfEq{font-size:10.5px;font-weight:700;color:rgba(240,236,228,0.6);cursor:pointer;
+  background:transparent;border:1px solid rgba(255,255,255,0.13);border-radius:999px;padding:4px 10px;}
+.bfEq.on{background:var(--gold);color:var(--onaccent);border-color:var(--gold);font-weight:800;}
 .bfConn{font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;
   color:rgba(240,236,228,0.6);margin-top:11px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.07);}
 .bfPills{display:flex;gap:8px;margin-top:8px;}
@@ -14211,6 +14217,29 @@ function bfRemoveSet(day,i,k){
   tpPersistSets(day, e.n);
   renderDayTimeline(true);
 }
+// ===== WHICH ONE DID YOU ACTUALLY USE ====================================
+// Several movements are written as a choice ("Any variation: dumbbell,
+// machine, or smith"). The card can ask which one it was — one tap, entirely
+// optional, and it feeds nothing but the record. An exercise whose v is an
+// instruction rather than a choice ("Go heavy", "Barbell ideal") gets no pills.
+function _bfEquipOpts(e){
+  var v=String((e&&e.v)||'').trim();
+  if(!v) return [];
+  var m=v.match(/^\s*any\s+(?:variation|grip)\s*:\s*(.+)$/i);
+  if(!m) return [];
+  return m[1].split(/\s*,\s*|\s+or\s+/i)
+    .map(function(s){ return s.replace(/^or\s+/i,'').trim(); })
+    .filter(function(s){ return s && s.length<20; });
+}
+function _bfEquipOf(ds, ex){
+  try{ return (_woDraft(ds).equip||{})[ex]||''; }catch(e){ return ''; }
+}
+function bfEquip(ds, ex, val){
+  var d=_woDraft(ds); d.equip=d.equip||{};
+  if(d.equip[ex]===val) delete d.equip[ex]; else d.equip[ex]=val;   // tapping it again clears it
+  _woSaveDraft(ds,d);
+  renderDayTimeline(true);
+}
 // One tap per exercise. Tapping the same pill again clears it — unanswered is fine.
 function bfFeel(ds, ex, v){
   var d=_woDraft(ds); d.feel=d.feel||{};
@@ -14222,8 +14251,26 @@ function bfFeel(ds, ex, v){
 // templated exercise already lives under its muscle group in EX_LIB. A custom
 // exercise the library doesn't know is banked under its own name so nothing is
 // lost; Jim learns to classify those next.
+// Finishers live in their own library, so the map would have banked them as
+// custom "ex:" rows. These are the groups they genuinely belong to, using only
+// keys the Connection Map contract already knows. Forearm work is deliberately
+// absent: the library has no Forearms group, and filing it under Biceps would
+// tell the map something untrue — those bank as ex: rows until Yusuf rules.
+var FIN_GROUP={
+  'Neck extensions':'Neck', 'Neck bridges':'Neck',
+  'Decline sit-ups':'Core', 'Cross-body sit-ups':'Core', 'Hanging leg raises':'Core',
+  'Calf raises, deep stretch':'Legs'
+};
 function _bfGroupOf(name){
   try{ for(var k in EX_LIB){ for(var i=0;i<EX_LIB[k].length;i++){ if(EX_LIB[k][i].n===name) return k; } } }catch(e){}
+  if(FIN_GROUP[name]) return FIN_GROUP[name];
+  // Same movement, different capitalisation, is the same movement — the finisher
+  // list writes "Decline sit-ups" where the library writes "Decline Sit-Ups".
+  try{
+    var lc=String(name||'').toLowerCase();
+    for(var k2 in EX_LIB){ for(var j=0;j<EX_LIB[k2].length;j++){ if(String(EX_LIB[k2][j].n).toLowerCase()===lc) return k2; } }
+    for(var f in FIN_GROUP){ if(f.toLowerCase()===lc) return FIN_GROUP[f]; }
+  }catch(e){}
   return null;
 }
 function _bfExCard(day,i,e,ds,dr){
@@ -14258,7 +14305,16 @@ function _bfExCard(day,i,e,ds,dr){
         // What the movement is FOR, from the same dictionary that feeds the map.
         // The card teaches the target; the pills ask whether it showed up.
         +(function(){ var g=_bfGroupOf(e.n); return g?('<div class="bfPlan">'+_escHtml(String(g).toLowerCase())+'</div>'):''; })()
-        +(_v?'<div class="bfPlan" style="color:var(--m2);">'+_escHtml(_v)+'</div>':'')
+        // The equipment line becomes tappable pills when it names a choice —
+        // otherwise it stays the plain instruction it always was.
+        +(function(){
+            var opts=_bfEquipOpts(e);
+            if(!opts.length) return _v?('<div class="bfPlan" style="color:var(--m2);">'+_escHtml(_v)+'</div>'):'';
+            var cur=_bfEquipOf(ds, e.n);
+            return '<div class="bfEquip">'+opts.map(function(o){
+              return '<span class="bfEq'+(cur===o?' on':'')+'" data-tl="bfequip" data-ds="'+_escHtml(ds)+'" data-ex="'+_escHtml(e.n)+'" data-v="'+_escHtml(o)+'">'+_escHtml(o)+'</span>';
+            }).join('')+'</div>';
+          })()
         +'<div class="bfPlan">'+e.s+' × '+_escHtml(String(e.r||''))+' reps</div>'
       +'</div>'
       +'<span class="bfMini" onclick="event.stopPropagation();tpSwapOpen(\''+day+'\','+i+')">Swap</span>'
@@ -15315,11 +15371,15 @@ function tlLogInlineWorkout(ds){
     if(_isTodayDs){ exs.forEach(function(e,i){ if(_wdKey){ _bfMaterialize(_wdKey, i); tpPersistSets(_wdKey, e.n); } }); }
   }catch(e){}
   var lines=exs.map(function(e){
-    if(!_isTodayDs) return e.n+' \u2014 '+(e.s||'')+(e.r?(' \u00d7 '+e.r):'');
+    // "Chest Press \u00b7 machine" when they said which one \u2014 the name carries it, so
+    // every read-back that prints the name gets it for free.
+    var _eq=''; try{ _eq=_bfEquipOf(ds, e.n); }catch(_){}
+    var nm=e.n+(_eq?(' \u00b7 '+_eq):'');
+    if(!_isTodayDs) return nm+' \u2014 '+(e.s||'')+(e.r?(' \u00d7 '+e.r):'');
     var L=[]; try{ L=(_tpToday&&_tpToday[e.n])||[]; }catch(_){}
     var sets=L.filter(function(x){ return x&&(x.w||x.r); }).map(function(x){ return (x.w? (x.w+' lb \u00d7 '+(x.r||e.r)) : (x.r+' reps')); });
-    if(sets.length) return e.n+': '+sets.join(', ');
-    return e.n+' \u2014 '+(e.s||'')+(e.r?(' \u00d7 '+e.r):'');
+    if(sets.length) return nm+': '+sets.join(', ');
+    return nm+' \u2014 '+(e.s||'')+(e.r?(' \u00d7 '+e.r):'');
   });
   var desc=lines.join('\n')+(dr.note?('\n\n'+dr.note):'');
   // The connection record: the pills, translated to audit language — felt it,
@@ -15634,6 +15694,7 @@ function _tlBindTaps(){
     if(a==='bfadd'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfAddSet(el.getAttribute('data-day'), +el.getAttribute('data-i')); return; }
     if(a==='bfrm'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfRemoveSet(el.getAttribute('data-day'), +el.getAttribute('data-i'), +el.getAttribute('data-k')); return; }
     if(a==='bffeel'){ ev.stopPropagation(); bfFeel(el.getAttribute('data-ds'), el.getAttribute('data-ex'), el.getAttribute('data-v')); return; }
+    if(a==='bfequip'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfEquip(el.getAttribute('data-ds'), el.getAttribute('data-ex'), el.getAttribute('data-v')); return; }
     if(a==='freestyle'){ ev.stopPropagation(); try{ openFreestyleWorkout(); }catch(e){} return; }
     if(a==='progtog'){ ev.stopPropagation(); tlToggleProgram(el.getAttribute('data-ds')); return; }
     if(a==='wotimeset'){ ev.stopPropagation(); openWoTime(el.getAttribute('data-ds')); return; }
@@ -38545,6 +38606,21 @@ function _tpFinBlock(day, ds) {
         + (done ? '<span style="font-size:10px;font-weight:800;color:rgba(240,236,228,0.55);flex-shrink:0;">done</span>' : '')
         + (canEdit ? ('<div onclick="event.stopPropagation();tpFinRemove(\'' + day + '\',' + i + ')" style="flex-shrink:0;color:rgba(240,236,228,0.78);font-size:17px;cursor:pointer;padding:0 2px;">\u00d7</div>') : '')
         + '</div>';
+      // A finished finisher asks the same question every exercise asks. Cardio
+      // does not \u2014 there is no muscle to have felt. The pills carry the finisher's
+      // own name, so they ride the existing draft.feel map straight into the
+      // connection row on Complete with no separate plumbing.
+      if (done && ds && it.cat !== 'cardio') {
+        var _ffeel = '';
+        try { _ffeel = ((_woDraft(ds).feel) || {})[it.ex] || ''; } catch (e) {}
+        h += '<div class="bfConn" style="margin-top:12px;">Connection</div>'
+          + '<div class="bfPills">'
+          + [['not','Low'],['ok','Moderate'],['tore','High']].map(function (p, pi) {
+              return '<div class="bfPill s' + pi + (_ffeel === p[0] ? ' on' : '') + (p[0] === 'tore' ? ' tore' : '')
+                + '" data-tl="bffeel" data-ds="' + _escHtml(ds) + '" data-ex="' + _escHtml(it.ex) + '" data-v="' + p[0] + '">' + p[1] + '</div>';
+            }).join('')
+          + '</div>';
+      }
       if (it.cat === 'cardio' && ds) {
         h += '<div style="display:flex;gap:5px;margin-top:9px;padding-left:30px;">' + CARDIO_MINS.map(function (m) {
           return '<span onclick="event.stopPropagation();tpFinMinDs(\'' + day + '\',' + i + ',\'' + ds + '\',' + m + ')" '
