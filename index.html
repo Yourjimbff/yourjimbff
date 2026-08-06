@@ -408,6 +408,10 @@ body.m-soft{overflow:hidden;}
 .cp{position:absolute;border-radius:2px;animation:cf linear forwards;}
 @keyframes cf{0%{opacity:1;transform:translateY(-10px) rotate(0);}100%{opacity:0;transform:translateY(110vh) rotate(720deg);}}
 .toast{position:fixed;top:78px;left:50%;transform:translateX(-50%) translateY(-8px);background:#111;color:#f0ece4;padding:10px 20px;border-radius:20px;font-size:13px;font-weight:600;opacity:0;transition:all 0.25s;z-index:100000;pointer-events:none;max-width:360px;text-align:center;white-space:nowrap;}
+/* The feed's day heading. This rule is exactly the inline style it replaced, so the
+   mobile Activity page is unchanged; the desktop owned block is the only override.
+   The time part is a plain span on mobile and only becomes a separate size there. */
+.fdDay{font-size:11px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:var(--gold);margin:4px 0 9px;}
 
 
 /* ==========================================================================
@@ -575,6 +579,38 @@ body.jv-on .jvSODue{font-size:11px;color:rgba(240,236,228,0.62);margin-top:2px;}
 body.jv-on .jvSOAmt{font-size:13px;font-weight:400;color:#f0ece4;font-variant-numeric:tabular-nums;white-space:nowrap;}
 body.jv-on .jvSEmpty{font-size:12.5px;color:rgba(240,236,228,0.62);padding:6px 0;line-height:1.5;}
 body.jv-on .jvSEmptyBig{background:#111;border:1px solid #232323;border-radius:16px;padding:22px;font-size:13px;color:rgba(240,236,228,0.78);line-height:1.55;}
+/* -- THE STACKING TRAP. #jarvisDesktop is position:fixed with an OPAQUE background at
+      z-index 5000, and every overlay in this app was written for the phone at a far
+      lower layer: modals sit at 200, the feed detail sheet at 1200. On the trainer
+      desktop they all open correctly — display:flex, real geometry — and paint
+      entirely BEHIND the cockpit. That is why Comment "did nothing": the sheet, its
+      comment box and its Send button were all there, under an opaque panel.
+      Make a sale was unreachable on desktop for the same reason.
+      Raised above the deep-dive panel (6001) so a modal opened from inside it still
+      lands on top. Scoped to jv-on, so the phone keeps its own layering untouched.
+      The detail sheet also carries its z-index INLINE, which beats a stylesheet rule
+      outright, so it is set in feedOpenDetail too; this rule is the belt to that. */
+body.jv-on .mbg{z-index:7000;}
+body.jv-on .gbg{z-index:7000;}
+body.jv-on #feedDetailOverlay{z-index:7001 !important;}
+
+/* -- DAY HIERARCHY. The day heading and a card's own text were within 2px of each
+      other, so crossing midnight registered as nothing. The heading is now the
+      loudest thing in the feed: day > card header > card content. Full-strength
+      text rather than gold — gold means action here, and a 22px gold banner reads
+      as a button. The rule line is what makes the boundary unmistakable when it
+      enters the viewport. Mobile keeps the original small gold label: .fdDay's base
+      rule is byte-for-byte the old inline style, and only this block overrides it. */
+body.jv-on .fdDay{
+  font-size:22px;font-weight:800;letter-spacing:-0.2px;text-transform:none;
+  color:#f0ece4;margin:26px 0 14px;padding-bottom:11px;
+  border-bottom:1px solid rgba(240,236,228,0.14);display:flex;align-items:baseline;gap:10px;
+}
+body.jv-on .fdDay:first-child{margin-top:2px;}
+body.jv-on .fdDay .fdDayWhen{font-size:12.5px;font-weight:600;letter-spacing:0.3px;
+  text-transform:uppercase;color:rgba(240,236,228,0.55);}
+/* the flex gap does the separating here; the dot is only for the phone's single line */
+body.jv-on .fdDay .fdDaySep{display:none;}
 /* ---- END OWNED BLOCK — TRAINER DESKTOP FEED ---------------------------- */
 
 /* ============ JARVIS DESKTOP ============ */
@@ -7838,6 +7874,20 @@ function _feedDayLabel(d){
   var wk=dd.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
   if(diff===0) return 'Today · '+wk; if(diff===1) return 'Yesterday · '+wk; return wk;
 }
+// Same words, split into parts so the desktop can make the day the loudest thing on
+// the page while the phone still renders one small gold line. The separator is a real
+// span rather than flex gap, because on mobile the three spans have to read as the
+// single "TODAY · THU, AUG 6" string they always were.
+function _feedDayLabelHtml(d){
+  if(!d) return '';
+  var now=new Date(); now.setHours(0,0,0,0); var dd=new Date(d); dd.setHours(0,0,0,0);
+  var diff=Math.round((now-dd)/86400000);
+  var wk=dd.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+  var main = diff===0 ? 'Today' : (diff===1 ? 'Yesterday' : wk);
+  var when = (diff===0||diff===1) ? wk : '';
+  return '<span class="fdDayMain">'+main+'</span>'
+    + (when ? '<span class="fdDaySep"> · </span><span class="fdDayWhen">'+when+'</span>' : '');
+}
 // A naive Postgres timestamp needs a Z to be read as UTC — but one that already
 // carries an offset must be left alone. The old test only looked for Z or +, so
 // a negative offset ("...-04:00") got a Z stapled on, became NaN, fell through to
@@ -7952,11 +8002,8 @@ async function loadTrainerFeed(targetId){
     photos.forEach(function(ph){ var c=ph.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(ph),kind:'photo',code:c,data:ph}); });
     moments.forEach(function(m){ items.push({ts:m.ts,kind:'moment',data:m}); });
     journals.forEach(function(j){ var c=j.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(j),kind:'journal',code:c,data:j}); });
-    // One feed, one width. Priority clients sort to the top of each day and get a
-    // gold edge; everyone else follows in time order underneath. Same card, same
-    // size — first class and economy on the same plane, not a separate cabin.
-    // Day order still wins over priority, because a feed that isn't chronological
-    // across days stops telling you what happened.
+    // One feed, one width, one ordering key: time. Same card, same size for everyone —
+    // no priority lane, no gold edge, nothing that quietly reorders the clock.
     // Client filters apply to the DESKTOP feed only; the phone keeps its own controls.
     if(_dtk){ try{ items=items.filter(function(it){ return !it.code || _jvPassesFilters(it.code); }); }catch(e){} }
     items.sort(function(a,b){ return b.ts-a.ts; });
@@ -7992,13 +8039,15 @@ async function loadTrainerFeed(targetId){
     }
     if(!items.length){ holder.innerHTML=html+(_dtk?'':'<div style="padding:30px 20px;text-align:center;color:var(--muted);font-size:13px;">Nothing here yet.</div>'); return; }
     dayKeys.forEach(function(k){
-      html+='<div style="font-size:11px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:var(--gold);margin:4px 0 9px;">'+_feedDayLabel(new Date(k))+'</div>';
-      // priority to the top of the day, then newest first within each group
-      dayMap[k].sort(function(a,b){
-        var pa=_isPriorityClient(a.code)?1:0, pb=_isPriorityClient(b.code)?1:0;
-        if(pa!==pb) return pb-pa;
-        return b.ts-a.ts;
-      });
+      html+='<div class="fdDay">'+_feedDayLabelHtml(new Date(k))+'</div>';
+      // STRICT NEWEST FIRST. This used to hoist "priority" clients to the top of every
+      // day before time was considered. The gold band that marked them was removed
+      // because the list driving it is stale — half its codes have no client row and
+      // ten people genuinely in term were never in it — but the SORT it fed was left
+      // behind. So the feed was being reordered, invisibly, by a list already judged
+      // wrong more often than right: that is why related things scattered and why the
+      // order never quite tracked the clock. Time is the only key now.
+      dayMap[k].sort(function(a,b){ return b.ts-a.ts; });
       // Each DAY is a full-width band; the cards inside it flow into columns. Running
       // one masonry over the whole feed would strand a day heading halfway down column
       // two, next to cards from a different day.
@@ -8030,7 +8079,12 @@ function feedOpenDetail(idx){
       if(!window._reviewedMap[_mk]){ window._reviewedMap[_mk]={seen:true}; if(typeof sbInsert==='function') sbInsert('reviews',{client_code:code,author_code:(cl&&cl.code),kind:_ak,ref_id:String(_aid),reaction:'seen',comment:null,seen:false}); }
       var _rvEl=document.getElementById('feedRv'+idx); if(_rvEl){ _rvEl.style.color='#f5c518'; _rvEl.style.borderColor='#f5c518'; } } }catch(e){}
   var o=document.getElementById('feedDetailOverlay');
-  if(!o){ o=document.createElement('div'); o.id='feedDetailOverlay'; o.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.78);z-index:1200;display:flex;align-items:flex-end;justify-content:center;'; o.onclick=function(e){ if(e.target===o) feedCloseDetail(); }; document.body.appendChild(o); }
+  // z-index 7001, not the old 1200: the desktop cockpit is a fixed, OPAQUE panel at
+  // 5000, so this sheet used to open perfectly and paint entirely behind it. That is
+  // what "comment does nothing" was — the box and its Send button were on the page the
+  // whole time, underneath. Above #jvDeep (6001) too, so it still works from there.
+  if(!o){ o=document.createElement('div'); o.id='feedDetailOverlay'; o.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.78);z-index:7001;display:flex;align-items:flex-end;justify-content:center;'; o.onclick=function(e){ if(e.target===o) feedCloseDetail(); }; document.body.appendChild(o); }
+  else { o.style.zIndex='7001'; }   // an overlay built before this fix keeps the old value
   o.style.display='flex';
   var when=_feedTimeStr(it.ts); var dateLbl=''; try{ dateLbl=new Date(it.ts).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}); }catch(e){}
   var body='';
@@ -8194,6 +8248,54 @@ function _feedActIcon(it){
   if(it.kind==='photo') return S+'<path d="M3 8.5a2 2 0 0 1 2-2h1.6L8.2 4.5h7.6L17.4 6.5H19a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="12" cy="12.7" r="3.2" stroke="currentColor" stroke-width="1.6"/>'+E;
   return '';
 }
+// ===== THE LIKE BUTTON =====
+// One definition of what a like looks like, used by the first render AND by the
+// optimistic update. They were bound to drift if written twice, and a like that
+// looks different before and after the write is exactly the bug being fixed.
+var JV_LIKE_ON_STYLE='color:#ff3b30;border-color:#404040;';
+var _JV_HEART_OUTLINE='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" style="vertical-align:-2px;"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
+var _JV_HEART_FILLED='<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-2px;"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>';
+// The red heart is the single styled exception to gold-for-action-only, kept because
+// Yusuf ruled the heart stays. The time rides inside the button at a smaller, muted
+// size so the pill still reads as one control rather than two pieces of text.
+function _jvLikePillInner(liked, timeStr){
+  if(!liked) return _JV_HEART_OUTLINE+' Like';
+  return _JV_HEART_FILLED+' Liked'
+    + (timeStr ? '<span class="jvLikeWhen" style="color:rgba(240,236,228,0.55);font-weight:600;font-size:10px;"> · '+timeStr+'</span>' : '');
+}
+// Repaint one like button in place. Returns nothing; it is a pure DOM update so it
+// can run before the network call and be undone if the write does not land.
+function _jvPaintLikePill(pill, liked, timeStr){
+  if(!pill) return;
+  var base=pill.getAttribute('data-basestyle');
+  if(base==null){ base=pill.getAttribute('style')||''; base=base.replace(JV_LIKE_ON_STYLE,''); pill.setAttribute('data-basestyle', base); }
+  pill.setAttribute('style', base + (liked?JV_LIKE_ON_STYLE:''));
+  pill.innerHTML=_jvLikePillInner(liked, timeStr);
+  pill.title = liked ? 'Tap to unlike' : 'Like';
+  var k=pill.getAttribute('data-kind'), r=pill.getAttribute('data-ref'), c=pill.getAttribute('data-code');
+  pill.onclick = function(e){
+    if(e && e.stopPropagation) e.stopPropagation();
+    if(liked) jvUnlike(k,r,c,pill); else quickReact(k,r,c,'like',pill);
+  };
+}
+// A failed save must not look like a save. This sits on the card and stays there —
+// a toast is gone in under three seconds and the button would be left lying.
+function _jvLikeFailed(pill, msg){
+  if(!pill) return;
+  var row=pill.parentNode; if(!row) return;
+  var card=row; while(card && !card.classList.contains('feedCard')) card=card.parentNode;
+  var host=card?card.querySelector('.fcExtra'):null; if(!host) host=row;
+  var old=host.querySelector('.jvLikeErr'); if(old) old.parentNode.removeChild(old);
+  var d=document.createElement('div');
+  d.className='jvLikeErr';
+  d.style.cssText='font-size:11px;font-weight:700;color:#ff4455;margin-top:6px;line-height:1.4;';
+  d.textContent=msg||'That like did not save. Tap to try again.';
+  host.appendChild(d);
+}
+function _jvClearLikeErr(pill){
+  try{ var card=pill; while(card && !card.classList.contains('feedCard')) card=card.parentNode;
+    var e=card?card.querySelector('.jvLikeErr'):null; if(e) e.parentNode.removeChild(e); }catch(_){}
+}
 function _revTimeStr(v){ if(!v) return ''; try{ var d=new Date(/[Z+]/.test(v)?v:v+'Z'); if(isNaN(d.getTime())) return ''; var now=new Date(); var sd=d.toDateString()===now.toDateString(); return (sd?'':d.toLocaleDateString('en-US',{month:'short',day:'numeric'})+', ')+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }catch(e){ return ''; } }
 function _feedItemHtml(it){
   if(it.kind==='moment'){
@@ -8257,7 +8359,10 @@ function _feedItemHtml(it){
   var _txtPill = phone ? ('<span onclick="event.stopPropagation();textClient(\''+code+'\')" title="Text" style="'+_pill+'">'+_icP+' Text</span>') : '<span style="flex:1;" aria-hidden="true"></span>';
   var _rmk=(window._reviewedMap&&window._reviewedMap[_rk+':'+_rid])||null;
   var _seenD=!!(_rmk&&(_rmk.seen||_rmk.comment)); var _likeD=!!(_rmk&&_rmk.like);
-  var _vSt=_pill+(_seenD?'color:#f5c518;border-color:#f5c518;':''); var _lSt=_pill+(_likeD?'color:#ff3b30;border-color:#404040;':'');
+  // The like time is read here, not down by the old floating label, because the
+  // liked state now lives inside the button and nowhere else.
+  var _likeT=(_rmk&&_rmk.like_ts)?_revTimeStr(_rmk.like_ts):'';
+  var _vSt=_pill+(_seenD?'color:#f5c518;border-color:#f5c518;':''); var _lSt=_pill+(_likeD?JV_LIKE_ON_STYLE:'');
   var _canRepost = (it.kind==='food' && it.data && it.data.photo && it.data.id!=null);
   if(_canRepost){ try{ window._jvRepostCache=window._jvRepostCache||{}; window._jvRepostCache[it.data.id]=it.data; }catch(e){} }
   var _icR='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" style="vertical-align:-2px;"><path d="M17 1l4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 11V9a4 4 0 0 1 4-4h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 23l-4-4 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 13v2a4 4 0 0 1-4 4H3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -8272,9 +8377,10 @@ function _feedItemHtml(it){
       : '<span onclick="event.stopPropagation();jvRepostMeal(\''+it.data.id+'\',\''+code+'\',this)" title="Repost to the client feed" style="'+_pill+'">'+_icR+' Repost</span>'
   ) : '';
   var actRow = _rk ? ('<div class="jvActRow" style="display:flex;gap:6px;margin-top:11px;flex-wrap:wrap;">'
-    +'<span class="jvLikePill" onclick="event.stopPropagation();'+(_likeD
+    +'<span class="jvLikePill" data-kind="'+_rk+'" data-ref="'+_rid+'" data-code="'+code+'"'
+      +' onclick="event.stopPropagation();'+(_likeD
         ? ('jvUnlike(\''+_rk+'\',\''+_rid+'\',\''+code+'\',this)')
-        : ('quickReact(\''+_rk+'\',\''+_rid+'\',\''+code+'\',\'like\',this)'))+'" title="'+(_likeD?'Tap to unlike':'Like')+'" style="'+_lSt+'">'+(_likeD?_icHf:_icH)+' '+(_likeD?'Liked':'Like')+'</span>'
+        : ('quickReact(\''+_rk+'\',\''+_rid+'\',\''+code+'\',\'like\',this)'))+'" title="'+(_likeD?'Tap to unlike':'Like')+'" style="'+_lSt+'">'+_jvLikePillInner(_likeD,_likeT)+'</span>'
     +'<span onclick="event.stopPropagation();feedOpenDetail('+it._idx+')" title="Comment" style="'+_pill+'">'+_icC+' Comment</span>'
     +_txtPill+_repostPill+'</div>')
     : (phone ? ('<div class="jvActRow" style="display:flex;gap:6px;margin-top:11px;">'+_txtPill+'</div>') : '');
@@ -8298,7 +8404,10 @@ function _feedItemHtml(it){
   // the one that survives. Nothing here is deleted; it is simply no longer emitted.
   var woHtml='';
   var _verb = it.kind==='food'?((it.data&&it.data._groupCount>1)?('logged '+it.data._groupCount+' foods'):'logged a meal'):(it.kind==='wo'?'logged a workout':(it.kind==='weight'?'logged a weigh-in':(it.kind==='photo'?'shared a progress photo':'logged something')));
-  var _likeT=(_rmk&&_rmk.like_ts)?_revTimeStr(_rmk.like_ts):''; var _likeLabel = _likeD ? '<div style="font-size:11.5px;color:#ff3b30;font-weight:700;margin-top:10px;">'+_icHf+' Yusuf liked this'+(_likeT?'<span style="color:var(--muted);font-weight:600;"> \u00b7 '+_likeT+'</span>':'')+'</div>' : '';
+  // The "Yusuf liked this \u00b7 5:57 PM" line that used to sit here is gone. A like is a
+  // thing you DID, so it belongs in the control you did it with \u2014 not as a floating
+  // row above the badges that only appeared after a refresh. Removing it also gives
+  // the fixed 34px extras zone back to the comment, which was competing with it.
   var _myCmt = (_rmk && _rmk.comment_text) ? '<div style="margin-top:10px;display:flex;gap:8px;align-items:flex-start;"><div style="width:23px;height:23px;border-radius:50%;background:var(--gold);color:#000;font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;">Y</div><div style="min-width:0;"><div style="font-weight:800;color:#f0ece4;font-size:12.5px;">Yusuf'+((_rmk&&_rmk.comment_ts&&_revTimeStr(_rmk.comment_ts))?'<span style="color:var(--muted);font-weight:600;font-size:11px;"> \u00b7 '+_revTimeStr(_rmk.comment_ts)+'</span>':'')+'</div><div style="font-size:12.5px;line-height:1.45;color:#f0ece4;margin-top:1px;">'+String(_rmk.comment_text).replace(/</g,'&lt;')+'</div></div></div>' : '';
   return '<div class="feedCard '+(photoUrl?'feedCard--photo':'feedCard--text')+'" style="background:var(--s2);border:1px solid var(--border);border-radius:14px;padding:13px 14px;margin-bottom:9px;">'
     +'<div class="fcHead"'+(_rk?(' onclick="jvCardTap(this,\''+_rk+'\',\''+_rid+'\',\''+code+'\','+it._idx+')" ondblclick="event.stopPropagation();jvCardDbl(this,\''+_rk+'\',\''+_rid+'\',\''+code+'\')"'):'')+' style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;cursor:pointer;">'
@@ -8306,7 +8415,7 @@ function _feedItemHtml(it){
       +'<div class="fcTime" style="font-size:11px;color:var(--muted);white-space:nowrap;flex-shrink:0;">'+when+'</div>'
     +'</div>'
     +'<div'+(_rk?(' onclick="jvCardTap(this,\''+_rk+'\',\''+_rid+'\',\''+code+'\','+it._idx+')" ondblclick="event.stopPropagation();jvCardDbl(this,\''+_rk+'\',\''+_rid+'\',\''+code+'\')"'):'')+' class="fcBody" style="cursor:pointer;margin-top:8px;">'+line+'</div>'
-    +'<div class="fcExtra">'+rawHtml+woHtml+noteHtml+_likeLabel+_myCmt+'</div>'
+    +'<div class="fcExtra">'+rawHtml+woHtml+noteHtml+_myCmt+'</div>'
     +photoHtml+actRow
   +'</div>';
 }
@@ -16567,24 +16676,35 @@ function jvToggleSpeak(){
 // simply lost its handler, and nothing anywhere deleted the row. Deletes the like rows
 // this trainer wrote for that item, then confirms by reading back that none remain —
 // a DELETE that matched nothing returns 204 exactly like one that worked.
+// Optimistic in both directions: the button goes back to Like on tap, and the delete
+// is confirmed by reading back that nothing is left. The old version waited on the
+// network and then repainted the whole feed, so an unlike also felt like nothing
+// happened until the repaint landed.
 async function jvUnlike(kind, refId, code, el){
   if(!refId && refId!==0) return;
+  if(el){ if(el._busy) return; el._busy=true; }
+  var k=kind+':'+refId;
+  var prev=null;
+  try{ prev=(window._reviewedMap&&window._reviewedMap[k])?Object.assign({},window._reviewedMap[k]):null; }catch(e){}
+  try{ if(window._reviewedMap && window._reviewedMap[k]){ window._reviewedMap[k].like=false; delete window._reviewedMap[k].like_ts; } }catch(e){}
+  if(el){ _jvClearLikeErr(el); _jvPaintLikePill(el, false, ''); }
+  function _revert(msg){
+    try{ if(prev) window._reviewedMap[k]=prev; }catch(e){}
+    if(el){ _jvPaintLikePill(el, !!(prev&&prev.like), (prev&&prev.like_ts)?_revTimeStr(prev.like_ts):''); _jvLikeFailed(el, msg); el._busy=false; }
+    try{ showToast('Could not unlike that'); }catch(e){}
+  }
   var q='client_code=eq.'+encodeURIComponent(code)
        +'&kind=eq.'+encodeURIComponent(kind)
        +'&ref_id=eq.'+encodeURIComponent(String(refId))
        +'&reaction=eq.like';
   try{
     var res=await fetch(SB_URL+'/rest/v1/reviews?'+q, {method:'DELETE', headers:sbHeaders()});
-    if(!res.ok){ try{ showToast('Could not unlike that'); }catch(e){} return; }
+    if(!res.ok){ _revert('That unlike did not save. Tap to try again.'); return; }
     var left=await sbSelect('reviews','select=id&'+q+'&limit=1');
-    if(left && left.length){ try{ showToast('Could not unlike that'); }catch(e){} return; }
-  }catch(e){ try{ showToast('Could not unlike that'); }catch(e){} return; }
-  try{
-    var k=kind+':'+refId;
-    if(window._reviewedMap && window._reviewedMap[k]){ window._reviewedMap[k].like=false; delete window._reviewedMap[k].like_ts; }
-  }catch(e){}
+    if(left && left.length){ _revert('That unlike did not save. Tap to try again.'); return; }
+  }catch(e){ _revert('That unlike did not save. Tap to try again.'); return; }
+  if(el) el._busy=false;
   try{ showToast('Unliked'); }catch(e){}
-  _feedRepaint();
 }
 // Single click OPENS, on every surface. Whole-card-like ate opening on the desktop —
 // there was no way left to open a log at all. Double click still likes, for speed.
@@ -16603,40 +16723,118 @@ function jvCardLike(el, kind, refId, code){
     quickReact(kind, refId, code, 'like', pill||null);
   }catch(e){ console.error('jvCardLike',e); }
 }
+// OPTIMISTIC. The button flips to Liked the instant it is tapped and the write runs
+// behind it \u2014 liking used to change only the pill's colour, leave the word "Like" in
+// place, and never touch _reviewedMap, so the real state appeared only after a
+// reload. If the write does not land the button goes back to Like and says so on the
+// card, because a like that silently failed is worse than one that never happened.
 async function quickReact(kind, refId, code, reaction, el){
-  var _click=null;
+  var isLike=(reaction==='like');
+  var key=kind+':'+refId;
+  var nowIso=new Date().toISOString();
+  var prevMap=null, painted=false;
   if(el){
     if(el._busy) return;            // guard: ignore rapid repeat taps -> no duplicate likes
     el._busy=true;
-    var _c=(reaction==='like'?'#ff3b30':'#f5c518');
-    el.style.color=_c; el.style.borderColor=_c; el.style.cursor='default';   // instant feedback
-    try{ var _hsvg=el.querySelector&&el.querySelector('svg'); if(reaction==='like'&&_hsvg){ _hsvg.setAttribute('fill','currentColor'); } var _anim=_hsvg||el; if(reaction==='like'&&_anim){ _anim.style.animation='none'; void _anim.offsetWidth; _anim.style.animation='yjbHeartPop 0.45s cubic-bezier(0.2,0.9,0.3,1.4)'; } }catch(e){}
-    _click=el.onclick; el.onclick=function(e){ if(e) e.stopPropagation(); };
   }
-  function _undo(){ if(el){ el._busy=false; el.style.cursor='pointer'; el.onclick=_click; } }
+  if(isLike){
+    try{ prevMap=(window._reviewedMap&&window._reviewedMap[key])?Object.assign({},window._reviewedMap[key]):null; }catch(e){}
+    try{
+      if(!window._reviewedMap) window._reviewedMap={};
+      var e0=window._reviewedMap[key]||(window._reviewedMap[key]={});
+      e0.like=true; e0.like_ts=nowIso;
+    }catch(e){}
+    if(el){
+      _jvClearLikeErr(el);
+      _jvPaintLikePill(el, true, _revTimeStr(nowIso));
+      painted=true;
+      try{ var _hsvg=el.querySelector&&el.querySelector('svg');
+        if(_hsvg){ _hsvg.style.animation='none'; void _hsvg.offsetWidth; _hsvg.style.animation='yjbHeartPop 0.45s cubic-bezier(0.2,0.9,0.3,1.4)'; } }catch(e){}
+    }
+  } else if(el){
+    el.style.color='#f5c518'; el.style.borderColor='#f5c518'; el.style.cursor='default';
+  }
+  function _revert(msg){
+    try{
+      if(isLike){
+        if(prevMap) window._reviewedMap[key]=prevMap; else { try{ delete window._reviewedMap[key]; }catch(_){} }
+        if(painted && el) _jvPaintLikePill(el, !!(prevMap&&prevMap.like), (prevMap&&prevMap.like_ts)?_revTimeStr(prevMap.like_ts):'');
+        if(el) _jvLikeFailed(el, msg);
+      }
+    }catch(e){}
+    if(el){ el._busy=false; el.style.cursor='pointer'; }
+  }
   try{
     var ok = await sbInsert('reviews', {client_code:code, author_code:(cl&&cl.code), kind:kind, ref_id:(refId!=null&&refId!==''?String(refId):null), reaction:reaction, comment:null, seen:false});
-    if(ok!==false){
-      var nm=(CLIENTS[code]&&CLIENTS[code].name)||code;
-      if(typeof showToast==='function') showToast((reaction==='like'?'\u2665 Liked':'\u2713 Reviewed')+' \u2014 '+nm+' will see it');
-      try{ if(typeof jvMarkHandled==='function') jvMarkHandled(code); }catch(e){}
-    } else { _undo(); if(typeof showToast==='function') showToast('Could not save'); }
-  }catch(e){ _undo(); if(typeof showToast==='function') showToast('Could not save'); }
+    if(ok===false){ _revert('That like did not save. Tap the heart to try again.'); if(typeof showToast==='function') showToast('Could not save'); return; }
+    // Read it back. sbInsert returning true says the request did not error, not that
+    // the row is there with the values sent.
+    if(isLike && refId!=null && refId!==''){
+      var back=await sbSelect('reviews','select=id&client_code=eq.'+encodeURIComponent(code)
+        +'&kind=eq.'+encodeURIComponent(kind)
+        +'&ref_id=eq.'+encodeURIComponent(String(refId))
+        +'&reaction=eq.like&limit=1');
+      if(!back || !back.length){ _revert('That like did not save. Tap the heart to try again.'); if(typeof showToast==='function') showToast('Could not confirm that like'); return; }
+    }
+    if(el) el._busy=false;
+    var nm=(CLIENTS[code]&&CLIENTS[code].name)||code;
+    if(typeof showToast==='function') showToast((isLike?'\u2665 Liked':'\u2713 Reviewed')+' \u2014 '+nm+' will see it');
+    try{ if(typeof jvMarkHandled==='function') jvMarkHandled(code); }catch(e){}
+  }catch(e){ _revert('That like did not save. Tap the heart to try again.'); if(typeof showToast==='function') showToast('Could not save'); }
 }
 async function markReviewed(kind, refId, code, btnId){
+  var btn = btnId?document.getElementById(btnId):null;
+  var ci = document.getElementById('reviewCommentInput');
+  function _fail(msg){
+    if(btn){ btn.textContent='Send'; btn.disabled=false; btn.style.opacity='1'; btn.style.cursor='pointer'; }
+    // The sheet stays open with the words still in the box, so nothing typed is lost
+    // and the failure cannot be mistaken for a send.
+    var w=document.getElementById('reviewSaveErr');
+    if(!w && ci && ci.parentNode && ci.parentNode.parentNode){
+      w=document.createElement('div'); w.id='reviewSaveErr';
+      w.style.cssText='font-size:12px;font-weight:700;color:#ff4455;margin-top:9px;line-height:1.45;';
+      ci.parentNode.parentNode.appendChild(w);
+    }
+    if(w) w.textContent=msg;
+    if(typeof showToast==='function') showToast('Could not save that comment');
+  }
   try{
-    var ci = document.getElementById('reviewCommentInput');
     var comment = ci ? (ci.value||'').trim() : '';
+    if(btn){ btn.textContent='Sending\u2026'; btn.disabled=true; btn.style.opacity='0.6'; }
+    var _err=document.getElementById('reviewSaveErr'); if(_err) _err.textContent='';
     var ok = await sbInsert('reviews', {client_code:code, author_code:(cl&&cl.code), kind:kind, ref_id:(refId!=null&&refId!==''?String(refId):null), comment:(comment||null), reaction:(comment?'comment':'seen'), seen:false});
+    if(ok===false){ _fail('That comment did not save. Your words are still here \u2014 tap Send to try again.'); return; }
+    // Read it back and compare the text. A POST that returns fine still has to have
+    // produced a row carrying the words that were typed.
+    var landed=null;
+    if(comment && refId!=null && refId!==''){
+      var back=await sbSelect('reviews','select=comment,created_at&client_code=eq.'+encodeURIComponent(code)
+        +'&kind=eq.'+encodeURIComponent(kind)
+        +'&ref_id=eq.'+encodeURIComponent(String(refId))
+        +'&reaction=eq.comment&order=id.desc&limit=1');
+      if(!back || !back.length || String(back[0].comment||'')!==comment){
+        _fail('That comment did not save. Your words are still here \u2014 tap Send to try again.'); return;
+      }
+      landed=back[0];
+    }
     var nm = (CLIENTS[code]&&CLIENTS[code].name)||code;
-    if(ok!==false){
-      if(typeof showToast==='function') showToast('\u2713 Reviewed \u2014 '+nm+' will see it');
-      try{ if(typeof jvMarkHandled==='function') jvMarkHandled(code); }catch(e){}
-      var btn = btnId?document.getElementById(btnId):null;
-      if(btn){ btn.textContent='Reviewed \u2713'; btn.disabled=true; btn.style.opacity='0.6'; btn.style.cursor='default'; }
-      if(ci) ci.value='';
-    } else { if(typeof showToast==='function') showToast('Could not save review'); }
-  }catch(e){ if(typeof showToast==='function') showToast('Could not save review'); }
+    if(typeof showToast==='function') showToast('\u2713 Sent \u2014 '+nm+' will see it');
+    try{ if(typeof jvMarkHandled==='function') jvMarkHandled(code); }catch(e){}
+    // Put it on the card straight away, the same way a like now lands.
+    if(comment){
+      try{
+        var mk=kind+':'+refId;
+        if(!window._reviewedMap) window._reviewedMap={};
+        var ent=window._reviewedMap[mk]||(window._reviewedMap[mk]={});
+        ent.comment=true; ent.comment_text=comment;
+        ent.comment_ts=(landed&&landed.created_at)?landed.created_at:new Date().toISOString();
+      }catch(e){}
+    }
+    if(btn){ btn.textContent='Sent \u2713'; btn.disabled=true; btn.style.opacity='0.6'; btn.style.cursor='default'; }
+    if(ci) ci.value='';
+    try{ feedCloseDetail(); }catch(e){}
+    try{ _feedRepaint(); }catch(e){}
+  }catch(e){ _fail('That comment did not save. Your words are still here \u2014 tap Send to try again.'); }
 }
 async function jvMealComment(kind,id,code,btn){
   try{
