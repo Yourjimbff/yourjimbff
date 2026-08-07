@@ -26018,7 +26018,13 @@ async function smartLogFromText(q){
   // Their sentence IS the meal. The split parts are its breakdown, so hold on to
   // the original — it used to be discarded the moment we split it.
   window._mealTitleText = (parts.length > 1) ? raw : '';
-  if(!_lbl && !mm.hasMacro && !parts.length){ if(_photo){ parts=['Meal']; } else { showToast('Write what you ate'); return; } }
+  // A photo with no words is not a food called "Meal" — it is a picture nobody has
+  // read yet. Remember that, so the estimate below goes to something that can see.
+  var _photoOnly=false;
+  if(!_lbl && !mm.hasMacro && !parts.length){
+    if(_photo){ parts=['Meal']; _photoOnly=true; }
+    else { showToast('Write what you ate'); return; }
+  }
   var meal=(window._mealSlot||((typeof _mealSlotNow==='function')?_mealSlotNow():'Meal'));
   var eatTime=(function(){ var _t=document.getElementById('foodTime'); var v=_t?String(_t.value||'').trim():''; return v||_defaultMealTime(window._mealSlot, window._mealLogDs); })();
   var logDs=(window._mealLogDs||_logDayStr());
@@ -26075,7 +26081,9 @@ async function smartLogFromText(q){
       // estimator was sitting right there, unused by this path.
       var nmb=_tcase(pr.qty!==1?(pr.qty+' '+pr.name):pr.name);
       var est=null;
-      try{ est=await _estimateFood(parts[i]); }catch(e){}
+      // A photo with no words goes to the reader that can see it. Everything else
+      // is a food the client named, and the text estimator is right for that.
+      try{ est = _photoOnly ? await _estimateFoodPhoto(_photo, '') : await _estimateFood(parts[i]); }catch(e){}
       if(est){
         var enm=_tcase(est.name||nmb);
         await _push(
@@ -40991,6 +40999,42 @@ async function _estimateFood(q){
     return {name:o.name||name, calories:cal, protein:Math.round(+o.protein||0),
             carbs:Math.round(+o.carbs||0), fat:Math.round(+o.fat||0)};
   }catch(e){ console.error('_estimateFood', e); return null; }
+}
+
+// A PHOTO HAS TO BE READ BY SOMETHING THAT CAN SEE IT.
+//
+// _estimateFood above takes a STRING. When a client sent a photo and no words,
+// this path handed it the placeholder "Meal" — so a model was asked to price the
+// WORD "meal", with the picture sitting there unread. That is where a dinner got
+// 80 calories that had nothing to do with the plate: not a bad reading, a reading
+// that never happened.
+//
+// This is the same call the Day page's meal sheet makes, which has always sent the
+// image. Returns null when the plate genuinely can't be made out — and null here
+// means ASK, never guess.
+async function _estimateFoodPhoto(photo, hint){
+  try{
+    var m=String(photo||'').match(/^data:(image\/[a-z]+);base64,(.+)$/i);
+    if(!m) return null;
+    var sys='You are reading one meal for a fitness coach whose clients measure in ounces for meat and '
+      +'handfuls or palms for everything else. Reply with ONLY compact JSON, no markdown: '
+      +'{"name":"short name of the meal","calories":n,"protein":n,"carbs":n,"fat":n}. '
+      +'If you cannot make out what the food is, reply {"error":true} — never guess a plate you cannot see.';
+    var content=[{type:'image', source:{type:'base64', media_type:m[1], data:m[2]}},
+                 {type:'text', text:sys+(hint?('\n\nThe client says: "'+hint+'"'):'')}];
+    var res=await fetch('/.netlify/functions/analyze',{method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({messages:[{role:'user',content:content}]})});
+    var data=await res.json(), txt='';
+    if(data&&data.content) data.content.forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; });
+    txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
+    var o=JSON.parse(txt);
+    if(!o || o.error) return null;
+    var cal=Math.round(+o.calories||0);
+    // Zero all round is a read that FAILED, not a zero-calorie plate.
+    if(!(cal>0)) return null;
+    return {name:String(o.name||'').trim()||null, calories:cal, protein:Math.round(+o.protein||0),
+            carbs:Math.round(+o.carbs||0), fat:Math.round(+o.fat||0)};
+  }catch(e){ console.error('_estimateFoodPhoto', e); return null; }
 }
 
 // Typing a food should reach your library, not start from nothing. Picking one
