@@ -4895,6 +4895,98 @@ body.hasnav #tToday{padding-bottom:96px;}
   setTimeout(_stamp, 400);
 })();
 
+// ===== THE SESSION =====
+// The access code is exchanged, server-side, for a signed session naming this client.
+// Until that exists the database is handed the same public key by everyone and cannot
+// tell one client from another, which is why "your own data only" can't be enforced.
+//
+// THIS IS INERT UNTIL THE LOCK IS PASTED. While the tables are still open the public
+// key keeps working exactly as before, so nothing here can break a client today. What
+// it does do is get every device carrying a session BEFORE the lock lands — which is
+// what stops anyone being bounced to the sign-in screen at cutover.
+//
+// A client who is already signed in has their code on the device. On the next wake the
+// app quietly trades it for a session. They see nothing: no screen, no prompt, no tap.
+var SESS_URL = '/.netlify/functions/session';
+var _sess = null;                 // {token, exp, code}
+function _sessLoad(){
+  if(_sess) return _sess;
+  try{ _sess = JSON.parse(localStorage.getItem('yjb_session')||'null'); }catch(e){ _sess=null; }
+  return _sess;
+}
+function _sessSave(s){
+  _sess = s;
+  try{ s ? localStorage.setItem('yjb_session', JSON.stringify(s)) : localStorage.removeItem('yjb_session'); }catch(e){}
+}
+function _sessClear(){ _sessSave(null); }
+// Valid means: we have one, it is for THIS client, and it has not expired. A session
+// belonging to whoever used the device last must never be sent for somebody else.
+function _sessToken(){
+  var s=_sessLoad();
+  if(!s || !s.token || !s.exp) return null;
+  if(s.exp <= Math.floor(Date.now()/1000)) return null;
+  try{ if(cl && cl.code && s.code && s.code!==cl.code) return null; }catch(e){}
+  return s.token;
+}
+var _sessBusy=null;
+// Trades a code for a session. Never throws and never blocks a render: a failure just
+// leaves the app on the public key, which is exactly today's behaviour.
+async function sessEnsure(code, force){
+  try{
+    code = String(code || (cl&&cl.code) || '').toLowerCase();
+    if(!code) return null;
+    if(!force){
+      var have=_sessToken();
+      if(have){
+        // Quiet renewal, well before it lapses, so a session never expires under
+        // someone mid-session and nobody is ever asked to sign in again.
+        var s=_sessLoad(), left=s.exp - Math.floor(Date.now()/1000);
+        if(left > (s.renew_within || 604800)) return have;
+      }
+    }
+    if(_sessBusy) return _sessBusy;
+    _sessBusy = (async function(){
+      try{
+        var r=await fetch(SESS_URL,{method:'POST',headers:{'Content-Type':'application/json'},
+                                    body:JSON.stringify({code:code})});
+        if(!r.ok) return null;
+        var d=await r.json();
+        if(!d || !d.token) return null;
+        _sessSave({token:d.token, exp:d.expires_at, code:code, renew_within:d.renew_within});
+        return d.token;
+      }catch(e){ return null; }
+      finally{ _sessBusy=null; }
+    })();
+    return _sessBusy;
+  }catch(e){ return null; }
+}
+// The failure mode is "sign in again", never "data visible". Once the lock is on, a
+// request refused for want of a session gets ONE silent retry with a fresh one; if that
+// fails too the app signs out rather than sitting on a screen full of blanks or, worse,
+// quietly falling back to a key that can still see everything.
+// The end of the line: a refusal we could not recover from. Drop the session and the
+// remembered code and land on the sign-in screen, which is the honest state — they are
+// not signed in as far as the database is concerned. Guarded so a storm of refused
+// requests cannot reload the page in a loop.
+var _sessSigningOut=false;
+function sessForceSignIn(){
+  if(_sessSigningOut) return;
+  _sessSigningOut=true;
+  try{ _sessClear(); }catch(e){}
+  try{ localStorage.removeItem('yjb_logged_in'); }catch(e){}
+  try{ location.reload(); }catch(e){}
+}
+var _sessRecovering=false;
+async function sessOnDenied(){
+  if(_sessRecovering) return false;
+  _sessRecovering=true;
+  try{
+    _sessClear();
+    var t=await sessEnsure((cl&&cl.code)||'', true);
+    return !!t;
+  } finally { _sessRecovering=false; }
+}
+
 // ===== SUPABASE CONFIG =====
 var SB_URL = 'https://frxptalfyutukmnsvysg.supabase.co';
 var SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZyeHB0YWxmeXV0dWttbnN2eXNnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4NDQzNTksImV4cCI6MjA5NTQyMDM1OX0.NjSM-7wF80oo2ypfRSf2TDRE9NFdT2w8-EjUdago5wk';
@@ -4982,6 +5074,22 @@ function _sbRenderDown(){
     }
     return _rawFetch(input, opts).then(function(res){
       if(_sbIsDown(res && res.status)) _sbNoted(res && res.status); else _sbRecovered();
+      // REFUSED FOR WANT OF A SESSION. After the lock, this is what a request carrying
+      // no session — or a stale one — comes back as. Every Supabase call in the app
+      // passes through here, so this is the one place that can answer it.
+      //
+      // ONE silent retry with a fresh session, then sign them out. The thing this must
+      // never do is shrug and carry on: an app that quietly keeps using the public key
+      // after being refused is an app showing whatever that key can still see. Sign in
+      // again is the correct failure; a screen full of someone else's data is not.
+      if(res && (res.status===401 || res.status===403) && !(opts||{}).__sessRetried){
+        return sessOnDenied().then(function(ok){
+          if(!ok){ try{ sessForceSignIn(); }catch(e){} return res; }
+          var o2=Object.assign({}, opts||{}, {__sessRetried:true});
+          try{ o2.headers=Object.assign({}, o2.headers||{}, {'Authorization':'Bearer '+_sessToken()}); }catch(e){}
+          return window.fetch(input, o2);
+        });
+      }
       return res;
     }, function(err){
       _sbNoted((err && err.name) || 'network');
@@ -4990,14 +5098,49 @@ function _sbRenderDown(){
   };
 })();
 
+// Every Supabase request in the app goes out through here, which makes it the one place
+// the session has to be attached. `apikey` stays the public key — PostgREST requires a
+// project key to route the request at all — while Authorization carries the session that
+// says WHO is asking. With no session it falls back to the public key, which is exactly
+// today's behaviour, so this changes nothing until the lock is pasted.
 function sbHeaders(){
+  var t=null; try{ t=_sessToken(); }catch(e){ t=null; }
   return {
     'Content-Type':'application/json',
     'apikey':SB_KEY,
-    'Authorization':'Bearer '+SB_KEY,
+    'Authorization':'Bearer '+(t||SB_KEY),
     'Prefer':'return=minimal'
   };
 }
+
+// THE TRAINER DOOR — the client side of netlify/functions/trainer.js.
+// Named operations only, exactly matching the OPS list the function exposes. There is
+// no passthrough here on purpose: adding a generic "table + filter" call would put the
+// hole straight back, just one hop further away.
+//
+// NOT YET CALLED FROM ANYWHERE. The cockpit's reads of sales, client_contacts,
+// jv_handled, engine_moments, coach_moments, coach_reposts and coach_notes still go
+// straight to the tables with the public key, exactly as before — moving each of those
+// over is the next step, done and verified one at a time rather than in the same diff
+// as the door itself. This function is ready for that step to start.
+//
+// Mirrors sbSelect's own contract: never throws, returns [] on failure. A trainer
+// surface that already treats [] as "nothing yet" needs no rewriting to switch readers.
+async function trainerOp(op, args){
+  try{
+    var t=_sessToken();
+    if(!t) return [];   // no session minted yet — nothing to ask the door with
+    var res=await fetch('/.netlify/functions/trainer',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+t},
+      body:JSON.stringify({op:op, args:(args||{})})
+    });
+    if(!res.ok) return [];
+    var d=await res.json();
+    return Array.isArray(d) ? d : (d?[d]:[]);
+  }catch(e){ return []; }
+}
+
 var SB_BUCKET = 'progress-photos';
 // Upload a full-res image blob to Supabase Storage; returns the public URL, or null if the bucket isn't reachable.
 async function uploadProgressImage(blob, clientCode){
@@ -6188,6 +6331,21 @@ async function _doLoginInner(){
     TRAINER_CODES.push(code);
   }
   localStorage.setItem('yjb_logged_in', code);
+  // THE SILENT EXCHANGE. Both routes into the app end here — a fresh sign-in and the
+  // restore of someone already signed in — so this one line is what gets a session onto
+  // every device without a single client being asked to do anything. It is why nobody
+  // gets bounced to the sign-in screen at cutover: by the time the lock is pasted, the
+  // devices already carry sessions.
+  //
+  // Raced against a timeout on purpose. A session makes the app work AFTER the lock; it
+  // is not needed before it, so a slow or unconfigured function must never sit in front
+  // of somebody's sign-in. Whatever happens, the app continues.
+  try{
+    await Promise.race([
+      sessEnsure(code),
+      new Promise(function(r){ setTimeout(r, 2500); })
+    ]);
+  }catch(e){}
   // Whose device this is. Set once, when a trainer signs in here, and never
   // cleared by signing in as somebody else — that is the whole point. It is what
   // lets the app notice that the account being written to is not the person
@@ -12684,6 +12842,9 @@ function doLogout(){
   if(!confirm('Log out?'))return;
   clearTimeout(trainerRefreshTimer);
   localStorage.removeItem('yjb_logged_in');
+  // The session names a person, so it leaves with them. A session left behind is one
+  // the next person on this device would send as their own.
+  try{ _sessClear(); }catch(e){}
   cl=null;profile=null;allFood=[];todayFood=[];todayWo=[];
   tots={cal:0,protein:0,carbs:0,fat:0};scores={food:0,workout:0,steps:0,sleep:0,weight:0,energy:0};
   photoData=null;curResult=null;wVal=null;badCt=0;lastWeight=null;
@@ -12972,6 +13133,7 @@ function jvCloseMore(){ var m=document.getElementById('jvMoreMenu'); if(m) m.cla
 function jvSignOut(){
   if(!confirm('Sign out?')) return;
   try{ localStorage.removeItem('yjb_logged_in'); }catch(e){}
+  try{ _sessClear(); }catch(e){}      // the session leaves with the person
   document.body.classList.remove('jv-on');
   document.body.classList.remove('jv-deep-open');
   location.reload();
