@@ -14994,13 +14994,14 @@ var JV_CLIENT_TABLES=[
   // list, which is how faithparker1's client row went while her daily score stayed
   // behind — an orphan nothing can reach or clean up. The list has to stay in step
   // with the schema or every deletion quietly leaves rows forever.
-  ['daily_scores','daily scores'], ['engine_moments','engine moments'],
-  // Deliberately labelled "payment records", not "sales": this table carries
-  // paid_amount, total_amount, due_date and sale_date. Deleting a client now deletes
-  // their payment history too, and whoever confirms the dialog should see that in
-  // plain words before they agree to it.
-  ['sales','payment records']
+  ['daily_scores','daily scores'], ['engine_moments','engine moments']
 ];
+// `sales` is client_code-keyed and deliberately NOT on the list above (Yusuf's ruling:
+// the books outlive the roster). It carries paid_amount, total_amount, due_date and
+// sale_date, so deleting a client leaves their payment history intact and deliberately
+// orphaned. That is the one exception to the keep-this-list-in-step-with-the-schema
+// rule, and it is a decision rather than an oversight — do not "fix" it by adding the
+// table back. Anything ELSE new that keys on client_code does belong on the list.
 // Exact count via PostgREST's Content-Range. null means the table isn't there or
 // doesn't key on client_code — either way there's nothing of theirs in it.
 async function _jvCountRows(table, code){
@@ -27567,6 +27568,12 @@ function _applyCardio(plan, c){
 // stays because a 2xx from PostgREST is still not evidence the row is there.
 async function _writeCalendar(plan){
   var sig=_splitSig(plan);
+  // NEVER PUT created_at IN THIS BODY, and the same goes for the other two
+  // training_plans writers. The column defaults to now() on insert, and PostgREST's
+  // merge-duplicates only updates the columns actually present — so leaving it out is
+  // what makes it mean "when this plan was first written". Send it and every swap of
+  // an exercise would re-stamp it, which is precisely the thing Admin needs it not to
+  // do: an old plan someone edited yesterday would count as a plan created yesterday.
   var body={client_code:cl.code, name:(_tpName||''), weeks:(_tpWeeks||4),
             plan:plan, updated_at:new Date().toISOString()};
   var posted=false;
@@ -29691,6 +29698,7 @@ async function saveTrainingPlan(){
   try{
     // A 4xx/5xx here still resolves \u2014 fetch only rejects on a network failure. This
     // used to toast "saved" on a rejected write, the same lie sbUpsert was telling.
+    // No created_at in this body, deliberately \u2014 see _writeCalendar.
     var res=await fetch(SB_URL+'/rest/v1/training_plans?on_conflict=client_code',{method:'POST',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'}),body:JSON.stringify({client_code:cl.code,name:_tpName,weeks:_tpWeeks,plan:_tpPlan,updated_at:new Date().toISOString()})});
     if(!res.ok){
       var _t=''; try{ _t=await res.text(); }catch(e){}
@@ -40292,7 +40300,8 @@ function _tpFinSave(){
     try{ if(typeof _saveTrainingPlanQuiet==='function') _saveTrainingPlanQuiet(); }catch(e){}
   }, 2500);
 }
-// same write as saveTrainingPlan, without the toast on every keystroke
+// same write as saveTrainingPlan, without the toast on every keystroke.
+// No created_at in this body either — see _writeCalendar for why.
 async function _saveTrainingPlanQuiet(){
   if(!cl) return;
   try{
