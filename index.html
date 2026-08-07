@@ -8389,27 +8389,37 @@ async function jvLoadTraining(force){
   wall.innerHTML='<div class="jvLoading">Loading the board…</div>';
   // Raw fetches: an empty array from a failed read would otherwise read as "nobody is
   // training today", which is exactly the lie this board must never tell.
-  var plans=null, wos=null, failed=false;
+  var plans=null, wos=null, roster=null, failed=false;
   try{
     var r=await Promise.all([
       fetch(SB_URL+'/rest/v1/training_plans?select=client_code,plan&limit=500',{headers:sbHeaders()}),
-      fetch(SB_URL+'/rest/v1/workout_logs?select=client_code,title,logged_at,date_str&order=logged_at.desc&limit=800',{headers:sbHeaders()})
+      fetch(SB_URL+'/rest/v1/workout_logs?select=client_code,title,logged_at,date_str&order=logged_at.desc&limit=800',{headers:sbHeaders()}),
+      // The roster is read from the clients table, NOT from the in-memory CLIENTS map.
+      // That map still carries long-dead hardcoded codes with no row behind them — it
+      // holds well over a hundred entries against 81 real clients — so counting "no
+      // plan on file" from it invented dozens of clients who do not exist.
+      fetch(SB_URL+'/rest/v1/clients?select=code,name,is_trainer,active&limit=2000',{headers:sbHeaders()})
     ]);
-    if(!r[0].ok||!r[1].ok) failed=true;
-    else { plans=await r[0].json(); wos=await r[1].json(); }
+    if(!r[0].ok||!r[1].ok||!r[2].ok) failed=true;
+    else { plans=await r[0].json(); wos=await r[1].json(); roster=await r[2].json(); }
   }catch(e){ failed=true; }
-  if(failed||!plans||!wos){
+  if(failed||!plans||!wos||!roster){
     wall.innerHTML='<div class="tbFail">The board did not load. That is a read that failed, not a quiet day — try Refresh.</div>';
     return;
   }
-  jvTrainData={plans:plans, wos:wos, at:Date.now()};
+  jvTrainData={plans:plans, wos:wos, roster:roster, at:Date.now()};
   jvRenderTraining();
 }
 function jvRenderTraining(){
   var wall=document.getElementById('jvWall'); if(!wall||!jvTrainData) return;
   wall.classList.add('jvTrainMode');
   var hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
-  var roster=Object.keys(CLIENTS).filter(function(c){ return !CLIENTS[c].isTrainer && !hidden[c]; });
+  // Real clients only — every code here came back from the clients table just now.
+  var nameOfCode={};
+  var roster=(jvTrainData.roster||[]).filter(function(r){
+    return r && r.code && !r.is_trainer && r.active!==false && !hidden[r.code];
+  }).map(function(r){ nameOfCode[r.code]=r.name||r.code; return r.code; });
+  function _tbName(c){ return nameOfCode[c] || ((CLIENTS[c]&&CLIENTS[c].name)||c); }
   var planBy={};
   (jvTrainData.plans||[]).forEach(function(p){
     if(p && p.client_code && p.plan && typeof p.plan==='object') planBy[p.client_code]=p.plan;
@@ -8427,13 +8437,13 @@ function jvRenderTraining(){
   roster.forEach(function(c){
     if(!planBy[c]){ noPlan.push(c); return; }
     var t=sessionOn(c, today);
-    if(t) schedT.push({code:c, name:(CLIENTS[c].name||c), type:t, done:!!doneT[c]});
+    if(t) schedT.push({code:c, name:_tbName(c), type:t, done:!!doneT[c]});
     else restT.push(c);
   });
   var schedY=[];
   roster.forEach(function(c){
     var t=sessionOn(c, yest);
-    if(t) schedY.push({code:c, name:(CLIENTS[c].name||c), done:!!doneY[c]});
+    if(t) schedY.push({code:c, name:_tbName(c), done:!!doneY[c]});
   });
   var doneTn=schedT.filter(function(r){return r.done;}).length;
   var trainedY=schedY.filter(function(r){return r.done;});
@@ -8444,7 +8454,7 @@ function jvRenderTraining(){
       +' onclick="jvOpenDeep(\''+r.code+'\')">'+(done?'<i>✓</i>':'')+String(r.name).replace(/</g,'&lt;')+'</span>';
   }
   function nameChip(c){
-    var nm=(CLIENTS[c]&&CLIENTS[c].name)||c;
+    var nm=_tbName(c);
     return '<span class="tbChip" data-name="'+String(nm).toLowerCase().replace(/"/g,'')+'"'
       +' onclick="jvOpenDeep(\''+c+'\')">'+String(nm).replace(/</g,'&lt;')+'</span>';
   }
