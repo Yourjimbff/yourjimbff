@@ -1578,6 +1578,16 @@ body.bfEditingToday .tlDaySec.ahead{display:none;}
 .tlHeroMeta{position:relative;margin-top:12px;font-size:13px;font-weight:600;color:var(--muted);}
 .tlHeroChev{position:relative;color:rgba(240,236,228,0.45);font-size:22px;line-height:1;margin-top:6px;transition:transform .15s;}
 .tlHeroEy{position:relative;font-size:10px;font-weight:800;letter-spacing:1.6px;text-transform:uppercase;color:var(--gold);margin-bottom:9px;}
+/* Movement and the weigh-in are siblings of the session, not rivals: same shell,
+   same gold eyebrow, none of the 40px name that makes the session the monument. */
+.tlMoveCard,.tlWeighCard{padding:16px 16px 6px;}
+.tlWeighCard{padding-bottom:16px;}
+.tlMoveCard .tlMv{position:relative;border-bottom:1px solid rgba(255,255,255,0.07);}
+.tlMoveCard .tlMv:last-of-type,.tlMoveCard .tlMv.on{border-bottom:none;}
+.tlMoveCard .tlMvBody{position:relative;}
+.tlWeighBig{position:relative;font-size:30px;font-weight:800;letter-spacing:-1.1px;line-height:1;color:var(--text);}
+.tlWeighBig i{font-style:normal;font-size:14px;font-weight:700;color:var(--muted);margin-left:5px;letter-spacing:0;}
+.tlWeighCard .tlHeroMeta{margin-top:7px;}
 /* quiet variants: the hero shape with something honest to say instead of a session */
 .tlHero.err .tlHeroName{font-size:19px;letter-spacing:-0.4px;line-height:1.3;}
 .tlExr{position:relative;display:flex;align-items:center;gap:11px;padding:13px 2px;border-bottom:1px solid rgba(255,255,255,0.07);cursor:pointer;}
@@ -15436,12 +15446,14 @@ function _dayMeta(ds, slots){
   var bits=[];
   var w=(slots&&slots.weigh&&slots.weigh.length)?slots.weigh[0]:null;
   var val = w && w.weight!=null ? (Math.round((+w.weight)*10)/10)+' lb' : '';
-  if(!_ro || val){
+  // A weigh-in that EXISTS is a card on the day now, so the header stops repeating
+  // it. What stays here is the "+" for a day with no weigh-in yet — that is the only
+  // route to logging a weight from this page, and the card can't carry it without
+  // becoming an empty box for something you owe.
+  if(!val && !_ro){
     bits.push('<span class="tlm tlmw"'
-      +(_ro ? ' style="cursor:default;"'
-            : (' data-tl="'+(val?'weighview':'add')+'" data-key="weigh" data-ds="'+_escHtml(ds)+'"'
-               +(w&&w.id?(' data-id="'+w.id+'"'):'')))
-      +'><b>Weigh in</b>'+(val?_escHtml(val):'<i>+</i>')+'</span>');
+      +' data-tl="add" data-key="weigh" data-ds="'+_escHtml(ds)+'"'
+      +'><b>Weigh in</b><i>+</i></span>');
   }
   var _st=_stepsFor(ds);
   var _stHtml='';
@@ -16200,7 +16212,17 @@ function _tlDaySectionHtml(cur, ctx){
     html+=_dayMeta(ds, slots);
     // everything that actually happened, in the order it happened
     var rows=[];
-    (slots.walk||[]).forEach(function(it){ rows.push({k:'walk', lbl:'Morning walk', it:it, m:_tlMins(it)}); });
+    // The day's walks and cardio collect into ONE Movement card rather than a
+    // stack of bare lines. Gathered here; the workout loop below adds any logged
+    // cardio to the same list before it is pushed as a single row.
+    var _moveRows=[];
+    (slots.walk||[]).forEach(function(it){ _moveRows.push({k:'walk', lbl:'Morning walk', it:it}); });
+    // A weigh-in is an entry on the day like anything else, so it gets a card and
+    // sorts by its own time. It used to be a hairline in the header above cards.
+    (function(){
+      var w=(slots.weigh&&slots.weigh.length)?slots.weigh[0]:null;
+      if(w && w.weight!=null) rows.push({k:'weighcard', it:w, m:_tlMins(w)});
+    })();
     // Eggs and potatoes at breakfast is one breakfast. Group the foods into a
     // single row per meal and hand the whole list to the card, which knows how
     // to lay out multiple items with a total.
@@ -16244,11 +16266,25 @@ function _tlDaySectionHtml(cur, ctx){
     // simply trained — the first session logged takes it instead, so a finished
     // session is never a grey line just because it was not on the sheet.
     _woList.forEach(function(it){ if(!_plannedWo && plan && plan.type && _woMatchesPlan(it, plan)) _plannedWo=it; });
-    if(!_plannedWo && (!plan || !plan.type || plan.rest)) _plannedWo=_woList[0]||null;
+    // Only a real session can take the monument. Without this, a day with no plan
+    // promoted whatever was logged first — so twenty minutes on the stairmaster
+    // became "The session" and left the Movement card empty beneath it.
+    if(!_plannedWo && (!plan || !plan.type || plan.rest)){
+      _plannedWo=_woList.filter(function(x){ return !_tlIsRecord(x); })[0]||null;
+    }
     _woList.forEach(function(it){
       if(it===_plannedWo) return;
-      rows.push({k:'workout', lbl:'Workout', it:it, m:_tlMins(it)});
+      // Cardio and anything else with no exercises against it is movement, and
+      // joins the one Movement card. A second real session keeps its own card.
+      if(_tlIsRecord(it)) _moveRows.push({k:'workout', lbl:'Workout', it:it});
+      else rows.push({k:'workout', lbl:'Workout', it:it, m:_tlMins(it)});
     });
+    if(_moveRows.length){
+      var _mm=99999;
+      _moveRows.forEach(function(r){ var m=_tlMins(r.it); if(m!=null && m<_mm) _mm=m; });
+      _moveRows.sort(function(a,b){ return (_tlMins(a.it)||0)-(_tlMins(b.it)||0); });
+      rows.push({k:'movement', move:_moveRows, m:((_mm<99999)?_mm:0)});
+    }
     (jByDay[ds]||[]).forEach(function(it){ rows.push({k:'journal', lbl:'Journal', it:it, m:_tlMins(it)}); });
     ((window._bookByDay&&window._bookByDay[ds])||[]).forEach(function(b){
       var d=new Date(b.starts_at);
@@ -16309,10 +16345,8 @@ function _tlDaySectionHtml(cur, ctx){
       if(r.planned)          return _tlSlot('workout','Workout', null, ds, plan);
       if(r.plannedMeal)      return _tlPlannedMeal(r.k, r.lbl, r.plannedMeal, ds);
       if(r.empty)            return _tlSlot(r.k, r.lbl, null, ds, null);
-      // A logged walk or a bit of cardio compresses to one line; anything carrying
-      // exercises keeps its card (Yusuf, 6 Aug).
-      if((r.k==='walk'||r.k==='workout') && r.it && _tlIsRecord(r.it))
-        return _tlMoveLine(r.k, r.lbl, r.it, ds);
+      if(r.k==='movement')   return _tlMovementCard(r.move, ds);
+      if(r.k==='weighcard')  return _tlWeighCard(r.it, ds);
       return _tlSlot(r.k, r.lbl, (r.all || [r.it]), ds, null);
     }
     // The day reads in the order it was lived — walk, breakfast, the session, cardio,
@@ -16711,6 +16745,43 @@ function _tlMoveLine(key, label, it, ds){
         +(it.photo?('<img data-tl="zoom" data-src="'+it.photo+'" src="'+it.photo+'" class="tlMvPhoto">'):'')
         +((it.id&&!window._tlRO)?('<div class="tlMvActs"><span onclick="event.stopPropagation();tlDelWorkout('+it.id+')">Delete</span></div>'):'')
       +'</div>'):'')
+  +'</div>';
+}
+// EVERYTHING ON THE DAY IS A CARD (Yusuf, 8 Aug). The compressed movement lines
+// read as leftovers sitting above real cards — the density was right, the absence
+// of a card around it was not. One Movement card holds the day's walks and cardio
+// however many there are, a sibling of the session rather than a competitor: the
+// same shell and gold eyebrow, no 40px name.
+//
+// The rows inside are the existing movement lines, so tap-to-expand, the note, the
+// photo and — the thing that matters — Delete all still work exactly as they did.
+// rows: [{k, lbl, it}]
+function _tlMovementCard(rows, ds){
+  if(!rows || !rows.length) return '';
+  var mins=99999;
+  rows.forEach(function(r){ var m=_tlMins(r.it); if(m!=null && m<mins) mins=m; });
+  return '<div class="tlHero tlMoveCard" data-mins="'+((mins<99999)?mins:0)+'">'
+    +'<div class="tlHeroEy">Movement</div>'
+    +rows.map(function(r){ return _tlMoveLine(r.k, r.lbl, r.it, ds); }).join('')
+  +'</div>';
+}
+// The weigh-in was a hairline in the header while everything it sat above was a
+// card. Now it is one too: the number big, the time quiet underneath. It only
+// draws when there IS a weigh-in — an empty one would be a box for something you
+// owe, which the day deliberately stopped doing. The "+" to add one stays in the
+// header for exactly that reason, so the only route to logging a weight survives.
+function _tlWeighCard(w, ds){
+  if(!w || w.weight==null) return '';
+  var _ro=!!window._tlRO;
+  var val=Math.round((+w.weight)*10)/10;
+  var clock=''; try{ var m=_tlMins(w); clock=(m!=null&&m<99999&&m>0)?_tlClock(m):''; }catch(e){}
+  return '<div class="tlHero tlWeighCard" data-mins="'+((_tlMins(w)||0))+'"'
+    +(_ro ? '' : (' data-tl="weighview" data-key="weigh" data-ds="'+_escHtml(ds)+'"'
+                  +(w.id?(' data-id="'+_escHtml(String(w.id))+'"'):'')+' style="cursor:pointer;"'))
+    +'>'
+    +'<div class="tlHeroEy">Weigh in</div>'
+    +'<div class="tlWeighBig">'+val+'<i>lb</i></div>'
+    +(clock?('<div class="tlHeroMeta">'+_escHtml(clock)+'</div>'):'')
   +'</div>';
 }
 function _tlSlot(key, label, filled, ds, plan){
