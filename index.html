@@ -22517,6 +22517,30 @@ async function insertWorkoutLog(row){
     guard++;
   }
   try{ window.__woInsertBusy=false; if(!attempt.ok){ window.__lastWoSig=null; } }catch(e){}
+  // VERIFY BY READING IT BACK — never by trusting the POST response alone. A client
+  // was told her walk was logged; it existed nowhere, not on her Day page, not
+  // anywhere Yusuf could find it (8 Aug). `return=representation` is normally
+  // trustworthy, but "normally" is exactly what the standing law says not to rely
+  // on, and a response with ok:true but no id (rare, but the code already had to
+  // account for it below) is precisely the shape that slipped past unnoticed.
+  if(attempt.ok){
+    if(attempt.id==null){
+      attempt = {ok:false, body:'insert reported success but returned no id'};
+    } else {
+      try{
+        var _rb = await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+encodeURIComponent(attempt.id)+'&select=id',
+          {headers: sbHeaders()});
+        var _rbRows = _rb.ok ? await _rb.json() : [];
+        if(!_rbRows || !_rbRows.length){
+          console.error('workout insert read-back came up empty for id', attempt.id);
+          attempt = {ok:false, body:'read-back found no row'};
+        }
+      }catch(e){
+        console.error('workout insert read-back threw', e);
+        attempt = {ok:false, body:'read-back threw'};
+      }
+    }
+  }
   return {ok: attempt.ok, id: (attempt.id!=null?attempt.id:null), dropped: dropped};
 }
 
@@ -37359,6 +37383,16 @@ async function jimTurn(text, photos, opts){
   }
   reply=(reply||'').trim();
   if(!reply){ throw new Error('Empty reply'); }
+  // Snapshot before ANY marker is stripped. Every extractAllMarkers() call below
+  // reassigns `reply` to its own cleanText with the tag removed REGARDLESS of
+  // whether the JSON inside parsed — success or failure, the tag is gone from
+  // `reply` by the time any later code runs. A salvage pass that re-matches
+  // against `reply` instead of this snapshot can never find anything: it is
+  // checking a variable that has already had the evidence deleted from it. (This
+  // was true of the existing FOOD_LOG salvage below too — fixed alongside.)
+  var _rawReply = reply;
+  var _rawReplyHadWorkoutTag = /\[WORKOUT_LOG\]/.test(_rawReply);
+  var _rawReplyHadFoodTag = /\[FOOD_LOG\]/.test(_rawReply);
 
   // Extract WORKOUT_LOG marker (new workout) AND WORKOUT_NOTE marker (append to existing)
   // A week described in one message is a week. The single-match extractor took
@@ -37399,22 +37433,41 @@ async function jimTurn(text, photos, opts){
   }
 
   // Handle STEPS_LOG: client told Jim their step total — save it (upsert per day, same as the tile).
+  var _stepsFailed=false;
   if(stepsLogs.items.length){
     var stepVal = parseInt(stepsLogs.items[stepsLogs.items.length-1].steps, 10);
     if(!isNaN(stepVal) && stepVal>=0){
       try{
+        // sbUpsert returns false on failure and never throws (the standing landmine) —
+        // this used to end there, silently, with Jim's "logged your steps" line
+        // standing in the chat regardless of whether the row landed.
         var sOk = await sbUpsert('step_logs', {client_code:cl.code, steps:stepVal, date_str:todayDateStr, updated_at:new Date().toISOString()}, 'client_code,date_str');
         if(sOk){
           if(typeof updSteps==='function') updSteps(stepVal);
           var _se=document.getElementById('stepsExact'); if(_se) _se.value=stepVal;
           if(typeof markTileDone==='function') markTileDone('Steps');
           showToast('👟 '+stepVal.toLocaleString()+' steps logged');
-        }
-      }catch(e){ console.error('steps log from chat failed', e); }
+        } else { _stepsFailed=true; }
+      }catch(e){ console.error('steps log from chat failed', e); _stepsFailed=true; }
     }
   }
+  if(_stepsFailed){
+    reply += (reply?'\n\n':'') + "That didn't actually save — can you tell me again?";
+  }
 
+  // A CLIENT ON A REST DAY SAID "add a 30 minute morning walk." Jim replied "Logged
+  // your 30-minute walk this morning" — and nothing was ever written. Not on her Day
+  // page, not anywhere Yusuf could find it. She trusted a record that did not exist,
+  // which is worse than an error (Yusuf, 8 Aug). The chat_messages table only stores
+  // REPLY TEXT AFTER marker-stripping, so there is no way to prove after the fact
+  // whether the model ever emitted [WORKOUT_LOG] for her — the two most likely
+  // explanations (a marker with JSON the strict parser choked on, and no marker at
+  // all despite confident prose) are addressed below because they leave the same
+  // trail either way: confident text, nothing in the database.
+  //
   // Handle WORKOUT_LOG: log a fresh workout. Use Jim's commentary (the visible reply) as the notes.
+  var _woExpected = workoutLogs.items.length;
+  var _woVerified = 0;
   for(var _wi=0;_wi<workoutLogs.items.length;_wi++){
   var extractedLog={log:workoutLogs.items[_wi]};
     // Use Jim's coaching commentary as the workout's note — but ONLY if it's substantive.
@@ -37427,8 +37480,11 @@ async function jimTurn(text, photos, opts){
     }
     var newId = await logWorkoutFromOffer(_pinDay(extractedLog.log));
     if(newId==='dup'){
-      // the same workout landed moments ago — stay quiet rather than log it twice
+      // the same workout landed moments ago — stay quiet rather than log it twice,
+      // and count it as verified: the earlier attempt already wrote the row.
+      _woVerified++;
     } else if(newId){
+      _woVerified++;
       showToast('✓ Workout logged');
       if(!extractedLog.log.intensity){
         pendingIntensityForId = newId;
@@ -37437,6 +37493,47 @@ async function jimTurn(text, photos, opts){
       console.error('workout save failed for offer', extractedLog.log);
       showToast('Could not save workout — try the manual log button');
     }
+  }
+  // SAFETY NET 1 — a marker was PRESENT but its JSON did not survive strict parsing.
+  // This retries the identical parse on the identical text, so it will not usually
+  // succeed where extractAllMarkers already failed — its real job is setting
+  // _woExpected so the shortfall check below still fires and corrects the reply,
+  // instead of a malformed-but-present marker leaving _woExpected at 0 and slipping
+  // past both this and the no-marker-at-all check further down. Mirrors (and shares
+  // the same reasoning as) the existing FOOD_LOG salvage below.
+  if(!_woExpected){
+    var _woSalvage = _rawReply.match(/\[WORKOUT_LOG\]([\s\S]*?)\[\/WORKOUT_LOG\]/);
+    if(_woSalvage){
+      _woExpected = 1;
+      try{
+        var _woSObj = JSON.parse(_woSalvage[1].trim());
+        if(_woSObj){
+          var _woSId = await logWorkoutFromOffer(_pinDay(_woSObj));
+          if(_woSId){ _woVerified++; showToast('✓ Workout logged'); }
+        }
+      }catch(e){ console.error('WORKOUT_LOG salvage parse failed', e, _woSalvage[1]); }
+    }
+  }
+  // SAFETY NET 2 — NO marker of any kind is in the raw reply, yet the text Jim is
+  // about to say confidently claims a workout or walk just got logged. This is the
+  // shape of what almost certainly happened to Andrea: prose promising a save with
+  // nothing behind it. There is no marker to recover here, so the only honest move
+  // is to not let the false confirmation stand — replace it and ask again, exactly
+  // as the rule requires: never silence, never a false yes.
+  // Steps get their own marker and their own confirmation path — a sentence like
+  // "logged your 8,000 steps" must not trip the WORKOUT safety net.
+  var _woConfirmMatch = /\b(logged|added|saved)\b[^.!\n]{0,50}\b(walk|workout|session|run|lift|training|cardio)\b/i.exec(reply);
+  if(!_woExpected && !_rawReplyHadWorkoutTag && _woConfirmMatch
+     && !/\bsteps?\b/i.test(_woConfirmMatch[0])){
+    console.error('WORKOUT confirmation with no marker at all — refusing to let it stand', reply);
+    reply = "I don't think that actually saved — can you tell me again what you did?";
+    _woExpected = 1;   // so the shortfall check below does not ALSO append its own line
+  }
+  // If a marker was present (or salvaged) and still came up short, the chat message
+  // must say so plainly — never let Jim's own prose, which already assumed success,
+  // reach the client uncorrected.
+  if(_woVerified < _woExpected && reply.indexOf("didn't actually save")<0 && reply.indexOf("don't think that actually saved")<0){
+    reply += (reply?'\n\n':'') + "That didn't actually save — can you tell me again?";
   }
 
   // Handle WORKOUT_NOTE: append commentary to existing workout (no new log)
@@ -37468,6 +37565,7 @@ async function jimTurn(text, photos, opts){
       if(ed && ed.id!=null){ var eOk = await applyFoodEdit(ed.id, ed); if(eOk) _foodToasts++; }
     }
   }
+  var _foodExpected=0, _foodVerified=0;
   if(foodAdds.items.length){
     // Attach the chat photo only when there's exactly one add (a single meal being logged with a pic).
     for(var fa=0; fa<foodAdds.items.length; fa++){
@@ -37476,8 +37574,11 @@ async function jimTurn(text, photos, opts){
       if(addOffer && addOffer.name){
         var _sig=((addOffer.name||'').toLowerCase().trim())+'|'+Math.round(addOffer.calories||0)+'|'+((addOffer.meal||'').toLowerCase());
         var _nowFa=Date.now(); window.__chatFoodSig=window.__chatFoodSig||{};
-        if(window.__chatFoodSig[_sig] && (_nowFa-window.__chatFoodSig[_sig])<600000){ continue; } // identical meal within 10 min -> skip duplicate insert
-        var aOk = await logFoodFromChat(_pinDay(addOffer), addPhoto); if(aOk){ _foodToasts++; window.__chatFoodSig[_sig]=_nowFa; }
+        if(window.__chatFoodSig[_sig] && (_nowFa-window.__chatFoodSig[_sig])<600000){ continue; } // identical meal within 10 min -> skip duplicate insert, not a failure
+        _foodExpected++;
+        var aOk = await logFoodFromChat(_pinDay(addOffer), addPhoto);
+        if(aOk){ _foodToasts++; _foodVerified++; window.__chatFoodSig[_sig]=_nowFa; }
+        else console.error('food save failed for offer', addOffer);
       }
     }
   }
@@ -37496,12 +37597,39 @@ async function jimTurn(text, photos, opts){
     reply = '✓ Got it — rated.\n\n' + reply;
   }
 
-  // SAFETY NET: if a FOOD_LOG marker survived strict extraction (model drift), salvage a single add so the meal still logs.
+  // SAFETY NET: if a FOOD_LOG marker survived strict extraction (model drift), salvage
+  // a single add so the meal still logs. This matched against `reply` before, which by
+  // this point has already had every FOOD_LOG tag stripped by extractAllMarkers — parsed
+  // or not — so the match could never succeed. Fixed to match the pre-strip snapshot.
   if(!foodAdds.items.length && !foodEdits.items.length && !foodDeletes.items.length){
-    var _salvage = reply.match(/\[FOOD_LOG\]([\s\S]*?)\[\/FOOD_LOG\]/);
+    var _salvage = _rawReply.match(/\[FOOD_LOG\]([\s\S]*?)\[\/FOOD_LOG\]/);
     if(_salvage){
-      try{ var _sObj = JSON.parse(_salvage[1].trim()); if(_sObj && _sObj.name){ var _sOk = await logFoodFromChat(_sObj, photoSnapshot); if(_sOk) showToast('✓ '+(_sObj.name||'Meal')+' logged'); } }catch(e){ console.error('food salvage parse failed', e); }
+      _foodExpected++;
+      try{
+        var _sObj = JSON.parse(_salvage[1].trim());
+        if(_sObj && _sObj.name){
+          var _sOk = await logFoodFromChat(_sObj, photoSnapshot);
+          if(_sOk){ _foodVerified++; showToast('✓ '+(_sObj.name||'Meal')+' logged'); }
+        }
+      }catch(e){ console.error('food salvage parse failed', e); }
     }
+  }
+  // Same shape of gap as the workout one, for food: no marker of any kind, yet the
+  // text is about to confidently say a meal got logged. Scoped to a slot word
+  // (breakfast/lunch/dinner/snack/meal) near the verb, deliberately narrower than
+  // the workout check — food descriptions don't share a small closed vocabulary
+  // the way walk/workout/run/lift do, so a looser net here would over-fire on
+  // ordinary sentences that just happen to contain "logged" and "it."
+  var _foodConfirmMatch = /\b(logged|added|saved)\b[^.!\n]{0,60}\b(meal|breakfast|lunch|dinner|snack)\b/i.exec(reply);
+  if(!_foodExpected && !_rawReplyHadFoodTag && _foodConfirmMatch){
+    console.error('FOOD confirmation with no marker at all — refusing to let it stand', reply);
+    reply = "I don't think that actually saved — can you tell me again what you ate?";
+    _foodExpected = 1;
+  }
+  // One check, after both the direct adds AND the salvage pass, so a food row that
+  // only surfaced via salvage still gets the same honest correction on failure.
+  if(_foodVerified < _foodExpected && reply.indexOf("didn't actually save")<0 && reply.indexOf("don't think that actually saved")<0){
+    reply += (reply?'\n\n':'') + "One of those didn't actually save — can you tell me again?";
   }
   // Scrub any leftover or partial marker text so raw JSON / tags never reach the screen.
   reply = reply
