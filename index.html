@@ -28210,12 +28210,22 @@ function gpSetCardioDays(n){ profile.cardio_days=Math.max(1,Math.min(7,parseInt(
 // text in profiles.movement_prefs, the same pattern split_week already uses.
 //
 // THE MISSING-ROW LAW (agreed, both sessions): null, missing or unreadable means
-// walks none, cardio 0 days, recovery ON at 10 minutes. Recovery is on for everyone
-// by default INCLUDING people who never open this screen — those people have nothing
-// stored at all, so the default lives here in code and never in the row. The Day side
-// carries the identical default; a side reading a missing value as "recovery off"
+// walks none, CARDIO ON, recovery ON at 10 minutes. Cardio and recovery are both on
+// for everyone by default INCLUDING people who never open this screen — those people
+// have nothing stored at all, so the default lives here in code and never in the row.
+// The Day side carries the identical default; a side reading a missing value as "off"
 // would silently take the slot away from every client who hasn't touched Profile.
-function _mvpDefaults(){ return {v:1, walks:[], cardio:{days_per_week:0}, recovery:{on:true, minutes:10}}; }
+//
+// CARDIO IS NOT A NUMBER (Yusuf, ruling). cardio.days_per_week is dead: there is no
+// goal, no days-a-week and no count anywhere a client can see. Cardio is simply
+// present on the day, every day, for everyone — waiting to be tapped done or ignored,
+// never expiring and never counted — unless the client explicitly turns it off here,
+// which is a real answer and the only thing this card stores about it.
+// Nothing needed migrating: every one of the 73 profile rows held NULL for this column
+// when the shape changed, so no client had a days_per_week to lose. A legacy object is
+// still handled — days_per_week is ignored entirely and absence reads as ON, so an old
+// row can only ever resolve to the default, never to a silent "off".
+function _mvpDefaults(){ return {v:1, walks:[], cardio:{on:true}, recovery:{on:true, minutes:10}}; }
 function _mvpClamp(v,lo,hi,fb){ v=parseInt(v,10); return isNaN(v)?fb:Math.max(lo,Math.min(hi,v)); }
 // Never trust a partial object: every gap is filled with the law's defaults, and every
 // value is clamped, so what render and save see is always the full agreed shape.
@@ -28238,7 +28248,10 @@ function _mvpPrefs(){
         return {id:(id||('w'+(i+1))), name:String(w.name||'Walk').slice(0,40), days:days};
       });
   }
-  if(p.cardio&&typeof p.cardio==='object') out.cardio.days_per_week=_mvpClamp(p.cardio.days_per_week,0,7,0);
+  // Exactly the recovery rule, for exactly the same reason: only an explicit false is
+  // off. A legacy {days_per_week:N} object has no `on` at all and therefore reads ON,
+  // which is the ruling's default — days_per_week is never consulted again.
+  if(p.cardio&&typeof p.cardio==='object') out.cardio.on=(p.cardio.on!==false);
   if(p.recovery&&typeof p.recovery==='object'){
     out.recovery.on=(p.recovery.on!==false);          // absent means ON — the law
     out.recovery.minutes=_mvpClamp(p.recovery.minutes,5,60,10);
@@ -28349,7 +28362,8 @@ function _mvpCount(n){ return ['No','One','Two','Three','Four','Five','Six','Sev
 function _mvpSummary(m){
   var bits=[];
   if(m.walks.length) bits.push(_mvpCount(m.walks.length)+' walk'+(m.walks.length===1?'':'s'));
-  if(m.cardio.days_per_week>0) bits.push('cardio goal '+m.cardio.days_per_week+' day'+(m.cardio.days_per_week===1?'':'s'));
+  // No count here either — the summary says whether it's there, never how much.
+  bits.push(m.cardio.on ? 'cardio every day' : 'cardio off');
   bits.push(m.recovery.on ? ('recovery '+m.recovery.minutes+' min') : 'recovery off');
   var t=bits.join(' · ');
   return t.charAt(0).toUpperCase()+t.slice(1);
@@ -28398,16 +28412,20 @@ function _mvpInner(m){
   } else if(m.walks.length<8){
     h+='<div class="mvpAdd" onclick="mvpAddStart()"><div class="mvpAddT">Add a walk</div><div class="mvpAddB">+</div></div>';
   }
-  var cg=m.cardio.days_per_week;
+  // Cardio is a switch, not a dial. The stepper that used to sit here asked the client
+  // to name a number of days, which made cardio a target they could fall short of —
+  // and this app states facts rather than setting people goals. It is on the day every
+  // day for everyone; the only thing to say about it is whether they want it at all.
   h+='<div class="mvpGrp">Cardio</div>'
-    +'<div class="mvpStepRow">'
-      +'<button class="mvpStep" onclick="mvpCardio(-1)" aria-label="Fewer days">−</button>'
-      +'<div class="mvpNum"><div class="mvpNumBig">'+cg+'</div><div class="mvpNumLbl">day'+(cg===1?'':'s')+' a week</div></div>'
-      +'<button class="mvpStep" onclick="mvpCardio(1)" aria-label="More days">+</button>'
+    +'<div class="mvpTog" onclick="mvpCardioToggle()">'
+      +'<div style="min-width:0;"><div class="mvpItemN">Any cardio you like</div>'
+      +'<div class="mvpItemWhen">'+(m.cardio.on?'Every day':'Off')+'</div></div>'
+      +'<div class="mvpSw'+(m.cardio.on?'':' off')+'"><i></i></div>'
     +'</div>'
-    +'<div class="mvpLine">'+(cg>0
-        ? 'Your goal — it shows up each day and you decide when it fits.'
-        : 'Set a goal and it shows up each day — you decide when it fits.')+'</div>';
+    // Said once, and only where it's true. Off is a real answer and gets no argument.
+    +(m.cardio.on
+        ? '<div class="mvpLine">On your day, every day. Do it when it fits, tap it done.</div>'
+        : '');
   h+='<div class="mvpGrp">Recovery</div>'
     +'<div class="mvpTog" onclick="mvpRecToggle()">'
       +'<div style="min-width:0;"><div class="mvpItemN">Stretching, foam roll, self massage</div>'
@@ -28506,9 +28524,9 @@ function mvpWalkPreset(id,which){
   else w.days=[];                      // pick days: start clean and choose
   _mvpSet(m);
 }
-function mvpCardio(d){
+function mvpCardioToggle(){
   var m=_mvpPrefs();
-  m.cardio.days_per_week=_mvpClamp(m.cardio.days_per_week+d,0,7,0);
+  m.cardio.on=!m.cardio.on;
   _mvpSet(m);
 }
 function mvpRecToggle(){
