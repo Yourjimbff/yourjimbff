@@ -2570,7 +2570,7 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
   cursor:pointer;-webkit-tap-highlight-color:transparent;}
 .cnEmpty{font-size:13.5px;color:rgba(240,236,228,0.78);line-height:1.6;}
 .cnFail{font-size:13px;color:#ffb4a2;line-height:1.55;}
-/* ===== MOVEMENT — walks, a cardio goal, recovery =========================
+/* ===== MOVEMENT — walks, cardio, recovery ================================
    The controls ARE this screen, so they all animate the same three things —
    background, border, transform — over the same 140ms, and nothing animates
    size or position, so nothing reflows. A pressed control scales; it never
@@ -27309,11 +27309,21 @@ async function _writeCalendar(plan){
 // not a settings field. Coaching style is Yusuf's job and no client should be picking
 // it out of a menu. Their numbers stay off the end of the sequence so _gpDone and the
 // trainer cockpit keep resolving; nothing on Profile renders them.
+// Cardio left this sequence (Yusuf, ruling): a client-facing weekly minutes target is
+// exactly the count the movement ruling says must not exist anywhere they can see, and
+// this card was still offering 120/180/250/330 min. The SURFACE is gone; the maths and
+// every stored value are deliberately untouched, so nobody's calorie number moves.
+// _gpSecCardio and its setters stay defined but unreferenced — deleting them would take
+// the cardio_min writes with them, and what feeds calories is decided in the merge map.
+// The section number comes from array position (n=i+1 in renderGoalsPage), so dropping
+// an entry renumbers everything after it. Movement and fuel move up by one here, and
+// GP_CARDIO joins the retired sentinels rather than keeping a live index — the same
+// thing GP_DAYS did when Training left for the Program tab.
 var GP_SECTIONS=[_gpSecYou,_gpSecGoal,
-                 _gpSecCardio,_gpSecMovement,_gpSecFuel];
+                 _gpSecMovement,_gpSecFuel];
 var GP_YOU=1, GP_GOAL=2,
-    GP_CARDIO=3, GP_MOVE=4, GP_FUEL=5;
-var GP_DAYS=90, GP_COACH=91, GP_SLEEP=92;
+    GP_MOVE=3, GP_FUEL=4;
+var GP_DAYS=90, GP_COACH=91, GP_SLEEP=92, GP_CARDIO=93;
 var GP_N=GP_SECTIONS.length;
 // A quiet label above the card that starts each group.
 var GP_GROUPS={};
@@ -28342,6 +28352,29 @@ async function pgRetryPlan(){
   try{ await loadTrainingPlan(); }catch(e){}
   try{ renderProgramTab(); }catch(e){}
 }
+// ===== TRAINER-SIDE DISPLAY HIDE — one switch, display only ==================
+// Yusuf's ruling: a client can be taken off the trainer's surfaces without anything
+// happening to them. No row is changed, nothing is deleted, and their own app is
+// untouched — they simply stop appearing on his side. Add or remove a code here and
+// that is the whole operation; this list is the switch.
+//
+// IT MUST NEVER BE WIRED INTO SIGN-IN. The pre-existing localStorage list
+// 'yjb_hidden_clients' looks like the obvious tool for this and is NOT: doLogin reads
+// it and REFUSES THE SIGN-IN ("Block hidden clients from logging in"), so hiding a
+// client through that route locks them out of their own account on that device and
+// shows them "Wrong code". It is also per-device, so it hides nobody on Yusuf's other
+// phone. This list is plain code, shared by every surface, and only ever filters what
+// is DRAWN.
+var PP_HIDDEN_FROM_TRAINER = ['adisa1'];
+function ppHiddenFromTrainer(code){
+  try{ return PP_HIDDEN_FROM_TRAINER.indexOf(String(code||'').toLowerCase())>-1; }
+  catch(e){ return false; }
+}
+// Convenience for any surface listing clients: keeps order, drops the hidden.
+function ppVisibleClients(codes){
+  try{ return (codes||[]).filter(function(c){ return !ppHiddenFromTrainer(c); }); }
+  catch(e){ return codes||[]; }
+}
 function renderProgramTab(){
   var host=document.getElementById('programWeekHost');
   if(!host||!profile) return;
@@ -29280,9 +29313,19 @@ async function gpPersist(){
     cal_manual:(profile.cal_manual||null), pro_manual:(profile.pro_manual||null),
     carb_manual:(profile.carb_manual||null), fat_manual:(profile.fat_manual||null),
     train_days_manual:(profile.train_days_manual?1:null),
-    cardio_manual:(profile.cardio_manual?1:null),
-    cardio_mode:(profile.cardio_mode||null),
     setup_done:true};
+  // THE CARDIO KEYS OMIT, THEY NEVER NULL. PostgREST only updates columns present in
+  // the body, so an absent key preserves what is stored and an explicit null erases it.
+  // These two used to coerce falsy to null, which meant any save made before the
+  // background profile read resolved — a fresh device, a cleared cache, a private tab,
+  // a slow network — wrote null over a client's hand-set cardio. That was survivable
+  // while the Cardio card existed, because one tap put it back. The card is gone now,
+  // so nothing on any surface can ever set it again: the erase would be permanent, and
+  // _tpPlanForClient gates on cardio_manual, so their cardio would quietly fall out of
+  // the composed week and _writeCalendar would persist the cardio-free version.
+  // Three clients' hand-set values (Yusuf's ruling: untouched) depend on this.
+  if(profile.cardio_manual) full.cardio_manual=1;
+  if(profile.cardio_mode) full.cardio_mode=profile.cardio_mode;
   // Same shape as saveProfileTab's ladder: shed the newest columns rather than lose
   // the whole row. sbUpsert RESOLVES false on an HTTP error, so branch on the value.
   var mid=Object.assign({},full);
@@ -33569,13 +33612,18 @@ async function changeAccessCode(){
 // section: optional 1–10 to land with that one open (the sleep edge passes 9).
 function openProfileGoals(section){
   try{ switchTab('Today'); }catch(e){}
-  _gpOpen=(section!=null)?section:null;
+  // _gpOpenOne is the real open-state variable. This wrote to `_gpOpen`, which is
+  // declared nowhere and read nowhere, so passing a section never opened anything.
+  _gpOpenOne=(section!=null)?section:null;
   try{ renderGoalsPage(); }catch(e){}
   if(section!=null){
     setTimeout(function(){
       try{
-        var host=document.getElementById('goalsPage');
-        var card=host?host.querySelectorAll('.gpCard')[section-1]:null;
+        // BY NUMBER, NOT BY POSITION. Counting cards is the exact bug _gpCard's own
+        // comment warns about, and cardio leaving the sequence just moved every
+        // position: section 4 used to be Movement and is now Fuel. The card carries
+        // its own number, so ask for it.
+        var card=document.querySelector('#goalsPage .gpCard[data-gp="'+section+'"]');
         if(card&&card.scrollIntoView) card.scrollIntoView({block:'center'});
       }catch(e){}
     },60);
@@ -35327,7 +35375,12 @@ async function buildDayContext(){
         var _ph=(typeof PHASES!=='undefined' && profile.phase && PHASES[profile.phase]) ? PHASES[profile.phase] : null;
         if(_ph) pBits.push('Current phase: '+_ph.name+' \u2014 '+_ph.line+' ('+_ph.who+')');
         if(profile.train_days) pBits.push('Lifting sessions committed to: '+profile.train_days+'/week ('+(7-profile.train_days)+' rest days)');
-        if(profile.cardio_min) pBits.push('Cardio target: '+profile.cardio_min+' min/week'+(profile.cardio_days?(' across ~'+profile.cardio_days+' days'):''));
+        // JIM DOES NOT SPEAK A CARDIO NUMBER. This handed him "Cardio target: 250
+        // min/week" and he said it out loud — a weekly target most clients never
+        // chose, auto-set from their phase. Same ruling that killed the cardio
+        // section and the goal strings: no target, no minutes, no weekly anything
+        // client-facing. Cardio is on or off now, and Jim can be warm about it
+        // without ever setting one.
         if(profile.carb_target) pBits.push('Carb target: '+profile.carb_target+'g/day');
         if(profile.fat_target) pBits.push('Fat target: '+profile.fat_target+'g/day');
         if(profile.body_fat||profile.bodyfat) pBits.push('Body fat: '+(profile.body_fat||profile.bodyfat)+'%');
