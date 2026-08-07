@@ -4810,15 +4810,6 @@ body.hasnav #tToday{padding-bottom:96px;}
   </div>
 </div>
 
-<!-- GRACE -->
-<div class="gbg" id="gracebg">
-  <div class="gsh">
-    <div class="ghnd"></div>
-    <div class="gem" id="gem">🍔</div>
-    <div class="gtit" id="gtit"></div>
-    <div class="gmsg" id="gmsg"></div>
-    <div class="gbwrap"><button class="gbbtn p" id="gb1" onclick="graceChoice(1)"></button><button class="gbbtn s" id="gb2" onclick="graceChoice(2)"></button></div>
-  </div>
 </div>
 
 <!-- PERFECT -->
@@ -4903,6 +4894,98 @@ body.hasnav #tToday{padding-bottom:96px;}
   else _stamp();
   setTimeout(_stamp, 400);
 })();
+
+// ===== THE SESSION =====
+// The access code is exchanged, server-side, for a signed session naming this client.
+// Until that exists the database is handed the same public key by everyone and cannot
+// tell one client from another, which is why "your own data only" can't be enforced.
+//
+// THIS IS INERT UNTIL THE LOCK IS PASTED. While the tables are still open the public
+// key keeps working exactly as before, so nothing here can break a client today. What
+// it does do is get every device carrying a session BEFORE the lock lands — which is
+// what stops anyone being bounced to the sign-in screen at cutover.
+//
+// A client who is already signed in has their code on the device. On the next wake the
+// app quietly trades it for a session. They see nothing: no screen, no prompt, no tap.
+var SESS_URL = '/.netlify/functions/session';
+var _sess = null;                 // {token, exp, code}
+function _sessLoad(){
+  if(_sess) return _sess;
+  try{ _sess = JSON.parse(localStorage.getItem('yjb_session')||'null'); }catch(e){ _sess=null; }
+  return _sess;
+}
+function _sessSave(s){
+  _sess = s;
+  try{ s ? localStorage.setItem('yjb_session', JSON.stringify(s)) : localStorage.removeItem('yjb_session'); }catch(e){}
+}
+function _sessClear(){ _sessSave(null); }
+// Valid means: we have one, it is for THIS client, and it has not expired. A session
+// belonging to whoever used the device last must never be sent for somebody else.
+function _sessToken(){
+  var s=_sessLoad();
+  if(!s || !s.token || !s.exp) return null;
+  if(s.exp <= Math.floor(Date.now()/1000)) return null;
+  try{ if(cl && cl.code && s.code && s.code!==cl.code) return null; }catch(e){}
+  return s.token;
+}
+var _sessBusy=null;
+// Trades a code for a session. Never throws and never blocks a render: a failure just
+// leaves the app on the public key, which is exactly today's behaviour.
+async function sessEnsure(code, force){
+  try{
+    code = String(code || (cl&&cl.code) || '').toLowerCase();
+    if(!code) return null;
+    if(!force){
+      var have=_sessToken();
+      if(have){
+        // Quiet renewal, well before it lapses, so a session never expires under
+        // someone mid-session and nobody is ever asked to sign in again.
+        var s=_sessLoad(), left=s.exp - Math.floor(Date.now()/1000);
+        if(left > (s.renew_within || 604800)) return have;
+      }
+    }
+    if(_sessBusy) return _sessBusy;
+    _sessBusy = (async function(){
+      try{
+        var r=await fetch(SESS_URL,{method:'POST',headers:{'Content-Type':'application/json'},
+                                    body:JSON.stringify({code:code})});
+        if(!r.ok) return null;
+        var d=await r.json();
+        if(!d || !d.token) return null;
+        _sessSave({token:d.token, exp:d.expires_at, code:code, renew_within:d.renew_within});
+        return d.token;
+      }catch(e){ return null; }
+      finally{ _sessBusy=null; }
+    })();
+    return _sessBusy;
+  }catch(e){ return null; }
+}
+// The failure mode is "sign in again", never "data visible". Once the lock is on, a
+// request refused for want of a session gets ONE silent retry with a fresh one; if that
+// fails too the app signs out rather than sitting on a screen full of blanks or, worse,
+// quietly falling back to a key that can still see everything.
+// The end of the line: a refusal we could not recover from. Drop the session and the
+// remembered code and land on the sign-in screen, which is the honest state — they are
+// not signed in as far as the database is concerned. Guarded so a storm of refused
+// requests cannot reload the page in a loop.
+var _sessSigningOut=false;
+function sessForceSignIn(){
+  if(_sessSigningOut) return;
+  _sessSigningOut=true;
+  try{ _sessClear(); }catch(e){}
+  try{ localStorage.removeItem('yjb_logged_in'); }catch(e){}
+  try{ location.reload(); }catch(e){}
+}
+var _sessRecovering=false;
+async function sessOnDenied(){
+  if(_sessRecovering) return false;
+  _sessRecovering=true;
+  try{
+    _sessClear();
+    var t=await sessEnsure((cl&&cl.code)||'', true);
+    return !!t;
+  } finally { _sessRecovering=false; }
+}
 
 // ===== SUPABASE CONFIG =====
 var SB_URL = 'https://frxptalfyutukmnsvysg.supabase.co';
@@ -4991,6 +5074,22 @@ function _sbRenderDown(){
     }
     return _rawFetch(input, opts).then(function(res){
       if(_sbIsDown(res && res.status)) _sbNoted(res && res.status); else _sbRecovered();
+      // REFUSED FOR WANT OF A SESSION. After the lock, this is what a request carrying
+      // no session — or a stale one — comes back as. Every Supabase call in the app
+      // passes through here, so this is the one place that can answer it.
+      //
+      // ONE silent retry with a fresh session, then sign them out. The thing this must
+      // never do is shrug and carry on: an app that quietly keeps using the public key
+      // after being refused is an app showing whatever that key can still see. Sign in
+      // again is the correct failure; a screen full of someone else's data is not.
+      if(res && (res.status===401 || res.status===403) && !(opts||{}).__sessRetried){
+        return sessOnDenied().then(function(ok){
+          if(!ok){ try{ sessForceSignIn(); }catch(e){} return res; }
+          var o2=Object.assign({}, opts||{}, {__sessRetried:true});
+          try{ o2.headers=Object.assign({}, o2.headers||{}, {'Authorization':'Bearer '+_sessToken()}); }catch(e){}
+          return window.fetch(input, o2);
+        });
+      }
       return res;
     }, function(err){
       _sbNoted((err && err.name) || 'network');
@@ -4999,14 +5098,49 @@ function _sbRenderDown(){
   };
 })();
 
+// Every Supabase request in the app goes out through here, which makes it the one place
+// the session has to be attached. `apikey` stays the public key — PostgREST requires a
+// project key to route the request at all — while Authorization carries the session that
+// says WHO is asking. With no session it falls back to the public key, which is exactly
+// today's behaviour, so this changes nothing until the lock is pasted.
 function sbHeaders(){
+  var t=null; try{ t=_sessToken(); }catch(e){ t=null; }
   return {
     'Content-Type':'application/json',
     'apikey':SB_KEY,
-    'Authorization':'Bearer '+SB_KEY,
+    'Authorization':'Bearer '+(t||SB_KEY),
     'Prefer':'return=minimal'
   };
 }
+
+// THE TRAINER DOOR — the client side of netlify/functions/trainer.js.
+// Named operations only, exactly matching the OPS list the function exposes. There is
+// no passthrough here on purpose: adding a generic "table + filter" call would put the
+// hole straight back, just one hop further away.
+//
+// NOT YET CALLED FROM ANYWHERE. The cockpit's reads of sales, client_contacts,
+// jv_handled, engine_moments, coach_moments, coach_reposts and coach_notes still go
+// straight to the tables with the public key, exactly as before — moving each of those
+// over is the next step, done and verified one at a time rather than in the same diff
+// as the door itself. This function is ready for that step to start.
+//
+// Mirrors sbSelect's own contract: never throws, returns [] on failure. A trainer
+// surface that already treats [] as "nothing yet" needs no rewriting to switch readers.
+async function trainerOp(op, args){
+  try{
+    var t=_sessToken();
+    if(!t) return [];   // no session minted yet — nothing to ask the door with
+    var res=await fetch('/.netlify/functions/trainer',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+t},
+      body:JSON.stringify({op:op, args:(args||{})})
+    });
+    if(!res.ok) return [];
+    var d=await res.json();
+    return Array.isArray(d) ? d : (d?[d]:[]);
+  }catch(e){ return []; }
+}
+
 var SB_BUCKET = 'progress-photos';
 // Upload a full-res image blob to Supabase Storage; returns the public URL, or null if the bucket isn't reachable.
 async function uploadProgressImage(blob, clientCode){
@@ -6096,6 +6230,21 @@ async function _doLoginInner(){
   // The one record this device is allowed to remember: its own. Auto-login seeds
   // from this now that no roster ships in the file.
   try{ localStorage.setItem('yjb_self_client', JSON.stringify(cl)); }catch(e){}
+  // THE SILENT EXCHANGE. Both routes into the app end here — a fresh sign-in and the
+  // restore of someone already signed in — so this one line is what gets a session onto
+  // every device without a single client being asked to do anything. It is why nobody
+  // gets bounced to the sign-in screen at cutover: by the time the lock is pasted, the
+  // devices already carry sessions.
+  //
+  // Raced against a timeout on purpose. A session makes the app work AFTER the lock; it
+  // is not needed before it, so a slow or unconfigured function must never sit in front
+  // of somebody's sign-in. Whatever happens, the app continues.
+  try{
+    await Promise.race([
+      sessEnsure(code),
+      new Promise(function(r){ setTimeout(r, 2500); })
+    ]);
+  }catch(e){}
   // Whose device this is. Set once, when a trainer signs in here, and never
   // cleared by signing in as somebody else — that is the whole point. It is what
   // lets the app notice that the account being written to is not the person
@@ -9949,7 +10098,17 @@ async function publishEntry(){
         _showEntryRead();
         try{ loadEntries(); }catch(e){}
         try{ if(isTrainer(cl.code)){ if(typeof loadTrainerFeed==='function') loadTrainerFeed(); } else { if(typeof loadJournal==='function') loadJournal(); } }catch(e){}
-      } else { console.error('check-in insert failed:', lastErr); showToast('Could not send: '+(lastErr?String(lastErr).slice(0,60):'unknown error')); }
+      } else {
+        // The server's own words go to the console and NOWHERE ELSE. This used to put
+        // the first 60 characters of the raw PostgREST body into a toast on a client's
+        // phone — column names, table names, constraint names, and once row-level
+        // security is on it would read out the policy that refused them. A client gets
+        // a sentence about their check-in; the detail is for whoever is debugging.
+        console.error('check-in insert failed:', lastErr);
+        // Nothing queues this — _queueRow was built and never used — so the honest
+        // thing is to say it did not send and leave their words on screen to retry.
+        showToast('Couldn’t send that — your words are still here, try again in a moment.');
+      }
     }
   }catch(e){ console.error('publishEntry', e); showToast('Could not publish — try again'); }
   finally{ if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent=_ot||'Send check-in \u2713'; } }
@@ -12605,6 +12764,9 @@ function doLogout(){
   if(!confirm('Log out?'))return;
   clearTimeout(trainerRefreshTimer);
   localStorage.removeItem('yjb_logged_in');
+  // The session names a person, so it leaves with them. A session left behind is one
+  // the next person on this device would send as their own.
+  try{ _sessClear(); }catch(e){}
   cl=null;profile=null;allFood=[];todayFood=[];todayWo=[];
   tots={cal:0,protein:0,carbs:0,fat:0};scores={food:0,workout:0,steps:0,sleep:0,weight:0,energy:0};
   photoData=null;curResult=null;wVal=null;badCt=0;lastWeight=null;
@@ -12890,6 +13052,7 @@ function jvCloseMore(){ var m=document.getElementById('jvMoreMenu'); if(m) m.cla
 function jvSignOut(){
   if(!confirm('Sign out?')) return;
   try{ localStorage.removeItem('yjb_logged_in'); }catch(e){}
+  try{ _sessClear(); }catch(e){}      // the session leaves with the person
   document.body.classList.remove('jv-on');
   document.body.classList.remove('jv-deep-open');
   location.reload();
@@ -15533,12 +15696,15 @@ function _tlWnCard(ds){
     if(cl && typeof isTrainer==='function' && isTrainer(cl.code)) return '';
     if(localStorage.getItem(_tlWnKey())) return '';
   }catch(e){ return ''; }
+  // Replaces the old changelog card whole (Yusuf, 8 Aug) — the audit called it "a
+  // changelog living where the client's day should start." This says what to do,
+  // not what changed, and it says nothing the naming law would have to walk back:
+  // no promise that a photo alone produces numbers.
   return '<div class="tlWn">'
     +'<div class="tlWnX" data-tl="wnday" data-ds="'+_escHtml(ds)+'"><svg width="9" height="9" viewBox="0 0 9 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1 1l7 7M8 1 1 8"/></svg></div>'
-    +'<div class="tlHeroEy">What’s new</div>'
-    +'<div class="tlWnRow"><b>Your Day page, redesigned.</b> Training front and center, and the day fills in as you go.</div>'
-    +'<div class="tlWnRow"><b>Food logs from a photo.</b> Take the picture, give me one line, and the numbers come back.</div>'
-    +'<div class="tlWnRow"><b>Or simply tell me.</b> Trained, ate, weighed in — say it and it’s handled.</div>'
+    +'<div class="tlWnRow" style="border-bottom:none;padding-top:2px;">Jim’s back, and sharper.</div>'
+    +'<div class="tlWnRow" style="border-bottom:none;">Tell him what you ate like you’d text me — palms, handfuls, plain words.</div>'
+    +'<div class="tlWnRow" style="border-bottom:none;padding-bottom:2px;">He’ll build your day as you go.</div>'
   +'</div>';
 }
 function tlWnDismiss(ds){
@@ -21729,12 +21895,6 @@ SITUATIONAL AWARENESS — factor these into your response:
 - If they trained today and this is post-workout: lean into the carbs
 - If sleep was poor and this is a sugar bomb: name the pattern (poor sleep → cravings is real)
 
-GRACE TRIGGER RULES — only fire bad_food:true when:
-- Sugar over 20g AND no meaningful protein payoff (under 10g protein)
-- Clear fast food chains (McDonald's, Burger King, Domino's, Taco Bell, etc.)
-- Zero nutritional value (candy, soda, chips with no redeeming macros)
-- Alcohol
-DO NOT fire bad_food:true for: protein bars, meal prep foods, foods with 15g+ protein even if processed, anything from a health-focused brand
 
 RESPONSE STYLE:
 - Nutrient dense whole food: "Perfect meal." + one specific food fact about a key ingredient. NEVER comment on it being low calorie or "not enough" — a clean light meal is a WIN, full stop.
@@ -22053,10 +22213,14 @@ function clearFoodResult(){
 function confirmMeal(){
   if(!curResult)return;
   var r=curResult;
-  if(r.is_alcohol){showGrace('alcohol',r);return;}
-  // Only trigger grace for genuinely bad food - not just any "bad" rating
-  var reallyBad = r.bad_food && (r.rating==='bad') && (r.calories > 200);
-  if(reallyBad){badCt++;showGrace(badCt>=3?'disaster':badCt===2?'two':'one',r);return;}
+  // A LOGGED TREAT IS A LOGGED MEAL (Yusuf, 8 Aug). This used to stop the log and
+  // put a modal in the way, escalating over three offences from arch, to a line
+  // about starting over, to outright insult. Shame for telling the truth about
+  // food, which is the one thing this app needs people to keep doing. The whole
+  // mechanism is gone — copy, modal and counter — and a treat is now absorbed like
+  // any other meal, with the day reporting the numbers.
+  // The old strings are quoted nowhere, deliberately: they should not survive even
+  // as a comment someone can grep out of the shipped file.
   try{ window._mealCommitBusy=false; }catch(e){}
   commitMeal(r,false);
 }
@@ -29602,9 +29766,25 @@ function _gpStatusHead(){
 // This is what the Profile route is FOR. The eleven sections below it are where you
 // change things; this is where you see how it's going. It gets richer as more gets
 // logged rather than waiting for everything to be filled in.
+// Current weight has ONE source of truth: the latest weigh-in. _pSyncBasics says so in
+// those words, but it only ever wrote that number into the Profile input box — the
+// status card above it read profile.weight, which nothing updates when a weigh-in is
+// logged from the Day page. So the card sat on a stale number until the next full load
+// while the field an inch below it showed the new one. Both read this now.
+function _pCurrentWeight(){
+  try{
+    var all=(window._wtAll||[]).filter(function(r){ return r && r.weight!=null; });
+    // _wtAll is sorted ascending — the newest is at the END.
+    if(all.length){ var n=parseFloat(all[all.length-1].weight); if(n>0) return n; }
+  }catch(e){}
+  // No weigh-ins loaded or none logged: fall back to what the profile carries, which is
+  // what they typed during setup.
+  var p=parseFloat(profile&&profile.weight);
+  return (p>0)?p:NaN;
+}
 function _gpOverview(){
   var p=profile||{};
-  var cw=parseFloat(p.weight), gw=parseFloat(p.goal_weight||p.goalWeight);
+  var cw=_pCurrentWeight(), gw=parseFloat(p.goal_weight||p.goalWeight);
   var sw=parseFloat(p.phase_start_weight)||parseFloat(p.start_weight);
   // No weight yet. Rather than vanish — which drops the heading and lets the old hero
   // fall through into the middle of the page — say the true thing: they're at the start.
@@ -30690,10 +30870,12 @@ function _buildBriefing(){
     head = name?('Heavy stretch, '+name+'.'):'Heavy stretch.';
     sub  = 'You said it felt hard \u2014 that\u2019s logged and it\u2019s real. Don\u2019t chase perfect today. Just show up, hit protein, move a little. Consistency beats intensity right now.';
   }
-  // 2) Ghosting — nothing logged, past midday
+  // 2) Nothing logged yet, past midday. The second ghost trigger — this one in the
+  // client's own greeting, not Jim's context. It named the silence and asked them
+  // to account for it. An empty day is not evidence of anything, so it offers now.
   else if(hour>=14 && foodCt===0 && woToday===0 && thisWk===0){
-    head = name?(name+', it\u2019s quiet.'):'It\u2019s quiet today.';
-    sub  = 'Nothing logged yet and it\u2019s past 2. Busy or slipping? Either way \u2014 log one thing right now and we\u2019re back on.';
+    head = name?('Hey, '+name+'.'):'Hey.';
+    sub  = 'Whenever you\u2019re ready, tell me what you\u2019ve eaten and I\u2019ll sort the numbers.';
   }
   // 3) On a roll — consistent training + logging
   else if(thisWk>=Math.max(3,target-1) && foodCt>0){
@@ -30924,37 +31106,12 @@ async function commitMeal(r,graced){
   // The app must never volunteer judgment that a client's food is "too much" —
   // especially dangerous for lighter clients or anyone with a loss/maintenance goal.
   // Any read on food volume is the coach's call, not an automated popup.
-  // (showHeavy retained but never triggered.)
 }
 
 
 
-function showHeavy(){
-  document.getElementById('gem').textContent='📋';document.getElementById('gtit').textContent='Heavy Food Day';
-  document.getElementById('gmsg').textContent='This is looking like a heavier food day for where you\'re trying to go.\n\nNo judgment — just worth noticing.';
-  document.getElementById('gb1').textContent="I'm good · moving on";document.getElementById('gb2').textContent='Got it · I\'ll be more mindful';
-  graceType='heavy';document.getElementById('gracebg').classList.add('open');
-}
 
-var graceMap={
-  one:{e:'🍔',t:'Interesting Choice',m:'Looks like a treat. Did you earn it or did it just happen?\n\nYou decide if this counts.',b1:'I earned it · moving on',b2:'Count it · keeping it real'},
-  two:{e:'👀',t:'Two In A Row',m:'Two in a row. Still your call.\n\nOne clean meal resets the whole thing.',b1:"I'm moving on from here",b2:"Count both · I'm being honest"},
-  disaster:{e:'🚨',t:'Come Onnnn',m:"Come oooonnnnnn. You're not an idiot.\n\nYou know better than this. Three in a row?\nThis is either a celebration or a slow spiral.\nOnly you know which one.\n\nPick your next move.",b1:'I earned this · moving on',b2:'Yeah I need to reset · next meal is clean'},
-  alcohol:{e:'🍷',t:'Alcohol Logged',m:'Consider this — alcohol has real physiological effects that are hard to offset for fat burn and muscle recovery.\n\nThis may hinder your progress. Your call.',b1:"Worth it · I'll walk it off",b2:'Noted · counting the hit'}
-};
 
-function showGrace(type,r){
-  graceType=type;pendResult=r;
-  var d=graceMap[type];
-  document.getElementById('gem').textContent=d.e;document.getElementById('gtit').textContent=d.t;
-  document.getElementById('gmsg').textContent=d.m;document.getElementById('gb1').textContent=d.b1;document.getElementById('gb2').textContent=d.b2;
-  document.getElementById('gracebg').classList.add('open');
-}
-function graceChoice(btn){
-  document.getElementById('gracebg').classList.remove('open');
-  if(graceType==='heavy')return;
-  commitMeal(pendResult,btn===1);pendResult=null;
-}
 
 function updTots(){
   var T=_goalTargets();
@@ -33730,6 +33887,9 @@ async function logWeight(){
   document.getElementById('weightInput').value='';
   wVal=null;
   try{ _tlInvalidate(); }catch(e){}
+  // renderWeightJourney above refreshed window._wtAll, so the Profile status card can
+  // be repainted off the new weigh-in straight away rather than waiting for a reload.
+  try{ if(typeof renderGoalsPage==='function') renderGoalsPage(); }catch(e){}
 }
 
 // ===== WEIGHT JOURNEY GRAPH =====
@@ -35879,13 +36039,11 @@ async function buildDayContext(){
     sections.push('=== CURRENT DATE & TIME ===\nRight now it is '+_now.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})+' at '+_now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})+', the client\'s local time. Treat THIS as today. Never state or guess a different date — if a log is from an earlier day, name that day relative to this one. "Today" always means '+todayDateStr+'.');
   }catch(e){}
 
-  // GHOST TRIGGER — past 2pm with 0 food logs AND 0 check-ins = ghosting
-  var hourNow = new Date().getHours();
-  var noFood = !todayFood || todayFood.length === 0;
-  var noCheckins = !todayCheckins || todayCheckins.length === 0;
-  if(hourNow >= 14 && noFood && noCheckins){
-    sections.push('=== ⚠️ GHOST TRIGGER ACTIVE ===\nIt is past 2pm and the client has logged ZERO food AND ZERO check-ins today. This is the signal to address head-on. They are either busy, slipping, or hiding. Lead the conversation with direct, honest accountability — NOT cheerful filler. Examples: "Haven\'t seen you log anything yet — slipping or just busy?" / "Quiet day on the log — what\'s actually going on?" / "It\'s past 2pm with nothing tracked. Walk me through it." Hold the standard. Stay warm. No lectures.');
-  }
+  // THE GHOST TRIGGER IS GONE (Yusuf, 8 Aug). Past 2pm with nothing logged used to
+  // hand Jim an instruction to open by naming the silence — "slipping or just
+  // busy?", "they are either busy, slipping, or hiding" — which is an accusation
+  // however warmly it is phrased, and it fired on anyone simply having a day. An
+  // unlogged day is not evidence of anything. Jim opens warm or he doesn't open.
 
   // PROFILE
   if(profile){
