@@ -14685,7 +14685,17 @@ var JV_CLIENT_TABLES=[
   ['training_plans','training plans'], ['programs','programs'], ['menu_items','menu items'],
   ['meals','saved meals'], ['saved_foods','saved foods'], ['mi_checkins','strength checks'],
   ['mi_attempts','strength attempts'], ['mi_assignments','strength assignments'],
-  ['coach_reposts','reposts'], ['jv_handled','board clears'], ['profiles','profile']
+  ['coach_reposts','reposts'], ['jv_handled','board clears'], ['profiles','profile'],
+  // Added after an audit found these three keyed on client_code but absent from this
+  // list, which is how faithparker1's client row went while her daily score stayed
+  // behind — an orphan nothing can reach or clean up. The list has to stay in step
+  // with the schema or every deletion quietly leaves rows forever.
+  ['daily_scores','daily scores'], ['engine_moments','engine moments'],
+  // Deliberately labelled "payment records", not "sales": this table carries
+  // paid_amount, total_amount, due_date and sale_date. Deleting a client now deletes
+  // their payment history too, and whoever confirms the dialog should see that in
+  // plain words before they agree to it.
+  ['sales','payment records']
 ];
 // Exact count via PostgREST's Content-Range. null means the table isn't there or
 // doesn't key on client_code — either way there's nothing of theirs in it.
@@ -27084,35 +27094,29 @@ function _clientGender(){
   return 'unknown';
 }
 function _sexKnown(){ return _clientGender()!=='unknown'; }
+// ONE SOURCE FOR THE DEFAULT WEEK. Both branches used to be hand-written copies of
+// SPLIT_BY_DAYS, and the women's copy had DRIFTED: it read Lower·Push·rest·Pull·Lower·
+// Full-Body·rest while the real female 5 is Lower·Push·Pull·Lower·Full-Body·rest·rest.
+// A woman with no saved program therefore saw one week here and a different one the
+// moment a program was written from the split table — the same client, two answers.
+// Deriving both from SPLIT_BY_DAYS means the drift cannot come back, and it keeps the
+// men's default from drifting the same way later.
+// No saved program changes: this only composes the fallback for someone who has none.
 function _tpDefaultPlan(g){
   g = g || _clientGender();
-  // Unknown gets the balanced week, NOT the men's — and it's flagged provisional
-  // so the training screen asks instead of pretending this was chosen. A plan
-  // object always comes back; callers assign it straight to _tpPlan and read
-  // .Mon off it, so returning null here would throw rather than ask.
-  if(g!=='male'){
-    // Lower · Push · rest · Pull · Lower · Full-Body · rest
-    return {
-      Mon:{type:'Lower',     ex:_tpFromTemplate('Lower')},
-      Tue:{type:'Push',      ex:_tpFromTemplate('Push')},
-      Wed:{type:'Rest',      ex:[]},
-      Thu:{type:'Pull',      ex:_tpFromTemplate('Pull')},
-      Fri:{type:'Lower',     ex:_tpFromTemplate('Lower')},
-      Sat:{type:'Full Body', ex:_tpFromTemplate('Full Body')},
-      Sun:{type:'Rest',      ex:[]},
-      _provisional:(g!=='female')
-    };
-  }
-  // Men: Push · Pull · Legs · Push · Pull · Arms · Legs
-  return {
-    Mon:{type:'Push', ex:_tpFromTemplate('Push')},
-    Tue:{type:'Pull', ex:_tpFromTemplate('Pull')},
-    Wed:{type:'Legs', ex:_tpFromTemplate('Legs')},
-    Thu:{type:'Push', ex:_tpFromTemplate('Push')},
-    Fri:{type:'Pull', ex:_tpFromTemplate('Pull')},
-    Sat:{type:'Arms', ex:_tpFromTemplate('Arms')},
-    Sun:{type:'Legs', ex:_tpFromTemplate('Legs')}
-  };
+  var male = (g==='male');
+  // Men 7 and women 5 are the two Yusuf confirmed as his own.
+  var week = (SPLIT_BY_DAYS[male?'male':'female']||{})[male?7:5];
+  var plan = _splitFromWeek(week);
+  // Callers assign this straight to _tpPlan and read .Mon off it, so a null would
+  // throw rather than ask. The table has both rows, but never return one anyway.
+  if(!plan) plan = { Mon:{type:'Rest',ex:[]}, Tue:{type:'Rest',ex:[]}, Wed:{type:'Rest',ex:[]},
+                     Thu:{type:'Rest',ex:[]}, Fri:{type:'Rest',ex:[]}, Sat:{type:'Rest',ex:[]},
+                     Sun:{type:'Rest',ex:[]} };
+  // Unknown sex gets the balanced week, NOT the men's, and is flagged provisional so
+  // the training screen asks instead of pretending this was chosen.
+  if(!male) plan._provisional = (g!=='female');
+  return plan;
 }
 function _tpFromTemplate(t){
   if(t==='Build') return [];   // blank on purpose
@@ -34297,7 +34301,7 @@ function _renderUnitToggle(){
   host.innerHTML=b('us','LBS / FT')+b('metric','KG / CM');
 }
 function _cardioWhy(T){
-  var P=T.phase, m=T.cardio;
+  var P=T.phase;
   var base;
   if(P.key==='fatloss'){
     base='Cardio widens the deficit without cutting your food further. Steady state is the good stuff \u2014 it lets your mind wander, it\u2019s close to meditative, and it takes the edge off anxiety. You can push it a little here. Just sleep well and massage your muscles.';
@@ -34306,11 +34310,12 @@ function _cardioWhy(T){
   } else {
     base='Cardio keeps the blood flowing. Your whole body runs hotter, food absorbs and gets used better, and you can afford to eat more \u2014 which is exactly what you want when you\u2019re building.';
   }
-  var level = m>=250 ? 'This is an aggressive load \u2014 strong for burn and conditioning.'
-    : (m>=180 ? 'A solid, sustainable load.'
-    : (m>=120 ? 'Enough to hold your conditioning.'
-    : 'Light \u2014 more would move things faster.'));
-  return base+' You\u2019re set at <b style="color:rgba(240,236,228,0.82);">'+m+' min/week</b>. '+level;
+  // The minutes are gone (Yusuf's ruling: no cardio number anywhere a client can see).
+  // This used to end "You're set at 250 min/week" and then grade the figure \u2014 an
+  // aggressive/solid/light verdict on a number the client never chose, since picking a
+  // phase sets it silently. What is left says what cardio is FOR in this phase, which
+  // was the only part that ever helped.
+  return base;
 }
 
 // Read their numbers and suggest the phase, rather than leaving them on a default.
