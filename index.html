@@ -2073,6 +2073,12 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
   border:1px solid rgba(245,197,24,0.4);color:var(--gold);
   display:flex;align-items:center;justify-content:center;font-size:19px;line-height:1;}
 .pgAddEx:active{background:rgba(245,197,24,0.16);}
+.pgLoadErr{border-radius:16px;padding:18px 16px;margin-top:12px;
+  background:rgba(255,255,255,0.115);border:1.5px solid rgba(255,180,162,0.34);}
+.pgLoadErrT{font-size:15px;font-weight:800;color:var(--text);letter-spacing:-0.2px;}
+.pgLoadErrS{font-size:12.5px;color:rgba(240,236,228,0.72);line-height:1.55;margin-top:5px;}
+.pgLoadErrB{margin-top:13px;width:100%;border-radius:12px;padding:12px;font-size:13.5px;font-weight:800;
+  background:var(--gold);border:none;color:var(--onaccent);cursor:pointer;font-family:inherit;}
 .pgDayEmpty{font-size:12.5px;color:rgba(240,236,228,0.6);line-height:1.55;padding:12px 0 2px;
   border-top:1px solid rgba(255,255,255,0.09);}
 /* The sets sheet, in the app's own language rather than the browser's. */
@@ -11177,6 +11183,19 @@ function doLogout(){
   todayCheckins=[]; moodSel='';
   menuItems=[]; menuLoadedFor=null;
   coachMenu=[]; coachMenuLoadedFor=null;
+  // The training plan is per-client and there is no page reload here, so leaving it
+  // behind hands the next person on this device the previous client's program — and
+  // any edit they make writes it into THEIR row, destroying their own. Everything the
+  // Program tab decides from goes with the client it belongs to.
+  try{
+    _tpPlan=null; _tpWeeks=4; _tpName='';
+    window._tpFromServer=false;
+    window._pgPlanAsked=false;
+    window._tpLoadFailed=undefined;   // "unknown" again, not "loaded fine"
+    _pgPlan=null; _pgDayOpen=null;
+    window._tlCache=null; window._tlSetsLoaded=false;
+    window._mvpServerSeen=false; window._mvpDirty=false;
+  }catch(e){}
   if(typeof resetChatState==='function') resetChatState();
   document.getElementById('sApp').style.display='none';
   document.getElementById('bnav').style.display='none';
@@ -25758,6 +25777,16 @@ function _gpSave(opts){
 // The week the Day tab reads. Same reasoning: it used to ride along with the commit.
 async function _gpSyncWeek(){
   try{
+    // NEVER regenerate over a program that exists. This rebuilt the week from the
+    // gender/day-count template and wrote it straight over training_plans, 1.5s after
+    // a client tapped the days-a-week chip — silently replacing a bespoke program
+    // Yusuf had built with a generic one. Saying how many days you intend to train is
+    // a statement of intent; rewriting your program is his call, not the chip's.
+    if(_pgSavedPlan()) return;
+    // And never write while the answer is unknown. A failed or in-flight read leaves
+    // _tpPlan null, which is indistinguishable from "no program" — and writing a
+    // template into that gap is exactly how a bespoke program gets destroyed.
+    if(!_pgPlanKnown()) return;
     var plan=_tpPlanForClient(); if(!plan) return;
     _tpPlan=plan;
     // _writeCalendar reads the row back and only reports ok when it matches. Throwing
@@ -26139,38 +26168,62 @@ function _gpDaysInner(){
   // THE WEEK, first. Day opens on Today's Plate and Program now opens on its
   // equivalent: what you're training, before anything asks you to change it.
   // Only drawn once there IS a week — an empty plate is a form, not a summary.
-  var _pw=(p.train_days_manual?_clientWeek():null);
+  var _saved=_pgSavedPlan();
+  // The profile-derived template is a STARTER, only for a client we know has no
+  // program. Until the read settles we show nothing rather than a week that isn't
+  // theirs — and the train_days_manual gate stays off that path, since that gate is
+  // what blanked the tab for 63 people in the first place.
+  var _pw=_saved ? _pgWeekFromPlan(_saved)
+                 : (_pgPlanKnown() ? _clientWeek() : null);
   var _plate='';
   if(_pw){
     var _trn=_pw.filter(function(t){ return t!=='Rest'; });
     var _split=_trn.map(_escHtml).join(' \u00b7 ');
     _plate='<div class="pgPlate">'
       +'<div class="pgPlateEy">Your week</div>'
-      +'<div class="pgPlateBig">'+((parseInt(p.train_days,10)||_trn.length))+'<i>days a week</i></div>'
+      // Counted off the week being shown. It used to read profile.train_days, which a
+      // chip tap changes instantly — so the headline said "6 days" over a four-day week.
+      +'<div class="pgPlateBig">'+_trn.length+'<i>days a week</i></div>'
       +(_split?('<div class="pgPlateSplit">'+_split+'</div>'):'')
     +'</div>';
   }
-  var inner=_plate+'<div class="pgLbl">Days a week</div><div class="gpChips">'+chips+'</div>';
+  // THE CHIPS ARE DANGEROUS AND ONLY BELONG IN ONE STATE.
+  // They regenerate a week from a template. That is right for someone who has no
+  // program yet and wrong for everyone else, so they render only when we KNOW the
+  // client has no program. While the answer is still loading, or the read failed,
+  // they are absent entirely — a live control that rewrites a program cannot sit
+  // above a card apologising that the program could not be loaded.
+  // With a program, how many days you train is what Yusuf built, not a setting.
+  var _showChips = _pgPlanKnown() && !_saved;
+  var inner=_plate
+    + (_showChips ? ('<div class="pgLbl">Days a week</div><div class="gpChips">'+chips+'</div>') : '');
 
   // The week follows from the number — there was never a second decision here.
-  var week=(p.train_days_manual?_clientWeek():null);
+  var week=_pw;
   // _tpPlanForClient always recomposes from the templates, so on its own it throws
   // away every swap the client has saved. Prefer the stored plan — but only while it
   // still describes this week; changing the day count makes a different week and the
   // old arrangement can't carry over.
+  // Saved plan wins outright. Recomposing from the templates threw away every swap,
+  // every sets-and-reps change and every bespoke day the client had.
   try{
-    var _fresh=_tpPlanForClient();
-    var _same=false;
-    try{
-      _same = !!(_tpPlan && _fresh) && WEEKDAYS.every(function(d){
-        return _tpPlan[d] && _fresh[d] && _tpPlan[d].type===_fresh[d].type; });
-    }catch(e){}
-    _pgPlan = _same ? _tpPlan : _fresh;
+    _pgPlan = _saved ? _saved : _tpPlanForClient();
   }catch(e){ _pgPlan=null; }
+  if(!week && window._tpLoadFailed===true){
+    // The read didn't complete. That is not "no program" and must never look like it.
+    inner+='<div class="pgLoadErr">'
+      +'<div class="pgLoadErrT">Couldn\u2019t load your program</div>'
+      +'<div class="pgLoadErrS">That\u2019s the connection, not an empty week \u2014 your program is safe.</div>'
+      +'<button class="pgLoadErrB" onclick="pgRetryPlan()">Try again</button>'
+    +'</div>';
+  }
   if(week){
     var canon=_splitWeek(p.train_days,p.gender);
     var moved=canon && week.join('|')!==canon.join('|');
-    inner+='<div class="pgWeekNote">Tap a day to see what\u2019s in it. Swapping an exercise here changes it for good.</div>'
+    inner+='<div class="pgWeekNote">'
+      +(_saved ? 'This is your program. Tap a day to see what\u2019s in it \u2014 swapping an exercise here changes it for good.'
+               : 'Tap a day to see what\u2019s in it. Swapping an exercise here changes it for good.')
+      +'</div>'
       // One card per day, the way the Day tab draws a workout: header carries the
       // name and what's in it, the card is shut until you open it, and the controls
       // that act on the day sit in its header rather than under its last exercise.
@@ -26239,8 +26292,49 @@ function _gpDaysInner(){
 }
 function _gpSecDays(n){
   var d=_gpDaysInner();
-  var sum = d.week ? ('<span class="gpVal">'+d.days+'</span> days \u00b7 '+d.week.filter(function(t){ return t!=='Rest'; }).join(', ')) : '';
+  // Counted off the same week it lists. d.days came from the profile and could
+  // disagree with the days named beside it.
+  var _t = d.week ? d.week.filter(function(t){ return t!=='Rest'; }) : [];
+  var sum = d.week ? ('<span class="gpVal">'+_t.length+'</span> days \u00b7 '+_t.join(', ')) : '';
   return _gpCard(n,'Training',d.range,d.inner,sum);
+}
+// The client's SAVED program is the truth on this tab. It is what Yusuf built, what
+// they actually train off, and the only thing that knows Saturday is Full Body. The
+// profile's day-count template is a starter for someone who has no program yet — it
+// is never a substitute for one that exists.
+//
+// This tab used to derive the whole week from the profile and never read
+// training_plans at all, behind a `train_days_manual` gate. On 6 Aug 2026 that left
+// 63 of 73 clients looking at a days-a-week selector and nothing else: no week, no
+// days, no exercises — while their real program sat in the database untouched. One
+// of them had to text Yusuf to ask what split he was on.
+// PROVENANCE, not shape. _tpPlan is a shared global and the Day tab fills it with a
+// generated TEMPLATE when a client has no program (renderDayTimeline -> _tlResolvePlan
+// -> _tpPlanForClient). Asking only "does it have a Monday" therefore called a
+// template a saved program: the tab told plan-less clients "this is your program"
+// about something nobody built, and the write guard below then refused to ever create
+// their real one. Only a row that actually came back from the server counts.
+function _pgSavedPlan(){
+  try{ return (window._tpFromServer && _tpPlan && _tpPlan.Mon) ? _tpPlan : null; }
+  catch(e){ return null; }
+}
+// Has the question "does this client have a program?" been answered yet at all?
+// Until it has, nothing may render a week and nothing may write one.
+function _pgPlanKnown(){ return window._tpLoadFailed===false; }
+function _pgWeekFromPlan(plan){
+  if(!plan) return null;
+  var out=[];
+  for(var i=0;i<WEEKDAYS.length;i++){
+    var d=plan[WEEKDAYS[i]];
+    // A day the plan doesn't mention is a rest day. Returning null for one missing key
+    // would put the whole tab back to blank — the exact bug this is fixing.
+    if(!d){ out.push('Rest'); continue; }
+    var t=String(d.type||'').trim();
+    var ex=(d.ex&&d.ex.length)?d.ex:[];
+    // A day with nothing in it is a rest day whatever it calls itself.
+    out.push((d.rest || !t || (!ex.length && t==='Rest')) ? 'Rest' : t);
+  }
+  return out;
 }
 // ===== THE PROGRAM TAB =====
 var _pgPlan=null, _pgWeights=null;
@@ -26514,9 +26608,25 @@ var _pgWeekOpen=true;   // open on arrival: it's the point of the tab
 function pgToggleWeek(){ _pgWeekOpen=!_pgWeekOpen; renderProgramTab(); }
 // The training week, open. On Profile it was a drawer inside "Goals and preferences",
 // which is what made the thing they paid for feel like a setting.
+// One tap on the error card, no reload.
+async function pgRetryPlan(){
+  window._pgPlanAsked=true;
+  try{ await loadTrainingPlan(); }catch(e){}
+  try{ renderProgramTab(); }catch(e){}
+}
 function renderProgramTab(){
   var host=document.getElementById('programWeekHost');
   if(!host||!profile) return;
+  // The one tab whose entire job is showing the saved program never asked for it —
+  // it only ever arrived as a side effect of opening the Day tab first. Fetch it
+  // once, then repaint.
+  if(!_pgSavedPlan() && !window._pgPlanAsked){
+    window._pgPlanAsked=true;
+    try{
+      loadTrainingPlan().then(function(){ try{ renderProgramTab(); }catch(e){} })
+        .catch(function(){ try{ renderProgramTab(); }catch(e){} });
+    }catch(e){}
+  }
   // The food tile is a real node that lives here now — move it out before the rebuild
   // or clearing this host destroys the only copy of it.
   var d=_gpDaysInner();
@@ -27466,7 +27576,7 @@ async function loadTrainingPlan(){
     window._tpLoadFailed=false;                    // the server answered; empty is a real answer
     if(rows[0]){
       var p=rows[0].plan; if(typeof p==='string'){ try{p=JSON.parse(p);}catch(e){p=null;} }
-      if(p && p.Mon){ _tpPlan=p; }
+      if(p && p.Mon){ _tpPlan=p; window._tpFromServer=true; }
       _tpWeeks=rows[0].weeks||4; _tpName=rows[0].name||'';
     }
   }catch(e){ window._tpLoadFailed=true; }
