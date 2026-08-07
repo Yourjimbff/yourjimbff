@@ -881,6 +881,9 @@ body.jv-on .pfAct:hover{border-color:rgba(240,236,228,0.28);}
 body.jv-on .pfQuiet{background:transparent;border-color:rgba(240,236,228,0.10);}
 body.jv-on .pfQuiet .pfName{color:rgba(240,236,228,0.72);font-weight:700;}
 body.jv-on .pfQuietWords{font-size:12.5px;color:rgba(240,236,228,0.48);margin-top:6px;line-height:1.5;}
+/* Log contact — a quiet fact, not an action earned. No gold: nothing here is a
+   thing to do, it's a thing that already happened. */
+body.jv-on .pfContactLine{font-size:12.5px;color:rgba(240,236,228,0.62);margin-top:6px;line-height:1.5;}
 /* ---- END OWNED BLOCK — TRAINER DESKTOP FEED ---------------------------- */
 
 /* ============ JARVIS DESKTOP ============ */
@@ -8638,19 +8641,68 @@ function _feedPeopleHtml(items, hidden){
   var hour=new Date(now).getHours();
   return '<div class="pfWrap">'+cards.map(function(b){ return _pfCard(b, hour, now); }).join('')+'</div>';
 }
+// A contact log is local state, not a server round trip away — repainting the whole
+// feed for it would mean refetching food/workout/weight/photo/review/moment/journal
+// reads that haven't changed. This re-runs the same pure renderer against the
+// already-loaded items and swaps just the card grid. Returns false (and touches
+// nothing) when the feed isn't the surface on screen, so callers fall back to
+// whatever board IS showing.
+function _feedRerenderPeopleOnly(){
+  try{
+    var wrap=document.querySelector('#jvWall .pfWrap'); if(!wrap) return false;
+    var hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
+    wrap.outerHTML=_feedPeopleHtml(window._feedItems||[], hidden);
+    return true;
+  }catch(e){ return false; }
+}
+// The confirmation line an empty card wears once contact has been made today — this
+// is what stops a quiet card reading as untouched silence. Undo and the optional note
+// are addressed by the row's own timestamp; neither exists until asked for.
+function _pfContactLine(code, row){
+  var label = row.k==='text' ? 'Texted' : row.k==='call' ? 'Called' : 'You reached out';
+  var when=''; try{ when=_feedTimeStr(row.t); }catch(e){}
+  var note = row.a ? (' — “'+_pfEsc(row.a)+'”') : '';
+  return '<div id="pfContact_'+code+'">'
+    +'<div class="pfContactLine">'+label+(when?(' · '+_pfEsc(when)):'')+note+'</div>'
+    +'<div class="pfActs" onclick="event.stopPropagation();">'
+      +(row.a?'':'<span class="pfAct" onclick="_pfNoteContact(\''+code+'\','+row.t+')">+ note</span>')
+      +'<span class="pfAct" onclick="jvUndoContact(\''+code+'\','+row.t+')">Undo</span>'
+    +'</div></div>';
+}
+function _pfNoteCancel(code){
+  var host=document.getElementById('pfContact_'+code); if(!host) return;
+  var prev=host.getAttribute('data-prev'); if(prev!=null) host.innerHTML=prev;
+}
+function _pfNoteContact(code, t){
+  var host=document.getElementById('pfContact_'+code); if(!host) return;
+  host.setAttribute('data-prev', host.innerHTML);
+  host.innerHTML='<input type="text" class="jvLogIn" placeholder="what did you say? (optional)" autocomplete="off"'
+    +' onclick="event.stopPropagation();"'
+    +' onkeydown="event.stopPropagation();if(event.key===\'Enter\'){event.preventDefault();jvSetContactAbout(\''+code+'\','+t+',this.value);}'
+    +               'if(event.key===\'Escape\'){_pfNoteCancel(\''+code+'\');}">';
+  try{ var i=host.querySelector('input'); if(i) i.focus(); }catch(e){}
+}
 function _pfCard(b, hour, now){
   var info=CLIENTS[b.code]||{};
   var nm=_pfEsc(info.name||b.code);
   var first=String(info.name||b.code).split(' ')[0];
   var evs=b.evs.slice().sort(function(x,y){ return y.ts-x.ts; });     // newest first
   if(!evs.length){
+    // Already reached out today: that IS today's event for this card. The invitation
+    // to check in and the fresh "Log contact" tap both stand down — showing either
+    // one under a line that already says he reached out would ask twice.
+    var todayC=null; try{ todayC=_ccToday(b.code); }catch(e){}
+    var body = todayC
+      ? _pfContactLine(b.code, todayC)
+      : '<div class="pfQuietWords">'+_pfQuietWords(hour)+'</div>'
+        +'<div class="pfActs" onclick="event.stopPropagation();">'
+          +(info.phone?('<span class="pfAct" onclick="textClient(\''+b.code+'\')">Say hello to '+_pfEsc(first)+'</span>'):'<span class="pfAct" onclick="jvOpenDeep(\''+b.code+'\')">Open '+_pfEsc(first)+'</span>')
+          +'<span class="pfAct" onclick="jvQuickLogContact(\''+b.code+'\')">Log contact</span>'
+        +'</div>';
     return '<div class="pfCard pfQuiet" data-name="'+String(info.name||'').toLowerCase().replace(/"/g,'')+'"'
       +' onclick="openClientDay(\''+b.code+'\')">'
       +'<div class="pfHead"><span class="pfName">'+nm+'</span></div>'
-      +'<div class="pfQuietWords">'+_pfQuietWords(hour)+'</div>'
-      +'<div class="pfActs" onclick="event.stopPropagation();">'
-        +(info.phone?('<span class="pfAct" onclick="textClient(\''+b.code+'\')">Say hello to '+_pfEsc(first)+'</span>'):'<span class="pfAct" onclick="jvOpenDeep(\''+b.code+'\')">Open '+_pfEsc(first)+'</span>')
-      +'</div></div>';
+      +body+'</div>';
   }
   var lead=evs[0], rest=evs.slice(1).sort(function(x,y){ return x.ts-y.ts; });   // day order beneath
   var L=_pfLine(lead);
@@ -13433,7 +13485,13 @@ async function jvLoadTriage(silent){
     jvTriage={per:per, days:days, now:nowMs, goals:goals};
     await jvSyncHandledFromServer();
     await jvSyncContacts();
-    jvRenderTriage();
+    // The mobile front desk calls this (silent:true) purely for the jvTriage data
+    // above — it paints its own element, never this one. Painting #jvWall here
+    // regardless used to mean a phone's background refresh could silently swap the
+    // desktop cockpit's feed, roster, training board or sales view for the triage
+    // board on any screen wide enough to have both live at once. Same guard as
+    // jvMarkHandled, same hazard.
+    try{ if(typeof jvMode==='undefined' || jvMode==='cockpit') jvRenderTriage(); }catch(e){}
     try{ renderWeekCaughtUp(); }catch(e){}
   }catch(e){ wall.innerHTML='<div class="jvLoading">Could not load. Try Refresh.</div>'; }
 }
@@ -13481,8 +13539,12 @@ function _ccUnanswered(code){
 // 'talk' is a conversation that happened, with no channel worth recording — the fast
 // path off the card. text/call stay for anything logged deliberately as one or the other.
 var _CC_KIND={text:'text', call:'call', talk:'talk'};
+// Returns the logged row (truthy) rather than a bare boolean, so a caller that needs to
+// address THIS entry again — undo, add a note — has the exact timestamp to match on.
+// No id comes back from the insert (Prefer: minimal), so contacted_at is the key
+// everywhere a specific row needs touching again.
 async function jvLogContact(code, kind, about, replied){
-  if(!code) return false;
+  if(!code) return null;
   kind=_CC_KIND[kind]?kind:'text';
   var row={t:Date.now(), k:kind, a:String(about||'').trim().slice(0,300), r:(replied!==false)};
   var m=jvContacts(); (m[code]=m[code]||[]).unshift(row); if(m[code].length>200) m[code].length=200;
@@ -13499,7 +13561,64 @@ async function jvLogContact(code, kind, about, replied){
       if(res.status===404||res.status===400) window._ccSrv='missing'; else if(res.ok) window._ccSrv='ok';
     }
   }catch(e){}
-  return true;
+  return row;
+}
+// Today's most recent contact, by the same day boundary the feed itself uses — or
+// null. This is the one check that turns an empty card from "nothing logged" into
+// "already handled": reaching out is itself the day's event when nothing else is.
+function _ccToday(code){
+  var top=_ccLast(code);
+  if(!top) return null;
+  try{ return (_feedDayStart(top.t).getTime()===_feedDayStart(Date.now()).getTime()) ? top : null; }
+  catch(e){ return null; }
+}
+// Undo and the optional note both act on ONE specific row, addressed by its exact
+// contacted_at — the only thing an id-less insert leaves to match on. Local and server
+// are kept in step in both directions so a fat-finger on one device doesn't leave a
+// ghost entry the other device still shows.
+async function jvSetContactAbout(code, t, about){
+  if(!code || !t) return;
+  about=String(about||'').trim().slice(0,300);
+  var m=jvContacts(), a=m[code]||[];
+  for(var i=0;i<a.length;i++){ if(a[i].t===+t){ a[i].a=about; break; } }
+  _ccSave(m);
+  try{
+    if(cl){
+      await fetch(SB_URL+'/rest/v1/client_contacts?coach_code=eq.'+encodeURIComponent(cl.code)
+        +'&client_code=eq.'+encodeURIComponent(code)+'&contacted_at=eq.'+encodeURIComponent(new Date(+t).toISOString()),
+        {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
+         body:JSON.stringify({about:about})});
+    }
+  }catch(e){}
+  try{ if(!_feedRerenderPeopleOnly()){ if(jvTriage && (typeof jvMode==='undefined'||jvMode==='cockpit')) jvRenderTriage(); } }catch(e){}
+  try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+}
+async function jvUndoContact(code, t){
+  if(!code || !t) return;
+  var m=jvContacts(), a=m[code]||[];
+  for(var i=0;i<a.length;i++){ if(a[i].t===+t){ a.splice(i,1); break; } }
+  _ccSave(m);
+  try{
+    if(cl){
+      await fetch(SB_URL+'/rest/v1/client_contacts?coach_code=eq.'+encodeURIComponent(cl.code)
+        +'&client_code=eq.'+encodeURIComponent(code)+'&contacted_at=eq.'+encodeURIComponent(new Date(+t).toISOString()),
+        {method:'DELETE', headers:sbHeaders()});
+    }
+  }catch(e){}
+  try{ showToast('Undone'); }catch(e){}
+  try{ if(!_feedRerenderPeopleOnly()){ if(jvTriage && (typeof jvMode==='undefined'||jvMode==='cockpit')) jvRenderTriage(); } }catch(e){}
+  try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+}
+// The one-tap version, off the feed's empty card. Logs a plain "reached out" (kind
+// 'talk' — no channel worth recording, matching the fast path already used from the
+// deep-dive) with no prompt and no note. The flavor and the note stay reachable
+// afterward, from the confirmation line itself, never required.
+async function jvQuickLogContact(code){
+  if(!code) return;
+  await jvLogContact(code, 'talk', '', true);
+  try{ showToast('Logged'); }catch(e){}
+  try{ if(!_feedRerenderPeopleOnly()){ if(jvTriage && (typeof jvMode==='undefined'||jvMode==='cockpit')) jvRenderTriage(); } }catch(e){}
+  try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
 }
 async function jvSyncContacts(){
   try{
@@ -13582,7 +13701,14 @@ async function renderWeekCaughtUp(){
     + '</div>';
 }
 
-function jvMarkHandled(code){ var m=jvHandledMap(); m[code]=_jvTodayKey(); try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} try{ if(cl) fetch(SB_URL+'/rest/v1/jv_handled?on_conflict=coach_code,client_code,date_str', {method:'POST', headers:Object.assign({},sbHeaders(),{'Prefer':'resolution=merge-duplicates,return=minimal','Content-Type':'application/json'}), body:JSON.stringify({coach_code:cl.code, client_code:code, date_str:_jvTodayKey()})}); }catch(e){} jvRenderTriage(); try{ renderWeekCaughtUp(); }catch(e){} try{ if(window.innerWidth<1024 && typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){} }
+function jvMarkHandled(code){ var m=jvHandledMap(); m[code]=_jvTodayKey(); try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} try{ if(cl) fetch(SB_URL+'/rest/v1/jv_handled?on_conflict=coach_code,client_code,date_str', {method:'POST', headers:Object.assign({},sbHeaders(),{'Prefer':'resolution=merge-duplicates,return=minimal','Content-Type':'application/json'}), body:JSON.stringify({coach_code:cl.code, client_code:code, date_str:_jvTodayKey()})}); }catch(e){}
+  // Repainting the triage board is only correct when the triage board is what's on
+  // screen. jvWall is shared by every desktop mode (feed, roster, training, sales) —
+  // firing this blind used to swap whichever of those was showing for the triage view
+  // out from under whoever just logged a contact from it. Matches the guard
+  // setFdFilter already uses for the same hazard.
+  try{ if(typeof jvMode==='undefined' || jvMode==='cockpit') jvRenderTriage(); }catch(e){}
+  try{ renderWeekCaughtUp(); }catch(e){} try{ if(window.innerWidth<1024 && typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){} }
 function jvUnhandle(code){ var m=jvHandledMap(); delete m[code]; try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} try{ if(cl) fetch(SB_URL+'/rest/v1/jv_handled?coach_code=eq.'+encodeURIComponent(cl.code)+'&client_code=eq.'+encodeURIComponent(code)+'&date_str=eq.'+encodeURIComponent(_jvTodayKey()), {method:'DELETE', headers:sbHeaders()}); }catch(e){} jvRenderTriage(); try{ renderWeekCaughtUp(); }catch(e){} try{ if(window.innerWidth<1024 && typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){} }
 async function jvSyncHandledFromServer(){
   try{
