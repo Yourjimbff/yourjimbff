@@ -10023,7 +10023,17 @@ async function publishEntry(){
         _showEntryRead();
         try{ loadEntries(); }catch(e){}
         try{ if(isTrainer(cl.code)){ if(typeof loadTrainerFeed==='function') loadTrainerFeed(); } else { if(typeof loadJournal==='function') loadJournal(); } }catch(e){}
-      } else { console.error('check-in insert failed:', lastErr); showToast('Could not send: '+(lastErr?String(lastErr).slice(0,60):'unknown error')); }
+      } else {
+        // The server's own words go to the console and NOWHERE ELSE. This used to put
+        // the first 60 characters of the raw PostgREST body into a toast on a client's
+        // phone — column names, table names, constraint names, and once row-level
+        // security is on it would read out the policy that refused them. A client gets
+        // a sentence about their check-in; the detail is for whoever is debugging.
+        console.error('check-in insert failed:', lastErr);
+        // Nothing queues this — _queueRow was built and never used — so the honest
+        // thing is to say it did not send and leave their words on screen to retry.
+        showToast('Couldn’t send that — your words are still here, try again in a moment.');
+      }
     }
   }catch(e){ console.error('publishEntry', e); showToast('Could not publish — try again'); }
   finally{ if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent=_ot||'Send check-in \u2713'; } }
@@ -29627,9 +29637,25 @@ function _gpStatusHead(){
 // This is what the Profile route is FOR. The eleven sections below it are where you
 // change things; this is where you see how it's going. It gets richer as more gets
 // logged rather than waiting for everything to be filled in.
+// Current weight has ONE source of truth: the latest weigh-in. _pSyncBasics says so in
+// those words, but it only ever wrote that number into the Profile input box — the
+// status card above it read profile.weight, which nothing updates when a weigh-in is
+// logged from the Day page. So the card sat on a stale number until the next full load
+// while the field an inch below it showed the new one. Both read this now.
+function _pCurrentWeight(){
+  try{
+    var all=(window._wtAll||[]).filter(function(r){ return r && r.weight!=null; });
+    // _wtAll is sorted ascending — the newest is at the END.
+    if(all.length){ var n=parseFloat(all[all.length-1].weight); if(n>0) return n; }
+  }catch(e){}
+  // No weigh-ins loaded or none logged: fall back to what the profile carries, which is
+  // what they typed during setup.
+  var p=parseFloat(profile&&profile.weight);
+  return (p>0)?p:NaN;
+}
 function _gpOverview(){
   var p=profile||{};
-  var cw=parseFloat(p.weight), gw=parseFloat(p.goal_weight||p.goalWeight);
+  var cw=_pCurrentWeight(), gw=parseFloat(p.goal_weight||p.goalWeight);
   var sw=parseFloat(p.phase_start_weight)||parseFloat(p.start_weight);
   // No weight yet. Rather than vanish — which drops the heading and lets the old hero
   // fall through into the middle of the page — say the true thing: they're at the start.
@@ -33726,6 +33752,9 @@ async function logWeight(){
   document.getElementById('weightInput').value='';
   wVal=null;
   try{ _tlInvalidate(); }catch(e){}
+  // renderWeightJourney above refreshed window._wtAll, so the Profile status card can
+  // be repainted off the new weigh-in straight away rather than waiting for a reload.
+  try{ if(typeof renderGoalsPage==='function') renderGoalsPage(); }catch(e){}
 }
 
 // ===== WEIGHT JOURNEY GRAPH =====
