@@ -16159,6 +16159,206 @@ function _bfParseDesc(desc){
   });
   return out;
 }
+
+// ===== THE TWO SCALES ====================================================
+// At the completed-session monument, one tap each (Yusuf, 8 Aug):
+//   CONNECTION — Low/Moderate/High, contract unchanged: nothing/partial/felt,
+//     stored group-keyed in mi_checkins exactly as the granular per-exercise
+//     pills already do. Only offered here when the session has NO connection
+//     data of any kind yet — a chat-logged session has no exercises to hang
+//     per-set pills on, and a by-feel session where the pills were skipped
+//     live is otherwise stuck with nothing recorded at all. If granular
+//     answers already exist, this never appears; the read-only per-exercise
+//     lines above already show them.
+//   INTENSITY — Couldn't light / Got hot / Ignited. Yusuf's words, fire not
+//     RPE, no numbers anywhere. This RETIRES the old numeric ask (Jim used to
+//     listen for a 1-10 reply in chat after logging a workout and patch it in
+//     — direct chat + a bare number, exactly what this law now forbids). That
+//     listening is removed below; this tap is the only way intensity gets
+//     answered going forward.
+// Both: one tap, skippable, skip is a real answer, never re-raised. Resolving
+// (answered OR skipped) is remembered locally per workout id, the same
+// dismiss-once pattern the What's New card uses — once resolved it is gone
+// for good, no streak energy, no re-ask.
+function _tlRatingIntKey(id){ return 'yjb_rate_int_'+id; }
+function _tlRatingConnKey(id){ return 'yjb_rate_conn_'+id; }
+function _tlRatingResolved(key){ try{ return !!localStorage.getItem(key); }catch(e){ return false; } }
+function _tlRatingResolve(key){ try{ localStorage.setItem(key,'1'); }catch(e){} }
+
+// The word is decoupled from the stored token exactly like Connection already
+// is — Low/Moderate/High displays over stored not/ok/tore, wording changed and
+// nothing underneath did. Same law here: the token never moves even when
+// Yusuf retunes this wording by ear. A leftover number from before this
+// shipped translates for DISPLAY only; it is never rewritten as a token and
+// never counted as a fresh answer to skip re-asking.
+var _TL_INT_WORD={cold:'Couldn’t light', hot:'Got hot', ignited:'Ignited'};
+function _tlIntensityToken(raw){
+  if(raw==null || raw==='') return null;
+  if(_TL_INT_WORD[raw]) return raw;
+  var n=parseFloat(raw);
+  if(!isNaN(n)) return n>=8 ? 'ignited' : (n>=4 ? 'hot' : 'cold');
+  return null;
+}
+function _tlIntensityWord(raw){
+  var t=_tlIntensityToken(raw);
+  return t ? _TL_INT_WORD[t] : '';
+}
+// Best signal across every group the session touched — the same "did it show
+// up at all today" rule the map itself uses (see the connection write path
+// above), collapsed to one word for the whole session.
+function _tlBestConn(connObj){
+  if(!connObj) return null;
+  var RANK={felt:3, partial:2, nothing:1}, best=null;
+  Object.keys(connObj).forEach(function(g){
+    var r=connObj[g]&&connObj[g].r;
+    if(r && (!best || RANK[r]>RANK[best])) best=r;
+  });
+  return best;
+}
+// The two answers compose the session's one line. Plain and unjudging at the
+// low end, by design — this reports, it never grades.
+var _TL_CONN_PHRASE={nothing:'quiet connection', partial:'decent connection', felt:'great connection'};
+function _tlRatingLine(intensityRaw, connLevel){
+  var iw=_tlIntensityWord(intensityRaw);
+  var cp=connLevel ? _TL_CONN_PHRASE[connLevel] : '';
+  if(iw && cp) return iw+', '+cp+'.';
+  if(iw) return iw+'.';
+  if(cp) return cp.charAt(0).toUpperCase()+cp.slice(1)+'.';
+  return '';                      // both skipped/unknown: no line, not a placeholder
+}
+function _tlRatingSection(wo, ds, rec){
+  var id=wo.id; if(id==null) return '';
+  var connExisting=_tlBestConn(rec&&rec.conn);
+  var intResolved = _tlRatingResolved(_tlRatingIntKey(id)) || wo.intensity!=null;
+  var connResolved = _tlRatingResolved(_tlRatingConnKey(id)) || !!connExisting;
+  var needIntTap = !intResolved && !window._tlRO;
+  var needConnTap = !connResolved && !window._tlRO;
+
+  var out='';
+  if(needIntTap || needConnTap){
+    out+='<div style="margin-top:14px;padding-top:13px;border-top:1px solid rgba(255,255,255,0.07);">';
+    if(needIntTap){
+      out+='<div class="bfConn" style="margin-top:0;padding-top:0;border-top:none;">How did it feel?</div>'
+        +'<div class="bfPills">'
+          +['cold','hot','ignited'].map(function(k){
+            return '<div class="bfPill" data-tl="rateint" data-id="'+id+'" data-ds="'+_escHtml(ds)+'" data-v="'+k+'">'+_escHtml(_TL_INT_WORD[k])+'</div>';
+          }).join('')
+        +'</div>'
+        +'<div data-tl="rateintskip" data-id="'+id+'" style="text-align:center;margin-top:8px;font-size:11.5px;font-weight:700;color:var(--m2);cursor:pointer;">Skip</div>';
+    }
+    if(needConnTap){
+      out+='<div class="bfConn">Connection</div>'
+        +'<div class="bfPills">'
+          // Low to high, left to right, the same ladder the granular pills use.
+          +[['not','Low'],['ok','Moderate'],['tore','High']].map(function(p,pi){
+            return '<div class="bfPill s'+pi+'" data-tl="rateconn" data-id="'+id+'" data-ds="'+_escHtml(ds)+'" data-v="'+p[0]+'">'+p[1]+'</div>';
+          }).join('')
+        +'</div>'
+        +'<div data-tl="rateconnskip" data-id="'+id+'" style="text-align:center;margin-top:8px;font-size:11.5px;font-weight:700;color:var(--m2);cursor:pointer;">Skip</div>';
+    }
+    out+='</div>';
+  }
+  // The summary line only composes once nothing is still waiting on a tap —
+  // a half-answered line next to an open prompt would read like a guess.
+  var line = (!needIntTap && !needConnTap) ? _tlRatingLine(wo.intensity, connExisting) : '';
+  if(line){
+    out+='<div style="margin-top:'+(out?'12px':'14px')+';'+(out?'':'padding-top:13px;border-top:1px solid rgba(255,255,255,0.07);')
+      +'font-size:13.5px;font-weight:700;color:var(--m2);">'+_escHtml(line)+'</div>';
+  }
+  return out;
+}
+// PATCH, then READ IT BACK — never trust the response alone (the standing
+// law, applied here after the same failure shape hit the workout insert
+// path: a request that reports success and changed nothing). Signature and
+// behavior for existing callers (the numeric 1-10 modal elsewhere in the app,
+// not touched by this build) are unchanged — this only adds verification.
+async function patchWorkoutIntensity(workoutId, intensity){
+  if(!workoutId || !intensity) return false;
+  try{
+    var res = await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+workoutId, {
+      method:'PATCH',
+      headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}),
+      body: JSON.stringify({intensity: intensity})
+    });
+    if(!res.ok) return false;
+    var rb = await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+workoutId+'&select=intensity', {headers: sbHeaders()});
+    if(!rb.ok) return false;
+    var rows = await rb.json();
+    return !!(rows && rows[0] && String(rows[0].intensity)===String(intensity));
+  }catch(e){
+    console.error('patch intensity failed', e);
+    return false;
+  }
+}
+function tlRateIntensity(id, ds, token){
+  if(window._tlRO || !id || !token) return;
+  patchWorkoutIntensity(id, token).then(function(ok){
+    if(ok){
+      _tlRatingResolve(_tlRatingIntKey(id));
+      try{
+        var wl=(window._tlCache&&window._tlCache.workouts)||[];
+        for(var i=0;i<wl.length;i++){ if(String(wl[i].id)===String(id)) wl[i].intensity=token; }
+      }catch(e){}
+      try{ renderDayTimeline(true); }catch(e){}
+    } else {
+      // Never a false yes: left unresolved on purpose, so the tap is still
+      // there to try again rather than silently losing the answer.
+      try{ showToast('Could not save — tap again'); }catch(e){}
+    }
+  });
+}
+function tlSkipIntensity(id){
+  if(window._tlRO || !id) return;
+  _tlRatingResolve(_tlRatingIntKey(id));
+  try{ renderDayTimeline(true); }catch(e){}
+}
+function tlRateSessionConnection(id, ds, level){
+  if(window._tlRO || !id || !cl) return;
+  var MAPV={not:'nothing', ok:'partial', tore:'felt'};
+  var v=MAPV[level]; if(!v) return;
+  var wo=null;
+  try{ var wl=(window._tlCache&&window._tlCache.workouts)||[]; for(var i=0;i<wl.length;i++){ if(String(wl[i].id)===String(id)) wo=wl[i]; } }catch(e){}
+  // Fan the one tap out across every group the session touched, using the
+  // SAME parsing the monument already reads its exercise lines from — no new
+  // parsing risk. No parseable exercises (a chat-logged session with just a
+  // free-text description) banks under the session's own title, the same
+  // graceful fallback an unrecognized single exercise already gets.
+  var names=[];
+  try{ names=_bfParseDesc(wo&&wo.description).items.map(function(it){ return it.name; }).filter(Boolean); }catch(e){}
+  var ratings={};
+  if(names.length){
+    names.forEach(function(n){
+      var g=_bfGroupOf(n)||('ex:'+n);
+      var by={}; by[n]=v;
+      ratings[g]={r:v, by:by};
+    });
+  } else {
+    ratings['ex:'+((wo&&wo.title)||'Workout')]={r:v, by:{}};
+  }
+  var row={client_code:cl.code, kind:'connection', ratings:ratings, date_str:ds, checked_at:new Date().toISOString()};
+  function _settle(){
+    _tlRatingResolve(_tlRatingConnKey(id));
+    try{
+      window._bfRec=window._bfRec||{};
+      window._bfRec[ds]=window._bfRec[ds]||{sets:{}, conn:null, loaded:true};
+      window._bfRec[ds].conn=ratings;
+    }catch(e){}
+    try{ renderDayTimeline(true); }catch(e){}
+  }
+  // sbInsert returns false on failure and never throws (the standing
+  // landmine) — a refused write goes to the offline queue, the same pattern
+  // the granular pills already use, and is treated as landed either way.
+  sbInsert('mi_checkins', row).then(function(ok){
+    if(!ok){ try{ sqPush('mi_checkins', row, 'POST'); }catch(e){} }
+    _settle();
+  });
+}
+function tlSkipConnection(id){
+  if(window._tlRO || !id) return;
+  _tlRatingResolve(_tlRatingConnKey(id));
+  try{ renderDayTimeline(true); }catch(e){}
+}
+
 function _tlDoneHero(ds, wo, plan){
   if(!wo) return '';
   var open=false; try{ open=!!(window._woDone && window._woDone[ds]); }catch(e){}
@@ -16214,6 +16414,8 @@ function _tlDoneHero(ds, wo, plan){
     }
     if(!rec){
       body+='<div style="font-size:11.5px;color:var(--m2);margin-top:10px;">Pulling the rest of the record…</div>';
+    } else {
+      body+=_tlRatingSection(wo, ds, rec);
     }
   }
   var cap=parsed.items.length+' exercise'+(parsed.items.length===1?'':'s');
@@ -17756,6 +17958,11 @@ function _tlBindTaps(){
     if(a==='bfrm'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfRemoveSet(el.getAttribute('data-day'), +el.getAttribute('data-i'), +el.getAttribute('data-k')); return; }
     if(a==='bffeel'){ ev.stopPropagation(); bfFeel(el.getAttribute('data-ds'), el.getAttribute('data-ex'), el.getAttribute('data-v')); return; }
     if(a==='bfequip'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfEquip(el.getAttribute('data-ds'), el.getAttribute('data-ex'), el.getAttribute('data-v')); return; }
+    // THE TWO SCALES (Yusuf, 8 Aug) — one tap each, at the monument.
+    if(a==='rateint'){ ev.stopPropagation(); tlRateIntensity(el.getAttribute('data-id'), el.getAttribute('data-ds'), el.getAttribute('data-v')); return; }
+    if(a==='rateintskip'){ ev.stopPropagation(); tlSkipIntensity(el.getAttribute('data-id')); return; }
+    if(a==='rateconn'){ ev.stopPropagation(); tlRateSessionConnection(el.getAttribute('data-id'), el.getAttribute('data-ds'), el.getAttribute('data-v')); return; }
+    if(a==='rateconnskip'){ ev.stopPropagation(); tlSkipConnection(el.getAttribute('data-id')); return; }
     // Opening a finished session is reading, not editing — ungated on every day.
     if(a==='wodone'){ ev.stopPropagation(); tlToggleDone(el.getAttribute('data-ds')); return; }
     if(a==='freestyle'){ ev.stopPropagation(); try{ openFreestyleWorkout(); }catch(e){} return; }
@@ -36668,8 +36875,7 @@ function buildCoachVoice(){
     '- title: 2-4 word session name ("Push Day", "Leg Day", "Walk", "Run", "Yoga", "Cardio", "Conditioning").\n'+
     '- description: one clean line of what was done.\n'+
     '- exercises: array of {name, sets?, reps?, weight?}. Include if user named movements. Omit for cardio/yoga/walks where there aren\'t discrete exercises.\n'+
-    '- DO NOT include intensity, duration, or notes in the marker. Intensity comes from the user\'s next reply (the app handles patching). Duration we skip — user can backfill later. Notes get auto-captured from your commentary.\n\n'+
-    'After the rating comes in OR user skips/moves on, transition naturally to refuel/recovery coaching. Never re-emit the marker for the same workout.\n\n'+
+    '- DO NOT include intensity, duration, or notes in the marker. Duration we skip — user can backfill later. Notes get auto-captured from your commentary. Do NOT ask how hard it hit, for a rating, or for a 1-10 — that is a tap on their Day page now, never a number typed to you. Move straight to refuel/recovery coaching once it is logged. Never re-emit the marker for the same workout.\n\n'+
 
     'PHOTO TYPE — IS IT FOOD OR A WORKOUT? Decide first when a photo comes in:\n'+
     '- A plate, bowl, meal, snack, drink, or anything edible → treat as FOOD (use the food logging rules below).\n'+
@@ -36941,9 +37147,8 @@ function buildCoachVoice(){
 
 // ===== WORKOUT LOGGING FROM CHAT (v2) =====
 // New flow: Jim logs the workout IMMEDIATELY when described.
-// Intensity is asked AFTER — user can type a 1-10 number, "skip", or just move on.
-// We track the most-recently-logged workout ID so we can patch intensity onto it.
-var pendingIntensityForId = null; // workout_logs.id awaiting an intensity rating
+// Intensity used to be asked after, in chat, as a typed 1-10 — retired 8 Aug;
+// it is a monument tap now (see _tlRatingSection), never a chat round trip.
 
 function extractWorkoutLog(text){
   // Look for [WORKOUT_LOG]{json}[/WORKOUT_LOG] — Jim emits this when he's recognized a workout
@@ -37206,25 +37411,8 @@ async function appendWorkoutNote(workoutId, addText){
   }
 }
 
-function parseIntensityFromText(text){
-  if(!text) return null;
-  var t = text.trim().toLowerCase();
-  // Matches like "7", "7/10", "7 out of 10", "8 out of ten", "intensity 7", "7-8"
-  var m = t.match(/\b(?:intensity\s+)?(\d{1,2})(?:\s*[-/]\s*(\d{1,2}))?(?:\s*(?:out of|\/)\s*10)?\b/);
-  if(!m) return null;
-  var lo = parseInt(m[1],10);
-  var hi = m[2] ? parseInt(m[2],10) : lo;
-  if(isNaN(lo) || lo < 1 || lo > 10) return null;
-  // If range like "7-8", take the higher
-  if(!isNaN(hi) && hi >= 1 && hi <= 10 && hi >= lo) return hi;
-  return lo;
-}
-
-function isRatingSkip(text){
-  if(!text) return false;
-  var t = text.trim().toLowerCase().replace(/[.!?]/g,'');
-  return ['skip','later','nah','not sure','idk','no rating','pass','dunno','don\'t know','dont know'].indexOf(t) !== -1;
-}
+// parseIntensityFromText / isRatingSkip retired with the chat-based intensity
+// ask they served (Yusuf, 8 Aug — no numbers anywhere; see _tlRatingSection).
 
 async function logWorkoutFromOffer(offer){
   if(!offer || !cl) return null;
@@ -37280,20 +37468,8 @@ async function logWorkoutFromOffer(offer){
   try{ _tlInvalidate(); }catch(e){}
 }
 
-async function patchWorkoutIntensity(workoutId, intensity){
-  if(!workoutId || !intensity) return false;
-  try{
-    var res = await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+workoutId, {
-      method:'PATCH',
-      headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}),
-      body: JSON.stringify({intensity: intensity})
-    });
-    return res.ok;
-  }catch(e){
-    console.error('patch intensity failed', e);
-    return false;
-  }
-}
+// (patchWorkoutIntensity now lives earlier in the file, by _tlDoneHero, with a
+// read-back added — it used to trust the PATCH response alone.)
 
 // ===== THE ONE JIM =========================================================
 // Every surface that talks to Jim comes through here: the Jim tab, the gold-bar
@@ -37317,27 +37493,10 @@ async function jimTurn(text, photos, opts){
   var photoSnapshot = photos[0] || null;
   try{ noteBodyTalk(text); }catch(e){}
 
-  // A workout from the prior turn may still be waiting on an intensity rating.
-  var intensityWasJustPatched = false;
-  if(pendingIntensityForId && !hasPhoto){
-    if(isRatingSkip(text)){ pendingIntensityForId=null; }
-    else{
-      var _rt=parseIntensityFromText(text);
-      if(_rt){
-        var _ok=await patchWorkoutIntensity(pendingIntensityForId,_rt);
-        if(_ok){
-          intensityWasJustPatched=true;
-          showToast('\u2713 Rated '+_rt+'/10');
-          if(typeof todayWo!=='undefined'){
-            var _lw=todayWo[todayWo.length-1];
-            if(_lw && !_lw.intensity) _lw.intensity=_rt;
-            if(typeof rendTodayWo==='function') rendTodayWo();
-          }
-        }
-        pendingIntensityForId=null;
-      }
-    }
-  }
+  // Jim no longer asks or listens for an intensity number after logging a
+  // workout (Yusuf, 8 Aug \u2014 no numbers anywhere). That question now lives on
+  // the Day page monument as a tap, in fire words, not typed into chat as a
+  // 1-10.
 
   var ctx=await buildChatContext();
   var systemBlock=buildCoachVoice();
@@ -37486,9 +37645,6 @@ async function jimTurn(text, photos, opts){
     } else if(newId){
       _woVerified++;
       showToast('✓ Workout logged');
-      if(!extractedLog.log.intensity){
-        pendingIntensityForId = newId;
-      }
     } else {
       console.error('workout save failed for offer', extractedLog.log);
       showToast('Could not save workout — try the manual log button');
@@ -37592,10 +37748,6 @@ async function jimTurn(text, photos, opts){
     }
   }
 
-  // If we just patched intensity from the prior turn, add a small confirmation prefix
-  if(intensityWasJustPatched){
-    reply = '✓ Got it — rated.\n\n' + reply;
-  }
 
   // SAFETY NET: if a FOOD_LOG marker survived strict extraction (model drift), salvage
   // a single add so the meal still logs. This matched against `reply` before, which by
