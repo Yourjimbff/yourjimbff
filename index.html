@@ -540,6 +540,9 @@ body.m-soft{overflow:hidden;}
 .cdRailTime{display:block;font-size:11px;font-weight:700;line-height:1.25;white-space:nowrap;
   color:var(--gold);font-variant-numeric:tabular-nums;}
 .cdCard{flex:1 1 auto;min-width:0;max-width:430px;}
+/* The rating chip — wrapper furniture appended after their card, never inside
+   it. Sentence case, muted, no gold: this reports, it never grades. */
+.cdRatingLine{font-size:12.5px;font-weight:700;color:var(--m2);margin-top:9px;}
 /* The gutter carries the time now, so the copy inside the entry is hidden outright —
    it was the same fact printed twice. Scoped to this sheet: the class is only ever
    applied to elements inside #cdOv, so the client's own page keeps its times. */
@@ -887,6 +890,9 @@ body.jv-on .pfDayMeta{font-size:11px;color:rgba(240,236,228,0.42);white-space:no
 /* The coaching signal — never truncated below one full sentence, wherever in the
    day this row falls. */
 body.jv-on .pfDayNote{font-size:11.5px;color:rgba(240,236,228,0.6);margin-top:2px;line-height:1.45;}
+/* The rating summary — sentence case, muted, no gold. This reports, it never
+   grades: same treatment the client's own completed-session card gives it. */
+body.jv-on .pfDayRating{font-size:11.5px;color:rgba(240,236,228,0.5);margin-top:2px;line-height:1.4;}
 /* A small tile on its own line, never a big orphan image at the card's foot. */
 body.jv-on .pfDayThumb{flex-shrink:0;}
 body.jv-on .pfDayThumb img{width:34px;height:34px;border-radius:8px;object-fit:cover;display:block;cursor:pointer;}
@@ -8441,6 +8447,11 @@ async function loadTrainerFeed(targetId){
     var _repostedP = sbSelect('coach_reposts','select=food_id&order=id.desc&limit=1000').catch(function(){return [];});
     var _momentsP = (lens==='all') ? Promise.resolve(_loadMoments()).catch(function(){return [];}) : Promise.resolve([]);
     var _journalP = sbSelect('journal_entries','select=id,client_code,body,logged_at,date_str,shared&shared=is.true&order=logged_at.desc.nullslast&limit=200').catch(function(){return [];});
+    // Connection is keyed client_code + date (not session id) — Day & Jim's
+    // contract, unchanged here. checked_at.desc order means the first row seen
+    // per client+date below is already the latest one for that day.
+    var _connSinceQ='&checked_at=gte.'+encodeURIComponent(_feedSince);
+    var _connP = sbSelect('mi_checkins','kind=eq.connection'+_connSinceQ+'&select=client_code,date_str,ratings,checked_at&order=checked_at.desc&limit=500').catch(function(){return [];});
     var foods = (await _foodsP)||[];
     foods=foods.filter(function(f){return _feedTs(f)>=_feedCut;});
     // Hide feed-hidden clients (e.g. Naya) from the activity feed entirely.
@@ -8455,6 +8466,16 @@ async function loadTrainerFeed(targetId){
     var photos=(_resAll[2]||[]).filter(function(p){return _feedTs(p)>=_feedCut;});
     try{ window._reviewedMap={}; var _rvw=_resAll[3]||[]; _rvw.forEach(function(r){ if(r.ref_id==null) return; var _k=(r.kind||'')+':'+r.ref_id; if(!window._reviewedMap[_k]) window._reviewedMap[_k]={}; var _rx=r.reaction||'seen'; if(_rx==='like'){ window._reviewedMap[_k].like=true; window._reviewedMap[_k].like_ts=r.created_at; } else if(_rx==='comment'){ window._reviewedMap[_k].comment=true; window._reviewedMap[_k].comment_ts=r.created_at; if(r.comment) window._reviewedMap[_k].comment_text=r.comment; } else window._reviewedMap[_k].seen=true; }); }catch(e){}
     try{ window._repostedFoodIds={}; var _rpd=await _repostedP; (_rpd||[]).forEach(function(r){ if(r.food_id!=null) window._repostedFoodIds[String(r.food_id)]=true; }); }catch(e){}
+    try{
+      var _connRows=await _connP;
+      window._pfConnByKey={};
+      (_connRows||[]).forEach(function(r){
+        if(!r.client_code || !r.date_str) return;
+        var key=r.client_code+'|'+r.date_str;
+        if(window._pfConnByKey[key]!=null) return;   // already have the newer row for this key
+        window._pfConnByKey[key]=_tlBestConn(r.ratings);
+      });
+    }catch(e){ window._pfConnByKey={}; }
     var moments=(_resAll[4]||[]).filter(function(m){return (m&&m.ts)?(m.ts>=_feedCut):true;});
     var journals=((await _journalP)||[]).filter(function(j){return _feedTs(j)>=_feedCut;});
     try{ var _woT={}; wos.forEach(function(w){ var c=w.client_code; var t=_feedTs(w); if(c&&t){ (_woT[c]=_woT[c]||[]).push(t); } }); var _POST=3*3600000, _PRE=3*3600000; foods.forEach(function(f){ var c=f.client_code; var ft=_feedTs(f); if(!c||!ft||!_woT[c]) return; for(var _wi=0;_wi<_woT[c].length;_wi++){ var _d=ft-_woT[c][_wi]; if(_d>=0&&_d<=_POST){ f._fuel='post'; break; } if(_d<0&&(-_d)<=_PRE){ f._fuel='pre'; break; } } }); }catch(e){}
@@ -8619,7 +8640,7 @@ function _pfWoNote(desc){
 function _pfDayRow(it){
   var d=it.data||{};
   var time=''; try{ time = (it.kind==='food') ? (_mealTimeStr(d)||_feedTimeStr(it.ts)) : _feedTimeStr(it.ts); }catch(e){}
-  var what='', meta='', note='', photo=null;
+  var what='', meta='', note='', photo=null, rating='';
   if(it.kind==='food'){
     what=_pfEsc(d.name||'a meal');
     var cal=Math.round(+d.calories||0), pro=Math.round(+d.protein||0);
@@ -8628,9 +8649,16 @@ function _pfDayRow(it){
   } else if(it.kind==='wo'){
     what=_pfEsc(d.title||'Workout');
     note=_pfWoNote(d.description);
-    // A summary rating chip joins this row once Day & Jim's contract for the two
-    // scales (intensity, connection) lands — that data isn't reachable from here yet.
     photo = d.photo||null;
+    // Composed at read time from Day & Jim's own functions, never reimplemented
+    // here — intensity lives on the row, connection is looked up by client code
+    // + date (not session id; two sessions the same day share the date's read,
+    // an accepted limit). NULL either side is unknown, not absent — no chip at
+    // all when neither answered, never a placeholder dash.
+    try{
+      var _connTok=(window._pfConnByKey||{})[it.code+'|'+d.date_str];
+      rating=_tlRatingLine(d.intensity, _connTok);
+    }catch(e){}
   } else if(it.kind==='weight'){
     what='Weigh-in';
     meta = (d.weight!=null&&d.weight!=='')?(wToDisp(d.weight)+' '+(wUnit()==='lbs'?'lb':'kg')):'';
@@ -8650,6 +8678,7 @@ function _pfDayRow(it){
       +'<div class="pfDayText">'
         +'<div class="pfDayMain"><span class="pfDayWhat">'+what+'</span>'+(meta?('<span class="pfDayMeta">'+_pfEsc(meta)+'</span>'):'')+'</div>'
         +(note?('<div class="pfDayNote">“'+_pfEsc(note)+'”</div>'):'')
+        +(rating?('<div class="pfDayRating">'+_pfEsc(rating)+'</div>'):'')
       +'</div>'
       +thumb
     +'</div>'
@@ -9605,6 +9634,14 @@ async function _cdDayHtml(code, day){
     else { foods=await r[0].json(); wos=await r[1].json(); weights=await r[2].json(); }
   }catch(e){ failed=true; }
   if(failed) return {failed:true, html:''};
+  // Connection, this client, this day only — never cl.code, which inside this
+  // sheet is the trainer signed in, not whoever's day is open. A read failure
+  // here is not fatal to the rest of the sheet; it just means no chip.
+  var dayConnTok=null;
+  try{
+    var _cr=await sbSelect('mi_checkins', cc+'&date_str=eq.'+encodeURIComponent(ds)+'&kind=eq.connection&order=checked_at.desc&limit=1');
+    dayConnTok=_tlBestConn((_cr&&_cr[0])?_cr[0].ratings:null);
+  }catch(e){}
   function rowDs(r){
     if(r&&r.date_str) return r.date_str;
     try{ if(r&&r.logged_at){ var d=new Date(/[Z+]/.test(r.logged_at)?r.logged_at:r.logged_at+'Z'); if(!isNaN(d.getTime())) return _tlDateStr(d); } }catch(e){}
@@ -9667,9 +9704,21 @@ async function _cdDayHtml(code, day){
       // The meal's time is when it started — items are already in meal order.
       var t='';
       try{ t=_mealTimeStr(g.items[0])||''; }catch(e){}
+      // The rating chip — wrapper furniture, appended after their card string,
+      // never inside it. Composed from Day & Jim's own functions, not
+      // reimplemented. workout_logs.intensity lives on the session itself;
+      // g.items[0] is the group's first (only, in practice) session. Two
+      // sessions the same day would share dayConnTok — the accepted limit.
+      var ratingHtml='';
+      if(g.k==='workout' || g.k==='walk'){
+        try{
+          var _line=_tlRatingLine((g.items[0]||{}).intensity, dayConnTok);
+          if(_line) ratingHtml='<div class="cdRatingLine">'+_cdEsc(_line)+'</div>';
+        }catch(e){}
+      }
       html+='<div class="cdRow">'
         +'<div class="cdRail"><span class="cdRailTime">'+_cdEsc(t)+'</span><span class="cdDot"></span></div>'
-        +'<div class="cdCard">'+card+'</div>'
+        +'<div class="cdCard">'+card+ratingHtml+'</div>'
       +'</div>';
     });
   }
