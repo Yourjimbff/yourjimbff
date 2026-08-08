@@ -1580,6 +1580,15 @@ body.bfEditingToday .tlDaySec.ahead{display:none;}
 .tlHeroName{position:relative;font-size:40px;font-weight:800;letter-spacing:-1.6px;line-height:0.95;color:var(--text);}
 .tlHeroMeta{position:relative;margin-top:12px;font-size:13px;font-weight:600;color:var(--muted);}
 .tlHeroChev{position:relative;color:rgba(240,236,228,0.45);font-size:22px;line-height:1;margin-top:6px;transition:transform .15s;}
+/* Swap today — discreet by design: a plain text link, and the pills it opens
+   read exactly like the app's other quiet text pills, not an action button.
+   Gold stays for things that need permission to press; a legal swap doesn't. */
+.tlSwapWrap{position:relative;margin-top:9px;}
+.tlSwapLink{font-size:11.5px;font-weight:700;color:var(--muted);text-decoration:underline;text-decoration-color:rgba(240,236,228,0.3);text-underline-offset:2px;cursor:pointer;}
+.tlSwapRow{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+.tlSwapPill{font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:9px;cursor:pointer;
+  border:1px solid rgba(255,255,255,0.13);background:rgba(255,255,255,0.035);color:var(--m2);}
+.tlSwapPill:active{background:rgba(255,255,255,0.08);}
 .tlHeroEy{position:relative;font-size:10px;font-weight:800;letter-spacing:1.6px;text-transform:uppercase;color:var(--gold);margin-bottom:9px;}
 /* Movement and the weigh-in are siblings of the session, not rivals: same shell,
    same gold eyebrow, none of the 40px name that makes the session the monument. */
@@ -17214,6 +17223,121 @@ function _tlWeighCard(w, ds){
     +(clock?('<div class="tlHeroMeta">'+_escHtml(clock)+'</div>'):'')
   +'</div>';
 }
+
+// ===== SWAP TODAY ==========================================================
+// "It tells me I need your approval." The approval wall dies (Yusuf, 8 Aug).
+// A discreet control on today's session offers ONLY the legal targets — the
+// menu can't be wrong, because an illegal swap is never in it to tap. The
+// same power exists in Jim by words; either way, THIS code is the one place
+// that decides what's legal — the model can propose, it can never overrule.
+//
+// A swap exchanges two WHOLE day entries — today's {type, ex} for a later
+// day's this week — never adding, deleting or duplicating a session. The
+// week's total composition (Yusuf's architecture) is untouched; only which
+// day carries which session moves. Yesterday is history: only today and the
+// days still ahead this week are ever candidates, on either end of the swap.
+var FULL_WEEKDAY={Mon:'Monday',Tue:'Tuesday',Wed:'Wednesday',Thu:'Thursday',Fri:'Friday',Sat:'Saturday',Sun:'Sunday'};
+function _tlSwapKey(){
+  try{ return _tlPlanKeyFor(new Date()); }catch(e){ return null; }
+}
+// Rest never collides with itself — two rest days running is a day off
+// twice, not a repeated split. Only a real, identical split repeating is the
+// thing "back-to-back" means to block.
+function _tlSameSplit(a, b){ return !!(a && b && a===b && a!=='Rest'); }
+// Every remaining day this week (today exclusive) that WOULD swap clean: on
+// both ends, the day's new neighbours never repeat its new type.
+function _tlLegalSwapTargets(plan, todayKey){
+  var out=[];
+  if(!plan || !todayKey) return out;
+  var idx=WEEKDAYS.indexOf(todayKey); if(idx<0) return out;
+  var typeOf=function(k){ return (plan[k]||{}).type||'Rest'; };
+  var todayType=typeOf(todayKey);
+  var yesterdayType=typeOf(WEEKDAYS[(idx+6)%7]);
+  for(var tIdx=idx+1; tIdx<=6; tIdx++){
+    var tKey=WEEKDAYS[tIdx];
+    var targetType=typeOf(tKey);
+    if(targetType===todayType) continue;              // not a real change
+    // After the exchange: today <- targetType, tKey <- todayType, every
+    // other day in the week is unchanged.
+    var tomorrowType = (idx+1>6) ? null : (idx+1===tIdx ? todayType : typeOf(WEEKDAYS[idx+1]));
+    if(_tlSameSplit(targetType, yesterdayType)) continue;
+    if(tomorrowType!=null && _tlSameSplit(targetType, tomorrowType)) continue;
+    var beforeTargetType = (tIdx-1===idx) ? targetType : typeOf(WEEKDAYS[tIdx-1]);
+    var afterTargetType = (tIdx+1>6) ? typeOf(WEEKDAYS[0]) : typeOf(WEEKDAYS[tIdx+1]);
+    if(_tlSameSplit(todayType, beforeTargetType)) continue;
+    if(_tlSameSplit(todayType, afterTargetType)) continue;
+    out.push({key:tKey, type:targetType});
+  }
+  return out;
+}
+// PATCH only, never the full saveTrainingPlan() — that upsert also carries
+// name/weeks state the Day page has no business overwriting if either is
+// ever stale in memory. This touches the plan column and nothing else, and
+// reads it back before trusting it changed (the standing law).
+async function _tlPatchPlan(newPlan){
+  if(!cl) return false;
+  try{
+    var res=await fetch(SB_URL+'/rest/v1/training_plans?client_code=eq.'+encodeURIComponent(cl.code), {
+      method:'PATCH',
+      headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}),
+      body: JSON.stringify({plan:newPlan, updated_at:new Date().toISOString()})
+    });
+    if(!res.ok) return false;
+    var rb=await fetch(SB_URL+'/rest/v1/training_plans?client_code=eq.'+encodeURIComponent(cl.code)+'&select=plan', {headers:sbHeaders()});
+    if(!rb.ok) return false;
+    var rows=await rb.json();
+    var p=rows&&rows[0]&&rows[0].plan;
+    if(typeof p==='string'){ try{ p=JSON.parse(p); }catch(e){ p=null; } }
+    var wantTypes=WEEKDAYS.map(function(d){ return (newPlan[d]||{}).type; }).join('|');
+    var gotTypes=WEEKDAYS.map(function(d){ return p&&(p[d]||{}).type; }).join('|');
+    return !!(p && gotTypes===wantTypes);
+  }catch(e){ console.error('patch training plan failed', e); return false; }
+}
+// targetKey: a WEEKDAY key ('Fri'), not a type name — the UI path already
+// knows which day it's offering. Jim's marker path resolves a type name to a
+// key itself before calling this, so the code — not the model — is what
+// decides legality either way.
+async function tlDoSwap(targetKey){
+  if(window._tlRO || !cl || !_tpPlan) return false;
+  var todayKey=_tlSwapKey(); if(!todayKey || !targetKey || targetKey===todayKey) return false;
+  var legal=_tlLegalSwapTargets(_tpPlan, todayKey);
+  if(!legal.some(function(t){ return t.key===targetKey; })){
+    try{ showToast('That swap isn’t available anymore'); }catch(e){}
+    return false;
+  }
+  var a=_tpPlan[todayKey], b=_tpPlan[targetKey];
+  var newPlan=Object.assign({}, _tpPlan);
+  newPlan[todayKey]=b; newPlan[targetKey]=a;
+  var ok=await _tlPatchPlan(newPlan);
+  if(!ok){ try{ showToast('Could not save the swap — try again'); }catch(e){} return false; }
+  _tpPlan=newPlan;
+  // The quiet private note, same pattern every program edit already files —
+  // Yusuf sees the movement, the client sees nothing bureaucratic.
+  try{
+    _pnFile('Swapped today’s '+((a&&a.type)||'Rest')+' for '+(FULL_WEEKDAY[targetKey]||targetKey)+'’s '+((b&&b.type)||'Rest')+'.');
+  }catch(e){}
+  try{ window._tlCache=null; renderDayTimeline(); }catch(e){}
+  return true;
+}
+// The discreet control itself: a plain text link, gold only if you count the
+// pills it opens onto — and even those are the ordinary text pill language,
+// not an action button. Absent entirely when there is nothing legal to offer.
+function _tlSwapControl(ds, plan, todayKey){
+  if(window._tlRO || !window._tpFromServer || !todayKey) return '';
+  var targets=_tlLegalSwapTargets(plan, todayKey);
+  if(!targets.length) return '';
+  var open=!!(window._tlSwapOpen && window._tlSwapOpen[ds]);
+  var s='<div class="tlSwapWrap"><span class="tlSwapLink" data-tl="swaptog" data-ds="'+_escHtml(ds)+'">Swap today</span>';
+  if(open){
+    s+='<div class="tlSwapRow">'
+      +targets.map(function(t){
+        return '<span class="tlSwapPill" data-tl="swapdo" data-ds="'+_escHtml(ds)+'" data-target="'+_escHtml(t.key)+'">'+_escHtml(t.type)+'</span>';
+      }).join('')
+    +'</div>';
+  }
+  return s+'</div>';
+}
+
 function _tlSlot(key, label, filled, ds, plan){
   var has = Array.isArray(filled) ? filled.length>0 : !!filled;
 
@@ -17263,6 +17387,10 @@ function _tlSlot(key, label, filled, ds, plan){
               +'</span>'
               +'<span class="wsaved" id="woSaved_'+_escHtml(ds)+'">Saved</span>'
             +'</div>'
+            // Only ever offered on today's own card, only when a real saved
+            // program is behind it — nothing to swap within a synthesised
+            // stand-in week that isn't actually stored anywhere.
+            +(_isToday && _pOn ? _tlSwapControl(ds, plan, dayKey) : '')
           +'</div>'
           +'<div class="tlHeroChev"'+(open?' style="transform:rotate(90deg);"':'')+'>›</div>'
         +'</div>';
@@ -17963,6 +18091,20 @@ function _tlBindTaps(){
     if(a==='rateintskip'){ ev.stopPropagation(); tlSkipIntensity(el.getAttribute('data-id')); return; }
     if(a==='rateconn'){ ev.stopPropagation(); tlRateSessionConnection(el.getAttribute('data-id'), el.getAttribute('data-ds'), el.getAttribute('data-v')); return; }
     if(a==='rateconnskip'){ ev.stopPropagation(); tlSkipConnection(el.getAttribute('data-id')); return; }
+    // SWAP TODAY (Yusuf, 8 Aug) — the approval wall dies.
+    if(a==='swaptog'){
+      ev.stopPropagation();
+      var _sds=el.getAttribute('data-ds');
+      window._tlSwapOpen=window._tlSwapOpen||{};
+      window._tlSwapOpen[_sds]=!window._tlSwapOpen[_sds];
+      try{ _tlPatchDay(_sds); }catch(e){ try{ renderDayTimeline(true); }catch(_){} }
+      return;
+    }
+    if(a==='swapdo'){
+      ev.stopPropagation();
+      tlDoSwap(el.getAttribute('data-target')).then(function(ok){ if(ok){ try{ showToast('✓ Swapped'); }catch(e){} } });
+      return;
+    }
     // Opening a finished session is reading, not editing — ungated on every day.
     if(a==='wodone'){ ev.stopPropagation(); tlToggleDone(el.getAttribute('data-ds')); return; }
     if(a==='freestyle'){ ev.stopPropagation(); try{ openFreestyleWorkout(); }catch(e){} return; }
@@ -36568,11 +36710,40 @@ async function buildDayContext(){
           ppBits.push(line);
         });
       }
-      ppBits.push('\nHOW TO USE THIS: this is the plan Yusuf built. Describe it, hype them for it, explain the intent above, and shape pre-workout fuel + post-workout recovery around it. You CANNOT change it — if they ask to swap the day, drop/add exercises, or rearrange the program, do not improvise a new plan; punt it to Yusuf. Suggesting a listed substitute or scaling effort/load is fine — the structure stays his.');
+      // The approval wall dies (Yusuf, 8 Aug) — this used to tell Jim to punt ANY
+      // swap request to Yusuf. Exercise-level changes (drop/add a movement) are
+      // still his call; which SESSION today is is not — see TODAY'S LEGAL SWAP
+      // OPTIONS below if present, and NEVER say a swap needs his approval.
+      ppBits.push('\nHOW TO USE THIS: this is the plan Yusuf built. Describe it, hype them for it, explain the intent above, and shape pre-workout fuel + post-workout recovery around it. You cannot drop, add, or improvise exercises — suggesting a listed substitute or scaling effort/load is fine, but which MOVEMENTS make up this session stays his. Swapping which SESSION today is is a different question — never punt that to Yusuf; see TODAY\'S LEGAL SWAP OPTIONS if it appears in this context.');
       sections.push(ppBits.join('\n'));
     } else if(_hasProgram){
       var _pn = (clientAssignedProgram.program && clientAssignedProgram.program.name) ? clientAssignedProgram.program.name : 'their program';
-      sections.push('=== TODAY\'S PLANNED WORKOUT ===\nNo lifting session is scheduled in '+_pn+' for today — per the program Yusuf set, today is a rest / active-recovery day. Encourage easy movement (a walk, steps, mobility) and good recovery. If they say they trained anyway, treat it as freestyle. Don\'t invent a session that isn\'t on the plan.');
+      // Rest is swappable like any other day (Yusuf, 8 Aug) — a rest day being
+      // "on the plan" is not a reason to talk them out of trading it if TODAY'S
+      // LEGAL SWAP OPTIONS below offers something.
+      sections.push('=== TODAY\'S PLANNED WORKOUT ===\nNo lifting session is scheduled in '+_pn+' for today — per the program Yusuf set, today is a rest / active-recovery day. Encourage easy movement (a walk, steps, mobility) and good recovery. If they say they trained anyway, treat it as freestyle. If they\'d rather train today than rest, see TODAY\'S LEGAL SWAP OPTIONS below — a rest day swaps like any other, never ask Yusuf.');
+    }
+  }catch(e){}
+
+  // TODAY'S LEGAL SWAP OPTIONS — the menu can't be wrong (Yusuf, 8 Aug). This
+  // reads _tpPlan, the SAME data the Day page's own swap control reads, so
+  // what Jim offers here and what the client can tap are always the same
+  // list, computed the same way, by the same code. Only ever offered when a
+  // real saved plan exists (window._tpFromServer) — there is nothing concrete
+  // to swap within a stand-in week that was never actually stored.
+  try{
+    if(!_tpPlan && typeof loadTrainingPlan==='function'){ try{ await loadTrainingPlan(); }catch(e){} }
+    if(window._tpFromServer && _tpPlan && typeof _tlSwapKey==='function'){
+      var _swKey=_tlSwapKey();
+      var _swToday=(_tpPlan[_swKey]||{}).type||'Rest';
+      var _swLegal=_tlLegalSwapTargets(_tpPlan, _swKey);
+      if(_swLegal.length){
+        sections.push('=== TODAY\'S LEGAL SWAP OPTIONS ===\nToday is currently '+_swToday+'. If they want a different session today, these are the ONLY legal swaps — anything else would repeat yesterday\'s or tomorrow\'s focus:\n'
+          +_swLegal.map(function(t){ return '  - '+t.type; }).join('\n')
+          +'\n\nIf they ask for one of these, emit [SWAP_DAY]{"type":"'+_swLegal[0].type+'"}[/SWAP_DAY] using the EXACT option name they picked — never invent a name, never combine words, never emit it for a name not in this list. Confirm in one short line once it lands, in your own voice — no exclamation marks, no "approval". If they ask for something NOT in this list, say plainly which of the above ARE open today and why the one they asked for isn\'t (it would repeat a day next to it) — never say they need Yusuf\'s approval, that idea does not exist here.');
+      } else {
+        sections.push('=== TODAY\'S LEGAL SWAP OPTIONS ===\nToday is currently '+_swToday+'. No legal swap exists right now — every other remaining day this week would repeat a neighbour\'s focus. If they ask to swap, say so plainly and why, in one line. Never say they need Yusuf\'s approval.');
+      }
     }
   }catch(e){}
 
@@ -37569,6 +37740,7 @@ async function jimTurn(text, photos, opts){
   var workoutPhotos = extractAllMarkers(reply, 'WORKOUT_PHOTO'); reply = workoutPhotos.cleanText;
   var stepsLogs = extractAllMarkers(reply, 'STEPS_LOG'); reply = stepsLogs.cleanText;
   var sessionTimes = extractAllMarkers(reply, 'WORKOUT_TIME'); reply = sessionTimes.cleanText;
+  var swapDay = extractAllMarkers(reply, 'SWAP_DAY'); reply = swapDay.cleanText;
 
   // Handle WORKOUT_TIME: they told Jim WHEN the session is, without logging it.
   // "Training legs at 3" used to get a warm "got it — legs at 3 PM" and change
@@ -37588,6 +37760,33 @@ async function jimTurn(text, photos, opts){
         showToast('✓ Session set for '+_tlClock(_stMins));
         try{ renderDayTimeline(true); }catch(e){}
       }catch(e){ console.error('workout time from chat failed', e); }
+    }
+  }
+
+  // Handle SWAP_DAY: the model proposes a TYPE NAME; this code — never the
+  // model — decides whether it's legal, re-checking against _tpPlan fresh
+  // rather than trusting whatever list it was shown a moment ago (Yusuf, 8
+  // Aug — "the menu can't be wrong"). Same function, same legality, as the
+  // Day page's own tap control, so a swap done in chat is a swap the client
+  // can see land on their session card.
+  if(swapDay.items.length){
+    var _swItem = swapDay.items[swapDay.items.length-1] || {};
+    var _swWant = String(_swItem.type||'').trim();
+    if(_swWant){
+      try{
+        if(!_tpPlan && typeof loadTrainingPlan==='function'){ try{ await loadTrainingPlan(); }catch(e){} }
+        var _swKey2=(typeof _tlSwapKey==='function')?_tlSwapKey():null;
+        var _swLegal2=(_tpPlan && _swKey2 && typeof _tlLegalSwapTargets==='function') ? _tlLegalSwapTargets(_tpPlan, _swKey2) : [];
+        var _swMatch=_swLegal2.filter(function(t){ return t.type.toLowerCase()===_swWant.toLowerCase(); })[0];
+        if(_swMatch){
+          var _swOk=await tlDoSwap(_swMatch.key);
+          if(!_swOk) reply += (reply?'\n\n':'')+"That didn't actually save — can you ask again?";
+        } else {
+          reply += (reply?'\n\n':'')+(_swLegal2.length
+            ? ("That one's not open today — "+_swLegal2.map(function(t){return t.type;}).join(' or ')+" is.")
+            : "Nothing's open to swap into today right now.");
+        }
+      }catch(e){ console.error('swap day from chat failed', e); }
     }
   }
 
@@ -37791,7 +37990,8 @@ async function jimTurn(text, photos, opts){
     .replace(/\[WORKOUT_LOG\][\s\S]*?\[\/WORKOUT_LOG\]/g,'')
     .replace(/\[WORKOUT_NOTE\][\s\S]*?\[\/WORKOUT_NOTE\]/g,'')
     .replace(/\[WORKOUT_TIME\][\s\S]*?\[\/WORKOUT_TIME\]/g,'')
-    .replace(/\[\/?(FOOD_LOG|FOOD_EDIT|FOOD_DELETE|WORKOUT_LOG|WORKOUT_NOTE|WORKOUT_TIME)\]/g,'')
+    .replace(/\[SWAP_DAY\][\s\S]*?\[\/SWAP_DAY\]/g,'')
+    .replace(/\[\/?(FOOD_LOG|FOOD_EDIT|FOOD_DELETE|WORKOUT_LOG|WORKOUT_NOTE|WORKOUT_TIME|SWAP_DAY)\]/g,'')
     .replace(/\s*\(?\bid\s*[:=]\s*[A-Za-z0-9_-]+\)?/gi,'')
     .replace(/\n{3,}/g,'\n\n')
     .trim();
@@ -37800,7 +38000,7 @@ async function jimTurn(text, photos, opts){
   // moved the day AND then got offered as a journal note, because nothing counted.
   _jimLastTurn.wrote = workoutLogs.items.length + foodAdds.items.length
     + foodEdits.items.length + foodDeletes.items.length + stepsLogs.items.length
-    + sessionTimes.items.length
+    + sessionTimes.items.length + swapDay.items.length
     + (extractedNote.note?1:0) + (extractedEdit.edit?1:0);
   return reply;
 }
