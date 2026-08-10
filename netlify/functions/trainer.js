@@ -202,13 +202,16 @@ const WRITE_OPS = {
       rating: a.rating ? str(a.rating, 40) : null,
     },
   }),
+  // Once the lock is on, this door is the only road left to this table — a table
+  // with no reverse gear on the only road in is permanent-mistake territory.
+  repostDelete: (a) => ({ method: 'DELETE', path: `coach_reposts?id=eq.${encId(a.id)}` }),
 
   // ---- coach_notes (private, TODAY'S banner + roster notes) ----------------------
   noteSend: (a) => ({
     method: 'POST', path: 'coach_notes',
     body: { client_code: enc_raw(a.client_code), note: str(a.note, 4000), date_str: str(a.date_str, 40), time_str: str(a.time_str, 20) },
   }),
-  noteDelete: (a) => ({ method: 'DELETE', path: `coach_notes?id=eq.${encId(a.id)}` }),
+  noteDelete: (a) => ({ method: 'DELETE', path: `coach_notes?id=eq.${encNoteId(a.id)}` }),
 };
 
 // A client_code carried in a WRITE BODY (not a URL filter) still gets the same shape
@@ -222,6 +225,15 @@ function encId(v) {
   const s = String(v == null ? '' : v);
   if (!/^\d+$/.test(s)) throw new Error('bad_arg');
   return s;
+}
+// coach_notes rows key on a UUID, not the integer id every other write-target here
+// uses — encId's digit-only check rejected every real row, so noteDelete could
+// never actually delete anything. Same shape check, widened to accept either.
+function encNoteId(v) {
+  const s = String(v == null ? '' : v);
+  if (/^\d+$/.test(s)) return s;
+  if (/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(s)) return s;
+  throw new Error('bad_arg');
 }
 
 exports.handler = async (event) => {
