@@ -1668,6 +1668,12 @@ body.bfEditingToday .tlDaySec.ahead{display:none;}
 .tlMvPhoto{width:130px;height:130px;object-fit:cover;border-radius:10px;display:block;margin-top:10px;cursor:pointer;}
 .tlMvActs{display:flex;justify-content:flex-end;margin-top:8px;}
 .tlMvActs span{font-size:10.5px;font-weight:700;color:rgba(255,120,110,0.9);padding:3px 8px;cursor:pointer;}
+/* PLANNED MOVEMENT — the client's own intent, quiet until it's tapped done.
+   An open ring reads as "not yet" without saying so; the row itself dims. */
+.tlMvPlanned .tlMvTop{cursor:default;}
+.tlMvPlanned[data-tl="mvdone"] .tlMvTop{cursor:pointer;}
+.tlMvCheck{flex-shrink:0;width:16px;height:16px;border-radius:50%;border:1.5px solid rgba(240,236,228,0.32);}
+.tlMvPlanned[data-tl="mvdone"]:active .tlMvCheck{border-color:var(--gold);}
 /* expanded meal: the macro tiles, each with its own quiet edit */
 .tlXMac{position:relative;display:flex;gap:8px;margin-top:14px;}
 .tlXm{flex:1;min-width:0;text-align:center;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.09);
@@ -17035,6 +17041,11 @@ function _tlDaySectionHtml(cur, ctx){
       if(_tlIsRecord(it)) _moveRows.push({k:'workout', lbl:'Workout', it:it});
       else rows.push({k:'workout', lbl:'Workout', it:it, m:_tlMins(it)});
     });
+    // Today and days still ahead see what's actually intended (movement_prefs) —
+    // a day already gone is history and doesn't grow a retroactive unfinished mark.
+    if(cur.getTime()>=today.getTime()){
+      try{ _tlPlannedMoveRows(cur, _moveRows).forEach(function(r){ _moveRows.push(r); }); }catch(e){}
+    }
     if(_moveRows.length){
       var _mm=99999;
       _moveRows.forEach(function(r){ var m=_tlMins(r.it); if(m!=null && m<_mm) _mm=m; });
@@ -17518,8 +17529,71 @@ function _tlMovementCard(rows, ds){
   rows.forEach(function(r){ var m=_tlMins(r.it); if(m!=null && m<mins) mins=m; });
   return '<div class="tlHero tlMoveCard" data-mins="'+((mins<99999)?mins:0)+'">'
     +'<div class="tlHeroEy">Movement</div>'
-    +rows.map(function(r){ return _tlMoveLine(r.k, r.lbl, r.it, ds); }).join('')
+    +rows.map(function(r){ return r.k==='plan' ? _tlPlannedMoveLine(r, ds) : _tlMoveLine(r.k, r.lbl, r.it, ds); }).join('')
   +'</div>';
+}
+// PLANNED MOVEMENT — the client's own intent (movement_prefs: walks, cardio,
+// recovery), shown as a quiet unlogged row in the same Movement card until it's
+// done. A row's absence IS "done" — it disappears the moment a matching title
+// is logged, so there is nothing else to track: no counts, no goals, no streak
+// (Yusuf, 10 Aug — "his recovery is set every day, 10 min and no day ever shows
+// it"). Only computed for today and days ahead; a day already gone doesn't grow
+// a permanent unfinished mark — that's the shame energy this app already refuses.
+function _tlPlannedMoveRows(cur, loggedMoveRows){
+  var out=[];
+  try{
+    if(!profile) return out;
+    var m=_mvpPrefs();
+    var dow=((cur.getDay()+6)%7)+1;   // 1=Mon..7=Sun — the stored contract
+    var loggedTitles=loggedMoveRows.filter(function(r){ return r.k==='workout'; })
+      .map(function(r){ return String((r.it&&r.it.title)||'').trim().toLowerCase(); });
+    var haveWalk=loggedMoveRows.some(function(r){ return r.k==='walk'; });
+    if(m.cardio.on && loggedTitles.indexOf('cardio')<0){
+      out.push({k:'plan', lbl:'Cardio', kind:'cardio'});
+    }
+    if(m.recovery.on && loggedTitles.indexOf('recovery')<0){
+      out.push({k:'plan', lbl:'Recovery', kind:'recovery', minutes:m.recovery.minutes});
+    }
+    (m.walks||[]).forEach(function(w){
+      if(!haveWalk && w.days.indexOf(dow)>=0){
+        out.push({k:'plan', lbl:w.name, kind:'walk', walkName:w.name});
+      }
+    });
+  }catch(e){}
+  return out;
+}
+// today only — you cannot tap a future walk done before you've walked it, and a
+// past day's card is read-only (see the isToday gate this carries in its data-tl).
+function _tlPlannedMoveLine(r, ds){
+  var meta=r.minutes ? (r.minutes+' min') : '';
+  var tappable=!window._tlRO && ds===_tlDateStr(new Date());
+  return '<div class="tlMv tlMvPlanned"'
+    +(tappable ? (' data-tl="mvdone" data-ds="'+_escHtml(ds)+'" data-kind="'+_escHtml(r.kind)+'"'+(r.walkName?(' data-walk="'+_escHtml(r.walkName)+'"'):'')) : '')
+    +'>'
+    +'<div class="tlMvTop">'
+      +'<span class="tlMvCheck"></span>'
+      +'<span class="tlMvName" style="opacity:0.55;">'+_escHtml(r.lbl)+'</span>'
+      +(meta?('<span class="tlMvDot">·</span><span class="tlMvMeta">'+_escHtml(meta)+'</span>'):'')
+      +'<span class="tlMvSp"></span>'
+    +'</div>'
+  +'</div>';
+}
+// Tap-to-done writes a REAL workout_logs row through the exact same insert every
+// other movement entry uses — read-back verified, duplicate-guarded, the same
+// "logging to X?" gate when following a client — so a done planned row and one
+// logged by hand are indistinguishable to every other reader of the day.
+async function tlMarkMovementDone(el){
+  if(window._tlRO || !cl) return;
+  var ds=el.getAttribute('data-ds'), kind=el.getAttribute('data-kind'), walkName=el.getAttribute('data-walk');
+  var title = kind==='walk' ? (walkName||'Walk') : (kind==='cardio' ? 'Cardio' : 'Recovery');
+  var payload={client_code:cl.code, title:title, description:'', date_str:ds, logged_at:_timeToISO('', ds)};
+  if(kind==='recovery'){ try{ var mins=_mvpPrefs().recovery.minutes; if(mins) payload.duration=String(mins); }catch(e){} }
+  var res=await insertWorkoutLog(payload);
+  if(!res || !res.ok){
+    if(!res || !res.cancelled){ try{ showToast('Could not save — try again'); }catch(e){} }
+    return;
+  }
+  try{ window._tlCache=null; renderDayTimeline(true); }catch(e){}
 }
 // The weigh-in was a hairline in the header while everything it sat above was a
 // card. Now it is one too: the number big, the time quiet underneath. It only
@@ -18465,6 +18539,7 @@ function _tlBindTaps(){
     var a=el.getAttribute('data-tl');
     ev.stopPropagation();
     if(a==='xp'){ tlXp(el.getAttribute('data-uid')); return; }
+    if(a==='mvdone'){ tlMarkMovementDone(el); return; }
     if(a==='taptime'){ ev.stopPropagation(); tlTapTime(el.getAttribute('data-id'), el.getAttribute('data-ds'), el.getAttribute('data-cur')); return; }
     if(a==='mealxp'){ tlXp(el.getAttribute('data-uid')); return; }
     if(a==='reply'){ ev.stopPropagation(); openReply(el.getAttribute('data-kind'), el.getAttribute('data-rid')); return; }
