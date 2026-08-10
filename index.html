@@ -1619,6 +1619,12 @@ body.bfEditingToday .tlDaySec.ahead{display:none;}
 .tlSwapPill{font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:9px;cursor:pointer;
   border:1px solid rgba(255,255,255,0.13);background:rgba(255,255,255,0.035);color:var(--m2);}
 .tlSwapPill:active{background:rgba(255,255,255,0.08);}
+/* The week planner's own two states, on the same pill: picked (gold, same
+   register as any other "in progress" selection) and not offered (no tap
+   handler at all — an illegal or past day is simply quieter, never explained). */
+.tlSwapPillSel{border-color:var(--gold);color:var(--gold);background:rgba(245,197,24,0.08);}
+.tlSwapPillOff{cursor:default;opacity:0.35;}
+.tlSwapNote{font-size:11px;color:rgba(240,236,228,0.5);margin-top:8px;}
 .tlHeroEy{position:relative;font-size:10px;font-weight:800;letter-spacing:1.6px;text-transform:uppercase;color:var(--gold);margin-bottom:9px;}
 /* Movement and the weigh-in are siblings of the session, not rivals: same shell,
    same gold eyebrow, none of the 40px name that makes the session the monument. */
@@ -13044,7 +13050,7 @@ function doLogout(){
   // any edit they make writes it into THEIR row, destroying their own. Everything the
   // Program tab decides from goes with the client it belongs to.
   try{
-    _tpPlan=null; _tpWeeks=4; _tpName='';
+    _tpPlan=null; _tpWeeks=4; _tpName=''; _tpWeekOverrides={};
     window._tpFromServer=false;
     window._pgPlanAsked=false;
     window._tpLoadFailed=undefined;   // "unknown" again, not "loaded fine"
@@ -16785,16 +16791,42 @@ function _tlPlanKeyFor(d){
   }catch(e){}
   return WEEKDAYS[(d.getDay()+6)%7];
 }
+// Monday of the week containing d, in the same label format the one-off day
+// keys use — the single string a week's override and every reader match
+// against. A week that has already ended just stops being anyone's current
+// week; there is nothing to clean up, its entry only ever answers for itself.
+function _tpWeekKeyFor(d){
+  var x=new Date(d); x.setHours(0,0,0,0);
+  x.setDate(x.getDate()-((x.getDay()+6)%7));
+  return _tlDateStr(x);
+}
+// THE resolver. Every surface that answers "what's today's/this week's
+// session" — the Day page's own hero card, Jim's context, the monument match —
+// already calls _tlPlanForDate, so teaching IT about the override layer is
+// what makes every one of those readers see the same thing without having to
+// find and rewire each call site individually.
 function _tlPlanForDate(d){
   try{
     if(!_tpPlan) return null;
     var key=_tlPlanKeyFor(d);
-    var day=_tpPlan[key];
+    var wk=_tpWeekKeyFor(d);
+    var ov=(_tpWeekOverrides && _tpWeekOverrides[wk]) ? _tpWeekOverrides[wk][key] : null;
+    var day=ov || _tpPlan[key];
     if(!day || !day.type) return null;
     // Rest used to return null, which removed the card entirely — and the card is
     // where the day-type pills live. One tap and there was no way back.
     return {type:day.type, ex:(day.ex||[]), rest:(day.type==='Rest')};
   }catch(e){ return null; }
+}
+// Template merged with this week's override, day by day — the ground truth
+// legality (and the trade UI) computes against, so a second trade in the same
+// week sees the first one's result rather than re-deriving from a stale template.
+function _tpEffectiveWeek(weekKey){
+  var base=_tpPlan||{};
+  var ov=(_tpWeekOverrides && _tpWeekOverrides[weekKey]) || {};
+  var out={};
+  WEEKDAYS.forEach(function(k){ out[k]=ov[k]||base[k]||{type:'Rest',ex:[]}; });
+  return out;
 }
 // What the Day page believes the program is, with the failure kept honest.
 // Three outcomes, and only the first two produce a plan:
@@ -17472,28 +17504,73 @@ function _tlLegalSwapTargets(plan, todayKey){
   }
   return out;
 }
-// PATCH only, never the full saveTrainingPlan() — that upsert also carries
-// name/weeks state the Day page has no business overwriting if either is
-// ever stale in memory. This touches the plan column and nothing else, and
-// reads it back before trusting it changed (the standing law).
-async function _tlPatchPlan(newPlan){
+// Same collision law as _tlLegalSwapTargets, generalized to an arbitrary pair
+// of days rather than "today vs later" — the week planner can trade any two
+// remaining days against each other, not only swap today itself. iA/iB are
+// WEEKDAYS indices; a plain hyphen day-of-week wrap mirrors the fixed-today
+// version's own wrap (yesterday reads off last Sunday, tomorrow off next Monday).
+function _tlLegalTradePair(plan, iA, iB){
+  if(!plan || iA==null || iB==null || iA===iB) return false;
+  var typeOf=function(idx){ return (plan[WEEKDAYS[((idx%7)+7)%7]]||{}).type||'Rest'; };
+  var typeA=typeOf(iA), typeB=typeOf(iB);
+  if(typeA===typeB) return false;                 // not a real change
+  function neighborType(idx){
+    if(idx===iA) return typeB;                     // the swap has already happened by the time we ask
+    if(idx===iB) return typeA;
+    return typeOf(idx);
+  }
+  if(_tlSameSplit(typeB, neighborType(iA-1))) return false;
+  if(_tlSameSplit(typeB, neighborType(iA+1))) return false;
+  if(_tlSameSplit(typeA, neighborType(iB-1))) return false;
+  if(_tlSameSplit(typeA, neighborType(iB+1))) return false;
+  return true;
+}
+// Is there anyone left this day could legally trade with, among today..Sunday?
+// Used to decide which days are even offered as a first pick — a day with no
+// legal partner simply never becomes tappable, rather than being tappable
+// into a dead end.
+function _tlHasTradePartner(plan, todayIdx, i){
+  for(var j=todayIdx;j<=6;j++){ if(j!==i && _tlLegalTradePair(plan,i,j)) return true; }
+  return false;
+}
+// Every client-made move — today-swap, the week planner — writes here now.
+// The template does not move from a client's hand again (Yusuf ruling); the
+// PATCH-the-whole-template helper this replaced is gone. Read-modify-write on
+// just this one week's entry inside week_overrides, so an overlapping edit to
+// a DIFFERENT week can't stomp anything. Same read-back-before-trusting law
+// as every other write here. Degrades to "could not save" on an un-migrated
+// database rather than pretending — see the toast below for the exact SQL to run.
+async function _tpPatchWeekOverride(weekKey, dayDelta){
   if(!cl) return false;
   try{
+    var rb=await fetch(SB_URL+'/rest/v1/training_plans?client_code=eq.'+encodeURIComponent(cl.code)+'&select=week_overrides', {headers:sbHeaders()});
+    if(!rb.ok) return false;
+    var rows=await rb.json();
+    var cur=(rows && rows[0] && rows[0].week_overrides) || {};
+    if(typeof cur==='string'){ try{ cur=JSON.parse(cur); }catch(e){ cur={}; } }
+    var next=Object.assign({}, cur);
+    next[weekKey]=Object.assign({}, next[weekKey]||{}, dayDelta);
     var res=await fetch(SB_URL+'/rest/v1/training_plans?client_code=eq.'+encodeURIComponent(cl.code), {
       method:'PATCH',
       headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}),
-      body: JSON.stringify({plan:newPlan, updated_at:new Date().toISOString()})
+      body: JSON.stringify({week_overrides:next, updated_at:new Date().toISOString()})
     });
-    if(!res.ok) return false;
-    var rb=await fetch(SB_URL+'/rest/v1/training_plans?client_code=eq.'+encodeURIComponent(cl.code)+'&select=plan', {headers:sbHeaders()});
-    if(!rb.ok) return false;
-    var rows=await rb.json();
-    var p=rows&&rows[0]&&rows[0].plan;
-    if(typeof p==='string'){ try{ p=JSON.parse(p); }catch(e){ p=null; } }
-    var wantTypes=WEEKDAYS.map(function(d){ return (newPlan[d]||{}).type; }).join('|');
-    var gotTypes=WEEKDAYS.map(function(d){ return p&&(p[d]||{}).type; }).join('|');
-    return !!(p && gotTypes===wantTypes);
-  }catch(e){ console.error('patch training plan failed', e); return false; }
+    if(!res.ok){
+      var t=''; try{ t=await res.text(); }catch(e){}
+      if(/week_overrides/i.test(t) && /(does not exist|could not find)/i.test(t)){
+        showToast('Run SQL: ALTER TABLE training_plans ADD COLUMN week_overrides JSONB DEFAULT \'{}\'::jsonb');
+      }
+      return false;
+    }
+    var rb2=await fetch(SB_URL+'/rest/v1/training_plans?client_code=eq.'+encodeURIComponent(cl.code)+'&select=week_overrides', {headers:sbHeaders()});
+    if(!rb2.ok) return false;
+    var rows2=await rb2.json();
+    var got=(rows2 && rows2[0] && rows2[0].week_overrides) || {};
+    if(typeof got==='string'){ try{ got=JSON.parse(got); }catch(e){ got=null; } }
+    var ok = got && JSON.stringify(got[weekKey]||null)===JSON.stringify(next[weekKey]);
+    if(ok) _tpWeekOverrides=next;
+    return !!ok;
+  }catch(e){ console.error('patch week override failed', e); return false; }
 }
 // targetKey: a WEEKDAY key ('Fri'), not a type name — the UI path already
 // knows which day it's offering. Jim's marker path resolves a type name to a
@@ -17502,24 +17579,73 @@ async function _tlPatchPlan(newPlan){
 async function tlDoSwap(targetKey){
   if(window._tlRO || !cl || !_tpPlan) return false;
   var todayKey=_tlSwapKey(); if(!todayKey || !targetKey || targetKey===todayKey) return false;
-  var legal=_tlLegalSwapTargets(_tpPlan, todayKey);
+  // Writes to the WEEK, never the template again (Yusuf ruling) — today-swap
+  // and the week planner are the same mechanism now, just two doors onto it.
+  var weekKey=_tpWeekKeyFor(new Date());
+  var eff=_tpEffectiveWeek(weekKey);
+  var legal=_tlLegalSwapTargets(eff, todayKey);
   if(!legal.some(function(t){ return t.key===targetKey; })){
     try{ showToast('That swap isn’t available anymore'); }catch(e){}
     return false;
   }
-  var a=_tpPlan[todayKey], b=_tpPlan[targetKey];
-  var newPlan=Object.assign({}, _tpPlan);
-  newPlan[todayKey]=b; newPlan[targetKey]=a;
-  var ok=await _tlPatchPlan(newPlan);
+  var a=eff[todayKey], b=eff[targetKey];
+  var delta={}; delta[todayKey]=b; delta[targetKey]=a;
+  var ok=await _tpPatchWeekOverride(weekKey, delta);
   if(!ok){ try{ showToast('Could not save the swap — try again'); }catch(e){} return false; }
-  _tpPlan=newPlan;
   // The quiet private note, same pattern every program edit already files —
   // Yusuf sees the movement, the client sees nothing bureaucratic.
   try{
-    _pnFile('Swapped today’s '+((a&&a.type)||'Rest')+' for '+(FULL_WEEKDAY[targetKey]||targetKey)+'’s '+((b&&b.type)||'Rest')+'.');
+    _pnFile('Swapped today’s '+((a&&a.type)||'Rest')+' for '+(FULL_WEEKDAY[targetKey]||targetKey)+'’s '+((b&&b.type)||'Rest')+' (this week only).');
   }catch(e){}
   try{ window._tlCache=null; renderDayTimeline(); }catch(e){}
   return true;
+}
+// The week planner's own move: trade any two of this week's remaining days
+// (today or later — history is untouchable) against each other, not only
+// swap today. iA/iB are WEEKDAYS indices. Same legality, same override
+// write, same private note as tlDoSwap — just not pinned to "today" as one side.
+async function tlDoWeekTrade(iA, iB){
+  if(window._tlRO || !cl || !_tpPlan) return false;
+  var todayIdx=WEEKDAYS.indexOf(_tlSwapKey());
+  if(todayIdx<0 || iA==null || iB==null || iA===iB) return false;
+  if(iA<todayIdx || iB<todayIdx) return false;
+  var weekKey=_tpWeekKeyFor(new Date());
+  var eff=_tpEffectiveWeek(weekKey);
+  if(!_tlLegalTradePair(eff, iA, iB)){
+    try{ showToast('That trade isn’t available anymore'); }catch(e){}
+    return false;
+  }
+  var kA=WEEKDAYS[iA], kB=WEEKDAYS[iB];
+  var a=eff[kA], b=eff[kB];
+  var delta={}; delta[kA]=b; delta[kB]=a;
+  var ok=await _tpPatchWeekOverride(weekKey, delta);
+  if(!ok){ try{ showToast('Could not save — try again'); }catch(e){} return false; }
+  try{
+    _pnFile('Traded '+(FULL_WEEKDAY[kA]||kA)+'’s '+((a&&a.type)||'Rest')+' for '+(FULL_WEEKDAY[kB]||kB)+'’s '+((b&&b.type)||'Rest')+' (this week only).');
+  }catch(e){}
+  try{ window._tlCache=null; renderDayTimeline(true); }catch(e){}
+  return true;
+}
+// First tap picks a day; second tap on a legal partner trades them (or on the
+// same day again, deselects). _tlWeekPlannerControl already limits which days
+// carry the tap handler at all, so by the time this fires the pick is legal.
+function tlWkPick(i){
+  if(window._tlWeekSel==null){
+    window._tlWeekSel=i;
+    try{ renderDayTimeline(true); }catch(e){}
+    return;
+  }
+  if(window._tlWeekSel===i){
+    window._tlWeekSel=null;
+    try{ renderDayTimeline(true); }catch(e){}
+    return;
+  }
+  var a=window._tlWeekSel, b=i;
+  window._tlWeekSel=null;
+  tlDoWeekTrade(a,b).then(function(ok){
+    if(ok){ try{ showToast('✓ Traded'); }catch(e){} }
+    try{ renderDayTimeline(true); }catch(e){}
+  });
 }
 // The discreet control itself: a plain text link, gold only if you count the
 // pills it opens onto — and even those are the ordinary text pill language,
@@ -17536,6 +17662,41 @@ function _tlSwapControl(ds, plan, todayKey){
         return '<span class="tlSwapPill" data-tl="swapdo" data-ds="'+_escHtml(ds)+'" data-target="'+_escHtml(t.key)+'">'+_escHtml(t.type)+'</span>';
       }).join('')
     +'</div>';
+  }
+  return s+'</div>';
+}
+// THE WEEK PLANNER — a client can rearrange THIS WEEK only, as a one-week
+// exception (Yusuf ruling); the saved template never moves from their hand.
+// Same discreet register as "Swap today", right beside it. Tap a day, then
+// tap its legal partner to trade them; only legal partners are ever tappable,
+// so there is nothing to reject and nothing to explain. effWeek is the
+// template merged with this week's own trades so far (_tpEffectiveWeek).
+function _tlWeekPlannerControl(ds, effWeek, todayKey){
+  if(window._tlRO || !window._tpFromServer || !todayKey) return '';
+  var todayIdx=WEEKDAYS.indexOf(todayKey); if(todayIdx<0) return '';
+  var anyLegal=false;
+  for(var i=todayIdx;i<=6 && !anyLegal;i++){ if(_tlHasTradePartner(effWeek, todayIdx, i)) anyLegal=true; }
+  if(!anyLegal) return '';
+  var open=!!(window._tlWeekOpen && window._tlWeekOpen[ds]);
+  var sel=(window._tlWeekSel!=null) ? window._tlWeekSel : null;
+  var s='<div class="tlSwapWrap"><span class="tlSwapLink" data-tl="wktog" data-ds="'+_escHtml(ds)+'">This week</span>';
+  if(open){
+    s+='<div class="tlSwapRow">'
+      +WEEKDAYS.map(function(k,i){
+        var t=(effWeek[k]||{}).type||'Rest';
+        var past=(i<todayIdx);
+        var isSel=(sel===i);
+        var tappable;
+        if(past) tappable=false;
+        else if(isSel) tappable=true;                              // tap again to deselect
+        else if(sel==null) tappable=_tlHasTradePartner(effWeek, todayIdx, i);
+        else tappable=_tlLegalTradePair(effWeek, sel, i);
+        var cls='tlSwapPill'+(isSel?' tlSwapPillSel':'')+(!tappable?' tlSwapPillOff':'');
+        var attrs=tappable ? (' data-tl="wkpick" data-ds="'+_escHtml(ds)+'" data-i="'+i+'"') : '';
+        return '<span class="'+cls+'"'+attrs+'>'+_escHtml(k)+' '+_escHtml(t)+'</span>';
+      }).join('')
+    +'</div>'
+    +'<div class="tlSwapNote">This week only - next week resets to your program</div>';
   }
   return s+'</div>';
 }
@@ -17562,6 +17723,12 @@ function _tlSlot(key, label, filled, ds, plan){
       var _pm=_planMins(ds, plan);
       var _setMins=_planTimeSet(ds);          // null when nobody has named a time
       var _pOn=_progOn();
+      // _tlLegalSwapTargets needs the WHOLE WEEK (it indexes plan[weekdayKey]) —
+      // `plan` here is _tlPlanForDate's single-day shape, which silently made
+      // every swap target list empty and the "Swap today" link never render.
+      // Found while wiring the week planner onto the same call site; fixed here
+      // since it uses the exact same effective-week lookup this build already needs.
+      var _effWeek = (typeof _tpEffectiveWeek==='function' && typeof _tpWeekKeyFor==='function') ? _tpEffectiveWeek(_tpWeekKeyFor(_wd)) : null;
       // THE HERO (approved mock, 5 Aug). The session is the centrepiece of the
       // day: the split name is the headline in the full premium treatment, and
       // everything administrative -- the program switch, the day-type pills,
@@ -17592,7 +17759,8 @@ function _tlSlot(key, label, filled, ds, plan){
             // Only ever offered on today's own card, only when a real saved
             // program is behind it — nothing to swap within a synthesised
             // stand-in week that isn't actually stored anywhere.
-            +(_isToday && _pOn ? _tlSwapControl(ds, plan, dayKey) : '')
+            +(_isToday && _pOn && _effWeek ? _tlSwapControl(ds, _effWeek, dayKey) : '')
+            +(_isToday && _pOn && _effWeek ? _tlWeekPlannerControl(ds, _effWeek, dayKey) : '')
           +'</div>'
           +'<div class="tlHeroChev"'+(open?' style="transform:rotate(90deg);"':'')+'>›</div>'
         +'</div>';
@@ -18305,6 +18473,21 @@ function _tlBindTaps(){
     if(a==='swapdo'){
       ev.stopPropagation();
       tlDoSwap(el.getAttribute('data-target')).then(function(ok){ if(ok){ try{ showToast('✓ Swapped'); }catch(e){} } });
+      return;
+    }
+    // THE WEEK PLANNER (Yusuf ruling) — same toggle-open pattern as swap today.
+    if(a==='wktog'){
+      ev.stopPropagation();
+      var _wds=el.getAttribute('data-ds');
+      window._tlWeekOpen=window._tlWeekOpen||{};
+      window._tlWeekOpen[_wds]=!window._tlWeekOpen[_wds];
+      window._tlWeekSel=null;
+      try{ _tlPatchDay(_wds); }catch(e){ try{ renderDayTimeline(true); }catch(_){} }
+      return;
+    }
+    if(a==='wkpick'){
+      ev.stopPropagation();
+      tlWkPick(+el.getAttribute('data-i'));
       return;
     }
     // Opening a finished session is reading, not editing — ungated on every day.
@@ -28568,6 +28751,12 @@ var DAY_TYPES_FEMALE=['Lower','Push','Pull','Glutes','Full Body','Rest'];
 function _tpDayTypes(){ return _clientGender()==='male' ? DAY_TYPES_MALE : DAY_TYPES_FEMALE; }
 var WEEKDAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 var _tpPlan=null, _tpWeeks=4, _tpName='', _tpPickDay=null;
+// Per-week overrides on top of the template — {weekStartLabel: {DayKey:{type,ex}}}.
+// The template is Yusuf's architecture and a client's hand never reaches it
+// again (Yusuf ruling); every client-made move — today-swap, the week planner —
+// lands here instead, scoped to the one week it happened in. See _tlPlanForDate
+// (the resolver every reader already goes through) and _tpPatchWeekOverride.
+var _tpWeekOverrides={};
 function _exFind(name){
   for(var k in EX_LIB){ for(var i=0;i<EX_LIB[k].length;i++){ if(EX_LIB[k][i].n===name) return EX_LIB[k][i]; } }
   return null;
@@ -30889,6 +31078,10 @@ async function loadTrainingPlan(){
       var p=rows[0].plan; if(typeof p==='string'){ try{p=JSON.parse(p);}catch(e){p=null;} }
       if(p && p.Mon){ _tpPlan=p; window._tpFromServer=true; }
       _tpWeeks=rows[0].weeks||4; _tpName=rows[0].name||'';
+      // Missing column on an un-migrated database reads back undefined, which
+      // resolves to {} below — same graceful-degrade every other column here gets.
+      var wo=rows[0].week_overrides; if(typeof wo==='string'){ try{wo=JSON.parse(wo);}catch(e){wo=null;} }
+      _tpWeekOverrides=wo||{};
     }
   }catch(e){ window._tpLoadFailed=true; }
 }
@@ -37021,17 +37214,20 @@ async function buildDayContext(){
   }catch(e){}
 
   // TODAY'S LEGAL SWAP OPTIONS — the menu can't be wrong (Yusuf, 8 Aug). This
-  // reads _tpPlan, the SAME data the Day page's own swap control reads, so
-  // what Jim offers here and what the client can tap are always the same
-  // list, computed the same way, by the same code. Only ever offered when a
-  // real saved plan exists (window._tpFromServer) — there is nothing concrete
-  // to swap within a stand-in week that was never actually stored.
+  // reads the EFFECTIVE week (template + this week's own trades so far — see
+  // _tpEffectiveWeek), the SAME data the Day page's own swap control and week
+  // planner read, so what Jim offers here and what the client can tap are
+  // always the same list, computed the same way, by the same code. Only ever
+  // offered when a real saved plan exists (window._tpFromServer) — there is
+  // nothing concrete to swap within a stand-in week that was never actually stored.
   try{
     if(!_tpPlan && typeof loadTrainingPlan==='function'){ try{ await loadTrainingPlan(); }catch(e){} }
     if(window._tpFromServer && _tpPlan && typeof _tlSwapKey==='function'){
       var _swKey=_tlSwapKey();
-      var _swToday=(_tpPlan[_swKey]||{}).type||'Rest';
-      var _swLegal=_tlLegalSwapTargets(_tpPlan, _swKey);
+      var _swWeekKey=(typeof _tpWeekKeyFor==='function')?_tpWeekKeyFor(new Date()):null;
+      var _swEff=(_swWeekKey && typeof _tpEffectiveWeek==='function') ? _tpEffectiveWeek(_swWeekKey) : _tpPlan;
+      var _swToday=(_swEff[_swKey]||{}).type||'Rest';
+      var _swLegal=_tlLegalSwapTargets(_swEff, _swKey);
       if(_swLegal.length){
         sections.push('=== TODAY\'S LEGAL SWAP OPTIONS ===\nToday is currently '+_swToday+'. If they want a different session today, these are the ONLY legal swaps — anything else would repeat yesterday\'s or tomorrow\'s focus:\n'
           +_swLegal.map(function(t){ return '  - '+t.type; }).join('\n')
@@ -37039,6 +37235,11 @@ async function buildDayContext(){
       } else {
         sections.push('=== TODAY\'S LEGAL SWAP OPTIONS ===\nToday is currently '+_swToday+'. No legal swap exists right now — every other remaining day this week would repeat a neighbour\'s focus. If they ask to swap, say so plainly and why, in one line. Never say they need Yusuf\'s approval.');
       }
+      // THIS WEEK, BEYOND TODAY (Yusuf ruling) — a client can rearrange their
+      // week as a one-week exception; the saved template itself never changes
+      // from their hand. Trading two later days against each other is legal
+      // the same way swapping today is — the code decides, not the model.
+      sections.push('=== THIS WEEK — TRADING OTHER DAYS ===\nThey can also move any two of this week\'s remaining days (today or later, never a day already past) against each other — "move Thursday\'s legs to Saturday", "swap Wednesday and Friday". If they ask for that, emit [WEEK_TRADE]{"dayA":"Thu","dayB":"Sat"}[/WEEK_TRADE] using three-letter weekday keys (Mon/Tue/Wed/Thu/Fri/Sat/Sun) for the two days named. The code checks it is legal and reports the outcome — if it fails, say plainly it is not available, never that it needs Yusuf\'s approval. This only ever changes THIS week; next week resets to their program. Changing what a session actually IS — not just which day it falls on — stays a Yusuf conversation, warm, never phrased as needing approval.');
     }
   }catch(e){}
 
@@ -38036,6 +38237,7 @@ async function jimTurn(text, photos, opts){
   var stepsLogs = extractAllMarkers(reply, 'STEPS_LOG'); reply = stepsLogs.cleanText;
   var sessionTimes = extractAllMarkers(reply, 'WORKOUT_TIME'); reply = sessionTimes.cleanText;
   var swapDay = extractAllMarkers(reply, 'SWAP_DAY'); reply = swapDay.cleanText;
+  var weekTrade = extractAllMarkers(reply, 'WEEK_TRADE'); reply = weekTrade.cleanText;
 
   // Handle WORKOUT_TIME: they told Jim WHEN the session is, without logging it.
   // "Training legs at 3" used to get a warm "got it — legs at 3 PM" and change
@@ -38071,7 +38273,9 @@ async function jimTurn(text, photos, opts){
       try{
         if(!_tpPlan && typeof loadTrainingPlan==='function'){ try{ await loadTrainingPlan(); }catch(e){} }
         var _swKey2=(typeof _tlSwapKey==='function')?_tlSwapKey():null;
-        var _swLegal2=(_tpPlan && _swKey2 && typeof _tlLegalSwapTargets==='function') ? _tlLegalSwapTargets(_tpPlan, _swKey2) : [];
+        var _swWeekKey2=(typeof _tpWeekKeyFor==='function')?_tpWeekKeyFor(new Date()):null;
+        var _swEff2=(_tpPlan && _swWeekKey2 && typeof _tpEffectiveWeek==='function') ? _tpEffectiveWeek(_swWeekKey2) : _tpPlan;
+        var _swLegal2=(_swEff2 && _swKey2 && typeof _tlLegalSwapTargets==='function') ? _tlLegalSwapTargets(_swEff2, _swKey2) : [];
         var _swMatch=_swLegal2.filter(function(t){ return t.type.toLowerCase()===_swWant.toLowerCase(); })[0];
         if(_swMatch){
           var _swOk=await tlDoSwap(_swMatch.key);
@@ -38082,6 +38286,32 @@ async function jimTurn(text, photos, opts){
             : "Nothing's open to swap into today right now.");
         }
       }catch(e){ console.error('swap day from chat failed', e); }
+    }
+  }
+
+  // Handle WEEK_TRADE: the client named two days by weekday, not a type — Jim
+  // parses which two, the code decides legality fresh (same law as SWAP_DAY,
+  // generalized) and actually moves them via tlDoWeekTrade. Days before today
+  // are rejected here too, not just trusted from the prompt.
+  if(weekTrade.items.length){
+    var _wtItem = weekTrade.items[weekTrade.items.length-1] || {};
+    var _wtA=String(_wtItem.dayA||'').trim(), _wtB=String(_wtItem.dayB||'').trim();
+    if(_wtA && _wtB && _wtA!==_wtB){
+      try{
+        if(!_tpPlan && typeof loadTrainingPlan==='function'){ try{ await loadTrainingPlan(); }catch(e){} }
+        var _wtIA=WEEKDAYS.indexOf(_wtA), _wtIB=WEEKDAYS.indexOf(_wtB);
+        var _wtTodayIdx=WEEKDAYS.indexOf((typeof _tlSwapKey==='function')?_tlSwapKey():null);
+        var _wtWeekKey=(typeof _tpWeekKeyFor==='function')?_tpWeekKeyFor(new Date()):null;
+        var _wtEff=(_tpPlan && _wtWeekKey && typeof _tpEffectiveWeek==='function') ? _tpEffectiveWeek(_wtWeekKey) : null;
+        var _wtInRange = (_wtIA>=0 && _wtIB>=0 && _wtTodayIdx>=0 && _wtIA>=_wtTodayIdx && _wtIB>=_wtTodayIdx);
+        var _wtLegal = (_wtEff && _wtInRange && typeof _tlLegalTradePair==='function') ? _tlLegalTradePair(_wtEff, _wtIA, _wtIB) : false;
+        if(_wtLegal){
+          var _wtOk=await tlDoWeekTrade(_wtIA, _wtIB);
+          if(!_wtOk) reply += (reply?'\n\n':'')+"That didn't actually save — can you ask again?";
+        } else {
+          reply += (reply?'\n\n':'')+"That trade isn't available — either one of those days has already passed, or it would repeat a day right next to it.";
+        }
+      }catch(e){ console.error('week trade from chat failed', e); }
     }
   }
 
@@ -38286,7 +38516,8 @@ async function jimTurn(text, photos, opts){
     .replace(/\[WORKOUT_NOTE\][\s\S]*?\[\/WORKOUT_NOTE\]/g,'')
     .replace(/\[WORKOUT_TIME\][\s\S]*?\[\/WORKOUT_TIME\]/g,'')
     .replace(/\[SWAP_DAY\][\s\S]*?\[\/SWAP_DAY\]/g,'')
-    .replace(/\[\/?(FOOD_LOG|FOOD_EDIT|FOOD_DELETE|WORKOUT_LOG|WORKOUT_NOTE|WORKOUT_TIME|SWAP_DAY)\]/g,'')
+    .replace(/\[WEEK_TRADE\][\s\S]*?\[\/WEEK_TRADE\]/g,'')
+    .replace(/\[\/?(FOOD_LOG|FOOD_EDIT|FOOD_DELETE|WORKOUT_LOG|WORKOUT_NOTE|WORKOUT_TIME|SWAP_DAY|WEEK_TRADE)\]/g,'')
     .replace(/\s*\(?\bid\s*[:=]\s*[A-Za-z0-9_-]+\)?/gi,'')
     .replace(/\n{3,}/g,'\n\n')
     .trim();
