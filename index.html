@@ -934,6 +934,8 @@ body.jv-on .pfOutreachIn:focus{border-color:rgba(224,196,152,0.4);}
 #jvTopbar > button{white-space:nowrap;flex-shrink:0;}
 #jvBrand{white-space:nowrap;flex-shrink:0;}
 #jvModeToggle{flex-shrink:0;}
+/* Unmistakable on purpose — red is used nowhere else in this bar. */
+#jvShareToggle.on{background:var(--red);border-color:var(--red);color:#fff;font-weight:800;}
 #jvMoreWrap{position:relative;flex-shrink:0;}
 #jvMore{width:38px;height:38px;border-radius:11px;border:1px solid rgba(240,236,228,0.09);
   background:rgba(255,255,255,0.03);color:rgba(240,236,228,0.80);cursor:pointer;font-size:17px;line-height:1;
@@ -1169,7 +1171,24 @@ body.jv-cockpit #jvDayTabs{display:none;}
 .jvTBody{flex:1;min-height:0;overflow:hidden;}
 /* The front desk gets the same treatment — a quiet client's card must not be visibly
    smaller than an active one there either. Its own height: more width, less wrapping. */
-.fdCard{height:224px;display:flex;flex-direction:column;box-sizing:border-box;}
+/* min-height, not height — the check-mark note field and the outreach compose box
+   are optional extra content that needs room to grow, not to be clipped at 224px. */
+.fdCard{min-height:224px;display:flex;flex-direction:column;box-sizing:border-box;}
+/* ---- Mobile front desk: contact-log check + outreach compose (own classes, not
+   shared with the desktop feed's body.jv-on-scoped styles, which don't apply here). */
+.mobCC{width:26px;height:26px;border-radius:50%;border:2px solid #3a3a3a;flex-shrink:0;cursor:pointer;background:transparent;}
+.mobCC:active{border-color:var(--gold);}
+.mobCCDone{display:flex;align-items:center;gap:7px;flex-shrink:0;font-size:11px;color:rgba(240,236,228,0.78);white-space:nowrap;}
+.mobCCTick{width:22px;height:22px;border-radius:50%;background:var(--gold);color:#000;display:inline-flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;flex-shrink:0;}
+.mobCCUndo{text-decoration:underline;cursor:pointer;}
+.mobCCNoteIn{display:flex;gap:8px;align-items:center;margin-top:9px;}
+.mobCCNoteIn input{flex:1;margin-top:0;}
+.mobCCDoneBtn{background:var(--gold);color:#000;font-weight:800;font-size:12px;padding:9px 15px;border-radius:9px;cursor:pointer;white-space:nowrap;flex-shrink:0;}
+.mobCCNote{font-size:12px;color:rgba(240,236,228,0.70);margin-top:7px;line-height:1.45;}
+.mobOutIn{width:100%;box-sizing:border-box;background:#1b1b1b;border:1px solid #2d2d2d;border-radius:10px;padding:9px 11px;
+  font-size:12.5px;line-height:1.5;color:#f0ece4;font-family:'Plus Jakarta Sans',sans-serif;outline:none;resize:vertical;min-height:52px;margin-top:9px;}
+.mobOutIn:focus{border-color:rgba(224,196,152,0.4);}
+.mobOutAct{display:inline-block;margin-top:7px;font-size:11px;font-weight:700;color:rgba(240,236,228,0.78);text-decoration:underline;cursor:pointer;}
 .jvTCard:hover{transform:translateY(-2px);border-color:rgba(224,196,152,0.35);}
 .jvTName{font-size:15px;font-weight:800;color:#f0ece4;display:flex;align-items:center;gap:8px;letter-spacing:-0.2px;}
 .jvTTerm{margin-top:7px;}
@@ -3194,6 +3213,12 @@ body.hasnav #tToday{padding-bottom:96px;}
          records money received, matching Admin. openSell is still reachable in code. -->
     <button id="jvBroadcast" onclick="openBroadcastCompose()">Broadcast</button>
     <button id="jvSell" onclick="openLogSale()">Make a sale</button>
+    <!-- Filming a live share: swaps every real name and phone on screen for a stable,
+         code-derived first-name alias, and hides every dollar figure outright. One
+         state, shown on every cockpit screen. Display-only, reversible with a second
+         tap. The on-state is red on purpose — nothing else in this bar is, so it
+         can't be missed. -->
+    <button id="jvShareToggle" onclick="jvToggleShareMode()" title="Anonymize real clients on screen for filming">Sharing mode</button>
     <button id="jvMyApp" onclick="jvToggleView()">My App</button>
     <div id="jvBandVer" onclick="jvForceUpdate()" title="Tap to pull the latest version"></div>
     <div id="jvMoreWrap">
@@ -4371,7 +4396,8 @@ body.hasnav #tToday{padding-bottom:96px;}
     <div class="mtitle">Make a sale</div>
     <div class="msub">Record what was agreed and what came in. No payment processing — just your tracker.</div>
     <div class="il">Client / name</div>
-    <input class="ifield" id="saleClient" type="text" placeholder="e.g. Aizik">
+    <input class="ifield" id="saleClient" type="text" placeholder="e.g. Aizik" list="saleClientList" oninput="_saleClientPick()" autocomplete="off">
+    <datalist id="saleClientList"></datalist>
     <div class="il">Program</div>
     <input class="ifield" id="saleProgram" type="text" placeholder="e.g. 12-week transformation">
     <!-- Both amounts are asked for, every time. A blank total used to be read as "paid in
@@ -6704,25 +6730,44 @@ function _acSuggest(){
 // number on a card that no total ever counts — that's why a $3,500 sale entered on
 // 4 Aug never reached the tracker, while everything older did: the older ones were
 // swept in by a one-time backfill and nothing has created a sale since.
-// Idempotent on client_code, so re-saving a fee can't bank it twice.
+//
+// clients is the source of truth (it's what Yusuf actually edits); sales is the
+// mirror. It has to update on EVERY call, not just the first — a renewal is real
+// revenue and has to land, but a correction to the same term's fee must not read
+// as a second sale. The two are told apart by sale_date: matching client_code AND
+// sale_date means this is the SAME term being corrected (update in place); no match
+// on that date means a new term started (a genuine new sale, its own row).
+//
+// A raw fetch, not sbSelect, for the existence check — sbSelect returns [] on a
+// failed read the same as on a genuinely empty table, and inserting after a read
+// that merely failed would double-count money that's already there.
 async function _ensureSaleFor(code, amount, whenDs){
   var amt=parseFloat(amount); if(!code || isNaN(amt) || amt<=0) return false;
   try{
-    // Through the trainer door now, not the anon key — this table goes dark to the
-    // public key once the lock is on. trainerOpChecked, not trainerOp: if the door
-    // couldn't be reached this insert must not proceed on a false "no existing sale" —
-    // that would risk exactly the double-billing this function exists to prevent. An
-    // uncertain check is treated the same as "one already exists": no insert this call.
-    var chk=await trainerOpChecked('sales',{});
-    if(!chk.ok) return false;
-    var existing=chk.rows.filter(function(r){ return r.client_code===code; });
-    if(existing && existing.length) return false;          // already has one; leave it alone
     var r=CLIENTS[code]||{};
     var ds=whenDs || (r.started_at?String(r.started_at).slice(0,10):new Date().toISOString().slice(0,10));
-    var w=await trainerWrite('salesInsert', {client_code:code, client_name:(r.name||code),
-      program:(r.tier==='vip'?'VIP':'1:1')+(r.term_months?(' \u00b7 '+r.term_months+' months'):''),
-      total_amount:amt, paid_amount:amt, sale_date:ds, created_at:new Date().toISOString()});
-    if(!w.ok) return false;
+    var program=(r.tier==='vip'?'VIP':'1:1')+(r.term_months?(' \u00b7 '+r.term_months+' months'):'');
+    // Through the trainer door now, not the anon key — this table goes dark to the
+    // public key once the lock is on. trainerOpChecked, not trainerOp: if the door
+    // couldn't be reached this write must not proceed on a false "no existing sale" —
+    // that would risk exactly the double-billing (or a missed correction) this
+    // function exists to prevent. An uncertain check is treated as "leave it alone."
+    var chk=await trainerOpChecked('sales',{});
+    if(!chk.ok) return false;
+    // Matched on client_code AND sale_date, not client_code alone — that is what
+    // tells a correction to THIS term's fee (same date, update in place) apart from
+    // a renewal into a new term (different date, a genuine new sale, its own row).
+    var existing=chk.rows.filter(function(row){ return row.client_code===code && row.sale_date===ds; })[0];
+    if(existing){
+      if(Number(existing.total_amount)===amt) return false;   // nothing about this term actually changed
+      var w=await trainerWrite('salesUpdate', {id:existing.id, client_name:(r.name||code), program:program,
+        total_amount:amt, paid_amount:amt, sale_date:ds, due_date:existing.due_date, client_code:code});
+      if(!w.ok) return false;
+    } else {
+      var w2=await trainerWrite('salesInsert', {client_code:code, client_name:(r.name||code),
+        program:program, total_amount:amt, paid_amount:amt, sale_date:ds, created_at:new Date().toISOString()});
+      if(!w2.ok) return false;
+    }
     try{ _salesRows=null; if(typeof loadSales==='function') loadSales(); }catch(e){}
     return true;
   }catch(e){ return false; }
@@ -8227,8 +8272,12 @@ function _feedQuietHtml(selDay, items){
   var top=Object.keys(byClient).sort(function(a,b){ return byClient[b]-byClient[a]; }).slice(0,3);
   if(top.length){
     var names=top.map(function(c){
-      return '<span class="jvQN" onclick="_jvOpenClient(\''+c+'\')">'
-        +String((CLIENTS[c]&&CLIENTS[c].name)||c).replace(/</g,'&lt;')+'</span> <span class="jvQC">'+byClient[c]+'</span>';
+      // RULING (Yusuf, live): from the feed, one tap goes straight to the day the
+      // client sees. The name is that tap now; View profile is the small second
+      // door, so this line still isn't single-door, just not name-first about it.
+      return '<span class="jvQN" onclick="openClientDay(\''+c+'\')" title="Open today">'
+        +String((CLIENTS[c]&&CLIENTS[c].name)||c).replace(/</g,'&lt;')+'</span> <span class="jvQC">'+byClient[c]+'</span>'
+        +' <span class="jvQN" onclick="jvOpenDeep(\''+c+'\')" title="View profile" style="font-size:11px;border-bottom-style:dotted;">View profile</span>';
     }).join('<span class="jvQSep">&middot;</span>');
     lines+='<div class="jvQRow"><span class="jvQK">Most on it</span><span class="jvQV">'+names+'</span></div>';
   }
@@ -8976,9 +9025,14 @@ function _pfCard(b, hour, now){
           +(info.phone?('<span class="pfAct" onclick="textClient(\''+b.code+'\')">Say hello to '+_pfEsc(first)+'</span>'):'<span class="pfAct" onclick="jvOpenDeep(\''+b.code+'\')">Open '+_pfEsc(first)+'</span>')
           +'<span class="pfAct" onclick="jvQuickLogContact(\''+b.code+'\')">Log contact</span>'
           +'<span class="pfAct" onclick="_pfCopyOutreach(\''+b.code+'\')">Copy</span>'
+          +'<span class="pfAct" onclick="jvOpenDeep(\''+b.code+'\')">View profile</span>'
         +'</div>';
     return '<div class="pfCard pfQuiet" data-name="'+String(info.name||'').toLowerCase().replace(/"/g,'')+'"'
       +' onclick="openClientDay(\''+b.code+'\')">'
+      // RULING (Yusuf, live): from the feed, ONE tap opens the day exactly as the
+      // client sees it — no stop at the profile first. The name is plain text now;
+      // View profile moved into the action row below, where it doesn't compete
+      // with the one gesture this card exists to serve.
       +'<div class="pfHead"><span class="pfName">'+nm+'</span></div>'
       +body+'</div>';
   }
@@ -8998,6 +9052,7 @@ function _pfCard(b, hour, now){
     acts+='<span class="pfAct" onclick="feedOpenDetail('+newest._idx+')">Comment</span>';
   }
   if(info.phone) acts+='<span class="pfAct" onclick="textClient(\''+b.code+'\')">Text</span>';
+  acts+='<span class="pfAct" onclick="jvOpenDeep(\''+b.code+'\')">View profile</span>';
   acts+='</div>';
   // Light day: 1-2 things logged, still worth a nudge — the outreach box shows here
   // too, not only on a fully quiet card. A fully-logged client doesn't need it.
@@ -9007,6 +9062,8 @@ function _pfCard(b, hour, now){
     : '';
   return '<div class="pfCard" data-name="'+String(info.name||'').toLowerCase().replace(/"/g,'')+'"'
     +' onclick="openClientDay(\''+b.code+'\','+(+newest.ts||0)+')">'
+    // RULING (Yusuf, live): one tap from the feed goes straight to the day, the same
+    // way the client sees it. The name is plain text; View profile lives in acts.
     +'<div class="pfHead"><span class="pfName">'+nm+'</span><span class="pfWhen">'+_pfEsc(_feedTimeStr(newest.ts))+'</span></div>'
     +'<div class="pfDay">'+evs.map(_pfDayRow).join('')+'</div>'
     + outreach
@@ -9037,7 +9094,10 @@ var jvRosterData=null;
 var _rsMark={};                 // code -> 'out' | 'remind'  (staged until confirmed)
 function _rsRemindList(){ try{ return JSON.parse(localStorage.getItem('yjb_roster_remind')||'[]'); }catch(e){ return []; } }
 function _rsSaveRemind(a){ try{ localStorage.setItem('yjb_roster_remind', JSON.stringify(a)); }catch(e){} }
-function _rsMoney(n){ var v=parseFloat(n); return isNaN(v)?'':('$'+Math.round(v).toLocaleString()); }
+// Sharing mode: not aliased, GONE — a quiet placeholder, same choke point idea as
+// the name swap. Every dollar figure that goes through _rsMoney or _sMoney hides
+// itself; nothing downstream has to know sharing mode exists.
+function _rsMoney(n){ if(window._jvShareMode) return '•••'; var v=parseFloat(n); return isNaN(v)?'':('$'+Math.round(v).toLocaleString()); }
 // Page a table properly. PostgREST caps a response at 1000 however large a limit you
 // ask for, so a lifetime count taken from one request would silently stop at 1000.
 async function _rsPaged(table, select){
@@ -9104,9 +9164,10 @@ function jvRenderRoster(target){
            hidden:!!(c.hidden || (typeof JV_HIDE_CLIENTS!=='undefined' && JV_HIDE_CLIENTS[c.code]))};
     // hidden=true used to mean genuinely unfindable — no Roster row, no Removed row,
     // no restore button anywhere, the only fix being a hand edit in Supabase. That's
-    // how victoriaa1 went untraceable from every trainer surface at once. A hidden
-    // row still doesn't clutter the working list, but it now has exactly one place it
-    // always shows up, with exactly one way back — nobody stays permanently unfindable.
+    // how a real client once went untraceable from every trainer surface at once. A
+    // hidden row still doesn't clutter the working list, but it now has exactly one
+    // place it always shows up, with exactly one way back — nobody stays permanently
+    // unfindable.
     if(c.hidden){ hiddenList.push(o); return; }
     if(c.active===false) removed.push(o); else rows.push(o);
   });
@@ -9130,9 +9191,12 @@ function jvRenderRoster(target){
   function row(o){
     var m=_rsMark[o.code]||'stays';
     return '<div class="rsRow'+(m==='out'?' rsOut':'')+(m==='remind'?' rsRemind':'')+'" data-name="'+String(o.name).toLowerCase().replace(/"/g,'')+'">'
-      +'<div class="rsName" onclick="jvOpenDeep(\''+o.code+'\')">'+String(o.name).replace(/</g,'&lt;')
+      +'<div class="rsName" onclick="jvOpenDeep(\''+o.code+'\')" title="View profile">'+String(o.name).replace(/</g,'&lt;')
         +(o.hidden?'<span class="rsTag">hidden</span>':'')
-        +(o.plan?'':'<span class="rsTag rsTagQ">no program</span>')+'</div>'
+        +(o.plan?'':'<span class="rsTag rsTagQ">no program</span>')
+        // Second door — the roster used to be profile-only, a one-door surface.
+        +'<span class="rsTag" style="cursor:pointer;text-decoration:underline;" onclick="event.stopPropagation();openClientDay(\''+o.code+'\')" title="Open today">Open today</span>'
+        +'</div>'
       +'<div class="rsCell">'+ago(o.last)+'</div>'
       +'<div class="rsCell rsNum">'+o.d30+'</div>'
       +'<div class="rsCell rsNum">'+o.life+'</div>'
@@ -9317,7 +9381,6 @@ async function _rsSetActive(code, active){
 // board says how many of those there are rather than looking like a light day.
 // Never "missed" — a session not logged yet is "not yet", all day, every day.
 var jvTrainData=null;
-function _tbDayAbbr(d){ try{ return d.toLocaleDateString('en-US',{weekday:'short'}); }catch(e){ return ''; } }
 function _tbDayKey(d){ try{ return _tlDateStr(d); }catch(e){ return ''; } }
 // A workout counts for a day if its own date string says so, or failing that its
 // timestamp lands in that day.
@@ -9349,7 +9412,7 @@ async function jvLoadTraining(force, target){
   var plans=null, wos=null, roster=null, failed=false;
   try{
     var r=await Promise.all([
-      fetch(SB_URL+'/rest/v1/training_plans?select=client_code,plan,created_at,updated_at&limit=500',{headers:sbHeaders()}),
+      fetch(SB_URL+'/rest/v1/training_plans?select=client_code,plan,week_overrides,created_at,updated_at&limit=500',{headers:sbHeaders()}),
       fetch(SB_URL+'/rest/v1/workout_logs?select=client_code,title,logged_at,date_str&order=logged_at.desc&limit=800',{headers:sbHeaders()}),
       // The roster is read from the clients table, NOT from the in-memory CLIENTS map.
       // That map still carries long-dead hardcoded codes with no row behind them — it
@@ -9384,10 +9447,15 @@ function jvRenderTraining(target){
   // A plan only counts for a day it already existed on. training_plans carries
   // updated_at, so scoring yesterday against plans stamped today made 35 clients look
   // absent from a day nobody had scheduled them for.
-  var planBy={}, planStamp={};
+  var planBy={}, planStamp={}, overridesBy={};
   (jvTrainData.plans||[]).forEach(function(p){
     if(!p || !p.client_code || !p.plan || typeof p.plan!=='object') return;
     planBy[p.client_code]=p.plan;
+    // Same column the Day page's own loadTrainingPlan reads — a one-week trade
+    // overlay, keyed by the Monday of the week it applies to. Missing on an
+    // un-migrated database reads back undefined, same graceful-degrade as theirs.
+    var wo=p.week_overrides; if(typeof wo==='string'){ try{ wo=JSON.parse(wo); }catch(e){ wo=null; } }
+    overridesBy[p.client_code]=wo||{};
     // created_at, not updated_at: an edit moves updated_at, which would drop a
     // long-standing client out of yesterday for the crime of being edited today.
     // Program & Profile confirmed the backfill — 77 rows, real spread, edits proven
@@ -9404,12 +9472,22 @@ function jvRenderTraining(target){
     return t<=end.getTime();
   }
   var doneT=_tbTrainedMap(jvTrainData.wos, today), doneY=_tbTrainedMap(jvTrainData.wos, yest);
+  // Routed through Day & Jim's resolver, not the raw weekday key: a client who has
+  // traded this specific date must show the traded session here, not the template's.
+  // _tlPlanForDate reads whatever is currently in the globals _tpPlan and
+  // _tpWeekOverrides, so this swaps BOTH to this client's own data for the one
+  // call, then always restores them — the trainer side has no business leaving
+  // another client's plan or trades sitting in those globals afterward.
   function sessionOn(code, d){
     var pl=planBy[code]; if(!pl) return null;
     if(!planExistedOn(code, d)) return null;
-    var e=pl[_tbDayAbbr(d)];
-    if(!e || typeof e!=='object') return null;
-    var t=e.type; return (t && String(t).trim()) ? String(t).trim() : null;
+    var prevPlan=_tpPlan, prevOv=_tpWeekOverrides, day=null;
+    _tpPlan=pl;
+    _tpWeekOverrides=overridesBy[code]||{};
+    try{ day=_tlPlanForDate(d); }finally{ _tpPlan=prevPlan; _tpWeekOverrides=prevOv; }
+    if(!day || !day.type) return null;
+    var t=String(day.type).trim();
+    return t || null;
   }
   // A day the plan itself calls Rest is a rest day, not a session they failed to do.
   // Those clients go to the quiet group and are out of the denominator entirely.
@@ -9752,6 +9830,8 @@ function _cdBar(code, name, day){
     +'</div>'
     +'<div class="cdActs">'
       +(info.phone?'<button class="cdAct cdActGold" onclick="textClient(\''+code+'\')">Text '+_cdEsc(first)+'</button>':'')
+      // The other door — cross to the profile without backing out of the day sheet first.
+      +'<button class="cdAct" onclick="closeClientDay();jvOpenDeep(\''+code+'\')">View profile</button>'
       +'<button class="cdAct" onclick="closeClientDay()">Close</button>'
     +'</div>'
   +'</div>';
@@ -9762,16 +9842,21 @@ function _cdBar(code, name, day){
 async function _cdDayHtml(code, day){
   var ds=_tlDateStr(day);
   var cc='client_code=eq.'+encodeURIComponent(code);
-  function grab(t, order){ return sbSelect(t, cc+'&order='+order+'&limit=200'); }
-  var foods=null, wos=null, weights=null, failed=false;
+  var foods=null, wos=null, weights=null, journals=null, failed=false;
   try{
     var r=await Promise.all([
       fetch(SB_URL+'/rest/v1/food_logs?'+cc+'&order=logged_at.desc&limit=200',{headers:sbHeaders()}),
       fetch(SB_URL+'/rest/v1/workout_logs?'+cc+'&order=logged_at.desc&limit=100',{headers:sbHeaders()}),
-      fetch(SB_URL+'/rest/v1/weight_logs?'+cc+'&order=id.desc&limit=100',{headers:sbHeaders()})
+      fetch(SB_URL+'/rest/v1/weight_logs?'+cc+'&order=id.desc&limit=100',{headers:sbHeaders()}),
+      // A journal entry is private unless the client marked it shared — this is the
+      // same gate the feed's own journal display uses. renderDayTimeline never filters
+      // on it because it only ever runs for the signed-in client reading their own
+      // entries; a trainer looking at someone else's day is a different audience and
+      // gets only what that client chose to share.
+      fetch(SB_URL+'/rest/v1/journal_entries?'+cc+'&shared=is.true&order=logged_at.desc&limit=100',{headers:sbHeaders()})
     ]);
-    if(!r[0].ok||!r[1].ok||!r[2].ok) failed=true;
-    else { foods=await r[0].json(); wos=await r[1].json(); weights=await r[2].json(); }
+    if(!r[0].ok||!r[1].ok||!r[2].ok||!r[3].ok) failed=true;
+    else { foods=await r[0].json(); wos=await r[1].json(); weights=await r[2].json(); journals=await r[3].json(); }
   }catch(e){ failed=true; }
   if(failed) return {failed:true, html:''};
   // Connection, this client, this day only — never cl.code, which inside this
@@ -9790,19 +9875,45 @@ async function _cdDayHtml(code, day){
   var dayFoods=(foods||[]).filter(function(f){ return rowDs(f)===ds; });
   var dayWos=(wos||[]).filter(function(w){ return rowDs(w)===ds; });
   var dayWt=(weights||[]).filter(function(g){ return rowDs(g)===ds; });
-  var logged=[];
-  dayWos.forEach(function(it){
-    var isWalk=/walk/i.test(String(it.title||''));
-    logged.push({k:isWalk?'walk':'workout', lbl:isWalk?'Morning Walk':'Workout', it:it});
+  var dayJournals=(journals||[]).filter(function(j){ return rowDs(j)===ds; });
+  // Walk vs a real session, and cardio-with-no-exercises vs an actual workout —
+  // the SAME two splits _tlDaySectionHtml makes for the client's own page, so a
+  // walk lands in the one Movement card here too, instead of posing as a session.
+  var dayWalks=dayWos.filter(function(w){ return /walk/i.test(String(w.title||'')); });
+  var dayRealWos=dayWos.filter(function(w){ return !/walk/i.test(String(w.title||'')); });
+  var dayWeigh=dayWt.length?dayWt[0]:null;
+  // slots feeds _dayMeta — the same totals-and-steps header the client's own page
+  // shows at the top of the day, which this sheet never drew at all until now.
+  var slots={breakfast:[], lunch:[], dinner:[], snack:[], weigh:(dayWeigh?[dayWeigh]:null)};
+  dayFoods.forEach(function(f){ slots[_mealSlotFor(f)].push(f); });
+
+  var groups=[];
+  // One card per meal slot with food in it — same grouping the client's page uses.
+  [['breakfast','Breakfast'],['lunch','Lunch'],['dinner','Dinner'],['snack','Snack']].forEach(function(pair){
+    var list=slots[pair[0]]; if(!list.length) return;
+    groups.push({k:pair[0], lbl:pair[1], items:list, kind:'slot'});
   });
-  dayFoods.forEach(function(f){
-    // Slot means slot: a snack stays a snack here too.
-    var ml=String(f.meal||'').toLowerCase();
-    var k = ml.indexOf('break')>=0?'breakfast' : ml.indexOf('lunch')>=0?'lunch'
-          : (ml.indexOf('snack')>=0||ml.indexOf('mini')>=0)?'snack' : 'dinner';
-    logged.push({k:k, lbl:(f.meal||'Meal'), it:f});
+  // Real sessions (not bare cardio) each keep their own card and their own rating
+  // chip. _tlDoneHero is deliberately NOT used here: its expanded detail reads
+  // set-by-set data through cl.code — the signed-in trainer, not whoever's day
+  // this is — so on someone else's day it would show the wrong person's sets, or
+  // none. _tlSlot reads only the row handed to it and already shows the full
+  // description — every exercise, set, weight and the note — on one tap to expand.
+  dayRealWos.forEach(function(w){
+    if(_tlIsRecord(w)) return;   // no real exercise list — cardio, joins Movement below
+    groups.push({k:'workout', lbl:'Workout', items:[w], kind:'workout'});
   });
-  dayWt.forEach(function(it){ logged.push({k:'weigh', lbl:'Weigh-in', it:it}); });
+  // Walks and plain cardio bundle into the one Movement card, same as theirs.
+  var moveItems=[];
+  dayWalks.forEach(function(w){ moveItems.push({k:'walk', lbl:'Morning walk', it:w}); });
+  dayRealWos.forEach(function(w){ if(_tlIsRecord(w)) moveItems.push({k:'workout', lbl:'Workout', it:w}); });
+  if(moveItems.length){
+    moveItems.sort(function(a,b){ return (_tlMins(a.it)||0)-(_tlMins(b.it)||0); });
+    groups.push({k:'movement', lbl:'Movement', items:moveItems, kind:'movement'});
+  }
+  if(dayWeigh) groups.push({k:'weigh', lbl:'Weigh-in', items:[dayWeigh], kind:'weigh'});
+  if(dayJournals.length) groups.push({k:'journal', lbl:'Journal', items:dayJournals, kind:'slot'});
+
   // Order of the list is the wrapper's job; drawing each entry is theirs. REVERSED
   // (Yusuf, seeing it live): this used to sort slot-first — training, then breakfast,
   // then lunch, then dinner, then snack, clock only within a slot — so a snack eaten
@@ -9811,46 +9922,38 @@ async function _cdDayHtml(code, day){
   // the day happened — slots are labels on entries, not sections — and this wrapper
   // was the only thing disagreeing with it. Chronological, full stop, same as theirs.
   try{
-    logged.sort(function(a,b){
-      return _tlMins(a.it)-_tlMins(b.it);
+    groups.sort(function(a,b){
+      var am=(a.kind==='movement')?_tlMins(a.items[0].it):_tlMins(a.items[0]);
+      var bm=(b.kind==='movement')?_tlMins(b.items[0].it):_tlMins(b.items[0]);
+      return (am||0)-(bm||0);
     });
   }catch(e){}
   // THE RAIL. Each entry is hung off a gutter that carries its time, a hairline down
   // the day and a dot per entry. Every part of that is built HERE, in the wrapper:
   // their card string is dropped into .cdCard verbatim and never parsed, wrapped or
-  // rewritten. If _tlSlot returns nothing for an entry, no rail row is drawn for it,
-  // so the gutter can never show a time with no card beside it.
+  // rewritten. If a card function returns nothing for an entry, no rail row is drawn
+  // for it, so the gutter can never show a time with no card beside it.
   var html='';
   var prevRO=window._tlRO;
   window._tlRO=true;                       // read-only: no edit, delete or add controls
-  // ONE ROW PER MEAL, NOT PER FOOD. _tlSlot takes an ARRAY and draws one headed slot
-  // for it — that is how the client's own page renders "Dinner" once with three foods
-  // under it. This call site was handing it a single entry at a time, so a three-food
-  // dinner came out as three separate Dinner cards, each with its own rail time and
-  // dot. Grouping by slot here fixes the sheet AND the rail in one move: one row, one
-  // time, one dot per meal — foods explicitly tagged the same meal are one plate, same
-  // as the client's own page. First-appearance order is preserved, so with `logged`
-  // now sorted chronologically above, a group's position is simply when it started.
   try{
-    var groups=[], byKey={};
-    logged.forEach(function(r2){
-      var g=byKey[r2.k];
-      if(!g){ g={k:r2.k, lbl:r2.lbl, items:[]}; byKey[r2.k]=g; groups.push(g); }
-      g.items.push(r2.it);
-    });
+    // The totals header — calories, protein, carbs, fat, steps — is the thing this
+    // sheet landed as a "summary" without: it sits above the rail, exactly where it
+    // sits above the cards on the client's own page, composed from their own function.
+    html+=_dayMeta(ds, slots);
     groups.forEach(function(g){
-      var card=_tlSlot(g.k, g.lbl, g.items, ds, null);
+      var card = (g.kind==='movement') ? _tlMovementCard(g.items, ds)
+               : (g.kind==='weigh')    ? _tlWeighCard(g.items[0], ds)
+               : _tlSlot(g.k, g.lbl, g.items, ds, null);
       if(!card) return;
-      // The meal's time is when it started — items are already in meal order.
-      var t='';
-      try{ t=_mealTimeStr(g.items[0])||''; }catch(e){}
+      var firstIt = (g.kind==='movement') ? g.items[0].it : g.items[0];
+      var t=''; try{ t=_mealTimeStr(firstIt)||''; }catch(e){}
       // The rating chip — wrapper furniture, appended after their card string,
       // never inside it. Composed from Day & Jim's own functions, not
-      // reimplemented. workout_logs.intensity lives on the session itself;
-      // g.items[0] is the group's first (only, in practice) session. Two
-      // sessions the same day would share dayConnTok — the accepted limit.
+      // reimplemented. workout_logs.intensity lives on the session itself.
+      // Two sessions the same day would share dayConnTok — the accepted limit.
       var ratingHtml='';
-      if(g.k==='workout' || g.k==='walk'){
+      if(g.kind==='workout'){
         try{
           var _line=_tlRatingLine((g.items[0]||{}).intensity, dayConnTok);
           if(_line) ratingHtml='<div class="cdRatingLine">'+_cdEsc(_line)+'</div>';
@@ -13568,6 +13671,96 @@ function jvSetDay(n){
 var jvMode='feed';   // the feed is the pulse; Admin is one click away
 var jvTriage=null;
 function _jvDayKey(d){ return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
+// ===== DEMO MODE =====
+// Yusuf films live demos of the trainer side. This swaps every already-loaded
+// display name and phone for a stable, code-derived alias — display only, no write
+// ever touches the database, and turning it back off restores the real values.
+//
+// ONE CHOKE POINT, not fifty edits: every card, list and Jarvis prompt in this file
+// already reads CLIENTS[code].name and CLIENTS[code].phone straight off the one
+// shared object — dozens of call sites, scattered everywhere. Rather than touching
+// each of those (guaranteed to miss one on camera), this mutates CLIENTS itself,
+// the one thing every one of them already reads from, and puts it back on toggle-off.
+window._jvShareMode = false;
+window._jvShareBackup = null;
+function _jvShareHash(s){
+  var h=0; s=String(s||'');
+  for(var i=0;i<s.length;i++){ h=((h<<5)-h+s.charCodeAt(i))|0; }
+  return Math.abs(h);
+}
+// Plausible, neutral, gender-non-specific on purpose — this stands in for anyone.
+// FIRST NAME ONLY (Yusuf's amendment): a full "First Last" is a fuller identity
+// than sharing mode is meant to hand out, and roster and every other name surface
+// read this same alias — so first-name-only here is first-name-only everywhere.
+// Checked against the live roster on 10 Aug 2026 and swapped out five names that
+// collided with real clients' actual first names — the roster-clean script caught
+// two of them already live on main. This list drifts as the roster grows; the
+// script is what actually proves it at ship time, this note is not a substitute
+// for running it again. (Deliberately not naming which ones collided, here.)
+var _JV_SHARE_FIRST=['Sutton','Bellamy','Taylor','Morgan','Casey','Riley','Jamie','Drew','Sam','Avery',
+  'Reese','Quinn','Rowan','Skyler','Hayden','Emerson','Finley','Parker','Kendall','Winslow',
+  'Cameron','Arden','Elliot','Harper','Jesse','Kai','Logan','Micah','Noel','Peyton',
+  'Remy','Sage','Tatum','Val','Wren','Thatcher','Charlie','Aubrey','Marlowe','Shay'];
+// Stable — derived from the code, never random, so the same client wears the same
+// alias on every surface, and again the next time sharing mode is turned on.
+function _jvShareAlias(code){
+  var h=_jvShareHash(code);
+  return _JV_SHARE_FIRST[h % _JV_SHARE_FIRST.length];
+}
+// Real client codes are often name-derived (e.g. a code built from someone's own
+// first name and initial) and get shown as a plain badge in a couple of places —
+// that leaks identity as surely as the name does, so those specific spots ask for
+// this instead of the raw code while filming.
+function _jvShareCode(code){
+  if(!window._jvShareMode) return code;
+  return 'share-'+(_jvShareHash(code)%1000);
+}
+function jvToggleShareMode(){ jvSetShareMode(!window._jvShareMode); }
+function jvSetShareMode(on){
+  on=!!on;
+  if(on===window._jvShareMode) return;
+  if(on){
+    var backup={};
+    Object.keys(CLIENTS).forEach(function(code){
+      var info=CLIENTS[code]; if(!info || info.isTrainer) return;
+      backup[code]={name:info.name, phone:info.phone};
+      info.name=_jvShareAlias(code);
+      info.phone=null;                      // hidden, not faked — nothing to mistake for real
+    });
+    window._jvShareBackup=backup;
+  } else {
+    var b=window._jvShareBackup||{};
+    Object.keys(b).forEach(function(code){
+      var info=CLIENTS[code]; if(!info) return;
+      info.name=b[code].name; info.phone=b[code].phone;
+    });
+    window._jvShareBackup=null;
+  }
+  window._jvShareMode=on;
+  try{ document.body.classList.toggle('jv-share-on', on); }catch(e){}
+  var btn=document.getElementById('jvShareToggle');
+  if(btn){ btn.textContent = on?'● Sharing mode ON':'Sharing mode'; btn.classList.toggle('on', on); }
+  // Repaint whatever is already on screen so the swap (or the restore) is immediate —
+  // nothing here should need a refresh to take effect, or to let go once it's off.
+  // The Feed is the default cockpit view and had no cache-only repaint of its own
+  // (unlike the board/roster/sales views below) — verified live that toggling did
+  // nothing to it at all until this was added. loadTrainerFeed refetches rather
+  // than repainting from a cache, which is heavier than the others, but there is
+  // no lighter path today: its render step isn't split out from its fetch.
+  try{
+    if(typeof jvMode==='undefined' || (jvMode!=='cockpit' && jvMode!=='roster' && jvMode!=='training' && jvMode!=='sales' && jvMode!=='gym' && jvMode!=='food')){
+      if(typeof loadTrainerFeed==='function') loadTrainerFeed('jvWall');
+    }
+  }catch(e){}
+  try{ if(window.jvTriage && typeof jvRenderTriage==='function') jvRenderTriage(); }catch(e){}
+  try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+  try{ if(window._jvDeepCode && typeof jvOpenDeep==='function') jvOpenDeep(window._jvDeepCode); }catch(e){}
+  try{ if(typeof jvMode!=='undefined' && jvMode==='roster' && typeof jvRenderRoster==='function') jvRenderRoster(); }catch(e){}
+  try{ if(typeof jvMode!=='undefined' && jvMode==='training' && typeof jvRenderTraining==='function') jvRenderTraining(); }catch(e){}
+  try{ if(typeof jvMode!=='undefined' && jvMode==='sales' && typeof jvRenderSalesView==='function') jvRenderSalesView(); }catch(e){}
+  try{ if(typeof _jvReFilter==='function') _jvReFilter(); }catch(e){}
+  try{ if(typeof filterClientCards==='function'){ var s=document.getElementById('clientSearch'); if(s&&s.value) filterClientCards(s.value); } }catch(e){}
+}
 function jvSetMode(m){
   jvMode=m;
   var mc=document.getElementById('jvModeCockpit'), mf=document.getElementById('jvModeFeed'), mg=document.getElementById('jvModeGym'), mfo=document.getElementById('jvModeFood'), msl=document.getElementById('jvModeSales'), mtr=document.getElementById('jvModeTraining'), mrs=document.getElementById('jvModeRoster');
@@ -13974,6 +14167,52 @@ async function jvQuickLogContact(code){
   try{ showToast('Logged'); }catch(e){}
   try{ if(!_feedRerenderPeopleOnly()){ if(jvTriage && (typeof jvMode==='undefined'||jvMode==='cockpit')) jvRenderTriage(); } }catch(e){}
   try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+}
+// ===== MOBILE FRONT DESK: check-mark contact logging =====
+// A check in the top right of the card: tapping it logs contact immediately,
+// timestamped — no prompt first, matching how fast the desktop board already moves.
+// It THEN reveals a small optional note field, because the contact is already
+// logged by that point and a note is something to add, never something to wait on.
+function _mobCheckHtml(code){
+  var row=_ccToday(code);
+  if(!row){
+    return '<div class="mobCC" id="mobCC_'+code+'" onclick="event.stopPropagation();_mobCheckTap(\''+code+'\')" title="Log contact"></div>';
+  }
+  var when=''; try{ when=_feedTimeStr(row.t); }catch(e){}
+  return '<div class="mobCCDone" id="mobCC_'+code+'">'
+    + '<span class="mobCCTick">✓</span><span>'+_pfEsc(when)+'</span>'
+    + '<span class="mobCCUndo" onclick="event.stopPropagation();jvUndoContact(\''+code+'\','+row.t+')">Undo</span>'
+    + '</div>';
+}
+// Below the header, full width — the note field appears only once there's a logged
+// row to attach it to, and only until a note is actually saved.
+function _mobNoteHtml(code){
+  var row=_ccToday(code); if(!row) return '';
+  if(row.a) return '<div class="mobCCNote" onclick="event.stopPropagation();">'+_pfEsc(row.a)+'</div>';
+  // No "(optional)" in the placeholder — the check already logged it; this just invites
+  // a word more. Never enter-to-save: the gold Done button is the only way this commits.
+  return '<div class="mobCCNoteIn" onclick="event.stopPropagation();">'
+    + '<input type="text" class="jvLogIn" id="mobCCIn_'+code+'" placeholder="A word on how it went" autocomplete="off">'
+    + '<span class="mobCCDoneBtn" onclick="_mobNoteSave(\''+code+'\','+row.t+')">Done</span>'
+    + '</div>';
+}
+async function _mobCheckTap(code){
+  await jvLogContact(code, 'talk', '', true);
+  try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+}
+async function _mobNoteSave(code, t){
+  var i=document.getElementById('mobCCIn_'+code);
+  var about=i?String(i.value||'').trim():'';
+  if(!about) return;
+  await jvSetContactAbout(code, t, about);
+}
+// Same suggestion engine as the desktop outreach box (_pfSuggestLine), same "app never
+// sends, Copy grabs whatever is actually typed" rule — just its own textarea id so the
+// two surfaces never fight over the same element.
+function _mobCopyOutreach(code){
+  var ta=document.getElementById('mobOut_'+code); if(!ta) return;
+  try{ navigator.clipboard.writeText(ta.value); showToast('Copied'); }
+  catch(e){ try{ showToast('Could not copy'); }catch(_){} }
 }
 async function jvSyncContacts(){
   try{
@@ -14890,7 +15129,7 @@ function _jvExportOne(code, D){
   if(info.tier){ try{ idBits.push(_jvTierLabel(info.tier)); }catch(e){ idBits.push(String(info.tier)); } }
   try{
     var paid=clientPaidTotal(code), owed=clientOwedTotal(code);
-    if(paid!=null) idBits.push('$'+Math.round(paid).toLocaleString()+(owed>0?(' of $'+Math.round(paid+owed).toLocaleString()):''));
+    if(paid!=null) idBits.push(_sMoney(paid)+(owed>0?(' of '+_sMoney(paid+owed)):''));
   }catch(e){}
   if(idBits.length) L.push(idBits.join(' | '));
 
@@ -15051,8 +15290,8 @@ function _jvContractLine(code){
   // and makes every instalment client look like a mismatch against their sale row.
   var owedNow=(typeof clientOwedTotal==='function')?clientOwedTotal(code):0;
   if(paid!=null){
-    bits.push('<span class="jvCtVal">$'+Math.round(paid).toLocaleString()
-      +(owedNow>0 ? (' <span class="jvCtOf">of $'+Math.round(paid+owedNow).toLocaleString()+'</span>') : '')
+    bits.push('<span class="jvCtVal">'+_sMoney(paid)
+      +(owedNow>0 ? (' <span class="jvCtOf">of '+_sMoney(paid+owedNow)+'</span>') : '')
     +'</span>');
   }
   var gaps=[];
@@ -15088,10 +15327,13 @@ function jvOpenContract(code){
   // put the two back out of step. Where there are none, this is the only record of it.
   var _owed=(typeof clientOwedTotal==='function')?clientOwedTotal(code):0;
   var feeField = sales.length
-    ? '<div class="jvCtRead">'+(paid!=null?('$'+Math.round(paid).toLocaleString()):'—')
-        +(_owed>0?(' <span class="jvCtOf">of $'+Math.round((paid||0)+_owed).toLocaleString()+' · $'+Math.round(_owed).toLocaleString()+' still owed</span>'):'')
+    ? '<div class="jvCtRead">'+(paid!=null?_sMoney(paid):'—')
+        +(_owed>0?(' <span class="jvCtOf">of '+_sMoney((paid||0)+_owed)+' · '+_sMoney(_owed)+' still owed</span>'):'')
         +' from '+sales.length+' sale'+(sales.length===1?'':'s')
         +' <span class="jvCtLink" onclick="jvCloseContract();openEditSale(\''+sales[0].id+'\')">Edit in sales</span></div>'
+    // Left as a real, editable field even in sharing mode: blanking an input's own
+    // value risks a save that quietly erases a real fee, and this sheet isn't
+    // something you'd have open while filming a casual scroll through the roster.
     : '<input id="jvCtFee" type="number" inputmode="decimal" class="jvCtInput" placeholder="2400" value="'
         +(r.paid!=null&&r.paid!==''?r.paid:'')+'">';
 
@@ -15156,7 +15398,10 @@ async function jvSaveContract(){
   var em=String((el('jvCtEmail')||{}).value||'').trim().toLowerCase();
   if(em && !/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(em)){ try{ showToast('That email doesn’t look right'); }catch(e){} return; }
   if(em!==String(r.email||'').toLowerCase()){ before.email=r.email; patch.email=(em||null); }
-  var _newFee=(patch.paid!=null)?patch.paid:null;
+  // Fee, term length and start date all describe the deal — a renewal at the SAME
+  // price still needs a sale on its own start date, so this can't gate on the fee
+  // having moved. It gates on the deal having moved at all.
+  var _dealChanged=(patch.paid!=null || patch.started_at!=null || patch.term_months!=null);
   if(!Object.keys(patch).length){ jvCloseContract(); return; }
   // Paint it immediately, then put it back if the server refuses — an optimistic write
   // that silently loses is how a term you thought you'd set reads as "no term set" again.
@@ -15167,8 +15412,9 @@ async function jvSaveContract(){
   // Checked, not discarded — same incident _ensureSaleFor's own comment names. The
   // contract patch itself already landed (res.ok is true); only the revenue tracker
   // can fail here, silently, and that has to be said out loud rather than assumed.
+  // r.paid is the CURRENT fee post-patch, whether or not this edit is what changed it.
   var _saleTracked=true;
-  if(res.ok && _newFee){ try{ _saleTracked=await _ensureSaleFor(code, _newFee, null); }catch(e){ _saleTracked=false; } }
+  if(res.ok && _dealChanged && r.paid) { try{ _saleTracked=await _ensureSaleFor(code, r.paid, null); }catch(e){ _saleTracked=false; } }
   if(!res.ok){
     Object.keys(before).forEach(function(k){ r[k]=before[k]; });
     try{ jvOpenDeep(code); }catch(e){}
@@ -15176,8 +15422,8 @@ async function jvSaveContract(){
     return;
   }
   try{ showToast(_jvTermState(code).label); }catch(e){}
-  if(_newFee && !_saleTracked){
-    setTimeout(function(){ try{ showToast('⚠️ Term saved, but the '+_sMoney(_newFee)+' fee did not reach the sales tracker — log it by hand'); }catch(e){} }, 2600);
+  if(_dealChanged && r.paid && !_saleTracked){
+    setTimeout(function(){ try{ showToast('⚠️ Term saved, but the '+_sMoney(r.paid)+' fee did not reach the sales tracker — log it by hand'); }catch(e){} }, 2600);
   }
   try{ if(typeof jvRenderTriage==='function' && jvTriage) jvRenderTriage(); }catch(e){}
   try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
@@ -15263,6 +15509,8 @@ function jvOpenDeep(code){
       + '<div id="jvDeepDays"><div class="jvBlockMuted">Loading…</div></div>'
     + '</div>'
     + '<div class="jvActs jvActsQuiet">'
+      // The other door — cross to the day sheet without backing out of the profile first.
+      + '<button class="jvAct jvActTertiary" onclick="jvCloseDeep();openClientDay(\''+code+'\')">Open today</button>'
       + '<button class="jvAct jvActTertiary" onclick="openClientNotes(\''+code+'\',\''+safeName+'\')">Private note</button>'
       + '<button class="jvAct jvActTertiary" onclick="jvToggleDeepJarvis(\''+code+'\',\''+safeName+'\')">Talk to Jarvis</button>'
       + '<button class="jvAct jvActTertiary" onclick="jvAssignProgram(\''+code+'\')">Program</button>'
@@ -19353,7 +19601,10 @@ function _jvBuildContext(){
       loggedToday++;
     }
     if(wos.length) bits.push(wos.length+' workout'+(wos.length>1?'s':'')+' today');
-    var why=(CLIENT_DOSSIERS[code]&&CLIENT_DOSSIERS[code].intake)?(' | why: '+CLIENT_DOSSIERS[code].intake.slice(0,100)):'';
+    // Intake text is free-form and can name-drop the client themself or someone else in
+    // their life — the same "no aliasing can sanitize a sentence" problem as private
+    // notes, so it drops out of what Jarvis sees while sharing mode is on.
+    var why=(!window._jvShareMode && CLIENT_DOSSIERS[code]&&CLIENT_DOSSIERS[code].intake)?(' | why: '+CLIENT_DOSSIERS[code].intake.slice(0,100)):'';
     lines.push(CLIENTS[code].name+': '+bits.join(', ')+why);
   });
   var head=active+' clients on the board who have ever logged. '+loggedToday+' have logged something today so far.';
@@ -20207,7 +20458,15 @@ function toggleSalesBody(){
 // One source of truth. Every fee lives in the sales table — including the ones that
 // used to sit only in clients.paid, which the old total never counted.
 var _salesRows = null;
-function _sMoney(n){ return '$'+Math.round(+n||0).toLocaleString(); }
+function _sMoney(n){ if(window._jvShareMode) return '•••'; return '$'+Math.round(+n||0).toLocaleString(); }
+// sales.client_name is a snapshot taken when the sale was written, not a live pointer —
+// so it's untouched by sharing mode's CLIENTS swap and would show a real name on camera
+// even with everything else aliased. In sharing mode only, swap in the live (aliased)
+// name for a linked sale; otherwise keep showing the historical snapshot as always.
+function _sDisplayName(s){
+  if(window._jvShareMode && s && s.client_code && CLIENTS[s.client_code]) return CLIENTS[s.client_code].name||s.client_name||'—';
+  return (s&&s.client_name)||'—';
+}
 function _sPaid(s){ return parseFloat(s&&s.paid_amount)||0; }
 function _sTotal(s){ var t=parseFloat(s&&s.total_amount); return isNaN(t)?_sPaid(s):t; }
 function _sOwed(s){ return Math.max(0, _sTotal(s)-_sPaid(s)); }
@@ -20226,6 +20485,39 @@ function _sDueLabel(v){
   if(days===1) return 'due tomorrow';
   return 'due in '+days+'d';
 }
+// The two generic "Make a sale" buttons (desktop and mobile) open with no code at
+// all — that was the actual gap behind a blank Program column and an unlinked sale:
+// most sales are entered from here, not from inside a client's profile, so most
+// never got a client_code. The datalist plus _saleClientPick() below is what lets
+// typing a name here resolve to a real client instead of free text.
+function _saleClientListFill(){
+  var dl=document.getElementById('saleClientList'); if(!dl) return;
+  var hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
+  var names=Object.keys(CLIENTS).filter(function(c){ return CLIENTS[c] && !CLIENTS[c].isTrainer && !hidden[c]; })
+    .map(function(c){ return CLIENTS[c].name||c; }).sort();
+  dl.innerHTML=names.map(function(n){ return '<option value="'+String(n).replace(/"/g,'&quot;')+'">'; }).join('');
+}
+// Matching a typed name against the real roster, not inferring a code from stale
+// maps — client codes only ever come from a live lookup here.
+function _saleClientPick(){
+  var el=document.getElementById('saleClient'); if(!el) return;
+  var typed=(el.value||'').trim().toLowerCase(); if(!typed) return;
+  var code=null;
+  Object.keys(CLIENTS).forEach(function(c){
+    if(code) return;
+    var info=CLIENTS[c]; if(!info || info.isTrainer) return;
+    if(String(info.name||'').trim().toLowerCase()===typed) code=c;
+  });
+  if(!code) return;
+  window._saleCode=code;
+  // Capture the program/term at sale time, so the Program column stops being blank —
+  // only when the field is still empty, so this never overwrites something typed by hand.
+  var progEl=document.getElementById('saleProgram');
+  if(progEl && !progEl.value){
+    var info=CLIENTS[code];
+    progEl.value=(info.tier==='vip'?'VIP':'1:1')+(info.term_months?(' · '+info.term_months+' months'):'');
+  }
+}
 function openLogSale(code){
   // Every field, every time. This form is SHARED with Edit sale and nothing cleared it
   // on the way in, so opening "Log a sale" after looking at someone else's sale showed
@@ -20237,10 +20529,20 @@ function openLogSale(code){
   });
   var d=document.getElementById('saleDate'); if(d) d.value=new Date().toISOString().slice(0,10);
   window._saleEditId=null; window._saleCode=code||null;
+  try{ _saleClientListFill(); }catch(e){}
   try{
     var t=document.querySelector('#mLogSale .mtitle'); if(t) t.textContent='Make a sale';
     var c=document.getElementById('saleClient');
     if(c && code && CLIENTS[code]) c.value=CLIENTS[code].name||'';
+    // Came in already linked to a client — capture their program/term too, same as
+    // a name picked from the list.
+    if(code && CLIENTS[code]){
+      var pe=document.getElementById('saleProgram');
+      if(pe && !pe.value){
+        var info=CLIENTS[code];
+        pe.value=(info.tier==='vip'?'VIP':'1:1')+(info.term_months?(' · '+info.term_months+' months'):'');
+      }
+    }
     var del=document.getElementById('saleDelete'); if(del) del.style.display='none';
   }catch(e){}
   try{ _saleBalance(); }catch(e){}
@@ -20252,6 +20554,7 @@ function openEditSale(id){
   var s=(_salesRows||[]).filter(function(r){ return String(r.id)===String(id); })[0];
   if(!s){ showToast('Could not find that sale'); return; }
   window._saleEditId=s.id; window._saleCode=s.client_code||null;
+  try{ _saleClientListFill(); }catch(e){}
   function set(el,v){ var e=document.getElementById(el); if(e) e.value=(v==null?'':v); }
   set('saleClient', s.client_name||''); set('saleProgram', s.program||'');
   set('saleTotal', (s.total_amount!=null?s.total_amount:'')); set('salePaid', (s.paid_amount!=null?s.paid_amount:''));
@@ -20275,6 +20578,7 @@ function _saleBalance(){
     if(ue) ue.textContent=_usDate((document.getElementById('saleDue')||{}).value||'');
   }catch(e){}
   if(isNaN(t)||isNaN(p)){ el.textContent=''; if(lbl) lbl.textContent='Balance due'; return; }
+  if(window._jvShareMode){ el.textContent=''; if(lbl) lbl.textContent='Balance due'; return; }
   var owed=Math.round((t-p)*100)/100;
   if(owed>0){
     el.innerHTML='<b style="color:var(--gold);">$'+owed.toLocaleString()+' still owed.</b> When is it due?';
@@ -20371,7 +20675,7 @@ function _salesPaint(){
   var el=function(id){ return document.getElementById(id); };
   var total=p.paid+p.owed;
   var t=el('salesTotal');
-  if(t) t.innerHTML='<span>$</span>'+Math.round(p.paid).toLocaleString();
+  if(t) t.innerHTML = window._jvShareMode ? '<span>•••</span>' : ('<span>$</span>'+Math.round(p.paid).toLocaleString());
   var sub=el('salesSub');
   if(sub) sub.textContent = p.n
     ? (p.n+(p.n===1?' sale':' sales')+' \u00b7 '+p.k)
@@ -20379,9 +20683,10 @@ function _salesPaint(){
   var c=el('salesCollected'); if(c) c.textContent=_sMoney(p.paid);
   var o=el('salesOutstanding'); if(o) o.textContent=_sMoney(p.owed);
   // The bar is the share actually collected. With nothing sold in the period there is
-  // no ratio to draw, so it stays empty rather than reading as 100% of nothing.
+  // no ratio to draw, so it stays empty rather than reading as 100% of nothing. Sharing
+  // mode empties it the same way -- the ratio is still a shape drawn from real revenue.
   var bar=el('salesBar');
-  if(bar) bar.style.width = total>0 ? (Math.max(0,Math.min(100,(p.paid/total)*100))+'%') : '0%';
+  if(bar) bar.style.width = (window._jvShareMode || total<=0) ? '0%' : (Math.max(0,Math.min(100,(p.paid/total)*100))+'%');
   var oo=el('salesOutstanding');
   if(oo) oo.className = 'admSplitV'+(p.owed>0?'':' q');
 }
@@ -20452,9 +20757,16 @@ async function loadSales(){
           meta.push(_sDateLabel(s.sale_date));
           var owedLine = owedN>0
             ? '<div class="sOwed">'+_sMoney(owedN)+' still owed'+(due?(' · '+due):' · no date set')+'</div>' : '';
+          // A sale row opens the client through the two doors too — only when it's
+          // actually linked to one; a legacy unlinked row has no code to open.
+          var doors = s.client_code
+            ? '<div class="sMeta" onclick="event.stopPropagation();">'
+              +'<span style="text-decoration:underline;cursor:pointer;" onclick="openClientDay(\''+s.client_code+'\')">Open today</span>'
+              +' · <span style="text-decoration:underline;cursor:pointer;" onclick="jvOpenDeep(\''+s.client_code+'\')">View profile</span>'
+              +'</div>' : '';
           return '<div class="sRow" onclick="openEditSale(\''+s.id+'\')">'
-            +'<div class="sWho"><div class="sName">'+String(s.client_name||'—').replace(/</g,'&lt;')+'</div>'
-              +'<div class="sMeta">'+meta.join(' · ')+'</div>'+owedLine+'</div>'
+            +'<div class="sWho"><div class="sName">'+String(_sDisplayName(s)).replace(/</g,'&lt;')+'</div>'
+              +'<div class="sMeta">'+meta.join(' · ')+'</div>'+owedLine+doors+'</div>'
             +'<div class="sAmt">'+_sMoney(_sPaid(s))+'</div>'
           +'</div>';
         }).join('');
@@ -20501,7 +20813,7 @@ function jvRenderSalesView(){
   try{ if(oldest) since='since '+new Date(oldest).toLocaleDateString('en-US',{month:'long',year:'numeric'}); }catch(e){}
   function tile(p, extra){
     var total=p.paid+p.owed;
-    var pct=total>0?Math.max(0,Math.min(100,(p.paid/total)*100)):0;
+    var pct=(window._jvShareMode||total<=0)?0:Math.max(0,Math.min(100,(p.paid/total)*100));
     var sub=p.n?('collected · '+p.n+(p.n===1?' sale':' sales')+(extra?' · '+extra:'')):'Nothing recorded';
     var owe=p.n?(p.owed>0?(_sMoney(p.owed)+' still owed'):'all collected'):' ';
     return '<div class="jvSTile"><div class="jvSTileK">'+p.k+'</div>'
@@ -20523,8 +20835,13 @@ function jvRenderSalesView(){
   var body=sorted.map(function(s){
     var ow=_sOwed(s);
     var due = ow>0 ? (s.due_date?_sDueLabel(s.due_date):'no date set') : '';
+    var doors = s.client_code
+      ? '<div style="font-weight:400;font-size:11px;" onclick="event.stopPropagation();">'
+        +'<span style="text-decoration:underline;cursor:pointer;" onclick="openClientDay(\''+s.client_code+'\')">Open today</span>'
+        +' · <span style="text-decoration:underline;cursor:pointer;" onclick="jvOpenDeep(\''+s.client_code+'\')">View profile</span>'
+        +'</div>' : '';
     return '<tr data-name="'+String(s.client_name||'').toLowerCase().replace(/"/g,'')+'" onclick="openEditSale(\''+s.id+'\')">'
-      +'<td class="name">'+_jvSEsc(s.client_name||'—')+'</td>'
+      +'<td class="name">'+_jvSEsc(_sDisplayName(s))+doors+'</td>'
       +'<td class="prog">'+(s.program?_jvSEsc(s.program):'<span class="dim">—</span>')+'</td>'
       +'<td class="dt">'+_sDateLabel(s.sale_date)+'</td>'
       +'<td class="r">'+_sMoney(_sTotal(s))+'</td>'
@@ -20547,7 +20864,7 @@ function jvRenderSalesView(){
   var owedHtml=owed.length?owed.map(function(s){
     var due=s.due_date?_sDueLabel(s.due_date):'no due date set';
     return '<div class="jvSORow" data-name="'+String(s.client_name||'').toLowerCase().replace(/"/g,'')+'" onclick="openEditSale(\''+s.id+'\')">'
-      +'<div><div class="jvSOName">'+_jvSEsc(s.client_name||'—')+'</div>'
+      +'<div><div class="jvSOName">'+_jvSEsc(_sDisplayName(s))+'</div>'
       +'<div class="jvSODue">'+due+' · sold '+_sDateLabel(s.sale_date)+'</div></div>'
       +'<div class="jvSOAmt">'+_sMoney(_sOwed(s))+'</div></div>';
   }).join(''):'<div class="jvSEmpty">Nothing outstanding — every sale on file is collected in full.</div>';
@@ -20636,10 +20953,14 @@ function filterClientCards(q){
     }
     else if(everLogged===false && per) sub='Never logged';   // the board loaded and is sure
     else sub='';                                             // nothing loaded — say nothing
-    return '<div onclick="_jvOpenClient(\''+code+'\')" style="display:flex;align-items:center;gap:10px;padding:15px 15px;border:1px solid var(--border);border-radius:12px;margin-bottom:12px;cursor:pointer;background:var(--surface);">'
+    return '<div style="display:flex;align-items:center;gap:10px;padding:15px 15px;border:1px solid var(--border);border-radius:12px;margin-bottom:12px;background:var(--surface);">'
       +'<span style="width:9px;height:9px;border-radius:50%;background:'+dot+';flex-shrink:0;"></span>'
-      +'<div style="flex:1;min-width:0;"><div style="font-weight:800;font-size:14px;color:var(--text);">'+nm+' <span style="font-size:10px;font-weight:600;color:var(--muted);font-family:ui-monospace,Menlo,monospace;background:var(--s2);padding:1px 6px;border-radius:5px;vertical-align:1px;">'+code+'</span></div><div style="font-size:11.5px;color:var(--muted);margin-top:2px;">'+sub+'</div></div>'
-      +'<span style="color:var(--muted);font-size:18px;flex-shrink:0;">\u203a</span>'
+      +'<div style="flex:1;min-width:0;"><div style="font-weight:800;font-size:14px;color:var(--text);">'+nm+' <span style="font-size:10px;font-weight:600;color:var(--muted);font-family:ui-monospace,Menlo,monospace;background:var(--s2);padding:1px 6px;border-radius:5px;vertical-align:1px;">'+_jvShareCode(code)+'</span></div><div style="font-size:11.5px;color:var(--muted);margin-top:2px;">'+sub+'</div></div>'
+      // Two doors, named the same way and in the same order everywhere: Open today, View profile.
+      +'<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0;">'
+        +'<span onclick="openClientDay(\''+code+'\')" style="font-size:11.5px;font-weight:700;color:var(--text);cursor:pointer;white-space:nowrap;">Open today</span>'
+        +'<span onclick="jvOpenDeep(\''+code+'\')" style="font-size:11.5px;font-weight:700;color:var(--muted);cursor:pointer;white-space:nowrap;">View profile</span>'
+      +'</div>'
       +'</div>';
   }).join('');
 }
@@ -21205,6 +21526,19 @@ async function openClientNotes(code, name){
     ov.onclick = function(e){ if(e.target===ov) ov.style.display='none'; };
     document.body.appendChild(ov);
   }
+  // Private notes are free text — a name, a detail about someone else, a specific
+  // complaint — and no aliasing can sanitize a sentence. They hide entirely in
+  // sharing mode rather than risk showing anything real on camera.
+  if(window._jvShareMode){
+    ov.innerHTML = '<div style="background:#1b1b1b;border:1px solid #2d2d2d;border-radius:20px 20px 0 0;max-width:480px;width:100%;font-family:\'Plus Jakarta Sans\',sans-serif;">'
+      + '<div style="padding:18px 18px 12px;display:flex;align-items:center;justify-content:space-between;">'
+        + '<div style="font-size:16px;font-weight:800;color:var(--text);">Private notes</div>'
+        + '<button onclick="document.getElementById(\'clientNotesModal\').style.display=\'none\'" style="background:transparent;border:1px solid #333;border-radius:8px;padding:5px 11px;color:#f0ece4;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;">Done</button>'
+      + '</div>'
+      + '<div style="padding:8px 18px 26px;color:rgba(240,236,228,0.70);font-size:13px;line-height:1.5;">Notes are hidden in sharing mode.</div></div>';
+    ov.style.display = 'flex';
+    return;
+  }
   ov.innerHTML = '<div style="background:#1b1b1b;border:1px solid #2d2d2d;border-radius:20px 20px 0 0;max-width:480px;width:100%;max-height:85vh;display:flex;flex-direction:column;font-family:\'Plus Jakarta Sans\',sans-serif;">'
     + '<div style="padding:18px 18px 12px;display:flex;align-items:center;justify-content:space-between;">'
       + '<div><div style="font-size:16px;font-weight:800;color:var(--text);">Private notes \u00b7 '+(name||'').replace(/</g,"&lt;")+'</div>'
@@ -21628,7 +21962,17 @@ async function renderMobFrontDesk(){
       +'<div style="font-size:15px;font-weight:800;color:#f0ece4;display:flex;align-items:center;gap:7px;"><span style="width:8px;height:8px;border-radius:50%;background:'+dot+';flex-shrink:0;"></span><span class="fcNameLink" onclick="event.stopPropagation();openClientDay(\''+o.code+'\')" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+nm+'</span></div>'
       +'<div style="margin:5px 0 0 15px;">'+_jvTermPill(o.term||_jvTermState(o.code))+'</div>'
       +'<div style="font-size:12px;color:#f0ece4;font-weight:700;margin-top:3px;margin-left:15px;">'+_ccLine(o.code)+'</div>'+(_prev?'<div style="font-size:12px;color:#f5c518;margin-top:4px;margin-left:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+_prev+'</div>':'')+'</div>'
+      // The check mark: top right of the card, next to the name it belongs to.
+      +_mobCheckHtml(o.code)
       +'</div>'
+      +_mobNoteHtml(o.code)
+      // The compose box, mobile side — same suggestion engine as the desktop feed.
+      // Only shown before contact is logged today: compose, then tap the check above,
+      // is the loop this exists for; once logged the slot isn't needed any more.
+      +(!_ccToday(o.code)
+        ? ('<div onclick="event.stopPropagation();"><textarea class="mobOutIn" id="mobOut_'+o.code+'">'+_pfEsc(_pfSuggestLine(o.code))+'</textarea>'
+           + '<span class="mobOutAct" onclick="_mobCopyOutreach(\''+o.code+'\')">Copy</span></div>')
+        : '')
       // Same one line as the cockpit board.
       // The weight line is the second door into the weigh-in history. Same on the
       // cockpit card and the phone's front desk card — this markup builds both.
@@ -22201,7 +22545,7 @@ async function loadTrainerDashboard(){
       html += '<div class="client-card">'
         // HEADER: name + username + weight badge only
         + '<div class="cc-head"><div class="cc-avi" onclick="event.stopPropagation();_jvOpenClient(\''+code+'\')" style="position:relative;cursor:pointer;">'+clientInfo.initials[0]+'<span style="position:absolute;bottom:-1px;right:-1px;width:11px;height:11px;border-radius:50%;background:'+_st.color+';border:2px solid var(--surface);"></span></div>'
-        + '<div class="cc-info"><div class="cc-name" onclick="event.stopPropagation();_jvOpenClient(\''+code+'\')" style="cursor:pointer;">'+(rankMedal?'<span style="margin-right:5px;font-weight:800;color:var(--gold);">'+rankMedal+'</span>':'')+clientInfo.name+' <span style="font-size:10px;font-weight:600;color:var(--muted);font-family:ui-monospace,Menlo,monospace;background:var(--s2);padding:1px 6px;border-radius:5px;vertical-align:1px;">'+code+'</span> '+lostChip+'</div>'+seenLabel+'</div>'
+        + '<div class="cc-info"><div class="cc-name" onclick="event.stopPropagation();_jvOpenClient(\''+code+'\')" style="cursor:pointer;">'+(rankMedal?'<span style="margin-right:5px;font-weight:800;color:var(--gold);">'+rankMedal+'</span>':'')+clientInfo.name+' <span style="font-size:10px;font-weight:600;color:var(--muted);font-family:ui-monospace,Menlo,monospace;background:var(--s2);padding:1px 6px;border-radius:5px;vertical-align:1px;">'+_jvShareCode(code)+'</span> '+lostChip+'</div>'+seenLabel+'</div>'
         + '<div style="flex-shrink:0;">'+assignChip+'</div>'
         + '</div>'
         + '<div id="cctoday_'+code+'">'
