@@ -16381,24 +16381,31 @@ function bfFeel(ds, ex, v){
 // lost; Jim learns to classify those next.
 // Finishers live in their own library, so the map would have banked them as
 // custom "ex:" rows. These are the groups they genuinely belong to, using only
-// keys the Connection Map contract already knows. Forearm work is deliberately
-// absent: the library has no Forearms group, and filing it under Biceps would
-// tell the map something untrue — those bank as ex: rows until Yusuf rules.
+// keys the Connection Map contract already knows.
 var FIN_GROUP={
   'Neck extensions':'Neck', 'Neck bridges':'Neck',
   'Decline sit-ups':'Core', 'Cross-body sit-ups':'Core', 'Hanging leg raises':'Core',
   'Calf raises, deep stretch':'Legs'
 };
+// FOREARMS (ruled 10 Aug, banked — ruled twice before this and never shipped):
+// its own Connection Map group, checked before the library scan below so these
+// don't fall into Biceps just because EX_LIB files them there for the workout
+// builder. Two are library exercises with a forearm target under a Biceps-day
+// heading; two are finisher-only movements FIN_GROUP used to leave out on
+// purpose, pending this exact ruling.
+var FOREARM_EX={'Reverse Curls':1, 'Forearm Curls':1, 'Forearm barbell curls':1, 'Dead hangs':1};
 function _bfGroupOf(rawName){
   // An old row saying "Bench Press" and a new one saying "Chest Press" are the
   // same movement, so the map hears one voice.
   var name=_exCanonical(rawName);
+  if(FOREARM_EX[name]) return 'Forearms';
   try{ for(var i0 in EX_LIB){ for(var i=0;i<EX_LIB[i0].length;i++){ if(EX_LIB[i0][i].n===name) return i0; } } }catch(e){}
   if(FIN_GROUP[name]) return FIN_GROUP[name];
   // Same movement, different capitalisation, is the same movement — the finisher
   // list writes "Decline sit-ups" where the library writes "Decline Sit-Ups".
   try{
     var lc=String(name||'').toLowerCase();
+    for(var f0 in FOREARM_EX){ if(f0.toLowerCase()===lc) return 'Forearms'; }
     for(var k2 in EX_LIB){ for(var j=0;j<EX_LIB[k2].length;j++){ if(String(EX_LIB[k2][j].n).toLowerCase()===lc) return k2; } }
     for(var f in FIN_GROUP){ if(f.toLowerCase()===lc) return FIN_GROUP[f]; }
   }catch(e){}
@@ -16494,14 +16501,24 @@ function _woMatchesPlan(w, plan){
     return !!(a && b && (a===b || a.indexOf(b)>-1 || b.indexOf(a)>-1));
   }catch(e){ return false; }
 }
-// Per-date record cache. Null means "not fetched yet", so a card can draw its
-// headline immediately and fill the detail in when the read lands.
+// Per-date record cache, keyed by client code + date — never by date alone.
+// RENDERER CONTRACT (Yusuf/Admin, 10 Aug): this used to key on `ds` only and
+// query client_code=cl.code unconditionally, which is invisible on a client's
+// own page (cl IS the day being viewed) but was the exact thing that blocked
+// Admin's read-only sheet from using this card — it would have loaded and
+// cached the SIGNED-IN trainer's own sets under a client's exercise names.
+// Every caller now says whose day this is; only the client's own page is
+// allowed to leave it out, and even there it resolves through the param,
+// never a bare reference to cl inside this function.
 window._bfRec = window._bfRec || {};
-async function _bfLoadRecord(ds){
-  if(!cl || !ds || window._bfRec[ds]) return window._bfRec[ds];
+function _bfRecKey(ds, code){ return (code||'')+'|'+ds; }
+async function _bfLoadRecord(ds, code){
+  code = code || (cl && cl.code);
+  var key=_bfRecKey(ds, code);
+  if(!code || !ds || window._bfRec[key]) return window._bfRec[key];
   var rec={sets:{}, conn:null, loaded:true};
   try{
-    var q='client_code=eq.'+encodeURIComponent(cl.code)+'&date_str=eq.'+encodeURIComponent(ds);
+    var q='client_code=eq.'+encodeURIComponent(code)+'&date_str=eq.'+encodeURIComponent(ds);
     var r=await Promise.all([
       sbSelect('set_logs', q+'&order=set_idx.asc&limit=400').catch(function(){ return []; }),
       sbSelect('mi_checkins', q+'&kind=eq.connection&order=checked_at.desc&limit=1').catch(function(){ return []; })
@@ -16514,7 +16531,7 @@ async function _bfLoadRecord(ds){
     var c=(r[1]||[])[0];
     if(c && c.ratings) rec.conn=c.ratings;
   }catch(e){}
-  window._bfRec[ds]=rec;
+  window._bfRec[key]=rec;
   try{ _tlPatchDay(ds); }catch(e){}
   return rec;
 }
@@ -16732,8 +16749,9 @@ function tlRateSessionConnection(id, ds, level){
     _tlRatingResolve(_tlRatingConnKey(id));
     try{
       window._bfRec=window._bfRec||{};
-      window._bfRec[ds]=window._bfRec[ds]||{sets:{}, conn:null, loaded:true};
-      window._bfRec[ds].conn=ratings;
+      var _rk=_bfRecKey(ds, cl.code);
+      window._bfRec[_rk]=window._bfRec[_rk]||{sets:{}, conn:null, loaded:true};
+      window._bfRec[_rk].conn=ratings;
     }catch(e){}
     try{ renderDayTimeline(true); }catch(e){}
   }
@@ -16751,11 +16769,17 @@ function tlSkipConnection(id){
   try{ renderDayTimeline(true); }catch(e){}
 }
 
-function _tlDoneHero(ds, wo, plan){
+// code: whose day this is. Defaults to the signed-in client, which is correct
+// on the client's own page — cl IS the day being viewed there. A caller
+// rendering someone else's day (Admin's read-only sheet) must pass it
+// explicitly, or this card falls back to the wrong person's records.
+function _tlDoneHero(ds, wo, plan, code){
   if(!wo) return '';
-  var open=false; try{ open=!!(window._woDone && window._woDone[ds]); }catch(e){}
-  var rec=window._bfRec[ds];
-  if(open && !rec){ try{ _bfLoadRecord(ds); }catch(e){} }
+  code = code || (cl && cl.code);
+  var recKey=_bfRecKey(ds, code);
+  var open=false; try{ open=!!(window._woDone && window._woDone[recKey]); }catch(e){}
+  var rec=window._bfRec[recKey];
+  if(open && !rec){ try{ _bfLoadRecord(ds, code); }catch(e){} }
   var parsed=_bfParseDesc(wo.description);
   var title=String(wo.title||(plan&&plan.type)||'Workout');
   var clock=''; try{ clock=_tlClock(_tlMins(wo))||''; }catch(e){}
@@ -16813,7 +16837,7 @@ function _tlDoneHero(ds, wo, plan){
   var cap=parsed.items.length+' exercise'+(parsed.items.length===1?'':'s');
   return '<div class="tlHero tlHeroDone" data-wocard="'+_escHtml(ds)+'" data-mins="'+(_tlMins(wo)||0)+'">'
     +'<div class="tlHeroEy">'+(isToday?'Today’s session':'The session')+'</div>'
-    +'<div data-tl="wodone" data-ds="'+_escHtml(ds)+'" style="position:relative;cursor:pointer;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">'
+    +'<div data-tl="wodone" data-ds="'+_escHtml(ds)+'" data-code="'+_escHtml(code||'')+'" style="position:relative;cursor:pointer;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">'
       +'<div style="flex:1;min-width:0;">'
         +'<div class="tlHeroName">'+_escHtml(title)+'</div>'
         +'<div class="tlHeroMeta">'+_escHtml(cap)+(clock?(' &nbsp;·&nbsp; '+_escHtml(clock)):'')+' &nbsp;·&nbsp; <span style="color:var(--gold);font-weight:800;">Complete</span></div>'
@@ -16823,10 +16847,16 @@ function _tlDoneHero(ds, wo, plan){
     +body
   +'</div>';
 }
-function tlToggleDone(ds){
+function tlToggleDone(ds, code){
+  code = code || (cl && cl.code);
+  var key=_bfRecKey(ds, code);
   window._woDone=window._woDone||{};
-  window._woDone[ds]=!window._woDone[ds];
-  if(window._woDone[ds] && !window._bfRec[ds]){ try{ _bfLoadRecord(ds); }catch(e){} }
+  window._woDone[key]=!window._woDone[key];
+  if(window._woDone[key] && !window._bfRec[key]){ try{ _bfLoadRecord(ds, code); }catch(e){} }
+  // On the client's own page this repaints the day in place. A wrapper
+  // rendering someone else's day (no #tlScroll/.tlDaySec of its own) gets no
+  // free repaint here — it needs its own after _bfLoadRecord resolves, same
+  // as _cdToggleXp already does for the plain-card path.
   try{ _tlPatchDay(ds); }catch(e){}
 }
 
@@ -16898,13 +16928,12 @@ function _slotForHour(){
   var h=12; try{ h=new Date().getHours(); }catch(e){}
   return h<11 ? 'breakfast' : (h<16 ? 'lunch' : 'dinner');
 }
-function _tlAddMealRow(ds){
-  if(window._tlRO) return '';
-  // Opens the pick screen (approved frame 4) — which meal is the client's first
-  // tap, not a guess from the wall clock. Snack included, past days included.
-  return '<div class="tlAddMeal" data-tl="add" data-key="pickmeal" data-ds="'+_escHtml(ds)+'">'
-    +'<span>+</span>Log a meal</div>';
-}
+// _tlAddMealRow (the standalone "+ Log a meal" row and its pick-a-slot screen)
+// is gone (ruled 10 Aug): it was a second door onto the same intent as the Jim
+// prompt card below, and the audit called the picker ceremony the app doesn't
+// need — it already knows what time it is. Jim's card is the one door now;
+// every logging path (typed, photo) still opens the same capture sheet, just
+// never through a slot-picker first.
 
 // where an unfilled slot nominally sits, so it can act as a drop target
 function _slotMins(key){
@@ -17193,6 +17222,22 @@ function _tlDaySectionHtml(cur, ctx){
       }catch(e){}
     }
     rows.sort(function(a,b){ return (a.m||0)-(b.m||0); });
+    // SESSION ABOVE MOVEMENT (ruled, 10 Aug): the session is the day's headline
+    // and stays large — a morning walk timestamped earlier used to out-rank an
+    // evening session under pure chronological sort, burying the hero beneath
+    // "supporting cast". Everything else still reads in clock order; this only
+    // ever moves the workout hero to sit directly above the Movement card.
+    (function(){
+      var heroIdx=-1, moveIdx=-1;
+      for(var i=0;i<rows.length;i++){
+        if(moveIdx<0 && rows[i].k==='movement') moveIdx=i;
+        if(heroIdx<0 && rows[i].k==='workout' && (rows[i].completed||rows[i].planned)) heroIdx=i;
+      }
+      if(heroIdx>=0 && moveIdx>=0 && heroIdx>moveIdx){
+        var hero=rows.splice(heroIdx,1)[0];
+        rows.splice(moveIdx,0,hero);
+      }
+    })();
     function _drawRow(r){
       if(r.completed)        return _tlDoneHero(ds, r.it, plan);
       if(r.planned)          return _tlSlot('workout','Workout', null, ds, plan);
@@ -17223,10 +17268,10 @@ function _tlDaySectionHtml(cur, ctx){
       }
     }
     rows.forEach(function(r){ html+=_drawRow(r); });
-    // Any day that has already happened can still be caught up on — that's what the
-    // empty boxes allowed and it mustn't quietly narrow to today. A day ahead is a
-    // plan, not a log, so it gets nothing.
-    if(!isAhead) html+=_tlAddMealRow(ds);
+    // ONE MEAL DOOR (ruled 10 Aug): the standalone "+ Log a meal" row that used to
+    // sit here is gone — it and the Jim prompt card below were two doors onto the
+    // same intent. Catching up on a day already gone still works: it goes through
+    // Jim, same as today.
     // Jim's offer closes the day (ruled 6 Aug): session, meals, activities stack
     // above — rows sort by time so the newest lands above this — and the quiet
     // ask sits last. _duePrompt is null on any day but today.
@@ -17890,7 +17935,11 @@ function _tlChangeControl(ds, effWeek, todayKey){
   var s='<span class="tlChangeLink" data-tl="swaptog" data-ds="'+_escHtml(ds)+'">Change</span>';
   if(open){
     s+='<div class="tlSwapRow">';
-    if(canRest) s+='<span class="tlSwapPill" data-tl="resttoday" data-ds="'+_escHtml(ds)+'">Resting today</span>';
+    // THE TWO RESTS (ruled, 10 Aug): this pill and the plain "Rest" pill below can
+    // both be sitting in the same row and must read as different things without
+    // an explainer. This one cascades the whole week forward a day; say so, in
+    // the butler register — a fact offered, not an instruction.
+    if(canRest) s+='<span class="tlSwapPill" data-tl="resttoday" data-ds="'+_escHtml(ds)+'">Resting today · the week slides up a day</span>';
     s+=targets.map(function(t){
       return '<span class="tlSwapPill" data-tl="swapdo" data-ds="'+_escHtml(ds)+'" data-target="'+_escHtml(t.key)+'">'+_escHtml(t.type)+'</span>';
     }).join('');
@@ -18636,8 +18685,9 @@ function _tlBindTaps(){
     if(a==='confirm'){ ev.stopPropagation(); tlConfirmPlanned(el.getAttribute('data-mid'), el.getAttribute('data-key'), el.getAttribute('data-ds')); return; }
     if(a==='add'){
       var _ak=el.getAttribute('data-key'), _ads=el.getAttribute('data-ds');
-      // Food goes through the approved flow: pick → photo → one line → confirm.
-      if(_ak==='pickmeal'){ nlOpen(_ads, null); return; }
+      // Food goes through the approved flow: photo → one line → confirm. The pick-a-
+      // slot screen (pickmeal) is gone with the standalone Log a meal button — the
+      // Jim door is the only way in now, and it already knows the slot.
       if(_ak==='breakfast'||_ak==='lunch'||_ak==='dinner'||_ak==='snack'){
         var _cap={breakfast:'Breakfast',lunch:'Lunch',dinner:'Dinner',snack:'Snack'}[_ak];
         nlOpen(_ads, _cap); return;
@@ -18694,7 +18744,7 @@ function _tlBindTaps(){
       return;
     }
     // Opening a finished session is reading, not editing — ungated on every day.
-    if(a==='wodone'){ ev.stopPropagation(); tlToggleDone(el.getAttribute('data-ds')); return; }
+    if(a==='wodone'){ ev.stopPropagation(); tlToggleDone(el.getAttribute('data-ds'), el.getAttribute('data-code')); return; }
     if(a==='freestyle'){ ev.stopPropagation(); try{ openFreestyleWorkout(); }catch(e){} return; }
     if(a==='progtog'){ ev.stopPropagation(); tlToggleProgram(el.getAttribute('data-ds')); return; }
     if(a==='wotimeset'){ ev.stopPropagation(); openWoTime(el.getAttribute('data-ds')); return; }
@@ -40207,11 +40257,15 @@ async function tlMacroCommit(id, field, val){
 // portions — ounces for meat, handfuls for the rest — then the result screen.
 // The result screen IS the confirm: the numbers stand there with their edits,
 // and NOTHING writes until Log it. A wrong read costs a glance, not a cleanup.
+// ONE MEAL DOOR (ruled 10 Aug): the pick-a-slot opening screen is gone with the
+// standalone Log a meal button that led to it — every remaining caller already
+// knows the slot (the Jim prompt card, addmore, tlAddSlot), so this sheet now
+// always opens straight into capture.
 window._nl=null;
 
 function nlOpen(ds, slot, opts){
   opts=opts||{};
-  window._nl={stage:(slot?'cap':'pick'), ds:(ds||_tlDateStr(new Date())), slot:slot||null,
+  window._nl={stage:'cap', ds:(ds||_tlDateStr(new Date())), slot:slot||null,
               photo:null, at:(opts.at||''), est:null, logged:false, busyMsg:''};
   nlRender();
   try{ if(typeof mlibLoad==='function') mlibLoad(); }catch(e){}
@@ -40224,30 +40278,11 @@ function nlClose(){
   // The day already refreshed in place when the log landed; closing costs nothing.
   try{ if(was && was.logged) _tlPatchDay(was.ds); }catch(e){}
 }
-function _nlSlotState(slot){
-  // "logged · 8:10am" on the pick screen when the slot already has food that day
-  try{
-    var ds=(window._nl&&window._nl.ds)||_tlDateStr(new Date());
-    var foods=((window._tlCache||{}).foods||[]).filter(function(f){
-      return f.date_str===ds && _mealSlotFor(f)===slot.toLowerCase();
-    });
-    if(!foods.length) return '';
-    var m=Math.min.apply(null, foods.map(function(f){ return _tlMins(f)||99999; }));
-    return (m<99999?(_tlClock(m)+' · '):'')+'logged';
-  }catch(e){ return ''; }
-}
 function nlRender(){
   var st=window._nl, sh=document.getElementById('nlSheet');
   if(!st||!sh) return;
   var h='<div class="nlHnd"></div>';
-  if(st.stage==='pick'){
-    h+='<div class="nlHead"><b>Log a meal</b><div class="nlX" onclick="nlClose()"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1.2 1.2l7.6 7.6M8.8 1.2 1.2 8.8"/></svg></div></div>';
-    ['Breakfast','Lunch','Dinner','Snack'].forEach(function(s){
-      var sub=_nlSlotState(s);
-      h+='<div class="nlPick" onclick="nlPickSlot(\''+s+'\')">'+s+'<small>'+sub+'</small></div>';
-    });
-  }
-  else if(st.stage==='cap'){
+  if(st.stage==='cap'){
     h+='<div class="nlHead"><b>'+_escHtml(st.slot)+'</b><span class="nlTimeTap" onclick="nlTimeOpen()">'+_escHtml(st.at||_tlNowClock())+'</span><div class="nlX" onclick="nlClose()"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1.2 1.2l7.6 7.6M8.8 1.2 1.2 8.8"/></svg></div></div>'
       +(st.photoErr?('<div class="nlPhotoErr">'+_escHtml(st.photoErr)+'</div>'):'')
       +'<div class="nlPhoto" onclick="document.getElementById(\'nlFile\').click()">'
@@ -40301,7 +40336,6 @@ function nlRender(){
     if(ln) ln.addEventListener('input', function(){ st.line=ln.value; });
   }
 }
-function nlPickSlot(s){ var st=window._nl; if(!st) return; st.slot=s; st.stage='cap'; nlRender(); }
 // A photo this app can't shrink is a photo it shouldn't send. Above this it is the
 // raw camera frame, and uploading one is the thirty-second wait.
 var NL_PHOTO_MAX_CHARS = 1600000;   // ~1.2 MB once base64 is undone
