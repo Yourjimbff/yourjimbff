@@ -16902,6 +16902,45 @@ function _bfParseDesc(desc){
   });
   return out;
 }
+// STRUCTURED DATA WINS OVER RE-PARSED TEXT (Yusuf, 10 Aug — the Leandra bug).
+// A chat-logged session carries BOTH a one-line description ("Bulgarian
+// Split Squat — 3 sets x 8 reps, Barbell Hip Thrust — 3 sets x 8 reps, …")
+// AND a properly structured exercises array — the marker format asks the
+// model for exactly that split. _bfParseDesc only ever split on newlines,
+// so a one-line, comma-joined description (correct, by the marker's own
+// rules — "description: one clean line") collapsed into ONE parsed item
+// wearing every other exercise's name and sets crammed into its own detail
+// text. The exercises array was sitting there, correctly shaped, unread.
+// This reads it first and only falls back to text-parsing when there is no
+// structured array — which is exactly the plan-completion path's shape,
+// never touched here.
+function _bfItemsFor(wo){
+  var exs=wo&&wo.exercises;
+  if(Array.isArray(exs) && exs.length){
+    var items=exs.map(function(e){
+      // Weight beats everything (the actual load lifted); sets+reps together
+      // beats either alone — "3 sets, 8 reps" read separately loses which
+      // reps count went with which sets count the moment there's more than
+      // one exercise on the card.
+      var detail=e.detail;
+      if(!detail){
+        if(e.weight!=null) detail=e.weight+' lb'+(e.reps!=null?(' × '+e.reps):(e.sets!=null?(' × '+e.sets):''));
+        else if(e.sets!=null && e.reps!=null) detail=e.sets+' set'+(e.sets===1?'':'s')+' × '+e.reps;
+        else if(e.reps!=null) detail=e.reps+' reps';
+        else if(e.sets!=null) detail=e.sets+' set'+(e.sets===1?'':'s');
+      }
+      return {name:String(e.name||'').trim(), equip:'', detail:(detail||''), logged:(e.weight!=null||e.reps!=null)};
+    }).filter(function(it){ return it.name; });
+    // Not wo.notes here — for a chat-logged session that field is often Jim's
+    // own confirmation reply ("Logged your Lower Day: ... Did I get that
+    // right?"), captured as a fallback note when the marker's own notes were
+    // empty. That is Jim talking, not the client, and does not belong under
+    // "The note". _bfParseDesc's blank-line convention (a client's own aside
+    // in description's second paragraph) has no equivalent here yet.
+    if(items.length) return {items:items, note:''};
+  }
+  return _bfParseDesc(wo&&wo.description);
+}
 
 // ===== THE TWO SCALES ====================================================
 // At the completed-session monument, one tap each (Yusuf, 8 Aug):
@@ -17062,12 +17101,12 @@ function tlRateSessionConnection(id, ds, level){
   var wo=null;
   try{ var wl=(window._tlCache&&window._tlCache.workouts)||[]; for(var i=0;i<wl.length;i++){ if(String(wl[i].id)===String(id)) wo=wl[i]; } }catch(e){}
   // Fan the one tap out across every group the session touched, using the
-  // SAME parsing the monument already reads its exercise lines from — no new
+  // SAME items the monument already reads its exercise lines from — no new
   // parsing risk. No parseable exercises (a chat-logged session with just a
   // free-text description) banks under the session's own title, the same
   // graceful fallback an unrecognized single exercise already gets.
   var names=[];
-  try{ names=_bfParseDesc(wo&&wo.description).items.map(function(it){ return it.name; }).filter(Boolean); }catch(e){}
+  try{ names=_bfItemsFor(wo).items.map(function(it){ return it.name; }).filter(Boolean); }catch(e){}
   var ratings={};
   if(names.length){
     names.forEach(function(n){
@@ -17114,7 +17153,7 @@ function _tlDoneHero(ds, wo, plan, code){
   var open=false; try{ open=!!(window._woDone && window._woDone[recKey]); }catch(e){}
   var rec=window._bfRec[recKey];
   if(open && !rec){ try{ _bfLoadRecord(ds, code); }catch(e){} }
-  var parsed=_bfParseDesc(wo.description);
+  var parsed=_bfItemsFor(wo);
   var title=String(wo.title||(plan&&plan.type)||'Workout');
   var clock=''; try{ clock=_tlClock(_tlMins(wo))||''; }catch(e){}
   var isToday=false; try{ isToday=(ds===_tlDateStr(new Date())); }catch(e){}
