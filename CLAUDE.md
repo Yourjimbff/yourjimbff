@@ -121,6 +121,8 @@ Real clients use this daily on phones. Never push untested changes to main.
 
 ## Design
 Gold/yellow, black, grey, white. Mobile-first.
+No emoji anywhere, house law (Yusuf, 10 Aug) — including fallback icons like a
+lifter glyph on a workout title. SVG icons are fine; the rule is emoji specifically.
 Full design standard lives in [BACKLOG.md](BACKLOG.md) — read it before designing any new screen.
 
 ## What's next
