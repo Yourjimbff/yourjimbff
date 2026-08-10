@@ -155,6 +155,12 @@ const WRITE_OPS = {
     method: 'DELETE',
     path: `client_contacts?coach_code=eq.${enc(coach)}&client_code=eq.${enc(a.client_code)}&contacted_at=eq.${encodeURIComponent(isoTs(a.contacted_at))}`,
   }),
+  // The standing delete guard (jvRemoveClient) used to reach every client-keyed table
+  // with the public key directly. Locking this table to the door took that road away
+  // and left nothing to replace it — every future client deletion would silently
+  // orphan rows here. One named op, scoped only to a client_code value, same
+  // discipline as everything else: never a raw table+filter from outside.
+  contactDeleteAll: (a) => ({ method: 'DELETE', path: `client_contacts?client_code=eq.${enc(a.client_code)}` }),
 
   // ---- jv_handled (board state) ------------------------------------------------
   handledMark: (a, coach) => ({
@@ -166,6 +172,8 @@ const WRITE_OPS = {
     method: 'DELETE',
     path: `jv_handled?coach_code=eq.${enc(coach)}&client_code=eq.${enc(a.client_code)}&date_str=eq.${encodeURIComponent(str(a.date_str, 40))}`,
   }),
+  // Same delete-guard gap as client_contacts above.
+  handledDeleteAll: (a) => ({ method: 'DELETE', path: `jv_handled?client_code=eq.${enc(a.client_code)}` }),
 
   // ---- engine_moments (board state) --------------------------------------------
   engineSave: (a, coach) => ({
@@ -178,6 +186,8 @@ const WRITE_OPS = {
     method: 'DELETE',
     path: `engine_moments?coach_code=eq.${enc(coach)}&client_code=eq.${enc(a.client_code)}&date_str=eq.${encodeURIComponent(str(a.date_str, 40))}`,
   }),
+  // Same delete-guard gap as client_contacts above.
+  engineDeleteAll: (a) => ({ method: 'DELETE', path: `engine_moments?client_code=eq.${enc(a.client_code)}` }),
 
   // ---- coach_moments (feed) -----------------------------------------------------
   momentPost: (a, coach) => ({ method: 'POST', path: 'coach_moments', body: { coach_code: coach, text: str(a.text, 2000) } }),
@@ -205,6 +215,8 @@ const WRITE_OPS = {
   // Once the lock is on, this door is the only road left to this table — a table
   // with no reverse gear on the only road in is permanent-mistake territory.
   repostDelete: (a) => ({ method: 'DELETE', path: `coach_reposts?id=eq.${encId(a.id)}` }),
+  // Same delete-guard gap as client_contacts above.
+  repostDeleteAll: (a) => ({ method: 'DELETE', path: `coach_reposts?client_code=eq.${enc(a.client_code)}` }),
 
   // ---- coach_notes (private, TODAY'S banner + roster notes) ----------------------
   noteSend: (a) => ({
@@ -212,6 +224,8 @@ const WRITE_OPS = {
     body: { client_code: enc_raw(a.client_code), note: str(a.note, 4000), date_str: str(a.date_str, 40), time_str: str(a.time_str, 20) },
   }),
   noteDelete: (a) => ({ method: 'DELETE', path: `coach_notes?id=eq.${encNoteId(a.id)}` }),
+  // Same delete-guard gap as client_contacts above.
+  noteDeleteAll: (a) => ({ method: 'DELETE', path: `coach_notes?client_code=eq.${enc(a.client_code)}` }),
 };
 
 // A client_code carried in a WRITE BODY (not a URL filter) still gets the same shape
