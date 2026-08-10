@@ -5236,6 +5236,37 @@ async function trainerOpChecked(op, args, _retried){
     return {ok:true, rows:(Array.isArray(d) ? d : (d?[d]:[]))};
   }catch(e){ return {ok:false, rows:[]}; }
 }
+// The write side of the door. Same shape as trainerOpChecked — {ok, rows} — because a
+// write has no safe "just say empty" fallback at all: every caller needs to know
+// definitively whether it landed, and `rows` is the row PostgREST actually wrote or
+// deleted (trainer.js sends Prefer: return=representation), not a trusted status code.
+//
+// FAILURES ARE THE CALLER'S TO SURFACE. This function does not toast, does not retry
+// silently past the one 401/403 recovery, and does not pretend a write succeeded. The
+// whole reason "failures VISIBLE" was the standing requirement for this build is that
+// several of the functions this replaces used to swallow a failed write with nothing
+// more than an empty catch block — jvSetContactAbout and jvUndoContact never told
+// anyone a sync failed. Every caller converted to trainerWrite() now checks .ok and
+// shows something true when it's false, even where the old code showed nothing.
+async function trainerWrite(op, args, _retried){
+  try{
+    var t=_sessToken();
+    if(!t) return {ok:false, rows:[]};
+    var res=await fetch('/.netlify/functions/trainer',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+t},
+      body:JSON.stringify({op:op, args:(args||{})}),
+      signal:_sbTimeout(SB_READ_MS)
+    });
+    if((res.status===401||res.status===403) && !_retried){
+      var ok=await sessOnDenied();
+      return ok ? trainerWrite(op, args, true) : {ok:false, rows:[]};
+    }
+    if(!res.ok) return {ok:false, rows:[]};
+    var d=await res.json();
+    return {ok:true, rows:(Array.isArray(d) ? d : (d?[d]:[]))};
+  }catch(e){ return {ok:false, rows:[]}; }
+}
 
 var SB_BUCKET = 'progress-photos';
 // Upload a full-res image blob to Supabase Storage; returns the public URL, or null if the bucket isn't reachable.
@@ -6684,10 +6715,10 @@ async function _ensureSaleFor(code, amount, whenDs){
     if(existing && existing.length) return false;          // already has one; leave it alone
     var r=CLIENTS[code]||{};
     var ds=whenDs || (r.started_at?String(r.started_at).slice(0,10):new Date().toISOString().slice(0,10));
-    var ok=await sbInsert('sales', {client_code:code, client_name:(r.name||code),
+    var w=await trainerWrite('salesInsert', {client_code:code, client_name:(r.name||code),
       program:(r.tier==='vip'?'VIP':'1:1')+(r.term_months?(' \u00b7 '+r.term_months+' months'):''),
       total_amount:amt, paid_amount:amt, sale_date:ds, created_at:new Date().toISOString()});
-    if(ok===false) return false;
+    if(!w.ok) return false;
     try{ _salesRows=null; if(typeof loadSales==='function') loadSales(); }catch(e){}
     return true;
   }catch(e){ return false; }
@@ -6723,11 +6754,19 @@ async function addClientToDb(){
   if(_ok){
     CLIENTS[code]=Object.assign({name:name,initials:initials,coach_code:cl.code,active:true,
       tier:_tier, term_months:_term, paid:_paid, started_at:new Date().toISOString().slice(0,10)}, _acc);
-    // The fee they were just charged has to reach the tracker, not only the card.
-    try{ if(_paid) await _ensureSaleFor(code, _paid, new Date().toISOString().slice(0,10)); }catch(e){}
+    // The fee they were just charged has to reach the tracker, not only the card. This
+    // is the exact incident class _ensureSaleFor's own comment names \u2014 "a $3,500 sale
+    // entered on 4 Aug never reached the tracker" \u2014 so its return value is checked, not
+    // discarded. The client record itself is real either way; only the money tracking
+    // can fail here, and that's what has to say so.
+    var _saleTracked=true;
+    try{ if(_paid) _saleTracked=await _ensureSaleFor(code, _paid, new Date().toISOString().slice(0,10)); }catch(e){ _saleTracked=false; }
     _closeAddClient();
     showToast('\u2713 '+name+' added \u00b7 '+code+' \u00b7 '
       +(_tier==='vip' ? 'VIP, books anytime' : '1:1, 2 calls')+' \u00b7 '+_term+' mo');
+    if(_paid && !_saleTracked){
+      setTimeout(function(){ try{ showToast('\u26a0\ufe0f Client added, but the '+_sMoney(_paid)+' fee did not reach the sales tracker \u2014 log it by hand'); }catch(e){} }, 2600);
+    }
     // Seed a profile with the gender so a split can be assigned before they log in.
     try{
       // No fallback: the button is gated on a real choice, and a guess here is what
@@ -7014,14 +7053,12 @@ async function saveEngineMoment(code, zone){
   _engineState[code]=zone;
   renderEngineBoard();
   var ov=document.getElementById('engineCaptureOverlay'); if(ov) ov.style.display='none';
-  // best-effort persist + let Jim log it against the client
+  // Through the trainer door — best-effort persist + let Jim log it against the client.
+  // A failure stays quiet by design (today's board still shows the right state in
+  // memory), same as before, just no longer a bare anon-key write to a locked table.
   try{
-    await fetch(SB_URL+'/rest/v1/engine_moments',{
-      method:'POST',
-      headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'}),
-      body: JSON.stringify({coach_code:cl.code, client_code:code, date_str:_engineDateKey(), state:zone, note:note||null, logged_at:new Date().toISOString()})
-    });
-  }catch(e){ /* table may not exist yet; state stays in-memory for today */ }
+    await trainerWrite('engineSave', {client_code:code, date_str:_engineDateKey(), state:zone, note:note||null, logged_at:new Date().toISOString()});
+  }catch(e){ /* state stays in-memory for today */ }
 }
 
 async function clearEngineMoment(code){
@@ -7029,9 +7066,7 @@ async function clearEngineMoment(code){
   renderEngineBoard();
   var ov=document.getElementById('engineCaptureOverlay'); if(ov) ov.style.display='none';
   try{
-    await fetch(SB_URL+'/rest/v1/engine_moments?coach_code=eq.'+encodeURIComponent(cl.code)+'&client_code=eq.'+encodeURIComponent(code)+'&date_str=eq.'+encodeURIComponent(_engineDateKey()),{
-      method:'DELETE', headers: Object.assign({}, sbHeaders(), {'Prefer':'return=minimal'})
-    });
+    await trainerWrite('engineClear', {client_code:code, date_str:_engineDateKey()});
   }catch(e){}
 }
 
@@ -8106,13 +8141,13 @@ async function feedPostMoment(){
   var t=(inp.value||'').trim(); if(!t) return;
   inp.value='';
   var saved=false;
-  try{ var row=await sbInsertReturning('coach_moments',{coach_code:cl.code, text:t}); if(row && row.id!=null) saved=true; }catch(e){}
+  try{ var w=await trainerWrite('momentPost',{text:t}); if(w.ok && w.rows[0] && w.rows[0].id!=null) saved=true; }catch(e){}
   if(!saved){ var a=_localMoments(); a.unshift({text:t, ts:Date.now()}); _saveLocalMoments(a); }
-  if(typeof showToast==='function') showToast('📌 Posted to the feed');
+  if(typeof showToast==='function') showToast(saved?'📌 Posted to the feed':'📌 Saved here — hasn’t synced yet');
   loadTrainerFeed();
 }
 async function feedDeleteMoment(kind, ref){
-  if(kind==='db'){ try{ await fetch(SB_URL+'/rest/v1/coach_moments?id=eq.'+encodeURIComponent(ref), {method:'DELETE', headers:sbHeaders()}); }catch(e){} }
+  if(kind==='db'){ try{ await trainerWrite('momentDelete',{id:ref}); }catch(e){} }
   else { _saveLocalMoments(_localMoments().filter(function(m){ return m.ts!==ref; })); }
   loadTrainerFeed();
 }
@@ -12457,7 +12492,7 @@ function _jimReadHtml(f){
 }
 async function _postMomentText(t){
   var saved=false;
-  try{ var row=await sbInsertReturning('coach_moments',{coach_code:cl.code, text:t}); if(row && row.id!=null) saved=true; }catch(e){}
+  try{ var w=await trainerWrite('momentPost',{text:t}); if(w.ok && w.rows[0] && w.rows[0].id!=null) saved=true; }catch(e){}
   if(!saved){ var a=_localMoments(); a.unshift({text:t, ts:Date.now()}); _saveLocalMoments(a); }
 }
 async function jarvisIngest(ns){
@@ -13828,14 +13863,15 @@ async function jvLogContact(code, kind, about, replied){
   _ccSave(m);
   // Speaking to someone clears them off today's board too — one action, not two.
   try{ jvMarkHandled(code); }catch(e){}
+  // Local is already the record of what happened — this row is on screen regardless.
+  // Through the trainer door: a failure here means "not synced to your other devices
+  // yet," never "lost," so it stays quiet rather than alarming, but it stops claiming
+  // 'missing' for a table that demonstrably exists — see jvSyncContacts for why.
   try{
     if(cl){
-      var res=await fetch(SB_URL+'/rest/v1/client_contacts', {
-        method:'POST', headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
-        body:JSON.stringify({coach_code:cl.code, client_code:code, kind:kind, about:row.a, replied:row.r,
-                             contacted_at:new Date(row.t).toISOString()})
-      });
-      if(res.status===404||res.status===400) window._ccSrv='missing'; else if(res.ok) window._ccSrv='ok';
+      var w=await trainerWrite('contactInsert', {client_code:code, kind:kind, about:row.a, replied:row.r,
+                             contacted_at:new Date(row.t).toISOString()});
+      if(w.ok) window._ccSrv='ok';
     }
   }catch(e){}
   return row;
@@ -13859,12 +13895,12 @@ async function jvSetContactAbout(code, t, about){
   var m=jvContacts(), a=m[code]||[];
   for(var i=0;i<a.length;i++){ if(a[i].t===+t){ a[i].a=about; break; } }
   _ccSave(m);
+  // This used to fire-and-forget with no visible failure at all — the note looked saved
+  // on this device even when the server never got it. Through the door now, and told.
   try{
     if(cl){
-      await fetch(SB_URL+'/rest/v1/client_contacts?coach_code=eq.'+encodeURIComponent(cl.code)
-        +'&client_code=eq.'+encodeURIComponent(code)+'&contacted_at=eq.'+encodeURIComponent(new Date(+t).toISOString()),
-        {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
-         body:JSON.stringify({about:about})});
+      var w=await trainerWrite('contactUpdate', {client_code:code, contacted_at:new Date(+t).toISOString(), about:about});
+      if(!w.ok) try{ showToast('Saved here — hasn’t synced yet'); }catch(e){}
     }
   }catch(e){}
   try{ if(!_feedRerenderPeopleOnly()){ if(jvTriage && (typeof jvMode==='undefined'||jvMode==='cockpit')) jvRenderTriage(); } }catch(e){}
@@ -13875,14 +13911,14 @@ async function jvUndoContact(code, t){
   var m=jvContacts(), a=m[code]||[];
   for(var i=0;i<a.length;i++){ if(a[i].t===+t){ a.splice(i,1); break; } }
   _ccSave(m);
+  var synced=true;
   try{
     if(cl){
-      await fetch(SB_URL+'/rest/v1/client_contacts?coach_code=eq.'+encodeURIComponent(cl.code)
-        +'&client_code=eq.'+encodeURIComponent(code)+'&contacted_at=eq.'+encodeURIComponent(new Date(+t).toISOString()),
-        {method:'DELETE', headers:sbHeaders()});
+      var w=await trainerWrite('contactDelete', {client_code:code, contacted_at:new Date(+t).toISOString()});
+      synced=w.ok;
     }
-  }catch(e){}
-  try{ showToast('Undone'); }catch(e){}
+  }catch(e){ synced=false; }
+  try{ showToast(synced?'Undone':'Undone here — hasn’t synced yet'); }catch(e){}
   try{ if(!_feedRerenderPeopleOnly()){ if(jvTriage && (typeof jvMode==='undefined'||jvMode==='cockpit')) jvRenderTriage(); } }catch(e){}
   try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
 }
@@ -13983,7 +14019,7 @@ async function renderWeekCaughtUp(){
     + '</div>';
 }
 
-function jvMarkHandled(code){ var m=jvHandledMap(); m[code]=_jvTodayKey(); try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} try{ if(cl) fetch(SB_URL+'/rest/v1/jv_handled?on_conflict=coach_code,client_code,date_str', {method:'POST', headers:Object.assign({},sbHeaders(),{'Prefer':'resolution=merge-duplicates,return=minimal','Content-Type':'application/json'}), body:JSON.stringify({coach_code:cl.code, client_code:code, date_str:_jvTodayKey()})}); }catch(e){}
+function jvMarkHandled(code){ var m=jvHandledMap(); m[code]=_jvTodayKey(); try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} try{ if(cl) trainerWrite('handledMark',{client_code:code, date_str:_jvTodayKey()}).then(function(w){ if(!w.ok) try{ showToast('Cleared here — hasn’t synced yet'); }catch(e){} }); }catch(e){}
   // Repainting the triage board is only correct when the triage board is what's on
   // screen. jvWall is shared by every desktop mode (feed, roster, training, sales) —
   // firing this blind used to swap whichever of those was showing for the triage view
@@ -13991,7 +14027,7 @@ function jvMarkHandled(code){ var m=jvHandledMap(); m[code]=_jvTodayKey(); try{ 
   // setFdFilter already uses for the same hazard.
   try{ if(typeof jvMode==='undefined' || jvMode==='cockpit') jvRenderTriage(); }catch(e){}
   try{ renderWeekCaughtUp(); }catch(e){} try{ if(window.innerWidth<1024 && typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){} }
-function jvUnhandle(code){ var m=jvHandledMap(); delete m[code]; try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} try{ if(cl) fetch(SB_URL+'/rest/v1/jv_handled?coach_code=eq.'+encodeURIComponent(cl.code)+'&client_code=eq.'+encodeURIComponent(code)+'&date_str=eq.'+encodeURIComponent(_jvTodayKey()), {method:'DELETE', headers:sbHeaders()}); }catch(e){} jvRenderTriage(); try{ renderWeekCaughtUp(); }catch(e){} try{ if(window.innerWidth<1024 && typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){} }
+function jvUnhandle(code){ var m=jvHandledMap(); delete m[code]; try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} try{ if(cl) trainerWrite('handledUnmark',{client_code:code, date_str:_jvTodayKey()}).then(function(w){ if(!w.ok) try{ showToast('Restored here — hasn’t synced yet'); }catch(e){} }); }catch(e){} jvRenderTriage(); try{ renderWeekCaughtUp(); }catch(e){} try{ if(window.innerWidth<1024 && typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){} }
 async function jvSyncHandledFromServer(){
   try{
     if(!cl) return;
@@ -15086,7 +15122,11 @@ async function jvSaveContract(){
   jvCloseContract();
   try{ jvOpenDeep(code); }catch(e){}
   var res=await _jvSaveClient(code, patch);
-  if(res.ok && _newFee) { try{ await _ensureSaleFor(code, _newFee, null); }catch(e){} }
+  // Checked, not discarded — same incident _ensureSaleFor's own comment names. The
+  // contract patch itself already landed (res.ok is true); only the revenue tracker
+  // can fail here, silently, and that has to be said out loud rather than assumed.
+  var _saleTracked=true;
+  if(res.ok && _newFee){ try{ _saleTracked=await _ensureSaleFor(code, _newFee, null); }catch(e){ _saleTracked=false; } }
   if(!res.ok){
     Object.keys(before).forEach(function(k){ r[k]=before[k]; });
     try{ jvOpenDeep(code); }catch(e){}
@@ -15094,6 +15134,9 @@ async function jvSaveContract(){
     return;
   }
   try{ showToast(_jvTermState(code).label); }catch(e){}
+  if(_newFee && !_saleTracked){
+    setTimeout(function(){ try{ showToast('⚠️ Term saved, but the '+_sMoney(_newFee)+' fee did not reach the sales tracker — log it by hand'); }catch(e){} }, 2600);
+  }
   try{ if(typeof jvRenderTriage==='function' && jvTriage) jvRenderTriage(); }catch(e){}
   try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
 }
@@ -15808,11 +15851,12 @@ async function jvRepostMeal(foodId, clientCode, btn){
        || (window._jvEditCache && window._jvEditCache.food && window._jvEditCache.food[foodId])
        || null;
   var firstName = ((CLIENTS[clientCode] && CLIENTS[clientCode].name) || 'A client').split(' ')[0];
+  // coach_code no longer travels in the record \u2014 the door derives it from the
+  // verified session itself, same as every other write behind it.
   var rec = {
     food_id: String(foodId),
     client_code: clientCode,
     client_first: firstName,
-    coach_code: (cl && cl.code) || '',
     reposted_at: new Date().toISOString(),
     client_logged_at: (f && (f.logged_at || null)) || null,
     client_eat_time: (f && (f.eat_time || null)) || null,
@@ -15827,22 +15871,22 @@ async function jvRepostMeal(foodId, clientCode, btn){
     rating: (f && f.rating) || null
   };
   try{
-    var ok = await sbInsert('coach_reposts', rec);
-    if(ok===false){
+    var w = await trainerWrite('repostInsert', rec);
+    if(!w.ok){
       var rec2=Object.assign({},rec); delete rec2.client_logged_at; delete rec2.client_eat_time;
-      ok = await sbInsert('coach_reposts', rec2);
+      w = await trainerWrite('repostInsert', rec2);
     }
-    if(ok!==false){
+    if(w.ok){
       try{ window._repostedFoodIds=window._repostedFoodIds||{}; window._repostedFoodIds[String(foodId)]=true; }catch(e){}
       if(btn){ btn.textContent='\u2713 Reposted to feed'; btn.style.background='rgba(245,197,24,0.14)'; btn.style.borderColor='#f5c518'; btn.style.color='#f5c518'; }
       if(typeof showToast==='function') showToast('Reposted '+firstName+'\u2019s meal \u2014 clients can see it in Follow Yusuf');
     } else {
       if(btn){ btn._busy=false; btn.style.opacity='1'; btn.textContent='\u2934 Repost to feed'; }
-      jvRepostTableMissing();
+      if(typeof showToast==='function') showToast('Could not repost \u2014 try again');
     }
   }catch(e){
     if(btn){ btn._busy=false; btn.style.opacity='1'; btn.textContent='\u2934 Repost to feed'; }
-    jvRepostTableMissing();
+    if(typeof showToast==='function') showToast('Could not repost \u2014 try again');
   }
 }
 function jvRepostTableMissing(){
@@ -20091,19 +20135,18 @@ async function saveSale(){
   var ok=false;
   try{
     if(editing){
-      var res=await fetch(SB_URL+'/rest/v1/sales?id=eq.'+encodeURIComponent(window._saleEditId), {
-        method:'PATCH', headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
-        body:JSON.stringify(row)});
-      ok=res.ok;
+      row.id=window._saleEditId;
+      var w=await trainerWrite('salesUpdate', row);
+      ok=w.ok;
       // due_date / client_code may not be migrated yet — drop them and keep the edit
       if(!ok){ delete row.due_date; delete row.client_code;
-        var r2=await fetch(SB_URL+'/rest/v1/sales?id=eq.'+encodeURIComponent(window._saleEditId), {
-          method:'PATCH', headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
-          body:JSON.stringify(row)}); ok=r2.ok; }
+        var w2=await trainerWrite('salesUpdate', row); ok=w2.ok; }
     } else {
       row.created_at=new Date().toISOString();
-      ok=await sbInsert('sales', row);
-      if(!ok){ delete row.due_date; delete row.client_code; ok=await sbInsert('sales', row); }
+      var wi=await trainerWrite('salesInsert', row);
+      ok=wi.ok;
+      if(!ok){ delete row.due_date; delete row.client_code;
+        var wi2=await trainerWrite('salesInsert', row); ok=wi2.ok; }
     }
   }catch(e){ ok=false; }
   if(!ok){ showToast(editing?'Could not save the change':'Could not save — check the sales table'); return; }
@@ -20120,8 +20163,8 @@ async function deleteSale(){
   var who=(s&&s.client_name)||'this sale';
   if(!confirm('Delete the '+_sMoney(_sPaid(s))+' sale for '+who+' on '+_sDateLabel(s&&s.sale_date)+'?\n\nIt comes off your revenue total. This cannot be undone.')) return;
   try{
-    var res=await fetch(SB_URL+'/rest/v1/sales?id=eq.'+encodeURIComponent(id), {method:'DELETE', headers:sbHeaders()});
-    if(!res.ok){ showToast('Could not delete that sale'); return; }
+    var w=await trainerWrite('salesDelete', {id:id});
+    if(!w.ok){ showToast('Could not delete that sale'); return; }
   }catch(e){ showToast('Could not delete that sale'); return; }
   showToast('Sale deleted');
   closeM('mLogSale'); window._saleEditId=null; window._saleCode=null;
@@ -21110,12 +21153,19 @@ async function saveClientNote(){
 // report success and leave the note sitting exactly where it was.
 async function deleteClientNote(id, store){
   if(!confirm('Delete this note?')) return;
-  var table = (store==='coach_notes') ? 'coach_notes' : 'client_notes';
   var ok=false;
   try{
-    var res=await fetch(SB_URL+'/rest/v1/'+table+'?id=eq.'+encodeURIComponent(id),
-      {method:'DELETE', headers:sbHeaders()});
-    ok=res.ok;
+    // coach_notes goes through the door — one of the seven. client_notes stays direct:
+    // it's protected differently (column-level, not a table lock) and out of this
+    // rewire's scope, same split the read side of this function already draws.
+    if(store==='coach_notes'){
+      var w=await trainerWrite('noteDelete', {id:id});
+      ok=w.ok;
+    } else {
+      var res=await fetch(SB_URL+'/rest/v1/client_notes?id=eq.'+encodeURIComponent(id),
+        {method:'DELETE', headers:sbHeaders()});
+      ok=res.ok;
+    }
   }catch(e){}
   if(!ok){ try{ showToast('Could not delete that note — it is still there'); }catch(e){} }
   if(_notesClientCode) loadClientNotes(_notesClientCode);
@@ -36591,23 +36641,11 @@ async function submitCoachReply(){
   if(!coachReplyTarget){ closeM('mCoachReply'); return; }
   var timeStr = new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
   var note = {client_code:coachReplyTarget.code, note:text, date_str:todayDateStr, time_str:timeStr};
-  console.log('Saving note:', JSON.stringify(note));
   var saved = false;
   try{
-    var res = await fetch(SB_URL+'/rest/v1/coach_notes', {
-      method:'POST',
-      headers:Object.assign({},sbHeaders(),{'Prefer':'return=representation'}),
-      body:JSON.stringify(note)
-    });
-    console.log('Save response status:', res.status);
-    if(res.ok){
-      saved = true;
-      var data = await res.json();
-      console.log('Saved note:', JSON.stringify(data));
-    } else {
-      var errText = await res.text();
-      console.error('Save failed:', errText);
-    }
+    var w = await trainerWrite('noteSend', note);
+    saved = w.ok;
+    if(!saved) console.error('Note save failed');
   } catch(e){ console.error('Note save error:', e); }
   // Also save to localStorage as backup
   localStorage.setItem('yjb_cnote_'+coachReplyTarget.code+'_'+todayKey, JSON.stringify(note));
@@ -36730,10 +36768,8 @@ async function deleteCoachNote(){
   // Delete from Supabase if it has an ID
   if(currentCoachNote.id){
     try{
-      await fetch(SB_URL+'/rest/v1/coach_notes?id=eq.'+currentCoachNote.id, {
-        method:'DELETE', headers:sbHeaders()
-      });
-      showToast('Note deleted');
+      var w = await trainerWrite('noteDelete', {id:currentCoachNote.id});
+      showToast(w.ok ? 'Note deleted' : 'Delete may have failed — refresh to confirm');
     }catch(e){
       showToast('Delete may have failed — refresh to confirm');
     }

@@ -82,6 +82,148 @@ function enc(v) {
   return encodeURIComponent(s);
 }
 
+// ---- WRITES ---------------------------------------------------------------
+// Same discipline as OPS: named operations only, args reach a VALUE never a column
+// name or table name. Two things writes need that reads didn't:
+//
+// 1. coach_code is never taken from args. It comes from the verified session's own
+//    client_code claim, passed in as `trainerCode` below — a session already proved
+//    who is asking, so asking again in the request body would just be trusting the
+//    client to tell the truth about its own identity.
+// 2. Every write carries `Prefer: return=representation`, so the response body IS the
+//    row PostgREST actually landed — a genuine read-back, not a trusted status code.
+//    This codebase's own standing rule: "a 2xx is not evidence the row is there."
+//
+// Each build function returns {method, path, body}. `body` is a plain object — never
+// a client-supplied string — assembled here field by field, with real validation
+// (types, lengths, ranges) on every value, not just URL-safety.
+function str(v, max) { const s = String(v == null ? '' : v).trim(); return s.slice(0, max || 500); }
+function num(v) { const n = Number(v); if (!isFinite(n)) throw new Error('bad_arg'); return n; }
+function isoDate(v) {
+  const s = String(v || '');
+  if (!/^\d{4}-\d{2}-\d{2}/.test(s)) throw new Error('bad_arg');
+  return s.slice(0, 10);
+}
+function isoTs(v) {
+  const s = String(v || '');
+  const d = new Date(s);
+  if (isNaN(d.getTime())) throw new Error('bad_arg');
+  return d.toISOString();
+}
+
+const WRITE_OPS = {
+  // ---- sales (money) --------------------------------------------------------
+  salesInsert: (a, coach) => ({
+    method: 'POST', path: 'sales',
+    body: {
+      client_code: a.client_code != null ? enc_raw(a.client_code) : undefined,
+      client_name: str(a.client_name, 200),
+      program: str(a.program, 200),
+      total_amount: num(a.total_amount),
+      paid_amount: num(a.paid_amount),
+      sale_date: isoDate(a.sale_date),
+      due_date: a.due_date ? isoDate(a.due_date) : undefined,
+      created_at: isoTs(a.created_at || new Date().toISOString()),
+    },
+  }),
+  salesUpdate: (a) => ({
+    method: 'PATCH', path: `sales?id=eq.${encId(a.id)}`,
+    body: {
+      client_name: str(a.client_name, 200),
+      program: str(a.program, 200),
+      total_amount: num(a.total_amount),
+      paid_amount: num(a.paid_amount),
+      sale_date: isoDate(a.sale_date),
+      due_date: a.due_date ? isoDate(a.due_date) : undefined,
+      client_code: a.client_code != null ? enc_raw(a.client_code) : undefined,
+    },
+  }),
+  salesDelete: (a) => ({ method: 'DELETE', path: `sales?id=eq.${encId(a.id)}` }),
+
+  // ---- client_contacts --------------------------------------------------------
+  contactInsert: (a, coach) => ({
+    method: 'POST', path: 'client_contacts',
+    body: { coach_code: coach, client_code: enc_raw(a.client_code), kind: str(a.kind, 40),
+      about: str(a.about, 300), replied: !!a.replied, contacted_at: isoTs(a.contacted_at) },
+  }),
+  contactUpdate: (a, coach) => ({
+    method: 'PATCH',
+    path: `client_contacts?coach_code=eq.${enc(coach)}&client_code=eq.${enc(a.client_code)}&contacted_at=eq.${encodeURIComponent(isoTs(a.contacted_at))}`,
+    body: { about: str(a.about, 300) },
+  }),
+  contactDelete: (a, coach) => ({
+    method: 'DELETE',
+    path: `client_contacts?coach_code=eq.${enc(coach)}&client_code=eq.${enc(a.client_code)}&contacted_at=eq.${encodeURIComponent(isoTs(a.contacted_at))}`,
+  }),
+
+  // ---- jv_handled (board state) ------------------------------------------------
+  handledMark: (a, coach) => ({
+    method: 'POST', path: 'jv_handled?on_conflict=coach_code,client_code,date_str',
+    body: { coach_code: coach, client_code: enc_raw(a.client_code), date_str: str(a.date_str, 40) },
+    upsert: true,
+  }),
+  handledUnmark: (a, coach) => ({
+    method: 'DELETE',
+    path: `jv_handled?coach_code=eq.${enc(coach)}&client_code=eq.${enc(a.client_code)}&date_str=eq.${encodeURIComponent(str(a.date_str, 40))}`,
+  }),
+
+  // ---- engine_moments (board state) --------------------------------------------
+  engineSave: (a, coach) => ({
+    method: 'POST', path: 'engine_moments',
+    body: { coach_code: coach, client_code: enc_raw(a.client_code), date_str: str(a.date_str, 40),
+      state: str(a.state, 40), note: a.note ? str(a.note, 500) : null, logged_at: isoTs(a.logged_at) },
+    upsert: true,
+  }),
+  engineClear: (a, coach) => ({
+    method: 'DELETE',
+    path: `engine_moments?coach_code=eq.${enc(coach)}&client_code=eq.${enc(a.client_code)}&date_str=eq.${encodeURIComponent(str(a.date_str, 40))}`,
+  }),
+
+  // ---- coach_moments (feed) -----------------------------------------------------
+  momentPost: (a, coach) => ({ method: 'POST', path: 'coach_moments', body: { coach_code: coach, text: str(a.text, 2000) } }),
+  momentDelete: (a) => ({ method: 'DELETE', path: `coach_moments?id=eq.${encId(a.id)}` }),
+
+  // ---- coach_reposts (feed) ------------------------------------------------------
+  // A wide, mostly-denormalized snapshot row. Every field is still typed and capped —
+  // "the client supplies values, never keys" holds here exactly as everywhere else.
+  repostInsert: (a, coach) => ({
+    method: 'POST', path: 'coach_reposts',
+    body: {
+      food_id: str(a.food_id, 100), client_code: enc_raw(a.client_code), client_first: str(a.client_first, 100),
+      coach_code: coach, reposted_at: isoTs(a.reposted_at || new Date().toISOString()),
+      client_logged_at: a.client_logged_at ? isoTs(a.client_logged_at) : undefined,
+      client_eat_time: a.client_eat_time ? str(a.client_eat_time, 40) : undefined,
+      name: str(a.name, 200) || 'Meal', emoji: str(a.emoji, 20) || '🍽️',
+      photo: a.photo ? str(a.photo, 2000) : null,
+      calories: a.calories != null ? Math.round(num(a.calories)) : null,
+      protein: a.protein != null ? Math.round(num(a.protein)) : null,
+      carbs: a.carbs != null ? Math.round(num(a.carbs)) : null,
+      fat: a.fat != null ? Math.round(num(a.fat)) : null,
+      rating: a.rating ? str(a.rating, 40) : null,
+    },
+  }),
+
+  // ---- coach_notes (private, TODAY'S banner + roster notes) ----------------------
+  noteSend: (a) => ({
+    method: 'POST', path: 'coach_notes',
+    body: { client_code: enc_raw(a.client_code), note: str(a.note, 4000), date_str: str(a.date_str, 40), time_str: str(a.time_str, 20) },
+  }),
+  noteDelete: (a) => ({ method: 'DELETE', path: `coach_notes?id=eq.${encId(a.id)}` }),
+};
+
+// A client_code carried in a WRITE BODY (not a URL filter) still gets the same shape
+// check as enc() — refusing it here is cheaper than discovering a malformed row later.
+function enc_raw(v) {
+  const s = String(v == null ? '' : v);
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(s)) throw new Error('bad_arg');
+  return s;
+}
+function encId(v) {
+  const s = String(v == null ? '' : v);
+  if (!/^\d+$/.test(s)) throw new Error('bad_arg');
+  return s;
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return json(405, { error: 'POST only' });
 
@@ -107,32 +249,61 @@ exports.handler = async (event) => {
   try { const b = JSON.parse(event.body || '{}'); op = String(b.op || ''); args = b.args || {}; }
   catch (e) { return json(400, { error: 'bad_request' }); }
 
-  const build = Object.prototype.hasOwnProperty.call(OPS, op) ? OPS[op] : null;
-  if (!build) return json(400, { error: 'unknown_op', op: op });
-
-  let path;
-  try { path = build(args); }
-  catch (e) { return json(400, { error: 'bad_arg' }); }
-
-  try {
-    const r = await fetch(`${URL}/rest/v1/${path}`, {
-      headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE },
-    });
-    const text = await r.text();
-    if (!r.ok) {
-      // The database's own words stay here. The cockpit gets a status, not a stack.
-      console.error('trainer: query failed', op, r.status, text.slice(0, 300));
+  // READ. Unchanged from before writes existed.
+  if (Object.prototype.hasOwnProperty.call(OPS, op)) {
+    let path;
+    try { path = OPS[op](args); }
+    catch (e) { return json(400, { error: 'bad_arg' }); }
+    try {
+      const r = await fetch(`${URL}/rest/v1/${path}`, {
+        headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE },
+      });
+      const text = await r.text();
+      if (!r.ok) {
+        // The database's own words stay here. The cockpit gets a status, not a stack.
+        console.error('trainer: query failed', op, r.status, text.slice(0, 300));
+        return json(502, { error: 'query_failed', op: op });
+      }
+      return { statusCode: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }, body: text };
+    } catch (e) {
+      console.error('trainer: threw', op, e && e.message);
       return json(502, { error: 'query_failed', op: op });
     }
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-      body: text,
-    };
-  } catch (e) {
-    console.error('trainer: threw', op, e && e.message);
-    return json(502, { error: 'query_failed', op: op });
   }
+
+  // WRITE. coach_code is the session's OWN verified claim, never anything from args —
+  // a session already proved who's asking. return=representation makes the response
+  // body the row PostgREST actually landed (or, on a DELETE, the row(s) actually
+  // removed — an empty array there means nothing matched, not an error).
+  if (Object.prototype.hasOwnProperty.call(WRITE_OPS, op)) {
+    let req;
+    try { req = WRITE_OPS[op](args, claims.client_code); }
+    catch (e) { return json(400, { error: 'bad_arg' }); }
+    try {
+      const headers = { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE, 'Content-Type': 'application/json',
+        Prefer: 'return=representation' + (req.upsert ? ',resolution=merge-duplicates' : '') };
+      const fetchOpts = { method: req.method, headers };
+      if (req.body) {
+        // undefined-valued keys are dropped by JSON.stringify — the column is simply
+        // absent from the write, exactly like the client-side sales fallback this
+        // mirrors (drop a not-yet-migrated column and retry with what's left).
+        fetchOpts.body = JSON.stringify(req.body);
+      }
+      const r = await fetch(`${URL}/rest/v1/${req.path}`, fetchOpts);
+      const text = await r.text();
+      if (!r.ok) {
+        console.error('trainer: write failed', op, r.status, text.slice(0, 300));
+        return json(502, { error: 'write_failed', op: op, detail: text.slice(0, 200) });
+      }
+      return { statusCode: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }, body: text || '[]' };
+    } catch (e) {
+      console.error('trainer: write threw', op, e && e.message);
+      return json(502, { error: 'write_failed', op: op });
+    }
+  }
+
+  return json(400, { error: 'unknown_op', op: op });
 };
 
 exports.OPS = OPS;
+exports.WRITE_OPS = WRITE_OPS;
