@@ -75,6 +75,14 @@ anything reading `_lastActivity` is empty there. Prefer `jvTriage.per`.
   `CLIENTS` map — they're stale, and several codes in them have no row in the live
   `clients` table. Query the real table. `UPDATE ... WHERE code='wrong'` reports
   `UPDATE 0` and looks exactly like success.
+- A chat-logged `workout_logs` row carries both a one-line `description` (the
+  marker format's own rule: "one clean line of what was done") and a properly
+  structured `exercises` JSONB array. Anything rendering a session's exercise
+  list must read `exercises` first and only re-parse `description` when it's
+  absent — `_bfParseDesc` only ever split on newlines, so a correctly-formed
+  one-line description collapsed into a single exercise wearing every other
+  exercise's name and sets crammed into its own text (`_bfItemsFor` is the
+  fix, 10 Aug — a real client's five-exercise session had rendered as one).
 
 ## Supabase traffic
 All of it passes through a `fetch` wrapper (search `SUPABASE BACKOFF + CIRCUIT BREAKER`)
