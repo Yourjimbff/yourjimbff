@@ -1610,12 +1610,15 @@ body.bfEditingToday .tlDaySec.ahead{display:none;}
 .tlHeroName{position:relative;font-size:40px;font-weight:800;letter-spacing:-1.6px;line-height:0.95;color:var(--text);}
 .tlHeroMeta{position:relative;margin-top:12px;font-size:13px;font-weight:600;color:var(--muted);}
 .tlHeroChev{position:relative;color:rgba(240,236,228,0.45);font-size:22px;line-height:1;margin-top:6px;transition:transform .15s;}
-/* Swap today — discreet by design: a plain text link, and the pills it opens
-   read exactly like the app's other quiet text pills, not an action button.
-   Gold stays for things that need permission to press; a legal swap doesn't. */
-.tlSwapWrap{position:relative;margin-top:9px;}
-.tlSwapLink{font-size:11.5px;font-weight:700;color:var(--muted);text-decoration:underline;text-decoration-color:rgba(240,236,228,0.3);text-underline-offset:2px;cursor:pointer;}
-.tlSwapRow{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+/* "Change" — discreet by design (Yusuf, 10 Aug): the card at rest shows the
+   session and nothing else. A small muted label in the card's corner, not a
+   link sitting in the flow; tap it and the choices (rest today, or a
+   different legal session) appear below, tap a choice or tap away and the
+   card is clean again. Gold stays for things that need permission to press;
+   changing which session today is doesn't. */
+.tlChangeLink{position:absolute;top:18px;right:18px;z-index:2;font-size:10.5px;font-weight:700;letter-spacing:0.2px;color:rgba(240,236,228,0.4);cursor:pointer;}
+.tlChangeLink:active{color:rgba(240,236,228,0.75);}
+.tlSwapRow{position:relative;z-index:2;display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;}
 .tlSwapPill{font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:9px;cursor:pointer;
   border:1px solid rgba(255,255,255,0.13);background:rgba(255,255,255,0.035);color:var(--m2);}
 .tlSwapPill:active{background:rgba(255,255,255,0.08);}
@@ -17643,10 +17646,26 @@ async function _tpPatchWeekOverride(weekKey, dayDelta){
     var rows2=await rb2.json();
     var got=(rows2 && rows2[0] && rows2[0].week_overrides) || {};
     if(typeof got==='string'){ try{ got=JSON.parse(got); }catch(e){ got=null; } }
-    var ok = got && JSON.stringify(got[weekKey]||null)===JSON.stringify(next[weekKey]);
+    // JSONB does not preserve key order on round-trip — Postgres hands columns
+    // back re-sorted (alphabetical, at every nesting level), so a plain
+    // JSON.stringify comparison against what we sent fails on every write, even
+    // a perfectly successful one. That was the whole bug (Yusuf, 10 Aug): every
+    // trade actually landed, "could not save" was this check lying. Compare
+    // through a key-order-independent canonical form instead.
+    var ok = got && _stableJson(got[weekKey]||null)===_stableJson(next[weekKey]);
     if(ok) _tpWeekOverrides=next;
     return !!ok;
   }catch(e){ console.error('patch week override failed', e); return false; }
+}
+// A JSON.stringify that sorts object keys at every level, so two objects with
+// identical content but different key order compare equal. Needed anywhere a
+// Postgres JSONB round-trip is checked for equality with what was sent.
+function _stableJson(x){
+  if(Array.isArray(x)) return '['+x.map(_stableJson).join(',')+']';
+  if(x && typeof x==='object'){
+    return '{'+Object.keys(x).sort().map(function(k){ return JSON.stringify(k)+':'+_stableJson(x[k]); }).join(',')+'}';
+  }
+  return JSON.stringify(x);
 }
 // targetKey: a WEEKDAY key ('Fri'), not a type name — the UI path already
 // knows which day it's offering. Jim's marker path resolves a type name to a
@@ -17700,34 +17719,30 @@ async function tlRestToday(){
   try{ window._tlCache=null; renderDayTimeline(true); }catch(e){}
   return true;
 }
-// The discreet control itself: a plain text link, gold only if you count the
-// pills it opens onto — and even those are the ordinary text pill language,
-// not an action button. Absent entirely when there is nothing legal to offer.
-// "Do a different day" (Yusuf ruling, was "Swap today") — same mechanism,
-// plainer words: no "swap", no "trade", just picking a different session.
-function _tlSwapControl(ds, plan, todayKey){
-  if(window._tlRO || !window._tpFromServer || !todayKey) return '';
-  var targets=_tlLegalSwapTargets(plan, todayKey);
-  if(!targets.length) return '';
-  var open=!!(window._tlSwapOpen && window._tlSwapOpen[ds]);
-  var s='<div class="tlSwapWrap"><span class="tlSwapLink" data-tl="swaptog" data-ds="'+_escHtml(ds)+'">Do a different day</span>';
-  if(open){
-    s+='<div class="tlSwapRow">'
-      +targets.map(function(t){
-        return '<span class="tlSwapPill" data-tl="swapdo" data-ds="'+_escHtml(ds)+'" data-target="'+_escHtml(t.key)+'">'+_escHtml(t.type)+'</span>';
-      }).join('')
-    +'</div>';
-  }
-  return s+'</div>';
-}
-// "Resting today" (Yusuf ruling) — one tap, done, no submenu. Sits beside "Do
-// a different day" wherever that control appears; absent when today is
-// already Rest or the slide would collide with next week's Monday.
-function _tlRestTodayControl(ds, effWeek, todayKey){
+// THE discreet control (Yusuf ruling, 10 Aug — replaces two separate links
+// with one). At rest: a small muted "Change" tucked in the card's corner,
+// nothing else. Tapped: reveals every legal choice — resting today, or a
+// different legal session — as the same quiet text pills as before. Pick one,
+// or tap anywhere else on the page, and it closes back to a clean card; see
+// the 'swaptog' handler for the tap-away listener. Absent entirely when there
+// is nothing legal to offer.
+function _tlChangeControl(ds, effWeek, todayKey){
   if(window._tlRO || !window._tpFromServer || !todayKey) return '';
   var todayIdx=WEEKDAYS.indexOf(todayKey); if(todayIdx<0) return '';
-  if(!_tlRestTodayLegal(effWeek, todayIdx)) return '';
-  return '<div class="tlSwapWrap"><span class="tlSwapLink" data-tl="resttoday" data-ds="'+_escHtml(ds)+'">Resting today</span></div>';
+  var canRest=_tlRestTodayLegal(effWeek, todayIdx);
+  var targets=_tlLegalSwapTargets(effWeek, todayKey);
+  if(!canRest && !targets.length) return '';
+  var open=!!(window._tlSwapOpen && window._tlSwapOpen[ds]);
+  var s='<span class="tlChangeLink" data-tl="swaptog" data-ds="'+_escHtml(ds)+'">Change</span>';
+  if(open){
+    s+='<div class="tlSwapRow">';
+    if(canRest) s+='<span class="tlSwapPill" data-tl="resttoday" data-ds="'+_escHtml(ds)+'">Resting today</span>';
+    s+=targets.map(function(t){
+      return '<span class="tlSwapPill" data-tl="swapdo" data-ds="'+_escHtml(ds)+'" data-target="'+_escHtml(t.key)+'">'+_escHtml(t.type)+'</span>';
+    }).join('');
+    s+='</div>';
+  }
+  return s;
 }
 
 function _tlSlot(key, label, filled, ds, plan){
@@ -17788,8 +17803,7 @@ function _tlSlot(key, label, filled, ds, plan){
             // Only ever offered on today's own card, only when a real saved
             // program is behind it — nothing to swap within a synthesised
             // stand-in week that isn't actually stored anywhere.
-            +(_isToday && _pOn && _effWeek ? _tlRestTodayControl(ds, _effWeek, dayKey) : '')
-            +(_isToday && _pOn && _effWeek ? _tlSwapControl(ds, _effWeek, dayKey) : '')
+            +(_isToday && _pOn && _effWeek ? _tlChangeControl(ds, _effWeek, dayKey) : '')
           +'</div>'
           +'<div class="tlHeroChev"'+(open?' style="transform:rotate(90deg);"':'')+'>›</div>'
         +'</div>';
@@ -18490,23 +18504,37 @@ function _tlBindTaps(){
     if(a==='rateintskip'){ ev.stopPropagation(); tlSkipIntensity(el.getAttribute('data-id')); return; }
     if(a==='rateconn'){ ev.stopPropagation(); tlRateSessionConnection(el.getAttribute('data-id'), el.getAttribute('data-ds'), el.getAttribute('data-v')); return; }
     if(a==='rateconnskip'){ ev.stopPropagation(); tlSkipConnection(el.getAttribute('data-id')); return; }
-    // SWAP TODAY (Yusuf, 8 Aug) — the approval wall dies.
+    // CHANGE (Yusuf, 8+10 Aug) — the approval wall dies, then the surface goes
+    // quiet: opening the choices also arms a one-shot tap-away listener,
+    // deferred a tick so it can't catch the very click that opened it.
     if(a==='swaptog'){
       ev.stopPropagation();
       var _sds=el.getAttribute('data-ds');
       window._tlSwapOpen=window._tlSwapOpen||{};
-      window._tlSwapOpen[_sds]=!window._tlSwapOpen[_sds];
+      var _wasOpen=!!window._tlSwapOpen[_sds];
+      window._tlSwapOpen[_sds]=!_wasOpen;
       try{ _tlPatchDay(_sds); }catch(e){ try{ renderDayTimeline(true); }catch(_){} }
+      if(!_wasOpen){
+        setTimeout(function(){
+          document.addEventListener('click', function(){
+            if(!window._tlSwapOpen || !window._tlSwapOpen[_sds]) return;
+            window._tlSwapOpen[_sds]=false;
+            try{ _tlPatchDay(_sds); }catch(e){ try{ renderDayTimeline(true); }catch(_){} }
+          }, {once:true});
+        }, 0);
+      }
       return;
     }
     if(a==='swapdo'){
       ev.stopPropagation();
-      tlDoSwap(el.getAttribute('data-target')).then(function(ok){ if(ok){ try{ showToast('✓ Swapped'); }catch(e){} } });
+      var _sdo=el.getAttribute('data-ds'); if(window._tlSwapOpen) window._tlSwapOpen[_sdo]=false;
+      tlDoSwap(el.getAttribute('data-target')).then(function(ok){ if(ok){ try{ showToast('✓ Changed'); }catch(e){} } });
       return;
     }
-    // RESTING TODAY (Yusuf ruling) — one tap, immediate, no submenu.
+    // RESTING TODAY (Yusuf ruling) — one tap, immediate, no further submenu.
     if(a==='resttoday'){
       ev.stopPropagation();
+      var _srt=el.getAttribute('data-ds'); if(window._tlSwapOpen) window._tlSwapOpen[_srt]=false;
       tlRestToday().then(function(ok){ if(ok){ try{ showToast('✓ Resting today'); }catch(e){} } });
       return;
     }
