@@ -22419,6 +22419,12 @@ function hdlFoodPhoto(input){
   reader.onload=function(e){
     downscaleImage(e.target.result, 1440, 0.85).then(function(compact){
       photoData=compact;
+      // A new photo invalidates any guess or label pending against the old one —
+      // the exact staleness shape the Aug audit flagged (a cancelled photo log
+      // firing later against the wrong photo). Both pending-proposal states die here.
+      _photoProposal=null; _photoProposalFor=null;
+      _foodLabelRaw=null; _foodLabelTriedFor=null;
+      try{ var _fri=document.getElementById('foodResultInline'); if(_fri) _fri.innerHTML=''; }catch(e){}
       _mlTimeFromPhoto(input.files[0]);
       var slot=document.getElementById('foodPhotoSlot');
       slot.classList.add('hi');
@@ -22890,6 +22896,7 @@ function saveFoodEdit(){
 }
 function clearFoodResult(){
   curResult=null;photoData=null;
+  _photoProposal=null; _photoProposalFor=null; _foodLabelRaw=null; _foodLabelTriedFor=null;
   var _fri=document.getElementById('foodResultInline'); if(_fri) _fri.innerHTML='';
   var _a=document.getElementById('aire'); if(_a) _a.classList.remove('show');
   // Restore the input area + title that were hidden when the result showed
@@ -23434,6 +23441,8 @@ function _applyFoodSlot(key){
 }
 function _foodSlot(el,key){ try{ selR(el,'meal'); }catch(e){} _applyFoodSlot(key); }
 function _foodSlotDefault(){
+  // A fresh open of the sheet is a fresh entry — nothing pending from before survives it.
+  _photoProposal=null; _photoProposalFor=null; _foodLabelRaw=null; _foodLabelTriedFor=null;
   try{
     var key=window._forceFoodSlot||_mealSlotNow(); window._forceFoodSlot=null;
     window._mealSlot=key;   // the meal this log belongs to — always in sync with what's shown
@@ -27747,6 +27756,13 @@ var _foodLabelRaw=null;      // the panel behind the confirm sheet, null when th
 var _foodLabelServings=1;
 var _foodLabelTriedFor=null; // the photo we've already attempted, so re-tapping Log doesn't re-scan
 
+// A photo with no readable label and no typed words gets a guess, never a silent
+// log. _photoProposal is null until a guess (or the no-guess "describe it" ask) is
+// ready to show; _photoProposalFor pins it to the exact photo it was made for, so
+// swapping to a different photo mid-flow can never confirm the wrong plate.
+var _photoProposal=null;
+var _photoProposalFor=null;
+
 // A panel's numbers describe ONE serving. This is the text that says what one is.
 function _labelServingText(raw){
   var t=String((raw&&raw.serving_text)||'').trim();
@@ -27865,20 +27881,97 @@ function foodLabelLogIt(){
   smartLogFromText('');
 }
 
-// No panel found. Say that, and stop — not guessing is the whole point.
-function _foodNoLabel(){
+// PHOTO, NO LABEL, NO WORDS — propose, then confirm. Never a silent log.
+//
+// Two registers, never blended: a confident guess reads back as a question
+// ("Looks like X? That right?"), portion included; a plate we can't make out
+// asks the client to describe it instead. Either way nothing reaches the
+// server until they tap Log it on THIS panel — see foodPhotoProposalLogIt.
+async function _foodPhotoPropose(photo){
+  _photoProposal=null; _photoProposalFor=photo;
   var host=document.getElementById('foodResultInline');
   if(!host){
     var ia=document.getElementById('foodInputArea');
     if(ia && ia.parentNode){ host=document.createElement('div'); host.id='foodResultInline'; ia.parentNode.insertBefore(host, ia.nextSibling); }
   }
-  if(host) host.innerHTML='<div style="background:#191919;border:1px solid #2b2b2b;border-radius:12px;padding:13px 14px;">'
-    +'<div style="font-size:13.5px;font-weight:800;color:#f0ece4;">I couldn’t read a label on that photo</div>'
-    +'<div style="font-size:12.5px;color:rgba(240,236,228,0.78);margin-top:5px;line-height:1.5;">'
-    +'Nothing in it looked like printed nutrition information, and I won’t guess macros from how food looks. '
-    +'Type what you ate and I’ll take it from there — or take the photo again with the panel in frame.</div></div>';
-  showToast('No label found — type what you ate');
+  if(host) host.innerHTML='<div style="text-align:center;padding:16px 0;color:rgba(240,236,228,0.7);font-size:12.5px;">Reading the plate...</div>';
+  var est=null;
+  try{ est=await _estimateFoodPhoto(photo,''); }catch(e){ est=null; }
+  // Staleness guard: a retaken photo, a closed sheet, or a reopened one all clear
+  // _photoProposalFor first (see hdlFoodPhoto / closeM / _foodSlotDefault) — so if
+  // either no longer matches the photo we sent, this answer belongs to a plate
+  // that isn't on screen anymore and gets dropped, not shown.
+  if(_photoProposalFor!==photo || (typeof photoData!=='undefined' && photoData!==photo)) return;
+  _photoProposal = (est && est.name && est.calories>0)
+    ? {ask:false, name:est.name, calories:est.calories, protein:est.protein, carbs:est.carbs, fat:est.fat}
+    : {ask:true};
+  _foodPhotoProposalPanel();
+}
+function _foodPhotoProposalPanel(){
+  var host=document.getElementById('foodResultInline');
+  if(!host){
+    var ia=document.getElementById('foodInputArea');
+    if(ia && ia.parentNode){ host=document.createElement('div'); host.id='foodResultInline'; ia.parentNode.insertBefore(host, ia.nextSibling); }
+  }
+  if(!host) return;
+  var p=_photoProposal;
+  if(!p){ host.innerHTML=''; return; }
+  if(p.ask){
+    host.innerHTML='<div style="background:#191919;border:1px solid #2b2b2b;border-radius:12px;padding:13px 14px;">'
+      +'<div style="font-size:13.5px;font-weight:800;color:#f0ece4;">Can you describe your meal with estimated portions?</div>'
+      +'<div style="font-size:12.5px;color:rgba(240,236,228,0.78);margin-top:5px;line-height:1.5;">'
+      +'I could not make out the plate well enough to guess. A palm of chicken, a handful of rice - whatever gets it close.</div>'
+      +'<input id="photoProposalTxt" type="text" placeholder="e.g. grilled chicken, about 6 oz, with a handful of rice" style="width:100%;margin-top:10px;background:#111;border:1px solid #333;border-radius:9px;padding:11px 12px;color:#f0ece4;font-size:14px;font-family:inherit;box-sizing:border-box;">'
+      +'<button class="sbtn" style="margin-top:12px;" onclick="foodPhotoProposalLogIt()">Log it</button>'
+      +'<div style="text-align:center;margin-top:9px;"><span onclick="foodPhotoProposalDiscard()" style="font-size:12.5px;font-weight:700;color:rgba(240,236,228,0.7);cursor:pointer;text-decoration:underline;text-underline-offset:3px;">Never mind</span></div>'
+    +'</div>';
+  } else {
+    function cell(lb,val){
+      return '<div style="flex:1;min-width:0;text-align:center;">'
+        +'<div style="font-size:8.5px;font-weight:800;letter-spacing:0.7px;text-transform:uppercase;color:rgba(240,236,228,0.78);margin-bottom:3px;">'+lb+'</div>'
+        +'<div style="font-size:16px;font-weight:800;color:#f0ece4;">'+val+'</div></div>';
+    }
+    host.innerHTML='<div style="background:rgba(245,197,24,0.07);border:1px solid rgba(245,197,24,0.45);border-radius:14px;padding:13px 14px;">'
+      +'<div style="font-size:11px;font-weight:800;color:var(--gold);letter-spacing:0.8px;">FROM THE PHOTO</div>'
+      +'<div style="font-size:14.5px;font-weight:800;color:#f0ece4;margin-top:5px;">Looks like '+_escHtml(p.name)+'? That right?</div>'
+      +'<input id="photoProposalTxt" type="text" value="'+_escHtml(p.name)+'" style="width:100%;margin-top:9px;background:#111;border:1px solid #333;border-radius:9px;padding:10px 12px;color:#f0ece4;font-size:13.5px;font-family:inherit;box-sizing:border-box;">'
+      +'<div style="display:flex;gap:6px;background:#151515;border-radius:10px;padding:10px 6px;margin-top:10px;">'
+        +cell('Cal',p.calories)+cell('Protein',p.protein+'g')+cell('Carbs',p.carbs+'g')+cell('Fat',p.fat+'g')
+      +'</div>'
+      +'<div style="font-size:11px;color:rgba(240,236,228,0.55);margin-top:6px;">An estimate from the photo, not printed numbers.</div>'
+      +'<button class="sbtn" style="margin-top:12px;" onclick="foodPhotoProposalLogIt()">Log it</button>'
+      +'<div style="text-align:center;margin-top:9px;"><span onclick="foodPhotoProposalDiscard()" style="font-size:12.5px;font-weight:700;color:rgba(240,236,228,0.7);cursor:pointer;text-decoration:underline;text-underline-offset:3px;">That is not right - let me type it</span></div>'
+    +'</div>';
+  }
+  try{ var el=document.getElementById('photoProposalTxt'); if(el) el.focus({preventScroll:true}); }catch(e){}
+}
+// The ONLY path from a bare photo to a written row. Everything above this only
+// ever shows a panel; nothing calls smartLogFromText until this fires.
+function foodPhotoProposalLogIt(){
+  if(!_photoProposal) return;
+  var p=_photoProposal;
+  var txt=((document.getElementById('photoProposalTxt')||{}).value||'').trim();
+  var host=document.getElementById('foodResultInline');
+  if(p.ask){
+    if(!txt){ showToast('Describe it first, then Log it'); return; }
+    _photoProposal=null; _photoProposalFor=null;
+    if(host) host.innerHTML='';
+    smartLogFromText(txt);          // their words, the photo rides along as evidence
+    return;
+  }
+  window._foodLabelConfirmed={
+    name:txt||p.name, calories:p.calories, protein:p.protein, carbs:p.carbs, fat:p.fat,
+    insight:'Estimated from the photo, confirmed by you.'
+  };
+  _photoProposal=null; _photoProposalFor=null;
+  if(host) host.innerHTML='';
+  smartLogFromText('');
+}
+function foodPhotoProposalDiscard(){
+  _photoProposal=null; _photoProposalFor=null;
+  var host=document.getElementById('foodResultInline'); if(host) host.innerHTML='';
   try{ var fa=document.getElementById('foodAdd'); if(fa) fa.focus({preventScroll:true}); }catch(e){}
+  showToast('Type what you ate and tap Log it');
 }
 
 async function onLogMeal(){
@@ -27886,6 +27979,7 @@ async function onLogMeal(){
   // screen above it. Both have to mean the same thing — otherwise tapping the top one
   // falls through and logs an empty "Meal" row, silently throwing the label away.
   if(_foodLabelRaw){ foodLabelLogIt(); return; }
+  if(_photoProposal){ foodPhotoProposalLogIt(); return; }
   var typed=((document.getElementById('foodAdd')||{}).value||'').trim();
   // A photo with a readable label is enough on its own, so the label attempt comes
   // before the "write what you ate" gate — and before the estimator, because printed
@@ -27902,12 +27996,12 @@ async function onLogMeal(){
       _foodLabelPanel();
       return;                       // nothing is logged until the numbers are confirmed
     }
-    if(!typed && !_plate.length){ _foodNoLabel(); return; }
+    if(!typed && !_plate.length){ await _foodPhotoPropose(photoData); return; }
     showToast('No label found — using what you typed');
   }
   if(typed){ smartLogFromText(typed); return; }
   if(_plate.length){ logPlateMeal(); return; }
-  if(typeof photoData!=='undefined' && photoData){ smartLogFromText(''); return; } // photo is proof only — log it, don't read it
+  if(typeof photoData!=='undefined' && photoData){ await _foodPhotoPropose(photoData); return; } // photo alone proposes, never logs itself
   showToast('Write what you ate');
 }
 // Parse a leading quantity out of a phrase: "2 servings of protein pancakes" -> {qty:2, name:"protein pancakes"}
@@ -36388,7 +36482,13 @@ function openM(id){
   // Use a timestamp (more robust than a clearing flag against iOS's delayed synthesized clicks).
   window._modalOpenedAt = Date.now();
 }
-function closeM(id){document.getElementById(id).classList.remove('open');_mUnlock();}
+function closeM(id){
+  document.getElementById(id).classList.remove('open');_mUnlock();
+  // Dismissing the food sheet any way — backdrop tap, nav away, a completed log —
+  // is a dismissal of whatever was pending in it too. Nothing waits around to fire
+  // on a later, unrelated tap.
+  if(id==='mFood'){ _photoProposal=null; _photoProposalFor=null; _foodLabelRaw=null; _foodLabelTriedFor=null; }
+}
 // Freeze the page behind any open modal so you can't see/scroll it through the sheet.
 function _mLock(){
   if(document.body.classList.contains('m-lock')) return;
@@ -43222,8 +43322,9 @@ async function _estimateFoodPhoto(photo, hint){
     var m=String(photo||'').match(/^data:(image\/[a-z]+);base64,(.+)$/i);
     if(!m) return null;
     var sys='You are reading one meal for a fitness coach whose clients measure in ounces for meat and '
-      +'handfuls or palms for everything else. Reply with ONLY compact JSON, no markdown: '
-      +'{"name":"short name of the meal","calories":n,"protein":n,"carbs":n,"fat":n}. '
+      +'handfuls or palms for everything else, never grams. Reply with ONLY compact JSON, no markdown: '
+      +'{"name":"the food plus your best portion guess, formatted exactly like \'Grilled chicken - about 6 oz\' '
+      +'using a plain hyphen (never an em dash, never grams)","calories":n,"protein":n,"carbs":n,"fat":n}. '
       +'If you cannot make out what the food is, reply {"error":true} — never guess a plate you cannot see.';
     var content=[{type:'image', source:{type:'base64', media_type:m[1], data:m[2]}},
                  {type:'text', text:sys+(hint?('\n\nThe client says: "'+hint+'"'):'')}];
