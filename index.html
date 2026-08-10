@@ -5166,27 +5166,66 @@ function sbHeaders(){
 // no passthrough here on purpose: adding a generic "table + filter" call would put the
 // hole straight back, just one hop further away.
 //
-// NOT YET CALLED FROM ANYWHERE. The cockpit's reads of sales, client_contacts,
-// jv_handled, engine_moments, coach_moments, coach_reposts and coach_notes still go
-// straight to the tables with the public key, exactly as before — moving each of those
-// over is the next step, done and verified one at a time rather than in the same diff
-// as the door itself. This function is ready for that step to start.
+// LIVE as of the cockpit rewire: ten call sites across sales, client_contacts,
+// jv_handled, engine_moments, coach_moments, coach_reposts and coach_notes now read
+// through this instead of the public key.
 //
 // Mirrors sbSelect's own contract: never throws, returns [] on failure. A trainer
-// surface that already treats [] as "nothing yet" needs no rewriting to switch readers.
-async function trainerOp(op, args){
+// surface that already treats [] as "nothing yet" needs no rewriting to switch readers —
+// this is the same tradeoff sbSelect already makes throughout this codebase, not a new
+// one. Two call sites where a false-empty could cause real harm (a possible duplicate
+// sale, an undercounted delete) do NOT use this function — they talk to the door
+// directly so a refusal can never be mistaken for a confirmed zero. See
+// _ensureSaleFor and _jvCountRows.
+//
+// A timeout, and ONE retry with a freshly-minted session on 401/403 — without both,
+// this function was the one Supabase read in the whole app that could hang forever on a
+// dead function, and the one whose only failure mode was a permanently empty cockpit the
+// moment a session merely needed renewing, with nothing to trigger sessOnDenied() the
+// way the SB_URL fetch wrapper already does for every other request in the app.
+async function trainerOp(op, args, _retried){
   try{
     var t=_sessToken();
     if(!t) return [];   // no session minted yet — nothing to ask the door with
     var res=await fetch('/.netlify/functions/trainer',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+t},
-      body:JSON.stringify({op:op, args:(args||{})})
+      body:JSON.stringify({op:op, args:(args||{})}),
+      signal:_sbTimeout(SB_READ_MS)
     });
+    if((res.status===401||res.status===403) && !_retried){
+      var ok=await sessOnDenied();
+      return ok ? trainerOp(op, args, true) : [];
+    }
     if(!res.ok) return [];
     var d=await res.json();
     return Array.isArray(d) ? d : (d?[d]:[]);
   }catch(e){ return []; }
+}
+// trainerOp()'s twin for the two places a false-empty is not survivable: {ok, rows}
+// instead of a bare array, so "the door failed" can never read as "confirmed zero rows."
+// _ensureSaleFor uses this so a transient failure can't cause a duplicate sale to be
+// written; _jvCountRows uses it so a refused count is never mistaken for "nothing here,
+// safe to delete." Same session/timeout/retry-once behavior as trainerOp — this exists
+// to change what a failure LOOKS like to the caller, not how failure is detected.
+async function trainerOpChecked(op, args, _retried){
+  try{
+    var t=_sessToken();
+    if(!t) return {ok:false, rows:[]};
+    var res=await fetch('/.netlify/functions/trainer',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+t},
+      body:JSON.stringify({op:op, args:(args||{})}),
+      signal:_sbTimeout(SB_READ_MS)
+    });
+    if((res.status===401||res.status===403) && !_retried){
+      var ok=await sessOnDenied();
+      return ok ? trainerOpChecked(op, args, true) : {ok:false, rows:[]};
+    }
+    if(!res.ok) return {ok:false, rows:[]};
+    var d=await res.json();
+    return {ok:true, rows:(Array.isArray(d) ? d : (d?[d]:[]))};
+  }catch(e){ return {ok:false, rows:[]}; }
 }
 
 var SB_BUCKET = 'progress-photos';
@@ -6625,7 +6664,14 @@ function _acSuggest(){
 async function _ensureSaleFor(code, amount, whenDs){
   var amt=parseFloat(amount); if(!code || isNaN(amt) || amt<=0) return false;
   try{
-    var existing=await sbSelect('sales','select=id&client_code=eq.'+encodeURIComponent(code)+'&limit=1');
+    // Through the trainer door now, not the anon key — this table goes dark to the
+    // public key once the lock is on. trainerOpChecked, not trainerOp: if the door
+    // couldn't be reached this insert must not proceed on a false "no existing sale" —
+    // that would risk exactly the double-billing this function exists to prevent. An
+    // uncertain check is treated the same as "one already exists": no insert this call.
+    var chk=await trainerOpChecked('sales',{});
+    if(!chk.ok) return false;
+    var existing=chk.rows.filter(function(r){ return r.client_code===code; });
     if(existing && existing.length) return false;          // already has one; leave it alone
     var r=CLIENTS[code]||{};
     var ds=whenDs || (r.started_at?String(r.started_at).slice(0,10):new Date().toISOString().slice(0,10));
@@ -6826,9 +6872,11 @@ function _engineDateKey(){ return todayDateStr; }
 function engineFloor(){ return 15; }
 
 async function loadEngineMoments(){
-  // best-effort load today's moments from Supabase; silent if table absent
+  // best-effort load today's moments — through the trainer door, filtered to today
+  // client-side the same way the original filtered it server-side.
   try{
-    var rows = await sbSelect('engine_moments','coach_code=eq.'+encodeURIComponent(cl.code)+'&date_str=eq.'+encodeURIComponent(_engineDateKey())+'&limit=200');
+    var today=_engineDateKey();
+    var rows = (await trainerOp('engineMoments',{})).filter(function(r){ return r.date_str===today; });
     _engineState = {};
     (rows||[]).forEach(function(r){ if(r.client_code) _engineState[r.client_code]=r.state||'good'; });
   }catch(e){ /* table may not exist yet; keep in-memory */ }
@@ -8040,7 +8088,7 @@ function _localMoments(){ try{ return JSON.parse(localStorage.getItem('yjb_coach
 function _saveLocalMoments(a){ try{ localStorage.setItem('yjb_coach_moments', JSON.stringify(a.slice(0,200))); }catch(e){} }
 async function _loadMoments(){
   var out=[];
-  try{ var rows=await sbSelect('coach_moments','coach_code=eq.'+encodeURIComponent(cl.code)+'&order=id.desc&limit=200'); (rows||[]).forEach(function(r){ out.push({text:r.text, ts:(r.created_at?new Date(r.created_at).getTime():Date.now()), id:r.id, src:'db'}); }); }catch(e){}
+  try{ var rows=await trainerOp('coachMoments',{}); (rows||[]).forEach(function(r){ out.push({text:r.text, ts:(r.created_at?new Date(r.created_at).getTime():Date.now()), id:r.id, src:'db'}); }); }catch(e){}
   _localMoments().forEach(function(m){ out.push({text:m.text, ts:m.ts, src:'local'}); });
   return out;
 }
@@ -8450,7 +8498,7 @@ async function loadTrainerFeed(targetId){
     var _photosP  = (lens==='all') ? sbSelect('progress_photos','order=id.desc&limit=90').catch(function(){return [];}) : Promise.resolve([]);
     var _reviewsP = sbSelect('reviews','select=kind,ref_id,reaction,comment,created_at&order=id.asc&limit=3000').catch(function(){return [];});
     // Which food_ids has the trainer already reposted — so the feed can show "Reposted" instead of "Repost".
-    var _repostedP = sbSelect('coach_reposts','select=food_id&order=id.desc&limit=1000').catch(function(){return [];});
+    var _repostedP = trainerOp('coachReposts',{}).catch(function(){return [];});
     var _momentsP = (lens==='all') ? Promise.resolve(_loadMoments()).catch(function(){return [];}) : Promise.resolve([]);
     var _journalP = sbSelect('journal_entries','select=id,client_code,body,logged_at,date_str,shared&shared=is.true&order=logged_at.desc.nullslast&limit=200').catch(function(){return [];});
     // Connection is keyed client_code + date (not session id) — Day & Jim's
@@ -13843,10 +13891,15 @@ async function jvQuickLogContact(code){
 async function jvSyncContacts(){
   try{
     if(!cl) return;
-    var res=await fetch(SB_URL+'/rest/v1/client_contacts?coach_code=eq.'+encodeURIComponent(cl.code)+'&order=contacted_at.desc&limit=2000', {headers:sbHeaders()});
-    if(res.status===404||res.status===400){ window._ccSrv='missing'; return; }
-    window._ccSrv='ok';
-    var rows=await res.json(); if(!rows||!rows.length) return;
+    // Through the trainer door now. trainerOp() has no HTTP status to hand back — a
+    // failed call and a genuinely empty table both come back as []. That means this can
+    // no longer tell "the client_contacts table doesn't exist yet" apart from "the door
+    // failed for some other reason" the way the direct anon read used to, so _ccSrv is
+    // simply never set to 'missing' from here any more. That onboarding banner was
+    // already stale (the table has real rows), so nothing true stops being said.
+    var rows=await trainerOp('contacts',{});
+    if(rows && rows.length) window._ccSrv='ok';
+    if(!rows||!rows.length) return;
     // Server is the record; local is the cache. Merge on timestamp so a contact
     // logged on the phone shows up here without clobbering one logged offline.
     var m=jvContacts();
@@ -13902,7 +13955,7 @@ async function renderWeekCaughtUp(){
   var el=document.getElementById('jvWeekChart'); if(!el||!cl) return;
   var days=[]; for(var i=6;i>=0;i--){ var d=new Date(); d.setDate(d.getDate()-i); days.push({key:_jvDayKey(d), lbl:d.toLocaleDateString('en-US',{weekday:'narrow'}), n:0}); }
   try{
-    var rows=await sbSelect('jv_handled','coach_code=eq.'+encodeURIComponent(cl.code)+'&limit=3000')||[];
+    var rows=await trainerOp('handled',{})||[];
     var byDay={}; rows.forEach(function(r){ if(!r.date_str) return; (byDay[r.date_str]=byDay[r.date_str]||{})[r.client_code]=1; });
     days.forEach(function(d){ d.n=byDay[d.key]?Object.keys(byDay[d.key]).length:0; });
   }catch(e){}
@@ -13933,10 +13986,11 @@ function jvUnhandle(code){ var m=jvHandledMap(); delete m[code]; try{ localStora
 async function jvSyncHandledFromServer(){
   try{
     if(!cl) return;
-    var res=await fetch(SB_URL+'/rest/v1/jv_handled?coach_code=eq.'+encodeURIComponent(cl.code)+'&date_str=eq.'+encodeURIComponent(_jvTodayKey())+'&limit=600', {headers:sbHeaders()});
-    if(res.status===404 || res.status===400){ window._jvHandledSrv='missing'; return; }
-    window._jvHandledSrv='ok';
-    var rows=await res.json();
+    // Through the trainer door — see jvSyncContacts for why 'missing' is no longer set
+    // from here. Filtered to today client-side, same as the original filtered server-side.
+    var today=_jvTodayKey();
+    var rows=(await trainerOp('handled',{})).filter(function(r){ return r.date_str===today; });
+    if(rows && rows.length) window._jvHandledSrv='ok';
     if(rows&&rows.length){ var m=jvHandledMap(); rows.forEach(function(r){ if(r.client_code) m[r.client_code]=_jvTodayKey(); }); try{ localStorage.setItem('yjb_jv_handled', JSON.stringify(m)); }catch(e){} }
   }catch(e){}
 }
@@ -14722,7 +14776,14 @@ async function _jvExportGather(codes){
     sbSelect('food_logs','select=client_code,name,date_str,logged_at,calories,protein&client_code=in.'+inList+'&logged_at=gte.'+since+'&order=logged_at.desc&limit=4000'),
     sbSelect('workout_logs','select=client_code,title,date_str,logged_at&client_code=in.'+inList+'&logged_at=gte.'+since+'&order=logged_at.desc&limit=2000'),
     sbSelect('client_notes','select=client_code,note,logged_at&client_code=in.'+inList+'&order=logged_at.desc&limit=1500'),
-    sbSelect('coach_notes','select=client_code,note,sent_at&client_code=in.'+inList+'&order=sent_at.desc&limit=1500'),
+    // Through the trainer door: coach_notes goes dark to the public key once the lock
+    // is on. Comes back roster-wide (the door's no-code shape) and filtered here to
+    // just the codes this export asked for — same result the server-side `in.` filter
+    // used to produce, computed client-side instead.
+    trainerOp('coachNotes',{}).then(function(rows){
+      var want={}; codes.forEach(function(c){ want[c]=1; });
+      return (rows||[]).filter(function(r){ return r.client_code && want[r.client_code]; });
+    }),
     sbSelect('mi_checkins','client_code=in.'+inList+'&or=(kind.is.null,kind.neq.connection)&order=checked_at.desc&limit=1500'),
     sbSelect('journal_entries','select=client_code,body,logged_at,date_str,shared&client_code=in.'+inList+'&shared=is.true&order=logged_at.desc&limit=1500')
   ]);
@@ -15636,9 +15697,28 @@ var JV_CLIENT_TABLES=[
 // orphaned. That is the one exception to the keep-this-list-in-step-with-the-schema
 // rule, and it is a decision rather than an oversight — do not "fix" it by adding the
 // table back. Anything ELSE new that keys on client_code does belong on the list.
+// Five of these 29 tables are trainer-only and go through the door — a direct anon HEAD
+// against them would 401/403 once the lock lands, and the whole point of counting before
+// deleting is that a refusal must never read as "zero rows here," or a real row gets
+// deleted out from under an undercount. Reuses the same full-roster ops trainerOp()
+// already exposes for these tables (see loadSales/loadEngineMoments/etc.) rather than
+// adding a table+filter count op — this door only ever answers named questions.
+var JV_DOOR_TABLES = {
+  coach_notes:'coachNotes', client_contacts:'contacts', coach_reposts:'coachReposts',
+  jv_handled:'handled', engine_moments:'engineMoments'
+};
 // Exact count via PostgREST's Content-Range. null means the table isn't there or
 // doesn't key on client_code — either way there's nothing of theirs in it.
 async function _jvCountRows(table, code){
+  if(JV_DOOR_TABLES[table]){
+    // trainerOpChecked, not trainerOp: a refused door call must return null (unknown),
+    // matching what a failed HEAD request already returns two lines down — never 0.
+    try{
+      var chk=await trainerOpChecked(JV_DOOR_TABLES[table],{});
+      if(!chk.ok) return null;
+      return chk.rows.filter(function(r){ return r.client_code===code; }).length;
+    }catch(e){ return null; }
+  }
   try{
     var res=await fetch(SB_URL+'/rest/v1/'+table+'?client_code=eq.'+encodeURIComponent(code)+'&select=client_code',
       {method:'HEAD', headers:Object.assign({},sbHeaders(),{'Prefer':'count=exact','Range-Unit':'items','Range':'0-0'})});
@@ -20128,8 +20208,10 @@ function salesPeriod(i, el){
 }
 async function loadSales(){
   try{
-    // No limit. The old query capped at 200, so past that the headline quietly under-reported.
-    var rows=await sbSelect('sales','order=sale_date.desc') || [];
+    // Through the trainer door. Still no limit — see the trainer.js comment on the
+    // `sales` op for why: this table goes dark to the public key once the lock is on,
+    // and the door's own query carries the same no-cap promise this one used to.
+    var rows=await trainerOp('sales',{}) || [];
     _salesRows=rows;
     // Three periods, computed once. The toggle only repaints — it never refetches, so
     // moving between 7 days and all time costs nothing and can't disagree with itself.
@@ -20972,10 +21054,30 @@ async function _cnFetchBoth(code){
       });
     }catch(e){ out.failed.push(table); }
   }
+  // coach_notes goes through the trainer door — same reason as every other read of this
+  // table. Kept as a raw fetch here rather than trainerOp(), deliberately: trainerOp()
+  // returns [] on ANY failure, which for this one function is exactly the silent-failure
+  // shape the comment above grab() says it exists to end. A refused or errored door call
+  // reports into out.failed, same as a refused table read always has here.
+  async function grabCoachNotes(){
+    var t=_sessToken();
+    if(!t){ out.failed.push('coach_notes'); return; }
+    try{
+      var res=await fetch('/.netlify/functions/trainer',{method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+t},
+        signal:_sbTimeout(SB_READ_MS),
+        body:JSON.stringify({op:'coachNotes',args:{code:code}})});
+      if(!res.ok){ out.failed.push('coach_notes'); return; }
+      var rows=await res.json();
+      (rows||[]).forEach(function(r){
+        out.rows.push({id:r.id, store:'coach_notes', note:r.note, ts:r.sent_at||null});
+      });
+    }catch(e){ out.failed.push('coach_notes'); }
+  }
   var q='&client_code=eq.'+encodeURIComponent(code)+'&limit=200';
   await Promise.all([
     grab('client_notes','logged_at','select=id,note,logged_at'+q+'&order=logged_at.desc'),
-    grab('coach_notes','sent_at','select=id,note,sent_at'+q+'&order=sent_at.desc')
+    grabCoachNotes()
   ]);
   // The older table has no markers — everything in it was written by you, so it all
   // belongs here. The current one is filtered down to your own reads.
@@ -36557,8 +36659,11 @@ async function loadCoachNote(){
     }catch(e){}
   }
   // Then check Supabase for latest — TODAY ONLY, so a note doesn't carry into the next day.
+  // Through the trainer door: cl.code here IS the trainer's own code (the _isT branch
+  // above already returned for anyone else), matching the op's per-code shape exactly.
+  // TODAY ONLY is now a client-side filter since the op doesn't take a date argument.
   try{
-    var notes = await sbSelect('coach_notes','client_code=eq.'+cl.code+'&date_str=eq.'+encodeURIComponent(todayDateStr)+'&limit=1');
+    var notes = (await trainerOp('coachNotes',{code:cl.code})).filter(function(r){ return r.date_str===todayDateStr; }).slice(0,1);
     if(notes && notes.length > 0){
       localStorage.setItem('yjb_cnote_'+cl.code+'_'+todayKey, JSON.stringify(notes[0]));
       // Only show if client hasn't already dismissed this specific note
