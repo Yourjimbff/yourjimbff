@@ -9096,18 +9096,25 @@ function jvRenderRoster(target){
     life[c]=(life[c]||0)+1;
     if(t){ if(t>(last[c]||0)) last[c]=t; if(t>=cut30) d30[c]=(d30[c]||0)+1; }
   });
-  var rows=[], removed=[];
+  var rows=[], removed=[], hiddenList=[];
   (jvRosterData.clients||[]).forEach(function(c){
-    if(!c || !c.code || c.is_trainer || _rsOwn(c)) return;
+    if(!c || !c.code || c.is_trainer) return;
     var o={code:c.code, name:c.name||c.code, paid:(c.paid==null?'':c.paid),
            plan:!!hasPlan[c.code], last:last[c.code]||0, d30:d30[c.code]||0, life:life[c.code]||0,
            hidden:!!(c.hidden || (typeof JV_HIDE_CLIENTS!=='undefined' && JV_HIDE_CLIENTS[c.code]))};
+    // hidden=true used to mean genuinely unfindable — no Roster row, no Removed row,
+    // no restore button anywhere, the only fix being a hand edit in Supabase. That's
+    // how victoriaa1 went untraceable from every trainer surface at once. A hidden
+    // row still doesn't clutter the working list, but it now has exactly one place it
+    // always shows up, with exactly one way back — nobody stays permanently unfindable.
+    if(c.hidden){ hiddenList.push(o); return; }
     if(c.active===false) removed.push(o); else rows.push(o);
   });
   // Most alive first: the last 30 days, then everything they have ever logged, then
   // how recently. Dead silence sinks.
   rows.sort(function(a,b){ return (b.d30-a.d30) || (b.life-a.life) || (b.last-a.last) || String(a.name).localeCompare(String(b.name)); });
   removed.sort(function(a,b){ return String(a.name).localeCompare(String(b.name)); });
+  hiddenList.sort(function(a,b){ return String(a.name).localeCompare(String(b.name)); });
 
   var stagedOut=rows.filter(function(o){ return _rsMark[o.code]==='out'; });
   var staying=rows.filter(function(o){ return _rsMark[o.code]!=='out'; });
@@ -9166,6 +9173,20 @@ function jvRenderRoster(target){
             +'<div class="rsCtl"><button class="rsBtn" onclick="rsRestore(\''+o.code+'\',this)">Restore</button></div></div>';
         }).join('')
       +'</div></div>';
+  }
+  // Always rendered when non-empty, never collapsed by default — a client who was
+  // unfindable everywhere else does not go back to being unfindable behind a closed
+  // toggle. This is the ONLY surface anywhere that can still see a hidden row.
+  if(hiddenList.length){
+    html+='<div class="rsQK rsQKTop" style="color:#f5c518;">Hidden from every surface · '+hiddenList.length+'</div>'
+      +'<div class="rsList rsListQuiet">'
+      + hiddenList.map(function(o){
+          return '<div class="rsRow"><div class="rsName">'+String(o.name).replace(/</g,'&lt;')+'</div>'
+            +'<div class="rsCell">'+ago(o.last)+'</div><div class="rsCell rsNum">'+o.d30+'</div>'
+            +'<div class="rsCell rsNum">'+o.life+'</div><div class="rsCell">'+(_rsMoney(o.paid)||'—')+'</div>'
+            +'<div class="rsCtl"><button class="rsBtn" onclick="rsUnhide(\''+o.code+'\',this)">Unhide</button></div></div>';
+        }).join('')
+      +'</div>';
   }
   wall.innerHTML=html;
   try{ _jvReFilter(); }catch(e){}
@@ -9238,6 +9259,27 @@ async function rsRestore(code, btn){
   var ok=await _rsSetActive(code, true);
   if(!ok){ if(btn) btn.disabled=false; try{ showToast('Could not restore'); }catch(e){} return; }
   try{ showToast(_rsNameOf(code)+' restored'); }catch(e){}
+  jvLoadRoster(true);
+}
+// The only place clients.hidden is ever written from the app. Previously that column
+// could only be flipped by hand in Supabase — this is the un-hide half of the ONE
+// SWITCH, so a hidden client always has exactly one way back through the UI.
+async function rsUnhide(code, btn){
+  if(btn) btn.disabled=true;
+  var name=_rsNameOf(code);
+  var ok=false;
+  try{
+    var res=await fetch(SB_URL+'/rest/v1/clients?code=eq.'+encodeURIComponent(code),
+      {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=representation'}),
+       body:JSON.stringify({hidden:false})});
+    if(res.ok){
+      var back=await res.json();
+      ok=!!(back && back.length && back[0].hidden===false);   // read it back, not just a 2xx
+    }
+  }catch(e){}
+  if(!ok){ if(btn) btn.disabled=false; try{ showToast('Could not unhide — try again'); }catch(e){} return; }
+  try{ PERMA_HIDE[code]=false; delete PERMA_HIDE[code]; delete JV_HIDE_CLIENTS[code]; }catch(e){}
+  try{ showToast(name+' is visible again'); }catch(e){}
   jvLoadRoster(true);
 }
 // active=false is the global lever — it lives on the row, so it holds on every device.
