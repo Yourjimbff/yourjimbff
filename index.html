@@ -5122,22 +5122,24 @@ function _sbRenderDown(){
     }
     return _rawFetch(input, opts).then(function(res){
       if(_sbIsDown(res && res.status)) _sbNoted(res && res.status); else _sbRecovered();
-      // REFUSED FOR WANT OF A SESSION. After the lock, this is what a request carrying
-      // no session — or a stale one — comes back as. Every Supabase call in the app
-      // passes through here, so this is the one place that can answer it.
+      // REMOVED: a retry-with-session-token-then-force-signout branch used to live here.
+      // It caused the incident this comment replaces — signing in for the ENTIRE roster,
+      // trainer and clients alike, within an hour of SUPABASE_JWT_SECRET being set.
       //
-      // ONE silent retry with a fresh session, then sign them out. The thing this must
-      // never do is shrug and carry on: an app that quietly keeps using the public key
-      // after being refused is an app showing whatever that key can still see. Sign in
-      // again is the correct failure; a screen full of someone else's data is not.
-      if(res && (res.status===401 || res.status===403) && !(opts||{}).__sessRetried){
-        return sessOnDenied().then(function(ok){
-          if(!ok){ try{ sessForceSignIn(); }catch(e){} return res; }
-          var o2=Object.assign({}, opts||{}, {__sessRetried:true});
-          try{ o2.headers=Object.assign({}, o2.headers||{}, {'Authorization':'Bearer '+_sessToken()}); }catch(e){}
-          return window.fetch(input, o2);
-        });
-      }
+      // Why it could never have worked, not just why it broke today: this wrapper
+      // watches every call to Supabase directly (SB_URL). The session/door system was
+      // built so those calls stay on the plain public key — the only two things that
+      // ever legitimately send a session token are trainerOp() and trainerOpChecked(),
+      // and they send it to /.netlify/functions/trainer, never to Supabase. So a 401/403
+      // reaching THIS wrapper was never "you need to prove who you are" — it was always
+      // something else. Retrying it with a session token attached could only ever fail
+      // again identically (no RLS policy anywhere grants the `authenticated` role access
+      // to anything — the draft lock only ever revokes from `anon`, it never grants to
+      // `authenticated`, and building that grant is explicitly a later, separate phase).
+      // The retry's ONLY observed effect was: turn a transient 401 into a second
+      // identical 401, then sign out an entire roster of people who were doing nothing
+      // wrong. If a future phase gives `authenticated` real per-client grants, this needs
+      // rebuilding deliberately then — not resurrecting from here.
       return res;
     }, function(err){
       _sbNoted((err && err.name) || 'network');
@@ -5146,17 +5148,27 @@ function _sbRenderDown(){
   };
 })();
 
-// Every Supabase request in the app goes out through here, which makes it the one place
-// the session has to be attached. `apikey` stays the public key — PostgREST requires a
-// project key to route the request at all — while Authorization carries the session that
-// says WHO is asking. With no session it falls back to the public key, which is exactly
-// today's behaviour, so this changes nothing until the lock is pasted.
+// ALWAYS THE PUBLIC KEY. This attached the session token whenever one existed, on the
+// theory that it would be inert until the lock was pasted — WRONG, and it took the
+// entire roster's sign-in down within an hour of SUPABASE_JWT_SECRET being set. A
+// session token is a real, validly-signed Supabase JWT the moment that secret matches
+// the project's — PostgREST doesn't wait for a policy to exist before honouring the
+// role a valid JWT claims. It switched every request carrying one from the `anon` role
+// (which has always had access) to `authenticated` (which has never been granted
+// anything on any table), and every read in the app started coming back 401 —
+// profiles, food_logs, weight_logs, all of it — the moment a client or trainer signed
+// in and picked up a session. sbSelect's "returns [] on failure, never throws" turned
+// that into the login flow reading back nothing and bouncing straight to the sign-in
+// screen, roster-wide.
+// The session token was never needed here anyway: the only two callers that legitimately
+// need it — trainerOp() and trainerOpChecked() — build their own headers directly and
+// send the token only to /.netlify/functions/trainer, never to Supabase itself. This
+// function's whole job is talking to Supabase, so it has no reason to ever carry one.
 function sbHeaders(){
-  var t=null; try{ t=_sessToken(); }catch(e){ t=null; }
   return {
     'Content-Type':'application/json',
     'apikey':SB_KEY,
-    'Authorization':'Bearer '+(t||SB_KEY),
+    'Authorization':'Bearer '+SB_KEY,
     'Prefer':'return=minimal'
   };
 }
