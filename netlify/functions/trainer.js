@@ -75,10 +75,12 @@ const OPS = {
       : 'coach_notes?select=client_code,note,sent_at&order=sent_at.desc&limit=1500',
 
   // Consult booking mailbox off the offer page. Strangers INSERT with the public
-  // key (write-only — no anon SELECT exists on this table), Yusuf reads and
-  // actions here. status.desc sorts 'pending' first for free — it's simply the
-  // alphabetically last of the four values — then newest first within a status.
-  consultList: () => 'consult_requests?select=id,name,phone,age,height,weight,goal,main_problem,why_reaching_out,willing_to_invest,serious,excited_or_nervous,requested_at,status,created_at&order=status.desc,created_at.desc&limit=500',
+  // key (write-only — no anon SELECT exists on this table); every row lands
+  // already 'accepted' — there's no review step, only Yusuf's cancel lever.
+  // status.asc puts 'accepted' before 'cancelled' for free (alphabetical), then
+  // requested_at.asc sorts by the proposed slot itself so the soonest upcoming
+  // call leads, not whichever was submitted most recently.
+  consultList: () => 'consult_requests?select=id,name,phone,age,height,weight,goal,main_problem,why_reaching_out,willing_to_invest,serious,excited_or_nervous,requested_at,status,created_at&order=status.asc,requested_at.asc&limit=500',
 };
 
 function enc(v) {
@@ -116,11 +118,12 @@ function isoTs(v) {
   if (isNaN(d.getTime())) throw new Error('bad_arg');
   return d.toISOString();
 }
-// consultSetStatus never accepts 'pending' — that's the state a row starts in,
-// not somewhere this op puts it back to.
+// Every request lands already 'accepted' at insert — there's no review step.
+// This op is Yusuf's cancel lever and nothing else, so 'cancelled' is the only
+// value it will ever write.
 function consultStatus(v) {
   const s = String(v || '');
-  if (['accepted', 'declined', 'cancelled'].indexOf(s) === -1) throw new Error('bad_arg');
+  if (s !== 'cancelled') throw new Error('bad_arg');
   return s;
 }
 
@@ -243,8 +246,8 @@ const WRITE_OPS = {
   // ---- consult_requests (offer-page booking mailbox) ----------------------------
   // No consultInsert here on purpose: strangers write this table with the public
   // key directly (it's INSERT-only for anon, nothing else), before any session
-  // exists to sign them into. Yusuf's own accept/decline/cancel is the only thing
-  // this door needs to do to it.
+  // exists to sign them into. Booking is auto-accept, no review step — this op
+  // is Yusuf's cancel lever and the only write this door makes to the table.
   consultSetStatus: (a) => ({
     method: 'PATCH', path: `consult_requests?id=eq.${encId(a.id)}`,
     body: { status: consultStatus(a.status) },
