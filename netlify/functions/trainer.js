@@ -73,6 +73,12 @@ const OPS = {
   coachNotes: (a) => a && a.code
       ? `coach_notes?client_code=eq.${enc(a.code)}&select=id,client_code,note,sent_at,date_str&order=sent_at.desc&limit=300`
       : 'coach_notes?select=client_code,note,sent_at&order=sent_at.desc&limit=1500',
+
+  // Consult booking mailbox off the offer page. Strangers INSERT with the public
+  // key (write-only — no anon SELECT exists on this table), Yusuf reads and
+  // actions here. status.desc sorts 'pending' first for free — it's simply the
+  // alphabetically last of the four values — then newest first within a status.
+  consultList: () => 'consult_requests?select=id,name,phone,age,height,weight,goal,main_problem,why_reaching_out,willing_to_invest,serious,excited_or_nervous,requested_at,status,created_at&order=status.desc,created_at.desc&limit=500',
 };
 
 function enc(v) {
@@ -109,6 +115,13 @@ function isoTs(v) {
   const d = new Date(s);
   if (isNaN(d.getTime())) throw new Error('bad_arg');
   return d.toISOString();
+}
+// consultSetStatus never accepts 'pending' — that's the state a row starts in,
+// not somewhere this op puts it back to.
+function consultStatus(v) {
+  const s = String(v || '');
+  if (['accepted', 'declined', 'cancelled'].indexOf(s) === -1) throw new Error('bad_arg');
+  return s;
 }
 
 const WRITE_OPS = {
@@ -226,6 +239,16 @@ const WRITE_OPS = {
   noteDelete: (a) => ({ method: 'DELETE', path: `coach_notes?id=eq.${encNoteId(a.id)}` }),
   // Same delete-guard gap as client_contacts above.
   noteDeleteAll: (a) => ({ method: 'DELETE', path: `coach_notes?client_code=eq.${enc(a.client_code)}` }),
+
+  // ---- consult_requests (offer-page booking mailbox) ----------------------------
+  // No consultInsert here on purpose: strangers write this table with the public
+  // key directly (it's INSERT-only for anon, nothing else), before any session
+  // exists to sign them into. Yusuf's own accept/decline/cancel is the only thing
+  // this door needs to do to it.
+  consultSetStatus: (a) => ({
+    method: 'PATCH', path: `consult_requests?id=eq.${encId(a.id)}`,
+    body: { status: consultStatus(a.status) },
+  }),
 };
 
 // A client_code carried in a WRITE BODY (not a URL filter) still gets the same shape
