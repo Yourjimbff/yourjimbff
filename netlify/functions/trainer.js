@@ -34,9 +34,12 @@ const json = (code, obj) => ({
 // widens what a caller could already see; it only moves the same read behind a checked
 // session instead of the bare public key.
 const OPS = {
-  // The roster, with the fields the cockpit lists people by. Not yet called from
-  // anywhere — banked for the roster-read pass this door was also built for.
-  roster: () => 'clients?select=code,name,initials,active,coach_code,is_trainer,tier,term_months,paid,started_at,term_ends&order=code.asc&limit=500',
+  // The roster, with every field a trainer surface reads about a client — the full
+  // set loadRosterFromDB used to pull with the public key, now behind the door
+  // instead so those columns can go dark to anon. limit matches what the anon
+  // call used (2000), not the old banked 500 — nothing that used to fit should
+  // now silently truncate.
+  roster: () => 'clients?select=code,name,initials,phone,email,active,coach_code,is_trainer,is_primary,hidden,tier,term_months,paid,started_at,term_ends,created_at,calls_enabled,call_credits&order=code.asc&limit=2000',
 
   // One client, deeply. The only place `code` is interpolated, and it is encoded.
   // Not yet called from anywhere — banked, same as roster.
@@ -125,6 +128,22 @@ function consultStatus(v) {
   const s = String(v || '');
   if (s !== 'cancelled') throw new Error('bad_arg');
   return s;
+}
+function clientTier(v) {
+  const s = String(v || '');
+  if (s !== 'vip' && s !== '1on1') throw new Error('bad_arg');
+  return s;
+}
+// A cleared money/contact field is a real state (no fee set, no phone on file),
+// not the same as never sending the key at all -- that's why this returns null
+// instead of throwing on empty, where num()/str() would refuse it outright.
+function nullableNum(v) {
+  if (v == null || v === '') return null;
+  return num(v);
+}
+function nullableStr(v, max) {
+  if (v == null || v === '') return null;
+  return str(v, max);
 }
 
 const WRITE_OPS = {
@@ -252,6 +271,51 @@ const WRITE_OPS = {
     method: 'PATCH', path: `consult_requests?id=eq.${encId(a.id)}`,
     body: { status: consultStatus(a.status) },
   }),
+
+  // ---- clients (trainer-only fields) ---------------------------------------------
+  // One flexible op, not nine narrow ones — every trainer-authored field on a
+  // client's own row (money, contact info, term dates, tier, call access) lands
+  // through here, each key still individually whitelisted and typed, never a
+  // raw passthrough of whatever the caller names. Replaces the roster's "paid"
+  // box, the phone edit on a client's card, the contract strip, and all three
+  // Call access controls (toggle, grant a credit, change tier) — those last
+  // three used to write with the public key via a shared client-side helper;
+  // this is that helper's new floor.
+  clientPatch: (a) => {
+    const body = {};
+    if (a.paid !== undefined) body.paid = nullableNum(a.paid);
+    if (a.active !== undefined) body.active = !!a.active;
+    if (a.phone !== undefined) body.phone = nullableStr(a.phone, 40);
+    if (a.email !== undefined) body.email = nullableStr(a.email, 200);
+    if (a.tier !== undefined) body.tier = clientTier(a.tier);
+    if (a.term_months !== undefined) body.term_months = num(a.term_months);
+    if (a.started_at !== undefined) body.started_at = isoDate(a.started_at);
+    if (a.term_ends !== undefined) body.term_ends = isoDate(a.term_ends);
+    if (a.calls_enabled !== undefined) body.calls_enabled = !!a.calls_enabled;
+    if (a.call_credits !== undefined) body.call_credits = num(a.call_credits);
+    if (!Object.keys(body).length) throw new Error('bad_arg');
+    return { method: 'PATCH', path: `clients?code=eq.${enc(a.code)}`, body: body };
+  },
+  // Kept separate from clientPatch on purpose — this is the ONE SWITCH, the only
+  // place clients.hidden is ever written from the app, same as it's always been.
+  clientUnhide: (a) => ({ method: 'PATCH', path: `clients?code=eq.${enc(a.code)}`, body: { hidden: false } }),
+  // New client creation. coach_code is the session's own claim, same as every
+  // other insert behind this door — never trusted from args.
+  clientInsert: (a, coach) => ({
+    method: 'POST', path: 'clients',
+    body: {
+      code: enc_raw(a.code), name: str(a.name, 200), initials: str(a.initials, 4),
+      coach_code: coach, is_trainer: false, active: true,
+      tier: clientTier(a.tier), term_months: num(a.term_months),
+      paid: a.paid != null ? nullableNum(a.paid) : undefined,
+      started_at: isoDate(a.started_at),
+      calls_enabled: a.calls_enabled != null ? !!a.calls_enabled : undefined,
+      call_credits: a.call_credits != null ? num(a.call_credits) : undefined,
+    },
+  }),
+  // The account row itself — the standing delete guard's last step, same as it's
+  // always been, just no longer with the public key.
+  clientDelete: (a) => ({ method: 'DELETE', path: `clients?code=eq.${enc(a.code)}` }),
 };
 
 // A client_code carried in a WRITE BODY (not a URL filter) still gets the same shape
@@ -276,6 +340,61 @@ function encNoteId(v) {
   throw new Error('bad_arg');
 }
 
+// CLIENT-SESSION-GATED — the one exception to "trainer only" anywhere in this
+// door. A real client spending their OWN call credit when they book a call
+// with one. Any valid session qualifies, is_trainer is never checked here —
+// but the account acted on is ALWAYS the session's own client_code, passed in
+// as `code` below, never anything a caller could supply. That's what keeps a
+// session able to spend only its own credit, never anyone else's.
+//
+// This can't be a plain WRITE_OPS entry: those are one fixed literal PATCH,
+// built purely from args, no read involved. Spending a credit correctly needs
+// the CURRENT value first — read it, then write the decrement back guarded on
+// that same value (call_credits=eq.<what was just read>), so two taps landing
+// at once can't both succeed off a stale read and hand out a credit for free.
+// A guard mismatch means someone else's request already landed; the caller
+// gets told to retry, not a false success.
+async function handleSpendCallCredit(URL, SERVICE, code) {
+  try {
+    const readRes = await fetch(
+      `${URL}/rest/v1/clients?code=eq.${encodeURIComponent(code)}&select=calls_enabled,call_credits`,
+      { headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE } }
+    );
+    if (!readRes.ok) return json(502, { error: 'query_failed', op: 'spendCallCredit' });
+    const rows = await readRes.json();
+    const row = rows && rows[0];
+    if (!row) return json(404, { error: 'no_such_account' });
+    if (row.calls_enabled === true) {
+      // Standing access — nothing to spend, and that's success, not an error.
+      return json(200, [{ code: code, calls_enabled: true, call_credits: row.call_credits, spent: false }]);
+    }
+    const current = Number(row.call_credits) || 0;
+    if (current <= 0) return json(409, { error: 'no_credit' });
+    const writeRes = await fetch(
+      `${URL}/rest/v1/clients?code=eq.${encodeURIComponent(code)}&call_credits=eq.${current}`,
+      {
+        method: 'PATCH',
+        headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE, 'Content-Type': 'application/json', Prefer: 'return=representation' },
+        body: JSON.stringify({ call_credits: current - 1 }),
+      }
+    );
+    const text = await writeRes.text();
+    if (!writeRes.ok) {
+      console.error('trainer: spendCallCredit write failed', writeRes.status, text.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'spendCallCredit' });
+    }
+    let rowsBack = [];
+    try { rowsBack = JSON.parse(text); } catch (e) {}
+    if (!rowsBack.length) {
+      return json(409, { error: 'conflict_retry' });
+    }
+    return json(200, rowsBack.map((r) => Object.assign({}, r, { spent: true })));
+  } catch (e) {
+    console.error('trainer: spendCallCredit threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'spendCallCredit' });
+  }
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return json(405, { error: 'POST only' });
 
@@ -291,15 +410,22 @@ exports.handler = async (event) => {
   const auth = (event.headers && (event.headers.authorization || event.headers.Authorization)) || '';
   const claims = verify(auth.replace(/^Bearer\s+/i, ''), SECRET);
   if (!claims) return json(401, { error: 'no_session' });
-  if (claims.is_trainer !== true) {
-    // A real client's session reaching this door is worth knowing about.
-    console.warn('trainer: non-trainer session attempted', claims.client_code);
-    return json(403, { error: 'not_a_trainer' });
-  }
 
   let op = '', args = {};
   try { const b = JSON.parse(event.body || '{}'); op = String(b.op || ''); args = b.args || {}; }
   catch (e) { return json(400, { error: 'bad_request' }); }
+
+  // The one op any signed-in session may call, trainer or not — see the function
+  // above for why. Everything else past this point requires is_trainer===true.
+  if (op === 'spendCallCredit') {
+    return handleSpendCallCredit(URL, SERVICE, claims.client_code);
+  }
+
+  if (claims.is_trainer !== true) {
+    // A real client's session reaching the trainer-only door is worth knowing about.
+    console.warn('trainer: non-trainer session attempted', claims.client_code, op);
+    return json(403, { error: 'not_a_trainer' });
+  }
 
   // READ. Unchanged from before writes existed.
   if (Object.prototype.hasOwnProperty.call(OPS, op)) {
