@@ -5905,6 +5905,14 @@ async function loadRosterFromDB(){
       }catch(e){}
       // Overlay any phone numbers saved locally so the Text button shows everywhere immediately.
       try{ if(typeof _jvHydratePhones==='function') _jvHydratePhones(); }catch(e){}
+      // BOOT RACE (Yusuf, confirmed live): this trainer-door read is a second round
+      // trip, slower than the feed's own item fetch, so the feed regularly finishes
+      // building its cards BEFORE phone lands here — every "Text" button was built
+      // from a phone-less CLIENTS entry and nothing ever asked the feed to rebuild
+      // once phone showed up. It's already sitting in CLIENTS correctly by the time
+      // anyone looks, which is exactly what made this read as "the door doesn't
+      // have it" — the door has it, the card just never got a second look.
+      try{ if(typeof _feedRerenderPeopleOnly==='function') _feedRerenderPeopleOnly(); }catch(e){}
     }catch(err){ console.error('loadRosterFromDB failed — running on hardcoded roster', err); }
     return true;
   })();
@@ -21424,27 +21432,26 @@ function _cqRowHtml(r){
     +cancelBtn
   +'</div>';
 }
+// RULING (Yusuf, live): upcoming accepted rows ONLY. Past and cancelled rows stay
+// in the table — nothing here deletes them — they just don't render. A "Past"
+// section used to list every one of them right below the upcoming list, which is
+// exactly what made a bulk decline look unfinished: the row left the upcoming
+// list and immediately reappeared in Past, cancelled tag and all.
 function _cqBodyHtml(){
   if(_consultLoadFailed) return '<div style="text-align:center;color:#f5c518;font-size:12px;padding:8px;">Couldn’t load consults — <span onclick="loadConsults()" style="text-decoration:underline;cursor:pointer;">try again</span></div>';
   if(_consultRows===null) return '<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px;">Loading…</div>';
   var g=_cqGroups();
-  if(!g.upcoming.length && !g.past.length) return '<div style="text-align:center;color:rgba(240,236,228,0.78);font-size:12px;padding:8px;">No consults booked yet.</div>';
-  var html = g.upcoming.length ? g.upcoming.map(_cqRowHtml).join('')
-    : '<div style="text-align:center;color:rgba(240,236,228,0.6);font-size:12px;padding:6px;">Nothing upcoming.</div>';
-  if(g.past.length){
-    html+='<div style="font-size:10.5px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:rgba(240,236,228,0.4);margin:14px 2px 8px;">Past</div>'
-      + g.past.map(_cqRowHtml).join('');
-  }
-  return html;
+  if(!g.upcoming.length) return '<div style="text-align:center;color:rgba(240,236,228,0.78);font-size:12px;padding:8px;">Nothing upcoming.</div>';
+  return g.upcoming.map(_cqRowHtml).join('');
 }
 // Desktop — its own jvSPanel, dropped at the very top of the Sales tab, ahead of the
 // revenue tiles. Empty string in sharing mode: this section hides entirely, it doesn't
 // blank fields the way money does, because free-text answers can't be aliased safely.
 function _cqPanelHtml(){
   if(window._jvShareMode) return '';
-  var count = _consultRows ? _consultRows.filter(function(r){ return r.status!=='cancelled'; }).length : null;
+  var count = _consultRows ? _cqGroups().upcoming.length : null;
   return '<div class="jvSPanel" style="margin-bottom:18px;">'
-    +'<div class="jvSPanelHead">Booked consults'+(count!=null?('<span>'+count+' upcoming or recent</span>'):'')+'</div>'
+    +'<div class="jvSPanelHead">Booked consults'+(count!=null?('<span>'+count+' upcoming</span>'):'')+'</div>'
     +_cqBodyHtml()
   +'</div>';
 }
@@ -21799,18 +21806,14 @@ function textClient(code, body){
     return;
   }
   var clean = String(phone).replace(/[^0-9+]/g,'');
-  // On Mac/desktop, imessage: opens the Messages app straight to the thread.
-  // On iPhone/Android, sms: opens the native texting app.
-  var ua = navigator.userAgent || '';
-  var isMobile = /iPhone|iPad|iPod|Android/i.test(ua);
-  var isMac = /Macintosh|Mac OS X/i.test(ua) && !isMobile;
+  // RULING (Yusuf, live): one scheme, sms: — not a Mac-only imessage:// branch.
+  // imessage:// is not a link scheme macOS actually registers for a browser to
+  // hand off to; the button looked dead because that write silently went
+  // nowhere. sms: is the one both platforms honor, and on Yusuf's own Mac it's
+  // exactly what opens Messages, straight to iMessage when the number supports it.
   // ?&body= is the form both iOS and Android accept; iOS ignores a bare ?body=.
   var tail = body ? ('?&body=' + encodeURIComponent(String(body))) : '';
-  if(isMac){
-    window.location.href = 'imessage://' + clean + tail;
-  } else {
-    window.location.href = 'sms:' + clean + tail;
-  }
+  window.location.href = 'sms:' + clean + tail;
 }
 // The opener. Deliberately short, deliberately not a pitch — it exists to restart a
 // conversation, and anything longer reads as a broadcast.
