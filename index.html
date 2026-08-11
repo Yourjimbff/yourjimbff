@@ -912,7 +912,16 @@ body.jv-on .pfWhen{margin-left:auto;font-size:12px;color:rgba(240,236,228,0.5);w
    drawn bigger than any other. Verified live at all three column widths — holds
    fine even in 3-column mode; nothing here crowds. */
 body.jv-on .pfDay{margin-top:8px;}
-body.jv-on .pfDayRow{display:flex;gap:8px;align-items:flex-start;position:relative;cursor:pointer;}
+/* RULING (Yusuf, live): meal slot headers, same family as the day page's own
+   meal-card face — bold, larger than the food line beneath it, left-aligned
+   with the content column (not the time gutter, since it isn't a timed row). */
+body.jv-on .pfSlotHead{margin:14px 0 4px 48px;font-size:15px;font-weight:800;
+  letter-spacing:0.2px;color:var(--text);line-height:1.2;}
+/* RULING (Yusuf, live): baseline, not flex-start — the timestamp and the row's
+   own text now align to the same line regardless of font size, which flex-start
+   plus a hand-tuned padding-top could never hold once text sizes changed (they
+   just had, last round, which is exactly how this drifted). */
+body.jv-on .pfDayRow{display:flex;gap:8px;align-items:baseline;position:relative;cursor:pointer;}
 body.jv-on .pfDayRail{position:relative;flex:0 0 40px;box-sizing:border-box;padding-right:8px;padding-top:2px;text-align:right;}
 body.jv-on .pfDayRail::before{content:"";position:absolute;right:0;top:0;bottom:-7px;width:1px;background:rgba(240,236,228,0.10);}
 body.jv-on .pfDayRow:first-child .pfDayRail::before{top:5px;}
@@ -8702,7 +8711,14 @@ async function loadTrainerFeed(targetId){
     var _sinceQ='&logged_at=gte.'+encodeURIComponent(_feedSince);
     // Fire every independent fetch at once instead of one-after-another — this back-to-back chain was the 20s stall.
     var _foodsP = (lens==='gym') ? Promise.resolve([]) : sbSelect('food_logs','select=id,client_code,name,emoji,calories,protein,carbs,fat,rating,logged_at,date_str,meal,eat_time,meal_text'+_sinceQ+'&order=logged_at.desc.nullslast&limit=400').catch(function(){return [];});
-    var _wosP   = (lens==='kitchen') ? Promise.resolve([]) : sbSelect('workout_logs','select=id,client_code,title,intensity,description,notes,logged_at,date_str,photo,performed_at'+_sinceQ+'&order=logged_at.desc.nullslast&limit=300').catch(function(){return [];});
+    // exercises added (Yusuf, live) — the fix that reads structured exercises
+    // before re-parsing description was silently inert here: this query never
+    // brought the column home, so every feed card fell to the raw-description
+    // fallback regardless of what the row actually had. That's why a session
+    // logged as one comma-joined description line rendered as one run-on
+    // paragraph, while one already written multi-line happened to still parse
+    // fine on its own — same code, two different-looking outcomes.
+    var _wosP   = (lens==='kitchen') ? Promise.resolve([]) : sbSelect('workout_logs','select=id,client_code,title,intensity,description,exercises,notes,logged_at,date_str,photo,performed_at'+_sinceQ+'&order=logged_at.desc.nullslast&limit=300').catch(function(){return [];});
     var _weightsP = (lens==='all') ? sbSelect('weight_logs','order=id.desc&limit=150').catch(function(){return [];}) : Promise.resolve([]);
     var _photosP  = (lens==='all') ? sbSelect('progress_photos','order=id.desc&limit=90').catch(function(){return [];}) : Promise.resolve([]);
     var _reviewsP = sbSelect('reviews','select=kind,ref_id,reaction,comment,created_at&order=id.asc&limit=3000').catch(function(){return [];});
@@ -8896,9 +8912,55 @@ function _pfWoNote(desc){
 // note rides under its own row in quotes wherever that row falls in the day — not
 // only when the workout happens to be newest. A photo is a small tile on its own
 // row, right-aligned, never a big image orphaned at the card's foot.
+// RULING (Yusuf, live): meal slot headers return — same family as the day page's
+// own meal-card face (a bold header naming the slot, foods underneath), not the
+// day page's stateful meal-card component itself, which groups all of a slot's
+// foods into one unit regardless of when else in the day something else happened.
+// The chronological law stands: this only inserts a header when a food's slot
+// differs from the last food's slot in the time-ordered list already being built.
+function _pfSlotCap(key){ return {breakfast:'Breakfast', lunch:'Lunch', dinner:'Dinner', snack:'Snack'}[key] || 'Snack'; }
+function _pfDayList(evs){
+  var out='', lastSlot=null;
+  evs.forEach(function(it){
+    if(it.kind==='food'){
+      var slot=''; try{ slot=_feedMealGroupKey(it.data||{}); }catch(e){}
+      if(slot && slot!==lastSlot){
+        out+='<div class="pfSlotHead"'+(out?'':' style="margin-top:0;"')+'>'+_pfSlotCap(slot)+'</div>';
+        lastSlot=slot;
+      }
+    } else {
+      lastSlot=null;   // a non-food event breaks the run — a later food re-heads its slot
+    }
+    out+=_pfDayRow(it);
+  });
+  return out;
+}
 function _pfDayRow(it){
   var d=it.data||{};
   var time=''; try{ time = (it.kind==='food') ? (_mealTimeStr(d)||_feedTimeStr(it.ts)) : _feedTimeStr(it.ts); }catch(e){}
+  // RULING (Yusuf, live): bullets are the collapsed one-glance preview only.
+  // Expanded, a workout shows the day sheet's own hero card — exercise name,
+  // muscle, sets/weights, ratings, the note — reused directly, not rebuilt as a
+  // lookalike. Default is collapsed: eagerly opening every workout on the feed
+  // would mean loading a full per-set record (a real network call) for every
+  // client with a session today just to render the page, which is a cost the
+  // day sheet only ever pays for the one day someone actually opens. Tapping a
+  // workout row toggles it, exactly the gesture that already opens/closes this
+  // exact card on the client's own page and in the day sheet.
+  if(it.kind==='wo'){
+    var recKey=_bfRecKey(String(d.date_str||''), it.code);
+    var isOpen=!!(window._woDone && window._woDone[recKey]);
+    if(isOpen){
+      var heroHtml=''; var _prevRO=window._tlRO;
+      try{ window._tlRO=true; heroHtml=_tlDoneHero(String(d.date_str||''), d, null, it.code); }
+      catch(e){}
+      finally{ window._tlRO=_prevRO; }
+      return '<div class="pfDayRow" onclick="event.stopPropagation();_pfToggleWo(\''+String(d.date_str||'').replace(/'/g,"\\'")+'\',\''+it.code+'\')">'
+        +'<div class="pfDayRail"><span class="pfDayTime">'+_pfEsc(time)+'</span><span class="pfDayDot"></span></div>'
+        +'<div class="pfDayCard" style="display:block;">'+heroHtml+'</div>'
+      +'</div>';
+    }
+  }
   var what='', meta='', note='', photo=null, rating='', exHtml='';
   if(it.kind==='food'){
     what=_pfEsc(d.name||'a meal');
@@ -8912,9 +8974,8 @@ function _pfDayRow(it){
     what=_pfEsc(d.title||'Workout');
     note=_pfWoNote(d.description);
     photo = d.photo||null;
-    // RULING (Yusuf, live): the desktop feed used to show the session name only —
-    // the full verb-led exercise list (mobile's own format, read safely) renders
-    // here too now, so a card reads as the complete session, not a headline for it.
+    // The full verb-led exercise list, same format mobile already used — this is
+    // the collapsed preview; expanding swaps the whole row for the hero card above.
     try{ exHtml=_bfProseHtml(d); }catch(e){}
     // Composed at read time from Day & Jim's own functions, never reimplemented
     // here — intensity lives on the row, connection is looked up by client code
@@ -8937,15 +8998,28 @@ function _pfDayRow(it){
   } else {
     what='Logged something';
   }
+  // RULING (Yusuf, live): the card-level Like button targets one specific item
+  // (the newest thing on the card) — that's the model the code actually runs,
+  // reviews are per kind+id, there's no day-level row to like against. Since
+  // nothing said which item that was, the liked item now carries its own heart
+  // inline, right here, rather than the card pretending it liked "the day."
+  var _rk = it.kind==='food'?'food':(it.kind==='wo'?'workout':(it.kind==='photo'?'photo':null));
+  var _rmk = (_rk && window._reviewedMap) ? window._reviewedMap[_rk+':'+(d.id!=null?d.id:'')] : null;
+  var likedMark = (_rmk && _rmk.like) ? ('<span style="margin-left:5px;color:var(--gold);" title="Liked">'+_JV_HEART_FILLED+'</span>') : '';
   var thumb = photo ? ('<div class="pfDayThumb"><img src="'+photo+'" onclick="event.stopPropagation();openPhotoLightbox(\''+photo+'\')"></div>') : '';
   // POLISH (Yusuf, live): tapping a specific item opens the day sheet at that
   // item's own time, not always the card's newest — the more precise route for
   // whichever row was actually tapped, one gesture with one meaning everywhere.
-  return '<div class="pfDayRow" onclick="event.stopPropagation();openClientDay(\''+it.code+'\','+(+it.ts||0)+')">'
+  // A workout row is the one exception: its own tap expands the hero card in
+  // place instead, since the day sheet's own version of it is right here now.
+  var rowClick = (it.kind==='wo')
+    ? ('_pfToggleWo(\''+String(d.date_str||'').replace(/'/g,"\\'")+'\',\''+it.code+'\')')
+    : ('openClientDay(\''+it.code+'\','+(+it.ts||0)+')');
+  return '<div class="pfDayRow" onclick="event.stopPropagation();'+rowClick+'">'
     +'<div class="pfDayRail"><span class="pfDayTime">'+_pfEsc(time)+'</span><span class="pfDayDot"></span></div>'
     +'<div class="pfDayCard">'
       +'<div class="pfDayText">'
-        +'<div class="pfDayMain"><span class="pfDayWhat">'+what+'</span>'+(meta?('<span class="pfDayMeta">'+_pfEsc(meta)+'</span>'):'')+'</div>'
+        +'<div class="pfDayMain"><span class="pfDayWhat">'+what+likedMark+'</span>'+(meta?('<span class="pfDayMeta">'+_pfEsc(meta)+'</span>'):'')+'</div>'
         +(exHtml?('<div class="pfDayEx">'+exHtml+'</div>'):'')
         +(note?('<div class="pfDayNote">“'+_pfEsc(note)+'”</div>'):'')
         +(rating?('<div class="pfDayRating">'+_pfEsc(rating)+'</div>'):'')
@@ -8953,6 +9027,20 @@ function _pfDayRow(it){
       +thumb
     +'</div>'
   +'</div>';
+}
+// The workout row's own expand/collapse — same shape as _cdToggleDone (the day
+// sheet's wrapper-owned toggle for someone else's day): flip the shared open
+// state, repaint immediately with whatever's already known, then load the full
+// record and repaint again once it lands. _feedRerenderPeopleOnly repaints every
+// card from the feed items already in memory — no refetch, cheap, and the same
+// "repaint everything from cache" pattern already used for contact-log updates.
+async function _pfToggleWo(ds, code){
+  var _prevRO=window._tlRO;
+  try{ window._tlRO=true; tlToggleDone(ds, code); }catch(e){}
+  try{ _feedRerenderPeopleOnly(); }catch(e){}
+  try{ await _bfLoadRecord(ds, code); }catch(e){}
+  try{ _feedRerenderPeopleOnly(); }catch(e){}
+  window._tlRO=_prevRO;
 }
 // The quiet card. Butler register: it states the day and offers a move. It never
 // says the client failed at anything, because they have not.
@@ -9181,6 +9269,12 @@ function _pfCard(b, hour, now){
   var rmk = (rk && window._reviewedMap) ? window._reviewedMap[rk+':'+rid] : null;
   var liked = !!(rmk && rmk.like);
   var likeT = (rmk && rmk.like_ts) ? _revTimeStr(rmk.like_ts) : '';
+  // RULING (Yusuf, live): the model this button actually runs is item-level —
+  // it likes the newest thing on the card, not "the day" — so its own label
+  // says which thing that is instead of leaving it to be inferred.
+  var likeTarget = newest.kind==='food' ? (newest.data&&newest.data.name||'that meal')
+    : newest.kind==='wo' ? (newest.data&&newest.data.title||'that workout')
+    : newest.kind==='photo' ? 'that photo' : '';
   // Light day: 1-2 things logged, still worth a nudge — the outreach box shows here
   // too, not only on a fully quiet card. A fully-logged client doesn't need it.
   // BUTTON DIET (Yusuf, live): Copy used to sit in its own flex:1 row under the
@@ -9194,6 +9288,7 @@ function _pfCard(b, hour, now){
   var acts='<div class="pfActs" onclick="event.stopPropagation();">';
   if(rk){
     acts+='<span class="pfAct jvLikePill" data-kind="'+rk+'" data-ref="'+rid+'" data-code="'+b.code+'"'
+      +' title="'+(liked?'Liked ':'Like ')+_pfEsc(likeTarget)+'"'
       +' onclick="'+(liked?('jvUnlike(\''+rk+'\',\''+rid+'\',\''+b.code+'\',this)'):('quickReact(\''+rk+'\',\''+rid+'\',\''+b.code+'\',\'like\',this)'))+'">'
       +_jvLikePillInner(liked, likeT)+'</span>';
     acts+='<span class="pfAct" onclick="feedOpenDetail('+newest._idx+')">Comment</span>';
@@ -9207,7 +9302,7 @@ function _pfCard(b, hour, now){
   return '<div class="pfCard" data-name="'+String(info.name||'').toLowerCase().replace(/"/g,'')+'"'
     +' onclick="openClientDay(\''+b.code+'\','+(+newest.ts||0)+')">'
     +'<div class="pfHead"><span class="pfName" onclick="event.stopPropagation();jvOpenDeep(\''+b.code+'\')">'+nm+'</span><span class="pfWhen">'+_pfEsc(_feedTimeStr(newest.ts))+'</span></div>'
-    +'<div class="pfDay">'+evs.map(_pfDayRow).join('')+'</div>'
+    +'<div class="pfDay">'+_pfDayList(evs)+'</div>'
     + outreach
     + acts
   +'</div>';
@@ -17053,7 +17148,12 @@ function _bfItemsFor(wo){
       // one exercise on the card.
       var detail=e.detail;
       if(!detail){
-        if(e.weight!=null) detail=e.weight+' lb'+(e.reps!=null?(' × '+e.reps):(e.sets!=null?(' × '+e.sets):''));
+        // A chat-logged exercise's weight sometimes arrives already unit-suffixed
+        // ("125 lbs", not 125) — appending " lb" unconditionally read as "125 lbs
+        // lb". Only append the unit when the value doesn't already carry one.
+        var wTxt=(e.weight!=null)?String(e.weight).trim():'';
+        var wHasUnit=/[a-zA-Z]/.test(wTxt);
+        if(wTxt) detail=(wHasUnit?wTxt:(wTxt+' lb'))+(e.reps!=null?(' × '+e.reps):(e.sets!=null?(' × '+e.sets):''));
         else if(e.sets!=null && e.reps!=null) detail=e.sets+' set'+(e.sets===1?'':'s')+' × '+e.reps;
         else if(e.reps!=null) detail=e.reps+' reps';
         else if(e.sets!=null) detail=e.sets+' set'+(e.sets===1?'':'s');
@@ -17090,8 +17190,12 @@ function _bfProseHtml(wo){
       var nm = String(e.name||'').trim(); if(!nm) return '';
       var reps = (e.reps!=null) ? String(e.reps) : '';
       var setN = Math.max(1, parseInt(e.sets,10)||1);
-      var one = (e.weight!=null)
-        ? (e.weight+' lb'+(reps?(' x '+reps):''))
+      // Same guard as _bfItemsFor: a weight that already reads "125 lbs" must not
+      // get a second " lb" appended.
+      var wTxt = (e.weight!=null) ? String(e.weight).trim() : '';
+      var wHasUnit = /[a-zA-Z]/.test(wTxt);
+      var one = wTxt
+        ? ((wHasUnit?wTxt:(wTxt+' lb'))+(reps?(' x '+reps):''))
         : (reps ? (reps+' reps') : (e.detail||''));
       if(!one) return nm;                    // name only — still shown, never dropped
       var toks=[]; for(var i=0;i<setN;i++) toks.push(one);
