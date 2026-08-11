@@ -5125,6 +5125,17 @@ async function sessEnsure(code, force){
         var d=await r.json();
         if(!d || !d.token) return null;
         _sessSave({token:d.token, exp:d.expires_at, code:code, renew_within:d.renew_within});
+        // Session-verified, not the public key's guess — session.js looked this up
+        // with the service key, so it's the value the call-booking gate trusts once
+        // the column it used to read directly goes dark to anon. Applied here,
+        // unconditionally, so it lands whether this call won its race with the
+        // login flow's timeout or finished quietly afterward.
+        try{
+          if(d.client){
+            if(cl && cl.code===code){ cl.calls_enabled=d.client.calls_enabled; cl.call_credits=d.client.call_credits; }
+            if(CLIENTS[code]){ CLIENTS[code].calls_enabled=d.client.calls_enabled; CLIENTS[code].call_credits=d.client.call_credits; }
+          }
+        }catch(e){}
         return d.token;
       }catch(e){ return null; }
       finally{ _sessBusy=null; }
@@ -5810,27 +5821,20 @@ async function loadRosterFromDB(){
   if(_rosterLoadPromise) return _rosterLoadPromise;
   _rosterLoadPromise = (async function(){
     try{
-      var rows=null, _hasCallCols=true;
+      // ANON-SAFE TIER — everyone gets this, trainer and client alike, with the
+      // public key. Only the columns that stayed open when clients was locked
+      // down: identity and attribution, nothing private or financial. No more
+      // three-tier self-heal cascade here — every column in this list is
+      // deliberately public, not a maybe-missing one, so one query is enough.
+      var rows=null;
       try{
-        rows = await sbSelect('clients','select=code,name,initials,phone,email,coach_code,is_trainer,active,calls_enabled,call_credits,tier,term_months,paid,term_ends,started_at,created_at,hidden,is_primary&order=code.asc&limit=2000');
+        rows = await sbSelect('clients','select=code,name,initials,coach_code,is_trainer,is_primary,active,hidden&order=code.asc&limit=2000');
       }catch(_e0){ rows=null; }
       if(!rows || !rows.length){
-        // hidden/is_primary/created_at not there yet — sbSelect usually self-heals a
-        // missing select column, so this only fires when the read came back empty
-        try{
-          rows = await sbSelect('clients','select=code,name,initials,phone,email,coach_code,is_trainer,active,calls_enabled,call_credits,tier,term_months,paid,term_ends,started_at,created_at&order=code.asc&limit=2000');
-        }catch(_e1){ rows=null; }
+        // Narrowest possible fallback, in case even is_primary/hidden trip
+        // something — degrade to "the app still knows who's who," not a blank roster.
+        try{ rows = await sbSelect('clients','select=code,name,is_trainer,active&order=code.asc&limit=2000'); }catch(_e1){ rows=null; }
       }
-      if(!rows || !rows.length){
-        // table hasn't got the call columns yet — fall back and grandfather instead
-        _hasCallCols=false;
-        rows = await sbSelect('clients','select=code,name,initials,phone,email,coach_code,is_trainer,active&order=code.asc&limit=2000');
-      }
-      window._callColsExist = _hasCallCols;
-      // Read the answer's SHAPE, not which query produced it: sbSelect self-heals a
-      // select naming a missing column by dropping it and retrying, so "rows came
-      // back" proves nothing about the columns. The raw clients reads (roster tab,
-      // training board) have no such self-heal and key off this flag.
       window._secColsExist = !!(rows && rows.length && ('hidden' in rows[0]));
       if(rows && rows.length){
         rows.forEach(function(r){
@@ -5838,23 +5842,9 @@ async function loadRosterFromDB(){
           var e = CLIENTS[r.code] || {};
           e.name = r.name || e.name || r.code;
           if(r.initials) e.initials = r.initials;
-          if(r.phone) e.phone = r.phone;
-          e.email = r.email || null;   // null, not undefined: 'no email' is one state
           if(r.coach_code) e.coach_code = r.coach_code;
           if(r.is_trainer) e.isTrainer = true;
           e.active = (r.active !== false);
-          // Grandfathering: anyone who already has a booking on record keeps access.
-          // Until the columns exist, an existing active client is treated as enabled and
-          // only brand-new signups start closed.
-          if(r.calls_enabled!=null) e.calls_enabled = (r.calls_enabled===true);
-          else if(!_hasCallCols) e.calls_enabled = true;
-          if(r.call_credits!=null) e.call_credits = (+r.call_credits||0);
-          if(r.tier) e.tier = r.tier;
-          if(r.term_months!=null) e.term_months = +r.term_months;
-          if(r.paid!=null) e.paid = +r.paid;
-          if(r.term_ends) e.term_ends = r.term_ends;
-          if(r.started_at) e.started_at = r.started_at;
-          if(r.created_at) e.created_at = r.created_at;
           // Hidden-from-trainer lives on the row, not in this file. PERMA_HIDE and
           // JV_HIDE_CLIENTS keep their old meanings for every existing reader.
           if(r.hidden===true){ e.hidden=true; PERMA_HIDE[r.code]=true; JV_HIDE_CLIENTS[r.code]=1; }
@@ -5873,6 +5863,33 @@ async function loadRosterFromDB(){
         }catch(e){}
         window._rosterFromDB = true;
       }
+      // TRAINER-ONLY TIER — phone, email, money, tier, term dates, call access:
+      // everything that went dark to the public key. Only a signed-in trainer's
+      // own session can still see it, and only through the door now. A client's
+      // OWN calls_enabled/call_credits doesn't come from here at all anymore —
+      // sessEnsure() applies those from the signed session response instead, so
+      // this tier never needs to touch them for anyone but the trainer's view of
+      // OTHER people's accounts.
+      try{
+        if(cl && typeof isTrainer==='function' && isTrainer(cl.code)){
+          var full = await trainerOp('roster', {});
+          (full||[]).forEach(function(r){
+            if(!r.code) return;
+            var e = CLIENTS[r.code] || {};
+            if(r.phone) e.phone = r.phone;
+            e.email = r.email || null;   // null, not undefined: 'no email' is one state
+            if(r.calls_enabled!=null) e.calls_enabled = (r.calls_enabled===true);
+            if(r.call_credits!=null) e.call_credits = (+r.call_credits||0);
+            if(r.tier) e.tier = r.tier;
+            if(r.term_months!=null) e.term_months = +r.term_months;
+            if(r.paid!=null) e.paid = +r.paid;
+            if(r.term_ends) e.term_ends = r.term_ends;
+            if(r.started_at) e.started_at = r.started_at;
+            if(r.created_at) e.created_at = r.created_at;
+            CLIENTS[r.code] = e;
+          });
+        }
+      }catch(e){}
       // Overlay any phone numbers saved locally so the Text button shows everywhere immediately.
       try{ if(typeof _jvHydratePhones==='function') _jvHydratePhones(); }catch(e){}
     }catch(err){ console.error('loadRosterFromDB failed — running on hardcoded roster', err); }
@@ -6435,17 +6452,15 @@ async function _doLoginInner(){
   // is how an unknown code took half a minute to be told anything.
   if(!c && !_rosterOffline){
     try{
-      // Only ask for the call columns when we know they exist, so this fallback
-      // never fails login on a table that hasn't been migrated yet.
-      var _cols='code,name,initials,phone,coach_code,is_trainer,active'
-        + (window._callColsExist===false ? '' : ',calls_enabled,call_credits');
+      // Public-safe columns only — phone/calls_enabled/call_credits went dark to
+      // the anon key with the rest of the clients lock. calls_enabled/call_credits
+      // arrive a moment later instead, once sessEnsure() below mints this person's
+      // session and applies the values session.js looked up with the service key.
+      var _cols='code,name,initials,coach_code,is_trainer,active';
       var _rows = await sbSelect('clients','code=eq.'+encodeURIComponent(entered)+'&select='+_cols+'&order=code.asc&limit=1');
       if(_rows && _rows.length){
         var r=_rows[0];
-        c = {name:(r.name||r.code), initials:r.initials||undefined, phone:r.phone||undefined, coach_code:r.coach_code||undefined, active:(r.active!==false)};
-        if(r.calls_enabled!=null) c.calls_enabled=(r.calls_enabled===true);
-        else if(window._callColsExist===false) c.calls_enabled=true; // grandfather until columns exist
-        if(r.call_credits!=null) c.call_credits=(+r.call_credits||0);
+        c = {name:(r.name||r.code), initials:r.initials||undefined, coach_code:r.coach_code||undefined, active:(r.active!==false)};
         if(r.is_trainer) c.isTrainer=true;
         CLIENTS[entered]=c;  // cache so the rest of the app sees them
       }
@@ -6878,25 +6893,24 @@ async function addClientToDb(){
   if(!window._acSex){ showToast('Pick a gender — it sets their split'); return; }
   var initials=(name.split(/\s+/).map(function(w){return w[0]||'';}).join('').slice(0,2)||name.slice(0,2)).toUpperCase();
   var btn=document.getElementById('acCreateBtn'); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='Creating\u2026'; }
-  // Full row first. If the table is missing a newer column Postgres rejects the whole
-  // insert, so step down to the columns that have always existed rather than fail outright.
+  // Through the door now, not the public key \u2014 one op, no more three-tier
+  // column-missing fallback, since clientInsert's fields are fixed and known
+  // to exist rather than guessed at by stepping down.
   // new clients start with no scheduled calls; upgrade them from the command center
   // the tier decides booking access, so they can never disagree
   var _tier = window._acTier || '1on1';
   var _term = window._acTerm || 6;
   var _paid = parseFloat(((document.getElementById('acPaid')||{}).value||'').replace(/[^0-9.]/g,'')) || null;
   var _acc = acAccessFor(_tier);
-  var _full=Object.assign({code:code,name:name,initials:initials,coach_code:cl.code,
-    is_trainer:false,active:true,
-    tier:_tier, term_months:_term, paid:_paid,
-    started_at:new Date().toISOString().slice(0,10)}, _acc);
-  var _mid=Object.assign({code:code,name:name,initials:initials,coach_code:cl.code}, _acc);
-  var _core={code:code,name:name,initials:initials};
   var _err=null, _ok=false;
-  for(var _i=0;_i<3 && !_ok;_i++){
-    try{ await sbInsertStrict('clients', [_full,_mid,_core][_i]); _ok=true; }
-    catch(e){ _err=e; }
-  }
+  try{
+    var _w=await trainerWrite('clientInsert', {code:code,name:name,initials:initials,
+      tier:_tier, term_months:_term, paid:_paid,
+      started_at:new Date().toISOString().slice(0,10),
+      calls_enabled:_acc.calls_enabled, call_credits:_acc.call_credits});
+    _ok=!!_w.ok;
+    if(!_ok) _err=new Error('Could not create client');
+  }catch(e){ _err=e; }
   if(_ok){
     CLIENTS[code]=Object.assign({name:name,initials:initials,coach_code:cl.code,active:true,
       tier:_tier, term_months:_term, paid:_paid, started_at:new Date().toISOString().slice(0,10)}, _acc);
@@ -9248,12 +9262,16 @@ async function jvLoadRoster(force, target){
   if(jvRosterData){ jvRenderRoster(wall); return; }
   wall.innerHTML='<div class="jvLoading">Reading the roster…</div>';
   try{
+    // clients?select=...paid... used to be a raw anon fetch. paid went dark to the
+    // public key with the rest of the lock, so this now goes through the door —
+    // trainerOp() throws nothing and returns [] on a refusal, which the empty-roster
+    // check right below already treats as a failed read, not an empty one.
     var r=await Promise.all([
-      fetch(SB_URL+'/rest/v1/clients?select=code,name,is_trainer,active,paid'+(window._secColsExist===false?'':',hidden')+'&limit=2000',{headers:sbHeaders()}),
+      trainerOp('roster', {}),
       fetch(SB_URL+'/rest/v1/training_plans?select=client_code&limit=1000',{headers:sbHeaders()})
     ]);
-    if(!r[0].ok||!r[1].ok) throw new Error('roster read');
-    var clients=await r[0].json(), plans=await r[1].json();
+    if(!r[0] || !r[0].length || !r[1].ok) throw new Error('roster read');
+    var clients=r[0], plans=await r[1].json();
     var logs=await Promise.all([
       _rsPaged('food_logs','client_code,logged_at'),
       _rsPaged('workout_logs','client_code,logged_at'),
@@ -9413,12 +9431,9 @@ async function rsSetPaid(el, code){
   if(raw!=='' && isNaN(val)){ try{ showToast('That is not a number'); }catch(e){} return; }
   el.disabled=true;
   try{
-    var res=await fetch(SB_URL+'/rest/v1/clients?code=eq.'+encodeURIComponent(code),
-      {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=representation'}),
-       body:JSON.stringify({paid:val})});
-    var back=res.ok?await res.json():null;
-    if(!res.ok || !back || !back.length){ throw new Error('no row'); }
-    var got=back[0].paid;
+    var w=await trainerWrite('clientPatch', {code:code, paid:val});
+    if(!w.ok || !w.rows.length){ throw new Error('no row'); }
+    var got=w.rows[0].paid;
     if(String(got==null?'':got)!==String(val==null?'':val)) throw new Error('mismatch');
     try{ (jvRosterData.clients||[]).forEach(function(c){ if(c.code===code) c.paid=got; }); }catch(e){}
     el.disabled=false;
@@ -9461,13 +9476,8 @@ async function rsUnhide(code, btn){
   var name=_rsNameOf(code);
   var ok=false;
   try{
-    var res=await fetch(SB_URL+'/rest/v1/clients?code=eq.'+encodeURIComponent(code),
-      {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=representation'}),
-       body:JSON.stringify({hidden:false})});
-    if(res.ok){
-      var back=await res.json();
-      ok=!!(back && back.length && back[0].hidden===false);   // read it back, not just a 2xx
-    }
+    var w=await trainerWrite('clientUnhide', {code:code});
+    ok=!!(w.ok && w.rows.length && w.rows[0].hidden===false);   // read it back, not just a 2xx
   }catch(e){}
   if(!ok){ if(btn) btn.disabled=false; try{ showToast('Could not unhide — try again'); }catch(e){} return; }
   try{ PERMA_HIDE[code]=false; delete PERMA_HIDE[code]; delete JV_HIDE_CLIENTS[code]; }catch(e){}
@@ -9479,12 +9489,9 @@ async function rsUnhide(code, btn){
 // own surfaces and this device's sign-in check read.
 async function _rsSetActive(code, active){
   try{
-    var res=await fetch(SB_URL+'/rest/v1/clients?code=eq.'+encodeURIComponent(code),
-      {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=representation'}),
-       body:JSON.stringify({active:active})});
-    if(!res.ok) return false;
-    var back=await res.json();
-    if(!back || !back.length || back[0].active!==active) return false;   // read it back
+    var w=await trainerWrite('clientPatch', {code:code, active:active});
+    if(!w.ok) return false;
+    if(!w.rows.length || w.rows[0].active!==active) return false;   // read it back
   }catch(e){ return false; }
   try{
     var arr=JSON.parse(localStorage.getItem('yjb_hidden_clients')||'[]');
@@ -14994,8 +15001,10 @@ function _jvSavePhone(code,num){
   try{ var m=JSON.parse(localStorage.getItem('yjb_phones')||'{}'); if(num){ m[code]=num; } else { delete m[code]; } localStorage.setItem('yjb_phones',JSON.stringify(m)); }catch(e){}
   if(CLIENTS[code]) CLIENTS[code].phone=num;
   try{ if(typeof sbUpsert==='function') sbUpsert('profiles',{client_code:code,phone:num},'client_code'); }catch(e){}
-  // Write to the clients roster table too — that's where the feed/Text button now reads phones from.
-  try{ fetch(SB_URL+'/rest/v1/clients?code=eq.'+encodeURIComponent(code), {method:'PATCH', headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}), body: JSON.stringify({phone: num||null})}); }catch(e){}
+  // Write to the clients roster table too — that's where the feed/Text button now
+  // reads phones from. Through the door now, not the public key; still fire-and-forget
+  // exactly as before, nothing here ever awaited or surfaced a failure.
+  try{ trainerWrite('clientPatch', {code:code, phone:num||null}); }catch(e){}
 }
 // What this client has paid, and what they still owe. Reads the same sales rows the
 // revenue card does, so the two can never disagree.
@@ -16328,11 +16337,11 @@ async function jvRemoveClient(code){
       if(!ok) failed.push(JV_CLIENT_TABLES[i][0]);
     }
     // The account row goes last, so a half-finished delete still leaves them findable.
+    // Through the door now, not the public key.
     var accOk=false;
     try{
-      var r=await fetch(SB_URL+'/rest/v1/clients?code=eq.'+encodeURIComponent(code),
-        {method:'DELETE', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'})});
-      accOk=r.ok;
+      var _wDel=await trainerWrite('clientDelete', {code:code});
+      accOk=!!_wDel.ok;
     }catch(e){}
     if(!accOk){
       try{ showToast('Their data is gone but the account row wouldn’t delete — check Supabase'); }catch(e){}
@@ -40973,15 +40982,18 @@ function renderCallAccess(){
     +'</div>';
   }).join('');
 }
+// Through the door now, not the public key \u2014 clients?code=eq... went dark with
+// the rest of the lock. trainerWrite reads the row back before saying ok, so a
+// failure here is a real one, not a guess. No more sqPush fallback: that used
+// to retry with the anon key, which can no longer write this table at all \u2014
+// queuing a retry that can never succeed just left a "waiting to sync" badge
+// stuck forever instead of telling the truth.
 async function _caPersist(code, patch){
   try{
-    await sbUpsert('clients', Object.assign({code:code}, patch), 'code');
-    return true;
-  }catch(e){
-    try{ showToast('Saved here \u2014 add the columns to sync'); }catch(_t){}
-    try{ sqPush('clients', Object.assign({code:code}, patch), 'UPSERT', 'code'); }catch(_q){}
-    return false;
-  }
+    var w=await trainerWrite('clientPatch', Object.assign({code:code}, patch));
+    if(!w.ok) try{ showToast('Could not save \u2014 try again'); }catch(_t){}
+    return !!w.ok;
+  }catch(e){ return false; }
 }
 async function caToggle(code){
   var r=CLIENTS[code]; if(!r) return;
@@ -40997,14 +41009,19 @@ async function caGrantCredit(code){
   await _caPersist(code, {call_credits:r.call_credits});
   try{ showToast('Gave '+(r.name||code)+' one call'); }catch(e){}
 }
-// spending a credit is what makes a one-off actually one-off
+// Spending a credit is what makes a one-off actually one-off. This is the ONE
+// write a regular client's own session may make through the door \u2014 a new,
+// narrower op (trainer.js: spendCallCredit) that only ever touches the
+// session's own account, never anything from args. The server does the actual
+// read-then-decrement now (a race-safe guard on the credit count it just
+// read), so this only reconciles what's on screen with what actually landed.
 async function consumeCallCredit(code){
   try{
     var r=CLIENTS[code]; if(!r) return;
     if(r.calls_enabled===true) return;          // standing access, nothing to spend
-    var left=(+r.call_credits||0); if(left<=0) return;
-    r.call_credits=left-1;
-    await _caPersist(code, {call_credits:r.call_credits});
+    if((+r.call_credits||0)<=0) return;
+    var w=await trainerWrite('spendCallCredit', {});
+    if(w.ok && w.rows[0] && w.rows[0].call_credits!=null){ r.call_credits=+w.rows[0].call_credits; }
   }catch(e){}
 }
 
@@ -42888,21 +42905,16 @@ async function caSetTier(code){
 function _jvTierLabel(t) { return t === "vip" ? "VIP" : "1:1"; }
 
 
-// Who they are and where they are in the term, on one line. This used to be three
-// one honest write path, so a missing column shows up as a failed toast
+// Who they are and where they are in the term, on one line. Through the door
+// now, not the public key — clientPatch whitelists each field this ever sends
+// (active, started_at, term_months, tier, paid, phone, email) and rejects
+// anything else, same discipline as every other write behind it.
 async function _jvSaveClient(code, patch) {
-  // report what Supabase actually said, rather than guessing at the cause
   try {
-    var res = await fetch(SB_URL + "/rest/v1/clients?code=eq." + encodeURIComponent(code), {
-      method: "PATCH",
-      headers: sbHeaders(),
-      body: JSON.stringify(patch)
-    });
-    if (res.ok) return {ok: true};
-    var msg = "";
-    try { var j = await res.json(); msg = j.message || j.hint || j.details || ""; } catch (e) {}
-    console.warn("client save failed", res.status, msg, patch);
-    return {ok: false, status: res.status, msg: msg};
+    var w = await trainerWrite('clientPatch', Object.assign({code: code}, patch));
+    if (w.ok) return {ok: true};
+    console.warn("client save failed", patch);
+    return {ok: false, status: 0, msg: "Could not save"};
   } catch (e) {
     return {ok: false, status: 0, msg: String(e && e.message || e)};
   }

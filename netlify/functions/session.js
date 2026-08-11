@@ -84,7 +84,7 @@ exports.handler = async (event) => {
   let row = null;
   try {
     const r = await fetch(
-      `${URL}/rest/v1/clients?code=eq.${encodeURIComponent(code)}&select=code,name,initials,is_trainer,active&limit=1`,
+      `${URL}/rest/v1/clients?code=eq.${encodeURIComponent(code)}&select=code,name,initials,is_trainer,active,calls_enabled,call_credits&limit=1`,
       { headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE } });
     if (!r.ok) { console.error('session: lookup failed', r.status); return json(502, { error: 'lookup_failed' }); }
     const rows = await r.json();
@@ -116,8 +116,14 @@ exports.handler = async (event) => {
     token: sign(claims, SECRET),
     expires_at: claims.exp,
     renew_within: RENEW_WITHIN,
+    // calls_enabled/call_credits ride here, not in the signed claims — this is
+    // data for the page to show, not an identity fact PostgREST or trainer.js
+    // needs to trust. Carrying them here lets the login flow stop asking the
+    // public key about a client's own call-booking permission once that column
+    // goes dark to anon — the exact thing that read used to depend on.
     client: { code: row.code, name: row.name || row.code, initials: row.initials || null,
-              is_trainer: row.is_trainer === true, active: row.active !== false },
+              is_trainer: row.is_trainer === true, active: row.active !== false,
+              calls_enabled: row.calls_enabled === true, call_credits: +row.call_credits || 0 },
   });
 };
 
