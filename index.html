@@ -15136,7 +15136,11 @@ function _jvHydratePhones(){
 function _jvSavePhone(code,num){
   try{ var m=JSON.parse(localStorage.getItem('yjb_phones')||'{}'); if(num){ m[code]=num; } else { delete m[code]; } localStorage.setItem('yjb_phones',JSON.stringify(m)); }catch(e){}
   if(CLIENTS[code]) CLIENTS[code].phone=num;
-  try{ if(typeof sbUpsert==='function') sbUpsert('profiles',{client_code:code,phone:num},'client_code'); }catch(e){}
+  // profiles.name is NOT NULL with no default — PostgREST upsert is INSERT ... ON
+  // CONFLICT DO UPDATE, and Postgres checks NOT NULL against the INSERT values before
+  // it ever reaches the conflict clause, so a name-less payload 400s even on a row
+  // that already exists. Same defect found and fixed on movement_prefs, 11 Aug.
+  try{ if(typeof sbUpsert==='function') sbUpsert('profiles',{client_code:code,name:((CLIENTS[code]&&CLIENTS[code].name)||code),phone:num},'client_code'); }catch(e){}
   // Write to the clients roster table too — that's where the feed/Text button now
   // reads phones from. Through the door now, not the public key; still fire-and-forget
   // exactly as before, nothing here ever awaited or surfaced a failure.
@@ -30560,7 +30564,12 @@ async function gpSetSex(g){
   // Two columns, not gpPersist(): on conflict PostgREST updates only the columns present,
   // so this can't disturb the other 25 fields. sbUpsert RESOLVES false on an HTTP error
   // rather than throwing, so branch on the value — a bare await would look like success.
-  var row={client_code:cl.code, gender:g}, ok=false;
+  // name is a third column, not a fourth field at risk: profiles.name is NOT NULL with
+  // no default, and Postgres checks NOT NULL against the INSERT values before it ever
+  // reaches ON CONFLICT, so a client_code+gender-only payload 400s even on a row that
+  // already exists — which is exactly how this bug (a client staying 'male' after being
+  // set to female) actually happened. Same defect found and fixed on movement_prefs, 11 Aug.
+  var row={client_code:cl.code, name:(cl.name||profile.name||''), gender:g}, ok=false;
   try{ ok=await sbUpsert('profiles', row, 'client_code'); }catch(e){ ok=false; }
   if(!ok){
     try{ sqPush('profiles', row, 'UPSERT', 'client_code'); }catch(e){}
