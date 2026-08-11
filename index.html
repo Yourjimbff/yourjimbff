@@ -15140,7 +15140,11 @@ function _jvHydratePhones(){
 function _jvSavePhone(code,num){
   try{ var m=JSON.parse(localStorage.getItem('yjb_phones')||'{}'); if(num){ m[code]=num; } else { delete m[code]; } localStorage.setItem('yjb_phones',JSON.stringify(m)); }catch(e){}
   if(CLIENTS[code]) CLIENTS[code].phone=num;
-  try{ if(typeof sbUpsert==='function') sbUpsert('profiles',{client_code:code,phone:num},'client_code'); }catch(e){}
+  // profiles.name is NOT NULL with no default — PostgREST upsert is INSERT ... ON
+  // CONFLICT DO UPDATE, and Postgres checks NOT NULL against the INSERT values before
+  // it ever reaches the conflict clause, so a name-less payload 400s even on a row
+  // that already exists. Same defect found and fixed on movement_prefs, 11 Aug.
+  try{ if(typeof sbUpsert==='function') sbUpsert('profiles',{client_code:code,name:((CLIENTS[code]&&CLIENTS[code].name)||code),phone:num},'client_code'); }catch(e){}
   // Write to the clients roster table too — that's where the feed/Text button now
   // reads phones from. Through the door now, not the public key; still fire-and-forget
   // exactly as before, nothing here ever awaited or surfaced a failure.
@@ -16392,7 +16396,10 @@ var JV_CLIENT_TABLES=[
   // list, which is how faithparker1's client row went while her daily score stayed
   // behind — an orphan nothing can reach or clean up. The list has to stay in step
   // with the schema or every deletion quietly leaves rows forever.
-  ['daily_scores','daily scores'], ['engine_moments','engine moments']
+  ['daily_scores','daily scores'], ['engine_moments','engine moments'],
+  // vip_calls (11 Aug): dark to anon from creation, door-only from the start —
+  // added here in the same breath it was created, not after an audit finds it missing.
+  ['vip_calls','VIP call blocks']
 ];
 // `sales` is client_code-keyed and deliberately NOT on the list above (Yusuf's ruling:
 // the books outlive the roster). It carries paid_amount, total_amount, due_date and
@@ -16408,7 +16415,7 @@ var JV_CLIENT_TABLES=[
 // adding a table+filter count op — this door only ever answers named questions.
 var JV_DOOR_TABLES = {
   coach_notes:'coachNotes', client_contacts:'contacts', coach_reposts:'coachReposts',
-  jv_handled:'handled', engine_moments:'engineMoments'
+  jv_handled:'handled', engine_moments:'engineMoments', vip_calls:'vipCallList'
 };
 // The lock took the public key's DELETE off these same five tables. _jvDeleteRows
 // used to reach every client-keyed table the same way; without this it would
@@ -16417,7 +16424,7 @@ var JV_DOOR_TABLES = {
 // caused by the door this time instead of a missing table.
 var JV_DOOR_DELETE_OPS = {
   coach_notes:'noteDeleteAll', client_contacts:'contactDeleteAll', coach_reposts:'repostDeleteAll',
-  jv_handled:'handledDeleteAll', engine_moments:'engineDeleteAll'
+  jv_handled:'handledDeleteAll', engine_moments:'engineDeleteAll', vip_calls:'vipCallDeleteAll'
 };
 // Exact count via PostgREST's Content-Range. null means the table isn't there or
 // doesn't key on client_code — either way there's nothing of theirs in it.
@@ -30593,7 +30600,12 @@ async function gpSetSex(g){
   // Two columns, not gpPersist(): on conflict PostgREST updates only the columns present,
   // so this can't disturb the other 25 fields. sbUpsert RESOLVES false on an HTTP error
   // rather than throwing, so branch on the value — a bare await would look like success.
-  var row={client_code:cl.code, gender:g}, ok=false;
+  // name is a third column, not a fourth field at risk: profiles.name is NOT NULL with
+  // no default, and Postgres checks NOT NULL against the INSERT values before it ever
+  // reaches ON CONFLICT, so a client_code+gender-only payload 400s even on a row that
+  // already exists — which is exactly how this bug (a client staying 'male' after being
+  // set to female) actually happened. Same defect found and fixed on movement_prefs, 11 Aug.
+  var row={client_code:cl.code, name:(cl.name||profile.name||''), gender:g}, ok=false;
   try{ ok=await sbUpsert('profiles', row, 'client_code'); }catch(e){ ok=false; }
   if(!ok){
     try{ sqPush('profiles', row, 'UPSERT', 'client_code'); }catch(e){}
@@ -31656,7 +31668,13 @@ async function _mvpPush(){
     window._mvpServerSeen=true;
     if(gen!==_mvpGen) return;   // a newer edit arrived mid-read; its push takes over
   }
-  try{ await sbUpsert('profiles',{client_code:cl.code, movement_prefs:want},'client_code'); }catch(e){}
+  // profiles.name is NOT NULL with no default. PostgREST upsert is INSERT ... ON
+  // CONFLICT DO UPDATE under the hood, and Postgres validates the INSERT values
+  // against every NOT NULL column before it ever looks at the conflict clause —
+  // so a client_code-and-movement_prefs-only payload 400s even when the row
+  // already exists. Found live 11 Aug verifying the movement rebuild: every
+  // movement save, old composer or new toggles, has always failed this way.
+  try{ await sbUpsert('profiles',{client_code:cl.code, name:(cl.name||profile.name||''), movement_prefs:want},'client_code'); }catch(e){}
   // Read it back. sbSelect returns [] on failure, so an empty answer is "could not
   // confirm", never "saved" — both land in the failed branch.
   var got=null;
@@ -31674,7 +31692,7 @@ async function _mvpPush(){
   }
   _gpSetSaveState('failed','Your movement choices didn’t reach the server. They’re on this phone, but the Day page and your other devices won’t see them yet.','movement');
   _mvpQueueScrub();
-  try{ sqPush('profiles',{client_code:cl.code, movement_prefs:want},'UPSERT','client_code'); }catch(e){}
+  try{ sqPush('profiles',{client_code:cl.code, name:(cl.name||profile.name||''), movement_prefs:want},'UPSERT','client_code'); }catch(e){}
 }
 // THREE FIXED WALKS (ruled 11 Aug, movement-page rebuild): name-your-own walks
 // and the per-walk day-picker are gone. A walk is one of exactly these three,

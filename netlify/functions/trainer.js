@@ -84,6 +84,11 @@ const OPS = {
   // requested_at.asc sorts by the proposed slot itself so the soonest upcoming
   // call leads, not whichever was submitted most recently.
   consultList: () => 'consult_requests?select=id,name,phone,age,height,weight,goal,main_problem,why_reaching_out,willing_to_invest,serious,excited_or_nervous,requested_at,status,created_at&order=status.asc,requested_at.asc&limit=500',
+
+  // ---- vip_calls (recurring trainer-set call blocks) -----------------------------
+  // For Admin's calendar view. Trainer-only read, same as every other OPS entry —
+  // a client's own read goes through myVipCalls below instead, never this.
+  vipCallList: () => 'vip_calls?select=id,client_code,weekdays,time_local,tz,duration_minutes,start_date,end_date,notes,active,created_at&order=start_date.desc&limit=500',
 };
 
 function enc(v) {
@@ -144,6 +149,36 @@ function nullableNum(v) {
 function nullableStr(v, max) {
   if (v == null || v === '') return null;
   return str(v, max);
+}
+// ---- vip_calls validators ---------------------------------------------------
+function weekdaysArr(v) {
+  if (!Array.isArray(v) || !v.length) throw new Error('bad_arg');
+  const out = v.map((x) => {
+    const n = Number(x);
+    if (!Number.isInteger(n) || n < 1 || n > 7) throw new Error('bad_arg');
+    return n;
+  });
+  return Array.from(new Set(out)).sort((a, b) => a - b);
+}
+function timeLocal(v) {
+  const s = String(v || '');
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(s)) throw new Error('bad_arg');
+  return s;
+}
+function tzName(v) {
+  const s = String(v || '');
+  if (!/^[A-Za-z_]+(\/[A-Za-z_]+)+$/.test(s)) throw new Error('bad_arg');
+  return s;
+}
+function posInt(v, max) {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n <= 0 || n > max) throw new Error('bad_arg');
+  return n;
+}
+function dateRange(startV, endV) {
+  const start = isoDate(startV), end = isoDate(endV);
+  if (end < start) throw new Error('bad_arg');
+  return { start, end };
 }
 
 const WRITE_OPS = {
@@ -316,6 +351,33 @@ const WRITE_OPS = {
   // The account row itself — the standing delete guard's last step, same as it's
   // always been, just no longer with the public key.
   clientDelete: (a) => ({ method: 'DELETE', path: `clients?code=eq.${enc(a.code)}` }),
+
+  // ---- vip_calls (recurring trainer-set call blocks) -----------------------------
+  vipCallCreate: (a) => {
+    const dr = dateRange(a.start_date, a.end_date);
+    return {
+      method: 'POST', path: 'vip_calls',
+      body: {
+        client_code: enc_raw(a.client_code),
+        weekdays: weekdaysArr(a.weekdays),
+        time_local: timeLocal(a.time_local),
+        tz: tzName(a.tz || 'America/New_York'),
+        duration_minutes: posInt(a.duration_minutes, 240),
+        start_date: dr.start,
+        end_date: dr.end,
+        notes: a.notes != null ? nullableStr(a.notes, 1000) : null,
+      },
+    };
+  },
+  // Soft on/off, not delete — pausing a block never loses its history, same
+  // shape as clients.active/hidden elsewhere in this door.
+  vipCallSetActive: (a) => ({
+    method: 'PATCH', path: `vip_calls?id=eq.${encId(a.id)}`,
+    body: { active: !!a.active },
+  }),
+  // Same delete-guard gap every other client-keyed table behind this door has —
+  // vip_calls joins JV_CLIENT_TABLES precisely so this gets called.
+  vipCallDeleteAll: (a) => ({ method: 'DELETE', path: `vip_calls?client_code=eq.${enc(a.client_code)}` }),
 };
 
 // A client_code carried in a WRITE BODY (not a URL filter) still gets the same shape
@@ -395,6 +457,33 @@ async function handleSpendCallCredit(URL, SERVICE, code) {
   }
 }
 
+// CLIENT-SESSION-GATED, same exception as spendCallCredit above — a client
+// reading their OWN upcoming VIP call schedule for Day & Jim's quiet row.
+// client_code is ALWAYS the session's own claim, never anything a caller
+// could supply, same reasoning as spendCallCredit: this is the first
+// client-facing READ through that pattern, not just a write, but the law is
+// identical — a narrow, named, session-scoped door, never a shared table read.
+// notes is deliberately never selected: it's the trainer's own text about the
+// booking, not the client's to read.
+async function handleMyVipCalls(URL, SERVICE, code) {
+  try {
+    const r = await fetch(
+      `${URL}/rest/v1/vip_calls?client_code=eq.${encodeURIComponent(code)}&active=eq.true`
+        + '&select=id,weekdays,time_local,tz,duration_minutes,start_date,end_date&order=start_date.asc',
+      { headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE } }
+    );
+    const text = await r.text();
+    if (!r.ok) {
+      console.error('trainer: myVipCalls query failed', r.status, text.slice(0, 300));
+      return json(502, { error: 'query_failed', op: 'myVipCalls' });
+    }
+    return { statusCode: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }, body: text };
+  } catch (e) {
+    console.error('trainer: myVipCalls threw', e && e.message);
+    return json(502, { error: 'query_failed', op: 'myVipCalls' });
+  }
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return json(405, { error: 'POST only' });
 
@@ -419,6 +508,9 @@ exports.handler = async (event) => {
   // above for why. Everything else past this point requires is_trainer===true.
   if (op === 'spendCallCredit') {
     return handleSpendCallCredit(URL, SERVICE, claims.client_code);
+  }
+  if (op === 'myVipCalls') {
+    return handleMyVipCalls(URL, SERVICE, claims.client_code);
   }
 
   if (claims.is_trainer !== true) {
