@@ -38745,6 +38745,7 @@ function buildCoachVoice(){
     '[WORKOUT_LOG]{"title":"Pull Day","description":"itemized list","exercises":[{"name":"Machine rows","sets":2},{"name":"Barbell bent-over rows","sets":4,"detail":"135 lbs"}],"daysAgo":0,"time":"8:00 AM"}[/WORKOUT_LOG]\n'+
     'WHICH DAY: workouts default to TODAY. If they say they trained on an earlier day ("trained yesterday but forgot to log it", "did legs on Tuesday", "two days ago"), add "daysAgo" (1=yesterday, 2=two days ago, etc.). Never refuse a back-date or send them to edit it manually — just stamp the right day and confirm ("Logged your pull day for yesterday").\n'+
     'WHAT TIME: if they say WHEN it happened — a clock time ("my morning walk at 8:00am", "trained at 6"), or a part of day ("this morning", "after lunch", "tonight") — add "time" in h:mm AM/PM. Resolve it against the CURRENT DATE & TIME above, and use the same 12-hour format. Leave "time" out entirely when they did not say — it then records at the time they tell you, which is the honest default. This applies to walks exactly as it does to lifting.\n\n'+
+    'ONE MESSAGE, MULTIPLE ENTRIES — THE "words" FIELD: if this reply will contain MORE THAN ONE [FOOD_LOG] and/or [WORKOUT_LOG] marker total (e.g. they described a whole day in one message — breakfast, a walk, lunch, dinner), give EACH marker\'s JSON a "words" field: the exact clause of their message that produced THAT entry, copied character-for-character from what they actually typed — never reworded, never summarized, never shared between two entries. If you cannot cleanly tell where one entry\'s clause ends and the next begins, omit "words" for that entry rather than guess. When your reply has only ONE entry total, omit "words" entirely — the whole message is used automatically. Example for a message covering breakfast and a walk: [FOOD_LOG]{"name":"Eggs & Toast",...,"words":"eggs and toast for breakfast"}[/FOOD_LOG] [WORKOUT_LOG]{"title":"Walk",...,"words":"walked 20 minutes"}[/WORKOUT_LOG]\n\n'+
     'Then your VISIBLE reply must:\n'+
     '1. Itemize what you logged, one exercise per line, with sets and any weight they gave — exactly as you understood it. Format like:\n'+
     '   "Logged your Pull Day:\\n• Machine rows — 2 sets\\n• Barbell bent-over rows — 4 sets @ 135 lbs\\n• Lat pulldown — 4 sets\\n• Hanging leg raises — 2 sets\\n• Rear delt flys — 4 sets\\n• Shrugs — 4 sets"\n'+
@@ -38887,7 +38888,7 @@ function buildCoachVoice(){
     '- If they explicitly say "delete X" and there is EXACTLY ONE clear, unambiguous match in the log, you may emit a single [FOOD_DELETE] for it. If there are multiple similar entries, or any doubt at all, DO NOT delete — point them to the ⋯ Delete button instead.\n'+
     'NEVER RETRY-BY-ADDING: if you already added or edited a meal this conversation and the user says it didn\'t work or something\'s off, DO NOT add it again. Re-read the current TODAY\'S FOOD list in context first. Adding again is what creates duplicates. When in doubt, add nothing and tell them to use the ⋯ Delete button to clean up.\n'+
     '[FOOD_DELETE]{"id":482}[/FOOD_DELETE]  (only for a single unambiguous explicit delete)\n'+
-    'You may emit MULTIPLE [FOOD_LOG]/[FOOD_EDIT] markers in one reply. Each on its own line.\n'+
+    'You may emit MULTIPLE [FOOD_LOG]/[FOOD_EDIT] markers in one reply. Each on its own line. If a reply has more than one [FOOD_LOG]/[WORKOUT_LOG] total, give each its own "words" field per the ONE MESSAGE, MULTIPLE ENTRIES rule above — never let two entries share the same words, never the whole message on each.\n'+
 
     'WHEN THEY TELL YOU WHEN THEY ARE TRAINING — MOVE THE SESSION, DON\'T JUST AGREE:\n'+
     'The day shows today\'s session with a time on it. If they tell you WHEN that session is or was — "training legs at 3", "I\'m starting in 20 minutes", "I lifted at 6:30 this morning", "pushing my session to 7" — you must emit a [WORKOUT_TIME] marker or the day does not move. Saying "got it, legs at 3 PM" with no marker is the worst possible answer: it reads as done and changes nothing.\n'+
@@ -39514,8 +39515,36 @@ async function jimTurn(text, photos, opts){
   // naming law already produces for a photo alone. Only fills a field the
   // offer doesn't already carry one for (a structured capture-sheet entry
   // sets its own meal_text at the point of typing and keeps it).
+  //
+  // ONE MESSAGE, MANY ENTRIES (fixed 13 Aug — Kelly's Aug 11 row): the whole
+  // raw message is correct ONLY when the message produced exactly one entry.
+  // "Eggs for breakfast, walked 20, sandwich for lunch, salmon for dinner" is
+  // one message but four rows — stamping _clientWords on all four repeated her
+  // entire day three times over, once per meal card. The model may name a
+  // "words" field per marker: the clause of her message that produced THAT
+  // entry. It is never trusted as typed — _verbatimSlice only accepts it if
+  // it's a literal substring of what she actually sent, and returns the real
+  // bytes sliced from her message, never the model's copy. A multi-entry
+  // message with no valid slice falls back to the parsed name, never to the
+  // full message — a partial words is honest; a repeated whole-day paragraph
+  // on a lunch card is not.
   var _clientWords = String(text||'').trim();
-  function _pinVoice(o, field){ if(o && _clientWords && !o[field]) o[field]=_clientWords; return o; }
+  function _verbatimSlice(words, whole){
+    var w = String(words||'').trim();
+    if(!w || !whole) return null;
+    var idx = String(whole).toLowerCase().indexOf(w.toLowerCase());
+    if(idx<0) return null;
+    return String(whole).slice(idx, idx+w.length).trim();
+  }
+  function _pinVoice(o, field){
+    if(!o || o[field]) return o;
+    var slice = _verbatimSlice(o.words, _clientWords);
+    if(slice){ o[field]=slice; return o; }
+    if(_totalVoicedEntries<=1 && _clientWords){ o[field]=_clientWords; return o; }
+    var fallback = String(o.name||o.title||'').trim();
+    if(fallback) o[field]=fallback;
+    return o;
+  }
   var extractedNote = extractWorkoutNote(reply);
   reply = extractedNote.cleanText;
   var extractedEdit = extractWorkoutEdit(reply);
@@ -39528,6 +39557,11 @@ async function jimTurn(text, photos, opts){
   var weightLogs = extractAllMarkers(reply, 'WEIGHT_LOG'); reply = weightLogs.cleanText;
   var sessionTimes = extractAllMarkers(reply, 'WORKOUT_TIME'); reply = sessionTimes.cleanText;
   var swapDay = extractAllMarkers(reply, 'SWAP_DAY'); reply = swapDay.cleanText;
+  // How many food/workout entries this one message is about to produce — the
+  // count _pinVoice needs to decide whether the whole message is safe to use
+  // as one entry's words, or whether it must slice/fall back instead. Salvage
+  // paths below bump this when they recover an entry extractAllMarkers missed.
+  var _totalVoicedEntries = workoutLogs.items.length + foodAdds.items.length;
 
   // Handle WORKOUT_TIME: they told Jim WHEN the session is, without logging it.
   // "Training legs at 3" used to get a warm "got it — legs at 3 PM" and change
@@ -39692,6 +39726,7 @@ async function jimTurn(text, photos, opts){
     var _woSalvage = _rawReply.match(/\[WORKOUT_LOG\]([\s\S]*?)\[\/WORKOUT_LOG\]/);
     if(_woSalvage){
       _woExpected = 1;
+      _totalVoicedEntries++;
       try{
         var _woSObj = JSON.parse(_woSalvage[1].trim());
         if(_woSObj){
@@ -39788,6 +39823,7 @@ async function jimTurn(text, photos, opts){
     var _salvage = _rawReply.match(/\[FOOD_LOG\]([\s\S]*?)\[\/FOOD_LOG\]/);
     if(_salvage){
       _foodExpected++;
+      _totalVoicedEntries++;
       try{
         var _sObj = JSON.parse(_salvage[1].trim());
         if(_sObj && _sObj.name){
