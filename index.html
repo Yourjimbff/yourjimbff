@@ -29801,11 +29801,22 @@ async function _rememberFood(it){
       // reloaded, so logging the same thing twice in one sitting never matched.
       Object.assign(existing, rounded);
     } else {
-      await sbInsert('saved_foods',Object.assign({client_code:cl.code,name:nm,emoji:'🍽️'},rounded));
-      // sbInsert doesn't hand back the new row's id, but _matchHistory never reads
-      // id — only name/calories/protein/carbs/fat — so this keeps her history
-      // usable immediately, same session, without waiting on a reload.
-      _savedFoods=(_savedFoods||[]).concat([Object.assign({client_code:cl.code,name:nm,emoji:'🍽️'},rounded)]);
+      // sbInsertReturning (not plain sbInsert) so this gets a REAL id back — an
+      // in-memory entry pushed without one caused the exact bug this comment used
+      // to describe: the SAME food remembered twice in one sitting (log it, then
+      // log it again right away) couldn't find "existing" with a real id on the
+      // second pass, so it inserted a genuine duplicate row instead of patching
+      // the first one. Caught live: two rows, same name, sixteen seconds apart.
+      var _ins=(typeof sbInsertReturning==='function')
+        ? await sbInsertReturning('saved_foods',Object.assign({client_code:cl.code,name:nm,emoji:'🍽️'},rounded))
+        : null;
+      if(_ins && _ins.id!=null){
+        _savedFoods=(_savedFoods||[]).concat([_ins]);
+      } else {
+        // returning= unavailable or failed — still write the row; it just won't
+        // be matchable again until the next full reload, same as before this fix.
+        try{ await sbInsert('saved_foods',Object.assign({client_code:cl.code,name:nm,emoji:'🍽️'},rounded)); }catch(e2){}
+      }
     }
   }catch(e){}
 }
