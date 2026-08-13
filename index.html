@@ -29088,6 +29088,7 @@ async function mbDeepBlock(code){
 }
 // ===== THE PLATE (pattern B) — add a food -> clean line -> tap to edit macros -> log =====
 var _savedFoods = [];
+var _savedFoodsLoadedFor = null;
 var _plate = [];
 function _tcase(s){
   // Title case that doesn't flatten acronyms. It used to lowercase the whole string first,
@@ -29105,11 +29106,16 @@ function _tcase(s){
     return tok.charAt(0).toUpperCase()+tok.slice(1).toLowerCase();
   }).join('');
 }
-async function loadSavedFoods(){
+async function loadSavedFoods(force){
   try{
     if(!cl) return;
+    // Same cache-per-client guard mlibLoad already uses — jimTurn now calls this
+    // on every chat turn to check history before the AI, so an unguarded fetch
+    // here would mean a real query on every single message.
+    if(!force && _savedFoodsLoadedFor===cl.code) return;
     var rows = await sbSelect('saved_foods','client_code=eq.'+encodeURIComponent(cl.code)+'&order=updated_at.desc&limit=200');
     _savedFoods = rows || [];
+    _savedFoodsLoadedFor = cl.code;
   }catch(e){ _savedFoods = _savedFoods || []; }
 }
 function _plateTotals(){
@@ -29190,7 +29196,7 @@ async function plateSaveFood(i){
       await sbInsert('saved_foods',{client_code:cl.code,name:nm,emoji:'🍽️',calories:it.calories,protein:it.protein,carbs:it.carbs,fat:it.fat});
     }
     showToast('★ Saved '+nm+' for next time');
-    try{ await loadSavedFoods(); }catch(e){}
+    try{ await loadSavedFoods(true); }catch(e){}
   }catch(e){ console.error('plateSaveFood',e); showToast('Could not save'); }
 }
 var _foodAddT=null;
@@ -29730,7 +29736,7 @@ async function logPlateMeal(){
   try{ allFood.push(entry); todayFood.push(entry); }catch(e){}
   try{ if(typeof trackMealForMenu==='function') trackMealForMenu({name:mealName,emoji:'🍽️',calories:cal,protein:pro,carbs:carb,fat:fat,meal:meal,rating:'unknown'}); }catch(e){}
   try{ tots.cal+=cal;tots.protein+=pro;tots.carbs+=carb;tots.fat+=fat; }catch(e){}
-  try{ _plate.forEach(function(it){ if(!it.noSave) _rememberFood(it); }); setTimeout(function(){ try{ loadSavedFoods(); }catch(e){} }, 400); }catch(e){}
+  try{ _plate.forEach(function(it){ if(!it.noSave) _rememberFood(it); }); setTimeout(function(){ try{ loadSavedFoods(true); }catch(e){} }, 400); }catch(e){}
   _plate=[]; try{ photoData=null; }catch(e){}
   try{ closeM('mFood'); }catch(e){}
   try{ if(typeof rendTodayFood==='function') rendTodayFood(); if(typeof updTots==='function') updTots(); if(typeof refreshTileStates==='function') refreshTileStates(); if(typeof updHalo==='function') updHalo(); if(typeof pulseH==='function') pulseH(); if(typeof updStats==='function') updStats(); }catch(e){}
@@ -29802,9 +29808,9 @@ async function openFoodHub(){
   var s=document.getElementById('hubSuggest'); if(s){ s.style.display='none'; s.innerHTML=''; }
   _hubEditId=null; _hubExpanded=false;
   var _hs=document.getElementById('hubSearch'); if(_hs) _hs.value='';
-  try{ await loadSavedFoods(); }catch(e){}
+  try{ await loadSavedFoods(true); }catch(e){}
   renderFoodHub();
-  try{ await _backfillFoodLibrary(); await loadSavedFoods(); renderFoodHub(); }catch(e){}
+  try{ await _backfillFoodLibrary(); await loadSavedFoods(true); renderFoodHub(); }catch(e){}
 }
 function _hubMacroLine(f){ return Math.round(f.calories||0)+' Cal · '+Math.round(f.protein||0)+'P · '+Math.round(f.carbs||0)+'C · '+Math.round(f.fat||0)+'F'; }
 // How many times this food has actually been logged.
@@ -29988,7 +29994,7 @@ async function hubResearchAdd(q){
   }catch(e){ obj={calories:0,protein:0,carbs:0,fat:0}; }
   var nm=_tcase(q); // keep the EXACT portion the user typed as the name
   try{ await _rememberFood({name:nm,calories:obj.calories,protein:obj.protein,carbs:obj.carbs,fat:obj.fat}); }catch(e){}
-  try{ await loadSavedFoods(); }catch(e){}
+  try{ await loadSavedFoods(true); }catch(e){}
   var a=document.getElementById('hubAdd'); if(a) a.value='';
   if(box){ box.style.display='none'; box.innerHTML=''; }
   _hubExpanded=false; // new food sits at the top of the first 5
@@ -39432,6 +39438,50 @@ async function logWeightFromChat(offer){
 // opts.dateStr pins which day the writes land on, for the per-day bars.
 var _jimLastTurn = {wrote:0};
 
+// MY FOOD MATCHING \u2014 SKIP THE AI ROUND TRIP ON A KNOWN FOOD (13 Aug, GO'd by
+// Yusuf after Mikaela's report: her usual breakfast, logged many times, was
+// never recognized because nothing ever checked her own history before
+// asking the model fresh, every single time). Reuses the exact matching this
+// app already trusts in the manual capture sheet \u2014 _matchHistory against
+// saved_foods, _mlibFindExact against the meal library \u2014 nothing new to
+// trust. A full match becomes a synthetic [FOOD_LOG] marker fed through the
+// SAME pipeline every other food log already goes through: write-verify,
+// duplicate guard, and \u2014 for free \u2014 the words law, since no "words" field
+// means the single-entry fallback a few lines down stamps her own raw
+// message as meal_text automatically, exactly as it would for any other
+// one-message/one-food case.
+// EVERY part of the message must match or this returns null and falls
+// through to the AI untouched \u2014 a partial match never half-logs. Gated to
+// short, non-question text so "should I eat eggs" or a multi-part day never
+// takes this path; anything that doesn't look like a plain food statement
+// goes to the AI exactly as before.
+function _jimQuickFoodMatch(raw){
+  var t=String(raw||'').trim();
+  if(!t || t.length>140) return null;
+  if(/[?]/.test(t)) return null;
+  if(/^(should|shouldn|what|why|when|where|do|does|did|can|could|is|are|will|how|log)\b/i.test(t)) return null;
+  if(typeof _splitFoods!=='function' || typeof _matchHistory!=='function') return null;
+  var mLib=(typeof _mlibFindExact==='function') ? _mlibFindExact(t) : null;
+  if(mLib && (+mLib.calories>0)){
+    return {name:String(mLib.name||'Saved meal'), emoji:'\ud83c\udf7d\ufe0f',
+      calories:Math.round(+mLib.calories||0), protein:Math.round(+mLib.protein_g||0),
+      carbs:Math.round(+mLib.carbs_g||0), fat:Math.round(+mLib.fat_g||0), sugar:0, rating:'good'};
+  }
+  var parts=_splitFoods(t);
+  if(!parts.length || parts.length>4) return null;
+  var cal=0,pro=0,carb=0,fat=0,sugar=0,names=[],rating='good';
+  for(var i=0;i<parts.length;i++){
+    var pr=(typeof _qtyParse==='function') ? _qtyParse(parts[i]) : {qty:1,name:parts[i]};
+    var multiOk=(typeof _looksLikeMultipleItems!=='function') || !_looksLikeMultipleItems(pr.name);
+    var hist=_matchHistory(multiOk ? pr.name : parts[i]);
+    if(!hist || !(+hist.calories>0)) return null;
+    var mult=multiOk ? (pr.qty||1) : 1;
+    cal+=(+hist.calories||0)*mult; pro+=(+hist.protein||0)*mult; carb+=(+hist.carbs||0)*mult; fat+=(+hist.fat||0)*mult; sugar+=(+hist.sugar||0)*mult;
+    names.push((typeof _tcase==='function'?_tcase(hist.name):hist.name)+(mult!==1?(' \u00d7'+mult):''));
+    if(hist.rating) rating=hist.rating;
+  }
+  return {name:names.join(', '), emoji:'\ud83c\udf7d\ufe0f', calories:Math.round(cal), protein:Math.round(pro), carbs:Math.round(carb), fat:Math.round(fat), sugar:Math.round(sugar), rating:rating};
+}
 async function jimTurn(text, photos, opts){
   opts = opts || {};
   photos = (photos||[]).filter(Boolean);
@@ -39445,6 +39495,17 @@ async function jimTurn(text, photos, opts){
   // the Day page monument as a tap, in fire words, not typed into chat as a
   // 1-10.
 
+  var _quickMatch=null, reply='';
+  if(!hasPhoto){
+    try{ await Promise.all([ (typeof loadSavedFoods==='function'?loadSavedFoods():null), (typeof mlibLoad==='function'?mlibLoad():null) ]); }catch(e){}
+    try{ _quickMatch=_jimQuickFoodMatch(text); }catch(e){ _quickMatch=null; }
+  }
+  if(_quickMatch){
+    var _qmMeal=(typeof _mealSlotNow==='function') ? _mealSlotNow() : 'Meal';
+    reply='Logged \u2014 '+_quickMatch.name+'.\n[FOOD_LOG]'+JSON.stringify({name:_quickMatch.name, emoji:_quickMatch.emoji,
+      calories:_quickMatch.calories, protein:_quickMatch.protein, carbs:_quickMatch.carbs, fat:_quickMatch.fat,
+      sugar:_quickMatch.sugar, rating:_quickMatch.rating, insight:'', meal:_qmMeal})+'[/FOOD_LOG]';
+  } else {
   var ctx=await buildChatContext();
   var systemBlock=buildCoachVoice();
   if(ctx && ctx.length>0){
@@ -39483,9 +39544,9 @@ async function jimTurn(text, photos, opts){
 
   var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:msgs})});
   var data=await res.json();
-  var reply='';
   if(data && data.content){
     data.content.forEach(function(b){ if(b.type==='text' && b.text) reply+=b.text; });
+  }
   }
   reply=(reply||'').trim();
   if(!reply){ throw new Error('Empty reply'); }
@@ -39550,6 +39611,43 @@ async function jimTurn(text, photos, opts){
   var extractedEdit = extractWorkoutEdit(reply);
   reply = extractedEdit.cleanText;
   var foodAdds = extractAllMarkers(reply, 'FOOD_LOG'); reply = foodAdds.cleanText;
+  // ONE SITTING = ONE MEAL, ENFORCED (fixed 13 Aug — George's Aug 4 breakfast):
+  // the system prompt already tells the model to combine everything eaten at one
+  // sitting into a single [FOOD_LOG] entry — but that's a prompt instruction with
+  // no code behind it, so a message like "orange, banana, rice cakes, yogurt,
+  // blueberries, protein powder" for breakfast could come back as SIX separate
+  // Breakfast entries, all logged in the same reply, all stamped 9:00 AM, instead
+  // of the one entry the rule asks for. Nothing upstream catches that. This does:
+  // markers from THIS one reply that share the same meal slot, the same eat_time
+  // (or both blank) and the same day are the same sitting by the system prompt's
+  // own definition, so they're combined here, macros summed, before anything is
+  // written — a genuinely different sitting (different eat_time, different slot,
+  // or logged in an earlier separate message entirely) is never touched.
+  function _mergeSameSittingFoodAdds(items){
+    if(!items || items.length<2) return items;
+    var groups={}, order=[];
+    items.forEach(function(it){
+      if(!it || !it.name) return;
+      var key=String(it.meal||'').toLowerCase().trim()+'|'+String(it.eat_time||'').toLowerCase().trim()+'|'+(it.daysAgo||0);
+      if(!groups[key]){ groups[key]=[]; order.push(key); }
+      groups[key].push(it);
+    });
+    var merged=[];
+    order.forEach(function(key){
+      var g=groups[key];
+      if(g.length<2){ merged.push(g[0]); return; }
+      var sum=function(f){ return g.reduce(function(s,x){ return s+(+x[f]||0); },0); };
+      merged.push({
+        name: g.map(function(x){ return x.name; }).filter(Boolean).join(', '),
+        emoji: g[0].emoji,
+        calories: sum('calories'), protein: sum('protein'), carbs: sum('carbs'), fat: sum('fat'), sugar: sum('sugar'),
+        rating: g[0].rating, insight: (g.map(function(x){ return x.insight; }).filter(Boolean)[0])||'',
+        meal: g[0].meal, eat_time: g[0].eat_time, daysAgo: g[0].daysAgo
+      });
+    });
+    return merged;
+  }
+  foodAdds.items = _mergeSameSittingFoodAdds(foodAdds.items);
   var foodEdits = extractAllMarkers(reply, 'FOOD_EDIT'); reply = foodEdits.cleanText;
   var foodDeletes = extractAllMarkers(reply, 'FOOD_DELETE'); reply = foodDeletes.cleanText;
   var workoutPhotos = extractAllMarkers(reply, 'WORKOUT_PHOTO'); reply = workoutPhotos.cleanText;
@@ -41391,21 +41489,7 @@ function nlRender(){
                     +'<span>Take a photo of the plate</span>'))
       +'</div>'
       +'<textarea class="nlLine" id="nlLine" rows="2" placeholder="12 oz steak, a handful of rice, a handful of peppers">'+_escHtml(st.line||'')+'</textarea>'
-      +(function(){
-          // saved meals, one tap away: the usual for this slot first, then the most logged
-          var chips=[];
-          try{
-            var u=(typeof mpUsualFor==='function')?mpUsualFor(st.slot):null;
-            if(u) chips.push(u);
-            var mine=(typeof _mlibMine==='function')?_mlibMine():[];
-            mine.forEach(function(m){ if(chips.length<4 && chips.indexOf(m)<0) chips.push(m); });
-          }catch(e){}
-          if(!chips.length) return '';
-          return '<div class="nlChips">'+chips.map(function(m){
-            var mid=String(m.id).replace(/[^a-zA-Z0-9:_-]/g,'');
-            return '<div class="nlChip" onclick="nlChip(\''+mid+'\')">'+_escHtml(m.name||'Saved meal')+'</div>';
-          }).join('')+'</div>';
-        })()
+      +'<div class="nlChips" id="nlChips">'+_nlChipsHtml(st)+'</div>'
       +'<button class="nlGo" onclick="nlSubmit()">Log it</button>';
   }
   else if(st.stage==='busy'){
@@ -41433,7 +41517,13 @@ function nlRender(){
   sh.innerHTML=h;
   if(st.stage==='cap'){
     var ln=document.getElementById('nlLine');
-    if(ln) ln.addEventListener('input', function(){ st.line=ln.value; });
+    if(ln) ln.addEventListener('input', function(){
+      st.line=ln.value;
+      // Only the chip row updates on keystroke — re-rendering the whole sheet
+      // here would recreate the textarea and drop focus mid-type.
+      var ch=document.getElementById('nlChips');
+      if(ch) ch.innerHTML=_nlChipsHtml(st);
+    });
   }
 }
 // A photo this app can't shrink is a photo it shouldn't send. Above this it is the
@@ -41472,6 +41562,70 @@ function nlPhotoPicked(input){
   };
   r.readAsDataURL(input.files[0]);
   input.value='';
+}
+// LIVE-FILTERED CHIPS (13 Aug, GO'd by Yusuf): the row used to be fixed the
+// moment the sheet opened — the slot's usual plus whatever was first in the
+// library, never responsive to what she actually typed. Now it re-ranks on
+// every keystroke against BOTH sources this app already keeps — her own
+// saved_foods and the meal library — same starts-with-beats-contains scoring
+// _mlibSuggestFor already uses for the single best match, just returning
+// several instead of one. Nothing typed yet falls back to the original
+// default (the slot's usual, then the most-used library entries) so the
+// sheet is never empty on open.
+function _nlChipCandidates(text, slot){
+  var t=String(text||'').trim().toLowerCase(), out=[];
+  if(t.length>=2){
+    var foodPool=(_savedFoods||[]).filter(function(f){ return (+f.calories)>0; });
+    var mealPool=(typeof _mlibMatchPool==='function')?_mlibMatchPool():[];
+    function scoreOf(nm){
+      nm=String(nm||'').toLowerCase(); if(!nm) return -1;
+      if(nm===t) return 3; if(nm.indexOf(t)===0) return 2; if(nm.indexOf(t)>0) return 1; return -1;
+    }
+    foodPool.forEach(function(f){ var s=scoreOf(f.name); if(s>=0) out.push({type:'food', item:f, score:s*100000}); });
+    mealPool.forEach(function(m){ var s=scoreOf(m.name); if(s>=0) out.push({type:'meal', item:m, score:s*100000+(+m.times_logged||0)}); });
+    out.sort(function(a,b){ return b.score-a.score; });
+    out=out.slice(0,5);
+  } else {
+    try{
+      var u=(typeof mpUsualFor==='function')?mpUsualFor(slot):null;
+      if(u) out.push({type:'meal', item:u});
+      var mine=(typeof _mlibMine==='function')?_mlibMine():[];
+      mine.forEach(function(m){ if(out.length<4 && !out.some(function(o){ return o.item===m; })) out.push({type:'meal', item:m}); });
+    }catch(e){}
+  }
+  return out;
+}
+function _nlChipsHtml(st){
+  var chips=_nlChipCandidates(st.line, st.slot);
+  st._liveChips=chips;
+  if(!chips.length) return '';
+  return chips.map(function(c,i){
+    var label=(c.type==='meal') ? (c.item.name||'Saved meal') : ((typeof _tcase==='function'?_tcase(c.item.name):c.item.name)||'Saved food');
+    return '<div class="nlChip" onclick="nlChipTap('+i+')">'+_escHtml(label)+'</div>';
+  }).join('');
+}
+function nlChipTap(i){
+  var st=window._nl; if(!st || !st._liveChips) return;
+  var c=st._liveChips[i]; if(!c) return;
+  if(c.type==='meal'){
+    var mid=String(c.item.id).replace(/[^a-zA-Z0-9:_-]/g,'');
+    nlChip(mid);
+    return;
+  }
+  var f=c.item;
+  if(!(+f.calories>0)){
+    // No macros on this one yet — same as an unfinished library composition:
+    // prefill the line and let her say the portion so a real read can happen.
+    st.line=String(f.name||'');
+    nlRender();
+    try{ var _ln=document.getElementById('nlLine'); if(_ln) _ln.focus(); }catch(e){}
+    return;
+  }
+  st.lib=null;
+  st.est={name:(typeof _tcase==='function'?_tcase(f.name):f.name)||'Food',
+    calories:Math.round(+f.calories||0), protein:Math.round(+f.protein||0),
+    carbs:Math.round(+f.carbs||0), fat:Math.round(+f.fat||0), tidbit:''};
+  st.stage='res'; nlRender();
 }
 // A saved meal is already known — no reading, straight to the confirm with its numbers.
 function nlChip(mid){
