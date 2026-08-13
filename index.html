@@ -39456,35 +39456,82 @@ async function logWeightFromChat(offer){
 // opts.dateStr pins which day the writes land on, for the per-day bars.
 var _jimLastTurn = {wrote:0};
 
+// Strip words that carry no food identity so two phrasings of the same meal
+// compare on what actually matters. "Grilled shrimp with brown rice and
+// green beans for lunch" and the saved "Grilled Shrimp, Brown Rice & Green
+// Beans" share every content word \u2014 they only differ in connectors and
+// punctuation, which a plain substring check treats as a mismatch.
+var _JIM_STOPWORDS={with:1,and:1,for:1,the:1,a:1,an:1,of:1,some:1,my:1,usual:1,plus:1,had:1,ate:1,just:1,i:1,again:1,today:1,this:1,morning:1,afternoon:1,evening:1,tonight:1,breakfast:1,lunch:1,dinner:1,snack:1};
+function _jimWordSet(s){
+  return String(s||'').toLowerCase().replace(/[^a-z0-9\s]/g,' ').split(/\s+/).filter(function(w){
+    return w.length>=3 && !_JIM_STOPWORDS[w];
+  });
+}
+// What fraction of a candidate's own identifying words show up in her
+// message \u2014 not the other way around, so a longer message with extra
+// context ("...and a coffee too") doesn't get penalized for saying more.
+function _jimWordOverlap(rawWords, candidateName){
+  var nameWords=_jimWordSet(candidateName);
+  if(!nameWords.length) return 0;
+  var rawSet={}; rawWords.forEach(function(w){ rawSet[w]=1; });
+  var hits=nameWords.filter(function(w){ return rawSet[w]; }).length;
+  return hits/nameWords.length;
+}
 // MY FOOD MATCHING \u2014 SKIP THE AI ROUND TRIP ON A KNOWN FOOD (13 Aug, GO'd by
 // Yusuf after Mikaela's report: her usual breakfast, logged many times, was
 // never recognized because nothing ever checked her own history before
-// asking the model fresh, every single time). Reuses the exact matching this
-// app already trusts in the manual capture sheet \u2014 _matchHistory against
-// saved_foods, _mlibFindExact against the meal library \u2014 nothing new to
-// trust. A full match becomes a synthetic [FOOD_LOG] marker fed through the
-// SAME pipeline every other food log already goes through: write-verify,
-// duplicate guard, and \u2014 for free \u2014 the words law, since no "words" field
-// means the single-entry fallback a few lines down stamps her own raw
-// message as meal_text automatically, exactly as it would for any other
-// one-message/one-food case.
-// EVERY part of the message must match or this returns null and falls
-// through to the AI untouched \u2014 a partial match never half-logs. Gated to
-// short, non-question text so "should I eat eggs" or a multi-part day never
-// takes this path; anything that doesn't look like a plain food statement
-// goes to the AI exactly as before.
+// asking the model fresh, every single time). A full match becomes a
+// synthetic [FOOD_LOG] marker fed through the SAME pipeline every other food
+// log already goes through: write-verify, duplicate guard, and \u2014 for free \u2014
+// the words law, since no "words" field means the single-entry fallback a
+// few lines down stamps her own raw message as meal_text automatically,
+// exactly as it would for any other one-message/one-food case.
+// Three passes, in order: an exact meal-library match (_mlibFindExact, same
+// as the composer bar's own shortcut); a whole-message word-overlap match
+// against saved_foods and the meal library together \u2014 this is the one that
+// actually carries a repeated chat sentence, because a chat log remembers
+// the WHOLE sitting as one row (see logFoodFromChat), so a message
+// describing that sitting again should match the row as a whole, not get
+// chopped into ingredients that don't exist separately; then a per-part
+// split match (_splitFoods + _matchHistory, the same matching the manual
+// capture sheet trusts) for a genuinely itemized list where each part really
+// was saved on its own. Any pass that doesn't clear a high bar returns
+// nothing and this falls through to the AI untouched \u2014 nothing here ever
+// half-logs. Gated to short, non-question text so "should I eat eggs" or a
+// multi-part day never takes this path at all.
 function _jimQuickFoodMatch(raw){
   var t=String(raw||'').trim();
   if(!t || t.length>140) return null;
   if(/[?]/.test(t)) return null;
   if(/^(should|shouldn|what|why|when|where|do|does|did|can|could|is|are|will|how|log)\b/i.test(t)) return null;
-  if(typeof _splitFoods!=='function' || typeof _matchHistory!=='function') return null;
   var mLib=(typeof _mlibFindExact==='function') ? _mlibFindExact(t) : null;
   if(mLib && (+mLib.calories>0)){
     return {name:String(mLib.name||'Saved meal'), emoji:'\ud83c\udf7d\ufe0f',
       calories:Math.round(+mLib.calories||0), protein:Math.round(+mLib.protein_g||0),
       carbs:Math.round(+mLib.carbs_g||0), fat:Math.round(+mLib.fat_g||0), sugar:0, rating:'good'};
   }
+  var rawWords=_jimWordSet(t);
+  if(rawWords.length){
+    var foodPool=(_savedFoods||[]).filter(function(f){ return (+f.calories)>0; });
+    var mealPool=(typeof _mlibMatchPool==='function') ? _mlibMatchPool() : [];
+    var best=null, bestScore=0;
+    foodPool.forEach(function(f){
+      var s=_jimWordOverlap(rawWords, f.name);
+      if(s>=0.8 && s>bestScore){ bestScore=s; best={type:'food', item:f}; }
+    });
+    mealPool.forEach(function(m){
+      if(!(+m.calories>0)) return;
+      var s=_jimWordOverlap(rawWords, m.name);
+      if(s>=0.8 && s>bestScore){ bestScore=s; best={type:'meal', item:m}; }
+    });
+    if(best){
+      var it=best.item;
+      return (best.type==='meal')
+        ? {name:String(it.name||'Saved meal'), emoji:'\ud83c\udf7d\ufe0f', calories:Math.round(+it.calories||0), protein:Math.round(+it.protein_g||0), carbs:Math.round(+it.carbs_g||0), fat:Math.round(+it.fat_g||0), sugar:0, rating:'good'}
+        : {name:(typeof _tcase==='function'?_tcase(it.name):it.name), emoji:'\ud83c\udf7d\ufe0f', calories:Math.round(+it.calories||0), protein:Math.round(+it.protein||0), carbs:Math.round(+it.carbs||0), fat:Math.round(+it.fat||0), sugar:Math.round(+it.sugar||0), rating:(it.rating||'good')};
+    }
+  }
+  if(typeof _splitFoods!=='function' || typeof _matchHistory!=='function') return null;
   var parts=_splitFoods(t);
   if(!parts.length || parts.length>4) return null;
   var cal=0,pro=0,carb=0,fat=0,sugar=0,names=[],rating='good';
