@@ -854,7 +854,26 @@ body.jv-on .rsPaid{width:100%;max-width:92px;background:#0d0d0d;border:1px solid
   padding:5px 8px;font-size:12px;color:#f0ece4;font-family:inherit;outline:none;font-variant-numeric:tabular-nums;}
 body.jv-on .rsPaid:focus{border-color:rgba(240,236,228,0.34);}
 body.jv-on .rsPaidErr{border-color:#ff4455;}
-body.jv-on .rsCtl{display:flex;gap:5px;justify-content:flex-end;}
+body.jv-on .rsCtl{display:flex;gap:5px;justify-content:flex-end;align-items:center;}
+/* RULING (Yusuf, live): call access, set directly from the roster row — the
+   fields already existed (calls_enabled, call_credits) and standing access was
+   already supported in the code, just never reachable without opening the Call
+   access panel per client. The pill IS the on/off for standing access (calls_
+   enabled); the number IS call_credits — together they cover all three states
+   (unlimited / a specific credit count / off) without a third control, because
+   that's exactly how the two fields already combine everywhere else that reads
+   them. */
+body.jv-on .rsCalls{display:flex;align-items:center;gap:4px;margin-right:4px;}
+body.jv-on .rsCallsInf{width:22px;height:22px;border-radius:7px;display:flex;align-items:center;
+  justify-content:center;font-size:12px;font-weight:800;cursor:pointer;
+  border:1px solid rgba(240,236,228,0.14);color:rgba(240,236,228,0.45);}
+body.jv-on .rsCallsInf.on{border-color:var(--gold);color:var(--gold);background:rgba(245,197,24,0.10);}
+body.jv-on .rsCallsN{width:34px;background:#0d0d0d;border:1px solid #2b2b2e;border-radius:7px;
+  padding:4px 3px;font-size:11.5px;color:#f0ece4;font-family:inherit;outline:none;text-align:center;
+  font-variant-numeric:tabular-nums;}
+body.jv-on .rsCallsN:disabled{opacity:0.35;}
+body.jv-on .rsCallsN:focus{border-color:rgba(240,236,228,0.34);}
+body.jv-on .rsCallsBlank{font-size:11px;color:rgba(240,236,228,0.3);margin-right:4px;}
 body.jv-on .rsBtn{background:transparent;border:1px solid rgba(240,236,228,0.14);border-radius:8px;
   padding:5px 9px;font-size:11px;font-weight:700;color:rgba(240,236,228,0.62);cursor:pointer;
   font-family:'Plus Jakarta Sans',sans-serif;white-space:nowrap;}
@@ -9399,7 +9418,8 @@ function jvRenderRoster(target){
     if(!c || !c.code || c.is_trainer) return;
     var o={code:c.code, name:c.name||c.code, paid:(c.paid==null?'':c.paid),
            plan:!!hasPlan[c.code], last:last[c.code]||0, d30:d30[c.code]||0, life:life[c.code]||0,
-           hidden:!!(c.hidden || (typeof JV_HIDE_CLIENTS!=='undefined' && JV_HIDE_CLIENTS[c.code]))};
+           hidden:!!(c.hidden || (typeof JV_HIDE_CLIENTS!=='undefined' && JV_HIDE_CLIENTS[c.code])),
+           calls_enabled:(c.calls_enabled===true), call_credits:(+c.call_credits||0)};
     // hidden=true used to mean genuinely unfindable — no Roster row, no Removed row,
     // no restore button anywhere, the only fix being a hand edit in Supabase. That's
     // how a real client once went untraceable from every trainer surface at once. A
@@ -9440,6 +9460,7 @@ function jvRenderRoster(target){
       +'<div class="rsCell rsNum">'+o.life+'</div>'
       +'<div class="rsCell"><input class="rsPaid" type="number" inputmode="decimal" value="'+(o.paid===''?'':o.paid)+'" placeholder="—" onchange="rsSetPaid(this,\''+o.code+'\')" onclick="event.stopPropagation();"></div>'
       +'<div class="rsCtl" onclick="event.stopPropagation();">'
+        +'<span class="rsCalls" id="rsCalls_'+o.code+'" title="Call access">'+_rsCallsHtml(o)+'</span>'
         +'<button class="rsBtn'+(m==='stays'?' on':'')+'" onclick="rsMark(\''+o.code+'\',\'stays\')">Stays</button>'
         +'<button class="rsBtn'+(m==='out'?' on':'')+'" onclick="rsMark(\''+o.code+'\',\'out\')">Out</button>'
         +'<button class="rsBtn'+(m==='remind'?' on':'')+'" onclick="rsMark(\''+o.code+'\',\'remind\')">Remind</button>'
@@ -9480,7 +9501,12 @@ function jvRenderRoster(target){
   // unfindable everywhere else does not go back to being unfindable behind a closed
   // toggle. This is the ONLY surface anywhere that can still see a hidden row.
   if(hiddenList.length){
-    html+='<div class="rsQK rsQKTop" style="color:#f5c518;">Hidden from every surface · '+hiddenList.length+'</div>'
+    // RULING (Yusuf, live): "hidden from every surface" was wrong and confusing —
+    // this list is itself proof it isn't hidden from every surface, since it's the
+    // one place that can still see a hidden row. What's actually true: hidden from
+    // clients, visible to you, here.
+    html+='<div class="rsQK rsQKTop" style="color:#f5c518;">Hidden from clients · '+hiddenList.length+'</div>'
+      +'<div class="rsQS">Hidden from every client-facing surface. Still visible to you, here.</div>'
       +'<div class="rsList rsListQuiet">'
       + hiddenList.map(function(o){
           return '<div class="rsRow"><div class="rsName">'+String(o.name).replace(/</g,'&lt;')+'</div>'
@@ -9535,6 +9561,51 @@ async function rsSetPaid(el, code){
     el.classList.add('rsPaidErr');
     try{ showToast('That figure did not save'); }catch(_){}
   }
+}
+// RULING (Yusuf, live): call access, set right from the roster row. The pill
+// is calls_enabled (standing access, nothing counted); the number is
+// call_credits. Sharing mode blanks it the same register as Paid — this is
+// trainer-tier data, not something to show over a screen share.
+function _rsCallsHtml(o){
+  if(window._jvShareMode) return '<span class="rsCallsBlank">•••</span>';
+  var on=!!o.calls_enabled, cr=+o.call_credits||0;
+  return '<span class="rsCallsInf'+(on?' on':'')+'" onclick="rsCallsToggleInf(\''+o.code+'\')" title="Unlimited calls">∞</span>'
+    +'<input class="rsCallsN" type="number" min="0" inputmode="numeric" value="'+(on?'':(cr||''))+'" placeholder="0"'+(on?' disabled':'')+' title="Call credits" onchange="rsCallsSetCredits(this,\''+o.code+'\')">';
+}
+function _rsCallsRow(code){
+  try{ return (jvRosterData.clients||[]).filter(function(c){ return c.code===code; })[0]; }catch(e){ return null; }
+}
+function _rsCallsRepaint(code){
+  var host=document.getElementById('rsCalls_'+code); var r=_rsCallsRow(code);
+  if(host && r) host.innerHTML=_rsCallsHtml({code:code, calls_enabled:r.calls_enabled, call_credits:r.call_credits});
+}
+async function rsCallsToggleInf(code){
+  var r=_rsCallsRow(code); if(!r) return;
+  var prev=r.calls_enabled;
+  r.calls_enabled=!(r.calls_enabled===true);
+  _rsCallsRepaint(code);
+  var w=await trainerWrite('clientPatch',{code:code, calls_enabled:r.calls_enabled});
+  if(!w.ok || !w.rows[0]){ r.calls_enabled=prev; _rsCallsRepaint(code); try{ showToast('Could not save — try again'); }catch(e){} return; }
+  r.calls_enabled=(w.rows[0].calls_enabled===true); _rsCallsRepaint(code);
+  try{ showToast((r.name||code)+(r.calls_enabled?' has unlimited calls':' calls no longer unlimited')); }catch(e){}
+}
+async function rsCallsSetCredits(input, code){
+  var r=_rsCallsRow(code); if(!r) return;
+  var n=Math.max(0, Math.round(+input.value||0));
+  var prevCredits=r.call_credits, prevEnabled=r.calls_enabled;
+  // Setting an explicit credit count IS choosing "a specific number," not
+  // "unlimited" — the two states share the same two fields, so claiming one
+  // means dropping standing access if it was on, same as the data already
+  // means everywhere else it's read.
+  var patch={code:code, call_credits:n};
+  if(r.calls_enabled===true) patch.calls_enabled=false;
+  r.call_credits=n; if(patch.calls_enabled!==undefined) r.calls_enabled=false;
+  _rsCallsRepaint(code);
+  var w=await trainerWrite('clientPatch', patch);
+  if(!w.ok || !w.rows[0]){ r.call_credits=prevCredits; r.calls_enabled=prevEnabled; _rsCallsRepaint(code); try{ showToast('Could not save — try again'); }catch(e){} return; }
+  r.call_credits=(+w.rows[0].call_credits||0); r.calls_enabled=(w.rows[0].calls_enabled===true);
+  _rsCallsRepaint(code);
+  try{ showToast((r.name||code)+' set to '+r.call_credits+' call credit'+(r.call_credits===1?'':'s')); }catch(e){}
 }
 // Staged removal. Nothing happens until this runs, and it names everyone first.
 async function rsConfirmOut(){
