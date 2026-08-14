@@ -34118,47 +34118,47 @@ async function cancelBooking(id){
 }
 
 // ---- the client picker's own collision check: accepted consults + vip_calls ----
-// Fail CLOSED here, deliberately — unlike bookings above, which fails open
+// Reads through consult-availability.js — the SAME public endpoint the offer
+// page's own grid already calls — rather than the trainer door. consultList
+// and vipCallList are trainer-only ops; a client session gets a flat 403 from
+// both, always, which is exactly the class of bug just fixed elsewhere this
+// session (a non-trainer surface reaching a trainer-only read). This endpoint
+// already unions accepted consult_requests with vip_calls occurrences and
+// needs no session at all — reusing it means this list is never out of step
+// with what the offer page itself honors, computed once, not twice.
+//
+// Fails CLOSED, deliberately — unlike bookings above, which fails open
 // (pre-existing, unchanged: a read error there just means a client might see
 // one of their own slots twice, nothing new gets double-booked). A silent
-// empty result from either read below would mean this whole check quietly
-// does nothing at exactly the moment it exists for: Yusuf granting unlimited
-// check-in access while driving consult traffic to the offer page is exactly
-// the condition under which a real collision happens. trainerOpChecked (not
-// trainerOp) is what makes "the door failed" distinguishable from "confirmed
-// no conflicts" — trainerOp's own [] on failure would be indistinguishable
-// from a genuinely open calendar, and reintroduce the bug this closes.
+// empty result here would mean this check quietly does nothing at exactly the
+// moment it exists for: Yusuf granting unlimited check-in access while
+// driving consult traffic to the offer page is exactly the condition under
+// which a real collision happens.
 var _safetyBusyCache=null;
 async function _loadPickerSafetyBusy(daysAhead, force){
   if(_safetyBusyCache && !force) return _safetyBusyCache;
-  var now=Date.now(), rangeEnd=now+daysAhead*86400000;
   var out={ok:true, taken:{}};
   try{
-    var consultChk = await trainerOpChecked('consultList', {});
-    var vipChk = await trainerOpChecked('vipCallList', {});
-    if(!consultChk.ok || !vipChk.ok){ out.ok=false; return out; }
-    (consultChk.rows||[]).forEach(function(r){
-      if(r.status==='cancelled') return;
-      var t=new Date(r.requested_at).getTime();
-      if(isFinite(t) && t>=now && t<=rangeEnd) out.taken[t]=1;
-    });
-    (vipChk.rows||[]).forEach(function(row){
-      if(row.active===false) return;
-      try{
-        var ruleStart=new Date(row.start_date+'T00:00:00.000Z').getTime();
-        var ruleEnd=new Date(row.end_date+'T00:00:00.000Z').getTime();
-        var todayUtc=new Date(); todayUtc.setUTCHours(0,0,0,0);
-        var spanStart=Math.max(ruleStart, todayUtc.getTime());
-        var spanEnd=Math.min(ruleEnd, rangeEnd);
-        var t=String(row.time_local||'').split(':');
-        for(var dt=spanStart; dt<=spanEnd; dt+=86400000){
-          var d=new Date(dt);
-          var dow=((d.getUTCDay()+6)%7)+1;
-          if(!Array.isArray(row.weekdays) || row.weekdays.indexOf(dow)===-1) continue;
-          var occ=_zonedToUtc(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), +t[0], +t[1], row.tz);
-          if(occ.getTime()>=now && occ.getTime()<=rangeEnd) out.taken[occ.getTime()]=1;
-        }
-      }catch(e){}
+    var todayUtc=new Date(); todayUtc.setUTCHours(0,0,0,0);
+    var chunks=[];
+    for(var start=0; start<daysAhead; start+=14){
+      var end=Math.min(start+13, daysAhead-1);
+      chunks.push({
+        from: new Date(todayUtc.getTime()+start*86400000).toISOString().slice(0,10),
+        to:   new Date(todayUtc.getTime()+end*86400000).toISOString().slice(0,10)
+      });
+    }
+    var results = await Promise.all(chunks.map(function(c){
+      return fetch('/.netlify/functions/consult-availability?from='+c.from+'&to='+c.to)
+        .then(function(r){ return r.ok ? r.json() : null; })
+        .catch(function(){ return null; });
+    }));
+    if(results.some(function(r){ return !r || !Array.isArray(r.busy); })){ out.ok=false; return out; }
+    results.forEach(function(r){
+      r.busy.forEach(function(iso){
+        var t=new Date(iso).getTime();
+        if(isFinite(t)) out.taken[t]=1;
+      });
     });
   }catch(e){ out.ok=false; }
   _safetyBusyCache = out;
