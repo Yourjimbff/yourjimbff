@@ -1125,6 +1125,19 @@ body.jv-on .pfOutreachIn:focus{border-color:rgba(224,196,152,0.4);}
 .jvSeg2{font-size:12.5px;font-weight:800;color:rgba(240,236,228,0.62);padding:7px 17px;border-radius:999px;
   cursor:pointer;white-space:nowrap;transition:.15s;}
 .jvSeg2.on{background:rgba(240,236,228,0.10);color:#f0ece4;box-shadow:0 1px 0 rgba(255,255,255,0.06) inset;}
+/* Day back/forward — muted chrome, not action gold; the day you're on is a
+   plain label, never a status. Today is the one gold-adjacent thing here
+   because it's the way home, an action, not a state. */
+.jvFeedDayNav{display:flex;align-items:center;gap:7px;}
+.jvFeedDayBtn{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+  background:transparent;border:1px solid rgba(240,236,228,0.14);color:rgba(240,236,228,0.72);
+  font-size:15px;font-weight:800;line-height:1;cursor:pointer;font-family:inherit;padding:0;}
+.jvFeedDayBtn:hover{border-color:rgba(240,236,228,0.32);}
+.jvFeedDayBtn:disabled{opacity:0.28;cursor:default;}
+.jvFeedDayLabel{font-size:12.5px;font-weight:800;color:rgba(240,236,228,0.85);white-space:nowrap;
+  min-width:58px;text-align:center;}
+.jvFeedTodayBtn{font-size:11px;font-weight:800;color:var(--gold);cursor:pointer;white-space:nowrap;
+  border:1px solid rgba(245,197,24,0.34);border-radius:999px;padding:6px 12px;}
 .jvQuiet{background:rgba(30,30,30,0.72);backdrop-filter:blur(24px) saturate(1.3);
   -webkit-backdrop-filter:blur(24px) saturate(1.3);border:1px solid rgba(245,197,24,0.10);
   border-radius:20px;padding:30px 28px;box-shadow:0 12px 34px rgba(0,0,0,0.5),0 1px 0 rgba(245,197,24,0.05) inset;}
@@ -8373,9 +8386,37 @@ function _jarvisReplyHtml(){
 // The desktop control row: which lens, and which day. Food and Fitness used to be
 // whole separate tabs with their own card systems built off the same rows; they are
 // three lenses on one feed now, and every lens renders the same card.
+// A day back/forward day, defaulting to today on every load (Yusuf, live) — the
+// desktop cockpit used to show today only, with a comment here that said "the
+// feed is continuous now, the day is a header you scroll past." That was true
+// for the OLD event-per-tile renderer mobile still runs, which does scroll
+// several days with headers — it was never true for the "feed is people" cards
+// desktop actually shows, which hard-filtered to today and had no way back.
+// Forward is capped at today (never into the future); a standing Today link
+// jumps straight home so nobody reading an old day gets stranded in it.
+function _feedDayLabel(daysBack){
+  if(!daysBack) return 'Today';
+  if(daysBack===1) return 'Yesterday';
+  var d=new Date(Date.now()-daysBack*86400000);
+  return d.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+}
+// Same day, phrased to slot into a sentence ("things logged ___") rather than
+// stand alone as a heading.
+function _feedDayPhrase(daysBack){
+  if(!daysBack) return 'today';
+  if(daysBack===1) return 'yesterday';
+  var d=new Date(Date.now()-daysBack*86400000);
+  return 'on '+d.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+}
+// How far back a day is honestly answerable — the row fetch is capped
+// (400 food rows, 300 workout rows), not unlimited, so past this the feed
+// would start silently reading as "nothing logged" on days that may well have
+// real history the fetch just never reached. Two weeks holds comfortably for
+// this roster's real volume; past it, Previous day disables rather than lie.
+var FEED_MAX_DAYS_BACK = 13;
 function _feedDeskControls(counts){
   var lens=window._feedLens||'all';
-  var day=(window._feedDay==null?0:window._feedDay);
+  var daysBack=(window._feedDay==null?0:window._feedDay);
   function seg(on,onclick,label){
     return '<div onclick="'+onclick+'" class="jvSeg2'+(on?' on':'')+'">'+label+'</div>';
   }
@@ -8384,11 +8425,16 @@ function _feedDeskControls(counts){
     + seg(lens==='kitchen','setFeedLens(\'kitchen\')','Food')
     + seg(lens==='gym','setFeedLens(\'gym\')','Training')
     + '</div>';
-  var dayRow='';   // the feed is continuous now; the day is a header you scroll past
+  var dayRow='<div class="jvFeedDayNav">'
+    + '<button class="jvFeedDayBtn" onclick="setFeedDay('+Math.min(FEED_MAX_DAYS_BACK,daysBack+1)+')" title="Previous day"'+(daysBack>=FEED_MAX_DAYS_BACK?' disabled':'')+'>‹</button>'
+    + '<span class="jvFeedDayLabel">'+_feedDayLabel(daysBack)+'</span>'
+    + '<button class="jvFeedDayBtn" onclick="setFeedDay('+Math.max(0,daysBack-1)+')" title="Next day"'+(daysBack===0?' disabled':'')+'>›</button>'
+    + (daysBack>0?'<span class="jvFeedTodayBtn" onclick="setFeedDay(0)">Today</span>':'')
+  + '</div>';
   var sub = counts ? ('<span>'+counts+'</span>') : '';
   return '<div class="jvFeedCtrl">'
     + '<div class="jvFeedH1">Feed '+sub+'</div>'
-    + '<div style="flex:1;"></div>' + lensRow + dayRow
+    + '<div style="flex:1;"></div>' + dayRow + lensRow
   + '</div>';
 }
 // ===== THE FEED, WHEN NOBODY HAS LOGGED YET =================================
@@ -8732,9 +8778,14 @@ async function loadTrainerFeed(targetId){
     var lens=window._feedLens||'all';
     var hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
     try{ await _jvLoadGender(); _jvRenderFilters(); }catch(e){}
-    var _feedCut=Date.now()-3*86400000;
+    // The window widens with how far back the desktop day-nav has gone, so the
+    // viewed day is always inside what got fetched — 3 days of buffer beyond it,
+    // same margin the default (today) always had. Mobile never sets _feedDay, so
+    // this is the unchanged 3-day window there.
+    var _feedBackDays = 3 + (_dtk ? Math.min(FEED_MAX_DAYS_BACK, window._feedDay||0) : 0);
+    var _feedCut=Date.now()-_feedBackDays*86400000;
     // Bound the window server-side too. Fetching the newest 400 rows across the
-    // WHOLE roster and only then trimming to 3 days meant a busy roster could
+    // WHOLE roster and only then trimming to N days meant a busy roster could
     // spend the entire budget on older rows and leave a client who logged today
     // with nothing on screen. Ask for a little more than the cut so a row sitting
     // right on the boundary (or with a skewed clock) still makes it in.
@@ -8862,19 +8913,25 @@ async function loadTrainerFeed(targetId){
     // The day selector picks ONE day. Anchored on the actual date, not on the position
     // in the list — otherwise a day with nothing in it disappears and "Yesterday"
     // silently shows the day before.
-    // One continuous feed, newest first, day headers as you scroll. The day tabs are
-    // gone: three buttons where two of them were usually empty rooms. If today has
-    // nothing in it the quiet card leads and yesterday flows straight in underneath,
-    // so the page is never a choice between empty tabs.
+    // Mobile (below, !_dtk): one continuous feed, newest first, day headers as you
+    // scroll — several days at once, no day control needed there. Desktop shows
+    // exactly one day's cards at a time instead (the "feed is people" shape below),
+    // which is why IT needs the explicit day-nav this block builds — there's no
+    // scroll to carry a reader from today into yesterday on its own.
     if(_dtk){
-      var _todayK=_feedDayStart(Date.now()).getTime();
-      var _n=(dayMap[_todayK]||[]).length;
-      var _people={}; (dayMap[_todayK]||[]).forEach(function(x){ if(x.code) _people[x.code]=1; });
+      // RENDERER IDENTITY (Yusuf, live): the day rendered is the day being viewed,
+      // read from _feedDay — never implicitly today's date. _viewDay defaults to 0
+      // (today) on every fresh load, same as it always did; navigating away from it
+      // is the only thing that ever changes it.
+      var _viewDay=(window._feedDay==null?0:window._feedDay);
+      var _viewK=_feedDayStart(Date.now()-_viewDay*86400000).getTime();
+      var _n=(dayMap[_viewK]||[]).length;
+      var _people={}; (dayMap[_viewK]||[]).forEach(function(x){ if(x.code) _people[x.code]=1; });
       var _pn=Object.keys(_people).length;
-      var _cn=_n ? (_n+(_n===1?' thing logged':' things logged')+' today · '+_pn+(_pn===1?' client':' clients'))
-                 : (items.length+(items.length===1?' thing':' things')+' in the last few days');
+      var _cn=_n ? (_n+(_n===1?' thing logged ':' things logged ')+_feedDayPhrase(_viewDay)+' · '+_pn+(_pn===1?' client':' clients'))
+                 : ('Nothing logged '+_feedDayPhrase(_viewDay)+(_viewDay===0?' yet':''));
       html+=_feedDeskControls(_cn);
-      if(!_n) html+=_feedQuietHtml(0, items);
+      if(!_n) html+=_feedQuietHtml(_viewDay, items);
     }
     // THE FEED IS PEOPLE NOW, on the desktop cockpit. One card per client per day,
     // freshest person on top. The old event-per-tile path below is untouched and
@@ -8882,7 +8939,7 @@ async function loadTrainerFeed(targetId){
     // to put the desktop straight back on it.
     if(_dtk && !window._feedOldCards){
       try{
-        holder.innerHTML = html + '<div id="pfPeopleWrap">'+_feedPeopleHtml(items, hidden)+'</div>';
+        holder.innerHTML = html + '<div id="pfPeopleWrap">'+_feedPeopleHtml(items, hidden, _viewK)+'</div>';
         _jvReFilter();
         return;
       }catch(e){ /* fall through to the old renderer rather than show nothing */ }
@@ -9080,13 +9137,22 @@ async function _pfToggleWo(ds, code){
 }
 // The quiet card. Butler register: it states the day and offers a move. It never
 // says the client failed at anything, because they have not.
-function _pfQuietWords(hour){
+// "Yet"/"so far" say the day is still open — true for today, false for a day
+// already over. isToday keeps this from telling Yusuf a client is still short
+// on time to log a day that's already three days gone.
+function _pfQuietWords(hour, isToday){
+  if(!isToday) return 'Nothing logged that day.';
   if(hour<12) return 'Nothing logged yet this morning.';
   if(hour<17) return 'Nothing logged so far today.';
   return 'Nothing logged today.';
 }
-function _feedPeopleHtml(items, hidden){
-  var now=Date.now(), today=_feedDayStart(now).getTime();
+// RENDERER IDENTITY (Yusuf, live): viewDayTs is the day this call renders — the
+// one thing that decides which items belong on screen. Defaults to today only
+// when the caller genuinely means "right now" (nothing here ever falls back to
+// Date.now() to decide which day's cards these are).
+function _feedPeopleHtml(items, hidden, viewDayTs){
+  var now=Date.now(), today=(viewDayTs!=null?viewDayTs:_feedDayStart(now).getTime());
+  var isToday=(today===_feedDayStart(now).getTime());
   // Who may never appear, enforced HERE and not only upstream. loadTrainerFeed already
   // filters these out of items, but a card built straight from an event must not
   // depend on that — "removed never appears" has to be true of this function alone.
@@ -9131,10 +9197,10 @@ function _feedPeopleHtml(items, hidden){
   // is unchanged — this only changes which container each card lands in.
   var active=cards.filter(function(b){ return b.evs.length>0; });
   var quiet=cards.filter(function(b){ return b.evs.length===0; });
-  var html='<div class="pfWrap">'+active.map(function(b){ return _pfCard(b, hour, now); }).join('')+'</div>';
+  var html='<div class="pfWrap">'+active.map(function(b){ return _pfCard(b, hour, now, isToday, today); }).join('')+'</div>';
   if(quiet.length){
-    html+='<div class="pfQuietHead">Nothing logged yet · '+quiet.length+'</div>'
-      +'<div class="pfWrapQuiet">'+quiet.map(function(b){ return _pfCard(b, hour, now); }).join('')+'</div>';
+    html+='<div class="pfQuietHead">'+(isToday?'Nothing logged yet':'Nothing logged')+' · '+quiet.length+'</div>'
+      +'<div class="pfWrapQuiet">'+quiet.map(function(b){ return _pfCard(b, hour, now, isToday, today); }).join('')+'</div>';
   }
   return html;
 }
@@ -9151,7 +9217,11 @@ function _feedRerenderPeopleOnly(){
     // alone would leave the previous render's quiet section orphaned underneath it.
     var wrap=document.querySelector('#jvWall #pfPeopleWrap'); if(!wrap) return false;
     var hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
-    wrap.innerHTML=_feedPeopleHtml(window._feedItems||[], hidden);
+    // Same day this wrapper was already showing — a local repaint (contact logged,
+    // phone landed) must never silently snap the view back to today.
+    var _viewDay=(window._feedDay==null?0:window._feedDay);
+    var _viewK=_feedDayStart(Date.now()-_viewDay*86400000).getTime();
+    wrap.innerHTML=_feedPeopleHtml(window._feedItems||[], hidden, _viewK);
     return true;
   }catch(e){ return false; }
 }
@@ -9268,7 +9338,8 @@ function _pfCopyOutreach(code){
 // workout that isn't the newest thing, which is exactly what went missing on
 // Chris's Pull. There is no lead any more. Every logged thing is one row, in the
 // order it happened, no featured item.
-function _pfCard(b, hour, now){
+function _pfCard(b, hour, now, isToday, viewDayTs){
+  if(isToday==null) isToday=true;           // callers outside the day-nav path still mean "now"
   var info=CLIENTS[b.code]||{};
   var nm=_pfEsc(info.name||b.code);
   var first=String(info.name||b.code).split(' ')[0];
@@ -9276,24 +9347,29 @@ function _pfCard(b, hour, now){
   if(!evs.length){
     // Already reached out today: that IS today's event for this card. The invitation
     // to check in and the fresh "Log contact" tap both stand down — showing either
-    // one under a line that already says he reached out would ask twice.
-    var todayC=null; try{ todayC=_ccToday(b.code); }catch(e){}
+    // one under a line that already says he reached out would ask twice. Only
+    // checked on today's own card — reaching out right now says nothing about
+    // whether a client was quiet on some earlier day being looked back at.
+    var todayC=null; if(isToday){ try{ todayC=_ccToday(b.code); }catch(e){} }
     var body = todayC
       ? _pfContactLine(b.code, todayC)
-      : '<div class="pfQuietWords">'+_pfQuietWords(hour)+'</div>'
-        +'<div onclick="event.stopPropagation();"><textarea class="pfOutreachIn" id="pfOut_'+b.code+'">'+_pfEsc(_pfSuggestLine(b.code))+'</textarea></div>'
-        +'<div class="pfActs" onclick="event.stopPropagation();">'
-          +(info.phone?('<span class="pfAct" onclick="textClient(\''+b.code+'\')">Say hello to '+_pfEsc(first)+'</span>'):'<span class="pfAct" onclick="jvOpenDeep(\''+b.code+'\')">Open '+_pfEsc(first)+'</span>')
-          +'<span class="pfAct" onclick="jvQuickLogContact(\''+b.code+'\')">Log contact</span>'
-          +'<span class="pfAct" onclick="_pfCopyOutreach(\''+b.code+'\')">Copy</span>'
-        +'</div>';
+      : '<div class="pfQuietWords">'+_pfQuietWords(hour, isToday)+'</div>'
+        +(isToday ? '<div onclick="event.stopPropagation();"><textarea class="pfOutreachIn" id="pfOut_'+b.code+'">'+_pfEsc(_pfSuggestLine(b.code))+'</textarea></div>'
+          +'<div class="pfActs" onclick="event.stopPropagation();">'
+            +(info.phone?('<span class="pfAct" onclick="textClient(\''+b.code+'\')">Say hello to '+_pfEsc(first)+'</span>'):'<span class="pfAct" onclick="jvOpenDeep(\''+b.code+'\')">Open '+_pfEsc(first)+'</span>')
+            +'<span class="pfAct" onclick="jvQuickLogContact(\''+b.code+'\')">Log contact</span>'
+            +'<span class="pfAct" onclick="_pfCopyOutreach(\''+b.code+'\')">Copy</span>'
+          +'</div>' : '');
     // RULING (Yusuf, live): the name is the profile door now, everywhere — tapping
     // it opens jvOpenDeep, not the day. The card itself keeps the one-tap-to-day
     // gesture it always had; View profile as its own button is gone, its job now
     // done by the name. Nothing here is ever a fourth flex:1 button crammed into
     // the action row — the diet is the row itself, not a lone button beside it.
+    // Opens the day actually being viewed, not implicitly today — a quiet card
+    // has no event timestamp of its own to fall back on the way an active card's
+    // click does, so the viewed day is passed straight through.
     return '<div class="pfCard pfQuiet" data-name="'+String(info.name||'').toLowerCase().replace(/"/g,'')+'"'
-      +' onclick="openClientDay(\''+b.code+'\')">'
+      +' onclick="openClientDay(\''+b.code+'\','+(viewDayTs!=null?viewDayTs:0)+')">'
       +'<div class="pfHead"><span class="pfName" onclick="event.stopPropagation();jvOpenDeep(\''+b.code+'\')">'+nm+'</span></div>'
       +body+'</div>';
   }
