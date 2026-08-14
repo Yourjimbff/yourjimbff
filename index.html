@@ -5830,6 +5830,13 @@ window.addEventListener('load', function(){
 // just its own record (yjb_self_client) so returning users still get in
 // instantly, offline included. Nothing about anyone else ships in this file.
 var CLIENTS = {};
+// A tier above hidden — a blocked code never makes it into CLIENTS at all
+// (loadRosterFromDB strips it at ingestion), so this set exists only for the
+// handful of surfaces that read the clients table independently of CLIENTS
+// and need to cross-reference it after the fact (jvLoadRoster's own door
+// read, jvLoadTraining's own raw fetch, loadSales — see each for why their
+// own queries stay untouched rather than asking about blocked directly).
+window._blockedCodes = {};
 
 // ===== ROSTER LOADER (Stage B) =====
 // Pulls the clients table from Supabase and merges it INTO the hardcoded CLIENTS
@@ -5857,7 +5864,11 @@ async function loadRosterFromDB(){
       // deliberately public, not a maybe-missing one, so one query is enough.
       var rows=null;
       try{
-        rows = await sbSelect('clients','select=code,name,initials,coach_code,is_trainer,is_primary,active,hidden&order=code.asc&limit=2000');
+        // blocked is new and may not exist in the DB yet — sbSelect already
+        // self-heals a select= column PostgREST rejects (drops it, retries), so
+        // this is safe to ask for before the migration has run: rows just come
+        // back without it until it does, same as any other not-yet-added column.
+        rows = await sbSelect('clients','select=code,name,initials,coach_code,is_trainer,is_primary,active,hidden,blocked&order=code.asc&limit=2000');
       }catch(_e0){ rows=null; }
       if(!rows || !rows.length){
         // Narrowest possible fallback, in case even is_primary/hidden trip
@@ -5865,9 +5876,17 @@ async function loadRosterFromDB(){
         try{ rows = await sbSelect('clients','select=code,name,is_trainer,active&order=code.asc&limit=2000'); }catch(_e1){ rows=null; }
       }
       window._secColsExist = !!(rows && rows.length && ('hidden' in rows[0]));
+      // RULING (Yusuf, live): a tier above hidden — blocked does not merely go
+      // unlisted in a trainer view, it is stripped out of CLIENTS at the point of
+      // ingestion, before anything downstream (roster, search, call access,
+      // training board, the feed's own roster-fill) ever gets a chance to read
+      // it. Only reachable by direct DB query — no UI or API path in this app
+      // ever sets it, on purpose, so a mis-click can't do what this is for.
+      window._blockedCodes = window._blockedCodes || {};
       if(rows && rows.length){
         rows.forEach(function(r){
           if(!r.code) return;
+          if(r.blocked===true){ window._blockedCodes[r.code]=true; delete CLIENTS[r.code]; return; }
           var e = CLIENTS[r.code] || {};
           e.name = r.name || e.name || r.code;
           if(r.initials) e.initials = r.initials;
@@ -5916,6 +5935,13 @@ async function loadRosterFromDB(){
           var full = await trainerOp('roster', {});
           (full||[]).forEach(function(r){
             if(!r.code) return;
+            // Blocked, per the anon-tier pass above — this door read doesn't know
+            // about blocked at all (its own query is untouched, deliberately, so
+            // a missing column there can never 400 the whole trainer-only tier),
+            // so it's re-checked here against the set that pass already built,
+            // or CLIENTS[r.code] would silently come right back from this fuller
+            // read a few lines after the first pass just deleted it.
+            if(window._blockedCodes && window._blockedCodes[r.code]){ delete CLIENTS[r.code]; return; }
             var e = CLIENTS[r.code] || {};
             if(r.phone) e.phone = r.phone;
             e.email = r.email || null;   // null, not undefined: 'no email' is one state
@@ -9501,7 +9527,11 @@ async function jvLoadRoster(force, target){
       fetch(SB_URL+'/rest/v1/training_plans?select=client_code&limit=1000',{headers:sbHeaders()})
     ]);
     if(!r[0] || !r[0].length || !r[1].ok) throw new Error('roster read');
-    var clients=r[0], plans=await r[1].json();
+    // Blocked, filtered here rather than in the door's own roster op — that op's
+    // query is deliberately untouched (a missing blocked column there would 400
+    // this whole fetch, taking phone/money/term dates down with it for
+    // everyone). Cross-referenced against the anon-tier pass's own set instead.
+    var clients=r[0].filter(function(c){ return !(window._blockedCodes && window._blockedCodes[c.code]); }), plans=await r[1].json();
     var logs=await Promise.all([
       _rsPaged('food_logs','client_code,logged_at'),
       _rsPaged('workout_logs','client_code,logged_at'),
@@ -9609,7 +9639,13 @@ function jvRenderRoster(target){
     html+='<div class="rsQK rsQKTop" onclick="rsToggleRemoved()">Removed · '+removed.length+' <span id="rsRemCaret">▾</span></div>'
       +'<div id="rsRemovedList" style="display:none;"><div class="rsList rsListQuiet">'
       + removed.map(function(o){
-          return '<div class="rsRow"><div class="rsName">'+String(o.name).replace(/</g,'&lt;')+'</div>'
+          // RULING (Yusuf, live): data-name is what jvFilter keys the whole-roster
+          // search on — this row never carried it, so a removed client could not be
+          // found by search at all, only by manually opening this shelf and reading
+          // down it. The shelf itself starts collapsed; jvFilter opens it for the
+          // duration of a search (below) so a match is actually visible, not just
+          // technically un-hidden behind a closed toggle.
+          return '<div class="rsRow" data-name="'+String(o.name).toLowerCase().replace(/"/g,'')+'"><div class="rsName">'+String(o.name).replace(/</g,'&lt;')+'<span class="rsTag">removed · no access</span></div>'
             +'<div class="rsCell">'+ago(o.last)+'</div><div class="rsCell rsNum">'+o.d30+'</div>'
             +'<div class="rsCell rsNum">'+o.life+'</div><div class="rsCell">'+(_rsMoney(o.paid)||'—')+'</div>'
             +'<div class="rsCtl"><button class="rsBtn" onclick="rsRestore(\''+o.code+'\',this)">Restore</button></div></div>';
@@ -9844,6 +9880,10 @@ async function jvLoadTraining(force, target){
     wall.innerHTML='<div class="tbFail">The board did not load. That is a read that failed, not a quiet day — try Refresh.</div>';
     return;
   }
+  // Blocked, filtered client-side — this fetch's own select= is left alone so a
+  // not-yet-migrated blocked column can never 400 the whole board, same reason
+  // jvLoadRoster's door read stays untouched and is filtered after the fact.
+  roster = roster.filter(function(c){ return !(window._blockedCodes && window._blockedCodes[c.code]); });
   jvTrainData={plans:plans, wos:wos, roster:roster, at:Date.now()};
   jvRenderTraining(wall);
 }
@@ -14432,6 +14472,14 @@ function jvFilter(q){
   // Only one shelf collapses now — the rest live in the Not-active view, listed open.
   var _hl=document.getElementById('jvHandledList'); if(_hl) _hl.style.display = q ? 'block' : 'none';
   var _hc=document.getElementById('jvHandledCaret'); if(_hc) _hc.textContent = q ? '\u25b4' : '\u25be';
+  // RULING (Yusuf, live): the Removed shelf on the roster was the one this
+  // comment's own "roster / dormant / handled" list named and never actually
+  // wired up \u2014 its rows now carry a data-name for search to match, but the
+  // shelf itself stayed collapsed the whole time, so a match was un-hidden
+  // behind a toggle nothing ever opened. Same open-while-searching,
+  // close-when-clear treatment as Handled, above.
+  var _rl=document.getElementById('rsRemovedList'); if(_rl) _rl.style.display = q ? 'block' : 'none';
+  var _rc=document.getElementById('rsRemCaret'); if(_rc) _rc.textContent = q ? '\u25b4' : '\u25be';
   wall.querySelectorAll('[data-name]').forEach(function(el){
     var n=el.getAttribute('data-name')||'';
     el.style.display = (!q || n.indexOf(q)>-1) ? '' : 'none';
@@ -21377,6 +21425,13 @@ async function loadSales(){
       return;
     }
     var rows=chk.rows;
+    // Blocked. A sale row carries its own client_name straight on the row —
+    // it was never looked up from CLIENTS/clients, so deleting a blocked code
+    // out of CLIENTS (where every other trainer-facing surface is filtered)
+    // would not have touched this one. Same money law elsewhere in this file:
+    // payment records are never deleted, so the row itself stays; only its
+    // appearance in this trainer-facing read is filtered.
+    rows=rows.filter(function(r){ return !(window._blockedCodes && r.client_code && window._blockedCodes[r.client_code]); });
     _salesRows=rows;
     // Three periods, computed once. The toggle only repaints — it never refetches, so
     // moving between 7 days and all time costs nothing and can't disagree with itself.
