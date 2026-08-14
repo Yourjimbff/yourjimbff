@@ -1793,6 +1793,27 @@ body.bfEditingToday .tlDaySec.ahead{display:none;}
 .tlSwapPill{font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:9px;cursor:pointer;
   border:1px solid rgba(255,255,255,0.13);background:rgba(255,255,255,0.035);color:var(--m2);}
 .tlSwapPill:active{background:rgba(255,255,255,0.08);}
+/* THE MODE PICKER — a sliding two-segment control (16 Aug, smoothed the
+   swap so it reshapes rather than hard-cuts). One gold thumb sits behind
+   two equal-width segments (flex:1 on both, so the slide math is a clean
+   50/50 split); toggling .p2 on the container moves the thumb AND swaps
+   which segment reads dark-on-gold, together, off one class flip — so the
+   JS side only ever has to touch one class, never choreograph the thumb
+   and the text color as two separate things. */
+.tlModePick{position:relative;display:flex;gap:8px;margin-top:15px;}
+.tlModeThumb{position:absolute;top:0;left:0;bottom:0;width:calc(50% - 4px);
+  background:var(--gold);border-radius:12px;pointer-events:none;
+  transition:transform .2s cubic-bezier(.2,.9,.3,1);}
+.tlModePick.p2 .tlModeThumb{transform:translateX(calc(100% + 8px));}
+.tlModeSeg{position:relative;z-index:1;flex:1;text-align:center;font-size:12.5px;
+  font-weight:800;padding:11px 4px;border-radius:12px;cursor:pointer;
+  border:1px solid rgba(255,255,255,0.13);color:var(--muted);
+  transition:color .2s ease-out;}
+.tlModePick:not(.p2) .tlModeSeg:first-child,
+.tlModePick.p2 .tlModeSeg:last-child{color:var(--onaccent);border-color:transparent;}
+@media (prefers-reduced-motion: reduce){
+  .tlModeThumb,.tlModeSeg{transition:none !important;}
+}
 .tlHeroEy{position:relative;font-size:10px;font-weight:800;letter-spacing:1.6px;text-transform:uppercase;color:var(--gold);margin-bottom:9px;}
 /* Movement and the weigh-in are siblings of the session, not rivals: same shell,
    same gold eyebrow, none of the 40px name that makes the session the monument. */
@@ -18987,23 +19008,25 @@ function _tlSlot(key, label, filled, ds, plan){
         // the top of the open card — not a pill buried in Change's drawer, not
         // a toggle discovered only after scrolling past everything else. This
         // is the ONLY place the mode is indicated; nothing at the bottom of the
-        // card says it any more. Reuses .bfPill/.bfPills — the same selected-
-        // among-options look already used for Connection (Low/Moderate/High)
-        // elsewhere on this exact card, so a real choice reads as a real choice
-        // everywhere in the app, not a one-off control style.
-        s+='<div class="bfPills" style="margin-top:15px;">'
-          +'<div class="bfPill s1'+(_pOn?' on':'')+'" data-tl="pickmode" data-ds="'+_escHtml(ds)+'" data-want="1">'+(_isToday?'Today’s session':'The session')+'</div>'
-          +'<div class="bfPill s1'+(!_pOn?' on':'')+'" data-tl="pickmode" data-ds="'+_escHtml(ds)+'" data-want="0">Your own workout</div>'
+        // card says it any more. .tlModePick (16 Aug) — a sliding thumb, not
+        // the plain .bfPill look this started as; see the CSS for why.
+        s+='<div class="tlModePick'+(_pOn?'':' p2')+'" data-ds="'+_escHtml(ds)+'">'
+          +'<div class="tlModeThumb"></div>'
+          +'<div class="tlModeSeg" data-tl="pickmode" data-ds="'+_escHtml(ds)+'" data-want="1">'+(_isToday?'Today’s session':'The session')+'</div>'
+          +'<div class="tlModeSeg" data-tl="pickmode" data-ds="'+_escHtml(ds)+'" data-want="0">Your own workout</div>'
         +'</div>';
+        // id="tlBody_ds": the swap-transition JS (tlToggleProgram) needs a
+        // stable handle on exactly this element, both branches, to snapshot
+        // the outgoing one and fade the incoming one in underneath it.
         if(_pOn){
-          s+='<div style="position:relative;margin-top:15px;">'
+          s+='<div id="tlBody_'+_escHtml(ds)+'" style="position:relative;margin-top:15px;">'
             +exs.map(function(e,i){ return _bfExCard(dayKey, i, e, ds, dr); }).join('')
             +'<button onclick="tpAddOpen(\''+dayKey+'\')" style="width:100%;margin-top:2px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.13);border-radius:9px;padding:10px;font-size:12px;font-weight:700;color:var(--text);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">+ Add exercise</button>'
             +_tpFinBlock(dayKey, ds)
             +_woPhotoHtml(ds)
           +'</div>';
         } else {
-          s+='<div style="position:relative;margin-top:15px;">'
+          s+='<div id="tlBody_'+_escHtml(ds)+'" style="position:relative;margin-top:15px;">'
             +'<input class="ownTitle" type="text" placeholder="Title"'
               +' value="'+_escHtml((dr.ownTitle||''))+'"'
               +' oninput="ownTitleSet(\''+ds+'\',this.value)">'
@@ -43584,49 +43607,100 @@ function tlToggleProgram(ds){
   // back to day-swap/rest only), but this stays harmless either way — if the
   // swap panel happened to be open, closing it here is still correct.
   try{ if(window._tlSwapOpen) window._tlSwapOpen[ds]=false; }catch(e){}
-  // Re-rendering destroys the picker and rebuilds it in its new state, so the
-  // CSS transition never gets to run. Flip which segment is .on on the live
-  // element first, let it travel, then redraw underneath it. Both segments'
-  // labels are static text now (a real pick-one control, not a toggle whose
-  // label used to describe whichever state you'd land in) — only which one
-  // carries .on needs to move.
+
+  // THE PICKER: one class flip drives the thumb slide and the text-color
+  // swap together (see .tlModePick.p2 in the CSS) — instant, decoupled from
+  // the body swap below, same ~200ms timing either way since it's a single
+  // CSS transition, not something this function has to choreograph.
   try{
-    var card=document.querySelector('[data-wocard="'+ds+'"]');
-    if(card){
-      var segs=card.querySelectorAll('[data-tl="pickmode"]');
-      segs.forEach(function(seg){
-        seg.classList.toggle('on', (seg.getAttribute('data-want')==='1')===on);
-      });
-    }
+    var pick=document.querySelector('.tlModePick[data-ds="'+ds+'"]');
+    if(pick) pick.classList.toggle('p2', !on);
   }catch(e){}
   try{ showToast(on ? 'Program on' : 'Your own workout now'); }catch(e){}
-  // Program has split pills and finishers stacked above the exercises and
-  // your own workout has neither, so the card's height changes hard. Measure
-  // before, measure after, and let it travel between the two.
-  var sel='[data-wocard="'+ds+'"]';
-  var before=null;
-  try{ var el0=document.querySelector(sel); if(el0) before=el0.getBoundingClientRect().height; }catch(e){}
 
-  setTimeout(async function(){
-    // renderDayTimeline is async. The old code measured on the next frame, which
-    // was before the new HTML existed — so it locked in the OLD height and set
-    // overflow:hidden. That's the black bar: everything below got clipped.
+  var reduceMotion=false;
+  try{ reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }catch(e){}
+  if(reduceMotion){
+    (async function(){ try{ window._tlCache=null; await renderDayTimeline(true); }catch(e){} })();
+    return;
+  }
+
+  // THE SWAP, reshaped instead of hard-cut (16 Aug — it used to sit dead
+  // still for 210ms, then hard-replace the whole card in one frame, THEN
+  // start a height tween — three separate abrupt moments end to end, not
+  // one smooth one). Snapshot the outgoing body NOW, before anything
+  // changes, so it can be laid over the incoming one at the exact spot it
+  // was sitting once the re-render lands.
+  var heroSel='[data-wocard="'+ds+'"]', bodyId='tlBody_'+ds;
+  var heightBefore=null, oldBodyRect=null, oldBodyHTML=null;
+  try{
+    var hero0=document.querySelector(heroSel);
+    if(hero0) heightBefore=hero0.getBoundingClientRect().height;
+    var oldBody=document.getElementById(bodyId);
+    if(oldBody){ oldBodyRect=oldBody.getBoundingClientRect(); oldBodyHTML=oldBody.outerHTML; }
+  }catch(e){}
+
+  (async function(){
+    // renderDayTimeline is async — measuring before it resolves locks in the
+    // OLD height and clips the new content, which is the black-bar bug the
+    // comment here used to warn about. Kicked off immediately now instead of
+    // after a dead pause; the height/fade both still wait for the real HTML.
     try{ window._tlCache=null; await renderDayTimeline(true); }catch(e){}
-    if(before==null) return;
+    if(heightBefore==null) return;
     requestAnimationFrame(function(){
-      var el=document.querySelector(sel); if(!el) return;
-      var after=el.getBoundingClientRect().height;
-      if(Math.abs(after-before)<12) return;
-      el.style.overflow='hidden';
-      el.style.height=before+'px';
-      el.getBoundingClientRect();
-      el.style.transition='height .26s cubic-bezier(.2,.9,.3,1)';
-      el.style.height=after+'px';
-      var done=function(){ el.style.transition=''; el.style.height=''; el.style.overflow=''; };
-      el.addEventListener('transitionend', done, {once:true});
-      setTimeout(done, 420);                          // and a backstop
+      var hero=document.querySelector(heroSel); if(!hero) return;
+      var heightAfter=hero.getBoundingClientRect().height;
+
+      // HEIGHT: lock to the old height, then let it travel to the new one.
+      // .tlHero is already overflow:hidden in its base CSS, so there's
+      // nothing to toggle there — just the height itself.
+      if(Math.abs(heightAfter-heightBefore)>=4){
+        hero.style.height=heightBefore+'px';
+        hero.getBoundingClientRect();
+        hero.style.transition='height .2s cubic-bezier(.2,.9,.3,1)';
+        hero.style.height=heightAfter+'px';
+        var doneHeight=function(){ hero.style.transition=''; hero.style.height=''; };
+        hero.addEventListener('transitionend', doneHeight, {once:true});
+        setTimeout(doneHeight, 320);
+      }
+
+      // CONTENT: cross-fade rather than hard-replace. The new body is
+      // already in the DOM, in place — drop the OLD one back in as an
+      // absolutely-positioned overlay at the exact spot it used to occupy,
+      // fade it out fast, and fade/settle the new one in underneath it.
+      var newBody=document.getElementById(bodyId);
+      if(newBody && oldBodyRect && oldBodyHTML){
+        var wrap=document.createElement('div');
+        wrap.innerHTML=oldBodyHTML;
+        var oldEl=wrap.firstChild;
+        oldEl.removeAttribute('id');                 // never two elements answering to the same id, even briefly
+        var heroRect=hero.getBoundingClientRect();
+        oldEl.style.position='absolute';
+        oldEl.style.left=(oldBodyRect.left-heroRect.left)+'px';
+        oldEl.style.top=(oldBodyRect.top-heroRect.top)+'px';
+        oldEl.style.width=oldBodyRect.width+'px';
+        oldEl.style.margin='0';
+        oldEl.style.pointerEvents='none';             // a fading snapshot, never a live control
+        oldEl.style.opacity='1';
+        oldEl.style.transition='opacity .12s ease-out';
+        hero.appendChild(oldEl);
+
+        newBody.style.opacity='0';
+        newBody.style.transform='translateY(4px)';
+        newBody.style.transition='opacity .18s ease-out .04s, transform .18s ease-out .04s';
+
+        requestAnimationFrame(function(){
+          oldEl.style.opacity='0';
+          newBody.style.opacity='1';
+          newBody.style.transform='translateY(0)';
+        });
+        setTimeout(function(){
+          try{ oldEl.remove(); }catch(e){}
+          newBody.style.transition=''; newBody.style.transform='';
+        }, 260);
+      }
     });
-  }, 210);
+  })();
 }
 function ownTitleSet(ds, v){
   var d=_woDraft(ds);
