@@ -19830,7 +19830,14 @@ async function evRenderCallSlots(){
   }
   host.innerHTML='<div style="padding:20px 2px;color:rgba(240,236,228,0.78);font-size:12.5px;">Loading\u2026</div>';
   var avail=await loadAvailability(true), booked=await loadBookings(true);
-  var all=buildOpenSlots(avail, booked, 21);
+  var safety=await _loadPickerSafetyBusy(21, true);
+  // Fail closed, same reasoning as renderBookingSlots above \u2014 don't offer a
+  // slot here that a consult or a vip_calls block might actually hold.
+  if(safety && !safety.ok){
+    host.innerHTML='<div style="padding:18px 2px;color:rgba(240,236,228,0.78);font-size:12.5px;line-height:1.6;">Couldn\u2019t confirm full availability right now.<br>Try again in a moment.</div>';
+    return;
+  }
+  var all=buildOpenSlots(avail, booked, 21, safety && safety.taken);
   var mine=all.filter(function(d){ return _tlDateStr(d)===ds; });
   var tz=(avail[0] && avail[0].tz) || _myTz();
   if(!mine.length){
@@ -21576,11 +21583,26 @@ function jvRenderSalesView(){
 // the function instead of trusting two people to keep two versions in sync.
 var _consultRows = null;
 var _consultLoadFailed = false;
+// Collision visibility (Yusuf, live): a consult books over an existing check-in
+// booking is invisible today — the offer page and the client picker are two
+// completely separate paths into the same calendar. Smallest surfacing: a chip
+// on the row itself, computed against bookings already read elsewhere in the
+// cockpit, no new table and no new door op. bookings is anon-open (never
+// locked), so this is a plain read, same discipline as everywhere else that
+// reads it. Purely informational — never blocks or changes what a consult can
+// book; Yusuf still moves the check-in himself per the precedence ruling.
+var _consultCollideSet = {};
 async function loadConsults(){
   try{
     var chk=await trainerOpChecked('consultList',{});
     _consultLoadFailed = !chk.ok;
     if(chk.ok) _consultRows=chk.rows;
+    try{
+      var booked = await loadBookings(true);
+      var set={};
+      (booked||[]).forEach(function(b){ set[new Date(b.starts_at).getTime()]=1; });
+      _consultCollideSet = set;
+    }catch(e){}
     try{ if(typeof jvMode!=='undefined' && jvMode==='sales' && typeof jvRenderSalesView==='function') jvRenderSalesView(); }catch(e){}
     try{ _cqPaintMobile(); }catch(e){}
   }catch(e){ console.error('consults load', e); }
@@ -21607,6 +21629,8 @@ function _cqChip(label){
 }
 function _cqRowHtml(r){
   var chips='';
+  var collides = r.status!=='cancelled' && _consultCollideSet && _consultCollideSet[new Date(r.requested_at).getTime()];
+  if(collides) chips+=_cqChip('Collides with a check-in');
   if(r.willing_to_invest===true||r.willing_to_invest==='true') chips+=_cqChip('Willing to invest');
   if(r.serious===true||r.serious==='true') chips+=_cqChip('Serious');
   if(r.excited_or_nervous) chips+=_cqChip(_cqEsc(_cqCap(r.excited_or_nervous)));
@@ -34046,10 +34070,59 @@ async function cancelBooking(id){
   }catch(e){ return false; }
 }
 
+// ---- the client picker's own collision check: accepted consults + vip_calls ----
+// Fail CLOSED here, deliberately — unlike bookings above, which fails open
+// (pre-existing, unchanged: a read error there just means a client might see
+// one of their own slots twice, nothing new gets double-booked). A silent
+// empty result from either read below would mean this whole check quietly
+// does nothing at exactly the moment it exists for: Yusuf granting unlimited
+// check-in access while driving consult traffic to the offer page is exactly
+// the condition under which a real collision happens. trainerOpChecked (not
+// trainerOp) is what makes "the door failed" distinguishable from "confirmed
+// no conflicts" — trainerOp's own [] on failure would be indistinguishable
+// from a genuinely open calendar, and reintroduce the bug this closes.
+var _safetyBusyCache=null;
+async function _loadPickerSafetyBusy(daysAhead, force){
+  if(_safetyBusyCache && !force) return _safetyBusyCache;
+  var now=Date.now(), rangeEnd=now+daysAhead*86400000;
+  var out={ok:true, taken:{}};
+  try{
+    var consultChk = await trainerOpChecked('consultList', {});
+    var vipChk = await trainerOpChecked('vipCallList', {});
+    if(!consultChk.ok || !vipChk.ok){ out.ok=false; return out; }
+    (consultChk.rows||[]).forEach(function(r){
+      if(r.status==='cancelled') return;
+      var t=new Date(r.requested_at).getTime();
+      if(isFinite(t) && t>=now && t<=rangeEnd) out.taken[t]=1;
+    });
+    (vipChk.rows||[]).forEach(function(row){
+      if(row.active===false) return;
+      try{
+        var ruleStart=new Date(row.start_date+'T00:00:00.000Z').getTime();
+        var ruleEnd=new Date(row.end_date+'T00:00:00.000Z').getTime();
+        var todayUtc=new Date(); todayUtc.setUTCHours(0,0,0,0);
+        var spanStart=Math.max(ruleStart, todayUtc.getTime());
+        var spanEnd=Math.min(ruleEnd, rangeEnd);
+        var t=String(row.time_local||'').split(':');
+        for(var dt=spanStart; dt<=spanEnd; dt+=86400000){
+          var d=new Date(dt);
+          var dow=((d.getUTCDay()+6)%7)+1;
+          if(!Array.isArray(row.weekdays) || row.weekdays.indexOf(dow)===-1) continue;
+          var occ=_zonedToUtc(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), +t[0], +t[1], row.tz);
+          if(occ.getTime()>=now && occ.getTime()<=rangeEnd) out.taken[occ.getTime()]=1;
+        }
+      }catch(e){}
+    });
+  }catch(e){ out.ok=false; }
+  _safetyBusyCache = out;
+  return out;
+}
+
 // ---- open slots, as real UTC instants ----
-function buildOpenSlots(avail, booked, daysAhead){
+function buildOpenSlots(avail, booked, daysAhead, extraTaken){
   var out=[], now=Date.now();
   var taken={}; (booked||[]).forEach(function(b){ taken[new Date(b.starts_at).getTime()]=1; });
+  if(extraTaken){ for(var _k in extraTaken){ taken[_k]=1; } }
   var tz = (avail[0] && avail[0].tz) || _myTz();
   for(var d=0; d<daysAhead; d++){
     var day = new Date(); day.setHours(0,0,0,0); day.setDate(day.getDate()+d);
@@ -34274,9 +34347,10 @@ async function openBooking(){
   if(host) host.innerHTML='<div style="text-align:center;padding:30px;color:rgba(240,236,228,0.78);font-size:13px;">Loading\u2026</div>';
   var avail = await loadAvailability(true);
   var booked = await loadBookings(true);
-  renderBookingSlots(avail, booked);
+  var safety = await _loadPickerSafetyBusy(21, true);
+  renderBookingSlots(avail, booked, safety);
 }
-function renderBookingSlots(avail, booked){
+function renderBookingSlots(avail, booked, safety){
   var host=document.getElementById('bookBody'); if(!host) return;
   if(!avail.length){
     host.innerHTML='<div style="text-align:center;padding:34px 16px;color:rgba(240,236,228,0.78);font-size:13px;line-height:1.6;">No times open right now.<br>Check back soon.</div>';
@@ -34284,7 +34358,6 @@ function renderBookingSlots(avail, booked){
   }
   var tz=(avail[0] && avail[0].tz) || _myTz();
   var mine=(booked||[]).filter(function(b){ return b.client_code===cl.code; });
-  var slots=buildOpenSlots(avail, booked, 21);
 
   var html='';
   if(mine.length){
@@ -34301,6 +34374,15 @@ function renderBookingSlots(avail, booked){
     });
     html+='<div style="height:14px;"></div>';
   }
+
+  // Fail closed: if the consult/vip collision check couldn't be confirmed,
+  // don't offer a slot that might actually be taken — say so and stop, after
+  // still showing what they already have booked above.
+  if(safety && !safety.ok){
+    host.innerHTML = html+'<div style="text-align:center;padding:26px 16px;color:rgba(240,236,228,0.78);font-size:13px;line-height:1.6;">Couldn’t confirm full availability right now.<br>Try again in a moment.</div>';
+    return;
+  }
+  var slots=buildOpenSlots(avail, booked, 21, safety && safety.taken);
 
   if(!slots.length){
     host.innerHTML = html+'<div style="text-align:center;padding:26px 16px;color:rgba(240,236,228,0.78);font-size:13px;">Nothing open in the next three weeks.</div>';
@@ -34345,9 +34427,9 @@ function renderBookingSlots(avail, booked){
     +'</div>';
   host.innerHTML=html;
 }
-function bkPickDay(k){
+async function bkPickDay(k){
   window._bkPick=k;
-  try{ renderBookingSlots(_availCache||[], _bookCache||[]); }catch(e){}
+  try{ var safety=await _loadPickerSafetyBusy(21); renderBookingSlots(_availCache||[], _bookCache||[], safety); }catch(e){}
 }
 async function onPickSlot(iso){
   var avail=await loadAvailability();
@@ -34372,11 +34454,13 @@ async function confirmBooking(){
     try{ window._tlCache=null; renderDayTimeline(); }catch(e){}
     try{ if(typeof _retireTodayTiles==='function') _retireTodayTiles(); }catch(e){}
     var avail=await loadAvailability(); var booked=await loadBookings(true); try{ await loadTrainerBlocks(); }catch(e){}
-    renderBookingSlots(avail, booked);
+    var safety=await _loadPickerSafetyBusy(21, true);
+    renderBookingSlots(avail, booked, safety);
   } else {
     try{ showToast(res.taken ? 'Someone just took that one' : 'Could not book'); }catch(e){}
     var a2=await loadAvailability(); var b2=await loadBookings(true);
-    renderBookingSlots(a2, b2);
+    var s2=await _loadPickerSafetyBusy(21, true);
+    renderBookingSlots(a2, b2, s2);
   }
 }
 async function onCancelBooking(id){
@@ -34385,7 +34469,8 @@ async function onCancelBooking(id){
   try{ showToast(ok?'Cancelled':'Could not cancel'); }catch(e){}
   try{ window._tlCache=null; renderDayTimeline(); }catch(e){}
   var avail=await loadAvailability(); var booked=await loadBookings(true); try{ await loadTrainerBlocks(); }catch(e){}
-  renderBookingSlots(avail, booked);
+  var safety=await _loadPickerSafetyBusy(21, true);
+  renderBookingSlots(avail, booked, safety);
 }
 
 // ===== FOLLOW: the client sees Yusuf's calendar, read-only =====
