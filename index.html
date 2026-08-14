@@ -39212,6 +39212,7 @@ function buildCoachVoice(){
     'FIELD RULES:\n'+
     '- name: short meal name in Title Case (capitalize the main words), so it sits cleanly next to other meals. e.g. "Chicken, Rice, Broccoli, Peppers & Onions" — not all-lowercase, not ALL CAPS. emoji: one fitting food emoji.\n'+
     'PHOTO — READ THE LABEL BEFORE YOU ESTIMATE (most important): When the user sends a photo, first decide if it shows food or hints at food (a plate, a meal-prep container, a wrapper, a menu, a screen showing a meal). Then SCAN FOR PRINTED NUMBERS FIRST. Meal-prep brands (e.g. Nutrition Solutions), packaged foods, menus, and apps print the exact Calories, Protein, Carbs, Fat and Sugar right on the label or screen. If those numbers are visible and legible, READ THEM AND USE THEM VERBATIM — do not estimate over them, do not round them away, do not average them with a guess. The printed number always wins. Match the serving stated and the quantity shown (two containers = double it). ONLY estimate when a value is genuinely not printed anywhere in the image.\n'+
+    'NEVER MIX SOURCES ON ONE ENTRY: calories and macros come from the SAME place, every time. If the panel is legible, take Calories AND Protein AND Carbs AND Fat AND Sugar all off the panel together — never take calories off the label and then estimate the macros yourself, and never take macros off the label with an estimated calorie figure. A label read with only some fields taken from it is not a label read. If you can only make out part of the panel clearly, treat the whole thing as not legible and estimate everything together instead — a consistent estimate beats a real number bolted onto guessed ones.\n'+
     'PHOTO — NAME ONLY WHAT YOU CAN SEE: name the foods clearly visible on the plate and nothing else. Do NOT pad the name with ingredients that are not plainly there, and do NOT guess. Lookalikes are common — a yellow item could be bell pepper, squash, potato, or corn; if you cannot tell with confidence, use the safer general read (usually peppers or mixed vegetables) or leave it out rather than naming a specific food. Never reference an ingredient in your insight that you are not sure is present. Fewer correct foods beat a longer guessed list.\n'+
     '- calories/protein/carbs/fat: read them off the label/screen when printed; otherwise your best estimate (calories in kcal, macros in grams) for the portion. Estimate confidently and round — do not refuse to estimate.\n'+
     '- sugar: grams of sugar, read off the label when shown, otherwise your best estimate (use 0 if not knowable). Sugar is tracked quietly in the background — capture it, but NEVER scold, flag, or call attention to it in your reply.\n'+
@@ -39498,8 +39499,33 @@ function _isoForDateStr(dateStr, eatTime){
 }
 // Log a meal Jim recognized from chat — instant, mirrors commitMeal's in-memory + UI updates.
 // If a photo was attached to the chat message, downscale and save it onto the entry.
+// MACROS MUST RECONCILE WITH CALORIES (13 Aug — the Chef Kelly bug): a photo
+// of a printed nutrition label came back with calories read correctly (770)
+// but protein and fat that were clearly a fresh estimate riding along beside
+// them — 62g protein + 70g carbs + 90g fat is roughly 1,338 calories, not
+// 770. The model complied with "read the label" for calories (and, it turns
+// out, carbs) and quietly estimated the rest in the same JSON blob, and
+// nothing caught the mismatch before it wrote. This is the general check —
+// it runs on every food log this function ever writes, from any source, not
+// just a label read, since a mixed-source entry always fails this same way:
+// the numbers don't add up to their own stated total. Generous tolerance on
+// purpose (a real label can be off by a few percent on rounding alone) — this
+// is for catching a genuinely fabricated set, not nitpicking rounding.
+function _macrosReconcileWithCalories(cal, pro, carb, fat){
+  var stated=+cal||0;
+  if(stated<=0) return true;                 // nothing to check a macro set against
+  var implied=(+pro||0)*4 + (+carb||0)*4 + (+fat||0)*9;
+  return Math.abs(implied-stated) <= Math.max(60, stated*0.25);
+}
 async function logFoodFromChat(offer, photo){
   if(!offer || !offer.name || !cl) return false;
+  if(!_macrosReconcileWithCalories(offer.calories, offer.protein, offer.carbs, offer.fat)){
+    // Never log a fabricated macro set — this falls through to the same
+    // "didn't actually save" honest correction every other write failure
+    // here already uses, which asks again instead of writing wrong numbers.
+    console.error('FOOD_LOG macros do not reconcile with stated calories — refusing to log', offer);
+    return false;
+  }
   var meal = offer.meal || guessMealByTime();
   var _daysAgo = Math.max(0, Math.min(60, parseInt(offer.daysAgo||offer.days_ago||0,10)||0));
   // A per-day bar states its day outright; that beats an inferred daysAgo.
