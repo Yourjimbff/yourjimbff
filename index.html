@@ -13991,6 +13991,10 @@ function doLogout(){
     window._tpFromServer=false;
     window._pgPlanAsked=false;
     window._tpLoadFailed=undefined;   // "unknown" again, not "loaded fine"
+    // The Day page's read of that same unknown, and its one-shot loader, so the
+    // next client starts from "nothing established" rather than inheriting the
+    // previous one's answer.
+    window._tlPlanPending=true; window._tlPlanErr=false; window._tlPlanKick=false;
     _pgPlan=null; _pgDayOpen=null;
     window._tlCache=null; window._tlSetsLoaded=false;
     try{ _tlResetPaging(); }catch(e){}   // one person's beginning never follows the next one in
@@ -18699,6 +18703,17 @@ function _tlHeroErr(ds){
     +'<div class="tlHeroMeta">Tap to try again</div>'
   +'</div>';
 }
+// The third state. "No program set up yet" is a statement ABOUT THEM, and it
+// was being made before anything had been asked — see _tlResolvePlan. This says
+// only what is true: we do not know yet. It clears itself the moment the read
+// lands, and it is a retry in the meantime so it can never become a dead end.
+function _tlHeroPending(ds){
+  return '<div class="tlHero err" data-tl="planretry" style="cursor:pointer;">'
+    +'<div class="tlHeroEy">Today’s session</div>'
+    +'<div class="tlHeroName">Loading your program</div>'
+    +'<div class="tlHeroMeta">Tap to try again</div>'
+  +'</div>';
+}
 function _tlHeroNone(ds){
   // data-tl="freestyle" opens the free workout logger — a door that actually
   // opens. The first cut toggled the planned card's open flag, and with no plan
@@ -19101,8 +19116,12 @@ function _tlDaySectionHtml(cur, ctx){
       // program says that instead. Never a fabricated week.
       var _hasPlanRow=rows.some(function(r){ return r.planned; });
       if(!_hasPlanRow && !(slots.workout||[]).length && !window._tlRO){
-        if(window._tlPlanErr)      html+=_tlHeroErr(ds);
-        else if(!plan || !plan.type) html+=_tlHeroNone(ds);
+        // Three states, in order of what we actually know: the read failed, the
+        // read has not happened, or the read happened and there is nothing.
+        // Only the last one is allowed to say anything about the client.
+        if(window._tlPlanErr)          html+=_tlHeroErr(ds);
+        else if(window._tlPlanPending) html+=_tlHeroPending(ds);
+        else if(!plan || !plan.type)   html+=_tlHeroNone(ds);
       }
     }
     rows.forEach(function(r){ html+=_drawRow(r); });
@@ -19203,8 +19222,43 @@ async function _tlRefreshDay(ds){
   _tlPatchDay(ds);
 }
 
+// THREE STATES, NOT TWO (Yusuf, 15 Aug). The same doctrine the trainer's
+// weigh-in card already states in full: undefined = no load has ever run,
+// true = a load ran and did not answer, false = a load ran and answered.
+//
+// This used to test `if(window._tpLoadFailed)`, and undefined is falsy — so
+// "nobody has asked the server yet" was handled exactly like "we asked and
+// there is nothing stored", and the page went straight on to DERIVE a week
+// from the profile's days-a-week and assign it into the shared _tpPlan. On the
+// cold path that was harmless, because it awaits loadTrainingPlan() first. The
+// soft path (renderDayTimeline(true) — every tap handler on this page) never
+// awaits it, so any repaint while the plan was still null invented a week and
+// presented it as the client's own program. For a client whose program Yusuf
+// hand-built, that is a different week entirely.
+//
+// Deriving from the profile is NOT the bug and is kept: a client who has said
+// how many days a week they train, and has no saved program yet, is genuinely
+// meant to see that week (see _tpPlanForClient). It just may not happen until
+// the answer is actually in.
 function _tlResolvePlan(){
-  if(window._tpLoadFailed){ window._tlPlanErr=true; return null; }
+  if(window._tpLoadFailed===undefined){
+    // Not "no program". Nothing established. Say nothing about their program
+    // until something has been asked — and ask, so this resolves itself
+    // instead of sitting there. The soft render is the path with no load
+    // behind it; one kick, guarded, then repaint when it lands.
+    window._tlPlanErr=false;
+    window._tlPlanPending=true;
+    if(!window._tlPlanKick && typeof loadTrainingPlan==='function'){
+      window._tlPlanKick=true;
+      loadTrainingPlan().catch(function(){}).then(function(){
+        window._tlPlanKick=false;
+        try{ renderDayTimeline(true); }catch(e){}
+      });
+    }
+    return null;
+  }
+  window._tlPlanPending=false;
+  if(window._tpLoadFailed===true){ window._tlPlanErr=true; return null; }
   window._tlPlanErr=false;
   try{ return _tpPlanForClient(); }catch(e){ return null; }
 }
@@ -33745,8 +33799,10 @@ async function loadTrainingPlan(){
 async function tlRetryPlan(){
   try{ await loadTrainingPlan(); }catch(e){}
   // The flag follows the load's outcome — a successful retry that found no saved
-  // plan must show "no program yet", not the error card forever.
-  window._tlPlanErr=!!window._tpLoadFailed;
+  // plan must show "no program yet", not the error card forever. A load has now
+  // run either way, so nothing is pending any more.
+  window._tlPlanErr=(window._tpLoadFailed===true);
+  window._tlPlanPending=false;
   try{ window._tlCache=null; renderDayTimeline(); }catch(e){}
 }
 async function saveTrainingPlan(){
