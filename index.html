@@ -1757,6 +1757,9 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
    an instruction, and it must not read louder than the day under it. Gold is
    reserved for actions, and this IS one — but a small one, so it wears the
    brand as an outline rather than a fill. */
+/* A number that has not arrived yet. Muted, never gold — nothing is being
+   asked of the trainer, and it is not a status about the client either. */
+.jvPending{color:rgba(240,236,228,0.38);}
 .tlEarlier{display:flex;justify-content:center;padding:14px 0 4px;}
 .tlEarlier button{
   -webkit-appearance:none;appearance:none;cursor:pointer;
@@ -15597,7 +15600,23 @@ function _jvMovement(p){
 // card — that's a person you've deliberately opened, not one of sixteen you're
 // scanning. A bar also reads as broken when start and current are the same number:
 // the marker pins to the left and says nothing at all.
+// ===== "NOT FETCHED YET" IS NOT "NEVER HAPPENED" ==========================
+// Every weigh-in number on this board comes out of jvTriage, which is filled by
+// ONE load that only runs when the board itself is opened. Anything that reads
+// jvTriage without checking whether that load has happened is reading an empty
+// shelf, and the two surfaces below used to turn that silence into a sentence
+// about the client: "No weigh-ins yet. Nothing to measure against." Toni A has
+// weighed in 74 times, most recently the day before this was written, and her
+// own card said exactly that whenever it was opened from the Feed — which is
+// the tab the app lands on, so it was the normal case, not the edge one.
+//
+// Three states now, and they are three different sentences:
+//   store not loaded   -> say nothing about them, and go and load it
+//   loaded, no rows    -> the real empty state, unchanged
+//   loaded, rows       -> the numbers
+function _jvTriageReady(){ try{ return !!(window.jvTriage && jvTriage.per); }catch(e){ return false; } }
 function _jvWeightLine(code){
+  if(!_jvTriageReady()) return '<span class="jvPending">Weigh-ins loading…</span>';
   var p=null; try{ p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null; }catch(e){}
   var lw=p&&p.lastWeight;
   if(!lw || isNaN(+lw.val)) return 'No weigh-ins yet';
@@ -15624,6 +15643,16 @@ function _jvProgress(code, size){
   var p=null, goal=null;
   try{ p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null; goal=(jvTriage&&jvTriage.goals)?jvTriage.goals[code]:null; }catch(e){}
   var lw=p&&p.lastWeight, fw=p&&p.firstWeight;
+
+  // Nothing has fetched their numbers yet. That is a fact about this page, not
+  // about them, so the card says so and jvOpenDeep repaints this block the
+  // moment the load lands.
+  if(!_jvTriageReady()){
+    return '<div class="'+cls+'" id="jvProgWait_'+code+'">'
+      +'<div class="ovEy">Progress</div>'
+      +'<div class="ovMetaTop">Loading their weigh-ins…</div>'
+    +'</div>';
+  }
 
   // Say it plainly rather than drawing an empty bar, which reads as "flat".
   if(!lw || isNaN(+lw.val)){
@@ -16143,6 +16172,35 @@ function _jvCoachStyle(code){
     +(roast?'<span style="flex-shrink:0;font-size:9.5px;font-weight:800;letter-spacing:0.7px;text-transform:uppercase;color:rgba(240,236,228,0.78);border:1px solid #3d3d3d;border-radius:20px;padding:3px 8px;">Not live</span>':'')
   +'</div>';
 }
+// Fill the board's store if nothing has, then repaint the one block on this
+// card that depends on it. One load is shared by however many cards ask for it
+// at once — opening three profiles in a row must not fire three roster-wide
+// reads. A load that fails leaves an honest failure on the card rather than a
+// spinner that never resolves, because "we could not read it" and "she has
+// never weighed in" are the two sentences this whole fix exists to separate.
+function _jvEnsureTriage(code){
+  if(_jvTriageReady()) return;
+  if(typeof jvLoadTriage!=='function') return;
+  if(!window._jvTriagePending){
+    try{ window._jvTriagePending=Promise.resolve(jvLoadTriage(true)).catch(function(){}); }
+    catch(e){ window._jvTriagePending=null; return; }
+  }
+  window._jvTriagePending.then(function(){
+    window._jvTriagePending=null;
+    try{ _jvRepaintProgress(code); }catch(e){}
+  });
+}
+function _jvRepaintProgress(code){
+  var host=document.getElementById('jvProgBlock_'+code);
+  if(!host) return;
+  if(_jvTriageReady()){
+    host.innerHTML='<div class="jvBlockLabel">Progress</div>'+_jvProgress(code);
+    return;
+  }
+  host.innerHTML='<div class="jvBlockLabel">Progress</div>'
+    +'<div class="ovCard ovSm"><div class="ovEy">Progress</div>'
+    +'<div class="ovMetaTop">Their weigh-ins did not load, so this is not a record of someone who has never weighed in — it is a read that failed. Close this and open it again.</div></div>';
+}
 function jvOpenDeep(code){
   _jvHydratePhones();
   var info=CLIENTS[code]; if(!info) return;
@@ -16173,7 +16231,10 @@ function jvOpenDeep(code){
     + '<div id="cnHostC_'+code+'" class="jvBlock">'+_cnCoachHtml(code)+'</div>'
     // Fills in only when the saved week contradicts the sex on file. Silent otherwise.
     + '<div id="jvSplitFlag"></div>'
-    + '<div class="jvBlock">'
+    // Identified so the load kicked off below can fill it in place. The card
+    // opens instantly either way — waiting on the numbers to draw the whole
+    // profile would trade one wrong answer for a slow one.
+    + '<div class="jvBlock" id="jvProgBlock_'+code+'">'
       + '<div class="jvBlockLabel">Progress</div>'
       + _jvProgress(code)
     + '</div>'
@@ -16215,6 +16276,11 @@ function jvOpenDeep(code){
   window._jvDeepMode=jvMode;
   // Recent history is in the card itself now, so it loads whether or not the rest
   // is expanded — it's the thing being looked for, not an extra.
+  // The numbers this card reports on are loaded by the board, and the board may
+  // never have been opened — from the Feed tab, which is where the app lands,
+  // it never has. Fetch them now and fill the Progress block in when they
+  // arrive, so the card stops answering a question it has not asked yet.
+  _jvEnsureTriage(code);
   _jvDeepHistory(code);
   _jvLoadSplitFlag(code);
   // Re-read on open so a note added on the phone shows up here, then repaint in place.
