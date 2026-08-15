@@ -1753,6 +1753,22 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
 }
 /* The timeline owns the full frame, so the tab must not add scrollable slack under it. */
 #tFeed{padding-bottom:0;}
+/* The way back, above the oldest day drawn. Quiet on purpose: it is a door, not
+   an instruction, and it must not read louder than the day under it. Gold is
+   reserved for actions, and this IS one — but a small one, so it wears the
+   brand as an outline rather than a fill. */
+.tlEarlier{display:flex;justify-content:center;padding:14px 0 4px;}
+.tlEarlier button{
+  -webkit-appearance:none;appearance:none;cursor:pointer;
+  background:transparent;border:1px solid rgba(245,197,24,0.42);color:#f5c518;
+  font:inherit;font-size:13px;font-weight:700;letter-spacing:0.2px;
+  padding:9px 18px;border-radius:999px;
+}
+.tlEarlier button:disabled{opacity:0.5;cursor:default;}
+/* Their beginning. A fact at the top of their own history, stated once. */
+.tlEarlierEnd{flex-direction:column;align-items:center;gap:3px;padding:18px 0 6px;text-align:center;}
+.tlEarlierEnd b{font-size:13px;font-weight:700;color:rgba(240,236,228,0.62);}
+.tlEarlierEnd span{font-size:12px;color:rgba(240,236,228,0.38);}
 /* One day, one page. It snaps into place and fills the viewport. */
 .tlDaySec{scroll-snap-align:start;scroll-snap-stop:normal;min-height:100%;display:flex;flex-direction:column;box-sizing:border-box;padding-bottom:12px;}
 /* Enough for the floating Jim affordance and the nav at the end of the last day. */
@@ -5197,6 +5213,14 @@ async function sessEnsure(code, force){
           if(d.client){
             if(cl && cl.code===code){ cl.calls_enabled=d.client.calls_enabled; cl.call_credits=d.client.call_credits; }
             if(CLIENTS[code]){ CLIENTS[code].calls_enabled=d.client.calls_enabled; CLIENTS[code].call_credits=d.client.call_credits; }
+            // Their own start date, off the same session read. The Day page uses it
+            // to know how far back their history goes; it arrives whenever the
+            // session does, and nothing waits on it — an anchor with no start date
+            // falls back to the first day they logged anything.
+            if(d.client.started_at){
+              if(cl && cl.code===code) cl.started_at=d.client.started_at;
+              if(CLIENTS[code]) CLIENTS[code].started_at=d.client.started_at;
+            }
           }
         }catch(e){}
         return d.token;
@@ -13858,6 +13882,7 @@ function doLogout(){
     window._tpLoadFailed=undefined;   // "unknown" again, not "loaded fine"
     _pgPlan=null; _pgDayOpen=null;
     window._tlCache=null; window._tlSetsLoaded=false;
+    try{ _tlResetPaging(); }catch(e){}   // one person's beginning never follows the next one in
     window._mvpServerSeen=false; window._mvpDirty=false;
   }catch(e){}
   if(typeof resetChatState==='function') resetChatState();
@@ -16962,11 +16987,159 @@ function _tlDayLabel(d){
 // ===== SCROLLABLE CALENDAR — past above, future below, plan baked in =====
 var _tlDaysBack=14, _tlDaysFwd=7;
 function _tlDateStr(d){ return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
+
+// ===== REACHING BACK PAST THE FORTNIGHT ===================================
+// The Day page used to draw a fixed 14 days back, full stop: a client's own
+// history fell off the top of their own page after two weeks and there was no
+// way to it. It is now anchored to their beginning — their start date if we
+// know it, otherwise the first day they logged anything — and paged there a
+// fortnight at a time, on request.
+//
+// Paged, not preloaded, and that is the whole design constraint. A client six
+// months in must not pay for six months of rows at boot, so boot still reads
+// exactly the recent window it always did. Every step further back is an
+// explicit tap, fetches only the slice it adds, and merges that slice into the
+// cache instead of re-reading a window that keeps growing — a growing window
+// would eventually hit the 300-row limit, and PostgREST answers that with the
+// NEWEST 300, which would quietly blank the oldest days. Slices can't.
+var _tlPageDays=14;                 // one fortnight per tap, same rhythm as the default view
+window._tlExtraBack = window._tlExtraBack || 0;   // days revealed beyond the default, this client
+window._tlAnchor    = window._tlAnchor    || null; // Date at local midnight, or null = not resolved yet
+window._tlAnchorSrc = window._tlAnchorSrc || '';   // 'start' | 'log' — only to word the end marker honestly
+function _tlWindowBack(){ return _tlDaysBack + (+window._tlExtraBack||0); }
+// The oldest day currently DRAWN. Never older than the anchor once we know it.
+function _tlWindowStart(today){
+  var t=today?new Date(today):new Date(); t.setHours(0,0,0,0);
+  var s=new Date(t); s.setDate(s.getDate()-_tlWindowBack()); s.setHours(0,0,0,0);
+  var a=window._tlAnchor;
+  if(a && s.getTime()<a.getTime()){ var c=new Date(a); c.setHours(0,0,0,0); return c; }
+  return s;
+}
+// One day of overlap on every read, and it is NOT slack to be trimmed.
+// logged_at is a naked timestamp the server compares as an instant, while
+// date_str is the local day the row actually belongs to. Local midnight sent as
+// an instant lands hours INTO the day for anyone west of UTC, so an exact-start
+// query drops every row logged before then — the oldest drawn day would lose
+// its early morning. One day covers every offset on earth. It used to be two,
+// which fetched a whole day of rows that were never drawn.
+function _tlFetchSince(start){ var s=new Date(start); s.setDate(s.getDate()-1); s.setHours(0,0,0,0); return s; }
+// Every day between two dates, as the same key the renderer groups rows by.
+function _tlDaySet(from, to){
+  var s={}, cur=new Date(from), end=new Date(to), guard=0;
+  cur.setHours(0,0,0,0); end.setHours(0,0,0,0);
+  while(cur.getTime()<=end.getTime() && guard++<4000){ s[_tlDateStr(cur)]=1; cur.setDate(cur.getDate()+1); }
+  return s;
+}
+function _tlYmdToDate(s){
+  try{
+    var m=String(s||'').slice(0,10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if(!m) return null;
+    var d=new Date(+m[1], +m[2]-1, +m[3]); d.setHours(0,0,0,0);
+    return isNaN(d.getTime())?null:d;
+  }catch(e){ return null; }
+}
+function _tlRowDs(r){
+  if(r&&r.date_str) return r.date_str;
+  try{ if(r&&r.logged_at){ var d=new Date(/[Z+]/.test(r.logged_at)?r.logged_at:r.logged_at+'Z'); if(!isNaN(d.getTime())) return _tlDateStr(d); } }catch(e){}
+  return null;
+}
+function _tlDedupe(rows){
+  var seen={}, out=[];
+  (rows||[]).forEach(function(r){
+    if(!r) return;
+    var k=(r.id!=null) ? ('i'+r.id)
+        : ('x'+(r.logged_at||'')+'|'+(r.date_str||'')+'|'+(r.description||r.title||''));
+    if(seen[k]) return; seen[k]=1; out.push(r);
+  });
+  return out;
+}
+// Fold a freshly-read range into the cache, keyed on the DAY rather than on the
+// timestamp — the day is what the renderer groups by, and comparing naked
+// timestamps against instants client-side is the same trap as above. Rows on a
+// day we just re-read come from the read, so a deletion actually disappears.
+// Rows on days outside it are kept, which is what stops the routine refresh of
+// the last fortnight from throwing away months a client has paged back to.
+function _tlCacheMerge(base, fresh, days){
+  base=base||{foods:[],workouts:[],weights:[],journals:[]};
+  fresh=fresh||{};
+  function merge(oldList, newList){
+    var kept=(oldList||[]).filter(function(r){ var d=_tlRowDs(r); return !(d && days[d]); });
+    return _tlDedupe(kept.concat(newList||[]));
+  }
+  return {
+    foods:    merge(base.foods,    fresh.foods),
+    workouts: merge(base.workouts, fresh.workouts),
+    weights:  merge(base.weights,  fresh.weights),
+    journals: merge(base.journals, fresh.journals)
+  };
+}
+// One reader for the client's own logs. `until` is exclusive, so a page-back
+// fetches only the slice it adds and never re-reads what is already on screen.
+function _tlGrab(table, since, until){
+  var cc='client_code=eq.'+encodeURIComponent(cl.code);
+  var q=cc+'&logged_at=gte.'+encodeURIComponent(since.toISOString());
+  if(until) q+='&logged_at=lt.'+encodeURIComponent(until.toISOString());
+  return sbSelect(table, q+'&order=logged_at.desc&limit=300')
+    .catch(function(){ return sbSelect(table, cc+'&order=logged_at.desc&limit=200').catch(function(){ return []; }); });
+}
+// The first day this client ever logged anything. Four limit-1 reads, so it
+// costs four ROWS, not four months — and it only runs when somebody actually
+// asks to go back, never at boot.
+async function _tlEarliestLoggedDate(){
+  if(!cl) return null;
+  var cc='client_code=eq.'+encodeURIComponent(cl.code);
+  function first(t){ return sbSelect(t, cc+'&select=logged_at,date_str&order=logged_at.asc&limit=1').catch(function(){ return []; }); }
+  var r=[];
+  try{ r=await Promise.all([first('food_logs'),first('workout_logs'),first('weight_logs'),first('journal_entries')]); }catch(e){ return null; }
+  var best=null;
+  (r||[]).forEach(function(rows){
+    var row=(rows&&rows[0])||null; if(!row) return;
+    var ds=_tlRowDs(row); if(!ds) return;
+    var d=_parseDs(ds); if(!d) return;
+    d.setHours(0,0,0,0);
+    if(!best || d.getTime()<best.getTime()) best=d;
+  });
+  return best;
+}
+// Their beginning. Start date wins when we have one — it is when the work
+// actually began, whether or not anything was logged that week — but a log that
+// PREDATES it still counts, because the point is their real history and history
+// is not hidden to protect a field. Unresolved stays unresolved: a failed read
+// must never harden into "you have nothing older", so the way back stays open
+// and the next tap tries again. sbSelect answers [] for a refusal and for an
+// empty table alike, so "no rows" is not proof of anything on its own.
+async function _tlResolveAnchor(){
+  if(window._tlAnchor) return window._tlAnchor;
+  if(!cl) return null;
+  var started=_tlYmdToDate(cl.started_at);
+  var logged=await _tlEarliestLoggedDate();
+  var pick=null, src='';
+  if(started){ pick=started; src='start'; }
+  if(logged && (!pick || logged.getTime()<pick.getTime())){ pick=logged; src=started?'start':'log'; }
+  if(!pick) return null;
+  window._tlAnchor=pick; window._tlAnchorSrc=src;
+  return pick;
+}
+// Paging state belongs to whoever's page this is. Switching clients, or leaving,
+// must not carry one person's anchor onto another person's history.
+function _tlResetPaging(){
+  window._tlExtraBack=0; window._tlAnchor=null; window._tlAnchorSrc=''; window._tlAtAnchor=false;
+}
 var _PLAN_DEFAULT_MIN=17*60;   // 5pm if nothing has been set
 // A day starts when you get up and ends when you go down. Thin bookends, not blocks.
 // Weigh-in is a line, not a block: the word and the number, nothing else.
 // One line for the top of the day instead of two floating fragments.
-function _dayMeta(ds, slots){
+// Past, today or ahead — derived from the day handed in, never from a day this
+// function went and looked up for itself.
+function _tlDayState(ds){
+  try{
+    var d=_parseDs(ds); if(!d) return 'today';
+    d.setHours(0,0,0,0);
+    var t=new Date(); t.setHours(0,0,0,0);
+    return d.getTime()<t.getTime() ? 'past' : (d.getTime()>t.getTime() ? 'ahead' : 'today');
+  }catch(e){ return 'today'; }
+}
+function _dayMeta(ds, slots, dayState){
   // Wake time is gone from the day (Yusuf, 5 Aug). It was display-only — the tap
   // handler was already a no-op — so nothing saved through it. Sleep stays on the
   // profile row it's actually edited from.
@@ -16997,14 +17170,14 @@ function _dayMeta(ds, slots){
     +'</span>';
   }
   return '<div class="tlmeta">'+bits.join('<span class="tlmsep"></span>')+_stHtml+'</div>'
-    + _tlTotLine(slots);
+    + _tlTotLine(slots, dayState||_tlDayState(ds));
 }
 // The day's running total — the plate card's numbers on one quiet line, where the
 // mock put them: under the readout, left, where your eye lands second. Always
 // present, even with nothing logged yet — a client asked where it was and found
 // it missing entirely, not showing zeros. A meal with no numbers is still SAID —
 // never silently counted as a zero.
-function _tlTotLine(slots){
+function _tlTotLine(slots, dayState){
   var meals=0, blank=0, cal=0, pro=0, carb=0, fat=0;
   ['breakfast','lunch','dinner','snack'].forEach(function(k){
     var list=(slots&&slots[k])||[]; if(!list.length) return;
@@ -17016,7 +17189,14 @@ function _tlTotLine(slots){
     });
     if(!t) blank++;
   });
-  if(!meals) return '<div class="tlTot"><span>Nothing logged yet - the day\'s ahead of you.</span></div>';
+  // A day already over is a record, not an invitation. "The day's ahead of you"
+  // was written for today and was being said to every empty day in the past —
+  // barely noticeable across a fortnight, absurd across the months a client can
+  // now reach. An empty past day states the fact and nothing else: no prompt to
+  // act on a day that is gone, and nothing that reads as a mark against them.
+  if(!meals) return '<div class="tlTot"><span>'
+    + ((dayState||'today')==='past' ? 'Nothing logged.' : 'Nothing logged yet - the day\'s ahead of you.')
+    + '</span></div>';
   return '<div class="tlTot">'
     +'<b>'+Math.round(cal).toLocaleString()+'</b><span>cal</span><span>·</span>'
     +'<span><b style="font-size:12.5px;">'+Math.round(pro)+'g</b> protein</span><span>·</span>'
@@ -18225,7 +18405,7 @@ function _tlDaySectionHtml(cur, ctx){
     }
 
     html+='<div class="tlday'+(isAhead?' ahead':'')+'" style="padding-left:2px;">';
-    html+=_dayMeta(ds, slots);
+    html+=_dayMeta(ds, slots, (isToday?'today':(isAhead?'ahead':'past')));
     // everything that actually happened, in the order it happened
     var rows=[];
     // The day's walks and cardio collect into ONE Movement card rather than a
@@ -18477,14 +18657,17 @@ async function _tlRefreshDay(ds){
   if(!cl){ return; }
   try{
     var today=new Date(); today.setHours(0,0,0,0);
-    var start=new Date(today); start.setDate(start.getDate()-_tlDaysBack-2);
-    var cc='client_code=eq.'+encodeURIComponent(cl.code);
-    var win='&logged_at=gte.'+encodeURIComponent(start.toISOString());
-    function grab(t){
-      return sbSelect(t, cc+win+'&order=logged_at.desc&limit=300')
-        .catch(function(){ return sbSelect(t, cc+'&order=logged_at.desc&limit=200').catch(function(){ return []; }); });
-    }
-    var r=await Promise.all([grab('food_logs'),grab('workout_logs'),grab('weight_logs'),grab('journal_entries')]);
+    // The recent window, plus the day being refreshed if it somehow sits older
+    // than that. NOT the whole paged-back window: a write lands on a day, and
+    // re-reading months to repaint one of them is the cost this page is trying
+    // not to pay.
+    var start=new Date(today); start.setDate(start.getDate()-_tlDaysBack);
+    var dsDate=_parseDs(ds); if(dsDate){ dsDate.setHours(0,0,0,0); if(dsDate.getTime()<start.getTime()) start=dsDate; }
+    var end=new Date(today); end.setDate(end.getDate()+_tlDaysFwd);
+    var r=await Promise.all([
+      _tlGrab('food_logs',_tlFetchSince(start)), _tlGrab('workout_logs',_tlFetchSince(start)),
+      _tlGrab('weight_logs',_tlFetchSince(start)), _tlGrab('journal_entries',_tlFetchSince(start))
+    ]);
     var fresh={foods:r[0]||[], workouts:r[1]||[], weights:r[2]||[], journals:r[3]||[]};
     // sbSelect answers [] for a refused request AND for a truly empty table — the
     // two are indistinguishable here. But this runs right after a WRITE: if the
@@ -18493,7 +18676,9 @@ async function _tlRefreshDay(ds){
     var freshEmpty=!(fresh.foods.length||fresh.workouts.length||fresh.weights.length||fresh.journals.length);
     var hadRows=!!(window._tlCache && ((window._tlCache.foods||[]).length||(window._tlCache.workouts||[]).length));
     if(!(freshEmpty && hadRows)){
-      window._tlCache=fresh;
+      // Merged, not swapped: days older than this read keep whatever the client
+      // has already paged back to.
+      window._tlCache=_tlCacheMerge(window._tlCache, fresh, _tlDaySet(start, end));
       window._tlFetchedAt=Date.now();
     }
   }catch(e){}
@@ -18504,6 +18689,72 @@ function _tlResolvePlan(){
   if(window._tpLoadFailed){ window._tlPlanErr=true; return null; }
   window._tlPlanErr=false;
   try{ return _tpPlanForClient(); }catch(e){ return null; }
+}
+// The way back, at the top of the scroller. It stays until the client has
+// actually reached their own beginning, and is then replaced by a plain marker
+// saying where that is — never a control that does nothing, never a floor that
+// arrives without a word. Following someone else's day is looking, not paging:
+// the trainer's read-only view keeps the fortnight it has always had.
+function _tlEarlierHtml(start){
+  if(window._tlRO) return '';
+  var a=window._tlAnchor;
+  var atAnchor = !!window._tlAtAnchor || !!(a && start && start.getTime()<=a.getTime());
+  if(atAnchor){
+    var when=a?_tlDateStr(a):'';
+    var lead=(window._tlAnchorSrc==='log') ? 'Your first logged day' : 'Your history starts here';
+    return '<div class="tlEarlier tlEarlierEnd"><b>'+_escHtml(lead)+'</b>'+(when?('<span>'+_escHtml(when)+'</span>'):'')+'</div>';
+  }
+  return '<div class="tlEarlier"><button type="button" id="tlEarlierBtn" onclick="tlLoadEarlier()">See earlier days</button></div>';
+}
+// One tap, one fortnight further back. Reads only the slice it adds.
+async function tlLoadEarlier(){
+  if(window._tlPaging || !cl) return;
+  window._tlPaging=true;
+  var btn=document.getElementById('tlEarlierBtn');
+  if(btn){ btn.disabled=true; btn.textContent='Loading…'; }
+  try{
+    var today=new Date(); today.setHours(0,0,0,0);
+    var curStart=_tlWindowStart(today);
+    var anchor=await _tlResolveAnchor();
+    // Already standing on their first day: say so rather than fetch nothing twice.
+    if(anchor && curStart.getTime()<=anchor.getTime()){
+      window._tlAtAnchor=true;
+      await renderDayTimeline(true);
+      return;
+    }
+    var newStart=new Date(today); newStart.setDate(newStart.getDate()-(_tlWindowBack()+_tlPageDays)); newStart.setHours(0,0,0,0);
+    if(anchor && newStart.getTime()<anchor.getTime()){ newStart=new Date(anchor); newStart.setHours(0,0,0,0); }
+    var prevDay=new Date(curStart); prevDay.setDate(prevDay.getDate()-1);
+    var r=await Promise.all([
+      _tlGrab('food_logs',      _tlFetchSince(newStart), curStart),
+      _tlGrab('workout_logs',   _tlFetchSince(newStart), curStart),
+      _tlGrab('weight_logs',    _tlFetchSince(newStart), curStart),
+      _tlGrab('journal_entries',_tlFetchSince(newStart), curStart)
+    ]);
+    window._tlCache=_tlCacheMerge(window._tlCache,
+      {foods:r[0]||[], workouts:r[1]||[], weights:r[2]||[], journals:r[3]||[]},
+      _tlDaySet(newStart, prevDay));
+    window._tlFetchedAt=Date.now();
+    window._tlExtraBack=Math.max(0, Math.round((today-newStart)/86400000)-_tlDaysBack);
+    if(anchor && newStart.getTime()<=anchor.getTime()) window._tlAtAnchor=true;
+    // Days are being added ABOVE what they're reading, so holding scrollTop would
+    // slide the page down by exactly the height just inserted. Hold the CONTENT
+    // still instead: keep the distance from the bottom, which is unchanged by a
+    // prepend.
+    var sc=document.getElementById('tlScroll');
+    var top0=sc?sc.scrollTop:0, h0=sc?sc.scrollHeight:0;
+    await renderDayTimeline(true);
+    var sc2=document.getElementById('tlScroll');
+    if(sc2 && h0){ sc2.scrollTop = top0 + (sc2.scrollHeight - h0); }
+  }catch(e){
+    try{ showToast('Could not load earlier days'); }catch(_){}
+  }finally{
+    window._tlPaging=false;
+    // Whatever happened, the way back is never left disabled — a failed read must
+    // not read as "there is nothing older".
+    var b2=document.getElementById('tlEarlierBtn');
+    if(b2){ b2.disabled=false; b2.textContent='See earlier days'; }
+  }
 }
 async function renderDayTimeline(soft){
   // Nothing should carry an inline height into a fresh render. One stuck value
@@ -18535,7 +18786,13 @@ async function renderDayTimeline(soft){
   var _hadContent = !!(body.innerHTML||'').trim();
 
   var today=new Date(); today.setHours(0,0,0,0);
-  var start=new Date(today); start.setDate(start.getDate()-_tlDaysBack);
+  // No cache means a cold read, and a cold read is ALWAYS the recent window —
+  // paging back is a thing this client asked for on this screen, not a cost that
+  // follows them into every later boot. Reset first, so `start` below is the
+  // fortnight rather than however far they had walked back before.
+  var _cold=!(soft && window._tlCache);
+  if(_cold){ try{ _tlResetPaging(); }catch(e){} }
+  var start=_tlWindowStart(today);
   var end=new Date(today);   end.setDate(end.getDate()+_tlDaysFwd);
 
   // pull the whole window of logs (cached, so expanding a card never reloads the page)
@@ -18545,7 +18802,9 @@ async function renderDayTimeline(soft){
     if(!_tpPlan){ try{ _tpPlan=_tlResolvePlan(); }catch(e){} }
   } else {
     // Only the window we actually draw, and all of it at once. Five trips in a row was the 10s.
-    var since=new Date(start); since.setDate(since.getDate()-2);
+    // A cold render is always the RECENT window — paging back never becomes a boot
+    // cost, it only ever adds slices on top of this one.
+    var since=_tlFetchSince(start);
     var win='&logged_at=gte.'+encodeURIComponent(since.toISOString());
     var cc='client_code=eq.'+encodeURIComponent(cl.code);
     function grab(table, extra){
@@ -18592,6 +18851,7 @@ async function renderDayTimeline(soft){
 
   // Sizing, overflow and snap all live in the stylesheet now — see #tlScroll there.
   var html='<div id="tlScroll" style="position:relative;padding-right:2px;">';
+  html+=_tlEarlierHtml(start);
   var cur=new Date(start);
   while(cur.getTime()<=end.getTime()){
     html+=_tlDaySectionHtml(new Date(cur), {today:today, start:start, fByDay:fByDay, wByDay:wByDay, gByDay:gByDay, jByDay:jByDay});
@@ -19448,21 +19708,23 @@ function _tlSignature(c){
 async function _tlRefreshQuiet(){
   if(!cl) return;
   var today=new Date(); today.setHours(0,0,0,0);
-  var start=new Date(today); start.setDate(start.getDate()-_tlDaysBack-2);
-  var cc='client_code=eq.'+encodeURIComponent(cl.code);
-  var win='&logged_at=gte.'+encodeURIComponent(start.toISOString());
-  function grab(t){
-    return sbSelect(t, cc+win+'&order=logged_at.desc&limit=300')
-      .catch(function(){ return sbSelect(t, cc+'&order=logged_at.desc&limit=200').catch(function(){ return []; }); });
-  }
+  // Re-opening the tab checks the RECENT window only. Whatever the client paged
+  // back to stays on screen untouched — old days don't change behind their back,
+  // and re-reading them on every tab switch is exactly the cost paging avoids.
+  var start=new Date(today); start.setDate(start.getDate()-_tlDaysBack);
+  var end=new Date(today); end.setDate(end.getDate()+_tlDaysFwd);
   var fresh;
   try{
-    var r=await Promise.all([grab('food_logs'),grab('workout_logs'),grab('weight_logs'),grab('journal_entries')]);
+    var r=await Promise.all([
+      _tlGrab('food_logs',_tlFetchSince(start)), _tlGrab('workout_logs',_tlFetchSince(start)),
+      _tlGrab('weight_logs',_tlFetchSince(start)), _tlGrab('journal_entries',_tlFetchSince(start))
+    ]);
     fresh={foods:r[0]||[], workouts:r[1]||[], weights:r[2]||[], journals:r[3]||[]};
   }catch(e){ return; }
+  var next = _tlCacheMerge(window._tlCache, fresh, _tlDaySet(start, end));
   var before = window._tlCache ? _tlSignature(window._tlCache) : '';
-  if(_tlSignature(fresh) === before) return;      // nothing changed — leave the screen alone
-  window._tlCache = fresh;
+  if(_tlSignature(next) === before) return;       // nothing changed — leave the screen alone
+  window._tlCache = next;
   window._tlFetchedAt = Date.now();
   try{ renderDayTimeline(true); }catch(e){}
 }

@@ -84,7 +84,7 @@ exports.handler = async (event) => {
   let row = null;
   try {
     const r = await fetch(
-      `${URL}/rest/v1/clients?code=eq.${encodeURIComponent(code)}&select=code,name,initials,is_trainer,active,calls_enabled,call_credits&limit=1`,
+      `${URL}/rest/v1/clients?code=eq.${encodeURIComponent(code)}&select=code,name,initials,is_trainer,active,calls_enabled,call_credits,started_at&limit=1`,
       { headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE } });
     if (!r.ok) { console.error('session: lookup failed', r.status); return json(502, { error: 'lookup_failed' }); }
     const rows = await r.json();
@@ -121,9 +121,16 @@ exports.handler = async (event) => {
     // needs to trust. Carrying them here lets the login flow stop asking the
     // public key about a client's own call-booking permission once that column
     // goes dark to anon — the exact thing that read used to depend on.
+    // started_at rides here for the same reason calls_enabled does: it is a fact
+    // about THIS client, needed by their own screen, on a column that is dark to
+    // the anon key and staying that way. The Day page anchors how far back a
+    // client can scroll to the day they actually started; without this it can
+    // only ever guess from their first logged row. Display data, not identity —
+    // nothing signs it and nothing trusts it for access.
     client: { code: row.code, name: row.name || row.code, initials: row.initials || null,
               is_trainer: row.is_trainer === true, active: row.active !== false,
-              calls_enabled: row.calls_enabled === true, call_credits: +row.call_credits || 0 },
+              calls_enabled: row.calls_enabled === true, call_credits: +row.call_credits || 0,
+              started_at: row.started_at ? String(row.started_at).slice(0, 10) : null },
   });
 };
 
