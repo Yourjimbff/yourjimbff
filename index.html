@@ -8646,6 +8646,9 @@ function _jvSay(msg){
 async function _jvFeedCommand(text){
   var t=String(text||'').trim();
   var m;
+  // An answer to a held write, then a statement of fact — both before any model.
+  try{ var _pr=await _jvPendingReply(t); if(_pr){ _jvSay(_pr.replace(/\n/g,'<br>')); return true; } }catch(e){ console.error('pending reply',e); }
+  try{ var _cc=await _ccHandleStatement(t); if(_cc){ _jvSay(_cc); return true; } }catch(e){ console.error('contact command',e); }
   var kindWord=function(w){ return /workout|session|training|lift|pull|push|legs/i.test(w||'') ? 'wo' : (/meal|food|breakfast|lunch|dinner|ate/i.test(w||'') ? 'food' : null); };
 
   // like <who>['s <what>]
@@ -13244,6 +13247,83 @@ async function _postMomentText(t){
   try{ var w=await trainerWrite('momentPost',{text:t}); if(w.ok && w.rows[0] && w.rows[0].id!=null) saved=true; }catch(e){}
   if(!saved){ var a=_localMoments(); a.unshift({text:t, ts:Date.now()}); _saveLocalMoments(a); }
 }
+// ===== TIER TWO: A NUMBER GETS STATED BACK AND WAITS ======================
+// The assistant could log a weight, a meal and a step count against whichever
+// client it decided a sentence was about, immediately, with no confirmation and
+// with the public key. Two things were wrong with that. It was choosing the
+// human being, and a wrong weight in a real history is invisible for weeks —
+// unlike a contact log, which is one line you can see and undo. And it wrote
+// with the same key any page on the internet holds, so nothing anywhere checked
+// that a trainer was behind it.
+//
+// Now: it states the client's FULL NAME and the exact numbers, and writes only
+// when told to. The writes go through the trainer door, which requires a real
+// trainer session, and every one is read back rather than trusted.
+var _JV_PENDING_MS=10*60*1000;      // a confirmation older than this is not a confirmation
+function _jvBuildPendingLog(lg, code, name){
+  if(!lg || !code || !CLIENTS[code]) return null;
+  var parts=[], payload={};
+  if(lg.food && ((+lg.food.calories||0)||(+lg.food.protein||0)||(+lg.food.carbs||0)||(+lg.food.fat||0))){
+    payload.food={ name:String(lg.food.name||'Logged meal'), calories:Math.round(+lg.food.calories||0),
+      protein:Math.round(+lg.food.protein||0), carbs:Math.round(+lg.food.carbs||0), fat:Math.round(+lg.food.fat||0) };
+    parts.push(payload.food.name+' — '+payload.food.calories.toLocaleString()+' cal, '+payload.food.protein+'g protein');
+  }
+  if(lg.weight!=null && !isNaN(parseFloat(lg.weight))){
+    payload.weight=parseFloat(lg.weight);
+    parts.push(payload.weight+' '+(typeof wUnit==='function'?wUnit():'lbs'));
+  }
+  if(lg.steps!=null && !isNaN(parseInt(lg.steps,10))){
+    payload.steps=parseInt(lg.steps,10);
+    parts.push(payload.steps.toLocaleString()+' steps');
+  }
+  if(!parts.length) return null;
+  return {code:code, name:(String(name||'')||(CLIENTS[code]||{}).name||code), parts:parts, payload:payload, at:Date.now()};
+}
+function _jvPendingSummary(p){
+  return 'I am about to log '+p.parts.join(', ')+' to '+p.name+' ('+p.code+'), dated today. Right client?';
+}
+function _jvPendingFresh(){
+  var p=window._jvPendingWrite;
+  return (p && (Date.now()-p.at)<_JV_PENDING_MS) ? p : null;
+}
+function _jvIsYes(t){ return /^\s*(y|yes|yep|yeah|yup|confirm(ed)?|do it|go ahead|go|correct|right|that'?s right|send it|log it)\b/i.test(String(t||'')); }
+function _jvIsNo(t){ return /^\s*(n|no|nope|nah|cancel|stop|don'?t|do not|wrong|never ?mind|forget it)\b/i.test(String(t||'')); }
+// Writes the held action. Every row goes through the door and is read back —
+// the door answers with the row it wrote, so "it saved" is something this can
+// actually see rather than infer from the absence of an error.
+async function _jvCommitPending(p){
+  var done=[], failed=[];
+  var now=new Date(), ds=now.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}), iso=now.toISOString();
+  if(p.payload.food){
+    var f=p.payload.food;
+    var w=await trainerWrite('logFood',{client_code:p.code, name:f.name, calories:f.calories, protein:f.protein,
+      carbs:f.carbs, fat:f.fat, rating:'unknown', date_str:ds, logged_at:iso});
+    if(w.ok && w.rows && w.rows[0]) done.push(f.calories.toLocaleString()+' cal · '+f.protein+'g protein'); else failed.push('the meal');
+  }
+  if(p.payload.weight!=null){
+    var w2=await trainerWrite('logWeight',{client_code:p.code, weight:p.payload.weight, notes:'[Jarvis]', logged_at:iso});
+    if(w2.ok && w2.rows && w2.rows[0]) done.push(p.payload.weight+' '+(typeof wUnit==='function'?wUnit():'lbs')); else failed.push('the weight');
+  }
+  if(p.payload.steps!=null){
+    var w3=await trainerWrite('logSteps',{client_code:p.code, steps:p.payload.steps, date_str:ds, updated_at:iso});
+    if(w3.ok) done.push(p.payload.steps.toLocaleString()+' steps'); else failed.push('the steps');
+  }
+  window._jvPendingWrite=null;
+  try{ window._tlCache=null; }catch(e){}
+  try{ if(typeof jvLoadTriage==='function') jvLoadTriage(true); }catch(e){}
+  if(!done.length) return 'None of that saved. Nothing was written to '+p.name+'.';
+  return '✓ Logged to '+p.name+': '+done.join(' · ')
+    + (failed.length ? ('\nDid not save: '+failed.join(', ')+'. Nothing was written for those.') : '');
+}
+// Consulted by every assistant box before its model is involved, so a "yes"
+// means the same thing wherever it is typed.
+async function _jvPendingReply(t){
+  var p=_jvPendingFresh();
+  if(!p) return null;
+  if(_jvIsNo(t)){ window._jvPendingWrite=null; return 'Dropped it. Nothing was written.'; }
+  if(!_jvIsYes(t)) return null;          // anything else is a new thought, not an answer
+  return await _jvCommitPending(p);
+}
 async function jarvisIngest(ns){
   ns=ns||'feed'; var ID=_jarvisIds(ns);
   var inp=document.getElementById(ID.inp); if(!inp) return;
@@ -13251,6 +13331,28 @@ async function jarvisIngest(ns){
   if(!window._jarvisThread) window._jarvisThread=[];
   window._jarvisThread.push({role:'you', text:t});
   inp.value='';
+  // Same statement handling as the cockpit box, so the answer to "I contacted
+  // Jordan R" does not depend on which of the three Jarvis boxes you happened to
+  // be looking at. This one only ever received a list of names, so it could not
+  // do anything but ask — that is what it was doing when it asked for a board
+  // snapshot.
+  try{
+    var _pr=await _jvPendingReply(t);
+    if(_pr){
+      window._jarvisThread.push({role:'jarvis', text:_pr, logged:null});
+      _jarvisSyncThreads();
+      if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent=(ns==='cl'?'Send ➤':'⚡ Send to Jarvis'); }
+      return;
+    }
+  }catch(e){ console.error('pending reply',e); }
+  try{
+    var _ccOut=await _ccHandleStatement(t);
+    if(_ccOut){
+      window._jarvisThread.push({role:'jarvis', text:_ccOut.replace(/<br>/g,'\n').replace(/<[^>]+>/g,''), logged:null});
+      _jarvisSyncThreads();
+      return;
+    }
+  }catch(e){ console.error('contact command (jarvis)',e); }
   var btn=document.getElementById(ID.send); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='Jarvis is thinking\u2026'; }
   var tEl=document.getElementById(ID.thread); if(tEl) tEl.innerHTML=_jarvisThreadHtml();
   try{
@@ -13276,23 +13378,17 @@ async function jarvisIngest(ns){
     var code=(obj&&obj.client_code)?String(obj.client_code).trim():'';
     var name=(obj&&obj.client_name?String(obj.client_name).trim():'')||(CLIENTS[code]&&CLIENTS[code].name)||'';
     var loggedTo=null;
+    // The note is trainer-only and lives on a profile you can see and delete, and
+    // the moment post is trainer-only too \u2014 both stay immediate. A number does
+    // not: a weight on the wrong client is a silent corruption of a real history
+    // that nobody catches for weeks, and it is the assistant, not Yusuf, choosing
+    // who it belongs to. Numbers get stated back and wait.
     if(code && CLIENTS[code] && note){ try{ await sbInsertReturning('client_notes',{client_code:code, note:'[Jarvis] '+note, logged_at:new Date().toISOString()}); }catch(e){} try{ await _postMomentText((name?(name+': '):'')+note); }catch(e){} loggedTo=name||code; }
-    var _logSum=[];
     try{
-      var lg=obj&&obj.log;
-      if(lg && code && CLIENTS[code]){
-        var _now2=new Date(), _ds2=_now2.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}), _iso2=_now2.toISOString();
-        if(lg.food && ((lg.food.calories||0)||(lg.food.protein||0)||(lg.food.carbs||0)||(lg.food.fat||0))){
-          var _fr={client_code:code, name:(lg.food.name||'Logged meal'), calories:Math.round(lg.food.calories||0), protein:Math.round(lg.food.protein||0), carbs:Math.round(lg.food.carbs||0), fat:Math.round(lg.food.fat||0), rating:'unknown', logged_at:_iso2};
-          try{ var _fres=await insertFoodLog(_fr,null); if(_fres&&_fres.ok){ _logSum.push(Math.round(lg.food.calories||0).toLocaleString()+' cal'+((lg.food.protein)?(' \u00b7 '+Math.round(lg.food.protein)+'P'):'')); } }catch(e){}
-        }
-        if(lg.weight!=null && !isNaN(parseFloat(lg.weight))){
-          try{ await sbInsert('weight_logs',{client_code:code, weight:parseFloat(lg.weight), notes:'[Jarvis]'}); _logSum.push(parseFloat(lg.weight)+' lb'); }catch(e){}
-        }
-        if(lg.steps!=null && !isNaN(parseInt(lg.steps,10))){
-          try{ await sbUpsert('step_logs',{client_code:code, steps:parseInt(lg.steps,10), date_str:_ds2, updated_at:_iso2}, 'client_code,date_str'); _logSum.push(parseInt(lg.steps,10).toLocaleString()+' steps'); }catch(e){}
-        }
-        if(_logSum.length){ loggedTo=(name||code); reply='\u2705 Logged to '+(name||code)+': '+_logSum.join(' \u00b7 ')+(reply&&reply!=='Got it.'?('\n\n'+reply):''); }
+      var _pend=_jvBuildPendingLog(obj&&obj.log, code, name);
+      if(_pend){
+        window._jvPendingWrite=_pend;
+        reply='Before I write that \u2014 '+_jvPendingSummary(_pend)+'\n\nSay yes and it goes in.';
       }
     }catch(e){ console.error('jarvis log',e); }
     window._jarvisThread.push({role:'jarvis', text:reply, logged:loggedTo});
@@ -14798,14 +14894,143 @@ function _ccUnanswered(code){
 // 'talk' is a conversation that happened, with no channel worth recording — the fast
 // path off the card. text/call stay for anything logged deliberately as one or the other.
 var _CC_KIND={text:'text', call:'call', talk:'talk'};
+
+// ===== TIER ONE: A STATED FACT IS CONSENT =================================
+// "I contacted Jordan R" is a thing that happened, not a question. It used to be
+// answered with a request for a board snapshot. It logs now, and says what it
+// logged.
+//
+// Names and dates are resolved HERE, in code, before any model sees the
+// sentence. A model reads a sentence well and has no business deciding WHICH
+// HUMAN BEING a row lands on: yusufa1 is a real client named Yusuf A, and the
+// cost of a confident wrong guess is a record against the wrong person that
+// nobody notices. So every name in the message must resolve to exactly one code
+// BEFORE a single row is written — three names with one ambiguity asks about
+// that one and writes nothing at all, rather than logging two and leaving the
+// third dangling in a half-done state nobody can see.
+var _CC_DOW={sunday:0,monday:1,tuesday:2,wednesday:3,thursday:4,friday:5,saturday:6};
+// The whole date vocabulary, deliberately small. Anything outside it is not
+// guessed at — the sentence comes back with a question.
+var _CC_WHEN_RE=/\b(this morning|this afternoon|this evening|tonight|last night|today|yesterday|(?:on\s+)?(?:last\s+)?(?:sun|mon|tues|tue|wednes|wednes|wed|thurs|thur|thu|fri|satur|sat)(?:day)?)\s*$/i;
+function _ccWhenFromWords(w){
+  var now=new Date();
+  if(!w) return {ts:now.getTime(), label:'today'};
+  var s=String(w).trim().toLowerCase().replace(/^on\s+/,'');
+  function at(d,h){ d.setHours(h,0,0,0); return d.getTime(); }
+  if(s==='today') return {ts:now.getTime(), label:'today'};
+  if(s==='this morning')   return {ts:at(new Date(),9),  label:'this morning'};
+  if(s==='this afternoon') return {ts:at(new Date(),14), label:'this afternoon'};
+  if(s==='this evening'||s==='tonight') return {ts:at(new Date(),19), label:s};
+  if(s==='yesterday'||s==='last night'){
+    var y=new Date(); y.setDate(y.getDate()-1);
+    return {ts:at(y, s==='last night'?21:12), label:s};
+  }
+  var last=/^last\s+/.test(s);
+  var word=s.replace(/^last\s+/,'');
+  var dow=null;
+  Object.keys(_CC_DOW).forEach(function(k){ if(k.indexOf(word)===0 || word.indexOf(k.slice(0,3))===0) dow=_CC_DOW[k]; });
+  if(dow==null) return null;
+  // The most recent one that has already happened. Saying "Tuesday" ON a Tuesday
+  // means today, not a week ago — but "last Tuesday" always means the one before.
+  var d=new Date(); d.setHours(12,0,0,0);
+  var back=(d.getDay()-dow+7)%7;
+  if(last) back=back===0?7:back+7;
+  d.setDate(d.getDate()-back);
+  var lbl=Object.keys(_CC_DOW).filter(function(k){ return _CC_DOW[k]===dow; })[0];
+  return {ts:d.getTime(), label:(last?'last ':'')+lbl.charAt(0).toUpperCase()+lbl.slice(1)};
+}
+function _ccKindFromVerb(v){
+  v=String(v||'').toLowerCase();
+  if(/call|rang|phoned/.test(v)) return 'call';
+  if(/spoke|talked|met|caught up/.test(v)) return 'talk';
+  return 'text';
+}
+var _CC_VERB='(?:texted|text|messaged|message|dm(?:\'?d|ed)?|called|call|rang|phoned|spoke to|spoke with|spoke|talked to|talked with|talked|met with|met|caught up with|contacted|contact|reached out to|checked in with|checked in on)';
+// Split "Texted Kelly Tuesday, Andrew yesterday and Toni this morning" into its
+// three separate facts, each keeping the verb it inherited from the front.
+function _ccParseStatement(text){
+  var t=String(text||'').trim().replace(/[.!]+$/,'');
+  var head=new RegExp('^(?:i\\s+(?:just\\s+)?)?('+_CC_VERB+')\\s+(.+)$','i').exec(t);
+  if(!head) return null;
+  var defKind=_ccKindFromVerb(head[1]);
+  var rest=head[2];
+  var parts=rest.split(/\s*,\s*|\s+and\s+/i).map(function(x){ return x.trim(); }).filter(Boolean);
+  if(!parts.length) return null;
+  var out=[];
+  for(var i=0;i<parts.length;i++){
+    var p=parts[i], kind=defKind;
+    // A later clause may carry its own verb: "texted Kelly, called Andrew".
+    var own=new RegExp('^('+_CC_VERB+')\\s+(.+)$','i').exec(p);
+    if(own){ kind=_ccKindFromVerb(own[1]); p=own[2].trim(); }
+    var when=null, mw=_CC_WHEN_RE.exec(p);
+    if(mw){ when=mw[1]; p=p.slice(0, mw.index).trim().replace(/[,\-]+$/,'').trim(); }
+    var about='';
+    var ma=/^(.+?)\s+about\s+(.+)$/i.exec(p);
+    if(ma){ p=ma[1].trim(); about=ma[2].trim(); }
+    if(!p) return null;
+    out.push({who:p, kind:kind, whenWords:when, about:about});
+  }
+  return out;
+}
+// Resolve EVERYTHING first. Nothing is written until every name and every date
+// in the message has exactly one answer.
+function _ccResolveAll(clauses){
+  var resolved=[], problems=[];
+  clauses.forEach(function(c){
+    var hits=_jvResolveClient(c.who);
+    if(!hits.length){ problems.push('I don’t have anyone called <b>'+_escHtml(c.who)+'</b>.'); return; }
+    if(hits.length>1){
+      problems.push('<b>'+_escHtml(c.who)+'</b> matches '+hits.length+' clients — '
+        + hits.map(function(h){ return _escHtml(String((CLIENTS[h]||{}).name||h)); }).join(', ')
+        + '. Which one?');
+      return;
+    }
+    var w=_ccWhenFromWords(c.whenWords);
+    if(!w){ problems.push('I don’t know when “'+_escHtml(String(c.whenWords||''))+'” is — give me a day and I’ll log it.'); return; }
+    resolved.push({code:hits[0], name:String((CLIENTS[hits[0]]||{}).name||hits[0]), kind:c.kind, about:c.about, ts:w.ts, when:w.label});
+  });
+  return {resolved:resolved, problems:problems};
+}
+// Returns a line of HTML when it handled the sentence, or null when the sentence
+// was not a contact statement and belongs to whatever comes next.
+async function _ccHandleStatement(text){
+  var clauses=_ccParseStatement(text);
+  if(!clauses) return null;
+  var r=_ccResolveAll(clauses);
+  // One bad name stops the whole message. Writing the two it understood and
+  // asking about the third leaves a half-logged sentence nobody can audit.
+  if(r.problems.length){
+    return r.problems.join('<br>') + (r.resolved.length ? '<br><span style="opacity:0.7;">Nothing logged yet — sort that out and say it again.</span>' : '');
+  }
+  if(!r.resolved.length) return null;
+  var done=[], unsynced=0;
+  for(var i=0;i<r.resolved.length;i++){
+    var x=r.resolved[i];
+    var row=await jvLogContact(x.code, x.kind, x.about, true, x.ts);
+    if(!row){ continue; }
+    if(!row.s) unsynced++;
+    var verb=(x.kind==='call'?'called':(x.kind==='talk'?'spoke to':'texted'));
+    done.push(verb+' <b>'+_escHtml(x.name)+'</b>, '+_escHtml(x.when)+(x.about?(' — '+_escHtml(x.about)):''));
+  }
+  if(!done.length) return 'That did not save. Nothing was logged.';
+  try{ if(window.jvTriage && typeof jvRenderTriage==='function') jvRenderTriage(); }catch(e){}
+  try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+  return '✓ Logged: '+done.join('; ')+'.'
+    + (unsynced ? '<br><span style="opacity:0.7;">'+unsynced+' saved here but not synced to your other devices yet.</span>' : '');
+}
 // Returns the logged row (truthy) rather than a bare boolean, so a caller that needs to
 // address THIS entry again — undo, add a note — has the exact timestamp to match on.
 // No id comes back from the insert (Prefer: minimal), so contacted_at is the key
 // everywhere a specific row needs touching again.
-async function jvLogContact(code, kind, about, replied){
+// whenTs backdates the entry. The trainer door has always accepted an explicit
+// contacted_at — this was the one hardcoded Date.now() standing between the app
+// and "texted Kelly on Tuesday". Absent, it is still now, so every existing
+// caller behaves exactly as it did.
+async function jvLogContact(code, kind, about, replied, whenTs){
   if(!code) return null;
   kind=_CC_KIND[kind]?kind:'text';
-  var row={t:Date.now(), k:kind, a:String(about||'').trim().slice(0,300), r:(replied!==false)};
+  var _t=(whenTs!=null && !isNaN(+whenTs)) ? +whenTs : Date.now();
+  var row={t:_t, k:kind, a:String(about||'').trim().slice(0,300), r:(replied!==false)};
   var m=jvContacts(); (m[code]=m[code]||[]).unshift(row); if(m[code].length>200) m[code].length=200;
   _ccSave(m);
   // Speaking to someone clears them off today's board too — one action, not two.
@@ -14818,7 +15043,7 @@ async function jvLogContact(code, kind, about, replied){
     if(cl){
       var w=await trainerWrite('contactInsert', {client_code:code, kind:kind, about:row.a, replied:row.r,
                              contacted_at:new Date(row.t).toISOString()});
-      if(w.ok) window._ccSrv='ok';
+      if(w.ok){ window._ccSrv='ok'; row.s=true; }
     }
   }catch(e){}
   return row;

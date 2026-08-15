@@ -242,6 +242,40 @@ const WRITE_OPS = {
   }),
   salesDelete: (a) => ({ method: 'DELETE', path: `sales?id=eq.${encId(a.id)}` }),
 
+  // ---- a trainer logging ON BEHALF OF a client ---------------------------------
+  // These three tables are not dark to the anon key and never will be: a client's
+  // own app writes their own weight, food and steps with it all day. What was
+  // going through the public key was something else entirely — the ASSISTANT
+  // writing a number onto whichever client it decided a sentence was about. That
+  // is a privileged, cross-client act and it had no more authority behind it than
+  // any page on the internet has.
+  //
+  // Through here it needs a real trainer session. Deliberately narrow: one row,
+  // one client, named fields only, no bulk shape, and no delete or update — an
+  // assistant that misfires can add a row somebody can see and remove, never
+  // rewrite or erase a history.
+  logWeight: (a) => ({
+    method: 'POST', path: 'weight_logs',
+    body: { client_code: enc_raw(a.client_code), weight: num(a.weight),
+      notes: str(a.notes, 300), logged_at: isoTs(a.logged_at || new Date().toISOString()) },
+  }),
+  logFood: (a) => ({
+    method: 'POST', path: 'food_logs',
+    body: { client_code: enc_raw(a.client_code), name: str(a.name, 200),
+      calories: num(a.calories), protein: num(a.protein), carbs: num(a.carbs), fat: num(a.fat),
+      rating: str(a.rating || 'unknown', 40),
+      date_str: str(a.date_str, 40) || undefined,
+      logged_at: isoTs(a.logged_at || new Date().toISOString()) },
+  }),
+  // Steps are one row per client per day, so this is the only one that merges
+  // rather than appends — the same on_conflict the client's own writer uses.
+  logSteps: (a) => ({
+    method: 'POST', path: 'step_logs?on_conflict=client_code,date_str',
+    upsert: true,
+    body: { client_code: enc_raw(a.client_code), steps: num(a.steps),
+      date_str: str(a.date_str, 40), updated_at: isoTs(a.updated_at || new Date().toISOString()) },
+  }),
+
   // ---- client_contacts --------------------------------------------------------
   contactInsert: (a, coach) => ({
     method: 'POST', path: 'client_contacts',
