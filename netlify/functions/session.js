@@ -83,11 +83,27 @@ exports.handler = async (event) => {
 
   let row = null;
   try {
-    const r = await fetch(
-      `${URL}/rest/v1/clients?code=eq.${encodeURIComponent(code)}&select=code,name,initials,is_trainer,active,calls_enabled,call_credits&limit=1`,
-      { headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE } });
+    // A column this select names but the table doesn't have yet (weekly_calls,
+    // weekly_call_spent_at, if the migration hasn't landed) would 400 this
+    // whole lookup — which is login itself, for every account. Looped, not
+    // just one retry, since this migration alone adds two columns and a
+    // single retry would still 400 on the second one if neither has landed.
+    let cols = 'code,name,initials,is_trainer,active,calls_enabled,call_credits,weekly_calls,weekly_call_spent_at';
+    let r, text;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      r = await fetch(
+        `${URL}/rest/v1/clients?code=eq.${encodeURIComponent(code)}&select=${cols}&limit=1`,
+        { headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE } });
+      text = await r.text();
+      if (r.ok) break;
+      const m = /column\s+\\?"?(?:[a-z_][a-z0-9_]*\.)?\\?"?([a-z_][a-z0-9_]*)\\?"?[\s\S]{0,40}?does not exist/i.exec(text)
+        || /could not find the '([a-z_]+)' column/i.exec(text);
+      if (!m || !cols.split(',').includes(m[1])) break;
+      console.warn('session: clients has no column "' + m[1] + '" — retrying without it');
+      cols = cols.split(',').filter((c) => c !== m[1]).join(',');
+    }
     if (!r.ok) { console.error('session: lookup failed', r.status); return json(502, { error: 'lookup_failed' }); }
-    const rows = await r.json();
+    const rows = JSON.parse(text);
     row = rows && rows[0];
   } catch (e) {
     console.error('session: lookup threw', e && e.message);
@@ -116,14 +132,18 @@ exports.handler = async (event) => {
     token: sign(claims, SECRET),
     expires_at: claims.exp,
     renew_within: RENEW_WITHIN,
-    // calls_enabled/call_credits ride here, not in the signed claims — this is
-    // data for the page to show, not an identity fact PostgREST or trainer.js
-    // needs to trust. Carrying them here lets the login flow stop asking the
-    // public key about a client's own call-booking permission once that column
-    // goes dark to anon — the exact thing that read used to depend on.
+    // calls_enabled/call_credits/weekly_calls/weekly_call_spent_at ride here, not
+    // in the signed claims — this is data for the page to show, not an identity
+    // fact PostgREST or trainer.js needs to trust. Carrying them here lets the
+    // login flow stop asking the public key about a client's own call-booking
+    // permission once that column goes dark to anon — the exact thing that read
+    // used to depend on. weekly_call_spent_at rides as-is (or undefined, if the
+    // migration hasn't landed and the retry above dropped it) — the page's own
+    // hasWeeklyCreditNow() treats a missing/falsy value as "never spent."
     client: { code: row.code, name: row.name || row.code, initials: row.initials || null,
               is_trainer: row.is_trainer === true, active: row.active !== false,
-              calls_enabled: row.calls_enabled === true, call_credits: +row.call_credits || 0 },
+              calls_enabled: row.calls_enabled === true, call_credits: +row.call_credits || 0,
+              weekly_calls: row.weekly_calls === true, weekly_call_spent_at: row.weekly_call_spent_at || null },
   });
 };
 

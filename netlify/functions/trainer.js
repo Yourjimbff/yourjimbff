@@ -39,7 +39,7 @@ const OPS = {
   // instead so those columns can go dark to anon. limit matches what the anon
   // call used (2000), not the old banked 500 — nothing that used to fit should
   // now silently truncate.
-  roster: () => 'clients?select=code,name,initials,phone,email,active,coach_code,is_trainer,is_primary,hidden,tier,term_months,paid,started_at,term_ends,created_at,calls_enabled,call_credits&order=code.asc&limit=2000',
+  roster: () => 'clients?select=code,name,initials,phone,email,active,coach_code,is_trainer,is_primary,hidden,tier,term_months,paid,started_at,term_ends,created_at,calls_enabled,call_credits,weekly_calls,weekly_call_spent_at&order=code.asc&limit=2000',
 
   // One client, deeply. The only place `code` is interpolated, and it is encoded.
   // Not yet called from anywhere — banked, same as roster.
@@ -96,6 +96,38 @@ function enc(v) {
   // Client codes are a known shape; refuse anything that could carry PostgREST syntax.
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(s)) throw new Error('bad_arg');
   return encodeURIComponent(s);
+}
+
+// UNKNOWN-COLUMN RECOVERY — same reasoning and the same regex as index.html's
+// own _sbBadColumn: a select= naming a column the table doesn't have 400s the
+// WHOLE query, and this function is a raw passthrough with no self-heal of
+// its own, unlike the client-side sbSelect/sbUpsert helpers. Added because a
+// schema change (weekly_calls, weekly_call_spent_at) now ships in the SAME
+// pass as this file — if the migration hasn't landed yet when this deploys,
+// this is what keeps the roster query answering instead of 400ing the whole
+// cockpit until someone notices and pastes the SQL.
+function badColumn(body) {
+  if (!body) return null;
+  const s = String(body);
+  const m = /column\s+\\?"?(?:[a-z_][a-z0-9_]*\.)?\\?"?([a-z_][a-z0-9_]*)\\?"?[\s\S]{0,40}?does not exist/i.exec(s)
+    || /could not find the '([a-z_]+)' column/i.exec(s)
+    || /'([a-z_]+)' column of '[a-z_]+'/i.exec(s);
+  return m ? m[1] : null;
+}
+// Drops one column out of a `table?select=a,b,c&...` path's select list.
+// Returns the same path unchanged if the column isn't actually in it, so a
+// caller can safely check `stripped !== path` to know whether a retry is
+// actually different from what just failed.
+function stripSelectColumn(path, col) {
+  const m = /^([^?]*\?)(.*)$/.exec(path);
+  if (!m) return path;
+  const [, base, qs] = m;
+  const params = qs.split('&').map((kv) => {
+    if (!kv.startsWith('select=')) return kv;
+    const cols = kv.slice(7).split(',').filter((c) => c !== col);
+    return 'select=' + cols.join(',');
+  });
+  return base + params.join('&');
 }
 
 // ---- WRITES ---------------------------------------------------------------
@@ -328,6 +360,10 @@ const WRITE_OPS = {
     if (a.term_ends !== undefined) body.term_ends = isoDate(a.term_ends);
     if (a.calls_enabled !== undefined) body.calls_enabled = !!a.calls_enabled;
     if (a.call_credits !== undefined) body.call_credits = num(a.call_credits);
+    // weekly_calls only, never weekly_call_spent_at here — the spend timestamp
+    // is written exactly once, by the guarded spendWeeklyCall op below, never
+    // by a flexible patch a trainer session could otherwise set to anything.
+    if (a.weekly_calls !== undefined) body.weekly_calls = !!a.weekly_calls;
     if (!Object.keys(body).length) throw new Error('bad_arg');
     return { method: 'PATCH', path: `clients?code=eq.${enc(a.code)}`, body: body };
   },
@@ -457,6 +493,115 @@ async function handleSpendCallCredit(URL, SERVICE, code) {
   }
 }
 
+// Same zone-conversion pair as consult-availability.js (duplicated there too,
+// for the identical reason: a Netlify function can't import from another).
+function tzOffsetMinutes(utcDate, tz) {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const parts = {};
+  dtf.formatToParts(utcDate).forEach((p) => { if (p.type !== 'literal') parts[p.type] = p.value; });
+  const asUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
+  return (asUtc - utcDate.getTime()) / 60000;
+}
+function zonedTimeToUtc(dateStr, timeStr, tz) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const [hh, mm] = timeStr.split(':').map(Number);
+  const guess = new Date(Date.UTC(y, m - 1, d, hh, mm, 0));
+  const offsetMin = tzOffsetMinutes(guess, tz);
+  return new Date(guess.getTime() - offsetMin * 60000);
+}
+
+// ---- weekly check-in credit: entitlement computed at read time -------------
+// No server-side scheduler exists anywhere in this stack, so nothing ever
+// writes a credit back on a timer. Instead, "does this client have their
+// weekly call right now" is a pure function of the current time and when
+// they last spent it — recomputed fresh on every check, here and in
+// index.html's own copy (duplicated for the same reason as vipCallOccurrences
+// above: a Netlify function can't import from the page). The boundary is
+// Sunday 00:00 America/New_York, the same for every client, so it never
+// needs a per-client anything and stays explainable in one sentence.
+function weeklyBoundaryYMD(now) {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short',
+  });
+  const parts = {};
+  dtf.formatToParts(now).forEach((p) => { if (p.type !== 'literal') parts[p.type] = p.value; });
+  const wdMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const dow = wdMap[parts.weekday];
+  const d = new Date(Date.UTC(+parts.year, +parts.month - 1, +parts.day));
+  d.setUTCDate(d.getUTCDate() - dow);
+  return { y: d.getUTCFullYear(), mo: d.getUTCMonth(), d: d.getUTCDate() };
+}
+function weeklyBoundaryOnOrBefore(now) {
+  const ymd = weeklyBoundaryYMD(now);
+  return zonedTimeToUtc(`${ymd.y}-${String(ymd.mo + 1).padStart(2, '0')}-${String(ymd.d).padStart(2, '0')}`, '00:00', 'America/New_York');
+}
+function nextWeeklyBoundaryAfter(now) {
+  const ymd = weeklyBoundaryYMD(now);
+  const d = new Date(Date.UTC(ymd.y, ymd.mo, ymd.d));
+  d.setUTCDate(d.getUTCDate() + 7);
+  return zonedTimeToUtc(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`, '00:00', 'America/New_York');
+}
+function hasWeeklyCreditNow(spentAtISO, now) {
+  if (!spentAtISO) return true;
+  const spent = new Date(spentAtISO);
+  if (isNaN(spent.getTime())) return true;
+  return spent.getTime() < weeklyBoundaryOnOrBefore(now).getTime();
+}
+
+// CLIENT-SESSION-GATED, same exception and same reasoning as spendCallCredit
+// above — a client spending their OWN weekly check-in call. Same read-then-
+// guarded-write shape: read the current weekly_call_spent_at, confirm a
+// credit is actually available right now, then write conditioned on that
+// exact prior value (via `or=` since the guard has to match either NULL or
+// the timestamp just read) so two taps landing at once can't both succeed.
+// On the no-credit path, the response carries `next` — the UTC instant the
+// next credit becomes available — so the caller can show the honest date
+// without a second round trip.
+async function handleSpendWeeklyCall(URL, SERVICE, code) {
+  try {
+    const readRes = await fetch(
+      `${URL}/rest/v1/clients?code=eq.${encodeURIComponent(code)}&select=weekly_calls,weekly_call_spent_at`,
+      { headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE } }
+    );
+    if (!readRes.ok) return json(502, { error: 'query_failed', op: 'spendWeeklyCall' });
+    const rows = await readRes.json();
+    const row = rows && rows[0];
+    if (!row) return json(404, { error: 'no_such_account' });
+    if (row.weekly_calls !== true) return json(409, { error: 'not_weekly_tier' });
+    const now = new Date();
+    if (!hasWeeklyCreditNow(row.weekly_call_spent_at, now)) {
+      return json(409, { error: 'no_credit', next: nextWeeklyBoundaryAfter(now).toISOString() });
+    }
+    const guard = row.weekly_call_spent_at
+      ? `weekly_call_spent_at.eq.${encodeURIComponent(row.weekly_call_spent_at)}`
+      : 'weekly_call_spent_at.is.null';
+    const writeRes = await fetch(
+      `${URL}/rest/v1/clients?code=eq.${encodeURIComponent(code)}&or=(${guard})`,
+      {
+        method: 'PATCH',
+        headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE, 'Content-Type': 'application/json', Prefer: 'return=representation' },
+        body: JSON.stringify({ weekly_call_spent_at: now.toISOString() }),
+      }
+    );
+    const text = await writeRes.text();
+    if (!writeRes.ok) {
+      console.error('trainer: spendWeeklyCall write failed', writeRes.status, text.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'spendWeeklyCall' });
+    }
+    let rowsBack = [];
+    try { rowsBack = JSON.parse(text); } catch (e) {}
+    if (!rowsBack.length) return json(409, { error: 'conflict_retry' });
+    return json(200, rowsBack.map((r) => Object.assign({}, r, { spent: true })));
+  } catch (e) {
+    console.error('trainer: spendWeeklyCall threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'spendWeeklyCall' });
+  }
+}
+
 // CLIENT-SESSION-GATED, same exception as spendCallCredit above — a client
 // reading their OWN upcoming VIP call schedule for Day & Jim's quiet row.
 // client_code is ALWAYS the session's own claim, never anything a caller
@@ -509,6 +654,9 @@ exports.handler = async (event) => {
   if (op === 'spendCallCredit') {
     return handleSpendCallCredit(URL, SERVICE, claims.client_code);
   }
+  if (op === 'spendWeeklyCall') {
+    return handleSpendWeeklyCall(URL, SERVICE, claims.client_code);
+  }
   if (op === 'myVipCalls') {
     return handleMyVipCalls(URL, SERVICE, claims.client_code);
   }
@@ -519,16 +667,30 @@ exports.handler = async (event) => {
     return json(403, { error: 'not_a_trainer' });
   }
 
-  // READ. Unchanged from before writes existed.
+  // READ. Unchanged from before writes existed, plus one recovery: a select=
+  // naming a column that doesn't exist yet (see badColumn above) gets that
+  // column dropped and the query retried — looped, not just once, since this
+  // migration alone adds two columns and a single retry would still 400 on
+  // the second one if neither has landed yet.
   if (Object.prototype.hasOwnProperty.call(OPS, op)) {
     let path;
     try { path = OPS[op](args); }
     catch (e) { return json(400, { error: 'bad_arg' }); }
     try {
-      const r = await fetch(`${URL}/rest/v1/${path}`, {
-        headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE },
-      });
-      const text = await r.text();
+      let r, text;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        r = await fetch(`${URL}/rest/v1/${path}`, {
+          headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE },
+        });
+        text = await r.text();
+        if (r.ok) break;
+        const bad = badColumn(text);
+        if (!bad) break;
+        const stripped = stripSelectColumn(path, bad);
+        if (stripped === path) break;
+        console.warn('trainer: ' + op + ' has no column "' + bad + '" — retrying without it');
+        path = stripped;
+      }
       if (!r.ok) {
         // The database's own words stay here. The cockpit gets a status, not a stack.
         console.error('trainer: query failed', op, r.status, text.slice(0, 300));
