@@ -17469,6 +17469,148 @@ function tlWnDismiss(ds){
 // for as many as you can — the load column is noise there, so the row asks only
 // for reps.
 function _bfRepsOnly(e){ return /^amrap$/i.test(String((e&&e.r)||'').trim()); }
+
+// ===== TODAY'S SESSION SHEET, NOT THE PROGRAM ============================
+// THE HARD LINE (Yusuf, 15 Aug): a client never writes training_plans.plan —
+// not directly, not as a side effect, not bundled with something else.
+//
+// The card's controls used to edit _tpPlan itself. Nothing on the card wrote,
+// so it looked harmless; then any finisher tap fired _saveTrainingPlanQuiet(),
+// which POSTs the WHOLE plan, and flushed those edits to the server. A client
+// dropping an exercise on Tuesday deleted it from the program for good, and
+// because the POST sends the copy loaded at sign-in it could also undo an edit
+// Yusuf made in the meantime.
+//
+// The card is TODAY'S SHEET. Skipping a movement, doing rope curls instead of
+// cable, adding a press at the end — all of that is about one date, and it now
+// lives in the same per-day draft the card already keeps its equipment pills,
+// its connection answers and its free text in. It reaches the permanent record
+// exactly where every other thing on this card does: the workout_logs row that
+// Complete writes, read-back verified, once.
+//
+// The program itself is still the client's to change — deliberately, on the
+// Program tab, behind its own Save, through a verified write that says so when
+// it fails (pgSavePlan). That is the one sanctioned door and this is not it.
+//
+// KEYED ON NAME, NEVER INDEX. A dropped or swapped movement is remembered by
+// what it is, so if Yusuf reshapes the week underneath an open draft the
+// untouched movements still follow the program instead of silently shifting
+// onto whatever landed at that position.
+function _bfDayEx(ds, plan){
+  var base=(plan && Array.isArray(plan.ex)) ? plan.ex : [];
+  var dr={}; try{ dr=_woDraft(ds)||{}; }catch(e){}
+  var drop=Array.isArray(dr.exDrop)?dr.exDrop:[];
+  var swap=(dr.exSwap && typeof dr.exSwap==='object')?dr.exSwap:{};
+  var add=Array.isArray(dr.exAdd)?dr.exAdd:[];
+  var out=[];
+  base.forEach(function(e){
+    if(!e || !e.n) return;
+    if(drop.indexOf(e.n)>=0) return;
+    var s=swap[e.n];
+    if(s && s.n){
+      // The prescription is the trainer's; only the movement changed. Sets and
+      // reps carry over unless the replacement states its own.
+      out.push({n:s.n, s:(s.s!=null?s.s:e.s), r:(s.r!=null?s.r:e.r), c:s.c, v:s.v});
+    } else {
+      out.push(e);
+    }
+  });
+  add.forEach(function(e){
+    if(!e || !e.n) return;
+    if(out.some(function(o){ return o.n===e.n; })) return;   // one card per movement
+    out.push(e);
+  });
+  return out;
+}
+// The card renders the effective list, so an index on a card is an index into
+// THAT — never into _tpPlan[day].ex. Every set handler resolves through here so
+// a dropped or swapped movement can't send a weight to the wrong exercise.
+function _bfExAt(day, i, ds){
+  try{
+    var d=ds || _tlDateStr(new Date());
+    var wd=_parseDs(d);
+    var plan=wd ? _tlPlanForDate(wd) : (_tpPlan && _tpPlan[day]);
+    var list=_bfDayEx(d, plan || (_tpPlan && _tpPlan[day]) || {});
+    return list[i] || null;
+  }catch(e){
+    try{ return (_tpPlan && _tpPlan[day] && _tpPlan[day].ex[i]) || null; }catch(_){ return null; }
+  }
+}
+function _bfDaySet(ds, mutate){
+  var d=_woDraft(ds);
+  if(!Array.isArray(d.exDrop)) d.exDrop=[];
+  if(!d.exSwap || typeof d.exSwap!=='object') d.exSwap={};
+  if(!Array.isArray(d.exAdd)) d.exAdd=[];
+  mutate(d);
+  _woSaveDraft(ds, d);
+  // In place: the day repaints, the scroller and every other day stay put.
+  try{ _tlPatchDay(ds); }catch(e){ try{ renderDayTimeline(true); }catch(_){} }
+}
+// Not doing this one today. An added movement is simply taken back off the
+// sheet; a programmed one is remembered as dropped for this date only.
+function bfDayDrop(ds, i){
+  var wd=_parseDs(ds); var plan=wd?_tlPlanForDate(wd):null;
+  var e=_bfDayEx(ds, plan||{})[i]; if(!e || !e.n) return;
+  var nm=e.n;
+  _bfDaySet(ds, function(d){
+    var ai=-1; d.exAdd.forEach(function(x,k){ if(x&&x.n===nm) ai=k; });
+    if(ai>=0){ d.exAdd.splice(ai,1); return; }
+    // A swapped-in movement drops the swap AND the original it stood in for.
+    var orig=null;
+    Object.keys(d.exSwap).forEach(function(k){ if(d.exSwap[k] && d.exSwap[k].n===nm) orig=k; });
+    if(orig){ delete d.exSwap[orig]; if(d.exDrop.indexOf(orig)<0) d.exDrop.push(orig); return; }
+    if(d.exDrop.indexOf(nm)<0) d.exDrop.push(nm);
+  });
+  try{ showToast('Off today’s session'); }catch(e){}
+}
+// _bfDayPick carries which card on which date opened the picker. The picker's
+// own markup is shared with the builder, so this is what tells tpSwapPick /
+// tpAddPick to write a draft instead of the program. Set on every open, so it
+// can never be left over from a previous one.
+window._bfDayPick = null;
+function bfDaySwapOpen(ds, day, i){
+  var wd=_parseDs(ds); var plan=wd?_tlPlanForDate(wd):null;
+  var list=_bfDayEx(ds, plan||{});
+  var e=list[i]; if(!e || !e.n) return;
+  window._bfDayPick={ds:ds, day:day, i:i, from:e.n, mode:'swap', taken:list.map(function(x){ return x.n; })};
+  try{ _tpOpenPickerFor(e, list, day); }catch(err){ window._bfDayPick=null; }
+}
+function bfDayAddOpen(ds, day){
+  var wd=_parseDs(ds); var plan=wd?_tlPlanForDate(wd):null;
+  var list=_bfDayEx(ds, plan||{});
+  window._bfDayPick={ds:ds, day:day, i:-1, from:null, mode:'add', taken:list.map(function(x){ return x.n; })};
+  try{ tpAddOpen(day); }catch(err){ window._bfDayPick=null; }
+}
+// One movement instead of another, for this date. The prescription stays the
+// trainer's — see _bfDayEx.
+function bfDaySwapCommit(x){
+  var st=window._bfDayPick; if(!st || !x || !x.n) return false;
+  var ds=st.ds, from=st.from;
+  window._bfDayPick=null;
+  try{ closeM('mTpPick'); }catch(e){}
+  if(st.mode==='add'){
+    _bfDaySet(ds, function(d){
+      if(d.exDrop.indexOf(x.n)>=0) d.exDrop.splice(d.exDrop.indexOf(x.n),1);   // adding back one you dropped
+      else d.exAdd.push({n:x.n, s:(x.s!=null?x.s:3), r:(x.r!=null?x.r:'10'), c:x.c, v:x.v});
+    });
+    try{ showToast('Added to today'); }catch(e){}
+    return true;
+  }
+  if(!from) return false;
+  // Two cards of the same name share one set state and double-log on Complete.
+  // The library picker filters these out already; the add-picker fallback (a
+  // movement EX_LIB doesn't know) comes through here without that filter.
+  if(x.n!==from && (st.taken||[]).indexOf(x.n)>=0){
+    try{ showToast('Already on today’s session'); }catch(e){}
+    return false;
+  }
+  _bfDaySet(ds, function(d){
+    if(x.n===from) delete d.exSwap[from];        // swapped back to the programmed one
+    else d.exSwap[from]={n:x.n, s:x.s, r:x.r, c:x.c, v:x.v};
+  });
+  try{ showToast('Swapped for today'); }catch(e){}
+  return true;
+}
 function _bfVisible(e, ds){
   // Another day's card must not wear today's numbers — _tpToday is name-keyed
   // and belongs to today alone.
@@ -17488,8 +17630,10 @@ function _bfVisible(e, ds){
 }
 // Touching any number adopts the whole visible card as today's — from then on the
 // rows are real, and Complete persists exactly what's on screen.
-function _bfMaterialize(day,i){
-  var e=_tpPlan&&_tpPlan[day]&&_tpPlan[day].ex[i]; if(!e) return null;
+function _bfMaterialize(day,i,ds){
+  // Resolve through the day's own sheet, not the raw template — a dropped or
+  // swapped movement shifts the indices the cards were rendered from.
+  var e=_bfExAt(day,i,ds); if(!e) return null;
   var vis=_bfVisible(e);
   if(vis.src!=='today'){
     _tpToday[e.n]=vis.rows.map(function(r){ return {w:String(r.w||''), r:String(r.r||'')}; });
@@ -17507,7 +17651,8 @@ function bfSetTap(el){
   if(!_bfEditableDs(el.getAttribute('data-ds'))) return;
   if(el._editing) return; el._editing=true;
   var day=el.getAttribute('data-day'), i=+el.getAttribute('data-i'), k=+el.getAttribute('data-k'), f=el.getAttribute('data-f');
-  var e=_tpPlan&&_tpPlan[day]&&_tpPlan[day].ex[i]; if(!e){ el._editing=false; return; }
+  var _sds=el.getAttribute('data-ds');
+  var e=_bfExAt(day,i,_sds); if(!e){ el._editing=false; return; }
   // Seed from the underlying row, never the rendered text. Scraping the cell
   // turned "× 6-8" into "68" — one stray tap and a mashed rep range persisted
   // and pre-filled every later session.
@@ -17537,7 +17682,7 @@ function bfSetTap(el){
     var v=(f==='w') ? String(inp.value||'').replace(/[^0-9.]/g,'')
                     : String(inp.value||'').trim().replace(/[^0-9.\-A-Za-z ]/g,'');
     if(v===seed){ try{ renderDayTimeline(true); }catch(e3){} return; }   // untouched: no write, no adoption
-    var e2=_bfMaterialize(day,i);
+    var e2=_bfMaterialize(day,i,_sds);
     if(e2){
       var arr=(_tpToday[e2.n]=_tpToday[e2.n]||[]);
       while(arr.length<=k) arr.push({w:'',r:''});
@@ -17549,16 +17694,16 @@ function bfSetTap(el){
   inp.addEventListener('blur', commit);
 }
 // A new set pre-fills from the set above it — never empty (approved amendment).
-function bfAddSet(day,i){
-  var e=_bfMaterialize(day,i); if(!e) return;
+function bfAddSet(day,i,ds){
+  var e=_bfMaterialize(day,i,ds); if(!e) return;
   var arr=(_tpToday[e.n]=_tpToday[e.n]||[]);
   var top=arr[arr.length-1]||{w:String((_tpLastW&&_tpLastW[e.n])||''), r:String(e.r||'')};
   arr.push({w:String(top.w||''), r:String(top.r||'')});
   tpPersistSets(day, e.n);
   renderDayTimeline(true);
 }
-function bfRemoveSet(day,i,k){
-  var e=_bfMaterialize(day,i); if(!e) return;
+function bfRemoveSet(day,i,k,ds){
+  var e=_bfMaterialize(day,i,ds); if(!e) return;
   var arr=(_tpToday[e.n]=_tpToday[e.n]||[]);
   if(k>=0 && k<arr.length) arr.splice(k,1);
   if(!arr.length) arr.push({w:'', r:String(e.r||'')});
@@ -17830,8 +17975,11 @@ function _bfExCard(day,i,e,ds,dr){
           })()
         +'<div class="bfPlan">'+e.s+' × '+_escHtml(String(e.r||''))+' reps</div>'
       +'</div>'
-      +'<span class="bfMini" onclick="event.stopPropagation();tpSwapOpen(\''+day+'\','+i+')">Swap</span>'
-      +'<span class="bfMini bfMiniX" onclick="event.stopPropagation();tpRemove(\''+day+'\','+i+')" title="Remove exercise">×</span>'
+      // Today's sheet, not the program. These used to call the builder's own
+      // tpSwapOpen/tpRemove, which edit _tpPlan — see _bfDayEx for what that
+      // cost. They write the day's draft now and nothing else.
+      +'<span class="bfMini" onclick="event.stopPropagation();bfDaySwapOpen(\''+ds+'\',\''+day+'\','+i+')">Swap</span>'
+      +'<span class="bfMini bfMiniX" onclick="event.stopPropagation();bfDayDrop(\''+ds+'\','+i+')" title="Not doing this one today">×</span>'
     +'</div>'
     +'<div class="bfWorking">Working sets</div>'
     +'<div style="margin-top:2px;">'+rows+'</div>'
@@ -19533,7 +19681,10 @@ function _tlSlot(key, label, filled, ds, plan){
       // the real planner lives ON the page: same rows, swap, add, notes as the training module
       var open=_woDraftOpen(ds);
       var dr=_woDraft(ds);
-      var exs=(plan.ex||[]);
+      // THE DAY'S SHEET, not the template — see _bfDayEx. Whatever the client
+      // dropped, swapped or added for THIS DATE is applied here, and the
+      // program itself is untouched.
+      var exs=_bfDayEx(ds, plan);
       var _wd=_parseDs(ds)||new Date();
       var dayKey=_tlPlanKeyFor(_wd);
       var loggedCt=0;
@@ -19609,7 +19760,8 @@ function _tlSlot(key, label, filled, ds, plan){
         if(_pOn){
           s+='<div id="tlBody_'+_escHtml(ds)+'" style="position:relative;margin-top:15px;">'
             +exs.map(function(e,i){ return _bfExCard(dayKey, i, e, ds, dr); }).join('')
-            +'<button onclick="tpAddOpen(\''+dayKey+'\')" style="width:100%;margin-top:2px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.13);border-radius:9px;padding:10px;font-size:12px;font-weight:700;color:var(--text);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">+ Add exercise</button>'
+            // Adds to TODAY, not to every week — same reason as Swap above it.
+            +'<button onclick="bfDayAddOpen(\''+ds+'\',\''+dayKey+'\')" style="width:100%;margin-top:2px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.13);border-radius:9px;padding:10px;font-size:12px;font-weight:700;color:var(--text);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">+ Add exercise</button>'
             +_tpFinBlock(dayKey, ds)
             +_woPhotoHtml(ds)
           +'</div>';
@@ -19977,7 +20129,10 @@ function tlLogInlineWorkout(ds){
     return;
   }
   if(!plan||!plan.type) return;
-  var exs=(plan.ex||[]);
+  // The same sheet the card rendered, dropped/swapped/added movements included
+  // (_bfDayEx). The logged row is where the day's changes become permanent —
+  // and it is the ONLY place they become permanent. The program is untouched.
+  var exs=_bfDayEx(ds, plan);
   // What's on the cards IS the session. Pre-filled counts as done — the approved
   // design: a client who never touches a number still logs a full workout, and
   // next session pre-fills from exactly this, added and removed sets included.
@@ -19990,7 +20145,7 @@ function tlLogInlineWorkout(ds){
   // today's numbers for another day's record.
   var _isTodayDs=false; try{ _isTodayDs=(ds===_tlDateStr(new Date())); }catch(e){}
   try{
-    if(_isTodayDs){ exs.forEach(function(e,i){ if(_wdKey){ _bfMaterialize(_wdKey, i); tpPersistSets(_wdKey, e.n); } }); }
+    if(_isTodayDs){ exs.forEach(function(e,i){ if(_wdKey){ _bfMaterialize(_wdKey, i, ds); tpPersistSets(_wdKey, e.n); } }); }
   }catch(e){}
   var lines=exs.map(function(e){
     // "Chest Press \u00b7 machine" when they said which one \u2014 the name carries it, so
@@ -20003,6 +20158,13 @@ function tlLogInlineWorkout(ds){
     if(sets.length) return nm+': '+sets.join(', ');
     return nm+' \u2014 '+(e.s||'')+(e.r?(' \u00d7 '+e.r):'');
   });
+  // A finisher they ticked is part of what they did, so it goes on the record
+  // with everything else — the only permanent home it has now that it no longer
+  // rides the template. See _finLines.
+  try{
+    var _fl=_finLines(_wdKey, ds);
+    if(_fl && _fl.length) lines=lines.concat(_fl);
+  }catch(e){}
   var desc=lines.join('\n')+(dr.note?('\n\n'+dr.note):'');
   // The connection record: the pills, translated to audit language — felt it,
   // partial, nothing — per muscle group, one row per session. Rides in
@@ -20313,8 +20475,8 @@ function _tlBindTaps(){
     if(a==='xmedit'){ ev.stopPropagation(); try{ tlMacroEditOpen(el); }catch(e){} return; }
     if(a==='wnday'){ ev.stopPropagation(); tlWnDismiss(el.getAttribute('data-ds')); return; }
     if(a==='bfset'){ ev.stopPropagation(); try{ bfSetTap(el); }catch(e){} return; }
-    if(a==='bfadd'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfAddSet(el.getAttribute('data-day'), +el.getAttribute('data-i')); return; }
-    if(a==='bfrm'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfRemoveSet(el.getAttribute('data-day'), +el.getAttribute('data-i'), +el.getAttribute('data-k')); return; }
+    if(a==='bfadd'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfAddSet(el.getAttribute('data-day'), +el.getAttribute('data-i'), el.getAttribute('data-ds')); return; }
+    if(a==='bfrm'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfRemoveSet(el.getAttribute('data-day'), +el.getAttribute('data-i'), +el.getAttribute('data-k'), el.getAttribute('data-ds')); return; }
     if(a==='bffeel'){ ev.stopPropagation(); bfFeel(el.getAttribute('data-ds'), el.getAttribute('data-ex'), el.getAttribute('data-v')); return; }
     if(a==='bfequip'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfEquip(el.getAttribute('data-ds'), el.getAttribute('data-ex'), el.getAttribute('data-v')); return; }
     if(a==='shelfpick'){ ev.stopPropagation(); tlShelfPick(el.getAttribute('data-ds'), el.getAttribute('data-type')); return; }
@@ -33762,23 +33924,33 @@ async function tpCompleteDay(day){
 }
 function tpSwapOpen(day,i){
   var e=_tpPlan[day].ex[i]; if(!e) return;
+  var taken=[];
+  try{ taken=(_tpPlan[day].ex||[]).map(function(o){ return o&&o.n; }).filter(Boolean); }catch(err){}
+  window._tpSwapIdx=i;
+  _tpOpenPickerFor(e, taken, day);
+}
+// The picker itself, off an exercise and the list it lives in — so the Day
+// card can open it against TODAY'S sheet (which may already differ from the
+// template) without the builder needing to know that sheet exists.
+function _tpOpenPickerFor(e, taken, day){
+  if(!e) return;
   var cat=null;
   for(var k in EX_LIB){ if(EX_LIB[k].some(function(x){ return x.n===e.n; })){ cat=k; break; } }
   if(!cat){ tpAddOpen(day); return; }
-  _tpPickDay=day; window._tpSwapIdx=i;
-  var el=document.getElementById('tpPickBody');
+  _tpPickDay=day;
+  var el=document.getElementById('tpPickBody'); if(!el) return;
   try{
     var _t=document.getElementById('tpPickTitle'), _s=document.getElementById('tpPickSub');
     if(_t) _t.textContent='Swap '+(e.n||'this movement');
     if(_s) _s.textContent='Same muscle, same intent.';
   }catch(err){}
+  var _taken=Array.isArray(taken)?taken:[];
   el.innerHTML=''
-    // Nothing already in this day. It mattered less when a swap lasted one session;
-    // now it's permanent, offering a duplicate writes one into the program for good.
+    // Nothing already on the sheet. Two cards of the same name share one set
+    // state and double-log on Complete, so a duplicate is never offered.
     +EX_LIB[cat].filter(function(x){
        if(x.n===e.n) return false;
-       try{ return !(_tpPlan[day].ex||[]).some(function(o,oi){ return oi!==i && o && o.n===x.n; }); }
-       catch(err){ return true; }
+       return _taken.indexOf(x.n)<0;
      }).map(function(x){
       var enc=encodeURIComponent(JSON.stringify(x));
       return '<div class="pgPick" onclick="tpSwapPick(\''+enc+'\')">'
@@ -33791,6 +33963,8 @@ function tpSwapOpen(day,i){
 }
 function tpSwapPick(enc){
   var x=null; try{ x=JSON.parse(decodeURIComponent(enc)); }catch(e){ return; }
+  // Opened from a Day card: this is one date's sheet, never the program.
+  if(window._bfDayPick){ window._tpSwapIdx=null; bfDaySwapCommit(x); return; }
   var i=window._tpSwapIdx;
   if(_tpPickDay==null||i==null||!x) return;
   var old=_tpPlan[_tpPickDay].ex[i];
@@ -34046,6 +34220,16 @@ function tpAddCustom(){
 }
 function tpAddPick(enc){
   var e=null; try{ e=JSON.parse(decodeURIComponent(enc)); }catch(err){ return; }
+  // Opened from a Day card: one date's sheet, never the program. Covers the
+  // swap picker's own fallback here too — tpSwapOpen sends a movement the
+  // library doesn't know to this screen.
+  if(window._bfDayPick){
+    if(e && window._bfDayPick.taken && window._bfDayPick.taken.indexOf(e.n)>=0 && window._bfDayPick.mode==='add'){
+      window._bfDayPick=null; try{ closeM('mTpPick'); }catch(err2){}
+      showToast('Already on today’s session'); return;
+    }
+    bfDaySwapCommit(e); return;
+  }
   if(!_tpPickDay||!e) return;
   if(!_tpPlan[_tpPickDay].ex) _tpPlan[_tpPickDay].ex=[];
   if(_tpPlan[_tpPickDay].type==='Rest') _tpPlan[_tpPickDay].type='Push';
@@ -44805,6 +44989,41 @@ function _finList(day) {
   }
   return d.fin;
 }
+// ===== FINISHERS ON A DATE, NOT ON THE TEMPLATE ==========================
+// The pills read "Pick an area, then what you did" — past tense, a log. On the
+// builder they are genuinely part of the week and _finList is right. On a
+// client's Day card they were the same call, so picking Abs on one Saturday
+// put Abs on EVERY Saturday — and, worse, _tpFinSave() then POSTed the whole
+// training plan, which is what flushed the card's other unwritten edits to the
+// server. See _bfDayEx. The done tick and the minutes were already per-date
+// (_finLog); the PICK now joins them.
+//
+// Read-only against the template: never _finList here, because that call
+// initialises _tpPlan[day].fin as a side effect, and this page must not leave a
+// single fingerprint on the plan object.
+function _finSeedFor(day){
+  try{
+    var d=_tpPlan && _tpPlan[day];
+    if(d && Array.isArray(d.fin)) return d.fin;
+    var cached=_finStore()[day];
+    return Array.isArray(cached) ? cached : [];
+  }catch(e){ return []; }
+}
+// The day's own finisher list. Seeded once from whatever the program puts on
+// that weekday, so a programmed finisher still shows up on the day.
+function _finListFor(day, ds){
+  if(!ds) return _finList(day);
+  var dr={}; try{ dr=_woDraft(ds)||{}; }catch(e){}
+  if(Array.isArray(dr.fin)) return dr.fin;
+  return _finSeedFor(day).map(function(x){ return {cat:x.cat, ex:x.ex, done:false, min:x.min}; });
+}
+function _finDaySet(day, ds, mutate){
+  var d=_woDraft(ds);
+  if(!Array.isArray(d.fin)) d.fin=_finSeedFor(day).map(function(x){ return {cat:x.cat, ex:x.ex, done:false, min:x.min}; });
+  mutate(d.fin);
+  _woSaveDraft(ds, d);
+  try{ _tlPatchDay(ds); }catch(e){ try{ renderDayTimeline(true); }catch(_){} }
+}
 
 function _finPill(day, k, on) {
   // same shape as the split pills above: 14px radius, same padding, same colours
@@ -44828,7 +45047,13 @@ function tpFinMin(day, i, m) {
   _tpFinSave();
   _finRepaint();
 }
-function tpFinRemove(day, i) {
+function tpFinRemove(day, i, ds) {
+  if(ds){
+    var it=_finListFor(day, ds)[i]; if(!it) return;
+    _finDaySet(day, ds, function(list){ list.splice(i,1); });
+    showToast('Removed ' + it.ex);
+    return;
+  }
   var list = _finList(day); if (!list[i]) return;
   var gone = list[i].ex;
   list.splice(i, 1);
@@ -44837,10 +45062,19 @@ function tpFinRemove(day, i) {
   showToast('Removed ' + gone);
 }
 
-// finishers join the lines written out when a day is completed
-function _finLines(day) {
-  return _finList(day).filter(function (x) { return x.done; }).map(function (x) {
-    return x.ex + (x.min ? (' \u00b7 ' + x.min + ' min') : '');
+// Finishers join the lines written out when a day is completed.
+// This was written for exactly that and never called, so a finisher a client
+// ticked reached nothing permanent \u2014 its only route to the server was riding
+// the template on _tpFinSave, which is the write that is now gone. Wired into
+// tlLogInlineWorkout, where the rest of the session's record is made.
+// Done and minutes are per-DATE (_finLog); only the list is looked up by day.
+function _finLines(day, ds) {
+  var log = ds ? _finLog(ds) : null;
+  return _finListFor(day, ds).filter(function (x) {
+    return log ? !!(log[x.ex] && log[x.ex].done) : !!x.done;
+  }).map(function (x) {
+    var m = (log && log[x.ex] && log[x.ex].min) ? log[x.ex].min : x.min;
+    return x.ex + (m ? (' \u00b7 ' + m + ' min') : '');
   });
 }
 
@@ -44867,8 +45101,22 @@ function _tpFinSave(){
 }
 // same write as saveTrainingPlan, without the toast on every keystroke.
 // No created_at in this body either — see _writeCalendar for why.
+//
+// THE BACKSTOP (Yusuf, 15 Aug). This function is the only thing on this side of
+// the app that POSTs the whole plan, and it is what turned an unwritten edit on
+// a Day card into a permanent one. Every route to it from the Day page is gone
+// (see _bfDayEx), and this refuses to fire unless the program builder is
+// actually on screen — the one surface it exists to serve. It says so out loud
+// rather than returning quietly, so a future caller finds out immediately
+// instead of shipping the same bug again. The client's own deliberate program
+// edits are not affected: those go through pgSavePlan, which is a different
+// function, a verified write, and honest when it fails.
 async function _saveTrainingPlanQuiet(){
   if(!cl) return;
+  if(!document.getElementById('tpBody')){
+    try{ console.error('[hard line] refused a training_plans write with no program builder on screen — a client never writes the template'); }catch(e){}
+    return;
+  }
   try{
     await fetch(SB_URL+'/rest/v1/training_plans',{method:'POST',
       headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'}),
@@ -44898,15 +45146,15 @@ function _finLogSet(ds, ex, patch){
   try{ localStorage.setItem('finlog_'+ds, JSON.stringify(m)); }catch(e){}
 }
 function tpFinToggleDs(day, i, ds){
-  var it=_finList(day)[i]; if(!it) return;
+  var it=_finListFor(day, ds)[i]; if(!it) return;
   var cur=(_finLog(ds)[it.ex]||{});
   _finLogSet(ds, it.ex, {done: !cur.done});
-  _finRepaint();
+  try{ _tlPatchDay(ds); }catch(e){ _finRepaint(); }
 }
 function tpFinMinDs(day, i, ds, m){
-  var it=_finList(day)[i]; if(!it) return;
+  var it=_finListFor(day, ds)[i]; if(!it) return;
   _finLogSet(ds, it.ex, {min: m});
-  _finRepaint();
+  try{ _tlPatchDay(ds); }catch(e){ _finRepaint(); }
 }
 
 // iOS hands us the capture time as the file's lastModified when a photo comes
@@ -45319,19 +45567,23 @@ var FIN_MAX = 2;      // categories
 var FIN_MAX_EX = 4;   // exercises in total
 window._finOpen = window._finOpen || {};
 
-function _finCats(day) {
+function _finCats(day, ds) {
   var seen = {};
-  _finList(day).forEach(function (x) { seen[x.cat] = 1; });
+  _finListFor(day, ds).forEach(function (x) { seen[x.cat] = 1; });
   return Object.keys(seen);
 }
 
+// ds present = a client's Day card, and every control below carries it through
+// so the pick lands on that DATE (see _finListFor). ds absent = the builder,
+// where a finisher really is part of the week and nothing here changes.
 function _tpFinBlock(day, ds) {
-  var list = _finList(day);
+  var list = _finListFor(day, ds);
   var log = ds ? _finLog(ds) : null;
   var canEdit = (window._tpCanEdit !== false);
   var open = window._finOpen[day] || null;
-  var cats = _finCats(day);
+  var cats = _finCats(day, ds);
   var full = cats.length >= FIN_MAX;
+  var _d = ds ? (",'" + ds + "'") : '';       // trailing ds argument, or nothing
 
   var h = '<div style="margin-top:14px;padding-top:13px;border-top:1px solid #272727;">'
     + '<div style="font-size:11px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:#f0ece4;margin-bottom:2px;">Select a finisher</div>'
@@ -45347,7 +45599,7 @@ function _tpFinBlock(day, ds) {
         var on = (cats.indexOf(k) >= 0);
         var locked = full && !on;
         var f = FINISHERS[k];
-        return '<span onclick="' + (locked ? '' : ('event.stopPropagation();tpFinPick(\'' + day + '\',\'' + k + '\')'))
+        return '<span onclick="' + (locked ? '' : ('event.stopPropagation();tpFinPick(\'' + day + '\',\'' + k + '\'' + _d + ')'))
           + '" style="font-size:10.5px;font-weight:800;padding:5px 10px;border-radius:14px;'
           + (locked ? 'cursor:default;opacity:0.34;' : 'cursor:pointer;')
           + 'background:' + (on ? '#f5c518' : (open === k ? 'rgba(245,197,24,0.12)' : 'transparent')) + ';'
@@ -45361,7 +45613,7 @@ function _tpFinBlock(day, ds) {
     h += '<div style="margin-top:9px;display:flex;flex-direction:column;gap:5px;">'
       + FINISHERS[open].ex.map(function (name, xi) {
           var picked = list.some(function (x) { return x.ex === name; });
-          return '<div onclick="event.stopPropagation();tpFinAdd(\'' + day + '\',\'' + open + '\',' + xi + ')" '
+          return '<div onclick="event.stopPropagation();tpFinAdd(\'' + day + '\',\'' + open + '\',' + xi + _d + ')" '
             + 'style="display:flex;align-items:center;gap:9px;border-radius:9px;padding:11px 12px;cursor:pointer;'
             + (picked ? 'background:rgba(245,197,24,0.10);border:1px solid rgba(245,197,24,0.42);'
                       : 'background:#151515;border:1px dashed #333;')
@@ -45391,7 +45643,7 @@ function _tpFinBlock(day, ds) {
         +   '<div style="font-size:11px;color:rgba(240,236,228,0.78);margin-top:3px;">' + cat + (mins ? (' \u00b7 ' + mins + ' min') : '') + '</div>'
         + '</div>'
         + (done ? '<span style="font-size:10px;font-weight:800;color:rgba(240,236,228,0.55);flex-shrink:0;">done</span>' : '')
-        + (canEdit ? ('<div onclick="event.stopPropagation();tpFinRemove(\'' + day + '\',' + i + ')" style="flex-shrink:0;color:rgba(240,236,228,0.78);font-size:17px;cursor:pointer;padding:0 2px;">\u00d7</div>') : '')
+        + (canEdit ? ('<div onclick="event.stopPropagation();tpFinRemove(\'' + day + '\',' + i + _d + ')" style="flex-shrink:0;color:rgba(240,236,228,0.78);font-size:17px;cursor:pointer;padding:0 2px;">\u00d7</div>') : '')
         + '</div>';
       // A finished finisher asks the same question every exercise asks. Cardio
       // does not \u2014 there is no muscle to have felt. The pills carry the finisher's
@@ -45426,41 +45678,50 @@ function _tpFinBlock(day, ds) {
 }
 
 // A lit pill clears its group. Otherwise it opens its options.
-function tpFinPick(day, k) {
+// ds present = this date only, straight into the day's draft, no plan write of
+// any kind. ds absent = the builder, unchanged.
+function tpFinPick(day, k, ds) {
   var f = FINISHERS[k]; if (!f) return;
-  var list = _finList(day);
+  var list = _finListFor(day, ds);
   var have = list.filter(function (x) { return x.cat === k; });
 
   if (have.length) {
-    for (var i = list.length - 1; i >= 0; i--) if (list[i].cat === k) list.splice(i, 1);
     if (window._finOpen[day] === k) window._finOpen[day] = null;
-    _tpFinSave(); _finRepaint();
+    if (ds){
+      _finDaySet(day, ds, function(L){ for (var j = L.length - 1; j >= 0; j--) if (L[j].cat === k) L.splice(j, 1); });
+    } else {
+      for (var i = list.length - 1; i >= 0; i--) if (list[i].cat === k) list.splice(i, 1);
+      _tpFinSave(); _finRepaint();
+    }
     showToast('Cleared ' + f.label);
     return;
   }
-  if (_finCats(day).length >= FIN_MAX) { showToast('Two areas is the limit'); return; }
+  if (_finCats(day, ds).length >= FIN_MAX) { showToast('Two areas is the limit'); return; }
   // opening another area closes this one — what you picked is already saved
   window._finOpen[day] = (window._finOpen[day] === k) ? null : k;
-  _finRepaint();
+  if (ds){ try{ _tlPatchDay(ds); }catch(e){ _finRepaint(); } } else { _finRepaint(); }
 }
 
 // Picking an option adds it; picking it again takes it off.
-function tpFinAdd(day, cat, xi) {
+function tpFinAdd(day, cat, xi, ds) {
   var name = (FINISHERS[cat] || {}).ex[xi]; if (!name) return;
-  var list = _finList(day);
+  var list = _finListFor(day, ds);
   var at = -1;
   list.forEach(function (x, i) { if (x.ex === name) at = i; });
   if (at >= 0) {
+    if (ds){ _finDaySet(day, ds, function(L){ L.splice(at, 1); }); return; }
     list.splice(at, 1);
     _tpFinSave(); _finRepaint();
     return;
   }
-  if (_finCats(day).indexOf(cat) < 0 && _finCats(day).length >= FIN_MAX) {
+  if (_finCats(day, ds).indexOf(cat) < 0 && _finCats(day, ds).length >= FIN_MAX) {
     showToast('Two areas is the limit'); return;
   }
   if (list.length >= FIN_MAX_EX) { showToast('Four finishers is plenty'); return; }
-  list.push({cat: cat, ex: name, done: false, min: (cat === 'cardio' ? 30 : null)});
-  if (list.length >= FIN_MAX_EX) window._finOpen[day] = null;   // done choosing
+  var _row={cat: cat, ex: name, done: false, min: (cat === 'cardio' ? 30 : null)};
+  if (list.length + 1 >= FIN_MAX_EX) window._finOpen[day] = null;   // done choosing
+  if (ds){ _finDaySet(day, ds, function(L){ L.push(_row); }); return; }
+  list.push(_row);
   // One repaint, always. This used to save-and-repaint and then repaint again
   // (the second call was unguarded — the if above is brace-less), which put two
   // async renders in flight over the same scroller.
