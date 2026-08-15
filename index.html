@@ -3404,6 +3404,7 @@ body.hasnav #tToday{padding-bottom:96px;}
       <div id="jvMoreMenu">
         <div onclick="jvCloseMore();jvCopyRoster(this)">Copy everyone in term</div>
         <div onclick="jvCloseMore();jvRefresh()">Refresh</div>
+        <div onclick="jvCloseMore();openAvailability()">My hours</div>
         <div onclick="jvCloseMore();jvToggleView()">My App</div>
         <hr>
         <div onclick="jvCloseMore();jvSignOut()">Sign out</div>
@@ -4116,9 +4117,10 @@ body.hasnav #tToday{padding-bottom:96px;}
     <div id="manageClientsBox" class="trainer-only" style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 16px;margin-bottom:14px;">
       <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px;">Calls</div>
       <div style="font-size:12px;color:var(--m2);line-height:1.5;margin-bottom:11px;">Who can book you, and when you're available.</div>
-      <div style="display:flex;gap:8px;">
-        <button class="obtn" style="margin:0;flex:1;" onclick="openCallAccess()">Call access</button>
-        <button class="obtn" style="margin:0;flex:1;" onclick="openMyTime()">My time</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="obtn" style="margin:0;flex:1;min-width:100px;" onclick="openCallAccess()">Call access</button>
+        <button class="obtn" style="margin:0;flex:1;min-width:100px;" onclick="openAvailability()">My hours</button>
+        <button class="obtn" style="margin:0;flex:1;min-width:100px;" onclick="openMyTime()">Block time off</button>
       </div>
       <!-- DORMANT: protocol authoring/assignment is parked. The code stays in place
            (miOpenLibrary, miOpenAssign, miOpenLog and friends) but has no entry point.
@@ -5214,8 +5216,8 @@ async function sessEnsure(code, force){
         // login flow's timeout or finished quietly afterward.
         try{
           if(d.client){
-            if(cl && cl.code===code){ cl.calls_enabled=d.client.calls_enabled; cl.call_credits=d.client.call_credits; }
-            if(CLIENTS[code]){ CLIENTS[code].calls_enabled=d.client.calls_enabled; CLIENTS[code].call_credits=d.client.call_credits; }
+            if(cl && cl.code===code){ cl.calls_enabled=d.client.calls_enabled; cl.call_credits=d.client.call_credits; cl.weekly_calls=d.client.weekly_calls; cl.weekly_call_spent_at=d.client.weekly_call_spent_at; }
+            if(CLIENTS[code]){ CLIENTS[code].calls_enabled=d.client.calls_enabled; CLIENTS[code].call_credits=d.client.call_credits; CLIENTS[code].weekly_calls=d.client.weekly_calls; CLIENTS[code].weekly_call_spent_at=d.client.weekly_call_spent_at; }
             // Their own start date, off the same session read. The Day page uses it
             // to know how far back their history goes; it arrives whenever the
             // session does, and nothing waits on it — an anchor with no start date
@@ -6009,6 +6011,8 @@ async function loadRosterFromDB(){
             e.email = r.email || null;   // null, not undefined: 'no email' is one state
             if(r.calls_enabled!=null) e.calls_enabled = (r.calls_enabled===true);
             if(r.call_credits!=null) e.call_credits = (+r.call_credits||0);
+            if(r.weekly_calls!=null) e.weekly_calls = (r.weekly_calls===true);
+            if(r.weekly_call_spent_at!==undefined) e.weekly_call_spent_at = r.weekly_call_spent_at||null;
             if(r.tier) e.tier = r.tier;
             if(r.term_months!=null) e.term_months = +r.term_months;
             if(r.paid!=null) e.paid = +r.paid;
@@ -34651,6 +34655,40 @@ function _zonedToUtc(y, mo, d, hh, mm, tz){
   off = _tzOffsetMin(tz, out);
   return new Date(guess.getTime() - off*60000);
 }
+// ---- weekly check-in credit: entitlement computed at read time, not stored ----
+// No server-side scheduler exists in this stack, so nothing ever writes a
+// credit back on a timer. "Does this client have their weekly call right
+// now" is a pure function of the current time and when they last spent it —
+// recomputed fresh every time it's checked, here and in trainer.js's own
+// copy (duplicated for the same reason as _zonedToUtc/vipCallOccurrences: a
+// Netlify function can't import from this page). The boundary is Sunday
+// 00:00 America/New_York, the same for every client — one sentence, no
+// per-client anything.
+function _weeklyBoundaryYMD(now){
+  var dtf=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',weekday:'short'});
+  var parts={}; dtf.formatToParts(now).forEach(function(p){ if(p.type!=='literal') parts[p.type]=p.value; });
+  var wdMap={Sun:0,Mon:1,Tue:2,Wed:3,Thu:4,Fri:5,Sat:6};
+  var dow=wdMap[parts.weekday];
+  var d=new Date(Date.UTC(+parts.year, +parts.month-1, +parts.day));
+  d.setUTCDate(d.getUTCDate()-dow);
+  return {y:d.getUTCFullYear(), mo:d.getUTCMonth(), d:d.getUTCDate()};
+}
+function _weeklyBoundaryOnOrBefore(now){
+  var ymd=_weeklyBoundaryYMD(now);
+  return _zonedToUtc(ymd.y, ymd.mo, ymd.d, 0, 0, 'America/New_York');
+}
+function _nextWeeklyBoundaryAfter(now){
+  var ymd=_weeklyBoundaryYMD(now);
+  var d=new Date(Date.UTC(ymd.y, ymd.mo, ymd.d));
+  d.setUTCDate(d.getUTCDate()+7);
+  return _zonedToUtc(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 'America/New_York');
+}
+function hasWeeklyCreditNow(spentAtISO, now){
+  if(!spentAtISO) return true;
+  var spent=new Date(spentAtISO);
+  if(isNaN(spent.getTime())) return true;
+  return spent.getTime() < _weeklyBoundaryOnOrBefore(now).getTime();
+}
 function _tzLabel(tz){
   try{
     var s = new Intl.DateTimeFormat('en-US',{timeZone:tz,timeZoneName:'short'}).formatToParts(new Date())
@@ -34877,6 +34915,13 @@ function _pcCardHtml(next, state, credits){
     var line='You have '+credits+' call'+(credits===1?'':'s')+' available.';
     body='<div style="font-size:13.5px;color:var(--text);line-height:1.5;">'+line+'</div>'
       +'<div style="font-size:12.5px;color:var(--gold);font-weight:700;margin-top:8px;">Book a call \u2192</div>';
+  } else if(state==='weekly-open'){
+    body='<div style="font-size:13.5px;color:var(--text);line-height:1.5;">One check-in call a week is part of your plan.</div>'
+      +'<div style="font-size:12.5px;color:var(--gold);font-weight:700;margin-top:8px;">Book a call \u2192</div>';
+  } else if(state==='weekly-zero'){
+    // Fact, not shortfall \u2014 states when it opens again, never that anything ran out.
+    body='<div style="font-size:13.5px;color:var(--text);line-height:1.5;">One check-in call a week. Yours opens again '
+      +next.toLocaleDateString('en-US',{weekday:'long'})+'.</div>';
   } else {
     body='<div style="font-size:13.5px;color:var(--m2);line-height:1.6;">A 1:1 call with Yusuf \u2014 check-ins, form, whatever\u2019s on your mind. Not part of your plan yet.</div>';
   }
@@ -34924,6 +34969,17 @@ async function _pgCallsCard(){
     if(next===nextBooking){
       host.onclick=function(){ openBooking(); };
       host.style.cursor='pointer';
+    }
+    return;
+  }
+  if(weeklyCallsFor(cl.code)){
+    if(hasWeeklyCreditNow(cl.weekly_call_spent_at, now)){
+      host.innerHTML=_pcCardHtml(null,'weekly-open');
+      host.onclick=function(){ openBooking(); };
+      host.style.cursor='pointer';
+    } else {
+      host.innerHTML=_pcCardHtml(_nextWeeklyBoundaryAfter(now),'weekly-zero');
+      host.onclick=null; host.style.cursor='';
     }
     return;
   }
@@ -35079,9 +35135,16 @@ function renderBookingSlots(avail, booked, safety){
       + picked.length+' open \u00b7 your time ('+_escHtml(_tzLabel(_myTz()))+')</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">'
     + picked.map(function(d){
+        // The second line only earns its place when it says something the
+        // first line didn't already — a client in Yusuf's own zone was
+        // seeing the identical time printed twice. Compare the formatted
+        // strings themselves (both go through the same hour:minute shape),
+        // not the raw zone names, so this is right even if two differently
+        // named zones happen to share an offset right now.
+        var mine=_fmtLocal(d), theirs=_fmtInZone(d,tz);
         return '<div onclick="onPickSlot(\''+d.toISOString()+'\')" style="text-align:center;cursor:pointer;background:#1e1e1e;border:1px solid rgba(240,236,228,0.13);border-radius:10px;padding:13px 8px;">'
-          +'<div style="font-size:14px;font-weight:700;color:#f0ece4;">'+_fmtLocal(d)+'</div>'
-          +'<div style="font-size:10px;color:rgba(240,236,228,0.78);margin-top:2px;">'+_fmtInZone(d,tz)+' his time</div>'
+          +'<div style="font-size:14px;font-weight:700;color:#f0ece4;">'+mine+'</div>'
+          +(mine!==theirs?'<div style="font-size:10px;color:rgba(240,236,228,0.78);margin-top:2px;">'+theirs+' for Yusuf</div>':'')
         +'</div>';
       }).join('')
     +'</div>';
@@ -35106,10 +35169,33 @@ async function onPickSlot(iso){
 async function confirmBooking(){
   var iso=window._pendingSlot; if(!iso) return;
   try{ closeM('mBookConfirm'); }catch(e){}
+  // createBooking() below has no idea what a credit is — it only checks
+  // whether the SLOT is taken, never whether the CLIENT has anything left to
+  // spend on a new one. Without this, a weekly or credit-only client at zero
+  // could still land a real booking through the Add Activity modal's picker
+  // (evRenderCallSlots), which doesn't gate on access the way the calls
+  // card's own onclick does — the credit would just silently fail to
+  // decrement further, while the call itself still went through for free.
+  // Caught while proving the weekly tier can't be spent twice; applies the
+  // same fix to the pre-existing one-off-credit path since it had the
+  // identical gap.
+  if(weeklyCallsFor(cl.code) && !hasWeeklyCreditNow(cl.weekly_call_spent_at, new Date())){
+    try{ showToast('Your next check-in call opens '+_nextWeeklyBoundaryAfter(new Date()).toLocaleDateString('en-US',{weekday:'long'})+'.'); }catch(e){}
+    try{ openBooking(); }catch(e){}
+    return;
+  }
+  if(callsAreCreditOnly(cl.code) && callCreditsLeft(cl.code)<=0){
+    try{ showToast('No calls left on your plan right now.'); }catch(e){}
+    try{ openBooking(); }catch(e){}
+    return;
+  }
   var res=await createBooking(iso);
   if(res.ok){
-    // a one-off is only one-off if it gets spent
-    try{ if(callsAreCreditOnly(cl.code)) await consumeCallCredit(cl.code); }catch(e){}
+    // a one-off is only one-off if it gets spent; a weekly call the same
+    try{
+      if(weeklyCallsFor(cl.code)) await consumeWeeklyCall(cl.code);
+      else if(callsAreCreditOnly(cl.code)) await consumeCallCredit(cl.code);
+    }catch(e){}
     try{ showToast('\u2713 Booked'); }catch(e){}
     try{ window._tlCache=null; renderDayTimeline(); }catch(e){}
     try{ if(typeof _retireTodayTiles==='function') _retireTodayTiles(); }catch(e){}
@@ -35921,7 +36007,20 @@ function callsEnabled(code){
     var rec=CLIENTS[String(code==null?'':code).trim().toLowerCase()];
     if(!rec) return false;
     if(rec.calls_enabled===true) return true;
+    if(rec.weekly_calls===true) return true;
     return (+rec.call_credits||0) > 0;
+  }catch(e){ return false; }
+}
+// The weekly tier — one credit, refilling Sunday 00:00 America/New_York, never
+// counted, never confirmed by hand. Its own state, checked ahead of unlimited
+// and credit-only below, since a client is on exactly one call-access tier at
+// a time (the Call access panel keeps calls_enabled and weekly_calls mutually
+// exclusive when either is toggled on).
+function weeklyCallsFor(code){
+  try{
+    if(isTrainer(code)) return false;
+    var rec=CLIENTS[String(code||'').trim().toLowerCase()];
+    return !!(rec && rec.weekly_calls===true);
   }catch(e){ return false; }
 }
 function callsAreCreditOnly(code){
@@ -35929,7 +36028,7 @@ function callsAreCreditOnly(code){
     if(isTrainer(code)) return false;
     var rec=CLIENTS[String(code||'').trim().toLowerCase()];
     if(!rec) return false;
-    return rec.calls_enabled!==true && (+rec.call_credits||0)>0;
+    return rec.calls_enabled!==true && rec.weekly_calls!==true && (+rec.call_credits||0)>0;
   }catch(e){ return false; }
 }
 function callCreditsLeft(code){
@@ -42361,7 +42460,7 @@ function openCallAccess(){
   ov.style.cssText='position:fixed;inset:0;z-index:99998;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(7,7,9,0.92);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);';
   ov.innerHTML='<div style="max-width:400px;width:100%;max-height:86vh;display:flex;flex-direction:column;background:#131313;border:1px solid rgba(245,197,24,0.28);border-radius:22px;padding:22px;">'
     +'<div style="font-size:19px;font-weight:800;color:var(--text);">Call access</div>'
-    +'<div style="font-size:12.5px;color:var(--m2);line-height:1.5;margin-top:5px;">On means they can book calls whenever. A credit is a single call without opening booking.</div>'
+    +'<div style="font-size:12.5px;color:var(--m2);line-height:1.5;margin-top:5px;">Unlimited books whenever. Weekly holds one credit that refills Sunday. A credit is a single call without opening either.</div>'
     +(window._callColsExist===false
         ? '<div style="font-size:12px;color:var(--gold);line-height:1.5;margin-top:11px;border:1px solid rgba(245,197,24,0.3);border-radius:10px;padding:10px 12px;">Add <b>calls_enabled</b> (bool) and <b>call_credits</b> (int) to the clients table, or these won\u2019t save.</div>'
         : '')
@@ -42369,6 +42468,19 @@ function openCallAccess(){
     +'<button onclick="_closeCallAccess()" style="margin-top:12px;width:100%;background:transparent;color:var(--m2);border:1px solid var(--border);border-radius:12px;padding:12px;font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit;">Done</button>'
   +'</div>';
   document.body.appendChild(ov);
+  // Which clients already hold a standing slot, so the row can say so instead
+  // of offering to grant a second one. Best-effort \u2014 a failed read just means
+  // the row won't show an existing slot, never a broken write.
+  window._caVipMap={};
+  (async function(){
+    try{
+      var rows=await trainerOp('vipCallList',{});
+      var m={};
+      (rows||[]).forEach(function(r){ if(r.active!==false && r.client_code){ (m[r.client_code]=m[r.client_code]||[]).push(r); } });
+      window._caVipMap=m;
+    }catch(e){}
+    renderCallAccess();
+  })();
   renderCallAccess();
 }
 function _closeCallAccess(){
@@ -42386,14 +42498,21 @@ function renderCallAccess(){
     return String((CLIENTS[a].name||a)).localeCompare(String((CLIENTS[b].name||b)));
   });
   if(!codes.length){ host.innerHTML='<div style="font-size:13px;color:var(--muted);padding:8px 0;">No active clients.</div>'; return; }
+  var vipMap=window._caVipMap||{};
   host.innerHTML=codes.map(function(c){
-    var r=CLIENTS[c], on=(r.calls_enabled===true), cr=(+r.call_credits||0);
-    return '<div style="display:flex;align-items:center;gap:10px;padding:12px 2px;border-bottom:1px solid #232323;">'
-      +'<div style="flex:1;min-width:0;">'
+    var r=CLIENTS[c], on=(r.calls_enabled===true), wk=(r.weekly_calls===true), cr=(+r.call_credits||0);
+    var mode = wk ? 'weekly' : (on ? 'unlimited' : 'off');
+    var slot=(vipMap[c]||[])[0];
+    var statusLine = wk ? (hasWeeklyCreditNow(r.weekly_call_spent_at, new Date()) ? 'Weekly \u00b7 credit ready' : 'Weekly \u00b7 opens Sunday')
+      : on ? 'Books anytime'
+      : (cr>0 ? (cr+' call credit'+(cr===1?'':'s')) : 'No scheduled calls');
+    return '<div style="padding:12px 2px;border-bottom:1px solid #232323;">'
+      +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">'
+      +'<div style="flex:1;min-width:120px;">'
         +'<div style="font-size:13.5px;font-weight:700;color:var(--m2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+_escHtml(r.name||c)+'</div>'
-        +'<div style="font-size:11.5px;color:'+(on?'var(--gold)':'rgba(240,236,228,0.42)')+';margin-top:2px;">'
-          +(r.tier==='vip'?'VIP \u00b7 ':'')
-          +(on?'Books anytime':(cr>0?(cr+' call credit'+(cr===1?'':'s')):'No scheduled calls'))
+        +'<div style="font-size:11.5px;color:'+((on||wk)?'var(--gold)':'rgba(240,236,228,0.42)')+';margin-top:2px;">'
+          +(r.tier==='vip'?'VIP \u00b7 ':'')+statusLine
+          +(slot?' \u00b7 standing '+_caSlotLabel(slot):'')
           +(r.term_months?(' \u00b7 '+r.term_months+' mo'):'')+'</div>'
       +'</div>'
       +'<div onclick="caSetTier(\''+c+'\')" style="flex-shrink:0;font-size:11px;font-weight:800;letter-spacing:0.4px;border-radius:8px;padding:7px 9px;cursor:pointer;'
@@ -42402,11 +42521,110 @@ function renderCallAccess(){
             : 'color:rgba(240,236,228,0.78);border:1px solid var(--border);')
         +'">'+(r.tier==='vip'?'VIP':'1:1')+'</div>'
       +'<div onclick="caGrantCredit(\''+c+'\')" style="flex-shrink:0;font-size:11.5px;font-weight:800;color:var(--gold);border:1px solid rgba(245,197,24,0.34);border-radius:8px;padding:7px 10px;cursor:pointer;">+1 call</div>'
-      +'<div onclick="caToggle(\''+c+'\')" style="flex-shrink:0;width:46px;height:27px;border-radius:14px;background:'+(on?'var(--gold)':'#333')+';position:relative;cursor:pointer;transition:background .18s;">'
-        +'<div style="position:absolute;top:3px;'+(on?'left:22px':'left:3px')+';width:21px;height:21px;border-radius:50%;background:'+(on?'#141008':'#8a8a8a')+';transition:left .18s;"></div>'
+      +'<div onclick="'+(slot?'':'openStandingSlot(\''+c+'\')')+'" style="flex-shrink:0;font-size:11.5px;font-weight:800;color:'+(slot?'rgba(240,236,228,0.35)':'rgba(240,236,228,0.78)')+';border:1px solid var(--border);border-radius:8px;padding:7px 10px;cursor:'+(slot?'default':'pointer')+';">'+(slot?'Has slot':'Slot')+'</div>'
+      +'</div>'
+      // Off / Weekly / Unlimited \u2014 one client, exactly one of these three, ever.
+      +'<div style="display:flex;gap:3px;background:#1c1c1c;border-radius:9px;padding:3px;margin-top:9px;">'
+        + ['off','weekly','unlimited'].map(function(m){
+            var label = m==='off'?'Off':(m==='weekly'?'Weekly':'Unlimited');
+            var active = (m===mode);
+            return '<div onclick="caSetAccess(\''+c+'\',\''+m+'\')" style="flex:1;text-align:center;font-size:11px;font-weight:800;letter-spacing:0.3px;border-radius:6px;padding:7px 4px;cursor:pointer;'
+              +(active?'background:var(--gold);color:var(--onaccent);':'color:rgba(240,236,228,0.6);')+'">'+label+'</div>';
+          }).join('')
       +'</div>'
     +'</div>';
   }).join('');
+}
+function _caSlotLabel(row){
+  try{
+    var names=['','Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    var days=(row.weekdays||[]).slice().sort(function(a,b){return a-b;}).map(function(d){return names[d];}).join('/');
+    var t=String(row.time_local||'').split(':');
+    var hh=+t[0], mm=t[1]||'00', ap=hh>=12?'pm':'am', h12=((hh%12)||12);
+    return days+' '+h12+(mm==='00'?'':':'+mm)+ap;
+  }catch(e){ return 'set'; }
+}
+// ===== STANDING SLOT (trainer) — the same mechanism Blake has, offered to any
+// client, per client, not a default. Building this is what vipCallCreate was
+// always missing: the op existed, proven correct on Blake's real row, with
+// zero UI ever calling it. Granting one clears weekly_calls for that client —
+// they're on exactly one of "picks a slot weekly from a credit" or "always
+// has the same slot," never both, so the calls card is never asked to show
+// two contradictory things at once.
+var _slotDraft=null;
+function openStandingSlot(code){
+  var r=CLIENTS[code]; if(!r) return;
+  _slotDraft={code:code, weekdays:{}, time:'09:30', duration:30, start:new Date().toISOString().slice(0,10), end:'', notes:''};
+  var ov=document.getElementById('standingSlotOverlay');
+  if(ov && ov.parentNode) ov.parentNode.removeChild(ov);
+  ov=document.createElement('div');
+  ov.id='standingSlotOverlay';
+  ov.style.cssText='position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-end;justify-content:center;background:rgba(7,7,9,0.92);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);';
+  ov.innerHTML='<div style="width:100%;max-width:430px;max-height:90vh;overflow-y:auto;display:flex;flex-direction:column;background:#222;border-radius:22px 22px 0 0;padding:16px 18px calc(24px + env(safe-area-inset-bottom,0px));">'
+    +'<div style="width:42px;height:4px;border-radius:2px;background:#3d3d3d;margin:0 auto 15px;"></div>'
+    +'<div style="font-size:19px;font-weight:800;color:var(--text);">Standing slot for '+_escHtml(r.name||code)+'</div>'
+    +'<div style="font-size:12.5px;color:var(--m2);line-height:1.5;margin-top:5px;">The same time, every week, blocked on the public grid — same as Blake’s. Clears their weekly credit tier once this is set.</div>'
+    +'<div id="slotBody" style="margin-top:14px;"></div>'
+    +'<div style="display:flex;gap:9px;margin-top:14px;">'
+      +'<button onclick="_closeStandingSlot()" style="flex:1;background:transparent;color:var(--m2);border:1px solid var(--border);border-radius:12px;padding:12px;font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit;">Cancel</button>'
+      +'<button onclick="saveStandingSlot()" style="flex:1;background:var(--gold);color:var(--onaccent);border:none;border-radius:12px;padding:12px;font-size:13.5px;font-weight:800;cursor:pointer;font-family:inherit;">Grant</button>'
+    +'</div>'
+  +'</div>';
+  document.body.appendChild(ov);
+  renderStandingSlot();
+}
+function _closeStandingSlot(){
+  var o=document.getElementById('standingSlotOverlay'); if(o&&o.parentNode) o.parentNode.removeChild(o);
+}
+function slotToggleDay(wd){
+  if(_slotDraft.weekdays[wd]) delete _slotDraft.weekdays[wd]; else _slotDraft.weekdays[wd]=1;
+  renderStandingSlot();
+}
+function slotSetField(k,v){ _slotDraft[k]=v; }
+function renderStandingSlot(){
+  var host=document.getElementById('slotBody'); if(!host || !_slotDraft) return;
+  var names=[['Mon',1],['Tue',2],['Wed',3],['Thu',4],['Fri',5],['Sat',6],['Sun',7]];
+  host.innerHTML='<div class="il" style="margin-top:0;">Days</div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;">'
+      + names.map(function(n){
+          var on=!!_slotDraft.weekdays[n[1]];
+          return '<div onclick="slotToggleDay('+n[1]+')" style="flex:1;min-width:38px;text-align:center;font-size:11.5px;font-weight:800;border-radius:8px;padding:9px 4px;cursor:pointer;'
+            +(on?'background:var(--gold);color:var(--onaccent);':'background:#1c1c1c;color:rgba(240,236,228,0.6);')+'">'+n[0]+'</div>';
+        }).join('')
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:12px;">'
+      +'<div><div class="il" style="margin-top:0;">Time</div><input class="ifield" type="time" value="'+_escHtml(_slotDraft.time)+'" oninput="slotSetField(\'time\',this.value)" style="margin:0;text-align:center;font-size:14px;"></div>'
+      +'<div><div class="il" style="margin-top:0;">Minutes</div><select class="ifield" onchange="slotSetField(\'duration\',+this.value)" style="margin:0;text-align:center;font-size:14px;">'
+        + [15,30,45,60].map(function(m){ return '<option value="'+m+'"'+(m===_slotDraft.duration?' selected':'')+'>'+m+'</option>'; }).join('')
+      +'</select></div>'
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:9px;">'
+      +'<div><div class="il" style="margin-top:0;">Starts</div><input class="ifield" type="date" value="'+_escHtml(_slotDraft.start)+'" oninput="slotSetField(\'start\',this.value)" style="margin:0;text-align:center;font-size:14px;"></div>'
+      +'<div><div class="il" style="margin-top:0;">Ends</div><input class="ifield" type="date" value="'+_escHtml(_slotDraft.end)+'" oninput="slotSetField(\'end\',this.value)" style="margin:0;text-align:center;font-size:14px;"></div>'
+    +'</div>'
+    +'<div class="il">Notes (yours only, never the client’s)</div>'
+    +'<textarea class="ifield" rows="2" oninput="slotSetField(\'notes\',this.value)" style="margin:0;font-size:13.5px;resize:vertical;">'+_escHtml(_slotDraft.notes)+'</textarea>';
+}
+async function saveStandingSlot(){
+  if(!_slotDraft) return;
+  var wds=Object.keys(_slotDraft.weekdays).map(Number);
+  if(!wds.length){ showToast('Pick at least one day'); return; }
+  if(!_slotDraft.end){ showToast('Set an end date'); return; }
+  var code=_slotDraft.code;
+  var w=await trainerWrite('vipCallCreate', {
+    client_code: code, weekdays: wds, time_local: _slotDraft.time, tz: _myTz(),
+    duration_minutes: _slotDraft.duration, start_date: _slotDraft.start, end_date: _slotDraft.end,
+    notes: _slotDraft.notes||null
+  });
+  if(!w.ok || !w.rows[0]){ showToast('Could not save — try again'); return; }
+  var cleared=await _caPersist(code, {weekly_calls:false});
+  var r=CLIENTS[code];
+  if(r){ r.weekly_calls=false; }
+  window._caVipMap = window._caVipMap||{};
+  (window._caVipMap[code]=window._caVipMap[code]||[]).push(w.rows[0]);
+  _closeStandingSlot();
+  renderCallAccess();
+  try{ showToast('Standing slot set for '+((r&&r.name)||code)+(cleared?'':' — weekly flag may need a retry')); }catch(e){}
 }
 // Through the door now, not the public key \u2014 clients?code=eq... went dark with
 // the rest of the lock. trainerWrite reads the row back before saying ok, so a
@@ -42421,12 +42639,19 @@ async function _caPersist(code, patch){
     return !!w.ok;
   }catch(e){ return false; }
 }
-async function caToggle(code){
+// One of three, never a combination — setting any one clears the other two
+// so the calls card is never left to arbitrate a contradiction.
+async function caSetAccess(code, mode){
   var r=CLIENTS[code]; if(!r) return;
-  r.calls_enabled = !(r.calls_enabled===true);
+  var patch = mode==='unlimited' ? {calls_enabled:true, weekly_calls:false}
+    : mode==='weekly' ? {calls_enabled:false, weekly_calls:true}
+    : {calls_enabled:false, weekly_calls:false};
+  Object.assign(r, patch);
   renderCallAccess();
-  await _caPersist(code, {calls_enabled:r.calls_enabled});
-  try{ showToast((r.name||code)+(r.calls_enabled?' can book calls':' can no longer book')); }catch(e){}
+  var ok=await _caPersist(code, patch);
+  if(!ok) return;
+  var label = mode==='unlimited'?'unlimited calls':(mode==='weekly'?'weekly check-in calls':'no scheduled calls');
+  try{ showToast((r.name||code)+' set to '+label); }catch(e){}
 }
 async function caGrantCredit(code){
   var r=CLIENTS[code]; if(!r) return;
@@ -42448,6 +42673,21 @@ async function consumeCallCredit(code){
     if((+r.call_credits||0)<=0) return;
     var w=await trainerWrite('spendCallCredit', {});
     if(w.ok && w.rows[0] && w.rows[0].call_credits!=null){ r.call_credits=+w.rows[0].call_credits; }
+  }catch(e){}
+}
+// Same shape as consumeCallCredit above, for the weekly tier's single credit —
+// through spendWeeklyCall (trainer.js), the same session-scoped, guarded write.
+// Updates both CLIENTS[code] and cl (when it's the signed-in session's own
+// code) so the calls card's very next repaint already reflects the spend
+// without waiting on a session refresh.
+async function consumeWeeklyCall(code){
+  try{
+    var r=CLIENTS[code]; if(!r || r.weekly_calls!==true) return;
+    var w=await trainerWrite('spendWeeklyCall', {});
+    if(w.ok && w.rows[0] && w.rows[0].weekly_call_spent_at!=null){
+      r.weekly_call_spent_at=w.rows[0].weekly_call_spent_at;
+      if(cl && cl.code===code) cl.weekly_call_spent_at=w.rows[0].weekly_call_spent_at;
+    }
   }catch(e){}
 }
 
@@ -43480,8 +43720,8 @@ function openMyTime(){
   ov.style.cssText='position:fixed;inset:0;z-index:99998;display:flex;align-items:flex-end;justify-content:center;background:rgba(7,7,9,0.92);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);';
   ov.innerHTML='<div style="width:100%;max-width:430px;max-height:90vh;display:flex;flex-direction:column;background:#222;border-radius:22px 22px 0 0;padding:16px 18px calc(24px + env(safe-area-inset-bottom,0px));">'
     +'<div style="width:42px;height:4px;border-radius:2px;background:#3d3d3d;margin:0 auto 15px;"></div>'
-    +'<div style="font-size:19px;font-weight:800;color:var(--text);">My time</div>'
-    +'<div style="font-size:12.5px;color:var(--m2);line-height:1.5;margin-top:5px;">Anything here comes off your booking page. Walks stay open \u2014 you can take a call on a walk.</div>'
+    +'<div style="font-size:19px;font-weight:800;color:var(--text);">Block time off</div>'
+    +'<div style="font-size:12.5px;color:var(--m2);line-height:1.5;margin-top:5px;">Blocks a specific date and time off your booking page. Walks stay open \u2014 you can take a call on a walk. For your regular weekly hours, use My hours instead.</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:15px;">'
       +'<div><div class="il" style="margin-top:0;">Day</div><input class="ifield" type="date" id="tbDate" style="margin:0;text-align:center;font-size:14px;padding-left:6px;padding-right:6px;"></div>'
       +'<div><div class="il" style="margin-top:0;">Start</div><input class="ifield" type="time" id="tbStart" style="margin:0;text-align:center;font-size:14px;"></div>'
