@@ -88,7 +88,7 @@ exports.handler = async (event) => {
     // whole lookup — which is login itself, for every account. Looped, not
     // just one retry, since this migration alone adds two columns and a
     // single retry would still 400 on the second one if neither has landed.
-    let cols = 'code,name,initials,is_trainer,active,calls_enabled,call_credits,weekly_calls,weekly_call_spent_at,started_at';
+    let cols = 'code,name,initials,is_trainer,active,calls_enabled,call_credits,weekly_calls,weekly_call_spent_at';
     let r, text;
     for (let attempt = 0; attempt < 4; attempt++) {
       r = await fetch(
@@ -141,17 +141,15 @@ exports.handler = async (event) => {
     // migration hasn't landed and the retry above dropped it) — the page's own
     // hasWeeklyCreditNow() treats a missing/falsy value as "never spent."
     //
-    // started_at rides for exactly the same reason: a fact about THIS client,
-    // needed by their own screen, on a column that is dark to the anon key and
-    // staying that way. The Day page anchors how far back a client can scroll to
-    // the day they actually started; without this it can only guess from their
-    // first logged row. Display data, not identity — nothing signs it and
-    // nothing trusts it for access.
+    // started_at briefly rode here too, for the Day page's scroll-back anchor.
+    // It came straight back out: the anchor is the client's first LOGGED day now
+    // (Yusuf, ruling, 15 Aug), which the page works out from their own logs, so
+    // nothing on a client's screen needs their term dates and this response has
+    // no business carrying them.
     client: { code: row.code, name: row.name || row.code, initials: row.initials || null,
               is_trainer: row.is_trainer === true, active: row.active !== false,
               calls_enabled: row.calls_enabled === true, call_credits: +row.call_credits || 0,
-              weekly_calls: row.weekly_calls === true, weekly_call_spent_at: row.weekly_call_spent_at || null,
-              started_at: row.started_at ? String(row.started_at).slice(0, 10) : null },
+              weekly_calls: row.weekly_calls === true, weekly_call_spent_at: row.weekly_call_spent_at || null },
   });
 };
 

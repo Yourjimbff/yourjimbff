@@ -5218,14 +5218,6 @@ async function sessEnsure(code, force){
           if(d.client){
             if(cl && cl.code===code){ cl.calls_enabled=d.client.calls_enabled; cl.call_credits=d.client.call_credits; cl.weekly_calls=d.client.weekly_calls; cl.weekly_call_spent_at=d.client.weekly_call_spent_at; }
             if(CLIENTS[code]){ CLIENTS[code].calls_enabled=d.client.calls_enabled; CLIENTS[code].call_credits=d.client.call_credits; CLIENTS[code].weekly_calls=d.client.weekly_calls; CLIENTS[code].weekly_call_spent_at=d.client.weekly_call_spent_at; }
-            // Their own start date, off the same session read. The Day page uses it
-            // to know how far back their history goes; it arrives whenever the
-            // session does, and nothing waits on it — an anchor with no start date
-            // falls back to the first day they logged anything.
-            if(d.client.started_at){
-              if(cl && cl.code===code) cl.started_at=d.client.started_at;
-              if(CLIENTS[code]) CLIENTS[code].started_at=d.client.started_at;
-            }
           }
         }catch(e){}
         return d.token;
@@ -5772,9 +5764,25 @@ async function sbSelect(table, filter){
     }
     // Never fail quietly: an empty result and a broken query must not look the same.
     console.error('[sbSelect] '+table+' returned '+res.status+' — treating as empty. '+String(why||'').slice(0,200));
+    _sbNoteFail(table);
     return [];
-  }catch(e){ console.error('[sbSelect] '+table+' failed',e); return []; }
+  }catch(e){ console.error('[sbSelect] '+table+' failed',e); _sbNoteFail(table); return []; }
 }
+// THE SIGNAL THIS FILE NEVER HAD.
+// sbSelect answers [] for a refused read and for a genuinely empty table alike,
+// and it cannot change that without touching every caller in the file. So it
+// raises a hand instead: a caller that cares reads this counter before its batch
+// and again after, and an unchanged number means every read in that batch really
+// did answer. Nothing has to opt in, and nothing that ignores it behaves any
+// differently than it does today.
+window._sbFailN = window._sbFailN || 0;
+window._sbFailLast = '';
+function _sbNoteFail(table){
+  try{ window._sbFailN=(window._sbFailN||0)+1; window._sbFailLast=String(table||''); }catch(e){}
+}
+// Snapshot / compare, so a caller reads as: var t=_sbFailMark(); ...; if(_sbFailedSince(t)) ...
+function _sbFailMark(){ try{ return window._sbFailN||0; }catch(e){ return 0; } }
+function _sbFailedSince(mark){ try{ return (window._sbFailN||0)!==mark; }catch(e){ return false; } }
 
 async function sbUpsert(table, data, onConflict){
   try{
@@ -14311,12 +14319,20 @@ function _jvShareDemoLine(code){
   var age=_ageFromBday(d.birthday) || (d.age!=null && d.age!=='' ? +d.age : null);
   if(age) bits.push(age+' yo');
   if(d.height) bits.push(String(d.height));
+  var weightUnknown=false;
   try{
-    var p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null;
-    var w=p&&p.lastWeight&&p.lastWeight.val;
-    if(w) bits.push(Math.round(wToDisp(w)*10)/10+' '+wUnit());
-  }catch(e){}
-  return bits.length ? bits.join(' · ') : 'No details on file';
+    if(!_jvTriageReady()){ weightUnknown=true; }
+    else {
+      var p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null;
+      var w=p&&p.lastWeight&&p.lastWeight.val;
+      if(w) bits.push(Math.round(wToDisp(w)*10)/10+' '+wUnit());
+    }
+  }catch(e){ weightUnknown=true; }
+  if(bits.length) return bits.join(' · ');
+  // Nothing to show, and the reason matters. "No details on file" is a claim
+  // about the client; it must not be what a screen says when it simply has not
+  // read anything yet.
+  return weightUnknown ? 'Details loading…' : 'No details on file';
 }
 // Real client codes are often name-derived (e.g. a code built from someone's own
 // first name and initial) and get shown as a plain badge in a couple of places —
@@ -14332,6 +14348,13 @@ async function jvSetShareMode(on){
   if(on===window._jvShareMode) return;
   if(on){
     await _jvShareLoadDemo();
+    // Sharing mode rewrites every client's name into their demographic line, and
+    // that line carries their current weight — out of the board's store, which
+    // may never have been filled. Turned on from the Feed, everyone's weight
+    // silently vanished and anyone with nothing else on file read "No details on
+    // file". This is the screen shown to other people; it is the last place a
+    // blank should be allowed to pass for a fact.
+    if(!_jvTriageReady() && typeof jvLoadTriage==='function'){ try{ await jvLoadTriage(true); }catch(e){} }
     var backup={};
     Object.keys(CLIENTS).forEach(function(code){
       var info=CLIENTS[code]; if(!info || info.isTrainer) return;
@@ -14649,6 +14672,10 @@ async function jvLoadTriage(silent){
     return 0;
   }
   try{
+    // Everything below answers [] when it fails, so mark the counter first and
+    // check it after: that is the only way this load can tell "nobody logged
+    // anything" apart from "the reads did not come back".
+    var _fmark=_sbFailMark();
     // Four single queries instead of 16 parallel per-day ones (those were dropping data under load).
     var res=await Promise.all([
       sbSelect('food_logs','select=client_code,date_str,logged_at,name,emoji,calories,protein&order=logged_at.desc.nullslast&limit=8000'),
@@ -14660,6 +14687,19 @@ async function jvLoadTriage(silent){
       // requests to put one line on forty cards, and load already fires around 25.
       sbSelect('client_notes','select=id,client_code,note,logged_at&order=logged_at.desc&limit=1500')
     ]);
+    // ANY read in this batch failing makes the WHOLE store untrustworthy, not
+    // just the part that failed. A batch where weight_logs alone was refused
+    // would otherwise install a jvTriage that looks completely healthy and in
+    // which nobody on the roster has ever weighed in — which is precisely the
+    // bug this is here to make impossible. Better a board that says it could
+    // not read than a board that quietly reports a fiction.
+    if(_sbFailedSince(_fmark)){
+      window._jvTriageFailed=true;
+      console.error('[jvLoadTriage] a read did not answer (last: '+(window._sbFailLast||'?')+') — not installing a half-empty board');
+      if(!silent && wall) wall.innerHTML='<div class="tbFail">That did not load. It is a read that failed, not an empty roster — try Refresh.</div>';
+      try{ if(typeof renderMobFrontDesk==='function' && window.innerWidth<1024) renderMobFrontDesk(); }catch(e){}
+      return;
+    }
     var foods=res[0]||[], wos=res[1]||[], weights=res[2]||[], steps=res[3]||[];
     var goals={};
     (res[4]||[]).forEach(function(pr){
@@ -14698,6 +14738,7 @@ async function jvLoadTriage(silent){
     wos.forEach(function(w){ if(dayOf(w.date_str,w.logged_at||w.created_at)===0)(woByClient[w.client_code]=woByClient[w.client_code]||[]).push(w); });
     jvData={foodsByClient:foodsByClient, woByClient:woByClient};
     jvTriage={per:per, days:days, now:nowMs, goals:goals};
+    window._jvTriageFailed=false;          // every read answered; this data is the truth
     await jvSyncHandledFromServer();
     await jvSyncContacts();
     // The mobile front desk calls this (silent:true) purely for the jvTriage data
@@ -15618,9 +15659,38 @@ function _jvMovement(p){
 //   store not loaded   -> say nothing about them, and go and load it
 //   loaded, no rows    -> the real empty state, unchanged
 //   loaded, rows       -> the numbers
+// ===== THE STORE KNOWS WHICH OF THREE THINGS IS TRUE ======================
+// This bug has now been found four times, always by accident, always the same
+// shape: something reads jvTriage, finds nothing there, and writes a sentence
+// about the client. It kept happening because the store had only two states —
+// an object, or null — and null was doing double duty for "nobody has fetched
+// this yet" and "she has nothing". Those are not the same fact and one of them
+// is not about her at all.
+//
+// Three states now, copied from the one place in this file that already got it
+// right (window._tpLoadFailed, which the Day page uses to tell "no plan saved"
+// apart from "the plan read failed"):
+//   undefined -> no load has ever run
+//   true      -> a load ran and at least one of its reads did not answer
+//   false     -> a load ran and every read answered; the data is the truth
+// A surface that cannot get an answer says which of the two silences it is
+// looking at, and never converts either into a statement about a person.
+window._jvTriageFailed = window._jvTriageFailed;   // deliberately left undefined
 function _jvTriageReady(){ try{ return !!(window.jvTriage && jvTriage.per); }catch(e){ return false; } }
+function _jvTriageState(){
+  if(_jvTriageReady()) return 'ready';
+  return (window._jvTriageFailed===true) ? 'failed' : 'never';
+}
+// One sentence, said the same way everywhere, for the two states that are not
+// an answer. `what` names the thing in the client's own terms, so the line reads
+// as a fact about the screen rather than a verdict on them.
+function _jvNoStore(what){
+  return (window._jvTriageFailed===true)
+    ? ('Could not read '+what+' — that is a read that failed, not a client with none. Try Refresh.')
+    : ('Loading '+what+'…');
+}
 function _jvWeightLine(code){
-  if(!_jvTriageReady()) return '<span class="jvPending">Weigh-ins loading…</span>';
+  if(!_jvTriageReady()) return '<span class="jvPending">'+_escHtml(_jvNoStore('their weigh-ins'))+'</span>';
   var p=null; try{ p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null; }catch(e){}
   var lw=p&&p.lastWeight;
   if(!lw || isNaN(+lw.val)) return 'No weigh-ins yet';
@@ -15654,7 +15724,7 @@ function _jvProgress(code, size){
   if(!_jvTriageReady()){
     return '<div class="'+cls+'" id="jvProgWait_'+code+'">'
       +'<div class="ovEy">Progress</div>'
-      +'<div class="ovMetaTop">Loading their weigh-ins…</div>'
+      +'<div class="ovMetaTop">'+_escHtml(_jvNoStore('their weigh-ins'))+'</div>'
     +'</div>';
   }
 
@@ -15843,7 +15913,11 @@ function _jvExportOne(code, D){
   // --- weight ---
   L.push(''); L.push('WEIGHT');
   var lw=p&&p.lastWeight, fw=p&&p.firstWeight;
-  if(!lw || isNaN(+lw.val)){ L.push('No weigh-ins recorded.'); }
+  // Belt to the caller's braces. If the store still is not there — the caller
+  // skipped the wait, or the read failed — this says which, rather than printing
+  // "No weigh-ins recorded" into a document that gets pasted to a human being.
+  if(!_jvTriageReady()){ L.push(_jvNoStore('their weigh-ins')); }
+  else if(!lw || isNaN(+lw.val)){ L.push('No weigh-ins recorded.'); }
   else {
     var cw=+lw.val, sw=(fw&&!isNaN(+fw.val))?+fw.val:cw, n=(p&&p.wCount)||1;
     var moved=Math.round((cw-sw)*10)/10;
@@ -15950,6 +16024,12 @@ async function jvCopyClient(code, btn){
   var label=btn?btn.textContent:'';
   if(btn){ btn.disabled=true; btn.textContent='Gathering…'; }
   try{
+    // The weight section is built from the board's store, and this button sits on
+    // a card that opens from the Feed — where nothing has filled it. Without this
+    // wait the copied text carried an empty WEIGHT section for a client with
+    // years of weigh-ins, and it is text that gets pasted to people. The
+    // roster-wide copy has always waited; this one never learned to.
+    if(!_jvTriageReady() && typeof jvLoadTriage==='function'){ try{ await jvLoadTriage(true); }catch(e){} }
     var D=await _jvExportGather([code]);
     var txt=_jvExportOne(code, D);
     _jvCopyText(txt, 'Copied '+String((CLIENTS[code]||{}).name||code).split(' ')[0]+' — paste it anywhere');
@@ -16203,7 +16283,7 @@ function _jvRepaintProgress(code){
   }
   host.innerHTML='<div class="jvBlockLabel">Progress</div>'
     +'<div class="ovCard ovSm"><div class="ovEy">Progress</div>'
-    +'<div class="ovMetaTop">Their weigh-ins did not load, so this is not a record of someone who has never weighed in — it is a read that failed. Close this and open it again.</div></div>';
+    +'<div class="ovMetaTop">'+_escHtml(_jvNoStore('their weigh-ins'))+'</div></div>';
 }
 function jvOpenDeep(code){
   _jvHydratePhones();
@@ -17100,14 +17180,6 @@ function _tlDaySet(from, to){
   while(cur.getTime()<=end.getTime() && guard++<4000){ s[_tlDateStr(cur)]=1; cur.setDate(cur.getDate()+1); }
   return s;
 }
-function _tlYmdToDate(s){
-  try{
-    var m=String(s||'').slice(0,10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if(!m) return null;
-    var d=new Date(+m[1], +m[2]-1, +m[3]); d.setHours(0,0,0,0);
-    return isNaN(d.getTime())?null:d;
-  }catch(e){ return null; }
-}
 function _tlRowDs(r){
   if(r&&r.date_str) return r.date_str;
   try{ if(r&&r.logged_at){ var d=new Date(/[Z+]/.test(r.logged_at)?r.logged_at:r.logged_at+'Z'); if(!isNaN(d.getTime())) return _tlDateStr(d); } }catch(e){}
@@ -17171,24 +17243,24 @@ async function _tlEarliestLoggedDate(){
   });
   return best;
 }
-// Their beginning. Start date wins when we have one — it is when the work
-// actually began, whether or not anything was logged that week — but a log that
-// PREDATES it still counts, because the point is their real history and history
-// is not hidden to protect a field. Unresolved stays unresolved: a failed read
-// must never harden into "you have nothing older", so the way back stays open
-// and the next tap tries again. sbSelect answers [] for a refusal and for an
-// empty table alike, so "no rows" is not proof of anything on its own.
+// Their beginning is THE FIRST DAY THEY LOGGED ANYTHING IN THIS APP, and
+// nothing else (Yusuf, ruling, 15 Aug). Not their start date and not their term.
+// This anchored on the start date for about an hour and the result made the case
+// against it on its own: Sarah started in February and first logged in July, so
+// her own history began behind five months of empty days she had to walk through
+// to reach it. A term is a commercial fact; the history is the days she has.
+//
+// Unresolved stays unresolved: a failed read must never harden into "you have
+// nothing older", so the way back stays open and the next tap tries again.
+// sbSelect answers [] for a refusal and for an empty table alike, so "no rows"
+// is not proof of anything on its own.
 async function _tlResolveAnchor(){
   if(window._tlAnchor) return window._tlAnchor;
   if(!cl) return null;
-  var started=_tlYmdToDate(cl.started_at);
   var logged=await _tlEarliestLoggedDate();
-  var pick=null, src='';
-  if(started){ pick=started; src='start'; }
-  if(logged && (!pick || logged.getTime()<pick.getTime())){ pick=logged; src=started?'start':'log'; }
-  if(!pick) return null;
-  window._tlAnchor=pick; window._tlAnchorSrc=src;
-  return pick;
+  if(!logged) return null;
+  window._tlAnchor=logged; window._tlAnchorSrc='log';
+  return logged;
 }
 // Paging state belongs to whoever's page this is. Switching clients, or leaving,
 // must not carry one person's anchor onto another person's history.
@@ -22736,6 +22808,11 @@ function _obOpener(code){
 // How long they have actually been gone, in plain words. Replaces "parked as inactive",
 // which described a setting rather than a person and told you nothing you could act on.
 function _obQuietLine(code){
+  // Both of today's callers happen to sit behind a guard, so this has never
+  // actually lied to anyone. It would the first time somebody called it from a
+  // surface that does not wait — the line it writes is "Never logged anything",
+  // which is about as final as this app gets. Converted so it cannot.
+  if(!_jvTriageReady()) return _jvNoStore('their activity');
   var last=0;
   try{ var p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null; last=(p&&p.last)||0; }catch(e){}
   if(!last) return 'Never logged anything';
