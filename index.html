@@ -13500,7 +13500,22 @@ function _jvBuildPendingLog(lg, code, name){
   return {code:code, name:(String(name||'')||(CLIENTS[code]||{}).name||code), parts:parts, payload:payload, at:Date.now()};
 }
 function _jvPendingSummary(p){
+  if(p.kind==='workingon') return 'I am about to put this on '+p.name+' ('+p.code+') as what they are working on: \u201c'+p.text+'\u201d. Right client?';
   return 'I am about to log '+p.parts.join(', ')+' to '+p.name+' ('+p.code+'), dated today. Right client?';
+}
+// "Blake is working on her sleep and getting her steps up" lands in the Working
+// on field. Confirmed first, like every other client write.
+//
+// SAME STORE, DIFFERENT MARKER, and worth stating because it is why this never
+// worked by accident: Working on reads client_notes rows marked [COACHING].
+// Jarvis has always written client_notes too — but marked [Jarvis], which the
+// coaching filter excludes, so every note it took landed in the private pile
+// and none of it ever reached the field. Checked before wiring rather than
+// assumed.
+function _jvBuildPendingWorkingOn(text, code, name){
+  if(!text || !code || !CLIENTS[code]) return null;
+  return {kind:'workingon', code:code, name:(String(name||'')||(CLIENTS[code]||{}).name||code),
+          text:String(text).trim().slice(0,300), parts:[], payload:{}, at:Date.now()};
 }
 function _jvPendingFresh(){
   var p=window._jvPendingWrite;
@@ -13512,6 +13527,17 @@ function _jvIsNo(t){ return /^\s*(n|no|nope|nah|cancel|stop|don'?t|do not|wrong|
 // the door answers with the row it wrote, so "it saved" is something this can
 // actually see rather than infer from the absence of an error.
 async function _jvCommitPending(p){
+  if(p.kind==='workingon'){
+    var saved=null;
+    try{ saved=await sbInsertReturning('client_notes',
+      {client_code:p.code, note:_cnMark(p.text,'coaching'), logged_at:new Date().toISOString()}); }catch(e){}
+    window._jvPendingWrite=null;
+    if(!saved) return 'That did not save. Nothing was written to '+p.name+'.';
+    try{ (window._cnCoach[p.code]=window._cnCoach[p.code]||[]).unshift({id:(saved&&saved.id)||null, body:p.text, ts:new Date().toISOString(), sharedAt:null, sharedNote:null}); }catch(e){}
+    try{ _cnRepaint(p.code); }catch(e){}
+    try{ jvActRecord('Set what '+p.name+' is working on', null); }catch(e){}
+    return '\u2713 '+p.name+' is working on: '+p.text;
+  }
   var done=[], failed=[];
   var now=new Date(), ds=now.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}), iso=now.toISOString();
   if(p.payload.food){
@@ -13587,10 +13613,11 @@ async function jarvisIngest(ns){
     var sys="You are Jarvis, fitness coach Yusuf's private work assistant, in an ongoing chat with him. "
       +"YOUR NORTH STAR: the client's experience and journey come first - help Yusuf truly understand each client, solve their real underlying problem, and always hand him the best concrete next action so the client feels understood and led forward. "
       +"ANSWER FROM WHAT YOU CAN SEE. The board below is live and it is yours to read. Never ask him to paste, share or describe his own board, his roster, or what anyone logged - if it is not below, say plainly that you cannot see it rather than asking him to fetch it. "
-      +"Each turn return ONLY JSON, no markdown: {\"client_code\":\"\",\"client_name\":\"\",\"note\":\"\",\"log\":null,\"reply\":\"\"}. "
+      +"Each turn return ONLY JSON, no markdown: {\"client_code\":\"\",\"client_name\":\"\",\"note\":\"\",\"log\":null,\"working_on\":\"\",\"reply\":\"\"}. "
       +"note = anything NEW worth recording on that client's profile this turn (what happened, a fact, a follow-up). Use real dates (today is "+today2+"); NEVER write placeholders like [date] or brackets; omit unknown details. Leave note EMPTY if there is nothing new to log (for example when you are just talking it through with him). "
       +"log = ONLY when Yusuf is explicitly recording numbers FOR a client (examples: log Naya's day; Sarah weighed 162; Mike 1900 cal 150 protein 9k steps). Otherwise null. When logging, log is an object with three fields: food (an object with name, calories, protein, carbs, fat - or null if no food was mentioned), weight (a number or null), steps (a number or null). Name the food as a short whole-food meal name, or Daily intake if only totals are given. Use null for any field Yusuf did not state, and NEVER invent numbers. He will be asked to confirm before any number is written, so state it plainly rather than hedging. "
       +"reply = your message back to Yusuf - coaching, the best next action, or just continuing the conversation. Direct, human, a sharp coach's voice, never clinical. "
+      +"working_on = ONLY when Yusuf states what a client is WORKING ON right now (examples: Blake is working on her sleep and getting her steps up; Toni's focus is protein at breakfast). A short phrase in their own terms, no preamble. Otherwise omit. He will be asked to confirm before it is written. "
       +"client_code and client_name = who this is about, matched from the roster, or empty if unclear.\n\n"
       +ctx;
     var msgs=[{role:'user',content:sys},{role:'assistant',content:'Ready.'}];
@@ -13613,6 +13640,7 @@ async function jarvisIngest(ns){
     if(code && CLIENTS[code] && note){ try{ await sbInsertReturning('client_notes',{client_code:code, note:'[Jarvis] '+note, logged_at:new Date().toISOString()}); }catch(e){} try{ await _postMomentText((name?(name+': '):'')+note); }catch(e){} loggedTo=name||code; }
     try{
       var _pend=_jvBuildPendingLog(obj&&obj.log, code, name);
+      if(!_pend && obj && obj.working_on) _pend=_jvBuildPendingWorkingOn(String(obj.working_on), code, name);
       if(_pend){
         window._jvPendingWrite=_pend;
         reply='Before I write that \u2014 '+_jvPendingSummary(_pend)+'\n\nSay yes and it goes in.';
@@ -14528,6 +14556,17 @@ function jvInit(){
     // the habit this replaces.
     try{ if(typeof jvLoadTriage==='function') jvLoadTriage(true); }catch(e){}
     try{ if(typeof loadConsults==='function') loadConsults(); }catch(e){}
+    // The standing call blocks, read once so a call that has already happened
+    // counts as engagement. Same door op the Admin calendar already uses.
+    try{
+      trainerOp('vipCallList',{}).then(function(rows){
+        window._vipRowsCache=rows||[];
+        try{ jvPaneRender(); }catch(e){}
+        try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+        try{ if(window.jvTriage && typeof jvRenderTriage==='function' && (typeof jvMode==='undefined'||jvMode==='cockpit')) jvRenderTriage(); }catch(e){}
+      });
+    }catch(e){}
+    try{ if(typeof loadBookings==='function') loadBookings(true); }catch(e){}
   } else {
     document.body.classList.remove('jv-on');
     document.body.classList.remove('jv-split','jv-paneOff');
@@ -15095,7 +15134,69 @@ function _ccFor(code){ var a=(jvContacts()[code])||[]; return a.slice().sort(fun
 function _ccLast(code){ return _ccFor(code)[0]||null; }
 // Same correction, same reason: "reached out 2 days ago" has to mean two
 // calendar days, or a message sent at 9pm reads as same-day for another 21 hours.
+// ===== A CALL THAT HAPPENED IS A TOUCH ====================================
+// Blake is spoken to every weekday at 09:30 on a standing block, and her card
+// read "No contact logged" — the loudest possible version of the engagement
+// problem. Nobody is going to confirm five calls a week by hand, so none of
+// this is written: it is DERIVED at read time from rows already being read.
+// A vip_calls block carries its weekdays, its local time, its timezone and its
+// start and end dates, which is everything needed to say when its most recent
+// occurrence was. A booking carries its own instant. No new table, no new
+// column, no row per occurrence.
+function _vipLastOccurrenceTs(row, now){
+  try{
+    if(!row || row.active===false) return 0;
+    var days=row.weekdays||[]; if(!days.length) return 0;
+    var hm=String(row.time_local||'').match(/^(\d{1,2}):(\d{2})$/); if(!hm) return 0;
+    var startMs=row.start_date ? new Date(row.start_date+'T00:00:00').getTime() : 0;
+    var endMs=row.end_date ? new Date(row.end_date+'T23:59:59').getTime() : Infinity;
+    var d=new Date(now||Date.now());
+    // Walk back at most a fortnight. Older than that and it is not "recent
+    // engagement" by any reading, so there is nothing to gain from looking.
+    for(var i=0;i<15;i++){
+      var probe=new Date(d); probe.setDate(probe.getDate()-i);
+      var dow=probe.getDay();
+      if(days.indexOf(dow)<0 && days.indexOf(dow===0?7:dow)<0) continue;
+      probe.setHours(+hm[1], +hm[2], 0, 0);
+      var t=probe.getTime();
+      if(t> (now||Date.now())) continue;          // today's call has not happened yet
+      if(t<startMs || t>endMs) continue;          // outside the block's own dates
+      return t;
+    }
+  }catch(e){}
+  return 0;
+}
+// The newest of: a logged contact, a standing call that has already happened,
+// and a booked call whose time has passed.
+function _ccLastEngagedTs(code){
+  var best=0;
+  try{ var l=_ccLast(code); if(l&&l.t) best=l.t; }catch(e){}
+  var now=Date.now();
+  try{
+    (window._vipRowsCache||[]).forEach(function(r){
+      if(r.client_code!==code) return;
+      var t=_vipLastOccurrenceTs(r, now); if(t>best) best=t;
+    });
+  }catch(e){}
+  try{
+    (window._bookCacheAll||[]).forEach(function(b){
+      if(b.client_code!==code) return;
+      if(String(b.status||'booked')==='cancelled') return;
+      var t=new Date(b.starts_at).getTime();
+      if(!isNaN(t) && t<=now && t>best) best=t;
+    });
+  }catch(e){}
+  return best||null;
+}
 function _ccDaysSince(code){
+  var t=_ccLastEngagedTs(code);
+  if(t){
+    try{
+      var a0=new Date(t); a0.setHours(0,0,0,0);
+      var b0=new Date(); b0.setHours(0,0,0,0);
+      return Math.max(0, Math.round((b0-a0)/86400000));
+    }catch(e){}
+  }
   var l=_ccLast(code); if(!l||!l.t) return null;
   try{
     var a=new Date(l.t); a.setHours(0,0,0,0);
@@ -15449,7 +15550,16 @@ function jvCopyContactsSQL(){
 // Always says what it knows and nothing more. Never falls back to their last log.
 function _ccLine(code){
   var l=_ccLast(code);
-  if(!l) return 'No contact logged';
+  // A call that has already happened is a touch, even with nothing typed about
+  // it. Blake is spoken to every weekday and this said "No contact logged".
+  if(!l){
+    var t0=_ccLastEngagedTs(code);
+    if(t0){
+      var d0=_ccDaysSince(code);
+      return 'Spoke on a call '+(d0<=0?'today':(d0===1?'yesterday':d0+' days ago'));
+    }
+    return 'No contact logged';
+  }
   var un=_ccUnanswered(code);
   var d=_ccDaysSince(code);
   var when=(d<=0?'today':(d===1?'yesterday':d+' days ago'));
@@ -36033,6 +36143,8 @@ async function loadBookings(force){
   try{ rows = await sbSelect('bookings','starts_at=gte.'+encodeURIComponent(from)+'&order=starts_at.asc&limit=400') || []; }
   catch(e){ rows=[]; }
   _bookCache = rows.filter(function(b){ return String(b.status||'booked')!=='cancelled'; });
+  // Kept where the engagement derivation can see it — same rows, no second read.
+  try{ window._bookCacheAll=_bookCache; }catch(e){}
   return _bookCache;
 }
 async function createBooking(startISO){
