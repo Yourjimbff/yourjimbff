@@ -54,6 +54,14 @@ async function listVoices(KEY) {
 
 async function resolveVoice(KEY) {
   if (VOICE_CACHE) return { ok: true, voice: VOICE_CACHE, cached: true };
+  // AN EXPLICIT ID WINS, and it exists because his key does not have to be able
+  // to read his voice list. ElevenLabs keys carry scoped permissions, and one
+  // without voices_read can still synthesize perfectly well — it simply cannot
+  // be asked what the voices are called. Setting ELEVENLABS_VOICE_ID skips the
+  // lookup entirely, which is both the smaller permission and one fewer round
+  // trip. The name lookup below stays as the convenience path.
+  const FIXED = process.env.ELEVENLABS_VOICE_ID;
+  if (FIXED) { VOICE_CACHE = { id: String(FIXED).trim(), name: process.env.ELEVENLABS_VOICE_NAME || 'configured' }; return { ok: true, voice: VOICE_CACHE, cached: false }; }
   const got = await listVoices(KEY);
   if (!got.ok) return got;
   for (const want of WANTED) {
@@ -86,6 +94,21 @@ exports.handler = async (event) => {
     const got = await listVoices(KEY);
     if (!got.ok) return json(502, { error: 'lookup_failed', detail: got.detail });
     return json(200, { voices: got.voices });
+  }
+
+  // Capability probe: synthesize one word with a caller-supplied id, so a key
+  // that cannot list voices can still be proven able to speak. Diagnostic only.
+  if (body.op === 'probe' && body.voice_id) {
+    try {
+      const r = await fetch(`${API}/text-to-speech/${encodeURIComponent(String(body.voice_id))}`, {
+        method: 'POST',
+        headers: { 'xi-api-key': KEY, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
+        body: JSON.stringify({ text: 'test', model_id: 'eleven_turbo_v2_5' }),
+      });
+      if (!r.ok) { const d = await r.text(); return json(200, { probe: 'failed', status: r.status, detail: d.slice(0, 200) }); }
+      const b = Buffer.from(await r.arrayBuffer());
+      return json(200, { probe: 'ok', bytes: b.length });
+    } catch (e) { return json(200, { probe: 'threw', detail: e && e.message }); }
   }
 
   const text = String(body.text || '').trim();
