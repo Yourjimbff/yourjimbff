@@ -98,7 +98,30 @@ const OPS = {
   // For Admin's calendar view. Trainer-only read, same as every other OPS entry —
   // a client's own read goes through myVipCalls below instead, never this.
   vipCallList: () => 'vip_calls?select=id,client_code,weekdays,time_local,tz,duration_minutes,start_date,end_date,notes,active,created_at&order=start_date.desc&limit=500',
+
+  // Per-occurrence exceptions to those rules — one row per (vip_call_id,
+  // occurrence_date), 'skip' or 'move'. The SERIES itself is never written by
+  // any of this; that's the whole point. Listed in TOLERATE_MISSING below so
+  // the cockpit reads [] rather than a 502 while the migration is unpasted.
+  vipCallExceptions: (a) => (a && a.vip_call_id
+    ? `vip_call_exceptions?vip_call_id=eq.${encId(a.vip_call_id)}&select=id,vip_call_id,occurrence_date,kind,new_date,new_time_local,created_at&order=occurrence_date.asc&limit=500`
+    : 'vip_call_exceptions?select=id,vip_call_id,occurrence_date,kind,new_date,new_time_local,created_at&order=occurrence_date.asc&limit=1000'),
+
+  // One named client's own call bookings — what the trainer's cancel/undo
+  // surface lists. Deliberately not the whole table: `bookings` is broad and
+  // this is a per-client question.
+  clientBookings: (a) => `bookings?client_code=eq.${enc(a.code)}&select=id,client_code,trainer_code,starts_at,duration_min,status,client_tz,note,spent,created_at&order=starts_at.desc&limit=200`,
 };
+
+// Ops whose table may legitimately not exist yet — a missing table answers []
+// rather than 502, so a cockpit opened before the SQL is pasted reads "no
+// exceptions" (which is true) instead of "something is broken". Scoped to an
+// explicit list: masking PGRST205 for every op would hide real breakage.
+const TOLERATE_MISSING = { vipCallExceptions: 1 };
+function missingTable(body) {
+  const s = String(body || '');
+  return /PGRST205/.test(s) || /Could not find the table/i.test(s);
+}
 
 function enc(v) {
   const s = String(v == null ? '' : v);
@@ -665,10 +688,854 @@ async function handleMyVipCalls(URL, SERVICE, code) {
       console.error('trainer: myVipCalls query failed', r.status, text.slice(0, 300));
       return json(502, { error: 'query_failed', op: 'myVipCalls' });
     }
-    return { statusCode: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }, body: text };
+    // Each rule carries its OWN exceptions, so the client's card applies the
+    // identical skip/move check the public grid does. Attached to the rows
+    // rather than returned beside them because trainerOp() hands callers an
+    // array — a second top-level key would have needed every caller changed,
+    // and a rule and its exceptions belong together anyway.
+    let rows = [];
+    try { rows = JSON.parse(text) || []; } catch (e) { rows = []; }
+    const exc = await fetchVipExceptions(URL, SERVICE, rows.map((x) => x.id));
+    rows.forEach((x) => {
+      const m = (exc.by && exc.by[String(x.id)]) || {};
+      x.exceptions = Object.keys(m).map((k) => ({
+        occurrence_date: k, kind: m[k].kind,
+        new_date: m[k].new_date || null, new_time_local: m[k].new_time_local || null,
+      }));
+      // A card that could not read the exceptions must not quietly show the
+      // rule's own time as if nothing had been moved.
+      x.exceptions_ok = exc.ok !== false;
+    });
+    return json(200, rows);
   } catch (e) {
     console.error('trainer: myVipCalls threw', e && e.message);
     return json(502, { error: 'query_failed', op: 'myVipCalls' });
+  }
+}
+
+// ===== TRAINER-AUTHORED CALLS ==============================================
+// Three ops, all is_trainer-gated, all read-then-write, all reading the row
+// back off the table before they answer.
+//
+// They are NOT a loosening of spendCallCredit/spendWeeklyCall. Those stay
+// exactly as they are: session-scoped, acting only on claims.client_code,
+// never on args. These act on a NAMED client because a trainer session has
+// already proved it is the trainer — a different authority, so a different op,
+// checked after the is_trainer gate rather than before it.
+//
+// Off-grid on purpose. The client picker's 30-minute slot grid exists so a
+// client is offered a tidy choice; Yusuf negotiating "9:45" with someone over
+// text is real, and there is no reason the grid should constrain him. These
+// take a clock time and honour it.
+
+const BOOK_DEFAULT_MIN = 30;
+const CONSULT_MIN = 30;        // the offer page's own slot length
+const NEAR_STEP_MIN = 15;      // nearest-open walks in quarter hours
+const NEAR_SPAN_MIN = 240;     // ...up to four hours either side, no further
+const NEAR_DAY_START = 7;      // ...and never proposes the middle of the night
+const NEAR_DAY_END = 21;
+const TRAINER_TZ = 'America/New_York';
+
+function overlapsWindow(aS, aE, bS, bE) { return aS < bE && aE > bS; }
+function localHourIn(date, tz) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', hour: '2-digit' }).formatToParts(date);
+    const h = parts.find((p) => p.type === 'hour');
+    return h ? +h.value : 12;
+  } catch (e) { return 12; }
+}
+function isoDayStr(d) { return d.toISOString().slice(0, 10); }
+function svc(SERVICE) { return { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE }; }
+
+// Exceptions for a set of vip_calls ids, as {vip_call_id: {occurrence_date: row}}.
+// FAIL-SOFT AND SAY SO: the table not existing yet (the migration unpasted) or
+// erroring returns {} plus a flag, so callers that must not silently ignore a
+// move — bookCallForClient's collision check — can refuse instead of booking
+// on top of an occurrence they couldn't see.
+async function fetchVipExceptions(URL, SERVICE, ids) {
+  if (!ids || !ids.length) return { ok: true, by: {} };
+  try {
+    const path = 'vip_call_exceptions?select=vip_call_id,occurrence_date,kind,new_date,new_time_local'
+      + `&vip_call_id=in.(${ids.map((i) => encodeURIComponent(i)).join(',')})&limit=2000`;
+    const r = await fetch(`${URL}/rest/v1/${path}`, { headers: svc(SERVICE) });
+    const text = await r.text();
+    if (!r.ok) {
+      // A table that isn't there yet is a known, expected state during rollout
+      // and is NOT a failure — there are genuinely no exceptions.
+      if (missingTable(text)) return { ok: true, by: {}, absent: true };
+      console.error('trainer: vip_call_exceptions read failed', r.status, text.slice(0, 200));
+      return { ok: false, by: {} };
+    }
+    const rows = JSON.parse(text);
+    const by = {};
+    (rows || []).forEach((x) => {
+      const k = String(x.vip_call_id);
+      by[k] = by[k] || {};
+      by[k][String(x.occurrence_date).slice(0, 10)] = x;
+    });
+    return { ok: true, by: by };
+  } catch (e) {
+    console.error('trainer: vip_call_exceptions threw', e && e.message);
+    return { ok: false, by: {} };
+  }
+}
+
+// Expand vip_calls RULES into real occurrences across a date range, applying
+// per-occurrence exceptions. The rule row is never modified — an exception is
+// consulted at expansion time, exactly like the DST offset is, which is why
+// next week still reads the rule's own time after tomorrow has been moved.
+//
+// SCANS WIDER THAN IT IS ASKED. A move can carry an occurrence onto a date the
+// rule does not fire, so a scan bounded by the requested range would lose an
+// occurrence moved INTO it from just outside. Seven days of padding either
+// side covers every move this op will accept; occurrences that land outside
+// the range are returned too, which is harmless — every caller tests overlap
+// against a specific window rather than trusting the list to be pre-trimmed.
+function expandVipOccurrences(rows, excBy, fromYmd, toYmd) {
+  const out = [];
+  const PAD = 7 * 86400000;
+  const scanStart = new Date(fromYmd + 'T00:00:00.000Z').getTime() - PAD;
+  const scanEnd = new Date(toYmd + 'T00:00:00.000Z').getTime() + PAD;
+  (rows || []).forEach((row) => {
+    const rowStart = new Date(row.start_date + 'T00:00:00.000Z').getTime();
+    const rowEnd = new Date(row.end_date + 'T00:00:00.000Z').getTime();
+    const spanStart = Math.max(rowStart, scanStart);
+    const spanEnd = Math.min(rowEnd, scanEnd);
+    const exc = (excBy && excBy[String(row.id)]) || {};
+    for (let t = spanStart; t <= spanEnd; t += 86400000) {
+      const d = new Date(t);
+      const dow = ((d.getUTCDay() + 6) % 7) + 1;   // 1=Mon..7=Sun
+      if (!Array.isArray(row.weekdays) || !row.weekdays.includes(dow)) continue;
+      const ds = isoDayStr(d);
+      const e = exc[ds];
+      if (e && e.kind === 'skip') continue;
+      const useDate = (e && e.new_date) ? String(e.new_date).slice(0, 10) : ds;
+      const useTime = (e && e.new_time_local) ? String(e.new_time_local).slice(0, 5) : row.time_local;
+      out.push({
+        vip_call_id: row.id,
+        client_code: row.client_code,
+        rule_date: ds,
+        date: useDate,
+        time_local: useTime,
+        tz: row.tz,
+        duration_minutes: +row.duration_minutes || BOOK_DEFAULT_MIN,
+        moved: !!(e && e.kind === 'move'),
+        at: zonedTimeToUtc(useDate, useTime, row.tz),
+      });
+    }
+  });
+  return out;
+}
+
+// Everything that already occupies the trainer's time across a window, from
+// every table that can hold a claim on it.
+//
+// FAILS CLOSED. Every other read in this file degrades to "empty" on error
+// because an empty list there costs a screen, not a mistake. Here an empty
+// list IS the mistake — it is exactly what double-books a real client — so a
+// source that cannot be read stops the booking and says which one.
+async function collectBusy(URL, SERVICE, fromMs, toMs) {
+  const fromISO = new Date(fromMs).toISOString();
+  const toISO = new Date(toMs).toISOString();
+  const fromYmd = fromISO.slice(0, 10);
+  const toYmd = toISO.slice(0, 10);
+  const busy = [];
+
+  // 1. Every call already booked, for ANY client — someone else's call is as
+  //    much of a clash as this client's own.
+  const bRes = await fetch(`${URL}/rest/v1/bookings?select=id,client_code,starts_at,duration_min,status`
+    + `&starts_at=gte.${encodeURIComponent(fromISO)}&starts_at=lte.${encodeURIComponent(toISO)}&limit=500`,
+    { headers: svc(SERVICE) });
+  if (!bRes.ok) return { ok: false, source: 'bookings' };
+  (await bRes.json() || []).forEach((b) => {
+    if (String(b.status || 'booked') === 'cancelled') return;
+    const s = new Date(b.starts_at).getTime();
+    if (!isFinite(s)) return;
+    busy.push({ kind: 'booking', id: b.id, client_code: b.client_code,
+      starts: s, ends: s + (+b.duration_min || BOOK_DEFAULT_MIN) * 60000 });
+  });
+
+  // 2. Accepted consults off the offer page. A cancelled one is not busy.
+  const cRes = await fetch(`${URL}/rest/v1/consult_requests?select=id,requested_at&status=eq.accepted`
+    + `&requested_at=gte.${encodeURIComponent(fromISO)}&requested_at=lte.${encodeURIComponent(toISO)}&limit=500`,
+    { headers: svc(SERVICE) });
+  if (!cRes.ok) return { ok: false, source: 'consults' };
+  (await cRes.json() || []).forEach((c) => {
+    const s = new Date(c.requested_at).getTime();
+    if (!isFinite(s)) return;
+    busy.push({ kind: 'consult', id: c.id, starts: s, ends: s + CONSULT_MIN * 60000 });
+  });
+
+  // 3. Standing VIP blocks, expanded exception-aware.
+  const vRes = await fetch(`${URL}/rest/v1/vip_calls?select=id,client_code,weekdays,time_local,tz,duration_minutes,start_date,end_date`
+    + `&active=eq.true&start_date=lte.${encodeURIComponent(toYmd)}&end_date=gte.${encodeURIComponent(fromYmd)}&limit=500`,
+    { headers: svc(SERVICE) });
+  if (!vRes.ok) return { ok: false, source: 'vip_calls' };
+  const vRows = await vRes.json() || [];
+  const exc = await fetchVipExceptions(URL, SERVICE, vRows.map((r) => r.id));
+  if (!exc.ok) return { ok: false, source: 'vip_call_exceptions' };
+  expandVipOccurrences(vRows, exc.by, fromYmd, toYmd).forEach((o) => {
+    const s = o.at.getTime();
+    if (!isFinite(s)) return;
+    busy.push({ kind: 'vip_call', id: o.vip_call_id, client_code: o.client_code,
+      starts: s, ends: s + o.duration_minutes * 60000, moved: o.moved });
+  });
+
+  // 4. The trainer's own time off. A walk is deliberately not a block — the
+  //    client picker has always taken calls on walks and this matches it.
+  const tRes = await fetch(`${URL}/rest/v1/trainer_blocks?select=id,starts_at,ends_at,kind,label`
+    + `&ends_at=gte.${encodeURIComponent(fromISO)}&starts_at=lte.${encodeURIComponent(toISO)}&limit=500`,
+    { headers: svc(SERVICE) });
+  if (!tRes.ok) return { ok: false, source: 'trainer_blocks' };
+  (await tRes.json() || []).forEach((b) => {
+    if (String(b.kind || '') === 'walk') return;
+    const s = new Date(b.starts_at).getTime(), e = new Date(b.ends_at).getTime();
+    if (!isFinite(s) || !isFinite(e)) return;
+    busy.push({ kind: 'block', id: b.id, label: b.label || b.kind, starts: s, ends: e });
+  });
+
+  return { ok: true, busy: busy };
+}
+
+function firstClash(startMs, durMin, busy) {
+  const endMs = startMs + durMin * 60000;
+  const hits = busy.filter((b) => overlapsWindow(startMs, endMs, b.starts, b.ends))
+    .sort((a, b) => a.starts - b.starts);
+  return hits.length ? hits[0] : null;
+}
+
+// The nearest times that genuinely are open, walking outward in quarter hours.
+// Not slots — this op is not grid-bound and neither is its suggestion. Later
+// is offered before earlier at the same distance, because a call that slipped
+// is more often pushed back than pulled forward.
+function nearestOpen(wantMs, durMin, busy, limit) {
+  const out = [];
+  const floor = Date.now() + 5 * 60000;
+  for (let k = 1; k * NEAR_STEP_MIN <= NEAR_SPAN_MIN && out.length < limit; k++) {
+    const cands = [wantMs + k * NEAR_STEP_MIN * 60000, wantMs - k * NEAR_STEP_MIN * 60000];
+    for (let i = 0; i < cands.length && out.length < limit; i++) {
+      const ms = cands[i];
+      if (ms < floor) continue;
+      const h = localHourIn(new Date(ms), TRAINER_TZ);
+      if (h < NEAR_DAY_START || h >= NEAR_DAY_END) continue;
+      if (firstClash(ms, durMin, busy)) continue;
+      out.push(new Date(ms).toISOString());
+    }
+  }
+  return out;
+}
+
+// Which tier a client is on, from their own row. Exactly one, always — the
+// Call access panel keeps weekly_calls and calls_enabled mutually exclusive,
+// and this reads them in the same order the page's own weeklyCallsFor /
+// callsEnabled / callsAreCreditOnly trio does.
+function callTierOf(row) {
+  if (row.weekly_calls === true) return 'weekly';
+  if (row.calls_enabled === true) return 'unlimited';
+  if ((+row.call_credits || 0) > 0) return 'credit';
+  return 'none';
+}
+
+async function readClientRow(URL, SERVICE, code) {
+  const r = await fetch(`${URL}/rest/v1/clients?code=eq.${encodeURIComponent(code)}`
+    + '&select=code,name,calls_enabled,call_credits,weekly_calls,weekly_call_spent_at&limit=1',
+    { headers: svc(SERVICE) });
+  if (!r.ok) return null;
+  const rows = await r.json();
+  return (rows && rows[0]) || null;
+}
+
+// ---- bookCallForClient ------------------------------------------------------
+// args: { client_code, starts_at (ISO instant), duration_minutes?, note?,
+//         dry_run?, force? }
+//
+// dry_run answers the whole picture with 200 and writes nothing — that is what
+// a confirmation card is built from, and what lets Jarvis state the exact time
+// back before anything lands. The real call answers 409 for the same clash,
+// so a caller that skipped the preview still cannot book over someone.
+async function handleBookCallForClient(URL, SERVICE, args, trainerCode) {
+  let code, startMs, durMin, note;
+  try {
+    code = enc_raw(args.client_code);
+    const d = new Date(isoTs(args.starts_at));
+    startMs = d.getTime();
+    durMin = args.duration_minutes == null ? BOOK_DEFAULT_MIN : posInt(args.duration_minutes, 240);
+    note = args.note != null ? nullableStr(args.note, 300) : null;
+  } catch (e) { return json(400, { error: 'bad_arg' }); }
+  if (startMs < Date.now() - 60 * 60000) return json(400, { error: 'in_the_past' });
+
+  try {
+    const row = await readClientRow(URL, SERVICE, code);
+    if (!row) return json(404, { error: 'no_such_client' });
+
+    const pad = (NEAR_SPAN_MIN + 24 * 60) * 60000;
+    const b = await collectBusy(URL, SERVICE, startMs - pad, startMs + pad);
+    if (!b.ok) return json(502, { error: 'availability_unknown', source: b.source });
+
+    const clash = firstClash(startMs, durMin, b.busy);
+    const near = clash ? nearestOpen(startMs, durMin, b.busy, 3) : [];
+
+    // What booking this costs. A trainer booking is an act of authority, not a
+    // purchase: when there is nothing to spend it still books and says so
+    // rather than refusing, so a caller is never told "no" for a client Yusuf
+    // has already decided to see. The preview states it either way, so the
+    // free call is a choice on screen and never a silent one.
+    const tier = callTierOf(row);
+    const now = new Date();
+    let willSpend = 'none', creditNote = null;
+    if (tier === 'weekly') {
+      if (hasWeeklyCreditNow(row.weekly_call_spent_at, now)) willSpend = 'weekly';
+      else creditNote = 'weekly credit already used — this books without one, and theirs still opens '
+        + nextWeeklyBoundaryAfter(now).toISOString();
+    } else if (tier === 'credit') {
+      willSpend = 'credit';
+    } else if (tier === 'none') {
+      creditNote = 'scheduled calls are not part of this plan — this books anyway';
+    }
+
+    const shape = {
+      client_code: row.code, client_name: row.name || row.code,
+      starts_at: new Date(startMs).toISOString(),
+      ends_at: new Date(startMs + durMin * 60000).toISOString(),
+      duration_minutes: durMin, tier: tier, will_spend: willSpend, credit_note: creditNote,
+      conflict: clash ? { kind: clash.kind, client_code: clash.client_code || null,
+        label: clash.label || null, starts_at: new Date(clash.starts).toISOString(),
+        ends_at: new Date(clash.ends).toISOString() } : null,
+      nearest_open: near,
+    };
+
+    if (args.dry_run === true) return json(200, [Object.assign({ preview: true }, shape)]);
+    // force is a deliberate override, not a bypass: the conflict is still
+    // computed and still returned on the booked row, so nothing pretends the
+    // clash wasn't there.
+    if (clash && args.force !== true) {
+      return json(409, { error: 'slot_taken', conflict: shape.conflict, nearest_open: near });
+    }
+
+    const body = {
+      client_code: row.code, trainer_code: trainerCode,
+      starts_at: shape.starts_at, duration_min: durMin,
+      status: 'booked', client_tz: TRAINER_TZ, note: note, spent: willSpend,
+    };
+    let wRes = await fetch(`${URL}/rest/v1/bookings`, {
+      method: 'POST',
+      headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+      body: JSON.stringify(body),
+    });
+    let wText = await wRes.text();
+    // Same schema self-heal the reads carry: `spent` ships in the same pass as
+    // this code and the SQL does not land at the same instant the deploy does.
+    if (!wRes.ok && badColumn(wText) === 'spent') {
+      console.warn('trainer: bookings has no column "spent" — writing without it');
+      delete body.spent;
+      wRes = await fetch(`${URL}/rest/v1/bookings`, {
+        method: 'POST',
+        headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+        body: JSON.stringify(body),
+      });
+      wText = await wRes.text();
+    }
+    if (!wRes.ok) {
+      console.error('trainer: bookCallForClient write failed', wRes.status, wText.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'bookCallForClient', detail: wText.slice(0, 200) });
+    }
+    let landed = [];
+    try { landed = JSON.parse(wText); } catch (e) {}
+    const bookingId = landed[0] && landed[0].id;
+
+    // Spend AFTER the booking exists, and never undo the booking if the spend
+    // races: the call is real and Yusuf made it. A spend that didn't land is
+    // reported as spent:'none' with the reason, which is the truth, rather
+    // than deleting a booking because a credit meter moved underneath it.
+    let spent = 'none', spendError = null;
+    if (willSpend === 'weekly') {
+      const guard = row.weekly_call_spent_at
+        ? `weekly_call_spent_at.eq.${encodeURIComponent(row.weekly_call_spent_at)}`
+        : 'weekly_call_spent_at.is.null';
+      const sRes = await fetch(`${URL}/rest/v1/clients?code=eq.${encodeURIComponent(code)}&or=(${guard})`, {
+        method: 'PATCH',
+        headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+        body: JSON.stringify({ weekly_call_spent_at: now.toISOString() }),
+      });
+      const sText = await sRes.text();
+      let sRows = []; try { sRows = JSON.parse(sText); } catch (e) {}
+      if (sRes.ok && sRows.length) spent = 'weekly';
+      else spendError = 'weekly credit was not spent (it moved under this request)';
+    } else if (willSpend === 'credit') {
+      const cur = +row.call_credits || 0;
+      const sRes = await fetch(`${URL}/rest/v1/clients?code=eq.${encodeURIComponent(code)}&call_credits=eq.${cur}`, {
+        method: 'PATCH',
+        headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+        body: JSON.stringify({ call_credits: cur - 1 }),
+      });
+      const sText = await sRes.text();
+      let sRows = []; try { sRows = JSON.parse(sText); } catch (e) {}
+      if (sRes.ok && sRows.length) spent = 'credit';
+      else spendError = 'call credit was not spent (it moved under this request)';
+    }
+
+    // If the spend landed but `spent` couldn't be stored on the row (column not
+    // migrated yet), cancelCallForClient's recorded-spend path won't see it —
+    // it falls back to the timing test, which is why that fallback exists.
+    // READ IT BACK. return=representation is PostgREST echoing what it wrote;
+    // this is the table answering a fresh question.
+    let confirmed = null;
+    if (bookingId != null) {
+      const rb = await fetch(`${URL}/rest/v1/bookings?id=eq.${encodeURIComponent(bookingId)}`
+        + '&select=id,client_code,trainer_code,starts_at,duration_min,status,note,created_at&limit=1',
+        { headers: svc(SERVICE) });
+      if (rb.ok) { const rows = await rb.json(); confirmed = (rows && rows[0]) || null; }
+    }
+    if (!confirmed) return json(502, { error: 'unconfirmed', op: 'bookCallForClient', booking_id: bookingId || null });
+
+    return json(200, [Object.assign({}, confirmed, {
+      client_name: row.name || row.code, tier: tier, spent: spent,
+      spend_error: spendError, credit_note: creditNote,
+      conflict: shape.conflict, forced: !!(clash && args.force === true),
+    })]);
+  } catch (e) {
+    console.error('trainer: bookCallForClient threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'bookCallForClient' });
+  }
+}
+
+// ---- cancelCallForClient ----------------------------------------------------
+// args: { booking_id } or { client_code, starts_at }
+//
+// Undo for everything above. A voice layer that can book and cannot unbook is
+// a layer that turns a misheard sentence into a standing appointment, so this
+// ships with the booking op rather than after it.
+//
+// THE REFUND IS ONLY EVER GIVEN BACK WHEN IT CAN BE PROVED IT WAS TAKEN:
+//   - bookings.spent says what this op charged. That's authoritative.
+//   - Without it (a client's own booking, or one made before that column
+//     existed), a weekly spend is recognised by TIMING: the client is on the
+//     weekly tier, their weekly_call_spent_at is inside the current week, and
+//     it lands within ten minutes of this booking's created_at. The spend
+//     fires immediately after the booking is created, so that window is a real
+//     link and not a guess — and a later booking moves the stamp, which
+//     correctly makes the earlier booking stop matching.
+//   - A one-off credit with no recorded spend is NOT refunded automatically.
+//     Nothing in the row proves a credit was taken for it, and inventing one
+//     hands out a free call. The answer says refund:'none' with the reason, so
+//     Yusuf can give one back with the "+1 call" control he already has.
+const SPEND_LINK_MS = 10 * 60000;
+
+async function handleCancelCallForClient(URL, SERVICE, args) {
+  try {
+    let path;
+    if (args.booking_id != null) {
+      path = `bookings?id=eq.${encId(args.booking_id)}`;
+    } else {
+      const code = enc(args.client_code);
+      const at = isoTs(args.starts_at);
+      path = `bookings?client_code=eq.${code}&starts_at=eq.${encodeURIComponent(at)}`;
+    }
+    const rRes = await fetch(`${URL}/rest/v1/${path}`
+      + '&select=id,client_code,starts_at,duration_min,status,spent,created_at&limit=2',
+      { headers: svc(SERVICE) });
+    let rText = await rRes.text();
+    let hasSpentCol = true;
+    if (!rRes.ok && badColumn(rText) === 'spent') {
+      hasSpentCol = false;
+      const r2 = await fetch(`${URL}/rest/v1/${path}`
+        + '&select=id,client_code,starts_at,duration_min,status,created_at&limit=2', { headers: svc(SERVICE) });
+      rText = await r2.text();
+      if (!r2.ok) return json(502, { error: 'query_failed', op: 'cancelCallForClient' });
+    } else if (!rRes.ok) {
+      return json(502, { error: 'query_failed', op: 'cancelCallForClient' });
+    }
+    let rows = []; try { rows = JSON.parse(rText); } catch (e) {}
+    if (!rows.length) return json(404, { error: 'no_such_booking' });
+    if (rows.length > 1) return json(409, { error: 'ambiguous', count: rows.length });
+    const bk = rows[0];
+    if (String(bk.status || 'booked') === 'cancelled') {
+      return json(200, [Object.assign({}, bk, { already_cancelled: true, refund: 'none' })]);
+    }
+
+    const client = await readClientRow(URL, SERVICE, bk.client_code);
+    if (!client) return json(404, { error: 'no_such_client' });
+
+    // Decide the refund BEFORE cancelling, off the booking as it stands.
+    let refund = 'none', refundWhy = null;
+    const recorded = hasSpentCol ? (bk.spent || null) : null;
+    if (recorded === 'weekly' || recorded === 'credit') {
+      refund = recorded;
+      refundWhy = 'recorded on the booking';
+    } else if (client.weekly_calls === true && client.weekly_call_spent_at
+        && !hasWeeklyCreditNow(client.weekly_call_spent_at, new Date())) {
+      const made = new Date(bk.created_at).getTime();
+      const spentAt = new Date(client.weekly_call_spent_at).getTime();
+      if (isFinite(made) && isFinite(spentAt) && Math.abs(spentAt - made) <= SPEND_LINK_MS) {
+        refund = 'weekly';
+        refundWhy = 'this booking is the one holding their weekly credit';
+      } else {
+        refundWhy = 'their weekly credit is held by a different booking';
+      }
+    } else if (recorded == null) {
+      refundWhy = 'nothing on this booking records a credit being spent for it';
+    }
+
+    const cRes = await fetch(`${URL}/rest/v1/bookings?id=eq.${encodeURIComponent(bk.id)}`, {
+      method: 'PATCH',
+      headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+      body: JSON.stringify({ status: 'cancelled' }),
+    });
+    const cText = await cRes.text();
+    if (!cRes.ok) {
+      console.error('trainer: cancelCallForClient write failed', cRes.status, cText.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'cancelCallForClient' });
+    }
+
+    let refunded = 'none', refundError = null;
+    if (refund === 'weekly') {
+      // Guarded on the exact stamp just read: if another booking spent it in
+      // between, this clears nothing rather than handing back someone else's.
+      const gRes = await fetch(`${URL}/rest/v1/clients?code=eq.${encodeURIComponent(bk.client_code)}`
+        + `&weekly_call_spent_at=eq.${encodeURIComponent(client.weekly_call_spent_at)}`, {
+        method: 'PATCH',
+        headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+        body: JSON.stringify({ weekly_call_spent_at: null }),
+      });
+      const gText = await gRes.text();
+      let gRows = []; try { gRows = JSON.parse(gText); } catch (e) {}
+      if (gRes.ok && gRows.length) refunded = 'weekly';
+      else refundError = 'weekly credit not returned (it moved under this request)';
+    } else if (refund === 'credit') {
+      const cur = +client.call_credits || 0;
+      const gRes = await fetch(`${URL}/rest/v1/clients?code=eq.${encodeURIComponent(bk.client_code)}&call_credits=eq.${cur}`, {
+        method: 'PATCH',
+        headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+        body: JSON.stringify({ call_credits: cur + 1 }),
+      });
+      const gText = await gRes.text();
+      let gRows = []; try { gRows = JSON.parse(gText); } catch (e) {}
+      if (gRes.ok && gRows.length) refunded = 'credit';
+      else refundError = 'call credit not returned (it moved under this request)';
+    }
+
+    // Read both sides back — the booking AND the account it was charged to.
+    const vb = await fetch(`${URL}/rest/v1/bookings?id=eq.${encodeURIComponent(bk.id)}&select=id,client_code,starts_at,status&limit=1`,
+      { headers: svc(SERVICE) });
+    let after = null;
+    if (vb.ok) { const arr = await vb.json(); after = (arr && arr[0]) || null; }
+    if (!after || String(after.status) !== 'cancelled') {
+      return json(502, { error: 'unconfirmed', op: 'cancelCallForClient', booking_id: bk.id });
+    }
+    const clientAfter = await readClientRow(URL, SERVICE, bk.client_code);
+
+    return json(200, [Object.assign({}, after, {
+      refund: refunded, refund_reason: refundWhy, refund_error: refundError,
+      call_credits: clientAfter ? clientAfter.call_credits : null,
+      weekly_call_spent_at: clientAfter ? clientAfter.weekly_call_spent_at : null,
+    })]);
+  } catch (e) {
+    console.error('trainer: cancelCallForClient threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'cancelCallForClient' });
+  }
+}
+
+// ---- moveVipOccurrence ------------------------------------------------------
+// args: { client_code, date (YYYY-MM-DD, the occurrence as the RULE places it),
+//         action: 'move' | 'skip' | 'restore',
+//         new_time?  (HH:MM, move only), new_date? (move only),
+//         vip_call_id? (only needed when a client holds more than one block) }
+//
+// THE SERIES IS NEVER WRITTEN. Not by this op, not by any op it calls. Blake's
+// row still says 09:30 after tomorrow becomes 09:45, because tomorrow's 09:45
+// lives in a different table and is consulted at expansion time. That is the
+// whole design: an exception is applied where the occurrence is COMPUTED, in
+// all three places that compute one, so the public grid frees the old time,
+// blocks the new one, and her own card reads the new time, from one fact.
+async function handleMoveVipOccurrence(URL, SERVICE, args) {
+  let code, dateStr, action, newTime, newDate, wantId;
+  try {
+    code = enc_raw(args.client_code);
+    dateStr = isoDate(args.date);
+    action = String(args.action || 'move');
+    if (action !== 'move' && action !== 'skip' && action !== 'restore') throw new Error('bad_arg');
+    newTime = args.new_time != null && args.new_time !== '' ? timeLocal(args.new_time) : null;
+    newDate = args.new_date != null && args.new_date !== '' ? isoDate(args.new_date) : null;
+    if (action === 'move' && !newTime && !newDate) throw new Error('bad_arg');
+    wantId = args.vip_call_id != null ? encId(args.vip_call_id) : null;
+  } catch (e) { return json(400, { error: 'bad_arg' }); }
+
+  try {
+    const vRes = await fetch(`${URL}/rest/v1/vip_calls?client_code=eq.${encodeURIComponent(code)}&active=eq.true`
+      + '&select=id,client_code,weekdays,time_local,tz,duration_minutes,start_date,end_date&limit=50',
+      { headers: svc(SERVICE) });
+    if (!vRes.ok) return json(502, { error: 'query_failed', op: 'moveVipOccurrence' });
+    let rules = await vRes.json() || [];
+    if (wantId) rules = rules.filter((r) => String(r.id) === String(wantId));
+    // Only rules that actually fire on that date — naming a date the block
+    // doesn't run is a mistake worth refusing, not a row worth writing.
+    const dayMs = new Date(dateStr + 'T00:00:00.000Z').getTime();
+    const dow = ((new Date(dayMs).getUTCDay() + 6) % 7) + 1;
+    const fits = rules.filter((r) => Array.isArray(r.weekdays) && r.weekdays.includes(dow)
+      && r.start_date <= dateStr && r.end_date >= dateStr);
+    if (!fits.length) return json(404, { error: 'no_occurrence_on_that_date' });
+    if (fits.length > 1) {
+      return json(409, { error: 'ambiguous', candidates: fits.map((r) => ({ vip_call_id: r.id, time_local: r.time_local })) });
+    }
+    const rule = fits[0];
+
+    if (action === 'restore') {
+      const dRes = await fetch(`${URL}/rest/v1/vip_call_exceptions?vip_call_id=eq.${encodeURIComponent(rule.id)}`
+        + `&occurrence_date=eq.${encodeURIComponent(dateStr)}`, {
+        method: 'DELETE',
+        headers: Object.assign({}, svc(SERVICE), { Prefer: 'return=representation' }),
+      });
+      const dText = await dRes.text();
+      if (!dRes.ok) {
+        if (missingTable(dText)) return json(503, { error: 'exceptions_table_missing' });
+        return json(502, { error: 'write_failed', op: 'moveVipOccurrence' });
+      }
+      return json(200, [{ vip_call_id: rule.id, client_code: rule.client_code, occurrence_date: dateStr,
+        action: 'restore', time_local: rule.time_local, tz: rule.tz,
+        at: zonedTimeToUtc(dateStr, rule.time_local, rule.tz).toISOString() }]);
+    }
+
+    const body = {
+      vip_call_id: rule.id,
+      occurrence_date: dateStr,
+      kind: action === 'skip' ? 'skip' : 'move',
+      new_date: action === 'skip' ? null : newDate,
+      new_time_local: action === 'skip' ? null : newTime,
+    };
+    const uRes = await fetch(`${URL}/rest/v1/vip_call_exceptions?on_conflict=vip_call_id,occurrence_date`, {
+      method: 'POST',
+      headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json',
+        Prefer: 'return=representation,resolution=merge-duplicates' }),
+      body: JSON.stringify(body),
+    });
+    const uText = await uRes.text();
+    if (!uRes.ok) {
+      if (missingTable(uText)) return json(503, { error: 'exceptions_table_missing' });
+      console.error('trainer: moveVipOccurrence write failed', uRes.status, uText.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'moveVipOccurrence', detail: uText.slice(0, 200) });
+    }
+
+    // Read it back off the table, then re-expand the rule through the SAME
+    // function the grid and the client's card use, so the answer is the
+    // occurrence as they will actually see it — not as this op meant it.
+    const rb = await fetch(`${URL}/rest/v1/vip_call_exceptions?vip_call_id=eq.${encodeURIComponent(rule.id)}`
+      + `&occurrence_date=eq.${encodeURIComponent(dateStr)}&select=vip_call_id,occurrence_date,kind,new_date,new_time_local&limit=1`,
+      { headers: svc(SERVICE) });
+    if (!rb.ok) return json(502, { error: 'unconfirmed', op: 'moveVipOccurrence' });
+    const back = (await rb.json() || [])[0];
+    if (!back) return json(502, { error: 'unconfirmed', op: 'moveVipOccurrence' });
+
+    const by = {}; by[String(rule.id)] = {}; by[String(rule.id)][dateStr] = back;
+    const occ = expandVipOccurrences([rule], by, dateStr, dateStr).filter((o) => o.rule_date === dateStr);
+    return json(200, [{
+      vip_call_id: rule.id, client_code: rule.client_code, occurrence_date: dateStr,
+      action: back.kind, new_time_local: back.new_time_local, new_date: back.new_date,
+      series_time_local: rule.time_local, tz: rule.tz,
+      at: occ.length ? occ[0].at.toISOString() : null,
+    }]);
+  } catch (e) {
+    console.error('trainer: moveVipOccurrence threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'moveVipOccurrence' });
+  }
+}
+
+// ---- clientPlanSetDay -------------------------------------------------------
+// The first trainer-authored write to ANOTHER client's training_plans. Until
+// now every writer in the app wrote cl.code — the signed-in session's own — and
+// there was no path that pointed one at somebody else. This is that path, and
+// it is deliberately the narrowest one that answers the request that prompted
+// it ("keep Mon–Thu, make Friday a Pilates day"): ONE named day, replaced whole.
+//
+// args: { client_code, day: 'Mon'|..|'Sun', type: string,
+//         exercises: [{n, s, r, v?}], clear_week_override?, dry_run? }
+//
+// NO SPLIT CHANGES, NO DAY-COUNT CHANGES, NO MULTI-DAY EDITS. Those are real
+// requests and they are real separate ops; folding them in here would mean one
+// op whose blast radius nobody can state in a sentence.
+//
+// THE TEMPLATE, NOT THE WEEK OVERRIDE. `plan` is Yusuf's architecture and the
+// thing a client's own week is derived from; week_overrides is where a
+// client's own one-week moves land and is never touched here. When an override
+// already sits on the named day, this SAYS SO rather than writing underneath
+// it — a change the client cannot see is not a change.
+//
+// EXERCISES ARE ALWAYS THE CALLER'S. This function holds no template library
+// on purpose: DAY_TEMPLATES and EX_LIB live in the page, and a second copy
+// here would drift from them the first time either is edited. A caller that
+// wants a known day type materialises it from the page's own tables and sends
+// the result; a caller with no template that fits — which is every request for
+// a Pilates day, because no such template exists — must send an explicit list
+// or be told to ask Yusuf what belongs in the day.
+const PLAN_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+function planDayKey(v) {
+  const s = String(v || '').trim();
+  const hit = PLAN_DAYS.find((d) => d.toLowerCase() === s.toLowerCase());
+  if (!hit) throw new Error('bad_arg');
+  return hit;
+}
+function planExercises(v) {
+  if (v == null) return null;
+  if (!Array.isArray(v)) throw new Error('bad_arg');
+  if (v.length > 20) throw new Error('bad_arg');
+  return v.map((x) => {
+    const n = str(x && x.n, 120);
+    if (!n) throw new Error('bad_arg');
+    const out = { n: n, s: posInt(x.s == null ? 3 : x.s, 20), r: str(x.r == null ? '' : x.r, 40) };
+    // c and v are the exercise library's own fields (a cardio flag and a
+    // variation note). Passed through when given, defaulted when not, never
+    // invented from a name this file cannot look up.
+    out.c = x.c ? 1 : 0;
+    out.v = str(x.v == null ? '' : x.v, 200);
+    return out;
+  });
+}
+// Monday of the current week in the trainer's zone, in the same YYYY-MM-DD
+// shape the page's _tpWeekKeyFor produces. Reported back on every answer so a
+// zone disagreement shows up as a wrong-looking key rather than as a silently
+// cleared week.
+function currentWeekKey() {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: TRAINER_TZ, year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short',
+  });
+  const parts = {};
+  dtf.formatToParts(new Date()).forEach((p) => { if (p.type !== 'literal') parts[p.type] = p.value; });
+  const wdMap = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 };
+  const d = new Date(Date.UTC(+parts.year, +parts.month - 1, +parts.day));
+  d.setUTCDate(d.getUTCDate() - (wdMap[parts.weekday] || 0));
+  return d.toISOString().slice(0, 10);
+}
+
+async function handleClientPlanSetDay(URL, SERVICE, args) {
+  let code, day, type, ex;
+  try {
+    code = enc_raw(args.client_code);
+    day = planDayKey(args.day);
+    type = str(args.type, 60);
+    if (!type) throw new Error('bad_arg');
+    ex = planExercises(args.exercises);
+    if (type.toLowerCase() === 'rest') ex = [];
+    if (ex == null) throw new Error('bad_arg');
+  } catch (e) { return json(400, { error: 'bad_arg' }); }
+
+  try {
+    // ONE ROW PER CLIENT, and that is enforced, not assumed: training_plans
+    // carries a unique index on client_code (idx_training_plans_client — it is
+    // what every writer's on_conflict=client_code targets). So "the row the app
+    // reads" and "the only row" are the same row. Ordered and counted anyway,
+    // so if that ever stops being true this answers ambiguous instead of
+    // picking whichever row PostgREST happened to return first.
+    const rRes = await fetch(`${URL}/rest/v1/training_plans?client_code=eq.${encodeURIComponent(code)}`
+      + '&select=id,client_code,plan,week_overrides,name,weeks&order=id.asc&limit=5', { headers: svc(SERVICE) });
+    if (!rRes.ok) return json(502, { error: 'query_failed', op: 'clientPlanSetDay' });
+    const rows = await rRes.json() || [];
+    if (rows.length > 1) return json(409, { error: 'ambiguous_plan_rows', count: rows.length });
+    // A client with no saved plan has their week DERIVED from their profile
+    // every load. Creating a row here would replace that derived week with a
+    // row containing one day and six holes — every other day would resolve to
+    // nothing. Refuse; the week has to exist before a day of it can be
+    // replaced.
+    if (!rows.length) return json(409, { error: 'no_saved_plan', client_code: code });
+    const row = rows[0];
+
+    let plan = row.plan;
+    if (typeof plan === 'string') { try { plan = JSON.parse(plan); } catch (e) { plan = null; } }
+    if (!plan || typeof plan !== 'object') return json(409, { error: 'plan_unreadable' });
+
+    let ovs = row.week_overrides;
+    if (typeof ovs === 'string') { try { ovs = JSON.parse(ovs); } catch (e) { ovs = {}; } }
+    ovs = ovs && typeof ovs === 'object' ? ovs : {};
+
+    // Everything that would still shadow this day after the write.
+    const weekKey = currentWeekKey();
+    const shadowWeeks = Object.keys(ovs).filter((k) => ovs[k] && ovs[k][day]);
+    const oneOffs = Object.keys(plan).filter((k) => k.charAt(0) === '@');
+
+    const before = plan[day] || null;
+    const after = { type: type, ex: ex };
+
+    if (args.dry_run === true) {
+      return json(200, [{
+        preview: true, client_code: code, day: day,
+        before: before, after: after,
+        week_key: weekKey,
+        shadowed_by_week_override: shadowWeeks,
+        shadowed_now: shadowWeeks.indexOf(weekKey) > -1,
+        one_off_day_keys: oneOffs,
+      }]);
+    }
+
+    const nextPlan = Object.assign({}, plan);
+    nextPlan[day] = after;
+
+    const body = { client_code: code, plan: nextPlan, updated_at: new Date().toISOString() };
+    // clear_week_override is opt-in and only ever touches THIS week and THIS
+    // day. Without it a change can land in the template and stay invisible
+    // behind a client's own override, which is the one outcome that would make
+    // this op look like it worked when it did nothing.
+    let clearedOverride = null;
+    if (args.clear_week_override === true && ovs[weekKey] && ovs[weekKey][day]) {
+      const nextOvs = Object.assign({}, ovs);
+      nextOvs[weekKey] = Object.assign({}, nextOvs[weekKey]);
+      delete nextOvs[weekKey][day];
+      if (!Object.keys(nextOvs[weekKey]).length) delete nextOvs[weekKey];
+      body.week_overrides = nextOvs;
+      clearedOverride = weekKey;
+    }
+    // NEVER created_at — the column means "when this plan was first written",
+    // and every training_plans writer in the app leaves it out for that reason.
+    const wRes = await fetch(`${URL}/rest/v1/training_plans?on_conflict=client_code`, {
+      method: 'POST',
+      headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json',
+        Prefer: 'return=representation,resolution=merge-duplicates' }),
+      body: JSON.stringify(body),
+    });
+    const wText = await wRes.text();
+    if (!wRes.ok) {
+      console.error('trainer: clientPlanSetDay write failed', wRes.status, wText.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'clientPlanSetDay', detail: wText.slice(0, 200) });
+    }
+
+    // THE READ-BACK IS THE PROOF. Not the 2xx, not the echoed representation —
+    // a fresh SELECT, compared field by field against what was sent. JSONB
+    // comes back with its keys in whatever order Postgres chose, so this
+    // compares the values themselves and never two stringified blobs.
+    const vRes = await fetch(`${URL}/rest/v1/training_plans?client_code=eq.${encodeURIComponent(code)}`
+      + '&select=plan,week_overrides&limit=1', { headers: svc(SERVICE) });
+    if (!vRes.ok) return json(502, { error: 'unconfirmed', op: 'clientPlanSetDay' });
+    const vRows = await vRes.json() || [];
+    let stored = vRows[0] && vRows[0].plan;
+    if (typeof stored === 'string') { try { stored = JSON.parse(stored); } catch (e) { stored = null; } }
+    const landed = stored && stored[day];
+    const same = !!landed && String(landed.type) === String(type)
+      && Array.isArray(landed.ex) && landed.ex.length === ex.length
+      && landed.ex.every((e, i) => String(e.n) === String(ex[i].n)
+        && (+e.s || 0) === (+ex[i].s || 0) && String(e.r || '') === String(ex[i].r || ''));
+    if (!same) {
+      return json(502, { error: 'unconfirmed', op: 'clientPlanSetDay', day: day, read_back: landed || null });
+    }
+    // Every other day is still whatever it was — stated, not assumed, because
+    // "keep the normal Mon–Thu" is half of what was asked for.
+    const untouched = {};
+    PLAN_DAYS.forEach((d) => { if (d !== day && stored[d]) untouched[d] = stored[d].type; });
+
+    let storedOvs = vRows[0] && vRows[0].week_overrides;
+    if (typeof storedOvs === 'string') { try { storedOvs = JSON.parse(storedOvs); } catch (e) { storedOvs = {}; } }
+    storedOvs = storedOvs && typeof storedOvs === 'object' ? storedOvs : {};
+    const stillShadowed = Object.keys(storedOvs).filter((k) => storedOvs[k] && storedOvs[k][day]);
+
+    return json(200, [{
+      client_code: code, day: day, day_after: landed,
+      other_days_unchanged: untouched,
+      week_key: weekKey, cleared_week_override: clearedOverride,
+      shadowed_by_week_override: stillShadowed,
+      shadowed_now: stillShadowed.indexOf(weekKey) > -1,
+      one_off_day_keys: oneOffs,
+      confirmed_by_read_back: true,
+    }]);
+  } catch (e) {
+    console.error('trainer: clientPlanSetDay threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'clientPlanSetDay' });
   }
 }
 
@@ -710,6 +1577,14 @@ exports.handler = async (event) => {
     return json(403, { error: 'not_a_trainer' });
   }
 
+  // TRAINER-AUTHORED, read-then-write, past the gate. These act on a NAMED
+  // client, which is exactly why they sit here and not with the three
+  // session-scoped ops above.
+  if (op === 'bookCallForClient') return handleBookCallForClient(URL, SERVICE, args, claims.client_code);
+  if (op === 'cancelCallForClient') return handleCancelCallForClient(URL, SERVICE, args);
+  if (op === 'moveVipOccurrence') return handleMoveVipOccurrence(URL, SERVICE, args);
+  if (op === 'clientPlanSetDay') return handleClientPlanSetDay(URL, SERVICE, args);
+
   // READ. Unchanged from before writes existed, plus one recovery: a select=
   // naming a column that doesn't exist yet (see badColumn above) gets that
   // column dropped and the query retried — looped, not just once, since this
@@ -735,6 +1610,14 @@ exports.handler = async (event) => {
         path = stripped;
       }
       if (!r.ok) {
+        // A table that hasn't been created yet, for the handful of ops whose
+        // table ships with this code rather than ahead of it: [] is the honest
+        // answer (there are genuinely no rows), and it keeps the surface that
+        // reads it from looking broken during a rollout.
+        if (TOLERATE_MISSING[op] && missingTable(text)) {
+          console.warn('trainer: ' + op + ' table not created yet — answering []');
+          return { statusCode: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }, body: '[]' };
+        }
         // The database's own words stay here. The cockpit gets a status, not a stack.
         console.error('trainer: query failed', op, r.status, text.slice(0, 300));
         return json(502, { error: 'query_failed', op: op });
