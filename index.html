@@ -3582,6 +3582,8 @@ body.hasnav #tToday{padding-bottom:96px;}
       <div id="jvMoreMenu">
         <div onclick="jvCloseMore();jvCopyRoster(this)">Copy everyone in term</div>
         <div onclick="jvCloseMore();jvRefresh()">Refresh</div>
+        <div onclick="jvCloseMore();openTrainerBook()">Book a call</div>
+        <div onclick="jvCloseMore();openCallAccess()">Call access</div>
         <div onclick="jvCloseMore();openAvailability()">My hours</div>
         <div onclick="jvCloseMore();jvToggleView()">My App</div>
         <hr>
@@ -4328,6 +4330,7 @@ body.hasnav #tToday{padding-bottom:96px;}
       <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px;">Calls</div>
       <div style="font-size:12px;color:var(--m2);line-height:1.5;margin-bottom:11px;">Who can book you, and when you're available.</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="obtn" style="margin:0;flex:1;min-width:100px;" onclick="openTrainerBook()">Book a call</button>
         <button class="obtn" style="margin:0;flex:1;min-width:100px;" onclick="openCallAccess()">Call access</button>
         <button class="obtn" style="margin:0;flex:1;min-width:100px;" onclick="openAvailability()">My hours</button>
         <button class="obtn" style="margin:0;flex:1;min-width:100px;" onclick="openMyTime()">Block time off</button>
@@ -36523,21 +36526,67 @@ function onCheckinTile(){
 // Soonest occurrence of one vip_calls rule at/after `from`, within the rule's
 // own start_date/end_date. Capped lookahead (366 days) so a far-off end_date
 // can't loop forever.
+// EXCEPTION-AWARE, the same way the public grid and the door are. A single
+// occurrence can be skipped or moved without the rule changing (Blake's
+// Mon-Fri 9:30 becoming 9:45 tomorrow while next week stays 9:30), so the
+// rule's own time_local is a DEFAULT here, not the answer — exactly as the
+// zone offset is. myVipCalls hands each rule its own `exceptions` array so
+// this check is the identical one consult-availability.js makes server-side;
+// one fact, applied in every place an occurrence is computed.
+//
+// Two passes, because a move can carry an occurrence off the day the rule
+// fires: the first walks rule dates from a week BEFORE `from` (so an
+// occurrence moved forward into view isn't missed) and keeps the earliest
+// real instant at or after `from` rather than returning the first match it
+// sees — with moves in play, rule order is not time order. The second is the
+// plain rule scan this function has always done, reached only when the first
+// finds nothing inside its window.
+function _pcOccurrenceOn(row, d, exMap){
+  var ds=d.toISOString().slice(0,10);
+  var e=exMap[ds];
+  if(e && e.kind==='skip') return null;
+  var useDate=(e && e.new_date) ? String(e.new_date).slice(0,10) : ds;
+  var useTime=(e && e.new_time_local) ? String(e.new_time_local).slice(0,5) : String(row.time_local||'');
+  var p=useDate.split('-'), t=useTime.split(':');
+  return _zonedToUtc(+p[0], (+p[1])-1, +p[2], +t[0], +t[1], row.tz);
+}
 function _pcNextVipOccurrence(row, from){
   try{
     var ruleEnd=new Date(row.end_date+'T00:00:00.000Z');
     var ruleStart=new Date(row.start_date+'T00:00:00.000Z');
-    var d=new Date(Math.max(from.getTime(), ruleStart.getTime()));
+    var exMap={};
+    (row.exceptions||[]).forEach(function(x){
+      if(x && x.occurrence_date) exMap[String(x.occurrence_date).slice(0,10)]=x;
+    });
+    var scanFrom=new Date(from.getTime()-7*86400000);
+    var d=new Date(Math.max(scanFrom.getTime(), ruleStart.getTime()));
     d.setUTCHours(0,0,0,0);
-    var t=String(row.time_local||'').split(':');
-    for(var i=0;i<366;i++){
-      if(d.getTime()>ruleEnd.getTime()) return null;
+    var best=null;
+    for(var i=0;i<70;i++){
+      if(d.getTime()>ruleEnd.getTime()) break;
       var dow=((d.getUTCDay()+6)%7)+1;
       if(Array.isArray(row.weekdays) && row.weekdays.indexOf(dow)>-1){
-        var occ=_zonedToUtc(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), +t[0], +t[1], row.tz);
-        if(occ.getTime()>=from.getTime()) return occ;
+        var occ=_pcOccurrenceOn(row, d, exMap);
+        if(occ && occ.getTime()>=from.getTime() && (!best || occ.getTime()<best.getTime())) best=occ;
       }
       d.setUTCDate(d.getUTCDate()+1);
+    }
+    if(best) return best;
+    // Nothing in the next ten weeks — fall back to the long plain scan for a
+    // block that starts much later. Exceptions are near-term by nature (a
+    // trainer moves tomorrow, not a date in June), so the rule alone is the
+    // right answer this far out.
+    var d2=new Date(Math.max(from.getTime(), ruleStart.getTime()));
+    d2.setUTCHours(0,0,0,0);
+    var t2=String(row.time_local||'').split(':');
+    for(var j=0;j<366;j++){
+      if(d2.getTime()>ruleEnd.getTime()) return null;
+      var dow2=((d2.getUTCDay()+6)%7)+1;
+      if(Array.isArray(row.weekdays) && row.weekdays.indexOf(dow2)>-1){
+        var occ2=_zonedToUtc(d2.getUTCFullYear(), d2.getUTCMonth(), d2.getUTCDate(), +t2[0], +t2[1], row.tz);
+        if(occ2.getTime()>=from.getTime()) return occ2;
+      }
+      d2.setUTCDate(d2.getUTCDate()+1);
     }
     return null;
   }catch(e){ return null; }
@@ -44175,7 +44224,11 @@ function renderCallAccess(){
             : 'color:rgba(240,236,228,0.78);border:1px solid var(--border);')
         +'">'+(r.tier==='vip'?'VIP':'1:1')+'</div>'
       +'<div onclick="caGrantCredit(\''+c+'\')" style="flex-shrink:0;font-size:11.5px;font-weight:800;color:var(--gold);border:1px solid rgba(245,197,24,0.34);border-radius:8px;padding:7px 10px;cursor:pointer;">+1 call</div>'
-      +'<div onclick="'+(slot?'':'openStandingSlot(\''+c+'\')')+'" style="flex-shrink:0;font-size:11.5px;font-weight:800;color:'+(slot?'rgba(240,236,228,0.35)':'rgba(240,236,228,0.78)')+';border:1px solid var(--border);border-radius:8px;padding:7px 10px;cursor:'+(slot?'default':'pointer')+';">'+(slot?'Has slot':'Slot')+'</div>'
+      // A client who already holds a slot needs the OTHER half of the feature:
+      // moving or skipping one day of it. This used to be inert and read as a
+      // dead end — the grant form was the only thing the button ever knew.
+      +'<div onclick="'+(slot?'openSlotOccurrences(\''+c+'\')':'openStandingSlot(\''+c+'\')')+'" style="flex-shrink:0;font-size:11.5px;font-weight:800;color:rgba(240,236,228,0.78);border:1px solid var(--border);border-radius:8px;padding:7px 10px;cursor:pointer;">'+(slot?'Edit slot':'Slot')+'</div>'
+      +'<div onclick="openTrainerBook(\''+c+'\')" style="flex-shrink:0;font-size:11.5px;font-weight:800;color:rgba(240,236,228,0.78);border:1px solid var(--border);border-radius:8px;padding:7px 10px;cursor:pointer;">Book</div>'
       +'</div>'
       // Off / Weekly / Unlimited \u2014 one client, exactly one of these three, ever.
       +'<div style="display:flex;gap:3px;background:#1c1c1c;border-radius:9px;padding:3px;margin-top:9px;">'
@@ -44280,6 +44333,352 @@ async function saveStandingSlot(){
   renderCallAccess();
   try{ showToast('Standing slot set for '+((r&&r.name)||code)+(cleared?'':' — weekly flag may need a retry')); }catch(e){}
 }
+// ===== BOOK A CALL FOR A CLIENT (trainer) ==================================
+// Yusuf's own side of the picker. Deliberately NOT slot-bound: the client's
+// picker offers a tidy 30-minute grid because a client needs a choice, and
+// Yusuf agreeing "9:45" with someone over text is real. This takes a clock
+// time and honours it.
+//
+// TIER TWO CONFIRMATION. Nothing is written by the first button. "Check this
+// time" runs the op's own dry_run, which reads every table that could hold a
+// claim on that slot and answers the whole picture; the panel states the
+// resulting call back in plain words \u2014 who, which day, what time, what it
+// costs them \u2014 and only the second button writes. A voice layer routes through
+// exactly the same two steps, which is why the preview lives in the op rather
+// than in this screen.
+var _tbkDraft=null, _tbkPreview=null, _tbkLast=null;
+function openTrainerBook(preCode){
+  if(!cl || (typeof isTrainer==='function' && !isTrainer(cl.code))){ showToast('Trainer only'); return; }
+  var now=new Date(); now.setMinutes(now.getMinutes()+60);
+  _tbkDraft={ code:(preCode||''), date:_tlDateStr(now), time:'09:30', duration:30, note:'' };
+  _tbkPreview=null; _tbkLast=null;
+  var ov=document.getElementById('trainerBookOverlay');
+  if(ov && ov.parentNode) ov.parentNode.removeChild(ov);
+  ov=document.createElement('div');
+  ov.id='trainerBookOverlay';
+  ov.style.cssText='position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-end;justify-content:center;background:rgba(7,7,9,0.92);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);';
+  ov.innerHTML='<div style="width:100%;max-width:430px;max-height:92vh;overflow-y:auto;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;background:#222;border-radius:22px 22px 0 0;padding:16px 18px calc(24px + env(safe-area-inset-bottom,0px));">'
+    +'<div style="width:42px;height:4px;border-radius:2px;background:#3d3d3d;margin:0 auto 15px;"></div>'
+    +'<div style="font-size:19px;font-weight:800;color:var(--text);">Book a call</div>'
+    +'<div style="font-size:12.5px;color:var(--m2);line-height:1.5;margin-top:5px;">Any time you like, not just the slots on their picker. Nothing is booked until you confirm it on the next screen.</div>'
+    +'<div id="tbkBody" style="margin-top:14px;"></div>'
+  +'</div>';
+  document.body.appendChild(ov);
+  renderTrainerBook();
+}
+function _closeTrainerBook(){
+  var o=document.getElementById('trainerBookOverlay'); if(o&&o.parentNode) o.parentNode.removeChild(o);
+}
+function tbkSet(k,v){ if(_tbkDraft) _tbkDraft[k]=v; }
+function _tbkClientOptions(){
+  var codes=Object.keys(CLIENTS).filter(function(c){
+    var r=CLIENTS[c];
+    if(!r || r.isTrainer) return false;
+    if(typeof PERMA_HIDE!=='undefined' && PERMA_HIDE[c]) return false;
+    return r.active!==false;
+  }).sort(function(a,b){ return String(CLIENTS[a].name||a).localeCompare(String(CLIENTS[b].name||b)); });
+  return '<option value="">Pick a client</option>'+codes.map(function(c){
+    return '<option value="'+_escHtml(c)+'"'+(c===_tbkDraft.code?' selected':'')+'>'+_escHtml(CLIENTS[c].name||c)+'</option>';
+  }).join('');
+}
+// The trainer's own zone. The client's card converts to theirs on their screen,
+// same as every other time in this app.
+function _tbkInstant(){
+  try{
+    var p=String(_tbkDraft.date).split('-'), t=String(_tbkDraft.time).split(':');
+    if(p.length!==3 || t.length<2) return null;
+    var d=_zonedToUtc(+p[0], (+p[1])-1, +p[2], +t[0], +t[1], _myTz());
+    return isNaN(d.getTime()) ? null : d;
+  }catch(e){ return null; }
+}
+function _tbkWhen(d){
+  try{
+    return d.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})
+      +' at '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+  }catch(e){ return ''; }
+}
+function renderTrainerBook(){
+  var host=document.getElementById('tbkBody'); if(!host || !_tbkDraft) return;
+  var inst=_tbkInstant();
+  host.innerHTML='<div class="il" style="margin-top:0;">Who</div>'
+    +'<select class="ifield" onchange="tbkSet(\'code\',this.value);renderTrainerBook()" style="margin:0;font-size:14px;">'+_tbkClientOptions()+'</select>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:11px;">'
+      +'<div><div class="il" style="margin-top:0;">Day</div><input class="ifield" type="date" value="'+_escHtml(_tbkDraft.date)+'" oninput="tbkSet(\'date\',this.value);renderTrainerBook()" style="margin:0;text-align:center;font-size:14px;padding-left:6px;padding-right:6px;"></div>'
+      +'<div><div class="il" style="margin-top:0;">Time</div><input class="ifield" type="time" value="'+_escHtml(_tbkDraft.time)+'" oninput="tbkSet(\'time\',this.value);renderTrainerBook()" style="margin:0;text-align:center;font-size:14px;"></div>'
+    +'</div>'
+    // The date field renders in the OS region setting, not anything this page
+    // can set, so the day is echoed unambiguously underneath it.
+    +'<div style="font-size:11.5px;color:rgba(240,236,228,0.62);margin-top:6px;">'
+      +(inst?_escHtml(_tbkWhen(inst)+' \u00b7 your time'):'Pick a real day and time')+'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:11px;">'
+      +'<div><div class="il" style="margin-top:0;">Minutes</div><select class="ifield" onchange="tbkSet(\'duration\',+this.value)" style="margin:0;text-align:center;font-size:14px;">'
+        + [15,30,45,60].map(function(m){ return '<option value="'+m+'"'+(m===_tbkDraft.duration?' selected':'')+'>'+m+'</option>'; }).join('')
+      +'</select></div>'
+      +'<div><div class="il" style="margin-top:0;">Note (yours)</div><input class="ifield" value="'+_escHtml(_tbkDraft.note)+'" oninput="tbkSet(\'note\',this.value)" style="margin:0;font-size:13.5px;"></div>'
+    +'</div>'
+    +'<div style="display:flex;gap:9px;margin-top:15px;">'
+      +'<button onclick="_closeTrainerBook()" style="flex:1;background:transparent;color:var(--m2);border:1px solid var(--border);border-radius:12px;padding:12px;font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit;">Close</button>'
+      +'<button onclick="tbkCheck()" style="flex:1.4;background:var(--gold);color:var(--onaccent);border:none;border-radius:12px;padding:12px;font-size:13.5px;font-weight:800;cursor:pointer;font-family:inherit;">Check this time</button>'
+    +'</div>'
+    +'<div id="tbkOut" style="margin-top:14px;"></div>';
+  if(_tbkPreview) _tbkRenderPreview();
+  if(_tbkLast) _tbkRenderBooked();
+}
+async function tbkCheck(){
+  if(!_tbkDraft || !_tbkDraft.code){ showToast('Pick a client first'); return; }
+  var inst=_tbkInstant();
+  if(!inst){ showToast('Pick a real day and time'); return; }
+  _tbkLast=null;
+  var out=document.getElementById('tbkOut');
+  if(out) out.innerHTML='<div style="font-size:12.5px;color:var(--m2);padding:6px 0;">Checking that time\u2026</div>';
+  var w=await trainerWrite('bookCallForClient',{
+    client_code:_tbkDraft.code, starts_at:inst.toISOString(),
+    duration_minutes:_tbkDraft.duration, note:_tbkDraft.note||null, dry_run:true
+  });
+  if(!w.ok || !w.rows[0]){
+    _tbkPreview=null;
+    if(out) out.innerHTML='<div style="font-size:12.5px;color:var(--gold);line-height:1.5;padding:6px 0;">Could not check that time. Nothing was booked. Try again in a moment.</div>';
+    return;
+  }
+  _tbkPreview=w.rows[0];
+  _tbkRenderPreview();
+}
+function _tbkNiceIso(iso){ try{ return _tbkWhen(new Date(iso)); }catch(e){ return iso; } }
+function _tbkConflictLine(c){
+  if(!c) return '';
+  var who=c.client_code ? ((CLIENTS[c.client_code]&&CLIENTS[c.client_code].name)||c.client_code) : '';
+  if(c.kind==='booking') return 'A call with '+_escHtml(who)+' is already on that time.';
+  if(c.kind==='vip_call') return _escHtml(who)+'\u2019s standing call is on that time.';
+  if(c.kind==='consult') return 'A booked consult is on that time.';
+  if(c.kind==='block') return 'Your own time off'+(c.label?(' ('+_escHtml(c.label)+')'):'')+' covers that time.';
+  return 'Something else is already on that time.';
+}
+function _tbkRenderPreview(){
+  var out=document.getElementById('tbkOut'); if(!out || !_tbkPreview) return;
+  var p=_tbkPreview;
+  var costs = p.will_spend==='weekly' ? 'Uses their weekly check-in call.'
+    : p.will_spend==='credit' ? 'Uses one of their call credits.'
+    : p.tier==='unlimited' ? 'They book whenever, so this costs them nothing.'
+    : 'This costs them nothing.';
+  var html='<div style="background:#1a1a1a;border:1px solid '+(p.conflict?'rgba(245,197,24,0.45)':'rgba(240,236,228,0.14)')+';border-radius:14px;padding:14px;">'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:rgba(240,236,228,0.5);">'
+      +(p.conflict?'That time is taken':'Confirm this call')+'</div>'
+    +'<div style="font-size:15px;font-weight:800;color:var(--text);margin-top:7px;">'+_escHtml(p.client_name||p.client_code)+'</div>'
+    +'<div style="font-size:13.5px;color:var(--text);margin-top:3px;">'+_escHtml(_tbkNiceIso(p.starts_at))+'</div>'
+    +'<div style="font-size:12px;color:var(--m2);margin-top:3px;">'+p.duration_minutes+' minutes \u00b7 your time</div>';
+  if(p.conflict){
+    html+='<div style="font-size:12.5px;color:var(--gold);line-height:1.5;margin-top:10px;">'+_tbkConflictLine(p.conflict)+'</div>';
+    if((p.nearest_open||[]).length){
+      html+='<div style="font-size:11.5px;color:rgba(240,236,228,0.62);margin-top:11px;">Nearest times that are actually open:</div>'
+        +'<div style="display:flex;flex-wrap:wrap;gap:7px;margin-top:7px;">'
+        + p.nearest_open.map(function(iso){
+            var d=new Date(iso);
+            return '<div onclick="tbkTake(\''+iso+'\')" style="cursor:pointer;background:#242424;border:1px solid rgba(240,236,228,0.16);border-radius:9px;padding:8px 11px;font-size:12.5px;font-weight:700;color:#f0ece4;">'
+              +_escHtml(d.toLocaleDateString('en-US',{weekday:'short'})+' '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}))+'</div>';
+          }).join('')
+        +'</div>';
+    } else {
+      html+='<div style="font-size:11.5px;color:rgba(240,236,228,0.62);margin-top:9px;">Nothing else is open within four hours of it either.</div>';
+    }
+  } else {
+    html+='<div style="font-size:12.5px;color:var(--m2);line-height:1.5;margin-top:10px;">'+_escHtml(costs)+'</div>';
+  }
+  if(p.credit_note){
+    html+='<div style="font-size:12px;color:var(--gold);line-height:1.5;margin-top:8px;">'
+      +(p.tier==='none'
+        ? 'Scheduled calls are not part of their plan. This books anyway.'
+        : 'Their weekly call is already used this week. This books anyway and does not use one.')+'</div>';
+  }
+  html+='<div style="display:flex;gap:9px;margin-top:14px;">'
+    +'<button onclick="_tbkPreview=null;renderTrainerBook()" style="flex:1;background:transparent;color:var(--m2);border:1px solid var(--border);border-radius:12px;padding:11px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;">Back</button>'
+    +'<button onclick="tbkBook('+(p.conflict?'true':'false')+')" style="flex:1.4;background:'+(p.conflict?'transparent':'var(--gold)')+';color:'+(p.conflict?'var(--gold)':'var(--onaccent)')+';border:'+(p.conflict?'1px solid rgba(245,197,24,0.5)':'none')+';border-radius:12px;padding:11px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;">'
+      +(p.conflict?'Book it anyway':'Book it')+'</button>'
+  +'</div></div>';
+  out.innerHTML=html;
+}
+function tbkTake(iso){
+  try{
+    var d=new Date(iso);
+    _tbkDraft.date=_tlDateStr(d);
+    _tbkDraft.time=('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
+    _tbkPreview=null;
+    renderTrainerBook();
+    tbkCheck();
+  }catch(e){}
+}
+async function tbkBook(force){
+  if(!_tbkPreview) return;
+  var out=document.getElementById('tbkOut');
+  if(out) out.innerHTML='<div style="font-size:12.5px;color:var(--m2);padding:6px 0;">Booking\u2026</div>';
+  var w=await trainerWrite('bookCallForClient',{
+    client_code:_tbkDraft.code, starts_at:_tbkPreview.starts_at,
+    duration_minutes:_tbkDraft.duration, note:_tbkDraft.note||null, force:!!force
+  });
+  if(!w.ok || !w.rows[0]){
+    // A 409 here means the slot went in the seconds between the check and the
+    // tap. Re-check rather than claim anything either way.
+    _tbkPreview=null;
+    if(out) out.innerHTML='<div style="font-size:12.5px;color:var(--gold);line-height:1.5;padding:6px 0;">That did not go through, and nothing was booked. Check the time again.</div>';
+    return;
+  }
+  _tbkLast=w.rows[0]; _tbkPreview=null;
+  try{ _bookCache=null; _safetyBusyCache=null; }catch(e){}
+  _tbkRenderBooked();
+}
+function _tbkRenderBooked(){
+  var out=document.getElementById('tbkOut'); if(!out || !_tbkLast) return;
+  var b=_tbkLast;
+  var spent = b.spent==='weekly' ? 'Their weekly check-in call was used.'
+    : b.spent==='credit' ? 'One call credit was used.'
+    : 'Nothing was taken off their plan.';
+  out.innerHTML='<div style="background:#1a1a1a;border:1px solid rgba(245,197,24,0.35);border-radius:14px;padding:14px;">'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:var(--gold);">Booked</div>'
+    +'<div style="font-size:15px;font-weight:800;color:var(--text);margin-top:7px;">'+_escHtml(b.client_name||b.client_code)+'</div>'
+    +'<div style="font-size:13.5px;color:var(--text);margin-top:3px;">'+_escHtml(_tbkNiceIso(b.starts_at))+'</div>'
+    +'<div style="font-size:12px;color:var(--m2);margin-top:6px;line-height:1.5;">'+_escHtml(spent)
+      +(b.spend_error?(' '+_escHtml(b.spend_error)+'.'):'')+' It is on their calls card now.</div>'
+    +'<div style="display:flex;gap:9px;margin-top:13px;">'
+      +'<button onclick="tbkUndo('+(b.id||0)+')" style="flex:1;background:transparent;color:var(--m2);border:1px solid var(--border);border-radius:12px;padding:11px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;">Undo this</button>'
+      +'<button onclick="_closeTrainerBook()" style="flex:1;background:var(--gold);color:var(--onaccent);border:none;border-radius:12px;padding:11px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;">Done</button>'
+    +'</div></div>';
+}
+async function tbkUndo(id){
+  if(!id) return;
+  var w=await trainerWrite('cancelCallForClient',{booking_id:id});
+  if(!w.ok || !w.rows[0]){ showToast('Could not undo that \u2014 it is still booked'); return; }
+  var r=w.rows[0];
+  try{ _bookCache=null; _safetyBusyCache=null; }catch(e){}
+  // Keep the roster's own copy in step so Call access reads right immediately.
+  try{
+    var rec=CLIENTS[_tbkDraft&&_tbkDraft.code];
+    if(rec){
+      if(r.call_credits!=null) rec.call_credits=+r.call_credits;
+      rec.weekly_call_spent_at=r.weekly_call_spent_at||null;
+    }
+  }catch(e){}
+  _tbkLast=null; _tbkPreview=null;
+  renderTrainerBook();
+  showToast(r.refund==='weekly' ? 'Cancelled, and their weekly call is back'
+    : r.refund==='credit' ? 'Cancelled, and their credit is back'
+    : 'Cancelled');
+}
+
+// ===== ONE OCCURRENCE OF A STANDING SLOT (trainer) =========================
+// Move or skip a single day of a recurring block without touching the series.
+// Blake's Mon-Fri 9:30 becoming 9:45 tomorrow, with next week still 9:30, is
+// the case this exists for.
+//
+// The series row is never written by anything on this screen. An exception is
+// its own row against (block, date), and every place that computes an
+// occurrence - the public grid, the door, her own calls card - applies it at
+// computation time. That is why one write frees the old slot, blocks the new
+// one, and changes what she sees, all at once.
+var _socState=null;
+async function openSlotOccurrences(code){
+  if(!cl || (typeof isTrainer==='function' && !isTrainer(cl.code))){ showToast('Trainer only'); return; }
+  var rows=(window._caVipMap||{})[code]||[];
+  if(!rows.length){ showToast('No standing slot for them'); return; }
+  _socState={code:code, row:rows[0], exc:{}, busy:false};
+  var ov=document.getElementById('slotOccOverlay');
+  if(ov && ov.parentNode) ov.parentNode.removeChild(ov);
+  ov=document.createElement('div');
+  ov.id='slotOccOverlay';
+  ov.style.cssText='position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-end;justify-content:center;background:rgba(7,7,9,0.92);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);';
+  ov.innerHTML='<div style="width:100%;max-width:430px;max-height:92vh;overflow-y:auto;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;background:#222;border-radius:22px 22px 0 0;padding:16px 18px calc(24px + env(safe-area-inset-bottom,0px));">'
+    +'<div style="width:42px;height:4px;border-radius:2px;background:#3d3d3d;margin:0 auto 15px;"></div>'
+    +'<div style="font-size:19px;font-weight:800;color:var(--text);">'+_escHtml((CLIENTS[code]&&CLIENTS[code].name)||code)+'\u2019s standing call</div>'
+    +'<div id="socSub" style="font-size:12.5px;color:var(--m2);line-height:1.5;margin-top:5px;"></div>'
+    +'<div id="socBody" style="margin-top:14px;">Loading\u2026</div>'
+    +'<button onclick="_closeSlotOcc()" style="margin-top:14px;width:100%;background:transparent;color:var(--m2);border:1px solid var(--border);border-radius:12px;padding:12px;font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit;">Done</button>'
+  +'</div>';
+  document.body.appendChild(ov);
+  await _socLoad();
+}
+function _closeSlotOcc(){
+  var o=document.getElementById('slotOccOverlay'); if(o&&o.parentNode) o.parentNode.removeChild(o);
+  _socState=null;
+}
+async function _socLoad(){
+  if(!_socState) return;
+  var rows=await trainerOp('vipCallExceptions',{vip_call_id:_socState.row.id});
+  var m={};
+  (rows||[]).forEach(function(x){ if(x && x.occurrence_date) m[String(x.occurrence_date).slice(0,10)]=x; });
+  _socState.exc=m;
+  renderSlotOcc();
+}
+// The next N dates the RULE fires, each shown with what it actually resolves
+// to once its exception (if any) is applied. Keyed on the rule's own date, not
+// the moved one, because that pair is what an exception row is written against.
+function _socDates(row, n){
+  var out=[], d=new Date(); d.setUTCHours(0,0,0,0);
+  var start=new Date(row.start_date+'T00:00:00.000Z');
+  if(start.getTime()>d.getTime()) d=start;
+  var end=new Date(row.end_date+'T00:00:00.000Z');
+  for(var i=0;i<120 && out.length<n;i++){
+    if(d.getTime()>end.getTime()) break;
+    var dow=((d.getUTCDay()+6)%7)+1;
+    if(Array.isArray(row.weekdays) && row.weekdays.indexOf(dow)>-1) out.push(d.toISOString().slice(0,10));
+    d.setUTCDate(d.getUTCDate()+1);
+  }
+  return out;
+}
+function _socFmt(ds, time, tz){
+  try{
+    var p=ds.split('-'), t=String(time||'').split(':');
+    var d=_zonedToUtc(+p[0], (+p[1])-1, +p[2], +t[0], +t[1], tz);
+    return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})
+      +' \u00b7 '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+  }catch(e){ return ds; }
+}
+function renderSlotOcc(){
+  var host=document.getElementById('socBody'); if(!host || !_socState) return;
+  var row=_socState.row, exc=_socState.exc;
+  var sub=document.getElementById('socSub');
+  if(sub) sub.innerHTML='Every week at '+_escHtml(_caSlotLabel(row))+'. Changing one day here never changes the rest.';
+  var dates=_socDates(row, 8);
+  if(!dates.length){ host.innerHTML='<div style="font-size:13px;color:var(--muted);">Nothing left on this block.</div>'; return; }
+  host.innerHTML=dates.map(function(ds){
+    var e=exc[ds];
+    var state = e ? (e.kind==='skip'?'skip':'move') : 'rule';
+    var line = state==='skip' ? 'Skipped'
+      : state==='move' ? ('Moved to '+_socFmt(e.new_date||ds, e.new_time_local||row.time_local, row.tz))
+      : _socFmt(ds, row.time_local, row.tz);
+    return '<div style="padding:11px 2px;border-bottom:1px solid #2b2b2b;">'
+      +'<div style="display:flex;align-items:center;gap:9px;">'
+        +'<div style="flex:1;min-width:0;">'
+          +'<div style="font-size:13.5px;font-weight:700;color:'+(state==='rule'?'var(--text)':'var(--gold)')+';">'+_escHtml(line)+'</div>'
+          +(state!=='rule'?('<div style="font-size:11px;color:rgba(240,236,228,0.5);margin-top:2px;">Normally '+_escHtml(_socFmt(ds, row.time_local, row.tz))+'</div>'):'')
+        +'</div>'
+        +(state==='rule'
+          ? '<div onclick="socSkip(\''+ds+'\')" style="flex-shrink:0;font-size:11.5px;font-weight:800;color:rgba(240,236,228,0.78);border:1px solid var(--border);border-radius:8px;padding:7px 10px;cursor:pointer;">Skip</div>'
+          : '<div onclick="socRestore(\''+ds+'\')" style="flex-shrink:0;font-size:11.5px;font-weight:800;color:rgba(240,236,228,0.78);border:1px solid var(--border);border-radius:8px;padding:7px 10px;cursor:pointer;">Put back</div>')
+      +'</div>'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-top:8px;">'
+        +'<input class="ifield" type="time" id="socT_'+ds+'" value="'+_escHtml((e&&e.new_time_local)||row.time_local)+'" style="margin:0;flex:1;padding:8px 10px;text-align:center;font-size:13px;">'
+        +'<div onclick="socMove(\''+ds+'\')" style="flex-shrink:0;font-size:11.5px;font-weight:800;color:var(--gold);border:1px solid rgba(245,197,24,0.34);border-radius:8px;padding:8px 12px;cursor:pointer;">Move</div>'
+      +'</div>'
+    +'</div>';
+  }).join('');
+}
+async function _socWrite(args, okMsg){
+  if(!_socState || _socState.busy) return;
+  _socState.busy=true;
+  var w=await trainerWrite('moveVipOccurrence', Object.assign({client_code:_socState.code, vip_call_id:_socState.row.id}, args));
+  _socState.busy=false;
+  if(!w.ok || !w.rows[0]){ showToast('Could not change that day \u2014 nothing moved'); return; }
+  try{ _safetyBusyCache=null; }catch(e){}
+  await _socLoad();
+  showToast(okMsg);
+}
+function socSkip(ds){ _socWrite({date:ds, action:'skip'}, 'That day is off'); }
+function socRestore(ds){ _socWrite({date:ds, action:'restore'}, 'Back to the usual time'); }
+function socMove(ds){
+  var el=document.getElementById('socT_'+ds);
+  var t=el?el.value:'';
+  if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(t||''))){ showToast('Pick a time'); return; }
+  _socWrite({date:ds, action:'move', new_time:t}, 'Moved, just that day');
+}
+
 // Through the door now, not the public key \u2014 clients?code=eq... went dark with
 // the rest of the lock. trainerWrite reads the row back before saying ok, so a
 // failure here is a real one, not a guess. No more sqPush fallback: that used

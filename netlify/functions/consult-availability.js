@@ -63,9 +63,43 @@ function zonedTimeToUtc(dateStr, timeStr, tz) {
 }
 function isoDateStr(d) { return d.toISOString().slice(0, 10); }
 
+// Per-occurrence exceptions, as {vip_call_id: {occurrence_date: row}}. Fail-soft
+// in both directions and for the same reason the whole vip union is: a table
+// that hasn't been created yet, or a read that errors, must never take down the
+// grid consult_requests already serves on its own. What it costs when this
+// returns empty is one moved occurrence still showing at its old time on the
+// PUBLIC grid — a stranger could be offered a slot Yusuf has moved into. That's
+// the same exposure the grid had before exceptions existed at all, so it is a
+// return to the previous behaviour, never worse than it.
+async function vipExceptions(URL, SERVICE, ids) {
+  if (!ids || !ids.length) return {};
+  try {
+    const path = 'vip_call_exceptions?select=vip_call_id,occurrence_date,kind,new_date,new_time_local'
+      + `&vip_call_id=in.(${ids.map((i) => encodeURIComponent(i)).join(',')})&limit=2000`;
+    const r = await fetch(`${URL}/rest/v1/${path}`, {
+      headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE },
+    });
+    if (!r.ok) {
+      console.warn('consult-availability: vip_call_exceptions unavailable', r.status);
+      return {};
+    }
+    const rows = await r.json();
+    const by = {};
+    (rows || []).forEach((x) => {
+      const k = String(x.vip_call_id);
+      by[k] = by[k] || {};
+      by[k][String(x.occurrence_date).slice(0, 10)] = x;
+    });
+    return by;
+  } catch (e) {
+    console.error('consult-availability: vip_call_exceptions threw', e && e.message);
+    return {};
+  }
+}
+
 async function vipCallOccurrences(URL, SERVICE, from, to) {
   try {
-    const path = 'vip_calls?select=weekdays,time_local,tz,start_date,end_date'
+    const path = 'vip_calls?select=id,weekdays,time_local,tz,start_date,end_date'
       + '&active=eq.true'
       + `&start_date=lte.${encodeURIComponent(to)}&end_date=gte.${encodeURIComponent(from)}`;
     const r = await fetch(`${URL}/rest/v1/${path}`, {
@@ -76,19 +110,42 @@ async function vipCallOccurrences(URL, SERVICE, from, to) {
       return [];
     }
     const rows = await r.json();
+    const excBy = await vipExceptions(URL, SERVICE, (rows || []).map((x) => x.id));
     const out = [];
     const rangeStart = new Date(from + 'T00:00:00.000Z');
     const rangeEnd = new Date(to + 'T00:00:00.000Z');
+    // A move can carry an occurrence onto a date the rule doesn't fire, so the
+    // scan runs a week wider than the question and the results are trimmed
+    // after — otherwise an occurrence moved INTO this range from just outside
+    // it would be missed, and the public grid would offer a slot Yusuf is in.
+    // The trim keeps a day of slack either side; a busy instant outside the
+    // asked-for range costs nothing (the picker matches exact instants) while
+    // a missing one costs a double-booked stranger.
+    const PAD = 7 * 86400000;
+    const scanStart = new Date(rangeStart.getTime() - PAD);
+    const scanEnd = new Date(rangeEnd.getTime() + PAD);
+    const keepFrom = rangeStart.getTime() - 86400000;
+    const keepTo = rangeEnd.getTime() + 2 * 86400000;
     (rows || []).forEach((row) => {
       const rowStart = new Date(row.start_date + 'T00:00:00.000Z');
       const rowEnd = new Date(row.end_date + 'T00:00:00.000Z');
-      const spanStart = rowStart.getTime() > rangeStart.getTime() ? rowStart : rangeStart;
-      const spanEnd = rowEnd.getTime() < rangeEnd.getTime() ? rowEnd : rangeEnd;
+      const spanStart = rowStart.getTime() > scanStart.getTime() ? rowStart : scanStart;
+      const spanEnd = rowEnd.getTime() < scanEnd.getTime() ? rowEnd : scanEnd;
+      const exc = excBy[String(row.id)] || {};
       for (let t = spanStart.getTime(); t <= spanEnd.getTime(); t += 86400000) {
         const d = new Date(t);
         const dow = ((d.getUTCDay() + 6) % 7) + 1; // 1=Mon..7=Sun — same contract as movement_prefs
         if (!Array.isArray(row.weekdays) || !row.weekdays.includes(dow)) continue;
-        out.push(zonedTimeToUtc(isoDateStr(d), row.time_local, row.tz).toISOString());
+        const ds = isoDateStr(d);
+        const e = exc[ds];
+        // A skipped occurrence FREES its slot — that is half of what moving one
+        // means, and the half a rule alone can never express.
+        if (e && e.kind === 'skip') continue;
+        const useDate = (e && e.new_date) ? String(e.new_date).slice(0, 10) : ds;
+        const useTime = (e && e.new_time_local) ? String(e.new_time_local).slice(0, 5) : row.time_local;
+        const at = zonedTimeToUtc(useDate, useTime, row.tz);
+        if (at.getTime() < keepFrom || at.getTime() > keepTo) continue;
+        out.push(at.toISOString());
       }
     });
     return out;
