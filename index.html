@@ -8895,6 +8895,7 @@ async function _jvFeedCommand(text){
   var m;
   // An answer to a held write, then a statement of fact — both before any model.
   try{ var _pr=await _jvPendingReply(t); if(_pr){ _jvSay(_pr.replace(/\n/g,'<br>')); _jvSpeakLine(_pr); return true; } }catch(e){ console.error('pending reply',e); }
+  try{ var _bk=await _jvBookCommand(t); if(_bk){ _jvSay(_bk); _jvSpeakLine(_bk); return true; } }catch(e){ console.error('book command',e); }
   try{ var _cc=await _ccHandleStatement(t); if(_cc){ _jvSay(_cc); _jvSpeakLine(_cc); return true; } }catch(e){ console.error('contact command',e); }
   var kindWord=function(w){ return /workout|session|training|lift|pull|push|legs/i.test(w||'') ? 'wo' : (/meal|food|breakfast|lunch|dinner|ate/i.test(w||'') ? 'food' : null); };
 
@@ -13495,6 +13496,75 @@ async function _postMomentText(t){
   try{ var w=await trainerWrite('momentPost',{text:t}); if(w.ok && w.rows[0] && w.rows[0].id!=null) saved=true; }catch(e){}
   if(!saved){ var a=_localMoments(); a.unshift({text:t, ts:Date.now()}); _saveLocalMoments(a); }
 }
+// ===== WHEN, FROM A SENTENCE ==============================================
+// Resolved in code, before any model sees it, for the same reason names are:
+// a model will happily invent a plausible Tuesday. A MISSING TIME NEVER
+// BECOMES NOW — "book Blake tomorrow" has no hour in it, and guessing one puts
+// a real appointment on two calendars at an hour nobody said.
+var _JV_TOD={morning:9, noon:12, afternoon:14, evening:18, night:19, tonight:19};
+function _jvParseWhen(text, now){
+  var t=' '+String(text||'').toLowerCase().replace(/[,]/g,' ')+' ';
+  var base=new Date(now||Date.now()); base.setSeconds(0,0);
+  var day=null, sawDay=false;
+
+  var mIn=/\bin\s+(\d+|a|one|two|three|four|five|six|seven)\s+days?\b/.exec(t);
+  var words={a:1,one:1,two:2,three:3,four:4,five:5,six:6,seven:7};
+  var mFrom=/\b(\d+|a|one|two|three|four|five|six|seven)\s+days?\s+from\s+now\b/.exec(t);
+  if(mIn||mFrom){
+    var w=(mIn||mFrom)[1];
+    var n=words[w]!=null?words[w]:parseInt(w,10);
+    if(isFinite(n)){ day=new Date(base); day.setDate(day.getDate()+n); sawDay=true; }
+  }
+  if(!sawDay && /\btomorrow\b/.test(t)){ day=new Date(base); day.setDate(day.getDate()+1); sawDay=true; }
+  if(!sawDay && /\btoday\b/.test(t)){ day=new Date(base); sawDay=true; }
+  if(!sawDay){
+    var names={sunday:0,monday:1,tuesday:2,wednesday:3,thursday:4,friday:5,saturday:6};
+    for(var k in names){
+      if(new RegExp('\\b'+k.slice(0,3)+'[a-z]*\\b').test(t) && new RegExp('\\b'+k+'\\b|\\b'+k.slice(0,3)+'\\b').test(t)){
+        var want=names[k], d=new Date(base), fwd=(want-d.getDay()+7)%7;
+        // "Tuesday" said on a Tuesday means next Tuesday, not five minutes ago.
+        if(fwd===0) fwd=7;
+        if(/\bnext\s+'+k+'\b/.test(t)) fwd+=7;
+        d.setDate(d.getDate()+fwd); day=d; sawDay=true; break;
+      }
+    }
+  }
+
+  // The clock. Explicit only — no hour is inferred from nothing.
+  var hh=null, mm=0, sawTime=false;
+  var mt=/\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/.exec(t) || /\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/.exec(t);
+  if(mt){
+    hh=parseInt(mt[1],10); mm=mt[2]?parseInt(mt[2],10):0;
+    var ap=mt[3]||'';
+    if(ap==='pm' && hh<12) hh+=12;
+    if(ap==='am' && hh===12) hh=0;
+    // No am/pm on a working hour: a coach's day is not at 2am.
+    if(!ap && hh>=1 && hh<=7) hh+=12;
+    sawTime=(hh>=0&&hh<=23&&mm>=0&&mm<=59);
+  }
+  if(!sawTime){
+    for(var w2 in _JV_TOD){
+      if(new RegExp('\\b'+w2+'\\b').test(t)){ hh=_JV_TOD[w2]; mm=0; sawTime=true; break; }
+    }
+  }
+  // "same time" only means something with a reference, which the caller owns.
+  if(!sawTime && /\bsame\s+time\b/.test(t)) return {needsTime:true, day:(sawDay?day:null), sameTime:true};
+  if(!sawDay && !sawTime) return null;
+  if(!sawTime) return {needsTime:true, day:day};
+  if(!sawDay){ day=new Date(base); }        // a bare time means today...
+  day.setHours(hh, mm, 0, 0);
+  if(!sawDay && day.getTime()<base.getTime()){ day.setDate(day.getDate()+1); }  // ...unless it has gone
+  return {ts:day.getTime(), iso:new Date(day.getTime()).toISOString(), label:_jvWhenLabel(day)};
+}
+function _jvWhenLabel(d){
+  try{
+    var a=new Date(d); a.setHours(0,0,0,0);
+    var b=new Date(); b.setHours(0,0,0,0);
+    var diff=Math.round((a-b)/86400000);
+    var day=(diff===0?'today':(diff===1?'tomorrow':d.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})));
+    return day+' at '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+  }catch(e){ return ''; }
+}
 // ===== TIER TWO: A NUMBER GETS STATED BACK AND WAITS ======================
 // The assistant could log a weight, a meal and a step count against whichever
 // client it decided a sentence was about, immediately, with no confirmation and
@@ -13669,6 +13739,36 @@ function _jvIsNo(t){ return /^\s*(n|no|nope|nah|cancel|stop|don'?t|do not|wrong|
 // the door answers with the row it wrote, so "it saved" is something this can
 // actually see rather than infer from the absence of an error.
 async function _jvCommitPending(p){
+  if(p.kind==='booking'){
+    // "Yes" after a clash means the ALTERNATIVE the door offered, not the time
+    // that was taken. Doubling up needs its own sentence.
+    var iso=(p.conflict && p.offer) ? p.offer : p.iso;
+    var w=await trainerWrite('bookCallForClient',{client_code:p.code, starts_at:iso, force:!!p.force});
+    window._jvPendingWrite=null;
+    if(!w.ok){
+      var row=(w.rows&&w.rows[0])||null;
+      if(w.status===409 || (row&&row.error==='slot_taken')) return 'That time went while we were talking. Nothing booked — say it again and I’ll re-check.';
+      return 'That did not book. Nothing was written for '+p.name+'.';
+    }
+    var got=(w.rows&&w.rows[0])||{};
+    var when=_jvWhenLabel(new Date(got.starts_at||iso));
+    var spent=got.spent||got.will_spend||'none';
+    try{ jvActRecord('Booked '+p.name+', '+when, {kind:'booking', code:p.code, id:(got.id!=null?got.id:null), starts_at:(got.starts_at||iso)}); }catch(e){}
+    try{ if(typeof loadBookings==='function') loadBookings(true); }catch(e){}
+    try{ jvPaneRender(); }catch(e){}
+    return '✓ Booked '+p.name+' for '+when
+      + (spent==='weekly' ? ' — that used their weekly call.' : (spent==='credit' ? ' — that used one credit.' : ''));
+  }
+  if(p.kind==='vipmove'){
+    var w2=await trainerWrite('moveVipOccurrence',{client_code:p.code, date:p.date,
+      action:(p.skip?'skip':'move'), new_time:(p.skip?undefined:p.time)});
+    window._jvPendingWrite=null;
+    if(!w2.ok) return 'That did not change. '+p.name+'’s series is untouched.';
+    try{ jvActRecord((p.skip?'Skipped ':'Moved ')+p.name+'’s call on '+p.date+(p.skip?'':(' to '+p.time)), null); }catch(e){}
+    try{ jvPaneRender(); }catch(e){}
+    return '✓ '+(p.skip?('Skipped '+p.name+'’s call on '+p.date):(p.name+'’s call on '+p.date+' is now '+p.time))
+      +' — that day only, the series is unchanged.';
+  }
   if(p.kind==='workingon'){
     var saved=null;
     try{ saved=await sbInsertReturning('client_notes',
@@ -13706,12 +13806,106 @@ async function _jvCommitPending(p){
   return '✓ Logged to '+p.name+': '+done.join(' · ')
     + (failed.length ? ('\nDid not save: '+failed.join(', ')+'. Nothing was written for those.') : '');
 }
+// ===== BOOKING, BY VOICE ==================================================
+// Tier two without exception. A misheard time or a wrong name lands on two
+// calendars and someone shows up to nothing, so nothing books on a bare
+// sentence — the client is named IN FULL, the day and the exact time are read
+// back, and what it costs is stated before he says yes.
+//
+// The confirmation is built from the door's own dry_run, not from what this
+// file thinks is true: the same call that would book returns the picture
+// first, so the time, the tier, the spend and any clash all come from the
+// thing that will actually do the writing.
+var _JV_BOOK_RE=/\b(book|schedule|set\s*up|put\s+(?:in|down)|pencil(?:\s+in)?)\b/i;
+var _JV_MOVE_RE=/\b(move|shift|push|reschedule|skip|cancel)\b/i;
+function _jvStripBookWords(t){
+  return String(t||'')
+    .replace(_JV_BOOK_RE,' ').replace(_JV_MOVE_RE,' ')
+    .replace(/\b(a\s+)?call\s+(with|for)\b/ig,' ')
+    .replace(/\bcall\b/ig,' ')
+    .replace(/\b(tomorrow|today|tonight|morning|afternoon|evening|night|noon|same\s+time)\b/ig,' ')
+    .replace(/\b(next\s+)?(sun|mon|tues|wednes|thurs|fri|satur)(day)?\b/ig,' ')
+    .replace(/\bin\s+\d+\s+days?\b/ig,' ').replace(/\b\d+\s+days?\s+from\s+now\b/ig,' ')
+    .replace(/\bat\s+\d{1,2}(:\d{2})?\s*(am|pm)?\b/ig,' ')
+    .replace(/\b\d{1,2}:\d{2}\s*(am|pm)?\b/ig,' ')
+    .replace(/\b(instead|please|for|with|to|the|her|his|their|a|an)\b/ig,' ')
+    .replace(/\s+/g,' ').trim();
+}
+// Returns HTML when it handled the sentence, or null to fall through.
+async function _jvBookCommand(text){
+  var t=String(text||'').trim();
+  var wantsBook=_JV_BOOK_RE.test(t), wantsMove=_JV_MOVE_RE.test(t);
+  if(!wantsBook && !wantsMove) return null;
+  if(!/\bcall\b|\bbook\b|\bschedule\b|\bpencil\b/i.test(t)) return null;   // "cancel that" is not a booking
+
+  var who=_jvStripBookWords(t);
+  if(!who) return null;
+  var hits=_jvResolveClient(who);
+  if(!hits.length) return 'I don’t have anyone called <b>'+_escHtml(who)+'</b>.';
+  if(hits.length>1){
+    return '<b>'+_escHtml(who)+'</b> matches '+hits.length+' clients — '
+      + hits.map(function(h){ return _escHtml(String((CLIENTS[h]||{}).name||h)); }).join(', ')
+      + '. Which one?';
+  }
+  var code=hits[0], name=String((CLIENTS[code]||{}).name||code);
+  var w=_jvParseWhen(t);
+  if(!w) return 'When? Give me a day and a time and I’ll set it up with '+_escHtml(name)+'.';
+  if(w.needsTime) return 'What time'+(w.day?(' on '+new Date(w.day).toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})):'')+'? I won’t guess an hour.';
+
+  // Moving a standing call is a different table and a different sentence.
+  var isMove = wantsMove && !wantsBook;
+  if(isMove){
+    var d=new Date(w.ts);
+    var dateStr=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    var hhmm=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+    var skip=/\bskip\b|\bcancel\b/i.test(t);
+    window._jvPendingWrite={kind:'vipmove', code:code, name:name, date:dateStr, time:hhmm, skip:skip,
+      parts:[], payload:{}, at:Date.now()};
+    return (skip
+      ? 'Skipping '+_escHtml(name)+'’s standing call on '+_escHtml(_jvWhenLabel(d).split(' at ')[0])+' — that day only, the rest of the series stays as it is. Yes?'
+      : 'Moving '+_escHtml(name)+'’s standing call on '+_escHtml(_jvWhenLabel(d).split(' at ')[0])+' to '+_escHtml(hhmm)+' — that day only, next week stays as it was. Yes?');
+  }
+
+  // The door's own preview. Nothing is written by this call.
+  var pv=null;
+  try{
+    var w1=await trainerWrite('bookCallForClient',{client_code:code, starts_at:w.iso, dry_run:true});
+    pv=(w1.ok && w1.rows && w1.rows[0]) ? w1.rows[0] : null;
+  }catch(e){}
+  if(!pv) return 'I couldn’t check that time just now, so I haven’t booked anything. Try again in a moment.';
+
+  var spendLine = pv.will_spend==='weekly' ? 'This uses '+_escHtml(name.split(' ')[0])+'’s weekly call.'
+                : pv.will_spend==='credit' ? 'This uses one of '+_escHtml(name.split(' ')[0])+'’s call credits.'
+                : (pv.credit_note ? _escHtml(pv.credit_note.replace(/\s*—.*$/,''))+' — it books anyway.' : 'This spends nothing.');
+
+  window._jvPendingWrite={kind:'booking', code:code, name:pv.client_name||name, iso:pv.starts_at,
+    when:_jvWhenLabel(new Date(pv.starts_at)), spend:pv.will_spend, conflict:pv.conflict||null,
+    nearest:(pv.nearest_open||[]), force:false, parts:[], payload:{}, at:Date.now()};
+
+  if(pv.conflict){
+    var c=pv.conflict;
+    var whoElse=(c.client_code && CLIENTS[c.client_code] && CLIENTS[c.client_code].name) || c.label || 'something else';
+    var n0=(pv.nearest_open||[])[0];
+    var offer=n0 ? (' <b>'+_escHtml(_jvWhenLabel(new Date(n0.starts_at||n0)))+'</b> is open — want that?')
+                 : ' Nothing near it is open.';
+    if(n0) window._jvPendingWrite.offer=(n0.starts_at||n0);
+    return _escHtml(_jvWhenLabel(new Date(pv.starts_at)))+' is '+_escHtml(whoElse)+'’s.'+offer
+      +'<br><span style="opacity:0.7;">Say yes for that time, or “book it anyway” to double up.</span>';
+  }
+  return 'Booking <b>'+_escHtml(pv.client_name||name)+'</b> for '+_escHtml(_jvWhenLabel(new Date(pv.starts_at)))
+    +'. '+spendLine+' Yes?';
+}
 // Consulted by every assistant box before its model is involved, so a "yes"
 // means the same thing wherever it is typed.
 async function _jvPendingReply(t){
   var p=_jvPendingFresh();
   if(!p) return null;
   if(_jvIsNo(t)){ window._jvPendingWrite=null; return 'Dropped it. Nothing was written.'; }
+  // Force is only ever an explicit yes to the conflict he was just told about.
+  if(p.kind==='booking' && p.conflict && /\b(anyway|double|both|regardless|do it anyway|book it anyway)\b/i.test(t)){
+    p.force=true; p.offer=null;
+    return await _jvCommitPending(p);
+  }
   if(!_jvIsYes(t)) return null;          // anything else is a new thought, not an answer
   return await _jvCommitPending(p);
 }
@@ -16032,7 +16226,7 @@ function jvRenderJustNow(hostId){
         // Undo only where one really exists. A contact log can be taken back;
         // a weight through the door cannot, because that op deliberately has no
         // delete. Saying so beats a button that quietly does nothing.
-        var btn = (x.undo && x.undo.kind==='contact')
+        var btn = (x.undo && (x.undo.kind==='contact' || x.undo.kind==='booking'))
           ? '<button class="jvJnUndo" onclick="jvActUndo('+i+')">Undo</button>'
           : '<button class="jvJnUndo" disabled title="This one cannot be taken back from here">&nbsp;</button>';
         return '<div class="jvJnRow"><time>'+_escHtml(_jvActWhen(x.t))+'</time>'
@@ -16041,8 +16235,21 @@ function jvRenderJustNow(hostId){
 }
 async function jvActUndo(i){
   var a=_jvActLog(), x=a[i];
-  if(!x || !x.undo || x.undo.kind!=='contact') return;
-  try{ await jvUndoContact(x.undo.code, x.undo.t); }catch(e){}
+  if(!x || !x.undo) return;
+  if(x.undo.kind==='contact'){
+    try{ await jvUndoContact(x.undo.code, x.undo.t); }catch(e){}
+  } else if(x.undo.kind==='booking'){
+    // Cancel AND refund. What came back is reported rather than assumed: the
+    // door refunds only what it can prove it took, so a credit it will not
+    // hand back is said out loud instead of quietly implied.
+    var args = (x.undo.id!=null) ? {booking_id:x.undo.id} : {client_code:x.undo.code, starts_at:x.undo.starts_at};
+    var w=null; try{ w=await trainerWrite('cancelCallForClient', args); }catch(e){}
+    if(!w || !w.ok){ try{ showToast('Could not cancel that booking'); }catch(e){} return; }
+    var r=(w.rows&&w.rows[0])||{};
+    var back=r.refunded||r.refund||'none';
+    try{ showToast(back==='none' ? 'Cancelled — no credit was returned' : 'Cancelled — '+back+' credit returned'); }catch(e){}
+    try{ if(typeof loadBookings==='function') loadBookings(true); }catch(e){}
+  } else return;
   a.splice(i,1); _jvActSave(a);
   jvRenderJustNow(); jvRenderNeeds();
 }
@@ -16131,6 +16338,7 @@ async function jvPaneSend(){
   function say(html){ if(out) out.innerHTML='<div class="jvPaneYou">'+_escHtml(t)+'</div>'+html; }
   say('<span style="opacity:0.6;">…</span>');
   try{ var pr=await _jvPendingReply(t); if(pr){ say(_escHtml(pr).replace(/\n/g,'<br>')); _jvSpeakLine(pr); jvPaneRender(); return; } }catch(e){}
+  try{ var bk=await _jvBookCommand(t); if(bk){ say(bk); _jvSpeakLine(bk); jvPaneRender(); return; } }catch(e){}
   try{ var cc=await _ccHandleStatement(t); if(cc){ say(cc); _jvSpeakLine(cc); jvPaneRender(); return; } }catch(e){}
   // Not a command: hand it to the cockpit chat, which owns the conversation.
   try{
@@ -16200,6 +16408,7 @@ async function admMicSend(){
   function say(html){ if(out) out.innerHTML=html; }
   say('<span style="opacity:0.6;">\u2026</span>');
   try{ var pr=await _jvPendingReply(t); if(pr){ say(_escHtml(pr).replace(/\n/g,'<br>')); _jvSpeakLine(pr); admRenderNeeds(); return; } }catch(e){}
+  try{ var bk=await _jvBookCommand(t); if(bk){ say(bk); _jvSpeakLine(bk); admRenderNeeds(); return; } }catch(e){}
   try{ var cc=await _ccHandleStatement(t); if(cc){ say(cc); _jvSpeakLine(cc); admRenderNeeds(); return; } }catch(e){}
   try{
     var box=document.getElementById('jvChatInput');
