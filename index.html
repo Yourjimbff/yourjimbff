@@ -21049,6 +21049,17 @@ async function sbWrite(method, path, body){
 function _sbFailToast(what){
   try{ showToast('Couldn’t '+what+' - nothing changed. Try again.'); }catch(e){}
 }
+// ...but "nothing changed" is itself an assertion, and for some tables it is
+// false. sbInsert/sbUpsert push a refused row onto the offline queue for the
+// tables in SB_QUEUE_TABLES and retry it later — that is how a weigh-in I
+// deliberately refused during testing turned up on the server on the next load.
+// Telling that client "nothing changed. Try again." would be a lie AND an
+// invitation to log it twice. Three states, not two: it landed, it is queued, or
+// it is genuinely gone.
+function _sbQueues(table){ try{ return !!SB_QUEUE_TABLES[table]; }catch(e){ return false; } }
+function _sbQueuedToast(){
+  try{ showToast('Saved here - it will sync when it can'); }catch(e){}
+}
 // PATCH that survives missing columns (mirrors insertFoodLog's behaviour)
 async function sbPatchGraceful(table, id, patch){
   var payload=Object.assign({}, patch), dropped=[], lastErr='';
@@ -21618,11 +21629,11 @@ async function tlSaveWeigh(){
   // The sheet stays open on a failure, so the number they typed isn't lost.
   var ok=false;
   try{ ok=await sbInsert('weight_logs', row); }catch(e){ ok=false; }
-  if(!ok){ _sbFailToast('save that weigh-in'); return; }
+  if(!ok && !_sbQueues('weight_logs')){ _sbFailToast('save that weigh-in'); return; }
   try{ closeM('mTlWeigh'); }catch(e){}
   _tlCacheAdd('weights', row);
   try{ renderDayTimeline(true); }catch(e){}
-  try{ showToast(v+' logged'); }catch(e){}
+  if(ok){ try{ showToast(v+' logged'); }catch(e){} } else { _sbQueuedToast(); }
   try{ _syncToday(); }catch(e){}
 }
 // --- Morning walk quick log (its own opaque sheet) ---
@@ -30988,7 +30999,7 @@ async function plateSaveFood(i){
       if(!_pu.ok){ _sbFailToast('save that food'); return; }
     } else {
       var _pi=await sbInsert('saved_foods',{client_code:cl.code,name:nm,emoji:'🍽️',calories:it.calories,protein:it.protein,carbs:it.carbs,fat:it.fat});
-      if(!_pi){ _sbFailToast('save that food'); return; }
+      if(!_pi){ if(!_sbQueues('saved_foods')){ _sbFailToast('save that food'); return; } _sbQueuedToast(); return; }
     }
     showToast('★ Saved '+nm+' for next time');
     try{ await loadSavedFoods(true); }catch(e){}
@@ -38292,7 +38303,7 @@ async function logWeight(){
   // below this line claimed the weigh-in had landed without asking.
   var _wok=false;
   try{ _wok=await sbInsert('weight_logs',{client_code:cl.code,weight:wVal,notes:''}); }catch(e){ _wok=false; }
-  if(!_wok){ _sbFailToast('save that weigh-in'); return; }
+  if(!_wok && !_sbQueues('weight_logs')){ _sbFailToast('save that weigh-in'); return; }
   lastWeight=wVal;
   scores.weight=1;
   updHalo();pulseH();updStats();
@@ -38301,7 +38312,7 @@ async function logWeight(){
   document.getElementById('sswt').textContent=_disp+_u;
   markTileDone('Weight');
   try{ localStorage.setItem('yjb_weighed_'+cl.code+'_'+isoDateStr(new Date()), '1'); }catch(e){}
-  showToast(_disp+' '+_u+' logged');
+  if(_wok) showToast(_disp+' '+_u+' logged'); else _sbQueuedToast();
   // Refresh journey graph
   await renderWeightJourney();
   document.getElementById('weightInput').value='';
@@ -43062,8 +43073,8 @@ async function mlSaveToLibrary(i){
   try{
     (window._savedFoods=window._savedFoods||[]).push(row);
     var _lok=await sbInsert('saved_foods', row);
-    if(!_lok){ _sbFailToast('add that to your library'); return; }
-    showToast('Added "'+nm+'" to your library');
+    if(!_lok && !_sbQueues('saved_foods')){ _sbFailToast('add that to your library'); return; }
+    if(_lok) showToast('Added "'+nm+'" to your library'); else _sbQueuedToast();
   }catch(e){
     try{ showToast('Saved locally, will sync'); }catch(_e){}
   }
@@ -45317,11 +45328,12 @@ async function saveSteps(ds, clear){
       {client_code:cl.code, steps:v, date_str:ds, updated_at:new Date().toISOString()},
       'client_code,date_str');
   }catch(e){ ok=false; }
-  if(!ok){ _sbFailToast(clear?'clear that':'save your steps'); return; }
+  if(!ok && !_sbQueues('step_logs')){ _sbFailToast(clear?'clear that':'save your steps'); return; }
   closeSteps();
   if(v>0) window._stepMap[ds]=v; else delete window._stepMap[ds];
   try{ window._tlCache=null; renderDayTimeline(true); }catch(e){}
-  showToast(v>0 ? (v.toLocaleString()+' steps') : 'Cleared');
+  if(ok) showToast(v>0 ? (v.toLocaleString()+' steps') : 'Cleared');
+  else _sbQueuedToast();
 }
 
 
@@ -47216,7 +47228,7 @@ var JIM_DEFAULT_TIMES = {breakfast: '9:00 AM', lunch: '1:00 PM', dinner: '7:00 P
 // It now returns what LANDED and what did not, separately, and its caller says
 // both. `did` is only appended to once a write is confirmed.
 async function _jimRun(plan, ds) {
-  var did = [], failed = [];
+  var did = [], failed = [], queued = [];
   for (var i = 0; i < plan.length; i++) {
     var a = plan[i] || {};
     try {
@@ -47257,7 +47269,10 @@ async function _jimRun(plan, ds) {
           // unchecked await counted a refused write as a success.
           var _sok = await sbUpsert('step_logs', {client_code: cl.code, steps: n, date_str: ds || todayDateStr,
                                        updated_at: new Date().toISOString()}, 'client_code,date_str');
-          (_sok ? did : failed).push(n.toLocaleString() + ' steps');
+          // A refused step write is queued and retried (SB_QUEUE_TABLES), so it
+          // is neither landed nor lost — say so rather than picking one.
+          if(_sok) did.push(n.toLocaleString() + ' steps');
+          else queued.push(n.toLocaleString() + ' steps');
         }
       } else if (a.type === 'workout' && a.title) {
         // A stated time wins here too. 5 PM was a stand-in for "we don't know",
@@ -47277,7 +47292,7 @@ async function _jimRun(plan, ds) {
       try{ failed.push(String(a.title || a.items || a.type || 'that')); }catch(_){}
     }
   }
-  return {did: did, failed: failed};
+  return {did: did, failed: failed, queued: queued};
 }
 
 
@@ -47458,7 +47473,8 @@ async function jimReadShot(dataUrl, ds) {
       return false;
     }
     var ran = await _jimRun(plan, ds);
-    var did = ran.did || [], failed = ran.failed || [];
+    var did = ran.did || [], failed = ran.failed || [], queued = ran.queued || [];
+    if(queued.length) did = did.concat(queued.map(function(q){ return q + ' (will sync)'; }));
     try { window._tlCache = null; await renderDayTimeline(true); } catch (e) {}
     // What landed and what didn't, said separately. Anything that failed is
     // named, so they know exactly what to tell me again \u2014 and a run where
