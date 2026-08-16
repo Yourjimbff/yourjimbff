@@ -1753,6 +1753,25 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
 }
 /* The timeline owns the full frame, so the tab must not add scrollable slack under it. */
 #tFeed{padding-bottom:0;}
+/* The way back, above the oldest day drawn. Quiet on purpose: it is a door, not
+   an instruction, and it must not read louder than the day under it. Gold is
+   reserved for actions, and this IS one — but a small one, so it wears the
+   brand as an outline rather than a fill. */
+/* A number that has not arrived yet. Muted, never gold — nothing is being
+   asked of the trainer, and it is not a status about the client either. */
+.jvPending{color:rgba(240,236,228,0.38);}
+.tlEarlier{display:flex;justify-content:center;padding:14px 0 4px;}
+.tlEarlier button{
+  -webkit-appearance:none;appearance:none;cursor:pointer;
+  background:transparent;border:1px solid rgba(245,197,24,0.42);color:#f5c518;
+  font:inherit;font-size:13px;font-weight:700;letter-spacing:0.2px;
+  padding:9px 18px;border-radius:999px;
+}
+.tlEarlier button:disabled{opacity:0.5;cursor:default;}
+/* Their beginning. A fact at the top of their own history, stated once. */
+.tlEarlierEnd{flex-direction:column;align-items:center;gap:3px;padding:18px 0 6px;text-align:center;}
+.tlEarlierEnd b{font-size:13px;font-weight:700;color:rgba(240,236,228,0.62);}
+.tlEarlierEnd span{font-size:12px;color:rgba(240,236,228,0.38);}
 /* One day, one page. It snaps into place and fills the viewport. */
 .tlDaySec{scroll-snap-align:start;scroll-snap-stop:normal;min-height:100%;display:flex;flex-direction:column;box-sizing:border-box;padding-bottom:12px;}
 /* Enough for the floating Jim affordance and the nav at the end of the last day. */
@@ -5745,9 +5764,25 @@ async function sbSelect(table, filter){
     }
     // Never fail quietly: an empty result and a broken query must not look the same.
     console.error('[sbSelect] '+table+' returned '+res.status+' — treating as empty. '+String(why||'').slice(0,200));
+    _sbNoteFail(table);
     return [];
-  }catch(e){ console.error('[sbSelect] '+table+' failed',e); return []; }
+  }catch(e){ console.error('[sbSelect] '+table+' failed',e); _sbNoteFail(table); return []; }
 }
+// THE SIGNAL THIS FILE NEVER HAD.
+// sbSelect answers [] for a refused read and for a genuinely empty table alike,
+// and it cannot change that without touching every caller in the file. So it
+// raises a hand instead: a caller that cares reads this counter before its batch
+// and again after, and an unchanged number means every read in that batch really
+// did answer. Nothing has to opt in, and nothing that ignores it behaves any
+// differently than it does today.
+window._sbFailN = window._sbFailN || 0;
+window._sbFailLast = '';
+function _sbNoteFail(table){
+  try{ window._sbFailN=(window._sbFailN||0)+1; window._sbFailLast=String(table||''); }catch(e){}
+}
+// Snapshot / compare, so a caller reads as: var t=_sbFailMark(); ...; if(_sbFailedSince(t)) ...
+function _sbFailMark(){ try{ return window._sbFailN||0; }catch(e){ return 0; } }
+function _sbFailedSince(mark){ try{ return (window._sbFailN||0)!==mark; }catch(e){ return false; } }
 
 async function sbUpsert(table, data, onConflict){
   try{
@@ -8464,7 +8499,7 @@ function setFeedStat(kind){ window._feedStat=(window._feedStat===kind?null:kind)
 function _jarvisReplyHtml(){
   var r=window._jarvisLastReply; if(!r||!r.reply) return '';
   return '<div style="margin-top:13px;background:rgba(224,196,152,0.08);border:1px solid rgba(224,196,152,0.28);border-radius:11px;padding:12px 13px;">'
-    +'<div style="font-size:9.5px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:var(--gold);margin-bottom:5px;">🧠 Jarvis'+(r.name?(' · '+String(r.name).replace(/</g,'&lt;')):'')+'</div>'
+    +'<div style="font-size:9.5px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:var(--gold);margin-bottom:5px;">Jarvis'+(r.name?(' · '+String(r.name).replace(/</g,'&lt;')):'')+'</div>'
     +'<div style="font-size:13px;color:#f0ece4;line-height:1.55;">'+String(r.reply).replace(/</g,'&lt;')+'</div></div>';
 }
 // The desktop control row: which lens, and which day. Food and Fitness used to be
@@ -8611,6 +8646,9 @@ function _jvSay(msg){
 async function _jvFeedCommand(text){
   var t=String(text||'').trim();
   var m;
+  // An answer to a held write, then a statement of fact — both before any model.
+  try{ var _pr=await _jvPendingReply(t); if(_pr){ _jvSay(_pr.replace(/\n/g,'<br>')); return true; } }catch(e){ console.error('pending reply',e); }
+  try{ var _cc=await _ccHandleStatement(t); if(_cc){ _jvSay(_cc); return true; } }catch(e){ console.error('contact command',e); }
   var kindWord=function(w){ return /workout|session|training|lift|pull|push|legs/i.test(w||'') ? 'wo' : (/meal|food|breakfast|lunch|dinner|ate/i.test(w||'') ? 'food' : null); };
 
   // like <who>['s <what>]
@@ -13209,6 +13247,125 @@ async function _postMomentText(t){
   try{ var w=await trainerWrite('momentPost',{text:t}); if(w.ok && w.rows[0] && w.rows[0].id!=null) saved=true; }catch(e){}
   if(!saved){ var a=_localMoments(); a.unshift({text:t, ts:Date.now()}); _saveLocalMoments(a); }
 }
+// ===== TIER TWO: A NUMBER GETS STATED BACK AND WAITS ======================
+// The assistant could log a weight, a meal and a step count against whichever
+// client it decided a sentence was about, immediately, with no confirmation and
+// with the public key. Two things were wrong with that. It was choosing the
+// human being, and a wrong weight in a real history is invisible for weeks —
+// unlike a contact log, which is one line you can see and undo. And it wrote
+// with the same key any page on the internet holds, so nothing anywhere checked
+// that a trainer was behind it.
+//
+// Now: it states the client's FULL NAME and the exact numbers, and writes only
+// when told to. The writes go through the trainer door, which requires a real
+// trainer session, and every one is read back rather than trusted.
+// ===== ONE CONTEXT, WHICHEVER BOX YOU ARE TYPING INTO =====================
+// There are three assistant boxes and they all answer to "Jarvis": the Feed
+// card, the cockpit chat, and the one on a client. They behaved like three
+// different products because they were handed three different amounts of
+// information. The cockpit one got a live board snapshot. The Feed one got the
+// date and a list of names — so when Yusuf said "I contacted Jordan R" it asked
+// him to paste a board snapshot, because a list of names is genuinely all it
+// could see. You cannot build a habit with something that answers differently
+// depending on which screen you happened to be on.
+//
+// The boxes stay separate — one on the feed, one in the cockpit, one on a
+// client is a sensible shape, and they are opened for different reasons. What
+// converges is what sits behind them: this builder, and the two action layers
+// above it. Ensures the board is loaded first, because the whole point is that
+// it should not have to ask for what it can go and read.
+async function _jvAssistantContext(opts){
+  opts=opts||{};
+  try{ if(!_jvTriageReady() && typeof _jvEnsureTriage==='function'){ if(!window._jvTriagePending && typeof jvLoadTriage==='function'){ window._jvTriagePending=Promise.resolve(jvLoadTriage(true)).catch(function(){}); } if(window._jvTriagePending){ await window._jvTriagePending; window._jvTriagePending=null; } } }catch(e){}
+  var today=new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+  var out='Today is '+today+'.';
+  var hidden={}; try{ hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{}; }catch(e){}
+  var roster='';
+  try{
+    roster=Object.keys(CLIENTS).filter(function(c){ return !hidden[c] && !(CLIENTS[c]||{}).isTrainer && (!cl || c!==cl.code); })
+      .map(function(c){ return (CLIENTS[c].name||c)+' ['+c+']'; }).join(', ');
+  }catch(e){}
+  if(roster) out+='\nROSTER (name [code]): '+roster+'.';
+  // The snapshot, or an honest word about why there isn't one. Never silence —
+  // silence is what made it ask Yusuf to paste his own board back to it.
+  var st=(typeof _jvTriageState==='function')?_jvTriageState():'never';
+  if(st==='ready'){
+    var snap=''; try{ snap=_jvBuildContext(); }catch(e){}
+    if(snap) out+='\n\nTHE BOARD RIGHT NOW (you can see this — never ask him for it):\n'+snap;
+  } else {
+    out+='\n\nTHE BOARD: could not be read just now'+(st==='failed'?' (the read failed)':'')
+      +'. Say so plainly if he asks something that needs it. Do NOT ask him to paste a snapshot.';
+  }
+  if(opts.code && CLIENTS[opts.code]){
+    out+='\n\nHE IS LOOKING AT: '+((CLIENTS[opts.code]||{}).name||opts.code)+' ['+opts.code+'].';
+  }
+  return out;
+}
+var _JV_PENDING_MS=10*60*1000;      // a confirmation older than this is not a confirmation
+function _jvBuildPendingLog(lg, code, name){
+  if(!lg || !code || !CLIENTS[code]) return null;
+  var parts=[], payload={};
+  if(lg.food && ((+lg.food.calories||0)||(+lg.food.protein||0)||(+lg.food.carbs||0)||(+lg.food.fat||0))){
+    payload.food={ name:String(lg.food.name||'Logged meal'), calories:Math.round(+lg.food.calories||0),
+      protein:Math.round(+lg.food.protein||0), carbs:Math.round(+lg.food.carbs||0), fat:Math.round(+lg.food.fat||0) };
+    parts.push(payload.food.name+' — '+payload.food.calories.toLocaleString()+' cal, '+payload.food.protein+'g protein');
+  }
+  if(lg.weight!=null && !isNaN(parseFloat(lg.weight))){
+    payload.weight=parseFloat(lg.weight);
+    parts.push(payload.weight+' '+(typeof wUnit==='function'?wUnit():'lbs'));
+  }
+  if(lg.steps!=null && !isNaN(parseInt(lg.steps,10))){
+    payload.steps=parseInt(lg.steps,10);
+    parts.push(payload.steps.toLocaleString()+' steps');
+  }
+  if(!parts.length) return null;
+  return {code:code, name:(String(name||'')||(CLIENTS[code]||{}).name||code), parts:parts, payload:payload, at:Date.now()};
+}
+function _jvPendingSummary(p){
+  return 'I am about to log '+p.parts.join(', ')+' to '+p.name+' ('+p.code+'), dated today. Right client?';
+}
+function _jvPendingFresh(){
+  var p=window._jvPendingWrite;
+  return (p && (Date.now()-p.at)<_JV_PENDING_MS) ? p : null;
+}
+function _jvIsYes(t){ return /^\s*(y|yes|yep|yeah|yup|confirm(ed)?|do it|go ahead|go|correct|right|that'?s right|send it|log it)\b/i.test(String(t||'')); }
+function _jvIsNo(t){ return /^\s*(n|no|nope|nah|cancel|stop|don'?t|do not|wrong|never ?mind|forget it)\b/i.test(String(t||'')); }
+// Writes the held action. Every row goes through the door and is read back —
+// the door answers with the row it wrote, so "it saved" is something this can
+// actually see rather than infer from the absence of an error.
+async function _jvCommitPending(p){
+  var done=[], failed=[];
+  var now=new Date(), ds=now.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}), iso=now.toISOString();
+  if(p.payload.food){
+    var f=p.payload.food;
+    var w=await trainerWrite('logFood',{client_code:p.code, name:f.name, calories:f.calories, protein:f.protein,
+      carbs:f.carbs, fat:f.fat, rating:'unknown', date_str:ds, logged_at:iso});
+    if(w.ok && w.rows && w.rows[0]) done.push(f.calories.toLocaleString()+' cal · '+f.protein+'g protein'); else failed.push('the meal');
+  }
+  if(p.payload.weight!=null){
+    var w2=await trainerWrite('logWeight',{client_code:p.code, weight:p.payload.weight, notes:'[Jarvis]', logged_at:iso});
+    if(w2.ok && w2.rows && w2.rows[0]) done.push(p.payload.weight+' '+(typeof wUnit==='function'?wUnit():'lbs')); else failed.push('the weight');
+  }
+  if(p.payload.steps!=null){
+    var w3=await trainerWrite('logSteps',{client_code:p.code, steps:p.payload.steps, date_str:ds, updated_at:iso});
+    if(w3.ok) done.push(p.payload.steps.toLocaleString()+' steps'); else failed.push('the steps');
+  }
+  window._jvPendingWrite=null;
+  try{ window._tlCache=null; }catch(e){}
+  try{ if(typeof jvLoadTriage==='function') jvLoadTriage(true); }catch(e){}
+  if(!done.length) return 'None of that saved. Nothing was written to '+p.name+'.';
+  return '✓ Logged to '+p.name+': '+done.join(' · ')
+    + (failed.length ? ('\nDid not save: '+failed.join(', ')+'. Nothing was written for those.') : '');
+}
+// Consulted by every assistant box before its model is involved, so a "yes"
+// means the same thing wherever it is typed.
+async function _jvPendingReply(t){
+  var p=_jvPendingFresh();
+  if(!p) return null;
+  if(_jvIsNo(t)){ window._jvPendingWrite=null; return 'Dropped it. Nothing was written.'; }
+  if(!_jvIsYes(t)) return null;          // anything else is a new thought, not an answer
+  return await _jvCommitPending(p);
+}
 async function jarvisIngest(ns){
   ns=ns||'feed'; var ID=_jarvisIds(ns);
   var inp=document.getElementById(ID.inp); if(!inp) return;
@@ -13216,19 +13373,45 @@ async function jarvisIngest(ns){
   if(!window._jarvisThread) window._jarvisThread=[];
   window._jarvisThread.push({role:'you', text:t});
   inp.value='';
+  // Same statement handling as the cockpit box, so the answer to "I contacted
+  // Jordan R" does not depend on which of the three Jarvis boxes you happened to
+  // be looking at. This one only ever received a list of names, so it could not
+  // do anything but ask — that is what it was doing when it asked for a board
+  // snapshot.
+  try{
+    var _pr=await _jvPendingReply(t);
+    if(_pr){
+      window._jarvisThread.push({role:'jarvis', text:_pr, logged:null});
+      _jarvisSyncThreads();
+      if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent=(ns==='cl'?'Send ➤':'Send to Jarvis'); }
+      return;
+    }
+  }catch(e){ console.error('pending reply',e); }
+  try{
+    var _ccOut=await _ccHandleStatement(t);
+    if(_ccOut){
+      window._jarvisThread.push({role:'jarvis', text:_ccOut.replace(/<br>/g,'\n').replace(/<[^>]+>/g,''), logged:null});
+      _jarvisSyncThreads();
+      return;
+    }
+  }catch(e){ console.error('contact command (jarvis)',e); }
   var btn=document.getElementById(ID.send); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='Jarvis is thinking\u2026'; }
   var tEl=document.getElementById(ID.thread); if(tEl) tEl.innerHTML=_jarvisThreadHtml();
   try{
-    var hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
-    var roster=Object.keys(CLIENTS).filter(function(c){return !hidden[c] && c!==cl.code;}).map(function(c){return (CLIENTS[c].name||c)+' ['+c+']';}).join(', ');
+    // The same board the cockpit box has always had. This one used to get the
+    // date and a list of names, which is why it asked Yusuf to paste a snapshot
+    // at it — it was telling the truth about what it could see.
+    var ctx=await _jvAssistantContext({code:(ns==='cl' && window._jvDeepCode)?window._jvDeepCode:null});
     var today2=new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
-    var sys="You are Jarvis, fitness coach Yusuf's private work assistant, in an ongoing chat with him. Today is "+today2+". "
+    var sys="You are Jarvis, fitness coach Yusuf's private work assistant, in an ongoing chat with him. "
       +"YOUR NORTH STAR: the client's experience and journey come first - help Yusuf truly understand each client, solve their real underlying problem, and always hand him the best concrete next action so the client feels understood and led forward. "
+      +"ANSWER FROM WHAT YOU CAN SEE. The board below is live and it is yours to read. Never ask him to paste, share or describe his own board, his roster, or what anyone logged - if it is not below, say plainly that you cannot see it rather than asking him to fetch it. "
       +"Each turn return ONLY JSON, no markdown: {\"client_code\":\"\",\"client_name\":\"\",\"note\":\"\",\"log\":null,\"reply\":\"\"}. "
       +"note = anything NEW worth recording on that client's profile this turn (what happened, a fact, a follow-up). Use real dates (today is "+today2+"); NEVER write placeholders like [date] or brackets; omit unknown details. Leave note EMPTY if there is nothing new to log (for example when you are just talking it through with him). "
-      +"log = ONLY when Yusuf is explicitly recording numbers FOR a client (examples: log Naya's day; Sarah weighed 162; Mike 1900 cal 150 protein 9k steps). Otherwise null. When logging, log is an object with three fields: food (an object with name, calories, protein, carbs, fat - or null if no food was mentioned), weight (a number or null), steps (a number or null). Name the food as a short whole-food meal name, or Daily intake if only totals are given. Use null for any field Yusuf did not state, and NEVER invent numbers. "
+      +"log = ONLY when Yusuf is explicitly recording numbers FOR a client (examples: log Naya's day; Sarah weighed 162; Mike 1900 cal 150 protein 9k steps). Otherwise null. When logging, log is an object with three fields: food (an object with name, calories, protein, carbs, fat - or null if no food was mentioned), weight (a number or null), steps (a number or null). Name the food as a short whole-food meal name, or Daily intake if only totals are given. Use null for any field Yusuf did not state, and NEVER invent numbers. He will be asked to confirm before any number is written, so state it plainly rather than hedging. "
       +"reply = your message back to Yusuf - coaching, the best next action, or just continuing the conversation. Direct, human, a sharp coach's voice, never clinical. "
-      +"client_code and client_name = who this is about, matched from the roster, or empty if unclear. ROSTER (name [code]): "+roster+".";
+      +"client_code and client_name = who this is about, matched from the roster, or empty if unclear.\n\n"
+      +ctx;
     var msgs=[{role:'user',content:sys},{role:'assistant',content:'Ready.'}];
     window._jarvisThread.forEach(function(m){ msgs.push({role: m.role==='you'?'user':'assistant', content:m.text}); });
     var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:msgs})});
@@ -13241,28 +13424,22 @@ async function jarvisIngest(ns){
     var code=(obj&&obj.client_code)?String(obj.client_code).trim():'';
     var name=(obj&&obj.client_name?String(obj.client_name).trim():'')||(CLIENTS[code]&&CLIENTS[code].name)||'';
     var loggedTo=null;
+    // The note is trainer-only and lives on a profile you can see and delete, and
+    // the moment post is trainer-only too \u2014 both stay immediate. A number does
+    // not: a weight on the wrong client is a silent corruption of a real history
+    // that nobody catches for weeks, and it is the assistant, not Yusuf, choosing
+    // who it belongs to. Numbers get stated back and wait.
     if(code && CLIENTS[code] && note){ try{ await sbInsertReturning('client_notes',{client_code:code, note:'[Jarvis] '+note, logged_at:new Date().toISOString()}); }catch(e){} try{ await _postMomentText((name?(name+': '):'')+note); }catch(e){} loggedTo=name||code; }
-    var _logSum=[];
     try{
-      var lg=obj&&obj.log;
-      if(lg && code && CLIENTS[code]){
-        var _now2=new Date(), _ds2=_now2.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}), _iso2=_now2.toISOString();
-        if(lg.food && ((lg.food.calories||0)||(lg.food.protein||0)||(lg.food.carbs||0)||(lg.food.fat||0))){
-          var _fr={client_code:code, name:(lg.food.name||'Logged meal'), calories:Math.round(lg.food.calories||0), protein:Math.round(lg.food.protein||0), carbs:Math.round(lg.food.carbs||0), fat:Math.round(lg.food.fat||0), rating:'unknown', logged_at:_iso2};
-          try{ var _fres=await insertFoodLog(_fr,null); if(_fres&&_fres.ok){ _logSum.push(Math.round(lg.food.calories||0).toLocaleString()+' cal'+((lg.food.protein)?(' \u00b7 '+Math.round(lg.food.protein)+'P'):'')); } }catch(e){}
-        }
-        if(lg.weight!=null && !isNaN(parseFloat(lg.weight))){
-          try{ await sbInsert('weight_logs',{client_code:code, weight:parseFloat(lg.weight), notes:'[Jarvis]'}); _logSum.push(parseFloat(lg.weight)+' lb'); }catch(e){}
-        }
-        if(lg.steps!=null && !isNaN(parseInt(lg.steps,10))){
-          try{ await sbUpsert('step_logs',{client_code:code, steps:parseInt(lg.steps,10), date_str:_ds2, updated_at:_iso2}, 'client_code,date_str'); _logSum.push(parseInt(lg.steps,10).toLocaleString()+' steps'); }catch(e){}
-        }
-        if(_logSum.length){ loggedTo=(name||code); reply='\u2705 Logged to '+(name||code)+': '+_logSum.join(' \u00b7 ')+(reply&&reply!=='Got it.'?('\n\n'+reply):''); }
+      var _pend=_jvBuildPendingLog(obj&&obj.log, code, name);
+      if(_pend){
+        window._jvPendingWrite=_pend;
+        reply='Before I write that \u2014 '+_jvPendingSummary(_pend)+'\n\nSay yes and it goes in.';
       }
     }catch(e){ console.error('jarvis log',e); }
     window._jarvisThread.push({role:'jarvis', text:reply, logged:loggedTo});
   }catch(e){ console.error('jarvisIngest',e); window._jarvisThread.push({role:'jarvis', text:'Could not reach Jarvis. Try again.', logged:null}); }
-  if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent=(ns==='cl'?'Send ➤':'\u26a1 Send to Jarvis'); }
+  if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent=(ns==='cl'?'Send ➤':'Send to Jarvis'); }
   _jarvisSyncThreads();
 }
 function _jarvisThreadHtml(){
@@ -13271,8 +13448,8 @@ function _jarvisThreadHtml(){
     if(m.role==='you'){
       return '<div style="display:flex;justify-content:flex-end;margin-top:9px;"><div style="max-width:82%;background:#282828;border-radius:13px 13px 4px 13px;padding:9px 12px;font-size:13px;color:#f0ece4;line-height:1.5;">'+String(m.text).replace(/</g,'&lt;')+'</div></div>';
     }
-    var logged = m.logged ? '<div style="font-size:10px;color:var(--gold);margin-top:7px;font-weight:800;letter-spacing:0.3px;">\ud83d\udcdd Logged to '+String(m.logged).replace(/</g,'&lt;')+'</div>' : '';
-    return '<div style="display:flex;justify-content:flex-start;margin-top:9px;"><div style="max-width:90%;background:rgba(224,196,152,0.08);border:1px solid rgba(224,196,152,0.22);border-radius:13px 13px 13px 4px;padding:10px 12px;"><div style="font-size:9px;font-weight:800;letter-spacing:0.5px;text-transform:uppercase;color:var(--gold);margin-bottom:4px;">\ud83e\udde0 Jarvis</div><div style="font-size:13px;color:#f0ece4;line-height:1.55;">'+String(m.text).replace(/</g,'&lt;')+'</div>'+logged+'</div></div>';
+    var logged = m.logged ? '<div style="font-size:10px;color:var(--gold);margin-top:7px;font-weight:800;letter-spacing:0.3px;">Logged to '+String(m.logged).replace(/</g,'&lt;')+'</div>' : '';
+    return '<div style="display:flex;justify-content:flex-start;margin-top:9px;"><div style="max-width:90%;background:rgba(224,196,152,0.08);border:1px solid rgba(224,196,152,0.22);border-radius:13px 13px 13px 4px;padding:10px 12px;"><div style="font-size:9px;font-weight:800;letter-spacing:0.5px;text-transform:uppercase;color:var(--gold);margin-bottom:4px;">Jarvis</div><div style="font-size:13px;color:#f0ece4;line-height:1.55;">'+String(m.text).replace(/</g,'&lt;')+'</div>'+logged+'</div></div>';
   }).join('');
   return '<div style="margin-top:13px;border-top:1px solid rgba(224,196,152,0.16);padding-top:4px;">'+rows+'</div>';
 }
@@ -13423,10 +13600,20 @@ async function _jvLoadClientNotes(code){
 async function jvClientJarvisSend(code){
   var inp=document.getElementById('jvClientJarvisInput'); if(!inp) return;
   var t=(inp.value||'').trim(); if(!t) return;
+  // The third box gets the same two layers and the same board as the other two.
+  // It is the one on a client's card, so it also gets told which client is on
+  // screen — but a statement naming somebody else still resolves to that person,
+  // by name, in code, exactly as it does everywhere else.
+  var rbEarly=document.getElementById('jvClientJarvisReply');
+  function _cjSay(msg){ if(rbEarly) rbEarly.innerHTML='<div style="background:rgba(224,196,152,0.08);border:1px solid rgba(224,196,152,0.28);border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0ece4;line-height:1.55;">'+msg+'</div>'; }
+  try{ var _pr=await _jvPendingReply(t); if(_pr){ _cjSay(_pr.replace(/\n/g,'<br>')); inp.value=''; return; } }catch(e){ console.error('pending reply (client jarvis)',e); }
+  try{ var _cc=await _ccHandleStatement(t); if(_cc){ _cjSay(_cc); inp.value=''; return; } }catch(e){ console.error('contact command (client jarvis)',e); }
   var btn=document.getElementById('jvClientJarvisBtn'); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='Thinking…'; }
   var name=(CLIENTS[code]&&CLIENTS[code].name)||'this client';
   try{
-    var prompt='You are Jarvis, fitness coach Yusuf\'s private assistant. He is telling you about his client '+name+'. Two jobs: '
+    var _ctx=await _jvAssistantContext({code:code});
+    var prompt=_ctx+'\n\nYou are Jarvis, fitness coach Yusuf\'s private assistant. He is telling you about his client '+name+'. '
+      +'Answer from the board above - never ask him to paste or describe it. Two jobs: '
       +'(1) write a concise factual NOTE (third person) to save on '+name+'\'s profile — what happened + any follow-up; '
       +'(2) give Yusuf a short, sharp REPLY: useful coaching feedback, a pattern worth noticing, or a clear next step (1-3 sentences, direct and human, in a sharp coach\'s voice, never clinical or fluffy). '
       +'Return ONLY JSON, no markdown: {"note":"...","reply":"..."}\n\nWHAT YUSUF SAID:\n'+t;
@@ -13438,11 +13625,11 @@ async function jvClientJarvisSend(code){
     var note=(obj&&obj.note)?String(obj.note).trim():t;
     var reply=(obj&&obj.reply)?String(obj.reply).trim():'';
     try{ await sbInsertReturning('client_notes',{client_code:code, note:'[Jarvis] '+note, logged_at:new Date().toISOString()}); }catch(e){}
-    var rb=document.getElementById('jvClientJarvisReply'); if(rb){ rb.innerHTML = reply ? '<div style="background:rgba(224,196,152,0.08);border:1px solid rgba(224,196,152,0.28);border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0ece4;line-height:1.55;">💬 '+reply.replace(/</g,'&lt;')+'</div>' : ''; }
+    var rb=document.getElementById('jvClientJarvisReply'); if(rb){ rb.innerHTML = reply ? '<div style="background:rgba(224,196,152,0.08);border:1px solid rgba(224,196,152,0.28);border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0ece4;line-height:1.55;">'+reply.replace(/</g,'&lt;')+'</div>' : ''; }
     inp.value='';
     _jvLoadClientNotes(code);
   }catch(e){ console.error('jvClientJarvisSend',e); if(typeof showToast==='function') showToast('Could not reach Jarvis. Try again.'); }
-  if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent='⚡ Tell Jarvis'; }
+  if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent='Tell Jarvis'; }
 }
 function woRowHtml(name, hint, done){
   name = (name||'').replace(/"/g,'&quot;');
@@ -13860,8 +14047,12 @@ function doLogout(){
     window._tpFromServer=false;
     window._pgPlanAsked=false;
     window._tpLoadFailed=undefined;   // "unknown" again, not "loaded fine"
+    // The Day page reads its three states straight off _tpLoadFailed above, so
+    // there is nothing else to reset but the one-shot loader guard.
+    window._tlPlanKick=false;
     _pgPlan=null; _pgDayOpen=null;
     window._tlCache=null; window._tlSetsLoaded=false;
+    try{ _tlResetPaging(); }catch(e){}   // one person's beginning never follows the next one in
     window._mvpServerSeen=false; window._mvpDirty=false;
   }catch(e){}
   if(typeof resetChatState==='function') resetChatState();
@@ -14283,12 +14474,23 @@ function _jvShareDemoLine(code){
   var age=_ageFromBday(d.birthday) || (d.age!=null && d.age!=='' ? +d.age : null);
   if(age) bits.push(age+' yo');
   if(d.height) bits.push(String(d.height));
+  var weightUnknown=false;
   try{
-    var p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null;
-    var w=p&&p.lastWeight&&p.lastWeight.val;
-    if(w) bits.push(Math.round(wToDisp(w)*10)/10+' '+wUnit());
-  }catch(e){}
-  return bits.length ? bits.join(' · ') : 'No details on file';
+    if(!_jvTriageReady()){ weightUnknown=true; }
+    else {
+      var p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null;
+      var w=p&&p.lastWeight&&p.lastWeight.val;
+      if(w) bits.push(Math.round(wToDisp(w)*10)/10+' '+wUnit());
+    }
+  }catch(e){ weightUnknown=true; }
+  if(bits.length) return bits.join(' · ');
+  // Nothing to show, and the reason matters. "No details on file" is a claim
+  // about the client; it must not be what a screen says when it simply has not
+  // read anything yet. Kept to three words rather than the full sentence the
+  // other surfaces use — this string replaces a client's NAME on the sharing
+  // screen, and a paragraph where a name should be is its own kind of wrong.
+  if(!weightUnknown) return 'No details on file';
+  return (window._jvTriageFailed===true) ? 'Details unavailable' : 'Details loading…';
 }
 // Real client codes are often name-derived (e.g. a code built from someone's own
 // first name and initial) and get shown as a plain badge in a couple of places —
@@ -14304,6 +14506,13 @@ async function jvSetShareMode(on){
   if(on===window._jvShareMode) return;
   if(on){
     await _jvShareLoadDemo();
+    // Sharing mode rewrites every client's name into their demographic line, and
+    // that line carries their current weight — out of the board's store, which
+    // may never have been filled. Turned on from the Feed, everyone's weight
+    // silently vanished and anyone with nothing else on file read "No details on
+    // file". This is the screen shown to other people; it is the last place a
+    // blank should be allowed to pass for a fact.
+    if(!_jvTriageReady() && typeof jvLoadTriage==='function'){ try{ await jvLoadTriage(true); }catch(e){} }
     var backup={};
     Object.keys(CLIENTS).forEach(function(code){
       var info=CLIENTS[code]; if(!info || info.isTrainer) return;
@@ -14621,6 +14830,10 @@ async function jvLoadTriage(silent){
     return 0;
   }
   try{
+    // Everything below answers [] when it fails, so mark the counter first and
+    // check it after: that is the only way this load can tell "nobody logged
+    // anything" apart from "the reads did not come back".
+    var _fmark=_sbFailMark();
     // Four single queries instead of 16 parallel per-day ones (those were dropping data under load).
     var res=await Promise.all([
       sbSelect('food_logs','select=client_code,date_str,logged_at,name,emoji,calories,protein&order=logged_at.desc.nullslast&limit=8000'),
@@ -14632,6 +14845,19 @@ async function jvLoadTriage(silent){
       // requests to put one line on forty cards, and load already fires around 25.
       sbSelect('client_notes','select=id,client_code,note,logged_at&order=logged_at.desc&limit=1500')
     ]);
+    // ANY read in this batch failing makes the WHOLE store untrustworthy, not
+    // just the part that failed. A batch where weight_logs alone was refused
+    // would otherwise install a jvTriage that looks completely healthy and in
+    // which nobody on the roster has ever weighed in — which is precisely the
+    // bug this is here to make impossible. Better a board that says it could
+    // not read than a board that quietly reports a fiction.
+    if(_sbFailedSince(_fmark)){
+      window._jvTriageFailed=true;
+      console.error('[jvLoadTriage] a read did not answer (last: '+(window._sbFailLast||'?')+') — not installing a half-empty board');
+      if(!silent && wall) wall.innerHTML='<div class="tbFail">That did not load. It is a read that failed, not an empty roster — try Refresh.</div>';
+      try{ if(typeof renderMobFrontDesk==='function' && window.innerWidth<1024) renderMobFrontDesk(); }catch(e){}
+      return;
+    }
     var foods=res[0]||[], wos=res[1]||[], weights=res[2]||[], steps=res[3]||[];
     var goals={};
     (res[4]||[]).forEach(function(pr){
@@ -14670,6 +14896,7 @@ async function jvLoadTriage(silent){
     wos.forEach(function(w){ if(dayOf(w.date_str,w.logged_at||w.created_at)===0)(woByClient[w.client_code]=woByClient[w.client_code]||[]).push(w); });
     jvData={foodsByClient:foodsByClient, woByClient:woByClient};
     jvTriage={per:per, days:days, now:nowMs, goals:goals};
+    window._jvTriageFailed=false;          // every read answered; this data is the truth
     await jvSyncHandledFromServer();
     await jvSyncContacts();
     // The mobile front desk calls this (silent:true) purely for the jvTriage data
@@ -14726,14 +14953,143 @@ function _ccUnanswered(code){
 // 'talk' is a conversation that happened, with no channel worth recording — the fast
 // path off the card. text/call stay for anything logged deliberately as one or the other.
 var _CC_KIND={text:'text', call:'call', talk:'talk'};
+
+// ===== TIER ONE: A STATED FACT IS CONSENT =================================
+// "I contacted Jordan R" is a thing that happened, not a question. It used to be
+// answered with a request for a board snapshot. It logs now, and says what it
+// logged.
+//
+// Names and dates are resolved HERE, in code, before any model sees the
+// sentence. A model reads a sentence well and has no business deciding WHICH
+// HUMAN BEING a row lands on: yusufa1 is a real client named Yusuf A, and the
+// cost of a confident wrong guess is a record against the wrong person that
+// nobody notices. So every name in the message must resolve to exactly one code
+// BEFORE a single row is written — three names with one ambiguity asks about
+// that one and writes nothing at all, rather than logging two and leaving the
+// third dangling in a half-done state nobody can see.
+var _CC_DOW={sunday:0,monday:1,tuesday:2,wednesday:3,thursday:4,friday:5,saturday:6};
+// The whole date vocabulary, deliberately small. Anything outside it is not
+// guessed at — the sentence comes back with a question.
+var _CC_WHEN_RE=/\b(this morning|this afternoon|this evening|tonight|last night|today|yesterday|(?:on\s+)?(?:last\s+)?(?:sun|mon|tues|tue|wednes|wednes|wed|thurs|thur|thu|fri|satur|sat)(?:day)?)\s*$/i;
+function _ccWhenFromWords(w){
+  var now=new Date();
+  if(!w) return {ts:now.getTime(), label:'today'};
+  var s=String(w).trim().toLowerCase().replace(/^on\s+/,'');
+  function at(d,h){ d.setHours(h,0,0,0); return d.getTime(); }
+  if(s==='today') return {ts:now.getTime(), label:'today'};
+  if(s==='this morning')   return {ts:at(new Date(),9),  label:'this morning'};
+  if(s==='this afternoon') return {ts:at(new Date(),14), label:'this afternoon'};
+  if(s==='this evening'||s==='tonight') return {ts:at(new Date(),19), label:s};
+  if(s==='yesterday'||s==='last night'){
+    var y=new Date(); y.setDate(y.getDate()-1);
+    return {ts:at(y, s==='last night'?21:12), label:s};
+  }
+  var last=/^last\s+/.test(s);
+  var word=s.replace(/^last\s+/,'');
+  var dow=null;
+  Object.keys(_CC_DOW).forEach(function(k){ if(k.indexOf(word)===0 || word.indexOf(k.slice(0,3))===0) dow=_CC_DOW[k]; });
+  if(dow==null) return null;
+  // The most recent one that has already happened. Saying "Tuesday" ON a Tuesday
+  // means today, not a week ago — but "last Tuesday" always means the one before.
+  var d=new Date(); d.setHours(12,0,0,0);
+  var back=(d.getDay()-dow+7)%7;
+  if(last) back=back===0?7:back+7;
+  d.setDate(d.getDate()-back);
+  var lbl=Object.keys(_CC_DOW).filter(function(k){ return _CC_DOW[k]===dow; })[0];
+  return {ts:d.getTime(), label:(last?'last ':'')+lbl.charAt(0).toUpperCase()+lbl.slice(1)};
+}
+function _ccKindFromVerb(v){
+  v=String(v||'').toLowerCase();
+  if(/call|rang|phoned/.test(v)) return 'call';
+  if(/spoke|talked|met|caught up/.test(v)) return 'talk';
+  return 'text';
+}
+var _CC_VERB='(?:texted|text|messaged|message|dm(?:\'?d|ed)?|called|call|rang|phoned|spoke to|spoke with|spoke|talked to|talked with|talked|met with|met|caught up with|contacted|contact|reached out to|checked in with|checked in on)';
+// Split "Texted Kelly Tuesday, Andrew yesterday and Toni this morning" into its
+// three separate facts, each keeping the verb it inherited from the front.
+function _ccParseStatement(text){
+  var t=String(text||'').trim().replace(/[.!]+$/,'');
+  var head=new RegExp('^(?:i\\s+(?:just\\s+)?)?('+_CC_VERB+')\\s+(.+)$','i').exec(t);
+  if(!head) return null;
+  var defKind=_ccKindFromVerb(head[1]);
+  var rest=head[2];
+  var parts=rest.split(/\s*,\s*|\s+and\s+/i).map(function(x){ return x.trim(); }).filter(Boolean);
+  if(!parts.length) return null;
+  var out=[];
+  for(var i=0;i<parts.length;i++){
+    var p=parts[i], kind=defKind;
+    // A later clause may carry its own verb: "texted Kelly, called Andrew".
+    var own=new RegExp('^('+_CC_VERB+')\\s+(.+)$','i').exec(p);
+    if(own){ kind=_ccKindFromVerb(own[1]); p=own[2].trim(); }
+    var when=null, mw=_CC_WHEN_RE.exec(p);
+    if(mw){ when=mw[1]; p=p.slice(0, mw.index).trim().replace(/[,\-]+$/,'').trim(); }
+    var about='';
+    var ma=/^(.+?)\s+about\s+(.+)$/i.exec(p);
+    if(ma){ p=ma[1].trim(); about=ma[2].trim(); }
+    if(!p) return null;
+    out.push({who:p, kind:kind, whenWords:when, about:about});
+  }
+  return out;
+}
+// Resolve EVERYTHING first. Nothing is written until every name and every date
+// in the message has exactly one answer.
+function _ccResolveAll(clauses){
+  var resolved=[], problems=[];
+  clauses.forEach(function(c){
+    var hits=_jvResolveClient(c.who);
+    if(!hits.length){ problems.push('I don’t have anyone called <b>'+_escHtml(c.who)+'</b>.'); return; }
+    if(hits.length>1){
+      problems.push('<b>'+_escHtml(c.who)+'</b> matches '+hits.length+' clients — '
+        + hits.map(function(h){ return _escHtml(String((CLIENTS[h]||{}).name||h)); }).join(', ')
+        + '. Which one?');
+      return;
+    }
+    var w=_ccWhenFromWords(c.whenWords);
+    if(!w){ problems.push('I don’t know when “'+_escHtml(String(c.whenWords||''))+'” is — give me a day and I’ll log it.'); return; }
+    resolved.push({code:hits[0], name:String((CLIENTS[hits[0]]||{}).name||hits[0]), kind:c.kind, about:c.about, ts:w.ts, when:w.label});
+  });
+  return {resolved:resolved, problems:problems};
+}
+// Returns a line of HTML when it handled the sentence, or null when the sentence
+// was not a contact statement and belongs to whatever comes next.
+async function _ccHandleStatement(text){
+  var clauses=_ccParseStatement(text);
+  if(!clauses) return null;
+  var r=_ccResolveAll(clauses);
+  // One bad name stops the whole message. Writing the two it understood and
+  // asking about the third leaves a half-logged sentence nobody can audit.
+  if(r.problems.length){
+    return r.problems.join('<br>') + (r.resolved.length ? '<br><span style="opacity:0.7;">Nothing logged yet — sort that out and say it again.</span>' : '');
+  }
+  if(!r.resolved.length) return null;
+  var done=[], unsynced=0;
+  for(var i=0;i<r.resolved.length;i++){
+    var x=r.resolved[i];
+    var row=await jvLogContact(x.code, x.kind, x.about, true, x.ts);
+    if(!row){ continue; }
+    if(!row.s) unsynced++;
+    var verb=(x.kind==='call'?'called':(x.kind==='talk'?'spoke to':'texted'));
+    done.push(verb+' <b>'+_escHtml(x.name)+'</b>, '+_escHtml(x.when)+(x.about?(' — '+_escHtml(x.about)):''));
+  }
+  if(!done.length) return 'That did not save. Nothing was logged.';
+  try{ if(window.jvTriage && typeof jvRenderTriage==='function') jvRenderTriage(); }catch(e){}
+  try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+  return '✓ Logged: '+done.join('; ')+'.'
+    + (unsynced ? '<br><span style="opacity:0.7;">'+unsynced+' saved here but not synced to your other devices yet.</span>' : '');
+}
 // Returns the logged row (truthy) rather than a bare boolean, so a caller that needs to
 // address THIS entry again — undo, add a note — has the exact timestamp to match on.
 // No id comes back from the insert (Prefer: minimal), so contacted_at is the key
 // everywhere a specific row needs touching again.
-async function jvLogContact(code, kind, about, replied){
+// whenTs backdates the entry. The trainer door has always accepted an explicit
+// contacted_at — this was the one hardcoded Date.now() standing between the app
+// and "texted Kelly on Tuesday". Absent, it is still now, so every existing
+// caller behaves exactly as it did.
+async function jvLogContact(code, kind, about, replied, whenTs){
   if(!code) return null;
   kind=_CC_KIND[kind]?kind:'text';
-  var row={t:Date.now(), k:kind, a:String(about||'').trim().slice(0,300), r:(replied!==false)};
+  var _t=(whenTs!=null && !isNaN(+whenTs)) ? +whenTs : Date.now();
+  var row={t:_t, k:kind, a:String(about||'').trim().slice(0,300), r:(replied!==false)};
   var m=jvContacts(); (m[code]=m[code]||[]).unshift(row); if(m[code].length>200) m[code].length=200;
   _ccSave(m);
   // Speaking to someone clears them off today's board too — one action, not two.
@@ -14746,7 +15102,7 @@ async function jvLogContact(code, kind, about, replied){
     if(cl){
       var w=await trainerWrite('contactInsert', {client_code:code, kind:kind, about:row.a, replied:row.r,
                              contacted_at:new Date(row.t).toISOString()});
-      if(w.ok) window._ccSrv='ok';
+      if(w.ok){ window._ccSrv='ok'; row.s=true; }
     }
   }catch(e){}
   return row;
@@ -15576,7 +15932,52 @@ function _jvMovement(p){
 // card — that's a person you've deliberately opened, not one of sixteen you're
 // scanning. A bar also reads as broken when start and current are the same number:
 // the marker pins to the left and says nothing at all.
+// ===== "NOT FETCHED YET" IS NOT "NEVER HAPPENED" ==========================
+// Every weigh-in number on this board comes out of jvTriage, which is filled by
+// ONE load that only runs when the board itself is opened. Anything that reads
+// jvTriage without checking whether that load has happened is reading an empty
+// shelf, and the two surfaces below used to turn that silence into a sentence
+// about the client: "No weigh-ins yet. Nothing to measure against." Toni A has
+// weighed in 74 times, most recently the day before this was written, and her
+// own card said exactly that whenever it was opened from the Feed — which is
+// the tab the app lands on, so it was the normal case, not the edge one.
+//
+// Three states now, and they are three different sentences:
+//   store not loaded   -> say nothing about them, and go and load it
+//   loaded, no rows    -> the real empty state, unchanged
+//   loaded, rows       -> the numbers
+// ===== THE STORE KNOWS WHICH OF THREE THINGS IS TRUE ======================
+// This bug has now been found four times, always by accident, always the same
+// shape: something reads jvTriage, finds nothing there, and writes a sentence
+// about the client. It kept happening because the store had only two states —
+// an object, or null — and null was doing double duty for "nobody has fetched
+// this yet" and "she has nothing". Those are not the same fact and one of them
+// is not about her at all.
+//
+// Three states now, copied from the one place in this file that already got it
+// right (window._tpLoadFailed, which the Day page uses to tell "no plan saved"
+// apart from "the plan read failed"):
+//   undefined -> no load has ever run
+//   true      -> a load ran and at least one of its reads did not answer
+//   false     -> a load ran and every read answered; the data is the truth
+// A surface that cannot get an answer says which of the two silences it is
+// looking at, and never converts either into a statement about a person.
+window._jvTriageFailed = window._jvTriageFailed;   // deliberately left undefined
+function _jvTriageReady(){ try{ return !!(window.jvTriage && jvTriage.per); }catch(e){ return false; } }
+function _jvTriageState(){
+  if(_jvTriageReady()) return 'ready';
+  return (window._jvTriageFailed===true) ? 'failed' : 'never';
+}
+// One sentence, said the same way everywhere, for the two states that are not
+// an answer. `what` names the thing in the client's own terms, so the line reads
+// as a fact about the screen rather than a verdict on them.
+function _jvNoStore(what){
+  return (window._jvTriageFailed===true)
+    ? ('Could not read '+what+' — that is a read that failed, not a client with none. Try Refresh.')
+    : ('Loading '+what+'…');
+}
 function _jvWeightLine(code){
+  if(!_jvTriageReady()) return '<span class="jvPending">'+_escHtml(_jvNoStore('their weigh-ins'))+'</span>';
   var p=null; try{ p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null; }catch(e){}
   var lw=p&&p.lastWeight;
   if(!lw || isNaN(+lw.val)) return 'No weigh-ins yet';
@@ -15603,6 +16004,16 @@ function _jvProgress(code, size){
   var p=null, goal=null;
   try{ p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null; goal=(jvTriage&&jvTriage.goals)?jvTriage.goals[code]:null; }catch(e){}
   var lw=p&&p.lastWeight, fw=p&&p.firstWeight;
+
+  // Nothing has fetched their numbers yet. That is a fact about this page, not
+  // about them, so the card says so and jvOpenDeep repaints this block the
+  // moment the load lands.
+  if(!_jvTriageReady()){
+    return '<div class="'+cls+'" id="jvProgWait_'+code+'">'
+      +'<div class="ovEy">Progress</div>'
+      +'<div class="ovMetaTop">'+_escHtml(_jvNoStore('their weigh-ins'))+'</div>'
+    +'</div>';
+  }
 
   // Say it plainly rather than drawing an empty bar, which reads as "flat".
   if(!lw || isNaN(+lw.val)){
@@ -15789,7 +16200,11 @@ function _jvExportOne(code, D){
   // --- weight ---
   L.push(''); L.push('WEIGHT');
   var lw=p&&p.lastWeight, fw=p&&p.firstWeight;
-  if(!lw || isNaN(+lw.val)){ L.push('No weigh-ins recorded.'); }
+  // Belt to the caller's braces. If the store still is not there — the caller
+  // skipped the wait, or the read failed — this says which, rather than printing
+  // "No weigh-ins recorded" into a document that gets pasted to a human being.
+  if(!_jvTriageReady()){ L.push(_jvNoStore('their weigh-ins')); }
+  else if(!lw || isNaN(+lw.val)){ L.push('No weigh-ins recorded.'); }
   else {
     var cw=+lw.val, sw=(fw&&!isNaN(+fw.val))?+fw.val:cw, n=(p&&p.wCount)||1;
     var moved=Math.round((cw-sw)*10)/10;
@@ -15896,6 +16311,12 @@ async function jvCopyClient(code, btn){
   var label=btn?btn.textContent:'';
   if(btn){ btn.disabled=true; btn.textContent='Gathering…'; }
   try{
+    // The weight section is built from the board's store, and this button sits on
+    // a card that opens from the Feed — where nothing has filled it. Without this
+    // wait the copied text carried an empty WEIGHT section for a client with
+    // years of weigh-ins, and it is text that gets pasted to people. The
+    // roster-wide copy has always waited; this one never learned to.
+    if(!_jvTriageReady() && typeof jvLoadTriage==='function'){ try{ await jvLoadTriage(true); }catch(e){} }
     var D=await _jvExportGather([code]);
     var txt=_jvExportOne(code, D);
     _jvCopyText(txt, 'Copied '+String((CLIENTS[code]||{}).name||code).split(' ')[0]+' — paste it anywhere');
@@ -16122,6 +16543,35 @@ function _jvCoachStyle(code){
     +(roast?'<span style="flex-shrink:0;font-size:9.5px;font-weight:800;letter-spacing:0.7px;text-transform:uppercase;color:rgba(240,236,228,0.78);border:1px solid #3d3d3d;border-radius:20px;padding:3px 8px;">Not live</span>':'')
   +'</div>';
 }
+// Fill the board's store if nothing has, then repaint the one block on this
+// card that depends on it. One load is shared by however many cards ask for it
+// at once — opening three profiles in a row must not fire three roster-wide
+// reads. A load that fails leaves an honest failure on the card rather than a
+// spinner that never resolves, because "we could not read it" and "she has
+// never weighed in" are the two sentences this whole fix exists to separate.
+function _jvEnsureTriage(code){
+  if(_jvTriageReady()) return;
+  if(typeof jvLoadTriage!=='function') return;
+  if(!window._jvTriagePending){
+    try{ window._jvTriagePending=Promise.resolve(jvLoadTriage(true)).catch(function(){}); }
+    catch(e){ window._jvTriagePending=null; return; }
+  }
+  window._jvTriagePending.then(function(){
+    window._jvTriagePending=null;
+    try{ _jvRepaintProgress(code); }catch(e){}
+  });
+}
+function _jvRepaintProgress(code){
+  var host=document.getElementById('jvProgBlock_'+code);
+  if(!host) return;
+  if(_jvTriageReady()){
+    host.innerHTML='<div class="jvBlockLabel">Progress</div>'+_jvProgress(code);
+    return;
+  }
+  host.innerHTML='<div class="jvBlockLabel">Progress</div>'
+    +'<div class="ovCard ovSm"><div class="ovEy">Progress</div>'
+    +'<div class="ovMetaTop">'+_escHtml(_jvNoStore('their weigh-ins'))+'</div></div>';
+}
 function jvOpenDeep(code){
   _jvHydratePhones();
   var info=CLIENTS[code]; if(!info) return;
@@ -16152,7 +16602,10 @@ function jvOpenDeep(code){
     + '<div id="cnHostC_'+code+'" class="jvBlock">'+_cnCoachHtml(code)+'</div>'
     // Fills in only when the saved week contradicts the sex on file. Silent otherwise.
     + '<div id="jvSplitFlag"></div>'
-    + '<div class="jvBlock">'
+    // Identified so the load kicked off below can fill it in place. The card
+    // opens instantly either way — waiting on the numbers to draw the whole
+    // profile would trade one wrong answer for a slow one.
+    + '<div class="jvBlock" id="jvProgBlock_'+code+'">'
       + '<div class="jvBlockLabel">Progress</div>'
       + _jvProgress(code)
     + '</div>'
@@ -16194,6 +16647,11 @@ function jvOpenDeep(code){
   window._jvDeepMode=jvMode;
   // Recent history is in the card itself now, so it loads whether or not the rest
   // is expanded — it's the thing being looked for, not an extra.
+  // The numbers this card reports on are loaded by the board, and the board may
+  // never have been opened — from the Feed tab, which is where the app lands,
+  // it never has. Fetch them now and fill the Progress block in when they
+  // arrive, so the card stops answering a question it has not asked yet.
+  _jvEnsureTriage(code);
   _jvDeepHistory(code);
   _jvLoadSplitFlag(code);
   // Re-read on open so a note added on the phone shows up here, then repaint in place.
@@ -16881,11 +17339,151 @@ function _tlDayLabel(d){
 // ===== SCROLLABLE CALENDAR — past above, future below, plan baked in =====
 var _tlDaysBack=14, _tlDaysFwd=7;
 function _tlDateStr(d){ return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
+
+// ===== REACHING BACK PAST THE FORTNIGHT ===================================
+// The Day page used to draw a fixed 14 days back, full stop: a client's own
+// history fell off the top of their own page after two weeks and there was no
+// way to it. It is now anchored to their beginning — their start date if we
+// know it, otherwise the first day they logged anything — and paged there a
+// fortnight at a time, on request.
+//
+// Paged, not preloaded, and that is the whole design constraint. A client six
+// months in must not pay for six months of rows at boot, so boot still reads
+// exactly the recent window it always did. Every step further back is an
+// explicit tap, fetches only the slice it adds, and merges that slice into the
+// cache instead of re-reading a window that keeps growing — a growing window
+// would eventually hit the 300-row limit, and PostgREST answers that with the
+// NEWEST 300, which would quietly blank the oldest days. Slices can't.
+var _tlPageDays=14;                 // one fortnight per tap, same rhythm as the default view
+window._tlExtraBack = window._tlExtraBack || 0;   // days revealed beyond the default, this client
+window._tlAnchor    = window._tlAnchor    || null; // Date at local midnight, or null = not resolved yet
+window._tlAnchorSrc = window._tlAnchorSrc || '';   // 'start' | 'log' — only to word the end marker honestly
+function _tlWindowBack(){ return _tlDaysBack + (+window._tlExtraBack||0); }
+// The oldest day currently DRAWN. Never older than the anchor once we know it.
+function _tlWindowStart(today){
+  var t=today?new Date(today):new Date(); t.setHours(0,0,0,0);
+  var s=new Date(t); s.setDate(s.getDate()-_tlWindowBack()); s.setHours(0,0,0,0);
+  var a=window._tlAnchor;
+  if(a && s.getTime()<a.getTime()){ var c=new Date(a); c.setHours(0,0,0,0); return c; }
+  return s;
+}
+// One day of overlap on every read, and it is NOT slack to be trimmed.
+// logged_at is a naked timestamp the server compares as an instant, while
+// date_str is the local day the row actually belongs to. Local midnight sent as
+// an instant lands hours INTO the day for anyone west of UTC, so an exact-start
+// query drops every row logged before then — the oldest drawn day would lose
+// its early morning. One day covers every offset on earth. It used to be two,
+// which fetched a whole day of rows that were never drawn.
+function _tlFetchSince(start){ var s=new Date(start); s.setDate(s.getDate()-1); s.setHours(0,0,0,0); return s; }
+// Every day between two dates, as the same key the renderer groups rows by.
+function _tlDaySet(from, to){
+  var s={}, cur=new Date(from), end=new Date(to), guard=0;
+  cur.setHours(0,0,0,0); end.setHours(0,0,0,0);
+  while(cur.getTime()<=end.getTime() && guard++<4000){ s[_tlDateStr(cur)]=1; cur.setDate(cur.getDate()+1); }
+  return s;
+}
+function _tlRowDs(r){
+  if(r&&r.date_str) return r.date_str;
+  try{ if(r&&r.logged_at){ var d=new Date(/[Z+]/.test(r.logged_at)?r.logged_at:r.logged_at+'Z'); if(!isNaN(d.getTime())) return _tlDateStr(d); } }catch(e){}
+  return null;
+}
+function _tlDedupe(rows){
+  var seen={}, out=[];
+  (rows||[]).forEach(function(r){
+    if(!r) return;
+    var k=(r.id!=null) ? ('i'+r.id)
+        : ('x'+(r.logged_at||'')+'|'+(r.date_str||'')+'|'+(r.description||r.title||''));
+    if(seen[k]) return; seen[k]=1; out.push(r);
+  });
+  return out;
+}
+// Fold a freshly-read range into the cache, keyed on the DAY rather than on the
+// timestamp — the day is what the renderer groups by, and comparing naked
+// timestamps against instants client-side is the same trap as above. Rows on a
+// day we just re-read come from the read, so a deletion actually disappears.
+// Rows on days outside it are kept, which is what stops the routine refresh of
+// the last fortnight from throwing away months a client has paged back to.
+function _tlCacheMerge(base, fresh, days){
+  base=base||{foods:[],workouts:[],weights:[],journals:[]};
+  fresh=fresh||{};
+  function merge(oldList, newList){
+    var kept=(oldList||[]).filter(function(r){ var d=_tlRowDs(r); return !(d && days[d]); });
+    return _tlDedupe(kept.concat(newList||[]));
+  }
+  return {
+    foods:    merge(base.foods,    fresh.foods),
+    workouts: merge(base.workouts, fresh.workouts),
+    weights:  merge(base.weights,  fresh.weights),
+    journals: merge(base.journals, fresh.journals)
+  };
+}
+// One reader for the client's own logs. `until` is exclusive, so a page-back
+// fetches only the slice it adds and never re-reads what is already on screen.
+function _tlGrab(table, since, until){
+  var cc='client_code=eq.'+encodeURIComponent(cl.code);
+  var q=cc+'&logged_at=gte.'+encodeURIComponent(since.toISOString());
+  if(until) q+='&logged_at=lt.'+encodeURIComponent(until.toISOString());
+  return sbSelect(table, q+'&order=logged_at.desc&limit=300')
+    .catch(function(){ return sbSelect(table, cc+'&order=logged_at.desc&limit=200').catch(function(){ return []; }); });
+}
+// The first day this client ever logged anything. Four limit-1 reads, so it
+// costs four ROWS, not four months — and it only runs when somebody actually
+// asks to go back, never at boot.
+async function _tlEarliestLoggedDate(){
+  if(!cl) return null;
+  var cc='client_code=eq.'+encodeURIComponent(cl.code);
+  function first(t){ return sbSelect(t, cc+'&select=logged_at,date_str&order=logged_at.asc&limit=1').catch(function(){ return []; }); }
+  var r=[];
+  try{ r=await Promise.all([first('food_logs'),first('workout_logs'),first('weight_logs'),first('journal_entries')]); }catch(e){ return null; }
+  var best=null;
+  (r||[]).forEach(function(rows){
+    var row=(rows&&rows[0])||null; if(!row) return;
+    var ds=_tlRowDs(row); if(!ds) return;
+    var d=_parseDs(ds); if(!d) return;
+    d.setHours(0,0,0,0);
+    if(!best || d.getTime()<best.getTime()) best=d;
+  });
+  return best;
+}
+// Their beginning is THE FIRST DAY THEY LOGGED ANYTHING IN THIS APP, and
+// nothing else (Yusuf, ruling, 15 Aug). Not their start date and not their term.
+// This anchored on the start date for about an hour and the result made the case
+// against it on its own: Sarah started in February and first logged in July, so
+// her own history began behind five months of empty days she had to walk through
+// to reach it. A term is a commercial fact; the history is the days she has.
+//
+// Unresolved stays unresolved: a failed read must never harden into "you have
+// nothing older", so the way back stays open and the next tap tries again.
+// sbSelect answers [] for a refusal and for an empty table alike, so "no rows"
+// is not proof of anything on its own.
+async function _tlResolveAnchor(){
+  if(window._tlAnchor) return window._tlAnchor;
+  if(!cl) return null;
+  var logged=await _tlEarliestLoggedDate();
+  if(!logged) return null;
+  window._tlAnchor=logged; window._tlAnchorSrc='log';
+  return logged;
+}
+// Paging state belongs to whoever's page this is. Switching clients, or leaving,
+// must not carry one person's anchor onto another person's history.
+function _tlResetPaging(){
+  window._tlExtraBack=0; window._tlAnchor=null; window._tlAnchorSrc=''; window._tlAtAnchor=false;
+}
 var _PLAN_DEFAULT_MIN=17*60;   // 5pm if nothing has been set
 // A day starts when you get up and ends when you go down. Thin bookends, not blocks.
 // Weigh-in is a line, not a block: the word and the number, nothing else.
 // One line for the top of the day instead of two floating fragments.
-function _dayMeta(ds, slots){
+// Past, today or ahead — derived from the day handed in, never from a day this
+// function went and looked up for itself.
+function _tlDayState(ds){
+  try{
+    var d=_parseDs(ds); if(!d) return 'today';
+    d.setHours(0,0,0,0);
+    var t=new Date(); t.setHours(0,0,0,0);
+    return d.getTime()<t.getTime() ? 'past' : (d.getTime()>t.getTime() ? 'ahead' : 'today');
+  }catch(e){ return 'today'; }
+}
+function _dayMeta(ds, slots, dayState){
   // Wake time is gone from the day (Yusuf, 5 Aug). It was display-only — the tap
   // handler was already a no-op — so nothing saved through it. Sleep stays on the
   // profile row it's actually edited from.
@@ -16916,14 +17514,14 @@ function _dayMeta(ds, slots){
     +'</span>';
   }
   return '<div class="tlmeta">'+bits.join('<span class="tlmsep"></span>')+_stHtml+'</div>'
-    + _tlTotLine(slots);
+    + _tlTotLine(slots, dayState||_tlDayState(ds));
 }
 // The day's running total — the plate card's numbers on one quiet line, where the
 // mock put them: under the readout, left, where your eye lands second. Always
 // present, even with nothing logged yet — a client asked where it was and found
 // it missing entirely, not showing zeros. A meal with no numbers is still SAID —
 // never silently counted as a zero.
-function _tlTotLine(slots){
+function _tlTotLine(slots, dayState){
   var meals=0, blank=0, cal=0, pro=0, carb=0, fat=0;
   ['breakfast','lunch','dinner','snack'].forEach(function(k){
     var list=(slots&&slots[k])||[]; if(!list.length) return;
@@ -16935,7 +17533,14 @@ function _tlTotLine(slots){
     });
     if(!t) blank++;
   });
-  if(!meals) return '<div class="tlTot"><span>Nothing logged yet - the day\'s ahead of you.</span></div>';
+  // A day already over is a record, not an invitation. "The day's ahead of you"
+  // was written for today and was being said to every empty day in the past —
+  // barely noticeable across a fortnight, absurd across the months a client can
+  // now reach. An empty past day states the fact and nothing else: no prompt to
+  // act on a day that is gone, and nothing that reads as a mark against them.
+  if(!meals) return '<div class="tlTot"><span>'
+    + ((dayState||'today')==='past' ? 'Nothing logged.' : 'Nothing logged yet - the day\'s ahead of you.')
+    + '</span></div>';
   return '<div class="tlTot">'
     +'<b>'+Math.round(cal).toLocaleString()+'</b><span>cal</span><span>·</span>'
     +'<span><b style="font-size:12.5px;">'+Math.round(pro)+'g</b> protein</span><span>·</span>'
@@ -17063,6 +17668,148 @@ function tlWnDismiss(ds){
 // for as many as you can — the load column is noise there, so the row asks only
 // for reps.
 function _bfRepsOnly(e){ return /^amrap$/i.test(String((e&&e.r)||'').trim()); }
+
+// ===== TODAY'S SESSION SHEET, NOT THE PROGRAM ============================
+// THE HARD LINE (Yusuf, 15 Aug): a client never writes training_plans.plan —
+// not directly, not as a side effect, not bundled with something else.
+//
+// The card's controls used to edit _tpPlan itself. Nothing on the card wrote,
+// so it looked harmless; then any finisher tap fired _saveTrainingPlanQuiet(),
+// which POSTs the WHOLE plan, and flushed those edits to the server. A client
+// dropping an exercise on Tuesday deleted it from the program for good, and
+// because the POST sends the copy loaded at sign-in it could also undo an edit
+// Yusuf made in the meantime.
+//
+// The card is TODAY'S SHEET. Skipping a movement, doing rope curls instead of
+// cable, adding a press at the end — all of that is about one date, and it now
+// lives in the same per-day draft the card already keeps its equipment pills,
+// its connection answers and its free text in. It reaches the permanent record
+// exactly where every other thing on this card does: the workout_logs row that
+// Complete writes, read-back verified, once.
+//
+// The program itself is still the client's to change — deliberately, on the
+// Program tab, behind its own Save, through a verified write that says so when
+// it fails (pgSavePlan). That is the one sanctioned door and this is not it.
+//
+// KEYED ON NAME, NEVER INDEX. A dropped or swapped movement is remembered by
+// what it is, so if Yusuf reshapes the week underneath an open draft the
+// untouched movements still follow the program instead of silently shifting
+// onto whatever landed at that position.
+function _bfDayEx(ds, plan){
+  var base=(plan && Array.isArray(plan.ex)) ? plan.ex : [];
+  var dr={}; try{ dr=_woDraft(ds)||{}; }catch(e){}
+  var drop=Array.isArray(dr.exDrop)?dr.exDrop:[];
+  var swap=(dr.exSwap && typeof dr.exSwap==='object')?dr.exSwap:{};
+  var add=Array.isArray(dr.exAdd)?dr.exAdd:[];
+  var out=[];
+  base.forEach(function(e){
+    if(!e || !e.n) return;
+    if(drop.indexOf(e.n)>=0) return;
+    var s=swap[e.n];
+    if(s && s.n){
+      // The prescription is the trainer's; only the movement changed. Sets and
+      // reps carry over unless the replacement states its own.
+      out.push({n:s.n, s:(s.s!=null?s.s:e.s), r:(s.r!=null?s.r:e.r), c:s.c, v:s.v});
+    } else {
+      out.push(e);
+    }
+  });
+  add.forEach(function(e){
+    if(!e || !e.n) return;
+    if(out.some(function(o){ return o.n===e.n; })) return;   // one card per movement
+    out.push(e);
+  });
+  return out;
+}
+// The card renders the effective list, so an index on a card is an index into
+// THAT — never into _tpPlan[day].ex. Every set handler resolves through here so
+// a dropped or swapped movement can't send a weight to the wrong exercise.
+function _bfExAt(day, i, ds){
+  try{
+    var d=ds || _tlDateStr(new Date());
+    var wd=_parseDs(d);
+    var plan=wd ? _tlPlanForDate(wd) : (_tpPlan && _tpPlan[day]);
+    var list=_bfDayEx(d, plan || (_tpPlan && _tpPlan[day]) || {});
+    return list[i] || null;
+  }catch(e){
+    try{ return (_tpPlan && _tpPlan[day] && _tpPlan[day].ex[i]) || null; }catch(_){ return null; }
+  }
+}
+function _bfDaySet(ds, mutate){
+  var d=_woDraft(ds);
+  if(!Array.isArray(d.exDrop)) d.exDrop=[];
+  if(!d.exSwap || typeof d.exSwap!=='object') d.exSwap={};
+  if(!Array.isArray(d.exAdd)) d.exAdd=[];
+  mutate(d);
+  _woSaveDraft(ds, d);
+  // In place: the day repaints, the scroller and every other day stay put.
+  try{ _tlPatchDay(ds); }catch(e){ try{ renderDayTimeline(true); }catch(_){} }
+}
+// Not doing this one today. An added movement is simply taken back off the
+// sheet; a programmed one is remembered as dropped for this date only.
+function bfDayDrop(ds, i){
+  var wd=_parseDs(ds); var plan=wd?_tlPlanForDate(wd):null;
+  var e=_bfDayEx(ds, plan||{})[i]; if(!e || !e.n) return;
+  var nm=e.n;
+  _bfDaySet(ds, function(d){
+    var ai=-1; d.exAdd.forEach(function(x,k){ if(x&&x.n===nm) ai=k; });
+    if(ai>=0){ d.exAdd.splice(ai,1); return; }
+    // A swapped-in movement drops the swap AND the original it stood in for.
+    var orig=null;
+    Object.keys(d.exSwap).forEach(function(k){ if(d.exSwap[k] && d.exSwap[k].n===nm) orig=k; });
+    if(orig){ delete d.exSwap[orig]; if(d.exDrop.indexOf(orig)<0) d.exDrop.push(orig); return; }
+    if(d.exDrop.indexOf(nm)<0) d.exDrop.push(nm);
+  });
+  try{ showToast('Off today’s session'); }catch(e){}
+}
+// _bfDayPick carries which card on which date opened the picker. The picker's
+// own markup is shared with the builder, so this is what tells tpSwapPick /
+// tpAddPick to write a draft instead of the program. Set on every open, so it
+// can never be left over from a previous one.
+window._bfDayPick = null;
+function bfDaySwapOpen(ds, day, i){
+  var wd=_parseDs(ds); var plan=wd?_tlPlanForDate(wd):null;
+  var list=_bfDayEx(ds, plan||{});
+  var e=list[i]; if(!e || !e.n) return;
+  window._bfDayPick={ds:ds, day:day, i:i, from:e.n, mode:'swap', taken:list.map(function(x){ return x.n; })};
+  try{ _tpOpenPickerFor(e, list, day); }catch(err){ window._bfDayPick=null; }
+}
+function bfDayAddOpen(ds, day){
+  var wd=_parseDs(ds); var plan=wd?_tlPlanForDate(wd):null;
+  var list=_bfDayEx(ds, plan||{});
+  window._bfDayPick={ds:ds, day:day, i:-1, from:null, mode:'add', taken:list.map(function(x){ return x.n; })};
+  try{ tpAddOpen(day); }catch(err){ window._bfDayPick=null; }
+}
+// One movement instead of another, for this date. The prescription stays the
+// trainer's — see _bfDayEx.
+function bfDaySwapCommit(x){
+  var st=window._bfDayPick; if(!st || !x || !x.n) return false;
+  var ds=st.ds, from=st.from;
+  window._bfDayPick=null;
+  try{ closeM('mTpPick'); }catch(e){}
+  if(st.mode==='add'){
+    _bfDaySet(ds, function(d){
+      if(d.exDrop.indexOf(x.n)>=0) d.exDrop.splice(d.exDrop.indexOf(x.n),1);   // adding back one you dropped
+      else d.exAdd.push({n:x.n, s:(x.s!=null?x.s:3), r:(x.r!=null?x.r:'10'), c:x.c, v:x.v});
+    });
+    try{ showToast('Added to today'); }catch(e){}
+    return true;
+  }
+  if(!from) return false;
+  // Two cards of the same name share one set state and double-log on Complete.
+  // The library picker filters these out already; the add-picker fallback (a
+  // movement EX_LIB doesn't know) comes through here without that filter.
+  if(x.n!==from && (st.taken||[]).indexOf(x.n)>=0){
+    try{ showToast('Already on today’s session'); }catch(e){}
+    return false;
+  }
+  _bfDaySet(ds, function(d){
+    if(x.n===from) delete d.exSwap[from];        // swapped back to the programmed one
+    else d.exSwap[from]={n:x.n, s:x.s, r:x.r, c:x.c, v:x.v};
+  });
+  try{ showToast('Swapped for today'); }catch(e){}
+  return true;
+}
 function _bfVisible(e, ds){
   // Another day's card must not wear today's numbers — _tpToday is name-keyed
   // and belongs to today alone.
@@ -17082,8 +17829,10 @@ function _bfVisible(e, ds){
 }
 // Touching any number adopts the whole visible card as today's — from then on the
 // rows are real, and Complete persists exactly what's on screen.
-function _bfMaterialize(day,i){
-  var e=_tpPlan&&_tpPlan[day]&&_tpPlan[day].ex[i]; if(!e) return null;
+function _bfMaterialize(day,i,ds){
+  // Resolve through the day's own sheet, not the raw template — a dropped or
+  // swapped movement shifts the indices the cards were rendered from.
+  var e=_bfExAt(day,i,ds); if(!e) return null;
   var vis=_bfVisible(e);
   if(vis.src!=='today'){
     _tpToday[e.n]=vis.rows.map(function(r){ return {w:String(r.w||''), r:String(r.r||'')}; });
@@ -17101,7 +17850,8 @@ function bfSetTap(el){
   if(!_bfEditableDs(el.getAttribute('data-ds'))) return;
   if(el._editing) return; el._editing=true;
   var day=el.getAttribute('data-day'), i=+el.getAttribute('data-i'), k=+el.getAttribute('data-k'), f=el.getAttribute('data-f');
-  var e=_tpPlan&&_tpPlan[day]&&_tpPlan[day].ex[i]; if(!e){ el._editing=false; return; }
+  var _sds=el.getAttribute('data-ds');
+  var e=_bfExAt(day,i,_sds); if(!e){ el._editing=false; return; }
   // Seed from the underlying row, never the rendered text. Scraping the cell
   // turned "× 6-8" into "68" — one stray tap and a mashed rep range persisted
   // and pre-filled every later session.
@@ -17131,7 +17881,7 @@ function bfSetTap(el){
     var v=(f==='w') ? String(inp.value||'').replace(/[^0-9.]/g,'')
                     : String(inp.value||'').trim().replace(/[^0-9.\-A-Za-z ]/g,'');
     if(v===seed){ try{ renderDayTimeline(true); }catch(e3){} return; }   // untouched: no write, no adoption
-    var e2=_bfMaterialize(day,i);
+    var e2=_bfMaterialize(day,i,_sds);
     if(e2){
       var arr=(_tpToday[e2.n]=_tpToday[e2.n]||[]);
       while(arr.length<=k) arr.push({w:'',r:''});
@@ -17143,16 +17893,16 @@ function bfSetTap(el){
   inp.addEventListener('blur', commit);
 }
 // A new set pre-fills from the set above it — never empty (approved amendment).
-function bfAddSet(day,i){
-  var e=_bfMaterialize(day,i); if(!e) return;
+function bfAddSet(day,i,ds){
+  var e=_bfMaterialize(day,i,ds); if(!e) return;
   var arr=(_tpToday[e.n]=_tpToday[e.n]||[]);
   var top=arr[arr.length-1]||{w:String((_tpLastW&&_tpLastW[e.n])||''), r:String(e.r||'')};
   arr.push({w:String(top.w||''), r:String(top.r||'')});
   tpPersistSets(day, e.n);
   renderDayTimeline(true);
 }
-function bfRemoveSet(day,i,k){
-  var e=_bfMaterialize(day,i); if(!e) return;
+function bfRemoveSet(day,i,k,ds){
+  var e=_bfMaterialize(day,i,ds); if(!e) return;
   var arr=(_tpToday[e.n]=_tpToday[e.n]||[]);
   if(k>=0 && k<arr.length) arr.splice(k,1);
   if(!arr.length) arr.push({w:'', r:String(e.r||'')});
@@ -17424,8 +18174,11 @@ function _bfExCard(day,i,e,ds,dr){
           })()
         +'<div class="bfPlan">'+e.s+' × '+_escHtml(String(e.r||''))+' reps</div>'
       +'</div>'
-      +'<span class="bfMini" onclick="event.stopPropagation();tpSwapOpen(\''+day+'\','+i+')">Swap</span>'
-      +'<span class="bfMini bfMiniX" onclick="event.stopPropagation();tpRemove(\''+day+'\','+i+')" title="Remove exercise">×</span>'
+      // Today's sheet, not the program. These used to call the builder's own
+      // tpSwapOpen/tpRemove, which edit _tpPlan — see _bfDayEx for what that
+      // cost. They write the day's draft now and nothing else.
+      +'<span class="bfMini" onclick="event.stopPropagation();bfDaySwapOpen(\''+ds+'\',\''+day+'\','+i+')">Swap</span>'
+      +'<span class="bfMini bfMiniX" onclick="event.stopPropagation();bfDayDrop(\''+ds+'\','+i+')" title="Not doing this one today">×</span>'
     +'</div>'
     +'<div class="bfWorking">Working sets</div>'
     +'<div style="margin-top:2px;">'+rows+'</div>'
@@ -17920,6 +18673,17 @@ function _tlHeroErr(ds){
     +'<div class="tlHeroMeta">Tap to try again</div>'
   +'</div>';
 }
+// The third state. "No program set up yet" is a statement ABOUT THEM, and it
+// was being made before anything had been asked — see _tlResolvePlan. This says
+// only what is true: we do not know yet. It clears itself the moment the read
+// lands, and it is a retry in the meantime so it can never become a dead end.
+function _tlHeroPending(ds){
+  return '<div class="tlHero err" data-tl="planretry" style="cursor:pointer;">'
+    +'<div class="tlHeroEy">Today’s session</div>'
+    +'<div class="tlHeroName">Loading your program</div>'
+    +'<div class="tlHeroMeta">Tap to try again</div>'
+  +'</div>';
+}
 function _tlHeroNone(ds){
   // data-tl="freestyle" opens the free workout logger — a door that actually
   // opens. The first cut toggled the planned card's open flag, and with no plan
@@ -18144,7 +18908,7 @@ function _tlDaySectionHtml(cur, ctx){
     }
 
     html+='<div class="tlday'+(isAhead?' ahead':'')+'" style="padding-left:2px;">';
-    html+=_dayMeta(ds, slots);
+    html+=_dayMeta(ds, slots, (isToday?'today':(isAhead?'ahead':'past')));
     // everything that actually happened, in the order it happened
     var rows=[];
     // The day's walks and cardio collect into ONE Movement card rather than a
@@ -18322,7 +19086,19 @@ function _tlDaySectionHtml(cur, ctx){
       // program says that instead. Never a fabricated week.
       var _hasPlanRow=rows.some(function(r){ return r.planned; });
       if(!_hasPlanRow && !(slots.workout||[]).length && !window._tlRO){
-        if(window._tlPlanErr)      html+=_tlHeroErr(ds);
+        // Three states, in order of what we actually know: the read failed, the
+        // read has not happened, or the read happened and there is nothing.
+        // Only the last one is allowed to say anything about the client.
+        //
+        // Read straight off _tpLoadFailed rather than a flag cached beside it.
+        // A cached copy is only correct while something keeps refreshing it, and
+        // the thing that refreshed it here (_tlResolvePlan) stops being called
+        // the moment a plan exists — so the card sat on "Loading your program"
+        // after the program had loaded. Two variables for one fact is the same
+        // shape of bug this whole change is about.
+        var _pf=window._tpLoadFailed;
+        if(_pf===true)               html+=_tlHeroErr(ds);
+        else if(_pf===undefined)     html+=_tlHeroPending(ds);
         else if(!plan || !plan.type) html+=_tlHeroNone(ds);
       }
     }
@@ -18396,14 +19172,17 @@ async function _tlRefreshDay(ds){
   if(!cl){ return; }
   try{
     var today=new Date(); today.setHours(0,0,0,0);
-    var start=new Date(today); start.setDate(start.getDate()-_tlDaysBack-2);
-    var cc='client_code=eq.'+encodeURIComponent(cl.code);
-    var win='&logged_at=gte.'+encodeURIComponent(start.toISOString());
-    function grab(t){
-      return sbSelect(t, cc+win+'&order=logged_at.desc&limit=300')
-        .catch(function(){ return sbSelect(t, cc+'&order=logged_at.desc&limit=200').catch(function(){ return []; }); });
-    }
-    var r=await Promise.all([grab('food_logs'),grab('workout_logs'),grab('weight_logs'),grab('journal_entries')]);
+    // The recent window, plus the day being refreshed if it somehow sits older
+    // than that. NOT the whole paged-back window: a write lands on a day, and
+    // re-reading months to repaint one of them is the cost this page is trying
+    // not to pay.
+    var start=new Date(today); start.setDate(start.getDate()-_tlDaysBack);
+    var dsDate=_parseDs(ds); if(dsDate){ dsDate.setHours(0,0,0,0); if(dsDate.getTime()<start.getTime()) start=dsDate; }
+    var end=new Date(today); end.setDate(end.getDate()+_tlDaysFwd);
+    var r=await Promise.all([
+      _tlGrab('food_logs',_tlFetchSince(start)), _tlGrab('workout_logs',_tlFetchSince(start)),
+      _tlGrab('weight_logs',_tlFetchSince(start)), _tlGrab('journal_entries',_tlFetchSince(start))
+    ]);
     var fresh={foods:r[0]||[], workouts:r[1]||[], weights:r[2]||[], journals:r[3]||[]};
     // sbSelect answers [] for a refused request AND for a truly empty table — the
     // two are indistinguishable here. But this runs right after a WRITE: if the
@@ -18412,17 +19191,116 @@ async function _tlRefreshDay(ds){
     var freshEmpty=!(fresh.foods.length||fresh.workouts.length||fresh.weights.length||fresh.journals.length);
     var hadRows=!!(window._tlCache && ((window._tlCache.foods||[]).length||(window._tlCache.workouts||[]).length));
     if(!(freshEmpty && hadRows)){
-      window._tlCache=fresh;
+      // Merged, not swapped: days older than this read keep whatever the client
+      // has already paged back to.
+      window._tlCache=_tlCacheMerge(window._tlCache, fresh, _tlDaySet(start, end));
       window._tlFetchedAt=Date.now();
     }
   }catch(e){}
   _tlPatchDay(ds);
 }
 
+// THREE STATES, NOT TWO (Yusuf, 15 Aug). The same doctrine the trainer's
+// weigh-in card already states in full: undefined = no load has ever run,
+// true = a load ran and did not answer, false = a load ran and answered.
+//
+// This used to test `if(window._tpLoadFailed)`, and undefined is falsy — so
+// "nobody has asked the server yet" was handled exactly like "we asked and
+// there is nothing stored", and the page went straight on to DERIVE a week
+// from the profile's days-a-week and assign it into the shared _tpPlan. On the
+// cold path that was harmless, because it awaits loadTrainingPlan() first. The
+// soft path (renderDayTimeline(true) — every tap handler on this page) never
+// awaits it, so any repaint while the plan was still null invented a week and
+// presented it as the client's own program. For a client whose program Yusuf
+// hand-built, that is a different week entirely.
+//
+// Deriving from the profile is NOT the bug and is kept: a client who has said
+// how many days a week they train, and has no saved program yet, is genuinely
+// meant to see that week (see _tpPlanForClient). It just may not happen until
+// the answer is actually in.
 function _tlResolvePlan(){
-  if(window._tpLoadFailed){ window._tlPlanErr=true; return null; }
-  window._tlPlanErr=false;
+  if(window._tpLoadFailed===undefined){
+    // Not "no program". Nothing established. Say nothing about their program
+    // until something has been asked — and ask, so this resolves itself
+    // instead of sitting there. The soft render is the path with no load
+    // behind it; one kick, guarded, then repaint when it lands.
+    if(!window._tlPlanKick && typeof loadTrainingPlan==='function'){
+      window._tlPlanKick=true;
+      loadTrainingPlan().catch(function(){}).then(function(){
+        window._tlPlanKick=false;
+        try{ renderDayTimeline(true); }catch(e){}
+      });
+    }
+    return null;
+  }
+  if(window._tpLoadFailed===true) return null;
   try{ return _tpPlanForClient(); }catch(e){ return null; }
+}
+// The way back, at the top of the scroller. It stays until the client has
+// actually reached their own beginning, and is then replaced by a plain marker
+// saying where that is — never a control that does nothing, never a floor that
+// arrives without a word. Following someone else's day is looking, not paging:
+// the trainer's read-only view keeps the fortnight it has always had.
+function _tlEarlierHtml(start){
+  if(window._tlRO) return '';
+  var a=window._tlAnchor;
+  var atAnchor = !!window._tlAtAnchor || !!(a && start && start.getTime()<=a.getTime());
+  if(atAnchor){
+    var when=a?_tlDateStr(a):'';
+    var lead=(window._tlAnchorSrc==='log') ? 'Your first logged day' : 'Your history starts here';
+    return '<div class="tlEarlier tlEarlierEnd"><b>'+_escHtml(lead)+'</b>'+(when?('<span>'+_escHtml(when)+'</span>'):'')+'</div>';
+  }
+  return '<div class="tlEarlier"><button type="button" id="tlEarlierBtn" onclick="tlLoadEarlier()">See earlier days</button></div>';
+}
+// One tap, one fortnight further back. Reads only the slice it adds.
+async function tlLoadEarlier(){
+  if(window._tlPaging || !cl) return;
+  window._tlPaging=true;
+  var btn=document.getElementById('tlEarlierBtn');
+  if(btn){ btn.disabled=true; btn.textContent='Loading…'; }
+  try{
+    var today=new Date(); today.setHours(0,0,0,0);
+    var curStart=_tlWindowStart(today);
+    var anchor=await _tlResolveAnchor();
+    // Already standing on their first day: say so rather than fetch nothing twice.
+    if(anchor && curStart.getTime()<=anchor.getTime()){
+      window._tlAtAnchor=true;
+      await renderDayTimeline(true);
+      return;
+    }
+    var newStart=new Date(today); newStart.setDate(newStart.getDate()-(_tlWindowBack()+_tlPageDays)); newStart.setHours(0,0,0,0);
+    if(anchor && newStart.getTime()<anchor.getTime()){ newStart=new Date(anchor); newStart.setHours(0,0,0,0); }
+    var prevDay=new Date(curStart); prevDay.setDate(prevDay.getDate()-1);
+    var r=await Promise.all([
+      _tlGrab('food_logs',      _tlFetchSince(newStart), curStart),
+      _tlGrab('workout_logs',   _tlFetchSince(newStart), curStart),
+      _tlGrab('weight_logs',    _tlFetchSince(newStart), curStart),
+      _tlGrab('journal_entries',_tlFetchSince(newStart), curStart)
+    ]);
+    window._tlCache=_tlCacheMerge(window._tlCache,
+      {foods:r[0]||[], workouts:r[1]||[], weights:r[2]||[], journals:r[3]||[]},
+      _tlDaySet(newStart, prevDay));
+    window._tlFetchedAt=Date.now();
+    window._tlExtraBack=Math.max(0, Math.round((today-newStart)/86400000)-_tlDaysBack);
+    if(anchor && newStart.getTime()<=anchor.getTime()) window._tlAtAnchor=true;
+    // Days are being added ABOVE what they're reading, so holding scrollTop would
+    // slide the page down by exactly the height just inserted. Hold the CONTENT
+    // still instead: keep the distance from the bottom, which is unchanged by a
+    // prepend.
+    var sc=document.getElementById('tlScroll');
+    var top0=sc?sc.scrollTop:0, h0=sc?sc.scrollHeight:0;
+    await renderDayTimeline(true);
+    var sc2=document.getElementById('tlScroll');
+    if(sc2 && h0){ sc2.scrollTop = top0 + (sc2.scrollHeight - h0); }
+  }catch(e){
+    try{ showToast('Could not load earlier days'); }catch(_){}
+  }finally{
+    window._tlPaging=false;
+    // Whatever happened, the way back is never left disabled — a failed read must
+    // not read as "there is nothing older".
+    var b2=document.getElementById('tlEarlierBtn');
+    if(b2){ b2.disabled=false; b2.textContent='See earlier days'; }
+  }
 }
 async function renderDayTimeline(soft){
   // Nothing should carry an inline height into a fresh render. One stuck value
@@ -18454,7 +19332,13 @@ async function renderDayTimeline(soft){
   var _hadContent = !!(body.innerHTML||'').trim();
 
   var today=new Date(); today.setHours(0,0,0,0);
-  var start=new Date(today); start.setDate(start.getDate()-_tlDaysBack);
+  // No cache means a cold read, and a cold read is ALWAYS the recent window —
+  // paging back is a thing this client asked for on this screen, not a cost that
+  // follows them into every later boot. Reset first, so `start` below is the
+  // fortnight rather than however far they had walked back before.
+  var _cold=!(soft && window._tlCache);
+  if(_cold){ try{ _tlResetPaging(); }catch(e){} }
+  var start=_tlWindowStart(today);
   var end=new Date(today);   end.setDate(end.getDate()+_tlDaysFwd);
 
   // pull the whole window of logs (cached, so expanding a card never reloads the page)
@@ -18464,7 +19348,9 @@ async function renderDayTimeline(soft){
     if(!_tpPlan){ try{ _tpPlan=_tlResolvePlan(); }catch(e){} }
   } else {
     // Only the window we actually draw, and all of it at once. Five trips in a row was the 10s.
-    var since=new Date(start); since.setDate(since.getDate()-2);
+    // A cold render is always the RECENT window — paging back never becomes a boot
+    // cost, it only ever adds slices on top of this one.
+    var since=_tlFetchSince(start);
     var win='&logged_at=gte.'+encodeURIComponent(since.toISOString());
     var cc='client_code=eq.'+encodeURIComponent(cl.code);
     function grab(table, extra){
@@ -18511,6 +19397,7 @@ async function renderDayTimeline(soft){
 
   // Sizing, overflow and snap all live in the stylesheet now — see #tlScroll there.
   var html='<div id="tlScroll" style="position:relative;padding-right:2px;">';
+  html+=_tlEarlierHtml(start);
   var cur=new Date(start);
   while(cur.getTime()<=end.getTime()){
     html+=_tlDaySectionHtml(new Date(cur), {today:today, start:start, fByDay:fByDay, wByDay:wByDay, gByDay:gByDay, jByDay:jByDay});
@@ -19047,7 +19934,10 @@ function _tlSlot(key, label, filled, ds, plan){
       // the real planner lives ON the page: same rows, swap, add, notes as the training module
       var open=_woDraftOpen(ds);
       var dr=_woDraft(ds);
-      var exs=(plan.ex||[]);
+      // THE DAY'S SHEET, not the template — see _bfDayEx. Whatever the client
+      // dropped, swapped or added for THIS DATE is applied here, and the
+      // program itself is untouched.
+      var exs=_bfDayEx(ds, plan);
       var _wd=_parseDs(ds)||new Date();
       var dayKey=_tlPlanKeyFor(_wd);
       var loggedCt=0;
@@ -19123,7 +20013,8 @@ function _tlSlot(key, label, filled, ds, plan){
         if(_pOn){
           s+='<div id="tlBody_'+_escHtml(ds)+'" style="position:relative;margin-top:15px;">'
             +exs.map(function(e,i){ return _bfExCard(dayKey, i, e, ds, dr); }).join('')
-            +'<button onclick="tpAddOpen(\''+dayKey+'\')" style="width:100%;margin-top:2px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.13);border-radius:9px;padding:10px;font-size:12px;font-weight:700;color:var(--text);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">+ Add exercise</button>'
+            // Adds to TODAY, not to every week — same reason as Swap above it.
+            +'<button onclick="bfDayAddOpen(\''+ds+'\',\''+dayKey+'\')" style="width:100%;margin-top:2px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.13);border-radius:9px;padding:10px;font-size:12px;font-weight:700;color:var(--text);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">+ Add exercise</button>'
             +_tpFinBlock(dayKey, ds)
             +_woPhotoHtml(ds)
           +'</div>';
@@ -19367,21 +20258,23 @@ function _tlSignature(c){
 async function _tlRefreshQuiet(){
   if(!cl) return;
   var today=new Date(); today.setHours(0,0,0,0);
-  var start=new Date(today); start.setDate(start.getDate()-_tlDaysBack-2);
-  var cc='client_code=eq.'+encodeURIComponent(cl.code);
-  var win='&logged_at=gte.'+encodeURIComponent(start.toISOString());
-  function grab(t){
-    return sbSelect(t, cc+win+'&order=logged_at.desc&limit=300')
-      .catch(function(){ return sbSelect(t, cc+'&order=logged_at.desc&limit=200').catch(function(){ return []; }); });
-  }
+  // Re-opening the tab checks the RECENT window only. Whatever the client paged
+  // back to stays on screen untouched — old days don't change behind their back,
+  // and re-reading them on every tab switch is exactly the cost paging avoids.
+  var start=new Date(today); start.setDate(start.getDate()-_tlDaysBack);
+  var end=new Date(today); end.setDate(end.getDate()+_tlDaysFwd);
   var fresh;
   try{
-    var r=await Promise.all([grab('food_logs'),grab('workout_logs'),grab('weight_logs'),grab('journal_entries')]);
+    var r=await Promise.all([
+      _tlGrab('food_logs',_tlFetchSince(start)), _tlGrab('workout_logs',_tlFetchSince(start)),
+      _tlGrab('weight_logs',_tlFetchSince(start)), _tlGrab('journal_entries',_tlFetchSince(start))
+    ]);
     fresh={foods:r[0]||[], workouts:r[1]||[], weights:r[2]||[], journals:r[3]||[]};
   }catch(e){ return; }
+  var next = _tlCacheMerge(window._tlCache, fresh, _tlDaySet(start, end));
   var before = window._tlCache ? _tlSignature(window._tlCache) : '';
-  if(_tlSignature(fresh) === before) return;      // nothing changed — leave the screen alone
-  window._tlCache = fresh;
+  if(_tlSignature(next) === before) return;       // nothing changed — leave the screen alone
+  window._tlCache = next;
   window._tlFetchedAt = Date.now();
   try{ renderDayTimeline(true); }catch(e){}
 }
@@ -19489,7 +20382,10 @@ function tlLogInlineWorkout(ds){
     return;
   }
   if(!plan||!plan.type) return;
-  var exs=(plan.ex||[]);
+  // The same sheet the card rendered, dropped/swapped/added movements included
+  // (_bfDayEx). The logged row is where the day's changes become permanent —
+  // and it is the ONLY place they become permanent. The program is untouched.
+  var exs=_bfDayEx(ds, plan);
   // What's on the cards IS the session. Pre-filled counts as done — the approved
   // design: a client who never touches a number still logs a full workout, and
   // next session pre-fills from exactly this, added and removed sets included.
@@ -19502,7 +20398,7 @@ function tlLogInlineWorkout(ds){
   // today's numbers for another day's record.
   var _isTodayDs=false; try{ _isTodayDs=(ds===_tlDateStr(new Date())); }catch(e){}
   try{
-    if(_isTodayDs){ exs.forEach(function(e,i){ if(_wdKey){ _bfMaterialize(_wdKey, i); tpPersistSets(_wdKey, e.n); } }); }
+    if(_isTodayDs){ exs.forEach(function(e,i){ if(_wdKey){ _bfMaterialize(_wdKey, i, ds); tpPersistSets(_wdKey, e.n); } }); }
   }catch(e){}
   var lines=exs.map(function(e){
     // "Chest Press \u00b7 machine" when they said which one \u2014 the name carries it, so
@@ -19515,6 +20411,13 @@ function tlLogInlineWorkout(ds){
     if(sets.length) return nm+': '+sets.join(', ');
     return nm+' \u2014 '+(e.s||'')+(e.r?(' \u00d7 '+e.r):'');
   });
+  // A finisher they ticked is part of what they did, so it goes on the record
+  // with everything else — the only permanent home it has now that it no longer
+  // rides the template. See _finLines.
+  try{
+    var _fl=_finLines(_wdKey, ds);
+    if(_fl && _fl.length) lines=lines.concat(_fl);
+  }catch(e){}
   var desc=lines.join('\n')+(dr.note?('\n\n'+dr.note):'');
   // The connection record: the pills, translated to audit language — felt it,
   // partial, nothing — per muscle group, one row per session. Rides in
@@ -19825,8 +20728,8 @@ function _tlBindTaps(){
     if(a==='xmedit'){ ev.stopPropagation(); try{ tlMacroEditOpen(el); }catch(e){} return; }
     if(a==='wnday'){ ev.stopPropagation(); tlWnDismiss(el.getAttribute('data-ds')); return; }
     if(a==='bfset'){ ev.stopPropagation(); try{ bfSetTap(el); }catch(e){} return; }
-    if(a==='bfadd'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfAddSet(el.getAttribute('data-day'), +el.getAttribute('data-i')); return; }
-    if(a==='bfrm'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfRemoveSet(el.getAttribute('data-day'), +el.getAttribute('data-i'), +el.getAttribute('data-k')); return; }
+    if(a==='bfadd'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfAddSet(el.getAttribute('data-day'), +el.getAttribute('data-i'), el.getAttribute('data-ds')); return; }
+    if(a==='bfrm'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfRemoveSet(el.getAttribute('data-day'), +el.getAttribute('data-i'), +el.getAttribute('data-k'), el.getAttribute('data-ds')); return; }
     if(a==='bffeel'){ ev.stopPropagation(); bfFeel(el.getAttribute('data-ds'), el.getAttribute('data-ex'), el.getAttribute('data-v')); return; }
     if(a==='bfequip'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfEquip(el.getAttribute('data-ds'), el.getAttribute('data-ex'), el.getAttribute('data-v')); return; }
     if(a==='shelfpick'){ ev.stopPropagation(); tlShelfPick(el.getAttribute('data-ds'), el.getAttribute('data-type')); return; }
@@ -22284,6 +23187,11 @@ function _obOpener(code){
 // How long they have actually been gone, in plain words. Replaces "parked as inactive",
 // which described a setting rather than a person and told you nothing you could act on.
 function _obQuietLine(code){
+  // Both of today's callers happen to sit behind a guard, so this has never
+  // actually lied to anyone. It would the first time somebody called it from a
+  // surface that does not wait — the line it writes is "Never logged anything",
+  // which is about as final as this app gets. Converted so it cannot.
+  if(!_jvTriageReady()) return _jvNoStore('their activity');
   var last=0;
   try{ var p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null; last=(p&&p.last)||0; }catch(e){}
   if(!last) return 'Never logged anything';
@@ -32825,9 +33733,8 @@ async function loadTrainingPlan(){
 // The Day page's retry — one tap on the error card, no reload.
 async function tlRetryPlan(){
   try{ await loadTrainingPlan(); }catch(e){}
-  // The flag follows the load's outcome — a successful retry that found no saved
-  // plan must show "no program yet", not the error card forever.
-  window._tlPlanErr=!!window._tpLoadFailed;
+  // Which of the three states the card shows is read off _tpLoadFailed at paint
+  // time, and loadTrainingPlan has just set it, so there is nothing to sync here.
   try{ window._tlCache=null; renderDayTimeline(); }catch(e){}
 }
 async function saveTrainingPlan(){
@@ -33230,23 +34137,33 @@ async function tpCompleteDay(day){
 }
 function tpSwapOpen(day,i){
   var e=_tpPlan[day].ex[i]; if(!e) return;
+  var taken=[];
+  try{ taken=(_tpPlan[day].ex||[]).map(function(o){ return o&&o.n; }).filter(Boolean); }catch(err){}
+  window._tpSwapIdx=i;
+  _tpOpenPickerFor(e, taken, day);
+}
+// The picker itself, off an exercise and the list it lives in — so the Day
+// card can open it against TODAY'S sheet (which may already differ from the
+// template) without the builder needing to know that sheet exists.
+function _tpOpenPickerFor(e, taken, day){
+  if(!e) return;
   var cat=null;
   for(var k in EX_LIB){ if(EX_LIB[k].some(function(x){ return x.n===e.n; })){ cat=k; break; } }
   if(!cat){ tpAddOpen(day); return; }
-  _tpPickDay=day; window._tpSwapIdx=i;
-  var el=document.getElementById('tpPickBody');
+  _tpPickDay=day;
+  var el=document.getElementById('tpPickBody'); if(!el) return;
   try{
     var _t=document.getElementById('tpPickTitle'), _s=document.getElementById('tpPickSub');
     if(_t) _t.textContent='Swap '+(e.n||'this movement');
     if(_s) _s.textContent='Same muscle, same intent.';
   }catch(err){}
+  var _taken=Array.isArray(taken)?taken:[];
   el.innerHTML=''
-    // Nothing already in this day. It mattered less when a swap lasted one session;
-    // now it's permanent, offering a duplicate writes one into the program for good.
+    // Nothing already on the sheet. Two cards of the same name share one set
+    // state and double-log on Complete, so a duplicate is never offered.
     +EX_LIB[cat].filter(function(x){
        if(x.n===e.n) return false;
-       try{ return !(_tpPlan[day].ex||[]).some(function(o,oi){ return oi!==i && o && o.n===x.n; }); }
-       catch(err){ return true; }
+       return _taken.indexOf(x.n)<0;
      }).map(function(x){
       var enc=encodeURIComponent(JSON.stringify(x));
       return '<div class="pgPick" onclick="tpSwapPick(\''+enc+'\')">'
@@ -33259,6 +34176,8 @@ function tpSwapOpen(day,i){
 }
 function tpSwapPick(enc){
   var x=null; try{ x=JSON.parse(decodeURIComponent(enc)); }catch(e){ return; }
+  // Opened from a Day card: this is one date's sheet, never the program.
+  if(window._bfDayPick){ window._tpSwapIdx=null; bfDaySwapCommit(x); return; }
   var i=window._tpSwapIdx;
   if(_tpPickDay==null||i==null||!x) return;
   var old=_tpPlan[_tpPickDay].ex[i];
@@ -33514,6 +34433,16 @@ function tpAddCustom(){
 }
 function tpAddPick(enc){
   var e=null; try{ e=JSON.parse(decodeURIComponent(enc)); }catch(err){ return; }
+  // Opened from a Day card: one date's sheet, never the program. Covers the
+  // swap picker's own fallback here too — tpSwapOpen sends a movement the
+  // library doesn't know to this screen.
+  if(window._bfDayPick){
+    if(e && window._bfDayPick.taken && window._bfDayPick.taken.indexOf(e.n)>=0 && window._bfDayPick.mode==='add'){
+      window._bfDayPick=null; try{ closeM('mTpPick'); }catch(err2){}
+      showToast('Already on today’s session'); return;
+    }
+    bfDaySwapCommit(e); return;
+  }
   if(!_tpPickDay||!e) return;
   if(!_tpPlan[_tpPickDay].ex) _tpPlan[_tpPickDay].ex=[];
   if(_tpPlan[_tpPickDay].type==='Rest') _tpPlan[_tpPickDay].type='Push';
@@ -44273,6 +45202,41 @@ function _finList(day) {
   }
   return d.fin;
 }
+// ===== FINISHERS ON A DATE, NOT ON THE TEMPLATE ==========================
+// The pills read "Pick an area, then what you did" — past tense, a log. On the
+// builder they are genuinely part of the week and _finList is right. On a
+// client's Day card they were the same call, so picking Abs on one Saturday
+// put Abs on EVERY Saturday — and, worse, _tpFinSave() then POSTed the whole
+// training plan, which is what flushed the card's other unwritten edits to the
+// server. See _bfDayEx. The done tick and the minutes were already per-date
+// (_finLog); the PICK now joins them.
+//
+// Read-only against the template: never _finList here, because that call
+// initialises _tpPlan[day].fin as a side effect, and this page must not leave a
+// single fingerprint on the plan object.
+function _finSeedFor(day){
+  try{
+    var d=_tpPlan && _tpPlan[day];
+    if(d && Array.isArray(d.fin)) return d.fin;
+    var cached=_finStore()[day];
+    return Array.isArray(cached) ? cached : [];
+  }catch(e){ return []; }
+}
+// The day's own finisher list. Seeded once from whatever the program puts on
+// that weekday, so a programmed finisher still shows up on the day.
+function _finListFor(day, ds){
+  if(!ds) return _finList(day);
+  var dr={}; try{ dr=_woDraft(ds)||{}; }catch(e){}
+  if(Array.isArray(dr.fin)) return dr.fin;
+  return _finSeedFor(day).map(function(x){ return {cat:x.cat, ex:x.ex, done:false, min:x.min}; });
+}
+function _finDaySet(day, ds, mutate){
+  var d=_woDraft(ds);
+  if(!Array.isArray(d.fin)) d.fin=_finSeedFor(day).map(function(x){ return {cat:x.cat, ex:x.ex, done:false, min:x.min}; });
+  mutate(d.fin);
+  _woSaveDraft(ds, d);
+  try{ _tlPatchDay(ds); }catch(e){ try{ renderDayTimeline(true); }catch(_){} }
+}
 
 function _finPill(day, k, on) {
   // same shape as the split pills above: 14px radius, same padding, same colours
@@ -44296,7 +45260,13 @@ function tpFinMin(day, i, m) {
   _tpFinSave();
   _finRepaint();
 }
-function tpFinRemove(day, i) {
+function tpFinRemove(day, i, ds) {
+  if(ds){
+    var it=_finListFor(day, ds)[i]; if(!it) return;
+    _finDaySet(day, ds, function(list){ list.splice(i,1); });
+    showToast('Removed ' + it.ex);
+    return;
+  }
   var list = _finList(day); if (!list[i]) return;
   var gone = list[i].ex;
   list.splice(i, 1);
@@ -44305,10 +45275,19 @@ function tpFinRemove(day, i) {
   showToast('Removed ' + gone);
 }
 
-// finishers join the lines written out when a day is completed
-function _finLines(day) {
-  return _finList(day).filter(function (x) { return x.done; }).map(function (x) {
-    return x.ex + (x.min ? (' \u00b7 ' + x.min + ' min') : '');
+// Finishers join the lines written out when a day is completed.
+// This was written for exactly that and never called, so a finisher a client
+// ticked reached nothing permanent \u2014 its only route to the server was riding
+// the template on _tpFinSave, which is the write that is now gone. Wired into
+// tlLogInlineWorkout, where the rest of the session's record is made.
+// Done and minutes are per-DATE (_finLog); only the list is looked up by day.
+function _finLines(day, ds) {
+  var log = ds ? _finLog(ds) : null;
+  return _finListFor(day, ds).filter(function (x) {
+    return log ? !!(log[x.ex] && log[x.ex].done) : !!x.done;
+  }).map(function (x) {
+    var m = (log && log[x.ex] && log[x.ex].min) ? log[x.ex].min : x.min;
+    return x.ex + (m ? (' \u00b7 ' + m + ' min') : '');
   });
 }
 
@@ -44335,8 +45314,22 @@ function _tpFinSave(){
 }
 // same write as saveTrainingPlan, without the toast on every keystroke.
 // No created_at in this body either — see _writeCalendar for why.
+//
+// THE BACKSTOP (Yusuf, 15 Aug). This function is the only thing on this side of
+// the app that POSTs the whole plan, and it is what turned an unwritten edit on
+// a Day card into a permanent one. Every route to it from the Day page is gone
+// (see _bfDayEx), and this refuses to fire unless the program builder is
+// actually on screen — the one surface it exists to serve. It says so out loud
+// rather than returning quietly, so a future caller finds out immediately
+// instead of shipping the same bug again. The client's own deliberate program
+// edits are not affected: those go through pgSavePlan, which is a different
+// function, a verified write, and honest when it fails.
 async function _saveTrainingPlanQuiet(){
   if(!cl) return;
+  if(!document.getElementById('tpBody')){
+    try{ console.error('[hard line] refused a training_plans write with no program builder on screen — a client never writes the template'); }catch(e){}
+    return;
+  }
   try{
     await fetch(SB_URL+'/rest/v1/training_plans',{method:'POST',
       headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'}),
@@ -44366,15 +45359,15 @@ function _finLogSet(ds, ex, patch){
   try{ localStorage.setItem('finlog_'+ds, JSON.stringify(m)); }catch(e){}
 }
 function tpFinToggleDs(day, i, ds){
-  var it=_finList(day)[i]; if(!it) return;
+  var it=_finListFor(day, ds)[i]; if(!it) return;
   var cur=(_finLog(ds)[it.ex]||{});
   _finLogSet(ds, it.ex, {done: !cur.done});
-  _finRepaint();
+  try{ _tlPatchDay(ds); }catch(e){ _finRepaint(); }
 }
 function tpFinMinDs(day, i, ds, m){
-  var it=_finList(day)[i]; if(!it) return;
+  var it=_finListFor(day, ds)[i]; if(!it) return;
   _finLogSet(ds, it.ex, {min: m});
-  _finRepaint();
+  try{ _tlPatchDay(ds); }catch(e){ _finRepaint(); }
 }
 
 // iOS hands us the capture time as the file's lastModified when a photo comes
@@ -44787,19 +45780,23 @@ var FIN_MAX = 2;      // categories
 var FIN_MAX_EX = 4;   // exercises in total
 window._finOpen = window._finOpen || {};
 
-function _finCats(day) {
+function _finCats(day, ds) {
   var seen = {};
-  _finList(day).forEach(function (x) { seen[x.cat] = 1; });
+  _finListFor(day, ds).forEach(function (x) { seen[x.cat] = 1; });
   return Object.keys(seen);
 }
 
+// ds present = a client's Day card, and every control below carries it through
+// so the pick lands on that DATE (see _finListFor). ds absent = the builder,
+// where a finisher really is part of the week and nothing here changes.
 function _tpFinBlock(day, ds) {
-  var list = _finList(day);
+  var list = _finListFor(day, ds);
   var log = ds ? _finLog(ds) : null;
   var canEdit = (window._tpCanEdit !== false);
   var open = window._finOpen[day] || null;
-  var cats = _finCats(day);
+  var cats = _finCats(day, ds);
   var full = cats.length >= FIN_MAX;
+  var _d = ds ? (",'" + ds + "'") : '';       // trailing ds argument, or nothing
 
   var h = '<div style="margin-top:14px;padding-top:13px;border-top:1px solid #272727;">'
     + '<div style="font-size:11px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:#f0ece4;margin-bottom:2px;">Select a finisher</div>'
@@ -44815,7 +45812,7 @@ function _tpFinBlock(day, ds) {
         var on = (cats.indexOf(k) >= 0);
         var locked = full && !on;
         var f = FINISHERS[k];
-        return '<span onclick="' + (locked ? '' : ('event.stopPropagation();tpFinPick(\'' + day + '\',\'' + k + '\')'))
+        return '<span onclick="' + (locked ? '' : ('event.stopPropagation();tpFinPick(\'' + day + '\',\'' + k + '\'' + _d + ')'))
           + '" style="font-size:10.5px;font-weight:800;padding:5px 10px;border-radius:14px;'
           + (locked ? 'cursor:default;opacity:0.34;' : 'cursor:pointer;')
           + 'background:' + (on ? '#f5c518' : (open === k ? 'rgba(245,197,24,0.12)' : 'transparent')) + ';'
@@ -44829,7 +45826,7 @@ function _tpFinBlock(day, ds) {
     h += '<div style="margin-top:9px;display:flex;flex-direction:column;gap:5px;">'
       + FINISHERS[open].ex.map(function (name, xi) {
           var picked = list.some(function (x) { return x.ex === name; });
-          return '<div onclick="event.stopPropagation();tpFinAdd(\'' + day + '\',\'' + open + '\',' + xi + ')" '
+          return '<div onclick="event.stopPropagation();tpFinAdd(\'' + day + '\',\'' + open + '\',' + xi + _d + ')" '
             + 'style="display:flex;align-items:center;gap:9px;border-radius:9px;padding:11px 12px;cursor:pointer;'
             + (picked ? 'background:rgba(245,197,24,0.10);border:1px solid rgba(245,197,24,0.42);'
                       : 'background:#151515;border:1px dashed #333;')
@@ -44859,7 +45856,7 @@ function _tpFinBlock(day, ds) {
         +   '<div style="font-size:11px;color:rgba(240,236,228,0.78);margin-top:3px;">' + cat + (mins ? (' \u00b7 ' + mins + ' min') : '') + '</div>'
         + '</div>'
         + (done ? '<span style="font-size:10px;font-weight:800;color:rgba(240,236,228,0.55);flex-shrink:0;">done</span>' : '')
-        + (canEdit ? ('<div onclick="event.stopPropagation();tpFinRemove(\'' + day + '\',' + i + ')" style="flex-shrink:0;color:rgba(240,236,228,0.78);font-size:17px;cursor:pointer;padding:0 2px;">\u00d7</div>') : '')
+        + (canEdit ? ('<div onclick="event.stopPropagation();tpFinRemove(\'' + day + '\',' + i + _d + ')" style="flex-shrink:0;color:rgba(240,236,228,0.78);font-size:17px;cursor:pointer;padding:0 2px;">\u00d7</div>') : '')
         + '</div>';
       // A finished finisher asks the same question every exercise asks. Cardio
       // does not \u2014 there is no muscle to have felt. The pills carry the finisher's
@@ -44894,41 +45891,50 @@ function _tpFinBlock(day, ds) {
 }
 
 // A lit pill clears its group. Otherwise it opens its options.
-function tpFinPick(day, k) {
+// ds present = this date only, straight into the day's draft, no plan write of
+// any kind. ds absent = the builder, unchanged.
+function tpFinPick(day, k, ds) {
   var f = FINISHERS[k]; if (!f) return;
-  var list = _finList(day);
+  var list = _finListFor(day, ds);
   var have = list.filter(function (x) { return x.cat === k; });
 
   if (have.length) {
-    for (var i = list.length - 1; i >= 0; i--) if (list[i].cat === k) list.splice(i, 1);
     if (window._finOpen[day] === k) window._finOpen[day] = null;
-    _tpFinSave(); _finRepaint();
+    if (ds){
+      _finDaySet(day, ds, function(L){ for (var j = L.length - 1; j >= 0; j--) if (L[j].cat === k) L.splice(j, 1); });
+    } else {
+      for (var i = list.length - 1; i >= 0; i--) if (list[i].cat === k) list.splice(i, 1);
+      _tpFinSave(); _finRepaint();
+    }
     showToast('Cleared ' + f.label);
     return;
   }
-  if (_finCats(day).length >= FIN_MAX) { showToast('Two areas is the limit'); return; }
+  if (_finCats(day, ds).length >= FIN_MAX) { showToast('Two areas is the limit'); return; }
   // opening another area closes this one — what you picked is already saved
   window._finOpen[day] = (window._finOpen[day] === k) ? null : k;
-  _finRepaint();
+  if (ds){ try{ _tlPatchDay(ds); }catch(e){ _finRepaint(); } } else { _finRepaint(); }
 }
 
 // Picking an option adds it; picking it again takes it off.
-function tpFinAdd(day, cat, xi) {
+function tpFinAdd(day, cat, xi, ds) {
   var name = (FINISHERS[cat] || {}).ex[xi]; if (!name) return;
-  var list = _finList(day);
+  var list = _finListFor(day, ds);
   var at = -1;
   list.forEach(function (x, i) { if (x.ex === name) at = i; });
   if (at >= 0) {
+    if (ds){ _finDaySet(day, ds, function(L){ L.splice(at, 1); }); return; }
     list.splice(at, 1);
     _tpFinSave(); _finRepaint();
     return;
   }
-  if (_finCats(day).indexOf(cat) < 0 && _finCats(day).length >= FIN_MAX) {
+  if (_finCats(day, ds).indexOf(cat) < 0 && _finCats(day, ds).length >= FIN_MAX) {
     showToast('Two areas is the limit'); return;
   }
   if (list.length >= FIN_MAX_EX) { showToast('Four finishers is plenty'); return; }
-  list.push({cat: cat, ex: name, done: false, min: (cat === 'cardio' ? 30 : null)});
-  if (list.length >= FIN_MAX_EX) window._finOpen[day] = null;   // done choosing
+  var _row={cat: cat, ex: name, done: false, min: (cat === 'cardio' ? 30 : null)};
+  if (list.length + 1 >= FIN_MAX_EX) window._finOpen[day] = null;   // done choosing
+  if (ds){ _finDaySet(day, ds, function(L){ L.push(_row); }); return; }
+  list.push(_row);
   // One repaint, always. This used to save-and-repaint and then repaint again
   // (the second call was unguarded — the if above is brace-less), which put two
   // async renders in flight over the same scroller.

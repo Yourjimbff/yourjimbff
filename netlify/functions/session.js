@@ -140,6 +140,12 @@ exports.handler = async (event) => {
     // used to depend on. weekly_call_spent_at rides as-is (or undefined, if the
     // migration hasn't landed and the retry above dropped it) — the page's own
     // hasWeeklyCreditNow() treats a missing/falsy value as "never spent."
+    //
+    // started_at briefly rode here too, for the Day page's scroll-back anchor.
+    // It came straight back out: the anchor is the client's first LOGGED day now
+    // (Yusuf, ruling, 15 Aug), which the page works out from their own logs, so
+    // nothing on a client's screen needs their term dates and this response has
+    // no business carrying them.
     client: { code: row.code, name: row.name || row.code, initials: row.initials || null,
               is_trainer: row.is_trainer === true, active: row.active !== false,
               calls_enabled: row.calls_enabled === true, call_credits: +row.call_credits || 0,

@@ -49,7 +49,16 @@ const OPS = {
   // Kept distinct from `contacts` below: this is "one client's contact timeline",
   // reached from a client deep-dive. `contacts` is "sync the whole log", reached from
   // the triage board. Different UI, different caller, both real.
-  clientContacts:(a) => `client_contacts?client_code=eq.${enc(a.code)}&order=logged_at.desc&limit=200`,
+  // contacted_at, NOT logged_at. This table's timestamp has always been
+  // contacted_at — the sibling `contacts` op right below orders by it correctly.
+  // An order column the table does not have 400s the WHOLE query, and this
+  // function is a raw passthrough whose recovery only rewrites a bad SELECT, not
+  // a bad ORDER, so it came back empty. Empty from here reads as "you have never
+  // contacted this person", on the one screen that exists to tell Yusuf who he
+  // has not spoken to. Nothing calls this op yet; it would have been wrong the
+  // first time anything did. Same shape as the coach_notes created_at/sent_at bug
+  // this file already carries a warning about.
+  clientContacts:(a) => `client_contacts?client_code=eq.${enc(a.code)}&select=client_code,coach_code,kind,about,replied,contacted_at&order=contacted_at.desc&limit=200`,
 
   // Money. NO LIMIT, on purpose. loadSales()'s own comment: "The old query capped at
   // 200, so past that the headline quietly under-reported." Capping this at any number
@@ -241,6 +250,40 @@ const WRITE_OPS = {
     },
   }),
   salesDelete: (a) => ({ method: 'DELETE', path: `sales?id=eq.${encId(a.id)}` }),
+
+  // ---- a trainer logging ON BEHALF OF a client ---------------------------------
+  // These three tables are not dark to the anon key and never will be: a client's
+  // own app writes their own weight, food and steps with it all day. What was
+  // going through the public key was something else entirely — the ASSISTANT
+  // writing a number onto whichever client it decided a sentence was about. That
+  // is a privileged, cross-client act and it had no more authority behind it than
+  // any page on the internet has.
+  //
+  // Through here it needs a real trainer session. Deliberately narrow: one row,
+  // one client, named fields only, no bulk shape, and no delete or update — an
+  // assistant that misfires can add a row somebody can see and remove, never
+  // rewrite or erase a history.
+  logWeight: (a) => ({
+    method: 'POST', path: 'weight_logs',
+    body: { client_code: enc_raw(a.client_code), weight: num(a.weight),
+      notes: str(a.notes, 300), logged_at: isoTs(a.logged_at || new Date().toISOString()) },
+  }),
+  logFood: (a) => ({
+    method: 'POST', path: 'food_logs',
+    body: { client_code: enc_raw(a.client_code), name: str(a.name, 200),
+      calories: num(a.calories), protein: num(a.protein), carbs: num(a.carbs), fat: num(a.fat),
+      rating: str(a.rating || 'unknown', 40),
+      date_str: str(a.date_str, 40) || undefined,
+      logged_at: isoTs(a.logged_at || new Date().toISOString()) },
+  }),
+  // Steps are one row per client per day, so this is the only one that merges
+  // rather than appends — the same on_conflict the client's own writer uses.
+  logSteps: (a) => ({
+    method: 'POST', path: 'step_logs?on_conflict=client_code,date_str',
+    upsert: true,
+    body: { client_code: enc_raw(a.client_code), steps: num(a.steps),
+      date_str: str(a.date_str, 40), updated_at: isoTs(a.updated_at || new Date().toISOString()) },
+  }),
 
   // ---- client_contacts --------------------------------------------------------
   contactInsert: (a, coach) => ({
