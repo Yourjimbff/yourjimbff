@@ -13,6 +13,10 @@
 //   SUPABASE_SERVICE_KEY    the service_role key — NEVER the anon key, and never
 //                           anywhere near index.html
 //   STRIPE_SECRET_KEY       sk_live_... — needed to STOP a split subscription. See below.
+//   RESEND_API_KEY, NOTIFY_EMAIL_TO, NOTIFY_EMAIL_FROM   optional — see _notify.js.
+//                           A new client landing here is money moving with zero action
+//                           from Yusuf; without these three he only finds out by opening
+//                           Admin. Missing them just means no email, same as before.
 //
 // Without the first three this returns 500 and writes nothing. It never half-creates.
 //
@@ -25,6 +29,7 @@
 // and every split has to be cancelled by hand in Stripe on the right day.
 
 const crypto = require('crypto');
+const { sendEmail } = require('./_notify.js');
 
 // The same table as SELL_PLANS in index.html.
 const PLANS = {
@@ -282,6 +287,27 @@ exports.handler = async function (event) {
     })});
 
     console.log('created', code, plan.key, email);
+
+    // Same pipe as the consult notification, same reasoning: a payment just
+    // created a client with zero action from Yusuf, so he only finds out by
+    // opening Admin unless something tells him. Fire-and-forget on purpose —
+    // wrapped so a failed send can never turn into a 500 that makes Stripe
+    // retry a payment that has already fully landed; sendEmail's own retries
+    // and loud logging are the failure handling, not this function's return
+    // code.
+    try {
+      await sendEmail(
+        'New client — ' + name + ' (' + plan.key + ')',
+        [
+          name + ' just paid and is set up as ' + code + '.',
+          '',
+          'Plan: ' + (plan.tier === 'vip' ? 'VIP' : '1:1') + ' · ' + plan.term + ' months',
+          'Paid today: $' + plan.first + (plan.parts > 1 ? (' of $' + plan.total + ' total') : ''),
+          'Email: ' + (email || 'not given'),
+        ].join('\n')
+      );
+    } catch (e) { console.error('stripe-hook: notify threw', e && e.message); }
+
     return {statusCode: 200, body: JSON.stringify({code: code, plan: plan.key})};
   } catch (e) {
     console.error('stripe-hook', e);
