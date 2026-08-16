@@ -49,7 +49,16 @@ const OPS = {
   // Kept distinct from `contacts` below: this is "one client's contact timeline",
   // reached from a client deep-dive. `contacts` is "sync the whole log", reached from
   // the triage board. Different UI, different caller, both real.
-  clientContacts:(a) => `client_contacts?client_code=eq.${enc(a.code)}&order=logged_at.desc&limit=200`,
+  // contacted_at, NOT logged_at. This table's timestamp has always been
+  // contacted_at — the sibling `contacts` op right below orders by it correctly.
+  // An order column the table does not have 400s the WHOLE query, and this
+  // function is a raw passthrough whose recovery only rewrites a bad SELECT, not
+  // a bad ORDER, so it came back empty. Empty from here reads as "you have never
+  // contacted this person", on the one screen that exists to tell Yusuf who he
+  // has not spoken to. Nothing calls this op yet; it would have been wrong the
+  // first time anything did. Same shape as the coach_notes created_at/sent_at bug
+  // this file already carries a warning about.
+  clientContacts:(a) => `client_contacts?client_code=eq.${enc(a.code)}&select=client_code,coach_code,kind,about,replied,contacted_at&order=contacted_at.desc&limit=200`,
 
   // Money. NO LIMIT, on purpose. loadSales()'s own comment: "The old query capped at
   // 200, so past that the headline quietly under-reported." Capping this at any number
