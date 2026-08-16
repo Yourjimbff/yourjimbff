@@ -1099,7 +1099,11 @@ body.jv-on .pfOutreachIn:focus{border-color:rgba(224,196,152,0.4);}
    was already sitting there at display:none. */
 body.jv-split #jvBody{flex-direction:row;gap:0;}
 body.jv-split #jvOrbCol{
-  display:flex;flex-direction:column;min-height:0;flex:0 0 var(--jvPaneW,392px);
+  /* 440px, which is what this column was before it was killed — the width the
+     rest of the cockpit was already laid out around. The pane is the point, so
+     it gets the room; the feed still clears 860px beside it at the 1300 edge
+     where the pane stops being a column at all. */
+  display:flex;flex-direction:column;min-height:0;flex:0 0 var(--jvPaneW,440px);
   border-left:1px solid #1c1c1c;background:#0d0d0d;
 }
 body.jv-split #jvWallCol{flex:1 1 auto;min-width:0;}
@@ -1147,7 +1151,7 @@ body.jv-on.jv-paneOff #jvPaneEdge{
    1024 — a phone gets the front desk — so nothing new is needed below that. */
 @media (max-width:1300px){
   body.jv-split #jvOrbCol{position:fixed;right:0;top:65px;bottom:0;z-index:59;
-    flex-basis:min(392px, 88vw);box-shadow:-24px 0 60px rgba(0,0,0,0.6);}
+    flex-basis:min(440px, 88vw);box-shadow:-24px 0 60px rgba(0,0,0,0.6);}
   body.jv-split .pfWrap,
   body.jv-split .pfWrapQuiet,
   body.jv-split .jvFeedGrid{column-count:1 !important;}
@@ -6162,8 +6166,11 @@ async function loadRosterFromDB(){
             if(r.created_at) e.created_at = r.created_at;
             CLIENTS[r.code] = e;
           });
-        }
-      }catch(e){}
+          // The tier answered. Until this is true, "no term_months on the record"
+          // means "not read yet", not "no term" — see _jvTermState.
+          window._jvTierLoaded=true;
+        } else { window._jvTierLoaded=false; }
+      }catch(e){ window._jvTierLoaded=false; }
       // Overlay any phone numbers saved locally so the Text button shows everywhere immediately.
       try{ if(typeof _jvHydratePhones==='function') _jvHydratePhones(); }catch(e){}
       // BOOT RACE (Yusuf, confirmed live): this trainer-door read is a second round
@@ -6174,6 +6181,15 @@ async function loadRosterFromDB(){
       // anyone looks, which is exactly what made this read as "the door doesn't
       // have it" — the door has it, the card just never got a second look.
       try{ if(typeof _feedRerenderPeopleOnly==='function') _feedRerenderPeopleOnly(); }catch(e){}
+      // Same second look for everything else built off this tier. The mobile front
+      // desk was the loudest case: opened inside the few seconds before this read
+      // lands, every card read "no term set" and thirty-two clients were filed
+      // under "term ended, still using the app" — including people in month 11 of
+      // 12. Nothing repainted them, so it stayed on screen until the tab was
+      // reopened, which is why it looked intermittent rather than broken.
+      try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+      try{ if(window.jvTriage && typeof jvRenderTriage==='function' && (typeof jvMode==='undefined'||jvMode==='cockpit')) jvRenderTriage(); }catch(e){}
+      try{ if(typeof jvPaneRender==='function') jvPaneRender(); }catch(e){}
     }catch(err){ console.error('loadRosterFromDB failed — running on hardcoded roster', err); }
     return true;
   })();
@@ -14890,7 +14906,7 @@ function _jvAgoLabel(months){
 // only ever chases someone he has actually said is in term.
 function _jvTermState(code, p){
   var r=(typeof CLIENTS!=='undefined')?CLIENTS[code]:null;
-  if(!r) return {state:'expired', label:'no term set', active:false};
+  if(!r) return {state:'unknown', label:'', active:false};
   // The term is checked before activity, always. This ran the other way round, so a
   // client with a term and no logs came back "never started" — activity hiding the
   // fact that they're paying, which is the one thing it must never do.
@@ -14903,6 +14919,12 @@ function _jvTermState(code, p){
     }
     return {state:'expired', label:'term ended '+_jvAgoLabel(since-months), active:false, monthsTotal:months};
   }
+  // NOTHING HAS READ THE TERMS YET. "No term_months on the record" is only a fact
+  // about a client once the trainer tier has actually answered; before that it is
+  // a fact about this page. Saying "no term set" here — and worse, filing them as
+  // EXPIRED, which is what put paying clients under "term ended" — is the same
+  // absence-as-evidence failure as everywhere else. Say nothing instead.
+  if(window._jvTierLoaded!==true) return {state:'unknown', label:'', active:false};
   // No term on file — only now can activity say anything.
   var knowActivity=false; try{ knowActivity=!!(jvTriage&&jvTriage.per); }catch(e){}
   if(p===undefined && knowActivity){ try{ p=jvTriage.per[code]; }catch(e){} }
@@ -14917,7 +14939,7 @@ var _JV_TERM_STYLE={
 };
 // Never gold — a term marker is a fact about someone, not something to tap.
 function _jvTermPill(t){
-  if(!t) return '';
+  if(!t || !t.label) return '';      // 'unknown' has no label on purpose
   var s=_JV_TERM_STYLE[t.state]||_JV_TERM_STYLE.noterm;
   return '<span style="display:inline-block;font-size:10px;font-weight:800;letter-spacing:0.4px;'
     +'color:'+s.col+';border:1px solid '+s.bd+';border-radius:999px;padding:2px 9px;white-space:nowrap;">'+t.label+'</span>';
@@ -15796,12 +15818,17 @@ function jvRenderTriage(){
     var o={code:code, cls:_jvClassify(p, nowMs)||{band:'none',reason:''}, cnt:(p&&p.cnt)||[0,0,0,0,0,0,0],
            p:p, term:term, quiet:quiet, since:since, unanswered:_ccUnanswered(code)};
     if(since===0) spokeToday++;
-    if(term.active){
-      intermN++;
+    // A term nobody has read yet is not an expired one. Bucketing on term.active
+    // alone filed every client under "lapsed" for the few seconds before the
+    // trainer tier lands, so an unknown term rides with the in-term group, where
+    // the sorting is by activity and nothing is claimed about their contract.
+    var termKnown=(term.state!=='unknown');
+    if(term.active || !termKnown){
+      if(term.active) intermN++;
       // Being paid for someone you haven't onboarded is the most valuable thing on
       // this screen, and it used to read as "never started" alongside people who
-      // signed up for nothing and vanished.
-      if(!everLogged){ notOnboarded.push(o); return; }
+      // signed up for nothing and vanished. Only sayable with the term in hand.
+      if(!everLogged){ if(termKnown) notOnboarded.push(o); return; }
       if(quiet!=null && quiet>=JV_GONE_QUIET_DAYS){ goneQuiet.push(o); return; }
       live.push(o); return;
     }
@@ -24323,13 +24350,21 @@ function _fmtLogTs(s){
   }catch(e){ return ''; }
 }
 // Mobile Front Desk: the same at-a-glance stats (tappable) + "get them started" batch, above the client list.
+// Days are CALENDAR days here too. Andrea logged on Aug 11; on Aug 16 this said
+// "4d ago" while her client card and the desktop pane both said 5, because an
+// evening log is 4 days and 20 hours and that floors to 4. Third instance of the
+// same bug in one day, on the surface used furthest from a desk. Hours and
+// minutes stay elapsed — "3h ago" means three hours.
 function _jvRelAgo(ts){
   if(!ts) return '';
   var s=Math.max(0,Math.floor((Date.now()-ts)/1000));
   if(s<90) return 'just now';
   var m=Math.floor(s/60); if(m<60) return m+'m ago';
   var h=Math.floor(m/60); if(h<24) return h+'h ago';
-  var d=Math.floor(h/24); if(d===1) return 'yesterday';
+  var a=new Date(ts); a.setHours(0,0,0,0);
+  var b=new Date(); b.setHours(0,0,0,0);
+  var d=Math.max(1, Math.round((b-a)/86400000));
+  if(d===1) return 'yesterday';
   return d+'d ago';
 }
 function _jvPreviewLine(p){
@@ -24357,8 +24392,8 @@ function _fdFilterBar(){
     + chip('all','All',!f)
     + chip('todo','To-do',f==='todo')
     + chip('done','Caught up',f==='done')
-    + chip('paid','\ud83d\udc8e Paid',f==='paid')
-    + chip('new','\ud83c\udd95 New',f==='new')
+    + chip('paid','Paid',f==='paid')
+    + chip('new','New',f==='new')
     + '</div>'
     + _fdHiddenNotice();
 }
@@ -24489,8 +24524,12 @@ async function renderMobFrontDesk(){
     // Same rule as the desktop board, in the same order: the term decides the bucket
     // and activity only sorts inside it. An in-term client never lands in win-backs.
     var o={code:code, cls:cls||{band:'green',reason:''}, cnt:(p&&p.cnt)||[0,0,0,0,0,0,0], term:term, quiet:quiet};
-    if(term.active){
-      if(!everLogged){ o.cls={band:'red', reason:'hasn’t started yet', urg:99}; bands.red.push(o); return; }
+    // Same correction as the desktop board: an unread term is not an ended one,
+    // and this is the surface where it showed — thirty-two clients under "term
+    // ended, still using the app", several of them in month 11 of 12.
+    var termKnown=(term.state!=='unknown');
+    if(term.active || !termKnown){
+      if(!everLogged){ if(!termKnown) return; o.cls={band:'red', reason:'hasn’t started yet', urg:99}; bands.red.push(o); return; }
       if(quiet!=null && quiet>=JV_GONE_QUIET_DAYS){ o.cls={band:'red', reason:quiet+' days without a log', urg:quiet}; bands.red.push(o); return; }
       bands[o.cls.band].push(o); return;
     }
@@ -24559,7 +24598,7 @@ async function renderMobFrontDesk(){
   var _rows=_match.map(function(c){ var p=per[c]; var cls=(typeof _jvClassify==='function')?_jvClassify(p, jvTriage.now):null; if(!cls)cls={band:'dormant',reason:'quiet',urg:0}; return {code:c,cls:cls,cnt:(p&&p.cnt)||[0,0,0,0,0]}; });
   html+='<div style="margin-top:16px;"><div style="font-size:11px;color:rgba(240,236,228,0.78);font-weight:700;margin-bottom:11px;">'+_rows.length+' client'+(_rows.length===1?'':'s')+'</div>'+(_rows.length?_rows.map(function(o){return mcard(o,(o.cls&&o.cls.band)||'dormant');}).join(''):'<div style="color:rgba(240,236,228,0.78);font-size:13px;padding:8px 0;">No clients match.</div>')+'</div>';
 } else {
-html+=msection('\ud83d\udc8e Paid \u00b7 in term', paidPin,'green','var(--gold)','protect these');
+html+=msection('Paid \u00b7 in term', paidPin,'green','var(--gold)','protect these');
 
   // "Working hard, not moving" was the app grading someone off two weigh-ins.
   // Whether their effort is paying off is a coaching call, not a computed one.
@@ -24575,7 +24614,7 @@ html+=msection('\ud83d\udc8e Paid \u00b7 in term', paidPin,'green','var(--gold)'
   if(batch.length){
     html+='<div style="background:#100e07;border:1px solid rgba(224,196,152,0.30);border-radius:14px;padding:12px 14px;margin-top:12px;">'
       +'<div onclick="var g=document.getElementById(\'mobBatchGrid\');var c=document.getElementById(\'mobBatchCaret\');if(g){var open=g.style.display!==\'none\';g.style.display=open?\'none\':\'flex\';if(c)c.textContent=open?\'\\u25be\':\'\\u25b4\';}" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;">'
-      +'<div style="font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--gold);">\ud83c\udd95 Get them started \u00b7 '+batch.length+'</div>'
+      +'<div style="font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--gold);">Get them started \u00b7 '+batch.length+'</div>'
       +'<div style="font-size:13px;color:var(--gold);" id="mobBatchCaret">\u25be</div>'
       +'</div>'
       +'<div id="mobBatchGrid" style="display:none;flex-wrap:wrap;gap:7px;margin-top:10px;">'
