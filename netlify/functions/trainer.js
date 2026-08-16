@@ -1122,8 +1122,12 @@ async function handleBookCallForClient(URL, SERVICE, args, trainerCode) {
 const SPEND_LINK_MS = 10 * 60000;
 
 async function handleCancelCallForClient(URL, SERVICE, args) {
+  // Validated BEFORE the try, not inside it. A validator throwing inside a
+  // catch-all comes back as 502 write_failed, which reads as "the database is
+  // unwell" for what is only a malformed request — and 502-vs-400 is exactly
+  // the signal anything probing this door uses to tell a real op from a typo.
+  let path;
   try {
-    let path;
     if (args.booking_id != null) {
       path = `bookings?id=eq.${encId(args.booking_id)}`;
     } else {
@@ -1131,6 +1135,8 @@ async function handleCancelCallForClient(URL, SERVICE, args) {
       const at = isoTs(args.starts_at);
       path = `bookings?client_code=eq.${code}&starts_at=eq.${encodeURIComponent(at)}`;
     }
+  } catch (e) { return json(400, { error: 'bad_arg' }); }
+  try {
     const rRes = await fetch(`${URL}/rest/v1/${path}`
       + '&select=id,client_code,starts_at,duration_min,status,spent,created_at&limit=2',
       { headers: svc(SERVICE) });
