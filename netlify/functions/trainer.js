@@ -791,7 +791,11 @@ async function fetchVipExceptions(URL, SERVICE, ids) {
 // side covers every move this op will accept; occurrences that land outside
 // the range are returned too, which is harmless — every caller tests overlap
 // against a specific window rather than trusting the list to be pre-trimmed.
-function expandVipOccurrences(rows, excBy, fromYmd, toYmd) {
+// keepSkipped: a busy list must never contain a skipped occurrence (that is
+// the whole point of skipping one), but a list a HUMAN is choosing from must
+// show it, or a day that has been taken off simply vanishes with no way to put
+// it back. Same expansion, one flag, rather than a second copy that drifts.
+function expandVipOccurrences(rows, excBy, fromYmd, toYmd, keepSkipped) {
   const out = [];
   const PAD = 7 * 86400000;
   const scanStart = new Date(fromYmd + 'T00:00:00.000Z').getTime() - PAD;
@@ -808,7 +812,8 @@ function expandVipOccurrences(rows, excBy, fromYmd, toYmd) {
       if (!Array.isArray(row.weekdays) || !row.weekdays.includes(dow)) continue;
       const ds = isoDayStr(d);
       const e = exc[ds];
-      if (e && e.kind === 'skip') continue;
+      const skipped = !!(e && e.kind === 'skip');
+      if (skipped && !keepSkipped) continue;
       const useDate = (e && e.new_date) ? String(e.new_date).slice(0, 10) : ds;
       const useTime = (e && e.new_time_local) ? String(e.new_time_local).slice(0, 5) : row.time_local;
       out.push({
@@ -820,6 +825,8 @@ function expandVipOccurrences(rows, excBy, fromYmd, toYmd) {
         tz: row.tz,
         duration_minutes: +row.duration_minutes || BOOK_DEFAULT_MIN,
         moved: !!(e && e.kind === 'move'),
+        skipped: skipped,
+        series_time_local: row.time_local,
         at: zonedTimeToUtc(useDate, useTime, row.tz),
       });
     }
@@ -1253,6 +1260,55 @@ async function handleCancelCallForClient(URL, SERVICE, args) {
 // whole design: an exception is applied where the occurrence is COMPUTED, in
 // all three places that compute one, so the public grid frees the old time,
 // blocks the new one, and her own card reads the new time, from one fact.
+// ---- vipOccurrences ---------------------------------------------------------
+// args: { client_code?, days? (default 21, max 90) }
+//
+// The READ half of moveVipOccurrence, and the reason it exists: anything asked
+// to move "tomorrow's call" has to know which real dates a block actually
+// falls on before it can name one, and the arithmetic that answers that is
+// this file's own expansion — not a fourth hand-rolled copy of it in whatever
+// layer happens to ask. Returns rule_date (what moveVipOccurrence takes as its
+// `date`) ALONGSIDE the resolved instant, so a caller can restate the
+// occurrence in a human sentence and then act on it without re-deriving
+// anything.
+//
+// Skipped occurrences are INCLUDED, flagged skipped:true. A day taken off that
+// vanished from this list would be a day nobody could ever put back.
+async function handleVipOccurrences(URL, SERVICE, args) {
+  let code, days;
+  try {
+    code = args.client_code != null && args.client_code !== '' ? enc_raw(args.client_code) : null;
+    days = args.days == null ? 21 : posInt(args.days, 90);
+  } catch (e) { return json(400, { error: 'bad_arg' }); }
+  try {
+    const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+    const fromYmd = isoDayStr(today);
+    const toYmd = isoDayStr(new Date(today.getTime() + days * 86400000));
+    let path = 'vip_calls?select=id,client_code,weekdays,time_local,tz,duration_minutes,start_date,end_date,notes'
+      + `&active=eq.true&start_date=lte.${encodeURIComponent(toYmd)}&end_date=gte.${encodeURIComponent(fromYmd)}&limit=200`;
+    if (code) path += `&client_code=eq.${encodeURIComponent(code)}`;
+    const r = await fetch(`${URL}/rest/v1/${path}`, { headers: svc(SERVICE) });
+    if (!r.ok) return json(502, { error: 'query_failed', op: 'vipOccurrences' });
+    const rules = await r.json() || [];
+    const exc = await fetchVipExceptions(URL, SERVICE, rules.map((x) => x.id));
+    // Unlike the busy list, this one may answer with what it has: a caller
+    // choosing a date is looking at the answer, and the flag tells it whether
+    // the exception layer was readable.
+    const nowMs = Date.now();
+    const fromMs = new Date(fromYmd + 'T00:00:00.000Z').getTime();
+    const toMs = new Date(toYmd + 'T00:00:00.000Z').getTime() + 86400000;
+    const out = expandVipOccurrences(rules, exc.by, fromYmd, toYmd, true)
+      .filter((o) => o.at.getTime() >= Math.min(nowMs, toMs) - 0
+        && o.at.getTime() >= fromMs && o.at.getTime() < toMs)
+      .sort((a, b) => a.at - b.at)
+      .map((o) => Object.assign({}, o, { at: o.at.toISOString() }));
+    return json(200, out.map((o) => Object.assign({}, o, { exceptions_ok: exc.ok !== false })));
+  } catch (e) {
+    console.error('trainer: vipOccurrences threw', e && e.message);
+    return json(502, { error: 'query_failed', op: 'vipOccurrences' });
+  }
+}
+
 async function handleMoveVipOccurrence(URL, SERVICE, args) {
   let code, dateStr, action, newTime, newDate, wantId;
   try {
@@ -1588,6 +1644,7 @@ exports.handler = async (event) => {
   // session-scoped ops above.
   if (op === 'bookCallForClient') return handleBookCallForClient(URL, SERVICE, args, claims.client_code);
   if (op === 'cancelCallForClient') return handleCancelCallForClient(URL, SERVICE, args);
+  if (op === 'vipOccurrences') return handleVipOccurrences(URL, SERVICE, args);
   if (op === 'moveVipOccurrence') return handleMoveVipOccurrence(URL, SERVICE, args);
   if (op === 'clientPlanSetDay') return handleClientPlanSetDay(URL, SERVICE, args);
 
