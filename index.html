@@ -8914,17 +8914,22 @@ function _jvNewestItem(code, kind){
   }
   return null;
 }
+// Every answer this renders is one he may not be looking at — a refusal like
+// "I don't have anyone called that" lands exactly when his eyes are elsewhere,
+// which is the whole argument for speaking it. So speaking lives HERE, with
+// the rendering, rather than at each call site where it kept being forgotten.
 function _jvSay(msg){
   var out=document.getElementById('jvReadOut'); if(!out) return;
   out.innerHTML='<div class="jvChatA">'+msg+'</div>';
+  try{ _jvSpeakLine(msg); }catch(e){}
 }
 async function _jvFeedCommand(text){
   var t=String(text||'').trim();
   var m;
   // An answer to a held write, then a statement of fact — both before any model.
-  try{ var _pr=await _jvPendingReply(t); if(_pr){ _jvSay(_pr.replace(/\n/g,'<br>')); _jvSpeakLine(_pr); return true; } }catch(e){ console.error('pending reply',e); }
-  try{ var _bk=await _jvBookCommand(t); if(_bk){ _jvSay(_bk); _jvSpeakLine(_bk); return true; } }catch(e){ console.error('book command',e); }
-  try{ var _cc=await _ccHandleStatement(t); if(_cc){ _jvSay(_cc); _jvSpeakLine(_cc); return true; } }catch(e){ console.error('contact command',e); }
+  try{ var _pr=await _jvPendingReply(t); if(_pr){ _jvSay(_pr.replace(/\n/g,'<br>')); return true; } }catch(e){ console.error('pending reply',e); }
+  try{ var _bk=await _jvBookCommand(t); if(_bk){ _jvSay(_bk); return true; } }catch(e){ console.error('book command',e); }
+  try{ var _cc=await _ccHandleStatement(t); if(_cc){ _jvSay(_cc); return true; } }catch(e){ console.error('contact command',e); }
   var kindWord=function(w){ return /workout|session|training|lift|pull|push|legs/i.test(w||'') ? 'wo' : (/meal|food|breakfast|lunch|dinner|ate/i.test(w||'') ? 'food' : null); };
 
   // like <who>['s <what>]
@@ -13698,7 +13703,14 @@ function jvAudioUnlock(){
 function _jvSpeakStrip(html){
   try{
     var d=document.createElement('div'); d.innerHTML=String(html||'');
-    return (d.textContent||'').replace(/\s+/g,' ').trim().slice(0,300);
+    var t=(d.textContent||'').replace(/\s+/g,' ').trim();
+    if(t.length<=300) return t;
+    // A long reply is cut at a SENTENCE, not mid-word — the server caps at 300
+    // and a butler trailing off halfway through a word sounds broken rather
+    // than brief. What is on screen is still the whole answer.
+    var cut=t.slice(0,300);
+    var end=Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '));
+    return (end>80 ? cut.slice(0,end+1) : cut.slice(0, cut.lastIndexOf(' '))).trim();
   }catch(e){ return ''; }
 }
 async function _jvSpeakLine(textOrHtml){
@@ -22833,6 +22845,11 @@ async function jvChatSend(){
     if(!txt) txt='Working on it.';
     var _applied=(_pg.results&&_pg.results.length)||(_pe.results&&_pe.results.length)||(_pp.results&&_pp.results.length)||(_pr.results&&_pr.results.length);
     jvChatHistory.push({role:'assistant',content:txt});
+    // The typed path. _jvFeedCommand handles the commands and speaks its own
+    // answers; everything else — which is most of what he types — came back
+    // from the model, painted, and stayed silent. That was the desktop bug:
+    // not the pipe, just this one path never asking it to speak.
+    try{ _jvSpeakLine(txt); }catch(e){}
     (_pg.results||[]).forEach(function(r){
       if(r.ok){ jvChatHistory.push({role:'assistant',content:'\u2705 '+((CLIENTS[r.code]&&CLIENTS[r.code].name)||r.code)+' \u2014 live in their app:\n\n'+_jvProgramBullets(r.workouts||[])}); }
       else { jvChatHistory.push({role:'assistant',content:'\u26a0\ufe0f Couldn\u2019t save '+((CLIENTS[r.code]&&CLIENTS[r.code].name)||r.code)+'\u2019s program \u2014 it came back malformed. Ask me to build it again and it should land.'}); }
