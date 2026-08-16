@@ -2535,6 +2535,20 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
 /* The weight run, in the goal card's own register: gold line, faded fill under
    it, the goal as a dashed rule across. Sits exactly where the progress bar sat,
    so the card keeps its rhythm. */
+/* The mute control. Obvious enough to find in a hurry, quiet enough not to
+   compete with the mic beside it — he will not always be somewhere the butler
+   should talk, and the state is remembered. */
+.jvVoiceBtn{flex:0 0 auto;-webkit-appearance:none;appearance:none;cursor:pointer;
+  background:transparent;border:1px solid rgba(240,236,228,0.18);border-radius:10px;
+  color:var(--gold);padding:9px 10px;line-height:0;margin-left:8px;}
+.jvVoiceBtn .jvVoiceSlash{opacity:0;}
+.jvVoiceBtn.off{color:rgba(240,236,228,0.40);}
+.jvVoiceBtn.off .jvVoiceWave{opacity:0;}
+.jvVoiceBtn.off .jvVoiceSlash{opacity:1;}
+#jvPaneBar > #jvPaneMic, #admMicBar > #admMic{display:inline-flex;width:auto;flex:1 1 auto;}
+#jvPaneBar, #admMicBar{}
+#jvPaneBar #jvPaneMic, #admMicBar #admMic{width:auto;}
+.jvBarRow{display:flex;align-items:center;}
 .ovChart{margin:12px 0 10px;}
 .ovChart svg{display:block;width:100%;height:96px;overflow:visible;}
 /* Three facts on one line, where the term/tier/price line used to be. */
@@ -4290,6 +4304,7 @@ body.hasnav #tToday{padding-bottom:96px;}
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4" stroke-linecap="round"/></svg>
         <span id="admMicLbl">Talk to Jarvis</span>
       </button>
+      <button id="admVoiceBtn" class="jvVoiceBtn" onclick="jvVoiceToggle()" aria-label="Mute Jarvis"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path class="jvVoiceWave" d="M17 9.5a4 4 0 0 1 0 5"/><path class="jvVoiceSlash" d="M3 3l18 18"/></svg></button>
       <div id="admMicType">
         <textarea id="admMicInput" rows="1" placeholder="or type it" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();admMicSend();}"></textarea>
         <button onclick="admMicSend()" aria-label="Send">&uarr;</button>
@@ -8876,8 +8891,8 @@ async function _jvFeedCommand(text){
   var t=String(text||'').trim();
   var m;
   // An answer to a held write, then a statement of fact — both before any model.
-  try{ var _pr=await _jvPendingReply(t); if(_pr){ _jvSay(_pr.replace(/\n/g,'<br>')); return true; } }catch(e){ console.error('pending reply',e); }
-  try{ var _cc=await _ccHandleStatement(t); if(_cc){ _jvSay(_cc); return true; } }catch(e){ console.error('contact command',e); }
+  try{ var _pr=await _jvPendingReply(t); if(_pr){ _jvSay(_pr.replace(/\n/g,'<br>')); _jvSpeakLine(_pr); return true; } }catch(e){ console.error('pending reply',e); }
+  try{ var _cc=await _ccHandleStatement(t); if(_cc){ _jvSay(_cc); _jvSpeakLine(_cc); return true; } }catch(e){ console.error('contact command',e); }
   var kindWord=function(w){ return /workout|session|training|lift|pull|push|legs/i.test(w||'') ? 'wo' : (/meal|food|breakfast|lunch|dinner|ate/i.test(w||'') ? 'food' : null); };
 
   // like <who>['s <what>]
@@ -13531,6 +13546,78 @@ async function _jvAssistantContext(opts){
   }
   return out;
 }
+// ===== JARVIS SPEAKS ======================================================
+// Confirmations only — what he already reads, read aloud. Not essays: the
+// server caps at 300 characters and the plan is roughly a thousand short lines
+// a month.
+//
+// GARNISH, NEVER A GATE. Every call renders its text FIRST and speaks second,
+// and nothing anywhere awaits the audio. If the function 503s because the key
+// is missing, 502s because the account lapsed or hit its rate limit, or the
+// browser refuses to play, Jarvis behaves exactly as he does today: text on
+// screen, silence, one line in the console. A failed line is never reported as
+// spoken and never steals focus with an error.
+//
+// iOS: Safari will not play audio that did not follow a user gesture, and the
+// audio here arrives after a fetch, which breaks that chain. So ONE audio
+// element is unlocked on the first tap — a muted play/pause of nothing — and
+// every later line reuses it. The element stays alive, so the gesture is only
+// needed once per page.
+var _jvAudioEl=null, _jvAudioReady=false;
+function jvVoiceOn(){ try{ return localStorage.getItem('yjb_jv_voice')!=='off'; }catch(e){ return true; } }
+function jvVoiceToggle(){
+  try{ localStorage.setItem('yjb_jv_voice', jvVoiceOn()?'off':'on'); }catch(e){}
+  if(!jvVoiceOn()){ try{ if(_jvAudioEl){ _jvAudioEl.pause(); _jvAudioEl.src=''; } }catch(e){} }
+  try{ _jvVoicePaint(); }catch(e){}
+}
+function _jvVoicePaint(){
+  var on=jvVoiceOn();
+  ['jvVoiceBtn','admVoiceBtn'].forEach(function(id){
+    var b=document.getElementById(id); if(!b) return;
+    b.classList.toggle('off', !on);
+    b.setAttribute('aria-label', on?'Mute Jarvis':'Unmute Jarvis');
+    b.title = on?'Jarvis speaks — tap to mute':'Jarvis is muted — tap to unmute';
+  });
+}
+// Called from a real tap, before any network work, so the element is unlocked
+// inside the gesture rather than after it.
+function jvAudioUnlock(){
+  try{
+    if(_jvAudioReady) return;
+    if(!_jvAudioEl){ _jvAudioEl=new Audio(); _jvAudioEl.preload='auto'; }
+    _jvAudioEl.muted=true;
+    var p=_jvAudioEl.play();
+    if(p && p.then) p.then(function(){ try{ _jvAudioEl.pause(); _jvAudioEl.currentTime=0; }catch(e){} _jvAudioEl.muted=false; _jvAudioReady=true; })
+                     .catch(function(){ _jvAudioEl.muted=false; });
+    else { _jvAudioEl.muted=false; _jvAudioReady=true; }
+  }catch(e){}
+}
+function _jvSpeakStrip(html){
+  try{
+    var d=document.createElement('div'); d.innerHTML=String(html||'');
+    return (d.textContent||'').replace(/\s+/g,' ').trim().slice(0,300);
+  }catch(e){ return ''; }
+}
+async function _jvSpeakLine(textOrHtml){
+  try{
+    if(!jvVoiceOn()) return;
+    var t=_jvSpeakStrip(textOrHtml); if(!t) return;
+    var tok=null; try{ tok=_sessToken(); }catch(e){}
+    if(!tok) return;                       // no session, no voice, no noise about it
+    var res=await fetch('/.netlify/functions/jarvis-speak',{
+      method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},
+      body:JSON.stringify({text:t})});
+    if(!res.ok){ console.warn('[jarvis-speak] '+res.status+' — line not spoken'); return; }
+    var buf=await res.arrayBuffer();
+    if(!buf || !buf.byteLength) return;
+    var url=URL.createObjectURL(new Blob([buf],{type:'audio/mpeg'}));
+    if(!_jvAudioEl) _jvAudioEl=new Audio();
+    _jvAudioEl.src=url;
+    var pl=_jvAudioEl.play();
+    if(pl && pl.catch) pl.catch(function(err){ console.warn('[jarvis-speak] blocked by the browser — line not spoken'); });
+    try{ _jvAudioEl.onended=function(){ try{ URL.revokeObjectURL(url); }catch(e){} }; }catch(e){}
+  }catch(e){ console.warn('[jarvis-speak] failed — line not spoken'); }
+}
 var _JV_PENDING_MS=10*60*1000;      // a confirmation older than this is not a confirmation
 function _jvBuildPendingLog(lg, code, name){
   if(!lg || !code || !CLIENTS[code]) return null;
@@ -15999,16 +16086,19 @@ function _jvPaneBarRender(){
   host.innerHTML='<button id="jvPaneMic" onclick="jvPaneMic()">'
       +'<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4" stroke-linecap="round"/></svg>'
       +'<span id="jvPaneMicLbl">Talk to Jarvis</span></button>'
+    +'<button id="jvVoiceBtn" class="jvVoiceBtn" onclick="jvVoiceToggle()" aria-label="Mute Jarvis"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path class="jvVoiceWave" d="M17 9.5a4 4 0 0 1 0 5"/><path class="jvVoiceSlash" d="M3 3l18 18"/></svg></button>'
     +'<div id="jvPaneType">'
       +'<textarea id="jvPaneInput" rows="1" placeholder="or type it" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();jvPaneSend();}"></textarea>'
       +'<button onclick="jvPaneSend()" aria-label="Send">&uarr;</button>'
     +'</div>'
     +'<div id="jvPaneOut"></div>';
+  try{ _jvVoicePaint(); }catch(e){}
 }
 var _jvPaneRec=null;
 // Dictation already worked in this app; it was a 15px icon docked in a row with
 // the search field. Same engine, made the way in.
 function jvPaneMic(){
+  jvAudioUnlock();
   var btn=document.getElementById('jvPaneMic'), lbl=document.getElementById('jvPaneMicLbl'), inp=document.getElementById('jvPaneInput');
   var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR){ try{ showToast('Voice isn’t supported on this browser'); }catch(e){} return; }
@@ -16029,6 +16119,7 @@ function jvPaneMic(){
 // Same two layers, same order, as every other box: an answer to a held write,
 // then a statement of fact, then the model.
 async function jvPaneSend(){
+  jvAudioUnlock();
   var inp=document.getElementById('jvPaneInput'), out=document.getElementById('jvPaneOut');
   if(!inp) return;
   var t=(inp.value||'').trim(); if(!t) return;
@@ -16036,8 +16127,8 @@ async function jvPaneSend(){
   inp.value='';
   function say(html){ if(out) out.innerHTML='<div class="jvPaneYou">'+_escHtml(t)+'</div>'+html; }
   say('<span style="opacity:0.6;">…</span>');
-  try{ var pr=await _jvPendingReply(t); if(pr){ say(_escHtml(pr).replace(/\n/g,'<br>')); jvPaneRender(); return; } }catch(e){}
-  try{ var cc=await _ccHandleStatement(t); if(cc){ say(cc); jvPaneRender(); return; } }catch(e){}
+  try{ var pr=await _jvPendingReply(t); if(pr){ say(_escHtml(pr).replace(/\n/g,'<br>')); _jvSpeakLine(pr); jvPaneRender(); return; } }catch(e){}
+  try{ var cc=await _ccHandleStatement(t); if(cc){ say(cc); _jvSpeakLine(cc); jvPaneRender(); return; } }catch(e){}
   // Not a command: hand it to the cockpit chat, which owns the conversation.
   try{
     var box=document.getElementById('jvChatInput');
@@ -16056,6 +16147,7 @@ function admRenderNeeds(){
     if(d) d.textContent='Today \u00b7 '+new Date().toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
     jvRenderNeeds('mobNeeds');
     jvRenderJustNow('mobJustNow');
+    _jvVoicePaint();
   }catch(e){ console.error('admRenderNeeds',e); }
 }
 function admFocusOn(){ try{ return localStorage.getItem('yjb_adm_rest')!=='open'; }catch(e){ return true; } }
@@ -16076,6 +16168,7 @@ function admToggleRest(){
 }
 var _admRec=null;
 function admMicTap(){
+  jvAudioUnlock();
   var btn=document.getElementById('admMic'), lbl=document.getElementById('admMicLbl'), inp=document.getElementById('admMicInput');
   var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR){ try{ showToast('Voice isn\u2019t supported on this browser'); }catch(e){} return; }
@@ -16095,6 +16188,7 @@ function admMicTap(){
 }
 // Same two layers, same order, as every other box.
 async function admMicSend(){
+  jvAudioUnlock();
   var inp=document.getElementById('admMicInput'), out=document.getElementById('admMicOut');
   if(!inp) return;
   var t=(inp.value||'').trim(); if(!t) return;
@@ -16102,8 +16196,8 @@ async function admMicSend(){
   inp.value='';
   function say(html){ if(out) out.innerHTML=html; }
   say('<span style="opacity:0.6;">\u2026</span>');
-  try{ var pr=await _jvPendingReply(t); if(pr){ say(_escHtml(pr).replace(/\n/g,'<br>')); admRenderNeeds(); return; } }catch(e){}
-  try{ var cc=await _ccHandleStatement(t); if(cc){ say(cc); admRenderNeeds(); return; } }catch(e){}
+  try{ var pr=await _jvPendingReply(t); if(pr){ say(_escHtml(pr).replace(/\n/g,'<br>')); _jvSpeakLine(pr); admRenderNeeds(); return; } }catch(e){}
+  try{ var cc=await _ccHandleStatement(t); if(cc){ say(cc); _jvSpeakLine(cc); admRenderNeeds(); return; } }catch(e){}
   try{
     var box=document.getElementById('jvChatInput');
     if(box){ box.value=t; await jvChatSend(); var ro=document.getElementById('jvReadOut'); say(ro?ro.innerHTML:''); return; }
