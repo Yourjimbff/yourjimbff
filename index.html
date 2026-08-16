@@ -7470,8 +7470,18 @@ async function loadTodayWorkouts(){
 }
 
 // ===== TRAINING TAB =====
+// The Day page's door to this screen is gone (Yusuf, 16 Aug — see _tlHeroNone).
+// This one is the Training tab's, and it is NOT the same door: the deleted one
+// was the only way a client on the Day page could reach it. The opener lived in
+// openFreestyleWorkout, which existed solely to serve both; its body is here now
+// so removing that door didn't take this one with it.
 function openManualWorkoutModal(){
-  openFreestyleWorkout();
+  resetFreestyleForm();
+  var titleEl = document.querySelector('#mWorkout .mtitle');
+  var subEl = document.querySelector('#mWorkout .msub');
+  if(titleEl) titleEl.textContent = 'Build your own';
+  if(subEl) subEl.textContent = 'One exercise at a time. Type any name — your past lifts come up as you go.';
+  openM('mWorkout');
 }
 
 // ===== TRAINING TAB =====
@@ -13795,14 +13805,6 @@ function _initWoDraftListeners(){
 }
 window.addEventListener('load', _initWoDraftListeners);
 
-function openFreestyleWorkout(){
-  resetFreestyleForm();
-  var titleEl = document.querySelector('#mWorkout .mtitle');
-  var subEl = document.querySelector('#mWorkout .msub');
-  if(titleEl) titleEl.textContent = 'Build your own';
-  if(subEl) subEl.textContent = 'One exercise at a time. Type any name \u2014 your past lifts come up as you go.';
-  openM('mWorkout');
-}
 
 function resetFreestyleForm(){
   window._exReg=null;
@@ -18684,15 +18686,80 @@ function _tlHeroPending(ds){
     +'<div class="tlHeroMeta">Tap to try again</div>'
   +'</div>';
 }
-function _tlHeroNone(ds){
-  // data-tl="freestyle" opens the free workout logger — a door that actually
-  // opens. The first cut toggled the planned card's open flag, and with no plan
-  // there is no planned card: a tap that did nothing at all.
-  return '<div class="tlHero err" data-tl="freestyle" data-ds="'+_escHtml(ds)+'" style="cursor:pointer;">'
-    +'<div class="tlHeroEy">Today’s session</div>'
-    +'<div class="tlHeroName">No program set up yet</div>'
-    +'<div class="tlHeroMeta">Tap to log a session of your own</div>'
+// This was a tap-through to #mWorkout — an older duplicate of the free-text
+// capture, reachable from this one card and nowhere else (deleted 16 Aug,
+// Yusuf's ruling). The box is on the card itself now: same component the rest
+// day uses, same verified write, and no screen to travel to.
+function _tlHeroNone(ds, isToday, isAhead, slots){
+  return _tlRestCard(ds, isToday, isAhead, slots, 'none');
+}
+
+// ===== ACTIVE REST (Yusuf, 16 Aug) =======================================
+// "There is no such thing as a rest day; people train on rest days."
+// A programmed rest day drew nothing at all, so a walk, a sauna, a stretch had
+// nowhere to go on this page. This says what the day is, suggests something in
+// that spirit, and takes as many entries as the day actually had.
+//
+// Every entry is its own workout_logs row on that date, so they read back on the
+// day exactly like anything else logged, and each goes through insertWorkoutLog
+// — read-back verified, same as every other write on this page.
+//
+// kind 'rest' = a programmed rest day. kind 'none' = no program at all: the same
+// card with a different headline, because the need is identical — nothing is
+// scheduled and they still want to say what they did.
+function _tlRestCard(ds, isToday, isAhead, slots, kind){
+  if(window._tlRO) return '';
+  var none=(kind==='none');
+  var logged=(((slots&&slots.workout)||[]).length) + (((slots&&slots.walk)||[]).length);
+  var dr={}; try{ dr=_woDraft(ds)||{}; }catch(e){}
+  var txt=String(dr.restText||'');
+  // The suggestion is for a day you can still act on, and it stands down once
+  // they've done something — advice about getting a walk in, sitting under two
+  // walks they already logged, is the app not reading the room.
+  var showHint=(!logged && (isToday || isAhead));
+  return '<div class="tlHero">'
+    +'<div class="tlHeroEy">'+(none?(isToday?'Today’s session':'The session'):(isToday?'Today':'Rest day'))+'</div>'
+    +'<div class="tlHeroName">'+(none?'No program set up yet':'Active rest')+'</div>'
+    +(showHint?('<div class="tlHeroMeta">'+(none
+        ?'Nothing scheduled. Say what you did and I’ll log it.'
+        :'Nothing programmed today. Get your steps in, go for a walk.')+'</div>'):'')
+    +'<textarea id="rest_'+_escHtml(ds)+'" rows="2"'
+      +' placeholder="Walk, sauna, stretch - whatever you did"'
+      +' onclick="event.stopPropagation()"'
+      +' oninput="restTextSet(\''+ds+'\',this.value)"'
+      +' style="width:100%;box-sizing:border-box;min-height:64px;margin-top:13px;background:#1b1b1b;'
+      +'border:1px solid #2d2d2d;border-radius:10px;padding:12px;color:#f0ece4;font-size:15px;'
+      +'line-height:1.5;font-family:inherit;outline:none;resize:vertical;">'+_escHtml(txt)+'</textarea>'
+    +'<button class="sbtn" style="margin-top:10px;" onclick="event.stopPropagation();restLogEntry(\''+ds+'\')">'
+      +(logged?'Add another':'Log it')
+    +'</button>'
   +'</div>';
+}
+function restTextSet(ds, v){
+  var d=_woDraft(ds); d.restText=String(v||''); _woSaveDraft(ds,d);
+}
+// One entry, one row, as many as the day had. The box empties only once the row
+// has actually landed, so a refused write leaves their words where they typed
+// them.
+async function restLogEntry(ds){
+  var d=_woDraft(ds);
+  var txt=String(d.restText||'').trim();
+  if(!txt){ try{ showToast('Say what you did first'); }catch(e){} return; }
+  // Their own words are the entry — the display line is never something a model
+  // reconstructs (standing law). The title is the opening of what they wrote.
+  var title=txt.split(/[.,\n]/)[0].trim().slice(0,60) || 'Active rest';
+  var row={client_code:cl.code, title:_tcase(title), description:txt, duration:null,
+           date_str:ds, logged_at:_timeToISO(_tlNowClock(), ds)};
+  var r=await insertWorkoutLog(row);
+  if(!(r && (r.ok || r.duplicate))){
+    if(r && r.cancelled) return;
+    _sbFailToast('log that');
+    return;
+  }
+  d.restText=''; _woSaveDraft(ds,d);
+  _tlCacheAdd('workouts', row);
+  try{ showToast('Logged'); }catch(e){}
+  try{ _tlRefreshDay(ds); }catch(e){ try{ window._tlCache=null; renderDayTimeline(); }catch(_){} }
 }
 
 // ===== TODAY'S PLATE =====================================================
@@ -19006,6 +19073,14 @@ function _tlDaySectionHtml(cur, ctx){
     if(plan && plan.type && !plan.rest && !planLogged){
       rows.push({k:'workout', lbl:(plan.type||'Workout'), it:null, planned:true, m:_planMins(ds, plan)});
     }
+    // THERE IS NO SUCH THING AS A REST DAY (Yusuf, 16 Aug). People train on them.
+    // A rest day used to draw nothing at all — no card, no door — so a client who
+    // walked, stretched or sat in a sauna had nowhere on this page to say so. It
+    // gets a real card now: what the day is, a suggestion in that spirit, and a
+    // box that takes as many entries as the day actually had.
+    if(plan && plan.rest && !window._tlRO){
+      rows.push({k:'restday', m:_planMins(ds, plan)});
+    }
     // Finished, and still the biggest thing on the day. A completed session keeps
     // the hero — it leads the day exactly as the planned one did, carrying what
     // was actually done instead of what was going to be.
@@ -19068,6 +19143,7 @@ function _tlDaySectionHtml(cur, ctx){
       if(r.empty)            return _tlSlot(r.k, r.lbl, null, ds, null);
       if(r.k==='movement')   return _tlMovementCard(r.move, ds);
       if(r.k==='weighcard')  return _tlWeighCard(r.it, ds);
+      if(r.k==='restday')    return _tlRestCard(ds, isToday, isAhead, slots, 'rest');
       return _tlSlot(r.k, r.lbl, (r.all || [r.it]), ds, null);
     }
     // The day reads in the order it was lived — walk, breakfast, the session, cardio,
@@ -19099,7 +19175,7 @@ function _tlDaySectionHtml(cur, ctx){
         var _pf=window._tpLoadFailed;
         if(_pf===true)               html+=_tlHeroErr(ds);
         else if(_pf===undefined)     html+=_tlHeroPending(ds);
-        else if(!plan || !plan.type) html+=_tlHeroNone(ds);
+        else if(!plan || !plan.type) html+=_tlHeroNone(ds, isToday, isAhead, slots);
       }
     }
     rows.forEach(function(r){ html+=_drawRow(r); });
@@ -20817,7 +20893,6 @@ function _tlBindTaps(){
     }
     // Opening a finished session is reading, not editing — ungated on every day.
     if(a==='wodone'){ ev.stopPropagation(); tlToggleDone(el.getAttribute('data-ds'), el.getAttribute('data-code')); return; }
-    if(a==='freestyle'){ ev.stopPropagation(); try{ openFreestyleWorkout(); }catch(e){} return; }
     if(a==='pickmode'){ ev.stopPropagation(); tlPickMode(el.getAttribute('data-ds'), el.getAttribute('data-want')==='1'); return; }
     if(a==='wotimeset'){ ev.stopPropagation(); openWoTime(el.getAttribute('data-ds')); return; }
     if(a==='addmore'){
@@ -20912,13 +20987,10 @@ function _tlTableFor(key){
 }
 async function tlSaveNote(key, id, v){
   var tbl=_tlTableFor(key); if(!tbl||!id) return;
-  try{
-    await fetch(SB_URL+'/rest/v1/'+tbl+'?id=eq.'+encodeURIComponent(id), {method:'PATCH',
-      headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
-      body:JSON.stringify({note:v})});
-    try{ ['foods','workouts','weights'].forEach(function(k){ ((window._tlCache&&window._tlCache[k])||[]).forEach(function(r){ if(r.id==id) r.note=v; }); }); }catch(e){}
-    try{ showToast('Saved'); }catch(e){}
-  }catch(e){}
+  var r=await sbWrite('PATCH', tbl+'?id=eq.'+encodeURIComponent(id), {note:v});
+  if(!r.ok){ _sbFailToast('save that note'); return; }
+  try{ ['foods','workouts','weights'].forEach(function(k){ ((window._tlCache&&window._tlCache[k])||[]).forEach(function(x){ if(x.id==id) x.note=v; }); }); }catch(e){}
+  try{ showToast('Saved'); }catch(e){}
 }
 // Add anything to a day — a session, a walk, pilates, a swim, whatever it was.
 function hdlActPhoto(inp){
@@ -26669,15 +26741,18 @@ async function mlibAdopt(t, opts){
     extras:t.extras||null, note:t.note||null, photo_url:t.photo_url||null, is_template:false,
     source_template_id:t.id, calories:t.calories||null, protein_g:t.protein_g||null, carbs_g:t.carbs_g||null,
     fat_g:t.fat_g||null, times_logged:0};
-  var row=null;
+  var row=null, queued=false;
   try{ row=await sbInsertReturning('meals', copy); }catch(e){}
   if(!row){
+    // Deliberate offline path, not a silent failure — but the message has to say
+    // which of the two actually happened.
+    queued=true;
     row=Object.assign({}, copy, {id:'tmp:'+Date.now()});
     try{ sqPush('meals', copy, 'POST'); }catch(e){}
   }
   _mlibMeals.push(row);
   if(opts.log){ mlibLogMeal(row); }
-  else { showToast('✓ Added to your meals'); mlibRenderPicker(); }
+  else { showToast(queued?'Added here - it will sync when it can':'✓ Added to your meals'); mlibRenderPicker(); }
 }
 function mlibOfferSave(prefill){
   try{
@@ -27110,7 +27185,8 @@ async function flibFoodSave(id){
   flibRender();
   if(String(f.id).indexOf('tmp:')===0){ showToast('✓ Saved'); return; }
   try{
-    await fetch(SB_URL+'/rest/v1/saved_foods?id=eq.'+encodeURIComponent(f.id),{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}),body:JSON.stringify({name:f.name,calories:f.calories,protein:f.protein,carbs:f.carbs,fat:f.fat,updated_at:new Date().toISOString()})});
+    var _fr=await sbWrite('PATCH','saved_foods?id=eq.'+encodeURIComponent(f.id),{name:f.name,calories:f.calories,protein:f.protein,carbs:f.carbs,fat:f.fat,updated_at:new Date().toISOString()});
+    if(!_fr.ok){ _sbFailToast('save that food'); return; }
     showToast('✓ Saved');
   }catch(e){ showToast('Saved here — will sync when it can'); }
 }
@@ -27139,9 +27215,10 @@ async function flibFoodAdd(){
   var est=null; try{ est=await _estimateFood(q); }catch(e){}
   var row={client_code:cl.code, name:_tcase(est?(est.name||q):q), emoji:'🍽️',
            calories:(est?est.calories:null), protein:(est?est.protein:null), carbs:(est?est.carbs:null), fat:(est?est.fat:null)};
-  var saved=null;
+  var saved=null, _queued=false;
   try{ saved=await sbInsertReturning('saved_foods', row); }catch(e){}
   if(!saved){
+    _queued=true;
     saved=Object.assign({},row,{id:'tmp:'+Date.now()});
     try{ sqPush('saved_foods', row, 'POST'); }catch(e){}
   }
@@ -27149,7 +27226,8 @@ async function flibFoodAdd(){
   var el2=document.getElementById('flibAddInput'); if(el2) el2.value='';
   _flibAddBusy=false;
   flibRender();
-  showToast(est?('✓ '+saved.name+' added'):'Added — tap it to set macros');
+  showToast(_queued ? 'Added here - it will sync when it can'
+                    : (est?('✓ '+saved.name+' added'):'Added - tap it to set macros'));
 }
 // ===== WEAK POINTS ======================================================
 // A weak point, the protocol Yusuf prescribes for it, and the proof it moved.
@@ -30587,9 +30665,11 @@ async function plateSaveFood(i){
   try{
     var existing=(_savedFoods||[]).find(function(f){ return (f.name||'').toLowerCase()===nm.toLowerCase(); });
     if(existing && existing.id!=null){
-      await fetch(SB_URL+'/rest/v1/saved_foods?id=eq.'+existing.id,{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}),body:JSON.stringify({name:nm,calories:it.calories,protein:it.protein,carbs:it.carbs,fat:it.fat,updated_at:new Date().toISOString()})});
+      var _pu=await sbWrite('PATCH','saved_foods?id=eq.'+encodeURIComponent(existing.id),{name:nm,calories:it.calories,protein:it.protein,carbs:it.carbs,fat:it.fat,updated_at:new Date().toISOString()});
+      if(!_pu.ok){ _sbFailToast('save that food'); return; }
     } else {
-      await sbInsert('saved_foods',{client_code:cl.code,name:nm,emoji:'🍽️',calories:it.calories,protein:it.protein,carbs:it.carbs,fat:it.fat});
+      var _pi=await sbInsert('saved_foods',{client_code:cl.code,name:nm,emoji:'🍽️',calories:it.calories,protein:it.protein,carbs:it.carbs,fat:it.fat});
+      if(!_pi){ _sbFailToast('save that food'); return; }
     }
     showToast('★ Saved '+nm+' for next time');
     try{ await loadSavedFoods(true); }catch(e){}
@@ -31127,7 +31207,14 @@ async function addMacrosToEntry(i){
     // into "good" so the daily score had a number to work with, which quietly
     // inflated every score built on an unreadable entry. Unknown stays unknown;
     // it already scores 0.2 rather than 1.0, which is the honest weight.
-    try{ if(e.id!=null){ await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(e.id),{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),body:JSON.stringify({calories:e.calories,protein:e.protein,carbs:e.carbs,fat:e.fat,rating:e.rating})}); } }catch(_){}
+    // The numbers only join the day once the row has them. This swallowed the
+    // PATCH's result, added the macros to the running totals anyway and said
+    // "Macros added" — so a refused write showed a day that didn't exist.
+    if(e.id!=null){
+      var _mr=await sbWrite('PATCH','food_logs?id=eq.'+encodeURIComponent(e.id),
+        {calories:e.calories,protein:e.protein,carbs:e.carbs,fat:e.fat,rating:e.rating});
+      if(!_mr.ok){ _sbFailToast('add those macros'); return; }
+    }
     try{ tots.cal+=e.calories; tots.protein+=e.protein; tots.carbs+=e.carbs; tots.fat+=e.fat; }catch(_){}
     try{ if(!/^\s*\d/.test(e.name)) _rememberFood(e); }catch(_){}
     try{ rendTodayFood(); updTots(); refreshTileStates(); updHalo(); updStats(); }catch(_){}
@@ -35070,7 +35157,9 @@ async function clarifyMeal(i){
     e.rating=newRating; if(newInsight) e.insight=newInsight;
     // remember what they told us, appended to the name context
     if(e.id!=null){
-      try{ await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(e.id),{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),body:JSON.stringify({rating:newRating,insight:(newInsight||e.insight||null),note:((e.note?e.note+' · ':'')+'Ingredients: '+ing)})}); }catch(err){}
+      var _cr=await sbWrite('PATCH','food_logs?id=eq.'+encodeURIComponent(e.id),
+        {rating:newRating,insight:(newInsight||e.insight||null),note:((e.note?e.note+' · ':'')+'Ingredients: '+ing)});
+      if(!_cr.ok){ _sbFailToast('re-grade that'); return; }
     }
     if(!e.note) e.note='Ingredients: '+ing;
     rendTodayFood(); updHalo();
@@ -36415,16 +36504,13 @@ async function addPhotoToMeal(i, input){
   var reader = new FileReader();
   reader.onload = function(ev){
     downscaleImage(ev.target.result, 1440, 0.85).then(async function(compact){
-      e.photo = compact;
+      // Server first. The photo used to be put on the card before the PATCH and
+      // kept there regardless, so a refused upload looked attached until reload.
       if(e.id){
-        try{
-          await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+e.id, {
-            method:'PATCH',
-            headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
-            body:JSON.stringify({photo: compact})
-          });
-        }catch(err){ console.error('add photo failed', err); }
+        var _pr=await sbWrite('PATCH','food_logs?id=eq.'+encodeURIComponent(e.id), {photo: compact});
+        if(!_pr.ok){ _sbFailToast('add that photo'); return; }
       }
+      e.photo = compact;
       rendTodayFood();
       showToast('✓ Photo added');
     });
@@ -36494,15 +36580,12 @@ async function saveEditedFood(){
 
   // Update Supabase if it has an id
   if(e.id){
-    try{
-      var _patch = {name:newName, calories:newCal, protein:newProt, carbs:newCarb, fat:newFat, eat_time:newTime, date_str:newDateStr, insight:newInsight, note:(newNote||null)};
-      if(newDateStr !== todayDateStr) _patch.logged_at = _isoForDateStr(newDateStr, newTime);
-      await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+e.id, {
-        method:'PATCH',
-        headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
-        body:JSON.stringify(_patch)
-      });
-    }catch(err){ console.error('Edit save failed', err); }
+    var _patch = {name:newName, calories:newCal, protein:newProt, carbs:newCarb, fat:newFat, eat_time:newTime, date_str:newDateStr, insight:newInsight, note:(newNote||null)};
+    if(newDateStr !== todayDateStr) _patch.logged_at = _isoForDateStr(newDateStr, newTime);
+    // The edit sheet used to close and say "Updated" with the PATCH's result
+    // thrown away. It stays open on a refusal now, so the edit isn't lost.
+    var _er=await sbWrite('PATCH','food_logs?id=eq.'+encodeURIComponent(e.id), _patch);
+    if(!_er.ok){ _sbFailToast('save that change'); return; }
   }
 
   updTots(); rendTodayFood(); updHalo(); updStats();
@@ -42659,7 +42742,8 @@ async function mlSaveToLibrary(i){
            rating:(_blank?'unknown':(it.rating||'good'))};
   try{
     (window._savedFoods=window._savedFoods||[]).push(row);
-    await sbInsert('saved_foods', row);
+    var _lok=await sbInsert('saved_foods', row);
+    if(!_lok){ _sbFailToast('add that to your library'); return; }
     showToast('Added "'+nm+'" to your library');
   }catch(e){
     try{ showToast('Saved locally, will sync'); }catch(_e){}
