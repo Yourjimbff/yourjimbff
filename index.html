@@ -2507,9 +2507,15 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
 .ovChart{margin:12px 0 10px;}
 .ovChart svg{display:block;width:100%;height:96px;overflow:visible;}
 /* Three facts on one line, where the term/tier/price line used to be. */
-.jvProfLine{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:2px 0 12px;
-  font-size:13px;color:rgba(240,236,228,0.72);}
-.jvProfNone{color:rgba(240,236,228,0.38);}
+/* The one factual line about the person, and it was quieter than the labels
+   around it. It reads second only to the name now. The room comes off the
+   block labels and the gaps above the chart, which is where the top of this
+   card was wasting it. */
+.jvProfLine{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 14px;
+  font-size:17px;font-weight:700;letter-spacing:-0.2px;color:#f0ece4;}
+.jvProfNone{font-size:14px;font-weight:400;color:rgba(240,236,228,0.38);}
+body.jv-deep-open .jvBlockLabel{margin-bottom:5px;}
+body.jv-deep-open .jvBlock{margin-bottom:14px;}
 .ovTrack{position:relative;height:7px;border-radius:99px;background:#2b2b2b;overflow:visible;}
 .ovFill{height:100%;border-radius:99px;background:linear-gradient(90deg,#c9a227,var(--gold));
   box-shadow:0 0 16px rgba(245,197,24,0.35);transition:width 0.5s cubic-bezier(0.22,1,0.36,1);}
@@ -8845,7 +8851,8 @@ async function _jvFeedCommand(text){
     var ok=await sbInsert('reviews',{client_code:h2[0], author_code:(cl&&cl.code), kind:(it2.kind==='wo'?'workout':'food'),
       ref_id:String(it2.data.id), comment:body, reaction:'comment', seen:false});
     // A boolean false is how this table reports failure. Never say sent unless it went.
-    if(ok===false){ _jvSay('⚠️ That comment did not save. Nothing was sent.'); return true; }
+    if(ok===false){ _jvSay('That comment did not save. Nothing was sent.'); return true; }
+    try{ jvLogEngagement(h2[0],'comment',body); }catch(e){}
     _jvSay('✓ Commented under '+String(CLIENTS[h2[0]].name).replace(/</g,'&lt;')+': “'+body.replace(/</g,'&lt;')+'”');
     return true;
   }
@@ -15100,12 +15107,40 @@ function _ccDaysSince(code){
 // This is the number that stops silence reading as your failure.
 function _ccUnanswered(code){
   var a=_ccFor(code), n=0;
-  for(var i=0;i<a.length;i++){ if(a[i].r) break; n++; }
+  for(var i=0;i<a.length;i++){
+    if(!_CC_OUTREACH[a[i].k]) continue;           // a like is engagement, not a question
+    if(a[i].r) break;
+    n++;
+  }
   return n;
 }
 // 'talk' is a conversation that happened, with no channel worth recording — the fast
 // path off the card. text/call stay for anything logged deliberately as one or the other.
-var _CC_KIND={text:'text', call:'call', talk:'talk'};
+// CONTACT IS ENGAGEMENT (Yusuf, 16 Aug). It is not a record kept to cover
+// himself, it is the answer to "when did I last touch this person" — so a like
+// and a comment count exactly as much as a text. All of it reuses THIS table:
+// the door's contactInsert already takes any kind string and an explicit
+// contacted_at, so engagement needed no new table and no new column, only new
+// kinds. Without them jvLogContact coerced anything unrecognised to 'text',
+// which would have logged every like as a text message.
+var _CC_KIND={text:'text', call:'call', talk:'talk', like:'like', comment:'comment', booking:'booking'};
+// Which kinds are you WAITING on a reply to. A like is engagement but it is not
+// a question, so it must not inflate "reached out three times, no reply" — that
+// number exists to tell him silence is not his failure, and padding it with
+// hearts would make it lie in the other direction.
+var _CC_OUTREACH={text:1, call:1, talk:1};
+// One entry point for the things that reach a client without being a message.
+// Fire-and-forget on purpose: a like that saved must never be undone because
+// the engagement row behind it failed, so this never blocks or reverts its
+// caller — the like is the client-visible act, this is the bookkeeping.
+function jvLogEngagement(code, kind, about){
+  try{
+    if(!code || !_CC_KIND[kind]) return;
+    if(cl && code===cl.code) return;              // his own account is not engagement
+    jvLogContact(code, kind, about||'', false);
+    try{ if(typeof jvPaneRender==='function') jvPaneRender(); }catch(e){}
+  }catch(e){}
+}
 
 // ===== TIER ONE: A STATED FACT IS CONSENT =================================
 // "I contacted Jordan R" is a thing that happened, not a question. It used to be
@@ -15420,6 +15455,9 @@ function _ccLine(code){
   var when=(d<=0?'today':(d===1?'yesterday':d+' days ago'));
   if(un>=2) return 'Reached out '+(un===2?'twice':un+' times')+', no reply · last '+when;
   if(un===1) return 'Reached out '+when+', no reply yet';
+  if(l.k==='like')    return 'Liked their post '+when;
+  if(l.k==='comment') return 'Commented '+when;
+  if(l.k==='booking') return 'Booked a call '+when;
   if(l.k==='talk') return 'Last contact '+when;
   return 'Last contact '+when+' · '+(l.k==='call'?'call':'text');
 }
@@ -15575,6 +15613,7 @@ function jvShowAllChase(){ window._jvChaseOpen=!window._jvChaseOpen; jvRenderTri
 // who did not log this morning is noise by lunchtime.
 var JV_NUDGE_MIN_DAYS=2;      // under this is normal life, not silence
 var JV_ESCALATE_DAYS=5;       // at this it stops being a nudge
+var JV_UNTOUCHED_DAYS=14;     // logging fine, but he has not touched them in a fortnight
 var JV_ESCALATE_SHOW=8;       // how many of the 5+ tail to show before counting the rest out loud
 // Days since their last log OF ANY KIND — food, workout, weigh-in or steps.
 // jvTriage.per[].last is the max across all four (see jvLoadTriage's four
@@ -15595,20 +15634,46 @@ function _jvSilenceGroups(){
     // prompt, so it stops prompting. Not "handled" — contacted, specifically.
     var since=null; try{ since=_ccDaysSince(code); }catch(e){}
     if(since===0) return;
-    (d>=JV_ESCALATE_DAYS ? escalate : nudge).push({code:code, name:(r.name||code), days:d});
+    (d>=JV_ESCALATE_DAYS ? escalate : nudge).push({code:code, name:(r.name||code), days:d, since:since});
   });
+  // THE OTHER SILENCE, and it is his, not theirs. A client logging every day
+  // who has not heard a word from him in three weeks is not on any list above —
+  // they are doing everything right, which is exactly why they go unnoticed. One
+  // number cannot carry both readings: theirs asks "are they drifting", his asks
+  // "am I". Same table behind it, now that a like and a comment count.
+  var untouched=[];
+  Object.keys(CLIENTS).forEach(function(code){
+    var r=CLIENTS[code]||{};
+    if(r.isTrainer || hidden[code]) return;
+    if(cl && code===cl.code) return;
+    var d=_jvQuietDays(per[code], now);
+    if(d==null || d>=JV_NUDGE_MIN_DAYS) return;   // already on a list above
+    var since=null; try{ since=_ccDaysSince(code); }catch(e){}
+    if(since==null || since<JV_UNTOUCHED_DAYS) return;
+    untouched.push({code:code, name:(r.name||code), days:d, since:since});
+  });
+  untouched.sort(function(a,b){ return b.since-a.since; });
   // Nudge: longest first — 4 days is about to become a text, 2 days can wait.
   // Escalate: SHORTEST first, which is the opposite and deliberate. Someone who
   // crossed 5 days yesterday is the one a text still reaches; someone 75 days
   // gone is not an escalation, they are lapsed, and putting them at the top
   // buries every client who could still be caught.
   return {nudge:nudge.sort(function(a,b){ return b.days-a.days; }),
-          escalate:escalate.sort(function(a,b){ return a.days-b.days; })};
+          escalate:escalate.sort(function(a,b){ return a.days-b.days; }),
+          untouched:untouched};
 }
 function _jvNeedRow(o){
   return '<button class="jvNeedRow" onclick="jvOpenDeep(\''+o.code+'\')">'
     +'<b>'+_escHtml(o.name)+'</b>'
-    +'<span>'+o.days+' days since anything logged</span>'
+    +'<span>'+o.days+' days since anything logged'
+      +(o.since!=null && o.since>=JV_NUDGE_MIN_DAYS ? (' \u00b7 last heard from you '+o.since+' days ago') : '')
+    +'</span>'
+  +'</button>';
+}
+function _jvTouchRow(o){
+  return '<button class="jvNeedRow" onclick="jvOpenDeep(\''+o.code+'\')">'
+    +'<b>'+_escHtml(o.name)+'</b>'
+    +'<span>Logging fine \u00b7 nothing from you in '+o.since+' days</span>'
   +'</button>';
 }
 function jvRenderNeeds(){
@@ -15649,6 +15714,16 @@ function jvRenderNeeds(){
             +'<b>'+rest+' more at '+JV_ESCALATE_DAYS+'+ days</b>'
             +'<span>Quiet longer, up to '+g.escalate[g.escalate.length-1].days+' days. Open the board for all of them.</span>'
           +'</button>') : '')
+      +'</div>';
+    }
+    if(g.untouched.length){
+      html+='<div class="jvNeedGroup">'
+        +'<div class="jvNeedHead"><b>They are fine, you have gone quiet</b><span>'+JV_UNTOUCHED_DAYS+'+ days</span></div>'
+        +g.untouched.slice(0, JV_ESCALATE_SHOW).map(_jvTouchRow).join('')
+        +(g.untouched.length>JV_ESCALATE_SHOW
+          ? ('<button class="jvNeedRow" onclick="jvSetMode(\'cockpit\')"><b>'+(g.untouched.length-JV_ESCALATE_SHOW)+' more</b>'
+             +'<span>Open the board for all of them.</span></button>')
+          : '')
       +'</div>';
     }
   }
@@ -15888,8 +15963,8 @@ function jvRenderTriage(){
       // here are talk to them, text them, or clear them. Note opened a modal on top of
       // the board and is on the client card, where a longer thought belongs.
       +'<div class="jvTBtns" onclick="event.stopPropagation();">'
-        +'<button class="jvTBtn jvTBtnGo" onclick="jvBoardTalk(this,\''+o.code+'\')">Talked to</button>'
-        +'<button class="jvTBtn" onclick="textClient(\''+o.code+'\')">Text</button>'
+        +'<button class="jvTBtn jvTBtnGo" onclick="textClient(\''+o.code+'\')">Text</button>'
+        +'<button class="jvTBtn" onclick="jvBoardTalk(this,\''+o.code+'\')">Talked to</button>'
         +'<button class="jvTBtn" onclick="jvMarkHandled(\''+o.code+'\')">Clear</button>'
       +'</div>'
     +'</div>';
@@ -17019,8 +17094,12 @@ function _jvContactInner(code, about){
     // One tap to a box, type what you talked about, enter. No kind picker, no reply
     // toggle, no save button — those were four decisions to record one conversation.
     + '<div class="jvActs">'
-      + '<button class="jvAct jvActPrimary" onclick="jvTalkedTo(\''+code+'\')">Talked to</button>'
-      + '<button class="jvAct jvActSecondary" onclick="textClient(\''+code+'\')">Text</button>'
+      // TEXT IS THE PRIMARY ACTION (Yusuf, 16 Aug). It is what he does all day,
+      // and it was wearing the quiet treatment while "Talked to" — the thing he
+      // only reaches for after the fact — wore the gold. The others stay; they
+      // stop competing.
+      + '<button class="jvAct jvActPrimary" onclick="textClient(\''+code+'\')">Text</button>'
+      + '<button class="jvAct jvActSecondary" onclick="jvTalkedTo(\''+code+'\')">Talked to</button>'
       + '<button class="jvAct jvActSecondary" onclick="callClient(\''+code+'\')">Call</button>'
     + '</div>';
 }
@@ -22506,6 +22585,9 @@ async function quickReact(kind, refId, code, reaction, el){
   try{
     var ok = await sbInsert('reviews', {client_code:code, author_code:(cl&&cl.code), kind:kind, ref_id:(refId!=null&&refId!==''?String(refId):null), reaction:reaction, comment:null, seen:false});
     if(ok===false){ _revert('That like did not save. Tap the heart to try again.'); if(typeof showToast==='function') showToast('Could not save'); return; }
+    // It reached the client, so it is engagement. Recorded only after the write
+    // came back — a like that failed never happened.
+    try{ jvLogEngagement(code, (reaction==='like'?'like':'comment'), ''); }catch(e){}
     // Read it back. sbInsert returning true says the request did not error, not that
     // the row is there with the values sent.
     if(isLike && refId!=null && refId!==''){
@@ -22581,6 +22663,7 @@ async function jvMealComment(kind,id,code,btn){
     var txt=(inp.value||'').trim(); if(!txt){ inp.focus(); return; }
     var ok=await sbInsert('reviews',{client_code:code, author_code:(cl&&cl.code), kind:kind, ref_id:(id!=null?String(id):null), comment:txt, reaction:'comment', seen:false});
     if(ok!==false){
+      try{ jvLogEngagement(code,'comment',txt); }catch(e){}
       var nm=(CLIENTS[code]&&CLIENTS[code].name)||code;
       if(typeof showToast==='function') showToast('\u2713 Sent \u2014 '+nm+' will see it');
       inp.value=''; if(btn){ btn.textContent='Sent \u2713'; btn.disabled=true; btn.style.opacity='0.6'; btn.style.cursor='default'; } try{ var _row=btn&&btn.parentNode; var _card=_row&&_row.parentNode; if(_card){ var _d=document.createElement('div'); _d.style.cssText='margin-top:8px;background:rgba(224,196,152,0.10);border-left:2px solid var(--gold);border-radius:6px;padding:7px 9px;font-size:12px;color:#f0ece4;line-height:1.5;'; _d.innerHTML='<span style="color:var(--gold);font-weight:800;">You wrote: </span>'+txt.replace(/</g,'&lt;'); _card.insertBefore(_d,_row); } }catch(e){}
@@ -23833,6 +23916,31 @@ function textClient(code, body){
   // exactly what opens Messages, straight to iMessage when the number supports it.
   // ?&body= is the form both iOS and Android accept; iOS ignores a bare ?body=.
   var tail = body ? ('?&body=' + encodeURIComponent(String(body))) : '';
+  // TAPPING TEXT LOGS IT (Yusuf, 16 Aug). He should never have to text someone
+  // and then separately remember to record it — that is precisely why the
+  // engagement record is full of holes today.
+  //
+  // The honest limitation, decided rather than hidden: this hands off to the
+  // messaging app and cannot know whether a message was actually sent. So the
+  // record is occasionally generous — he opens a text and thinks better of it.
+  // The ruling is that generous beats the reverse, where he texts ten people
+  // and the app believes he touched nobody, which is the state it is in now.
+  //
+  // Two minutes of grace against a double-tap. Long enough that fumbling the
+  // button, or backing out of Messages and going again, is one touch; short
+  // enough that genuinely texting the same person twice in an afternoon still
+  // records twice. It is the same conversation for two minutes.
+  try{
+    var last=_ccLast(code);
+    var fresh=(last && last.k==='text' && (Date.now()-last.t) < 120000);
+    if(!fresh){
+      jvLogContact(code, 'text', '', false);
+      try{ jvActRecord('Texted '+((info.name||code))+', logged automatically',
+                       {kind:'contact', code:code, t:(_ccLast(code)||{}).t}); }catch(e){}
+      try{ if(typeof jvPaneRender==='function') jvPaneRender(); }catch(e){}
+      try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+    }
+  }catch(e){}
   window.location.href = 'sms:' + clean + tail;
 }
 // The opener. Deliberately short, deliberately not a pitch — it exists to restart a
@@ -24588,8 +24696,8 @@ async function renderMobFrontDesk(){
       // Same three actions as the cockpit board, in the same words. The icon cluster
       // said 💬 📝 ✓ with the meaning in a title attribute, which a thumb never sees.
       +'<div class="jvTBtns fdBtns" onclick="event.stopPropagation();">'
-        +'<button class="jvTBtn jvTBtnGo" onclick="jvBoardTalk(this,\''+o.code+'\')">Talked to</button>'
-        +'<button class="jvTBtn" onclick="textClient(\''+o.code+'\')">Text</button>'
+        +'<button class="jvTBtn jvTBtnGo" onclick="textClient(\''+o.code+'\')">Text</button>'
+        +'<button class="jvTBtn" onclick="jvBoardTalk(this,\''+o.code+'\')">Talked to</button>'
         +'<button class="jvTBtn" onclick="jvMarkHandled(\''+o.code+'\')">Clear</button>'
       +'</div>'
       +'</div>';
