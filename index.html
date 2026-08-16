@@ -5666,7 +5666,14 @@ async function trainerOpChecked(op, args, _retried){
       var ok=await sessOnDenied();
       return ok ? trainerOpChecked(op, args, true) : {ok:false, rows:[]};
     }
-    if(!res.ok) return {ok:false, rows:[]};
+    // A failure carries its reason now. Additive: every existing caller reads
+    // .ok and .rows and is untouched, but a caller that can say something
+    // useful about WHY — a migration not run, a slot taken — no longer has to
+    // report a flat "that did not work" for an error the door spelled out.
+    if(!res.ok){
+      var eb=null; try{ eb=await res.json(); }catch(e){}
+      return {ok:false, rows:[], status:res.status, err:(eb&&eb.error)||'', detail:eb||null};
+    }
     var d=await res.json();
     return {ok:true, rows:(Array.isArray(d) ? d : (d?[d]:[]))};
   }catch(e){ return {ok:false, rows:[]}; }
@@ -13746,8 +13753,7 @@ async function _jvCommitPending(p){
     var w=await trainerWrite('bookCallForClient',{client_code:p.code, starts_at:iso, force:!!p.force});
     window._jvPendingWrite=null;
     if(!w.ok){
-      var row=(w.rows&&w.rows[0])||null;
-      if(w.status===409 || (row&&row.error==='slot_taken')) return 'That time went while we were talking. Nothing booked — say it again and I’ll re-check.';
+      if(w.status===409 || w.err==='slot_taken') return 'That time went while we were talking. Nothing booked — say it again and I’ll re-check.';
       return 'That did not book. Nothing was written for '+p.name+'.';
     }
     var got=(w.rows&&w.rows[0])||{};
@@ -13763,7 +13769,16 @@ async function _jvCommitPending(p){
     var w2=await trainerWrite('moveVipOccurrence',{client_code:p.code, date:p.date,
       action:(p.skip?'skip':'move'), new_time:(p.skip?undefined:p.time)});
     window._jvPendingWrite=null;
-    if(!w2.ok) return 'That did not change. '+p.name+'’s series is untouched.';
+    if(!w2.ok){
+      // The op tells us WHY, so pass it on rather than a flat failure. Its
+      // exceptions table ships with its own migration, and until that is run
+      // this is a paste Yusuf is owed, not a bug he should chase.
+      var e2=w2.err||((w2.rows&&w2.rows[0])||{}).error||'';
+      if(e2==='exceptions_table_missing')
+        return 'I can’t move one occurrence yet — that needs a database table that hasn’t been created. '
+             + p.name+'’s series is untouched, and nothing else was changed.';
+      return 'That did not change. '+p.name+'’s series is untouched.';
+    }
     try{ jvActRecord((p.skip?'Skipped ':'Moved ')+p.name+'’s call on '+p.date+(p.skip?'':(' to '+p.time)), null); }catch(e){}
     try{ jvPaneRender(); }catch(e){}
     return '✓ '+(p.skip?('Skipped '+p.name+'’s call on '+p.date):(p.name+'’s call on '+p.date+' is now '+p.time))
