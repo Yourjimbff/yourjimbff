@@ -19192,6 +19192,10 @@ function _tlRestCard(ds, isToday, isAhead, slots, kind){
       +' style="width:100%;box-sizing:border-box;min-height:64px;margin-top:13px;background:#1b1b1b;'
       +'border:1px solid #2d2d2d;border-radius:10px;padding:12px;color:#f0ece4;font-size:15px;'
       +'line-height:1.5;font-family:inherit;outline:none;resize:vertical;">'+_escHtml(txt)+'</textarea>'
+    // Same slot, same four-photo limit, same behaviour as the session card
+    // (Yusuf, 16 Aug). A hike or a sauna is exactly the kind of thing people
+    // photograph, and it is the identical component.
+    +_woPhotoHtml(ds)
     +'<button class="sbtn" style="margin-top:10px;" onclick="event.stopPropagation();restLogEntry(\''+ds+'\')">'
       +(logged?'Add another':'Log it')
     +'</button>'
@@ -19211,14 +19215,18 @@ async function restLogEntry(ds){
   // reconstructs (standing law). The title is the opening of what they wrote.
   var title=txt.split(/[.,\n]/)[0].trim().slice(0,60) || 'Active rest';
   var row={client_code:cl.code, title:_tcase(title), description:txt, duration:null,
-           date_str:ds, logged_at:_timeToISO(_tlNowClock(), ds)};
+           date_str:ds, logged_at:_timeToISO(_tlNowClock(), ds),
+           photo:_woPhotoForRow(ds)};
   var r=await insertWorkoutLog(row);
   if(!(r && (r.ok || r.duplicate))){
     if(r && r.cancelled) return;
     _sbFailToast('log that');
     return;
   }
-  d.restText=''; _woSaveDraft(ds,d);
+  // The photos belonged to THAT entry. Clear them with the words so the next
+  // one on the same day starts empty rather than inheriting them.
+  d.restText=''; d.photo=null; _woSaveDraft(ds,d);
+  try{ delete window._woSessionPhoto[ds]; }catch(e){}
   _tlCacheAdd('workouts', row);
   try{ showToast('Logged'); }catch(e){}
   try{ _tlRefreshDay(ds); }catch(e){ try{ window._tlCache=null; renderDayTimeline(); }catch(_){} }
@@ -20686,7 +20694,14 @@ function _tlSlot(key, label, filled, ds, plan){
     var rm=(isWo&&it.id&&!window._tlRO)?'<span onclick="event.stopPropagation();tlDelWorkout('+it.id+')" title="Remove" style="flex-shrink:0;color:var(--muted);font-size:13px;line-height:1;cursor:pointer;padding:2px 0 2px 8px;">\u00d7</span>':'';
     var uid=key+'_'+(it.id||0);
     var xp=!!(window._tlXp&&window._tlXp[uid]);
-    var thumb=(it.photo)?'<img src="'+it.photo+'" onclick="event.stopPropagation();try{openPhotoLightbox(this.src)}catch(e){}" style="width:38px;height:38px;border-radius:7px;object-fit:cover;flex-shrink:0;align-self:center;margin-left:9px;cursor:pointer;">':'';
+    // A row can carry several photos now (the JSON-array shape _woPhotosHtml
+    // reads). Dropping that straight into src would render a broken image, so
+    // the thumbnail shows the first and says how many there are.
+    var _thumbs=[]; try{ _thumbs=_woPhotoList(it.photo); }catch(e){ _thumbs=it.photo?[it.photo]:[]; }
+    var thumb=(_thumbs.length)?('<div style="position:relative;flex-shrink:0;align-self:center;margin-left:9px;">'
+      +'<img src="'+_thumbs[0]+'" onclick="event.stopPropagation();try{openPhotoLightbox(this.src)}catch(e){}" style="width:38px;height:38px;border-radius:7px;object-fit:cover;display:block;cursor:pointer;">'
+      +(_thumbs.length>1?('<div style="position:absolute;bottom:-3px;right:-3px;background:#141414;border:1px solid #2d2d2d;border-radius:6px;padding:0 4px;font-size:9.5px;font-weight:800;color:rgba(240,236,228,0.85);">'+_thumbs.length+'</div>'):'')
+      +'</div>'):'';
     var slotTap=(isFood && it.id && !window._tlRO)?('<span data-tl="move" data-id="'+it.id+'" data-ds="'+_escHtml(ds)+'" style="cursor:pointer;border-bottom:1px solid #5f5f5f;">'+_escHtml(slotName)+'</span>'):_escHtml(slotName);
     var _rk=(key==='workout'||key==='walk')?'workout':(isJr?'journal':'food');
     out+='<div data-mins="'+((mins!=null&&mins<99999)?mins:0)+'" style="position:relative;'+_tlCardCss(false)+'">'
@@ -38293,12 +38308,20 @@ function onFitnessTileTap(){
   if(!hasWo){ tlOpenDayLogger(); return; }
   tog('Workout');
 }
+// One place that understands both stored shapes: a plain data URL, or the JSON
+// array a multi-photo session writes. Everything that draws a workout photo
+// reads through this so none of them can disagree.
+function _woPhotoList(photo){
+  if(!photo) return [];
+  if(Array.isArray(photo)) return photo.filter(Boolean);
+  if(typeof photo==='string' && photo.charAt(0)==='['){
+    try{ var a=JSON.parse(photo); return Array.isArray(a)?a.filter(Boolean):[photo]; }catch(e){ return [photo]; }
+  }
+  return [photo];
+}
 function _woPhotosHtml(photo, opts){
   if(!photo) return '';
-  var arr=[];
-  if(typeof photo==='string' && photo.charAt(0)==='['){ try{ arr=JSON.parse(photo); }catch(e){ arr=[photo]; } }
-  else arr=[photo];
-  arr=arr.filter(Boolean);
+  var arr=_woPhotoList(photo);
   if(!arr.length) return '';
   var m=(opts&&opts.margin)||'8px 0';
   var two=arr.length>1;
