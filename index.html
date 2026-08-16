@@ -20318,13 +20318,12 @@ function _tlInvalidate(){
 }
 async function tlDelWorkout(id){
   if(!id) return;
-  try{
-    await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+encodeURIComponent(id), {method:'DELETE', headers: sbHeaders()});
-    try{ showToast('Removed'); }catch(e){}
-    renderDayTimeline();
+  var r=await sbWrite('DELETE', 'workout_logs?id=eq.'+encodeURIComponent(id));
+  if(!r.ok){ _sbFailToast('remove that'); return; }
+  try{ showToast('Removed'); }catch(e){}
+  renderDayTimeline();
   try{ _syncToday(); }catch(e){}
-    try{ if(typeof loadTodayWorkouts==='function') await loadTodayWorkouts(); }catch(e){}
-  }catch(e){ try{ showToast('Could not remove'); }catch(_){} }
+  try{ if(typeof loadTodayWorkouts==='function') await loadTodayWorkouts(); }catch(e){}
 }
 // Tapping an empty slot opens THAT slot's own log — never the Jim chat.
 var _tlSlotDate=null;
@@ -20523,15 +20522,20 @@ async function tlSetMeal(meal){
   var id=window._moveMealId; if(!id){ try{ closeM('mMoveMeal'); }catch(e){} return; }
   var patch={meal:meal};
   if(window._mmDayChanged) patch.date_str=window._moveMealDs;
-  try{
-    await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id), {method:'PATCH',
-      headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
-      body:JSON.stringify(patch)});
-    try{ ((window._tlCache&&window._tlCache.foods)||[]).forEach(function(r){ if(r.id==id){ for(var k in patch) r[k]=patch[k]; } }); }catch(e){}
-    try{ (allFood||[]).forEach(function(f){ if(f.id==id){ for(var k in patch) f[k]=patch[k]; } }); }catch(e){}
-    if(patch.date_str){ try{ todayFood=(todayFood||[]).filter(function(f){ return f.id!=id; }); }catch(e){} }
-    try{ showToast('Moved to '+meal); }catch(e){}
-  }catch(e){ try{ showToast('Could not move it'); }catch(_){} }
+  // The card used to move on screen and say "Moved to Snack" with the server
+  // having refused the change. Proven live, 15 Aug. Now neither happens unless
+  // the write landed.
+  var r=await sbWrite('PATCH', 'food_logs?id=eq.'+encodeURIComponent(id), patch);
+  if(!r.ok){
+    _sbFailToast('move that');
+    window._mmDayChanged=false;
+    try{ closeM('mMoveMeal'); }catch(e){}
+    return;
+  }
+  try{ ((window._tlCache&&window._tlCache.foods)||[]).forEach(function(x){ if(x.id==id){ for(var k in patch) x[k]=patch[k]; } }); }catch(e){}
+  try{ (allFood||[]).forEach(function(f){ if(f.id==id){ for(var k in patch) f[k]=patch[k]; } }); }catch(e){}
+  if(patch.date_str){ try{ todayFood=(todayFood||[]).filter(function(f){ return f.id!=id; }); }catch(e){} }
+  try{ showToast('Moved to '+meal); }catch(e){}
   window._mmDayChanged=false;
   try{ closeM('mMoveMeal'); }catch(e){}
   try{ renderDayTimeline(); }catch(e){}
@@ -20644,6 +20648,40 @@ function tlEditNudgeDay(delta){
 }
 function tlEditPickMeal(m){ window._edMeal=m; _edPaintMeal(); }
 function _edReadTag(){ var t=document.getElementById('edTagInput'); return t?String(t.value||'').trim():''; }
+// ===== THE APP NEVER ASSERTS WHAT IT HAS NOT ESTABLISHED ==================
+// (Standing rule, Yusuf, 15 Aug.)
+//
+// fetch() only rejects on a network failure. A 401, a 404, a refused row — all
+// of those RESOLVE, so `try{ await fetch(...) }catch{}` never fires and the line
+// after it happily says "Removed". That one shape accounted for most of the
+// sweep: a client watching a meal disappear off the page while the row sat
+// untouched on the server, back again on the next load.
+//
+// One helper, one contract: it never throws, and it returns whether the write
+// actually landed. Callers do BOTH halves off that answer — the message AND the
+// optimistic screen update — so the page can never contradict the toast.
+async function sbWrite(method, path, body){
+  try{
+    var opt={method:method, headers:sbHeaders()};
+    if(body!==undefined && body!==null){
+      opt.headers=Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'});
+      opt.body=JSON.stringify(body);
+    }
+    var res=await fetch(SB_URL+'/rest/v1/'+path, opt);
+    if(res.ok) return {ok:true, status:res.status};
+    var t=''; try{ t=await res.text(); }catch(e){}
+    try{ console.error('[sbWrite] '+method+' '+path+' -> '+res.status+' '+String(t).slice(0,200)); }catch(e){}
+    return {ok:false, status:res.status, body:t};
+  }catch(e){
+    try{ console.error('[sbWrite] '+method+' '+path+' threw', e); }catch(_){}
+    return {ok:false, status:0, body:String(e&&e.message||e)};
+  }
+}
+// The one sentence a refused write gets. Same words everywhere, so a client
+// learns what it means: nothing happened, and the screen still shows the truth.
+function _sbFailToast(what){
+  try{ showToast('Couldn’t '+what+' - nothing changed. Try again.'); }catch(e){}
+}
 // PATCH that survives missing columns (mirrors insertFoodLog's behaviour)
 async function sbPatchGraceful(table, id, patch){
   var payload=Object.assign({}, patch), dropped=[], lastErr='';
@@ -20852,15 +20890,17 @@ function _foodDupReset(){
 async function tlDelFood(id){
   if(!id) return;
   _foodDupReset();
-  try{
-    await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id), {method:'DELETE', headers:sbHeaders()});
-    try{ if(window._tlCache&&window._tlCache.foods) window._tlCache.foods=window._tlCache.foods.filter(function(r){ return String(r.id)!==String(id); }); }catch(e){}
-    try{ allFood=(allFood||[]).filter(function(f){ return String(f.id)!==String(id); }); }catch(e){}
-    try{ todayFood=(todayFood||[]).filter(function(f){ return String(f.id)!==String(id); }); }catch(e){}
-    try{ showToast('Removed'); }catch(e){}
-    renderDayTimeline(true);
-    try{ _syncToday(); }catch(e){}
-  }catch(e){ try{ showToast('Could not remove'); }catch(_){} }
+  // Both halves off one answer. This used to drop the meal from the local cache
+  // and say "Removed" whatever the server did, so a refused delete looked like a
+  // success and the meal came back on the next load.
+  var r=await sbWrite('DELETE', 'food_logs?id=eq.'+encodeURIComponent(id));
+  if(!r.ok){ _sbFailToast('remove that'); return; }
+  try{ if(window._tlCache&&window._tlCache.foods) window._tlCache.foods=window._tlCache.foods.filter(function(x){ return String(x.id)!==String(id); }); }catch(e){}
+  try{ allFood=(allFood||[]).filter(function(f){ return String(f.id)!==String(id); }); }catch(e){}
+  try{ todayFood=(todayFood||[]).filter(function(f){ return String(f.id)!==String(id); }); }catch(e){}
+  try{ showToast('Removed'); }catch(e){}
+  renderDayTimeline(true);
+  try{ _syncToday(); }catch(e){}
 }
 async function tlSaveWorkoutText(id, txt){
   if(!id) return;
@@ -21201,21 +21241,26 @@ function tlWeighIn(ds){
     }, ms);
   });
 }
-function tlSaveWeigh(){
+async function tlSaveWeigh(){
   var i=document.getElementById('tlWeighInput'); var v=i?parseFloat(i.value):NaN;
   if(!v || v<=0){ try{ showToast('Enter your weight first'); }catch(e){} return; }
   var tm=(document.getElementById('tlWeighTime')||{}).value||'';
   var ds=_tlSlotDate||todayDateStr;
   var iso=_timeToISO(tm, ds);
   var row={client_code:cl.code, weight:v, notes:'', logged_at:iso};
+  // sbInsert reports failure by RETURNING false, never by throwing \u2014 the very
+  // landmine written down in the project notes \u2014 so the catch below could never
+  // fire and the number went onto the day and said "logged" regardless.
+  // The write goes first now, and the day only gets the number if it landed.
+  // The sheet stays open on a failure, so the number they typed isn't lost.
+  var ok=false;
+  try{ ok=await sbInsert('weight_logs', row); }catch(e){ ok=false; }
+  if(!ok){ _sbFailToast('save that weigh-in'); return; }
   try{ closeM('mTlWeigh'); }catch(e){}
   _tlCacheAdd('weights', row);
   try{ renderDayTimeline(true); }catch(e){}
-  try{ showToast('\u2696\ufe0f '+v+' logged'); }catch(e){}
-  (async function(){
-    try{ await sbInsert('weight_logs', row); try{ _syncToday(); }catch(e){} }
-    catch(e){ try{ showToast('Could not save'); window._tlCache=null; renderDayTimeline(); }catch(_){} }
-  })();
+  try{ showToast(v+' logged'); }catch(e){}
+  try{ _syncToday(); }catch(e){}
 }
 // --- Morning walk quick log (its own opaque sheet) ---
 function tlWalkLog(ds){
@@ -31016,13 +31061,17 @@ async function smartLogFromText(q){
   var _photoOnly=false;
   if(!_lbl && !mm.hasMacro && !parts.length){
     if(_photo){ parts=['Meal']; _photoOnly=true; }
-    else { showToast('Write what you ate'); return; }
+    else { showToast('Write what you ate'); return false; }
   }
   var meal=(window._mealSlot||((typeof _mealSlotNow==='function')?_mealSlotNow():'Meal'));
   var eatTime=(function(){ var _t=document.getElementById('foodTime'); var v=_t?String(_t.value||'').trim():''; return v||_defaultMealTime(window._mealSlot, window._mealLogDs); })();
   var logDs=(window._mealLogDs||_logDayStr());
   var btn=document.getElementById('plateLogBtn'); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; }
-  var loggedNames=[], _usedPhoto=false;
+  // insertFoodLog returns {ok,...} and verifies with a read-back. This threw
+  // that answer away and pushed the name onto loggedNames regardless, so the
+  // "Logged ..." line at the bottom fired for a meal that never wrote — and
+  // the screen was updated to match. Both halves now follow the same answer.
+  var loggedNames=[], failedNames=[], _usedPhoto=false;
   async function _push(row, entry, remember){
     // stamp the whole-meal sentence on every row of the meal, so the card can
     // title itself no matter which row it reads first
@@ -31030,7 +31079,13 @@ async function smartLogFromText(q){
       if(window._mealTitleText){ row.meal_text=window._mealTitleText; entry.meal_text=window._mealTitleText; }
     }catch(e){}
     var ph=(!_usedPhoto)?_photo:null; if(ph){ row.photo=ph; entry.photo=ph; _usedPhoto=true; }
-    try{ var _ins=await insertFoodLog(row, ph); if(_ins && _ins.id!=null) entry.id=_ins.id; }catch(e){}
+    var _ins=null;
+    try{ _ins=await insertFoodLog(row, ph); if(_ins && _ins.id!=null) entry.id=_ins.id; }catch(e){ _ins=null; }
+    // A duplicate is the guard doing its job on a double tap — the row is
+    // already there, so it counts as landed. Anything else that isn't ok did
+    // not write, and nothing downstream may pretend otherwise.
+    var _ok=!!(_ins && (_ins.ok || _ins.duplicate));
+    if(!_ok){ if(!(_ins && _ins.cancelled)) failedNames.push(entry.name); return; }
     try{ allFood.push(entry); todayFood.push(entry); }catch(e){}
     try{ if(entry.calories){ tots.cal+=(+entry.calories||0); tots.protein+=(+entry.protein||0); tots.carbs+=(+entry.carbs||0); tots.fat+=(+entry.fat||0); } }catch(e){}
     if(remember){ try{ _rememberFood(entry); }catch(e){} }
@@ -31112,8 +31167,18 @@ async function smartLogFromText(q){
   try{ if(typeof rendTodayFood==='function') rendTodayFood(); if(typeof updTots==='function') updTots(); if(typeof refreshTileStates==='function') refreshTileStates(); if(typeof updHalo==='function') updHalo(); if(typeof pulseH==='function') pulseH(); if(typeof updStats==='function') updStats(); }catch(e){}
   try{ _tlInvalidate(); }catch(e){}
   if(btn){ btn.disabled=false; btn.style.opacity='1'; }
-  try{ showToast('\u2713 Logged '+(loggedNames.length>1?(loggedNames.length+' items'):(loggedNames[0]||'it'))); }catch(e){}
+  // Say what actually landed. Nothing landing is a failure, not a quiet success.
+  if(!loggedNames.length){
+    try{ showToast(failedNames.length ? 'That didn\u2019t save - nothing was logged. Try again.' : 'Nothing to log there'); }catch(e){}
+    return false;
+  }
+  try{
+    var _msg='\u2713 Logged '+(loggedNames.length>1?(loggedNames.length+' items'):(loggedNames[0]||'it'));
+    if(failedNames.length) _msg+='. '+failedNames.join(', ')+' didn\u2019t save.';
+    showToast(_msg);
+  }catch(e){}
   try{ mlibOfferSave({name:(window._mealTitleText||loggedNames.join(', '))}); }catch(e){}
+  return !failedNames.length;
 }
 // Opt-in macros: tap a bare entry to estimate them right there. Adjust anytime via Edit.
 async function addMacrosToEntry(i){
@@ -36392,6 +36457,13 @@ async function rmMeal(i){
   _foodDupReset();
   var e=_orderedTodayFood()[i];
   if(!e) return;
+  // The server first, then the screen. This ran the other way round — the entry
+  // was pulled out of the day and "Entry removed" said before the delete was
+  // even sent, and the delete's result was thrown away.
+  if(e.id){
+    var r=await sbWrite('DELETE', 'food_logs?id=eq.'+encodeURIComponent(e.id));
+    if(!r.ok){ _sbFailToast('remove that'); return; }
+  }
   tots.cal-=e.calories||0;tots.protein-=e.protein||0;tots.carbs-=e.carbs||0;tots.fat-=e.fat||0;
   var realIdx=todayFood.indexOf(e);if(realIdx>-1)todayFood.splice(realIdx,1);
   var idx=allFood.indexOf(e);if(idx>-1)allFood.splice(idx,1);
@@ -36399,12 +36471,7 @@ async function rmMeal(i){
   scores.food=Math.max(-4,scores.food-rScore);
   updTots();rendTodayFood();updHalo();updStats();
   showToast('Entry removed');
-  // Also delete from Supabase if it has an id
-  if(e.id){
-    try{
-      await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+e.id, {method:'DELETE', headers:sbHeaders()});
-    }catch(err){}
-  }
+  try{ _tlInvalidate(); }catch(err){}
 }
 
 var editingFoodIdx = null;
@@ -37327,16 +37394,16 @@ async function logWorkout(){
 async function deleteTodayWorkout(id){
   if(!id) return;
   if(!window.confirm('Delete this workout?')) return;
-  try{
-    await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+id, { method:'DELETE', headers:sbHeaders() });
-    // drop locally + re-render the tile immediately
-    todayWo = todayWo.filter(function(w){ return String(w.id)!==String(id); });
-    rendTodayWo();
-    if(todayWo.length===0){ if(typeof unmarkTileDone==='function'){ unmarkTileDone('Workout'); } }
-    if(typeof renderTodayWorkoutCard==='function') renderTodayWorkoutCard();
-    if(typeof loadTrainingHistory==='function') loadTrainingHistory(); // keep Fitness tab in sync
-    showToast('Deleted');
-  }catch(e){ showToast('Could not delete'); }
+  var r=await sbWrite('DELETE', 'workout_logs?id=eq.'+encodeURIComponent(id));
+  if(!r.ok){ _sbFailToast('delete that workout'); return; }
+  // drop locally + re-render the tile immediately
+  todayWo = todayWo.filter(function(w){ return String(w.id)!==String(id); });
+  rendTodayWo();
+  if(todayWo.length===0){ if(typeof unmarkTileDone==='function'){ unmarkTileDone('Workout'); } }
+  if(typeof renderTodayWorkoutCard==='function') renderTodayWorkoutCard();
+  if(typeof loadTrainingHistory==='function') loadTrainingHistory(); // keep Fitness tab in sync
+  showToast('Deleted');
+  try{ _tlInvalidate(); }catch(e){}
 }
 // ============================================================
 // PROGRESS PHOTOS — persistent album inside the Fitness tile.
@@ -37859,7 +37926,8 @@ function setWeightUnit(u){
 async function delWeighIn(id){
   if(!id) return;
   if(!confirm('Delete this weigh-in? This can\u2019t be undone.')) return;
-  try{ await fetch(SB_URL+'/rest/v1/weight_logs?id=eq.'+encodeURIComponent(id), {method:'DELETE', headers: sbHeaders()}); }catch(e){}
+  var r=await sbWrite('DELETE', 'weight_logs?id=eq.'+encodeURIComponent(id));
+  if(!r.ok){ _sbFailToast('delete that weigh-in'); return; }
   showToast('Weigh-in deleted');
   await renderWeightJourney();
 }
@@ -37886,7 +37954,11 @@ function nudgeW(d){var el=document.getElementById('weightInput');if(!el)return;v
 function prefillWeight(){var el=document.getElementById('weightInput');if(el&&!el.value&&lastWeight){el.value=wToDisp(lastWeight);setW(el.value);}}
 async function logWeight(){
   if(!wVal){showToast('Enter your weight first');return;}
-  await sbInsert('weight_logs',{client_code:cl.code,weight:wVal,notes:''});
+  // Same landmine as tlSaveWeigh: a boolean false, never a throw. Everything
+  // below this line claimed the weigh-in had landed without asking.
+  var _wok=false;
+  try{ _wok=await sbInsert('weight_logs',{client_code:cl.code,weight:wVal,notes:''}); }catch(e){ _wok=false; }
+  if(!_wok){ _sbFailToast('save that weigh-in'); return; }
   lastWeight=wVal;
   scores.weight=1;
   updHalo();pulseH();updStats();
@@ -37895,7 +37967,7 @@ async function logWeight(){
   document.getElementById('sswt').textContent=_disp+_u;
   markTileDone('Weight');
   try{ localStorage.setItem('yjb_weighed_'+cl.code+'_'+isoDateStr(new Date()), '1'); }catch(e){}
-  showToast('\u2696\ufe0f '+_disp+' '+_u+' logged');
+  showToast(_disp+' '+_u+' logged');
   // Refresh journey graph
   await renderWeightJourney();
   document.getElementById('weightInput').value='';
@@ -44901,15 +44973,20 @@ function closeSteps(){
 async function saveSteps(ds, clear){
   var v = clear ? 0 : (parseInt((document.getElementById('stepsIn')||{}).value,10)||0);
   if(!clear && v<=0){ try{ showToast('Put in a number'); }catch(e){} return; }
+  // sbUpsert returns false on failure, so the old await told us nothing and the
+  // number was already on the day by then either way. The sheet stays open if
+  // it doesn't land, so the number isn't lost.
+  var ok=false;
+  try{
+    ok=await sbUpsert('step_logs',
+      {client_code:cl.code, steps:v, date_str:ds, updated_at:new Date().toISOString()},
+      'client_code,date_str');
+  }catch(e){ ok=false; }
+  if(!ok){ _sbFailToast(clear?'clear that':'save your steps'); return; }
   closeSteps();
   if(v>0) window._stepMap[ds]=v; else delete window._stepMap[ds];
   try{ window._tlCache=null; renderDayTimeline(true); }catch(e){}
-  try{
-    await sbUpsert('step_logs',
-      {client_code:cl.code, steps:v, date_str:ds, updated_at:new Date().toISOString()},
-      'client_code,date_str');
-    showToast(v>0 ? (v.toLocaleString()+' steps') : 'Cleared');
-  }catch(e){ try{ showToast('Saved here \u2014 will sync'); }catch(_e){} }
+  showToast(v>0 ? (v.toLocaleString()+' steps') : 'Cleared');
 }
 
 
@@ -46795,8 +46872,16 @@ var JIM_DEFAULT_TIMES = {breakfast: '9:00 AM', lunch: '1:00 PM', dinner: '7:00 P
 // Worth the round trip only when there's more than one thing in the sentence.
 
 
+// Everything read out of a photo or a screenshot lands here. This used to be the
+// one door in the app with NO verification behind it at all: typed messages go
+// through jimTurn, which counts every marker it expects against what actually
+// wrote and corrects itself honestly when the two disagree — this path just
+// fired the writes and reported "Logged ..." whatever came back.
+//
+// It now returns what LANDED and what did not, separately, and its caller says
+// both. `did` is only appended to once a write is confirmed.
 async function _jimRun(plan, ds) {
-  var did = [];
+  var did = [], failed = [];
   for (var i = 0; i < plan.length; i++) {
     var a = plan[i] || {};
     try {
@@ -46824,31 +46909,40 @@ async function _jimRun(plan, ds) {
         if (ds) { window._mealLogDs = ds; window._mlDs = ds; }
         var line = String(a.items);
         if (a.calories) line += ' ' + Math.round(a.calories) + ' cal';
-        smartLogFromText(line);
-        did.push((cap || 'Food') + (t ? (' \u00b7 ' + t) : ''));
+        // Awaited, and its answer used. It was fire-and-forget, so a meal that
+        // never wrote was still announced as logged.
+        var _fok = false;
+        try { _fok = (await smartLogFromText(line)) !== false; } catch (e) { _fok = false; }
+        (_fok ? did : failed).push((cap || 'Food') + (t ? (' \u00b7 ' + t) : ''));
         await new Promise(function (r) { setTimeout(r, 350); });   // let each meal land in order
       } else if (a.type === 'steps' && a.count) {
         var n = parseInt(a.count, 10) || 0;
         if (n > 0) {
-          await sbUpsert('step_logs', {client_code: cl.code, steps: n, date_str: ds || todayDateStr,
+          // sbUpsert returns false on failure and never throws, so the old
+          // unchecked await counted a refused write as a success.
+          var _sok = await sbUpsert('step_logs', {client_code: cl.code, steps: n, date_str: ds || todayDateStr,
                                        updated_at: new Date().toISOString()}, 'client_code,date_str');
-          did.push(n.toLocaleString() + ' steps');
+          (_sok ? did : failed).push(n.toLocaleString() + ' steps');
         }
       } else if (a.type === 'workout' && a.title) {
         // A stated time wins here too. 5 PM was a stand-in for "we don't know",
         // and it wrote a fiction into the record; without a time the honest
         // answer is when they told us, which _timeToISO gives for a blank.
         var iso = _timeToISO(String(a.time || '').trim(), ds || todayDateStr);
-        await fetch(SB_URL + '/rest/v1/workout_logs', {
-          method: 'POST', headers: Object.assign({}, sbHeaders(), {'Prefer': 'return=minimal'}),
-          body: JSON.stringify({client_code: cl.code, title: String(a.title),
+        // Was a bare fetch whose result was thrown away. A 4xx resolves, so the
+        // title went onto the "Logged" list either way.
+        var _wr = await sbWrite('POST', 'workout_logs', {client_code: cl.code, title: String(a.title),
                                 description: String(a.detail || ''), duration: null,
-                                date_str: ds || todayDateStr, logged_at: iso})});
-        did.push(String(a.title));
+                                date_str: ds || todayDateStr, logged_at: iso});
+        (_wr.ok ? did : failed).push(String(a.title));
       }
-    } catch (e) { console.error('jim action', a, e); }
+    } catch (e) {
+      console.error('jim action', a, e);
+      // A thrown action is a failed action, not a silent one.
+      try{ failed.push(String(a.title || a.items || a.type || 'that')); }catch(_){}
+    }
   }
-  return did;
+  return {did: did, failed: failed};
 }
 
 
@@ -47028,9 +47122,21 @@ async function jimReadShot(dataUrl, ds) {
       showToast("Couldn't read that one \u2014 type it instead");
       return false;
     }
-    var did = await _jimRun(plan, ds);
+    var ran = await _jimRun(plan, ds);
+    var did = ran.did || [], failed = ran.failed || [];
     try { window._tlCache = null; await renderDayTimeline(true); } catch (e) {}
-    showToast(did.length ? ('Logged ' + did.join(' \u00b7 ')) : "Nothing I could log in that");
+    // What landed and what didn't, said separately. Anything that failed is
+    // named, so they know exactly what to tell me again \u2014 and a run where
+    // nothing landed never reads as a success.
+    if (did.length && failed.length) {
+      showToast('Logged ' + did.join(' \u00b7 ') + '. ' + failed.join(' \u00b7 ') + ' didn\u2019t save - tell me that one again.');
+    } else if (did.length) {
+      showToast('Logged ' + did.join(' \u00b7 '));
+    } else if (failed.length) {
+      showToast('That didn\u2019t save - nothing was logged. Try again.');
+    } else {
+      showToast('Nothing I could log in that');
+    }
     return true;
   } catch (e) {
     console.error('jimReadShot', e);
