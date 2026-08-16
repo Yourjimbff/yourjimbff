@@ -21426,11 +21426,14 @@ function _edReadTag(){ var t=document.getElementById('edTagInput'); return t?Str
 // One helper, one contract: it never throws, and it returns whether the write
 // actually landed. Callers do BOTH halves off that answer — the message AND the
 // optimistic screen update — so the page can never contradict the toast.
-async function sbWrite(method, path, body){
+async function sbWrite(method, path, body, prefer){
   try{
     var opt={method:method, headers:sbHeaders()};
     if(body!==undefined && body!==null){
-      opt.headers=Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'});
+      // An upsert needs resolution=merge-duplicates alongside its on_conflict
+      // target; without it Postgres has nothing to merge on and answers 409.
+      opt.headers=Object.assign({}, sbHeaders(), {'Content-Type':'application/json',
+        'Prefer':(prefer?(prefer+',return=minimal'):'return=minimal')});
       opt.body=JSON.stringify(body);
     }
     var res=await fetch(SB_URL+'/rest/v1/'+path, opt);
@@ -34707,15 +34710,36 @@ async function loadSetLogs(){
     Object.keys(_tpLastSets).forEach(function(k){ _tpLastSets[k]=(_tpLastSets[k]||[]).filter(function(x){ return !!x; }); });
   }catch(e){}
 }
+// THE PRESCRIPTION IS NOT THE LOG (client-reported, 16 Aug).
+// A client typed 10 reps against a prescribed 8-10 and watched it come back as
+// "8-10". Her number was not mangled — her CORRECTION was never written at all.
+//
+// This POSTed with Prefer: resolution=merge-duplicates but no on_conflict, and
+// set_logs carries a unique index on (client_code, date_str, exercise, set_idx).
+// Without a conflict target Postgres has nothing to merge on, so the second
+// write for a set came back 409 duplicate key — and a 409 RESOLVES, so the bare
+// try/catch never fired and nothing was reported. The first value written for a
+// set was permanent; every correction after it was silently discarded. Since an
+// untouched set is persisted from the plan's own prescription, the value that
+// won was usually the prescription itself.
+//
+// Verified against the live table: as shipped -> 409 duplicate key; with the
+// conflict target -> 200 and the row updated.
 async function tpSaveSet(day,exName,idx,field,val){
   var arr=(_tpToday[exName]=_tpToday[exName]||[]);
   var cur=arr[idx]||{w:'',r:''};
   cur[field]=String(val||'').trim();
   arr[idx]=cur;
-  try{
-    await fetch(SB_URL+'/rest/v1/set_logs',{method:'POST',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'}),
-      body:JSON.stringify({client_code:cl.code,date_str:todayDateStr,exercise:exName,set_idx:idx,weight:cur.w,reps:cur.r,logged_at:new Date().toISOString()})});
-  }catch(e){}
+  var row={client_code:cl.code,date_str:todayDateStr,exercise:exName,set_idx:idx,
+           weight:cur.w,reps:cur.r,logged_at:new Date().toISOString()};
+  var res=await sbWrite('POST','set_logs?on_conflict=client_code,date_str,exercise,set_idx', row, 'resolution=merge-duplicates');
+  if(!res.ok){
+    // set_logs isn't a queued table by default, but tpPersistSets already hands
+    // its rows to the same queue on a failed write — a number someone typed is
+    // worth the retry rather than the shrug this used to give it.
+    try{ sqPush('set_logs', row, 'POST'); }catch(e){}
+    _sbQueuedToast();
+  }
   if(field==='w'){ var g=document.getElementById('gain_'+_slug(day+exName+idx)); if(g) g.innerHTML=_tpGainHtml(exName,cur.w); }
 }
 function _slug(s){ return String(s).replace(/[^a-zA-Z0-9]/g,''); }
@@ -34799,8 +34823,13 @@ async function tpSaveNote(exName,val){
   _tpNotes[exName]=val;
   if(!cl) return;
   try{
-    await fetch(SB_URL+'/rest/v1/exercise_notes',{method:'POST',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'}),
-      body:JSON.stringify({client_code:cl.code,date_str:todayDateStr,exercise:exName,note:val,updated_at:new Date().toISOString()})});
+    // Same fault as tpSaveSet, same table shape: exercise_notes carries a unique
+    // index too, so the merge had nothing to merge on and every edit after the
+    // first came back 409 and was swallowed. Verified against the live table.
+    var _nr=await sbWrite('POST','exercise_notes?on_conflict=client_code,date_str,exercise',
+      {client_code:cl.code,date_str:todayDateStr,exercise:exName,note:val,updated_at:new Date().toISOString()},
+      'resolution=merge-duplicates');
+    if(!_nr.ok){ try{ sqPush('exercise_notes',{client_code:cl.code,date_str:todayDateStr,exercise:exName,note:val,updated_at:new Date().toISOString()},'POST'); }catch(e){} }
   }catch(e){}
 }
 async function loadExerciseNotes(){
