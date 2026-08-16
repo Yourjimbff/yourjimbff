@@ -8499,7 +8499,7 @@ function setFeedStat(kind){ window._feedStat=(window._feedStat===kind?null:kind)
 function _jarvisReplyHtml(){
   var r=window._jarvisLastReply; if(!r||!r.reply) return '';
   return '<div style="margin-top:13px;background:rgba(224,196,152,0.08);border:1px solid rgba(224,196,152,0.28);border-radius:11px;padding:12px 13px;">'
-    +'<div style="font-size:9.5px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:var(--gold);margin-bottom:5px;">🧠 Jarvis'+(r.name?(' · '+String(r.name).replace(/</g,'&lt;')):'')+'</div>'
+    +'<div style="font-size:9.5px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:var(--gold);margin-bottom:5px;">Jarvis'+(r.name?(' · '+String(r.name).replace(/</g,'&lt;')):'')+'</div>'
     +'<div style="font-size:13px;color:#f0ece4;line-height:1.55;">'+String(r.reply).replace(/</g,'&lt;')+'</div></div>';
 }
 // The desktop control row: which lens, and which day. Food and Fitness used to be
@@ -13259,6 +13259,48 @@ async function _postMomentText(t){
 // Now: it states the client's FULL NAME and the exact numbers, and writes only
 // when told to. The writes go through the trainer door, which requires a real
 // trainer session, and every one is read back rather than trusted.
+// ===== ONE CONTEXT, WHICHEVER BOX YOU ARE TYPING INTO =====================
+// There are three assistant boxes and they all answer to "Jarvis": the Feed
+// card, the cockpit chat, and the one on a client. They behaved like three
+// different products because they were handed three different amounts of
+// information. The cockpit one got a live board snapshot. The Feed one got the
+// date and a list of names — so when Yusuf said "I contacted Jordan R" it asked
+// him to paste a board snapshot, because a list of names is genuinely all it
+// could see. You cannot build a habit with something that answers differently
+// depending on which screen you happened to be on.
+//
+// The boxes stay separate — one on the feed, one in the cockpit, one on a
+// client is a sensible shape, and they are opened for different reasons. What
+// converges is what sits behind them: this builder, and the two action layers
+// above it. Ensures the board is loaded first, because the whole point is that
+// it should not have to ask for what it can go and read.
+async function _jvAssistantContext(opts){
+  opts=opts||{};
+  try{ if(!_jvTriageReady() && typeof _jvEnsureTriage==='function'){ if(!window._jvTriagePending && typeof jvLoadTriage==='function'){ window._jvTriagePending=Promise.resolve(jvLoadTriage(true)).catch(function(){}); } if(window._jvTriagePending){ await window._jvTriagePending; window._jvTriagePending=null; } } }catch(e){}
+  var today=new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+  var out='Today is '+today+'.';
+  var hidden={}; try{ hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{}; }catch(e){}
+  var roster='';
+  try{
+    roster=Object.keys(CLIENTS).filter(function(c){ return !hidden[c] && !(CLIENTS[c]||{}).isTrainer && (!cl || c!==cl.code); })
+      .map(function(c){ return (CLIENTS[c].name||c)+' ['+c+']'; }).join(', ');
+  }catch(e){}
+  if(roster) out+='\nROSTER (name [code]): '+roster+'.';
+  // The snapshot, or an honest word about why there isn't one. Never silence —
+  // silence is what made it ask Yusuf to paste his own board back to it.
+  var st=(typeof _jvTriageState==='function')?_jvTriageState():'never';
+  if(st==='ready'){
+    var snap=''; try{ snap=_jvBuildContext(); }catch(e){}
+    if(snap) out+='\n\nTHE BOARD RIGHT NOW (you can see this — never ask him for it):\n'+snap;
+  } else {
+    out+='\n\nTHE BOARD: could not be read just now'+(st==='failed'?' (the read failed)':'')
+      +'. Say so plainly if he asks something that needs it. Do NOT ask him to paste a snapshot.';
+  }
+  if(opts.code && CLIENTS[opts.code]){
+    out+='\n\nHE IS LOOKING AT: '+((CLIENTS[opts.code]||{}).name||opts.code)+' ['+opts.code+'].';
+  }
+  return out;
+}
 var _JV_PENDING_MS=10*60*1000;      // a confirmation older than this is not a confirmation
 function _jvBuildPendingLog(lg, code, name){
   if(!lg || !code || !CLIENTS[code]) return null;
@@ -13341,7 +13383,7 @@ async function jarvisIngest(ns){
     if(_pr){
       window._jarvisThread.push({role:'jarvis', text:_pr, logged:null});
       _jarvisSyncThreads();
-      if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent=(ns==='cl'?'Send ➤':'⚡ Send to Jarvis'); }
+      if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent=(ns==='cl'?'Send ➤':'Send to Jarvis'); }
       return;
     }
   }catch(e){ console.error('pending reply',e); }
@@ -13356,16 +13398,20 @@ async function jarvisIngest(ns){
   var btn=document.getElementById(ID.send); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='Jarvis is thinking\u2026'; }
   var tEl=document.getElementById(ID.thread); if(tEl) tEl.innerHTML=_jarvisThreadHtml();
   try{
-    var hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
-    var roster=Object.keys(CLIENTS).filter(function(c){return !hidden[c] && c!==cl.code;}).map(function(c){return (CLIENTS[c].name||c)+' ['+c+']';}).join(', ');
+    // The same board the cockpit box has always had. This one used to get the
+    // date and a list of names, which is why it asked Yusuf to paste a snapshot
+    // at it — it was telling the truth about what it could see.
+    var ctx=await _jvAssistantContext({code:(ns==='cl' && window._jvDeepCode)?window._jvDeepCode:null});
     var today2=new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
-    var sys="You are Jarvis, fitness coach Yusuf's private work assistant, in an ongoing chat with him. Today is "+today2+". "
+    var sys="You are Jarvis, fitness coach Yusuf's private work assistant, in an ongoing chat with him. "
       +"YOUR NORTH STAR: the client's experience and journey come first - help Yusuf truly understand each client, solve their real underlying problem, and always hand him the best concrete next action so the client feels understood and led forward. "
+      +"ANSWER FROM WHAT YOU CAN SEE. The board below is live and it is yours to read. Never ask him to paste, share or describe his own board, his roster, or what anyone logged - if it is not below, say plainly that you cannot see it rather than asking him to fetch it. "
       +"Each turn return ONLY JSON, no markdown: {\"client_code\":\"\",\"client_name\":\"\",\"note\":\"\",\"log\":null,\"reply\":\"\"}. "
       +"note = anything NEW worth recording on that client's profile this turn (what happened, a fact, a follow-up). Use real dates (today is "+today2+"); NEVER write placeholders like [date] or brackets; omit unknown details. Leave note EMPTY if there is nothing new to log (for example when you are just talking it through with him). "
-      +"log = ONLY when Yusuf is explicitly recording numbers FOR a client (examples: log Naya's day; Sarah weighed 162; Mike 1900 cal 150 protein 9k steps). Otherwise null. When logging, log is an object with three fields: food (an object with name, calories, protein, carbs, fat - or null if no food was mentioned), weight (a number or null), steps (a number or null). Name the food as a short whole-food meal name, or Daily intake if only totals are given. Use null for any field Yusuf did not state, and NEVER invent numbers. "
+      +"log = ONLY when Yusuf is explicitly recording numbers FOR a client (examples: log Naya's day; Sarah weighed 162; Mike 1900 cal 150 protein 9k steps). Otherwise null. When logging, log is an object with three fields: food (an object with name, calories, protein, carbs, fat - or null if no food was mentioned), weight (a number or null), steps (a number or null). Name the food as a short whole-food meal name, or Daily intake if only totals are given. Use null for any field Yusuf did not state, and NEVER invent numbers. He will be asked to confirm before any number is written, so state it plainly rather than hedging. "
       +"reply = your message back to Yusuf - coaching, the best next action, or just continuing the conversation. Direct, human, a sharp coach's voice, never clinical. "
-      +"client_code and client_name = who this is about, matched from the roster, or empty if unclear. ROSTER (name [code]): "+roster+".";
+      +"client_code and client_name = who this is about, matched from the roster, or empty if unclear.\n\n"
+      +ctx;
     var msgs=[{role:'user',content:sys},{role:'assistant',content:'Ready.'}];
     window._jarvisThread.forEach(function(m){ msgs.push({role: m.role==='you'?'user':'assistant', content:m.text}); });
     var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:msgs})});
@@ -13393,7 +13439,7 @@ async function jarvisIngest(ns){
     }catch(e){ console.error('jarvis log',e); }
     window._jarvisThread.push({role:'jarvis', text:reply, logged:loggedTo});
   }catch(e){ console.error('jarvisIngest',e); window._jarvisThread.push({role:'jarvis', text:'Could not reach Jarvis. Try again.', logged:null}); }
-  if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent=(ns==='cl'?'Send ➤':'\u26a1 Send to Jarvis'); }
+  if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent=(ns==='cl'?'Send ➤':'Send to Jarvis'); }
   _jarvisSyncThreads();
 }
 function _jarvisThreadHtml(){
@@ -13402,8 +13448,8 @@ function _jarvisThreadHtml(){
     if(m.role==='you'){
       return '<div style="display:flex;justify-content:flex-end;margin-top:9px;"><div style="max-width:82%;background:#282828;border-radius:13px 13px 4px 13px;padding:9px 12px;font-size:13px;color:#f0ece4;line-height:1.5;">'+String(m.text).replace(/</g,'&lt;')+'</div></div>';
     }
-    var logged = m.logged ? '<div style="font-size:10px;color:var(--gold);margin-top:7px;font-weight:800;letter-spacing:0.3px;">\ud83d\udcdd Logged to '+String(m.logged).replace(/</g,'&lt;')+'</div>' : '';
-    return '<div style="display:flex;justify-content:flex-start;margin-top:9px;"><div style="max-width:90%;background:rgba(224,196,152,0.08);border:1px solid rgba(224,196,152,0.22);border-radius:13px 13px 13px 4px;padding:10px 12px;"><div style="font-size:9px;font-weight:800;letter-spacing:0.5px;text-transform:uppercase;color:var(--gold);margin-bottom:4px;">\ud83e\udde0 Jarvis</div><div style="font-size:13px;color:#f0ece4;line-height:1.55;">'+String(m.text).replace(/</g,'&lt;')+'</div>'+logged+'</div></div>';
+    var logged = m.logged ? '<div style="font-size:10px;color:var(--gold);margin-top:7px;font-weight:800;letter-spacing:0.3px;">Logged to '+String(m.logged).replace(/</g,'&lt;')+'</div>' : '';
+    return '<div style="display:flex;justify-content:flex-start;margin-top:9px;"><div style="max-width:90%;background:rgba(224,196,152,0.08);border:1px solid rgba(224,196,152,0.22);border-radius:13px 13px 13px 4px;padding:10px 12px;"><div style="font-size:9px;font-weight:800;letter-spacing:0.5px;text-transform:uppercase;color:var(--gold);margin-bottom:4px;">Jarvis</div><div style="font-size:13px;color:#f0ece4;line-height:1.55;">'+String(m.text).replace(/</g,'&lt;')+'</div>'+logged+'</div></div>';
   }).join('');
   return '<div style="margin-top:13px;border-top:1px solid rgba(224,196,152,0.16);padding-top:4px;">'+rows+'</div>';
 }
@@ -13554,10 +13600,20 @@ async function _jvLoadClientNotes(code){
 async function jvClientJarvisSend(code){
   var inp=document.getElementById('jvClientJarvisInput'); if(!inp) return;
   var t=(inp.value||'').trim(); if(!t) return;
+  // The third box gets the same two layers and the same board as the other two.
+  // It is the one on a client's card, so it also gets told which client is on
+  // screen — but a statement naming somebody else still resolves to that person,
+  // by name, in code, exactly as it does everywhere else.
+  var rbEarly=document.getElementById('jvClientJarvisReply');
+  function _cjSay(msg){ if(rbEarly) rbEarly.innerHTML='<div style="background:rgba(224,196,152,0.08);border:1px solid rgba(224,196,152,0.28);border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0ece4;line-height:1.55;">'+msg+'</div>'; }
+  try{ var _pr=await _jvPendingReply(t); if(_pr){ _cjSay(_pr.replace(/\n/g,'<br>')); inp.value=''; return; } }catch(e){ console.error('pending reply (client jarvis)',e); }
+  try{ var _cc=await _ccHandleStatement(t); if(_cc){ _cjSay(_cc); inp.value=''; return; } }catch(e){ console.error('contact command (client jarvis)',e); }
   var btn=document.getElementById('jvClientJarvisBtn'); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='Thinking…'; }
   var name=(CLIENTS[code]&&CLIENTS[code].name)||'this client';
   try{
-    var prompt='You are Jarvis, fitness coach Yusuf\'s private assistant. He is telling you about his client '+name+'. Two jobs: '
+    var _ctx=await _jvAssistantContext({code:code});
+    var prompt=_ctx+'\n\nYou are Jarvis, fitness coach Yusuf\'s private assistant. He is telling you about his client '+name+'. '
+      +'Answer from the board above - never ask him to paste or describe it. Two jobs: '
       +'(1) write a concise factual NOTE (third person) to save on '+name+'\'s profile — what happened + any follow-up; '
       +'(2) give Yusuf a short, sharp REPLY: useful coaching feedback, a pattern worth noticing, or a clear next step (1-3 sentences, direct and human, in a sharp coach\'s voice, never clinical or fluffy). '
       +'Return ONLY JSON, no markdown: {"note":"...","reply":"..."}\n\nWHAT YUSUF SAID:\n'+t;
@@ -13569,11 +13625,11 @@ async function jvClientJarvisSend(code){
     var note=(obj&&obj.note)?String(obj.note).trim():t;
     var reply=(obj&&obj.reply)?String(obj.reply).trim():'';
     try{ await sbInsertReturning('client_notes',{client_code:code, note:'[Jarvis] '+note, logged_at:new Date().toISOString()}); }catch(e){}
-    var rb=document.getElementById('jvClientJarvisReply'); if(rb){ rb.innerHTML = reply ? '<div style="background:rgba(224,196,152,0.08);border:1px solid rgba(224,196,152,0.28);border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0ece4;line-height:1.55;">💬 '+reply.replace(/</g,'&lt;')+'</div>' : ''; }
+    var rb=document.getElementById('jvClientJarvisReply'); if(rb){ rb.innerHTML = reply ? '<div style="background:rgba(224,196,152,0.08);border:1px solid rgba(224,196,152,0.28);border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0ece4;line-height:1.55;">'+reply.replace(/</g,'&lt;')+'</div>' : ''; }
     inp.value='';
     _jvLoadClientNotes(code);
   }catch(e){ console.error('jvClientJarvisSend',e); if(typeof showToast==='function') showToast('Could not reach Jarvis. Try again.'); }
-  if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent='⚡ Tell Jarvis'; }
+  if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent='Tell Jarvis'; }
 }
 function woRowHtml(name, hint, done){
   name = (name||'').replace(/"/g,'&quot;');
