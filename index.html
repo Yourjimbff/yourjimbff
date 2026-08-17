@@ -18586,7 +18586,12 @@ function _jtSplit(text){
   var out=[];
   raw.split(_JT_TERM).forEach(function(ch){
     ch=ch.trim(); if(!ch) return;
-    ch.split(/\s+(?:and\s+then|then|also|plus|next|after\s+that)\s+/i).forEach(function(p){
+    // "next" IS NOT A CONNECTIVE, it is part of a time phrase. "for the next 2
+    // days", "next Monday", "next week" — splitting there carved "Who are all
+    // my calls for the next 2 days?" into "…for the" and "2 days" and reported
+    // both as clients it could not place. Only "next up" starts a new item, and
+    // even that is rare enough to be worth the narrowness.
+    ch.split(/\s+(?:and\s+then|then|also|plus|next\s+up|after\s+that)\s+/i).forEach(function(p){
       _jtVerbSplit(p, out);
     });
   });
@@ -18780,13 +18785,50 @@ async function _jtSingle(t){
   var r=await _jtRunItem(t, false, ctx);
   return {html:r.line, speak:null};
 }
+// ===== THE ROUTING ORDER ==================================================
+// Written down because the stages were grabbing what belonged to later ones,
+// and two live failures came out of exactly that. This is the order, once, and
+// every stage below is a consequence of it rather than an independent guess.
+//
+//   0. ANSWER TO A HELD WRITE      yes / no to a stated-back action.
+//                                  Never a batch, never re-parsed.
+//   1. ANSWER TO AN OPEN QUESTION  the missing name or time Jarvis asked for.
+//                                  Lives inside _jvBookCommand, ahead of its
+//                                  own verb test, so a bare "Blakeb1" reaches it.
+//   2. THE BATCH GATE              is this ONE thing or several? A QUESTION is
+//                                  always one thing. Everything else is split.
+//   3. per item, in _jtRunItem:
+//        a. consult keywords       consult / consultation / sales call -> a
+//                                  LEAD, name as given, roster never consulted
+//        b. command verbs          book / move / skip -> a CLIENT call
+//        c. stated facts           contacts, with their own commas and ands
+//        d. engagement + notes     likes, comments, call notes
+//        e. programs               handed to the cockpit chat
+//        f. THE MODEL              board questions and everything else
+//
+// THE FAILURE THIS ORDER FIXES: stage 2 was running before anything could say
+// "this is a question", so "Who are all my calls for the next 2 days?" was cut
+// into fragments and each fragment was offered to stage 3 as a command. A
+// question is a single thing being asked, and the split is what has to yield.
+//
+// A QUESTION GATES THE BATCH, IT DOES NOT OVERRIDE THE ROUTE. "Can you book
+// Halie - a consultation, tomorrow at 4?" opens like a question and IS a
+// command; it still runs the whole of stage 3 and still books. All the gate
+// does is refuse to cut it into pieces first — which is precisely what stage 2
+// should never have been doing to a question in the first place.
+function _jtIsQuestion(t){
+  var s=String(t||'').trim();
+  if(/\?\s*$/.test(s)) return true;
+  return /^(who|whose|what|whats|what's|when|where|which|why|how|is|are|was|were|do|does|did|any|anyone|anything|show|tell)\b/i.test(s);
+}
 async function _jtTurn(t){
-  // An answer to a held write is never a batch. Same first layer, same order, as
-  // every other box — and it advances the queue by exactly one.
+  // 0. An answer to a held write is never a batch and is never re-parsed.
   try{
     var pr=await _jvPendingReply(t);
     if(pr) return {html:_escHtml(pr).replace(/\n/g,'<br>'), speak:pr};
   }catch(e){ console.error('jt pending',e); }
+  // 2. The batch gate. A question is one thing being asked, whatever its length.
+  if(_jtIsQuestion(t)) return await _jtSingle(t);
   var items=_jtSplit(t);
   if(items.length<=1) return await _jtSingle(items[0]||t);
   return await _jtBatch(items);
