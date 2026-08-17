@@ -480,6 +480,14 @@ const WRITE_OPS = {
   // Same delete-guard gap every other client-keyed table behind this door has —
   // vip_calls joins JV_CLIENT_TABLES precisely so this gets called.
   vipCallDeleteAll: (a) => ({ method: 'DELETE', path: `vip_calls?client_code=eq.${enc(a.client_code)}` }),
+
+  // call_notes is client_code-keyed, so it joins JV_CLIENT_TABLES and needs
+  // this, written in the same breath the table is created rather than after an
+  // audit finds it missing. Its two foreign keys cascade from bookings and
+  // vip_calls, which would cover most deletions on their own — this is the
+  // belt to that pair of braces, because "most" is not the standard the delete
+  // guard is held to.
+  callNoteDeleteAll: (a) => ({ method: 'DELETE', path: `call_notes?client_code=eq.${enc(a.client_code)}` }),
 };
 
 // A client_code carried in a WRITE BODY (not a URL filter) still gets the same shape
@@ -1401,6 +1409,275 @@ async function handleMoveVipOccurrence(URL, SERVICE, args) {
   }
 }
 
+// ===== SHARED CALL NOTES ====================================================
+// A thread hanging off ONE call, that both sides write into before it happens
+// and that stays with the call afterwards as its record. Nothing here is
+// private: the founding law of this lane is that both halves are visible to
+// both people, so there is no "visible to" column and no way to add one
+// without changing the table.
+//
+// WHAT IDENTIFIES A CALL. The brief named three kinds and there are only two.
+// A moved or skipped occurrence is NOT a third thing — vip_call_exceptions is
+// keyed on (vip_call_id, occurrence_date), the exact pair that already names
+// the standing occurrence, and a move changes only what that pair RESOLVES to.
+// So notes keyed on the rule date survive a move for free: shift Tuesday to
+// 11:45 and Tuesday's notes are still Tuesday's notes. Key them on the moved
+// instant instead and every move would orphan the thread it belongs to, which
+// is precisely the failure worth designing out.
+//
+// That leaves two:
+//   booking — a one-off row a client picked, identified by bookings.id
+//   vip     — a standing occurrence, identified by (vip_call_id, rule date)
+// Each carries its OWN key and nothing else, enforced by a check constraint,
+// so no column is ever asked to mean two things depending on a sibling. That
+// is the "no faking meaning into existing columns" the brief asked for, spent
+// on two nullable id columns rather than one overloaded one.
+//
+// APPEND-ONLY. One row per note, never one row per occurrence with text
+// rewritten into it — "a second write appends rather than overwrites" is a
+// property of the table's shape here, not of a careful caller.
+const CALL_NOTE_MAX = 2000;
+
+function noteSource(v) {
+  const s = String(v || '');
+  if (s !== 'booking' && s !== 'vip') throw new Error('bad_arg');
+  return s;
+}
+function threadKeyOf(n) {
+  return n.source === 'booking' ? ('booking:' + n.booking_id)
+    : ('vip:' + n.vip_call_id + ':' + String(n.occurrence_date).slice(0, 10));
+}
+
+// Turn args naming an occurrence into a VERIFIED occurrence, or refuse.
+//
+// forCode is the whole of a client session's authority: pass the session's own
+// claim and the occurrence must belong to it, or this answers not_yours. Pass
+// null (trainer) and any occurrence resolves. A client naming someone else's
+// booking id is the obvious attack on a feature like this and it is answered
+// here, once, rather than in each caller.
+async function resolveOccurrenceSpec(URL, SERVICE, args, forCode) {
+  const source = noteSource(args.source);
+
+  if (source === 'booking') {
+    const id = encId(args.booking_id);
+    const r = await fetch(`${URL}/rest/v1/bookings?id=eq.${id}&select=id,client_code,starts_at,status&limit=1`,
+      { headers: svc(SERVICE) });
+    if (!r.ok) return { error: 'query_failed' };
+    const row = (await r.json() || [])[0];
+    if (!row) return { error: 'no_such_occurrence' };
+    if (forCode && String(row.client_code) !== String(forCode)) return { error: 'not_yours' };
+    return { occ: { source: 'booking', booking_id: row.id, vip_call_id: null, occurrence_date: null,
+      client_code: row.client_code, occurs_at: row.starts_at,
+      cancelled: String(row.status || 'booked') === 'cancelled' } };
+  }
+
+  const vid = encId(args.vip_call_id);
+  const date = isoDate(args.occurrence_date);
+  const r = await fetch(`${URL}/rest/v1/vip_calls?id=eq.${vid}`
+    + '&select=id,client_code,weekdays,time_local,tz,duration_minutes,start_date,end_date,active&limit=1',
+    { headers: svc(SERVICE) });
+  if (!r.ok) return { error: 'query_failed' };
+  const rule = (await r.json() || [])[0];
+  if (!rule) return { error: 'no_such_occurrence' };
+  if (forCode && String(rule.client_code) !== String(forCode)) return { error: 'not_yours' };
+  // The date must be one the rule actually fires on. A thread against a date
+  // the block never runs is a thread nothing will ever surface, and writing it
+  // would look like it worked.
+  const dow = ((new Date(date + 'T00:00:00.000Z').getUTCDay() + 6) % 7) + 1;
+  if (!Array.isArray(rule.weekdays) || !rule.weekdays.includes(dow)
+      || rule.start_date > date || rule.end_date < date) {
+    return { error: 'no_occurrence_on_that_date' };
+  }
+  const exc = await fetchVipExceptions(URL, SERVICE, [rule.id]);
+  const occ = expandVipOccurrences([rule], exc.by, date, date, true).filter((o) => o.rule_date === date)[0];
+  return { occ: { source: 'vip', booking_id: null, vip_call_id: rule.id, occurrence_date: date,
+    client_code: rule.client_code,
+    occurs_at: (occ && occ.at) ? occ.at.toISOString() : null,
+    skipped: !!(occ && occ.skipped), moved: !!(occ && occ.moved) } };
+}
+
+// Attach the resolved instant to a page of notes, in TWO batch reads rather
+// than one per note. occurs_at is deliberately not stored on the row: a moved
+// occurrence would make a stored copy wrong, and this system already has one
+// place that computes an occurrence from a rule. Both sides therefore always
+// read the same time, because they both read it from the same computation.
+async function attachOccurrences(URL, SERVICE, notes) {
+  const bookingIds = [...new Set(notes.filter((n) => n.source === 'booking').map((n) => n.booking_id))];
+  const vipIds = [...new Set(notes.filter((n) => n.source === 'vip').map((n) => n.vip_call_id))];
+  const bookingBy = {}, vipBy = {};
+
+  if (bookingIds.length) {
+    const r = await fetch(`${URL}/rest/v1/bookings?id=in.(${bookingIds.map(encodeURIComponent).join(',')})`
+      + '&select=id,starts_at,duration_min,status&limit=1000', { headers: svc(SERVICE) });
+    if (r.ok) (await r.json() || []).forEach((b) => { bookingBy[String(b.id)] = b; });
+  }
+  if (vipIds.length) {
+    const r = await fetch(`${URL}/rest/v1/vip_calls?id=in.(${vipIds.map(encodeURIComponent).join(',')})`
+      + '&select=id,client_code,weekdays,time_local,tz,duration_minutes,start_date,end_date&limit=200',
+      { headers: svc(SERVICE) });
+    if (r.ok) {
+      const rules = await r.json() || [];
+      const exc = await fetchVipExceptions(URL, SERVICE, rules.map((x) => x.id));
+      const dates = notes.filter((n) => n.source === 'vip').map((n) => String(n.occurrence_date).slice(0, 10)).sort();
+      if (dates.length) {
+        expandVipOccurrences(rules, exc.by, dates[0], dates[dates.length - 1], true).forEach((o) => {
+          vipBy[o.vip_call_id + ':' + o.rule_date] = o;
+        });
+      }
+    }
+  }
+
+  return notes.map((n) => {
+    const out = Object.assign({}, n, { thread_key: threadKeyOf(n) });
+    if (n.source === 'booking') {
+      const b = bookingBy[String(n.booking_id)];
+      out.occurs_at = b ? b.starts_at : null;
+      out.duration_minutes = b ? b.duration_min : null;
+      out.cancelled = b ? String(b.status || 'booked') === 'cancelled' : null;
+    } else {
+      const o = vipBy[n.vip_call_id + ':' + String(n.occurrence_date).slice(0, 10)];
+      out.occurs_at = (o && o.at) ? o.at.toISOString() : null;
+      out.duration_minutes = o ? o.duration_minutes : null;
+      out.skipped = o ? !!o.skipped : null;
+      out.moved = o ? !!o.moved : null;
+    }
+    return out;
+  }).sort((a, b) => {
+    const ta = a.occurs_at ? new Date(a.occurs_at).getTime() : 0;
+    const tb = b.occurs_at ? new Date(b.occurs_at).getTime() : 0;
+    if (ta !== tb) return ta - tb;                       // by the call they belong to
+    return new Date(a.created_at) - new Date(b.created_at);  // then the order they were said in
+  });
+}
+
+// READ. code=null is the trainer's roster-wide read; a client session always
+// passes its own claim and can never pass anything else.
+async function handleCallNotesRead(URL, SERVICE, code) {
+  try {
+    let path = 'call_notes?select=id,client_code,source,booking_id,vip_call_id,occurrence_date,'
+      + 'author,author_code,body,created_at&order=created_at.asc&limit=1000';
+    if (code) path += `&client_code=eq.${encodeURIComponent(code)}`;
+    const r = await fetch(`${URL}/rest/v1/${path}`, { headers: svc(SERVICE) });
+    const text = await r.text();
+    if (!r.ok) {
+      // The table ships with this code and the SQL lands after it. No notes yet
+      // is the truth during that window, and it is not an error.
+      if (missingTable(text)) return json(200, []);
+      console.error('trainer: call notes read failed', r.status, text.slice(0, 300));
+      return json(502, { error: 'query_failed', op: 'callNotes' });
+    }
+    let rows = []; try { rows = JSON.parse(text) || []; } catch (e) { rows = []; }
+    if (!rows.length) return json(200, []);
+    return json(200, await attachOccurrences(URL, SERVICE, rows));
+  } catch (e) {
+    console.error('trainer: call notes read threw', e && e.message);
+    return json(502, { error: 'query_failed', op: 'callNotes' });
+  }
+}
+
+// WRITE. authorCode is ALWAYS the verified session's own claim, never args —
+// a session already proved who is asking, so asking again in the body would
+// just be trusting the caller about its own name. forCode is null for a
+// trainer (any client's call) and the session's own code for a client (only
+// their own).
+async function handleCallNoteAdd(URL, SERVICE, args, authorCode, asTrainer, forCode) {
+  let body;
+  try {
+    body = str(args.body, CALL_NOTE_MAX);
+    if (!body) throw new Error('bad_arg');
+  } catch (e) { return json(400, { error: 'bad_arg' }); }
+
+  let spec;
+  try { spec = await resolveOccurrenceSpec(URL, SERVICE, args, forCode); }
+  catch (e) { return json(400, { error: 'bad_arg' }); }
+  if (spec.error) {
+    const code = spec.error === 'query_failed' ? 502 : (spec.error === 'not_yours' ? 403 : 404);
+    if (spec.error === 'not_yours') console.warn('trainer: session tried to write notes on another client\'s call', forCode);
+    return json(code, { error: spec.error });
+  }
+  const o = spec.occ;
+
+  try {
+    const row = {
+      client_code: o.client_code, source: o.source,
+      booking_id: o.booking_id, vip_call_id: o.vip_call_id, occurrence_date: o.occurrence_date,
+      author: asTrainer ? 'trainer' : 'client', author_code: authorCode, body: body,
+    };
+    const w = await fetch(`${URL}/rest/v1/call_notes`, {
+      method: 'POST',
+      headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+      body: JSON.stringify(row),
+    });
+    const text = await w.text();
+    if (!w.ok) {
+      if (missingTable(text)) return json(503, { error: 'notes_table_missing' });
+      console.error('trainer: call note write failed', w.status, text.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'callNoteAdd', detail: text.slice(0, 200) });
+    }
+    let landed = []; try { landed = JSON.parse(text); } catch (e) {}
+    const id = landed[0] && landed[0].id;
+    if (id == null) return json(502, { error: 'unconfirmed', op: 'callNoteAdd' });
+
+    // READ IT BACK, and read back the WHOLE THREAD while we are here — the
+    // caller's next act is to render the conversation, and a write that
+    // answers with only its own half invites a second round trip that could
+    // disagree with it.
+    const key = threadKeyOf(o);
+    let tPath = 'call_notes?select=id,client_code,source,booking_id,vip_call_id,occurrence_date,'
+      + 'author,author_code,body,created_at&order=created_at.asc&limit=500'
+      + `&client_code=eq.${encodeURIComponent(o.client_code)}`;
+    tPath += o.source === 'booking'
+      ? `&source=eq.booking&booking_id=eq.${encodeURIComponent(o.booking_id)}`
+      : `&source=eq.vip&vip_call_id=eq.${encodeURIComponent(o.vip_call_id)}&occurrence_date=eq.${encodeURIComponent(o.occurrence_date)}`;
+    const tr = await fetch(`${URL}/rest/v1/${tPath}`, { headers: svc(SERVICE) });
+    if (!tr.ok) return json(502, { error: 'unconfirmed', op: 'callNoteAdd', id: id });
+    const thread = await tr.json() || [];
+    if (!thread.some((n) => String(n.id) === String(id))) {
+      return json(502, { error: 'unconfirmed', op: 'callNoteAdd', id: id });
+    }
+    const resolved = await attachOccurrences(URL, SERVICE, thread);
+    return json(200, resolved.map((n) => Object.assign({}, n, {
+      thread_key: key, just_added: String(n.id) === String(id),
+      occurrence_skipped: o.skipped === true, occurrence_cancelled: o.cancelled === true,
+    })));
+  } catch (e) {
+    console.error('trainer: call note write threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'callNoteAdd' });
+  }
+}
+
+// DELETE. byCode non-null means "only your own words" — a client may unsay
+// what they said and nothing else. The trainer may remove any, because this
+// door is the only road into the table and a table with no reverse gear on
+// its only road in is permanent-mistake territory. Not privacy: both sides
+// still see everything that exists.
+async function handleCallNoteDelete(URL, SERVICE, args, byCode) {
+  let path;
+  try {
+    path = `call_notes?id=eq.${encId(args.id)}`;
+    if (byCode) path += `&author_code=eq.${enc(byCode)}`;
+  } catch (e) { return json(400, { error: 'bad_arg' }); }
+  try {
+    const r = await fetch(`${URL}/rest/v1/${path}`, {
+      method: 'DELETE',
+      headers: Object.assign({}, svc(SERVICE), { Prefer: 'return=representation' }),
+    });
+    const text = await r.text();
+    if (!r.ok) {
+      if (missingTable(text)) return json(503, { error: 'notes_table_missing' });
+      return json(502, { error: 'write_failed', op: 'callNoteDelete' });
+    }
+    let rows = []; try { rows = JSON.parse(text); } catch (e) {}
+    // Empty means nothing matched — a wrong id, or somebody else's words.
+    // Said plainly rather than reported as a success that removed nothing.
+    if (!rows.length) return json(404, { error: 'no_such_note' });
+    return json(200, rows);
+  } catch (e) {
+    console.error('trainer: call note delete threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'callNoteDelete' });
+  }
+}
+
 // ---- clientPlanSetDay -------------------------------------------------------
 // The first trainer-authored write to ANOTHER client's training_plans. Until
 // now every writer in the app wrote cl.code — the signed-in session's own — and
@@ -1632,6 +1909,21 @@ exports.handler = async (event) => {
   if (op === 'myVipCalls') {
     return handleMyVipCalls(URL, SERVICE, claims.client_code);
   }
+  // Shared call notes, the client's own half. Same exception and the same
+  // discipline as the three above: the account acted on is ALWAYS
+  // claims.client_code, passed in below, never anything a caller could
+  // supply. myCallNoteAdd additionally proves the OCCURRENCE belongs to that
+  // client before it writes, because here the session's own code is not
+  // enough on its own — a booking id names someone.
+  if (op === 'myCallNotes') {
+    return handleCallNotesRead(URL, SERVICE, claims.client_code);
+  }
+  if (op === 'myCallNoteAdd') {
+    return handleCallNoteAdd(URL, SERVICE, args, claims.client_code, false, claims.client_code);
+  }
+  if (op === 'myCallNoteDelete') {
+    return handleCallNoteDelete(URL, SERVICE, args, claims.client_code);
+  }
 
   if (claims.is_trainer !== true) {
     // A real client's session reaching the trainer-only door is worth knowing about.
@@ -1645,6 +1937,17 @@ exports.handler = async (event) => {
   if (op === 'bookCallForClient') return handleBookCallForClient(URL, SERVICE, args, claims.client_code);
   if (op === 'cancelCallForClient') return handleCancelCallForClient(URL, SERVICE, args);
   if (op === 'vipOccurrences') return handleVipOccurrences(URL, SERVICE, args);
+  // The trainer's half of the same threads. forCode null: any client's call.
+  if (op === 'callNotes') {
+    let only = null;
+    // Validated out here, not inside the handler's catch-all: a malformed code
+    // is a bad request, and answering 502 for one reads as a sick database.
+    try { only = args.client_code ? enc_raw(args.client_code) : null; }
+    catch (e) { return json(400, { error: 'bad_arg' }); }
+    return handleCallNotesRead(URL, SERVICE, only);
+  }
+  if (op === 'callNoteAdd') return handleCallNoteAdd(URL, SERVICE, args, claims.client_code, true, null);
+  if (op === 'callNoteDelete') return handleCallNoteDelete(URL, SERVICE, args, null);
   if (op === 'moveVipOccurrence') return handleMoveVipOccurrence(URL, SERVICE, args);
   if (op === 'clientPlanSetDay') return handleClientPlanSetDay(URL, SERVICE, args);
 
