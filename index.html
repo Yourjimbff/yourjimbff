@@ -4431,6 +4431,10 @@ body.hasnav #tToday{padding-bottom:96px;}
       <div id="trainingLogBtns" style="display:none;"></div>
     </div>
     <div id="jRoleSwitch"></div>
+    <!-- The call and the written check-in are the same relationship (Yusuf, 17 Aug),
+         so the calls card surfaces here too. Same card, same read, no second state:
+         see _pcHosts / _pcHostShim. -->
+    <div id="ciCallsCard" style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:16px;display:none;"></div>
     <div id="jPageComposer"></div>
     <!-- COLLAPSIBLE PROFILE + GOALS (merged from Profile tab) -->
     <!-- The Profile & Goals sheet that lived here is gone: setup is its own route now,
@@ -8111,7 +8115,7 @@ function jClearDraft(){ try{ localStorage.removeItem(_jDraftKey()); }catch(e){} 
 // Labels the client sees, and what gets prefixed onto a line. The KEYS are unchanged
 // on purpose — they're stored on every entry already written, so renaming them would
 // orphan history for a wording change.
-var J_OPEN={food:'Food',training:'Fitness',progress:'Progress',sleep:'Sleep',mood:'General'};
+var J_OPEN={progress:'Progress',training:'Fitness',food:'Food',question:'Question',sleep:'Sleep',mood:'General'};
 function jPageType(k){
   _jType=k;
   var ta=document.getElementById('jPageText');
@@ -8628,28 +8632,12 @@ function _modeInstruction(mode){
     +'Reach for the fact they missed rather than the compliment. If there is no evidence for it, do not invent any \u2014 say less.';
 }
 
-var _jNewLocked=true;
-function _jNewLockInit(){
-  try{ var v=localStorage.getItem('yjb_jlock_'+(cl?cl.code:'x')); _jNewLocked = (v===null) ? true : v==='1'; }catch(e){ _jNewLocked=true; }
-  return _jNewLocked;
-}
-function jToggleNewLock(){
-  _jNewLocked=!_jNewLocked;
-  try{ localStorage.setItem('yjb_jlock_'+(cl?cl.code:'x'), _jNewLocked?'1':'0'); }catch(e){}
-  var h=document.getElementById('jNewLock');
-  if(h) h.outerHTML=_newLockBtn();
-}
+// The private/shared toggle is gone, not hidden (Yusuf, 17 Aug): there is no
+// privacy distinction on this surface to offer. The dead branch below it went
+// with it — it was the only thing still describing a check-in as optional to
+// share, and leaving that wording in the file is how it comes back.
 function _newLockBtn(){
-  // Nothing to toggle here any more. A check-in goes to Yusuf by definition — asking
-  // whether to share it was a question from when this was a private journal.
-  return '<span id="jNewLock" style="display:none;"></span>';
-  // eslint-disable-next-line no-unreachable
-  var locked=_jNewLocked;
-  if(locked) return '<span id="jNewLock" style="display:none;"></span>';
-  return '<span id="jNewLock" onclick="jToggleNewLock()" style="display:inline-flex;align-items:center;gap:7px;cursor:pointer;flex-shrink:0;color:var(--gold);">'
-    +_lockIcon(false)
-    +'<span style="font-size:13px;font-weight:800;">Share with Yusuf</span>'
-  +'</span>';
+  return '';
 }
 
 var _jHost={comp:'jPageComposer', ent:'jPageEntries'};
@@ -8747,7 +8735,6 @@ async function jDeleteEntry(id){
   _openEntryId=null; loadMyJournalEntries();
 }
 function renderJournalPage(){
-  try{ _jNewLockInit(); }catch(e){}
   try{ renderJournalRoleSwitch(); }catch(e){}
   try{ var lb=document.getElementById('trainingLogBtns'); if(lb) lb.style.display='none'; }catch(e){}
   var host=document.getElementById(_jHost.comp); if(!host) return;
@@ -8873,7 +8860,16 @@ async function jPageSave(){
   var ds=(typeof todayDateStr!=='undefined'&&todayDateStr)?todayDateStr:new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
   var title=''; try{ title=await _jAutoTitle(body); }catch(e){}
   var base={client_code:cl.code, body:body, date_str:ds, logged_at:new Date().toISOString()};
-  var rich=Object.assign({}, base, {entry_type:_jType, title:title, title_edited:false, shared:!_jNewLocked, mode:_jMode()});
+  // NOTHING IS PRIVATE (Yusuf, 17 Aug). A check-in goes to him — that is the
+  // entire point of the surface, and there is no toggle, no tier, no "just
+  // yours" anywhere.
+  //
+  // This wrote shared:!_jNewLocked, and _jNewLocked defaults to TRUE, so every
+  // check-in was written shared:FALSE — while the page above it promised "This
+  // goes straight to Yusuf" and the button said "Send check-in". Every
+  // trainer-side feed filters on shared=is.true, so none of it ever reached him.
+  // The surface has been telling clients it delivers and delivering nothing.
+  var rich=Object.assign({}, base, {entry_type:_jType, title:title, title_edited:false, shared:true, mode:_jMode()});
   if(!rich.entry_type){ try{ rich.entry_type=_autoType(body)||null; }catch(e){} }
   var saved=false;
   if(window._editingMyEntry){
@@ -8891,7 +8887,19 @@ async function jPageSave(){
     try{ loadMyJournalEntries(); }catch(e){}
     return;
   }
-  var tries=[rich, Object.assign({},base,{entry_type:_jType,title:title}), base, {client_code:cl.code, body:body}];
+  // shared:true rides EVERY rung of the ladder. It was only on the first, and the
+  // first is the one most likely to be refused — it carries the optional columns.
+  // So a missing `mode` column dropped the app to a rung with no shared flag at
+  // all, the column defaulted to false, and the check-in silently failed to reach
+  // Yusuf again by a different route. Proven on the deployed file: both test
+  // check-ins landed with shared:false until this. Sharing is not an optional
+  // column here — it is the point of the row.
+  var tries=[rich,
+             Object.assign({},base,{entry_type:_jType,title:title,shared:true}),
+             Object.assign({},base,{shared:true}),
+             base,
+             {client_code:cl.code, body:body, shared:true},
+             {client_code:cl.code, body:body}];
   for(var i=0;i<tries.length && !saved;i++){
     try{
       var r=await fetch(SB_URL+'/rest/v1/journal_entries',{method:'POST',
@@ -8920,6 +8928,122 @@ async function jPageSave(){
   }catch(e){}
 }
 
+// ===== CHECK-INS: THE READ PATHS ========================================
+// One place that knows how to read check-ins, for both sides, so the client's
+// page and the trainer's feed can never disagree about what a check-in is.
+//
+// Both return {ok, rows}: ok is FALSE when the server did not answer, which is a
+// different fact from "there are none". sbSelect alone cannot tell those apart —
+// it answers [] for both — and every "nothing here" message in this app has to
+// know the difference (standing rule: never assert what has not been established).
+async function _ciFetchEntries(code, sinceIso){
+  try{
+    var q='client_code=eq.'+encodeURIComponent(code)
+      +'&select=id,client_code,body,entry_type,title,date_str,logged_at,shared,photo'
+      +(sinceIso?('&logged_at=gte.'+encodeURIComponent(sinceIso)):'')
+      +'&order=logged_at.desc&limit=200';
+    var res=await fetch(SB_URL+'/rest/v1/journal_entries?'+q,{headers:sbHeaders()});
+    if(!res.ok) return {ok:false, rows:[]};
+    var rows=await res.json();
+    return {ok:true, rows:(Array.isArray(rows)?rows:[])};
+  }catch(e){ return {ok:false, rows:[]}; }
+}
+// ===== THE SHAPE ADMIN CONSUMES =========================================
+// Documented contract, so the Jarvis-reads-aloud side can be built against it
+// without reading this file:
+//
+//   await ciFeedForTrainer(codes, {sinceIso, limit})
+//     -> { ok: boolean,
+//          byClient: { <client_code>: [entry, ...newest first] },
+//          days:     { <client_code>: [ {date_str, entries:[...]} , ...] },
+//          latest:   [ {client_code, date_str, body, logged_at}, ... ] }
+//
+//   entry = {id, client_code, body, entry_type, title, date_str, logged_at}
+//
+// - ok:false means the read failed. byClient will be empty, and that must NEVER
+//   be spoken as "nobody checked in".
+// - body is THE CLIENT'S OWN WORDS, verbatim. Never summarise it into speech
+//   without saying it is a summary; never put words in her mouth.
+// - days groups a date's sends into one check-in, newest date first, because
+//   several sends in a day are one check-in that grew (append, never overwrite).
+// - latest is one row per client, their most recent, for "who has something new".
+// - Only shared entries are returned. Under the current ruling every check-in is
+//   shared, but the filter stays so an older private row can never surface.
+async function ciFeedForTrainer(codes, opts){
+  opts=opts||{};
+  var list=(codes||[]).filter(Boolean);
+  if(!list.length) return {ok:true, byClient:{}, days:{}, latest:[]};
+  try{
+    var q='select=id,client_code,body,entry_type,title,date_str,logged_at'
+      +'&shared=is.true&client_code=in.('+list.map(encodeURIComponent).join(',')+')'
+      +(opts.sinceIso?('&logged_at=gte.'+encodeURIComponent(opts.sinceIso)):'')
+      +'&order=logged_at.desc&limit='+(+opts.limit||1500);
+    var res=await fetch(SB_URL+'/rest/v1/journal_entries?'+q,{headers:sbHeaders()});
+    if(!res.ok) return {ok:false, byClient:{}, days:{}, latest:[]};
+    var rows=await res.json(); if(!Array.isArray(rows)) rows=[];
+    var byClient={}, days={}, latest=[], seen={};
+    rows.forEach(function(r){
+      if(!r || !r.client_code) return;
+      (byClient[r.client_code]=byClient[r.client_code]||[]).push(r);
+      var ds=String(r.date_str||'').trim()||'Undated';
+      var d=(days[r.client_code]=days[r.client_code]||[]);
+      var slot=null;
+      for(var i=0;i<d.length;i++){ if(d[i].date_str===ds){ slot=d[i]; break; } }
+      if(!slot){ slot={date_str:ds, entries:[]}; d.push(slot); }
+      slot.entries.push(r);
+      if(!seen[r.client_code]){
+        seen[r.client_code]=1;
+        latest.push({client_code:r.client_code, date_str:ds, body:r.body, logged_at:r.logged_at});
+      }
+    });
+    return {ok:true, byClient:byClient, days:days, latest:latest};
+  }catch(e){ return {ok:false, byClient:{}, days:{}, latest:[]}; }
+}
+// ===== TAKE A CHECK-IN TO YUSUF AS A TEXT (Yusuf, 17 Aug) ================
+// Opens the client's own messaging app with the check-in already written out, so
+// a question she wants answered by a person reaches a person.
+//
+// sms:, one scheme, and the ?&body= form — both settled on the trainer side with
+// the reasoning written next to them: imessage:// is not a scheme a browser can
+// hand off to, so that button silently did nothing, and iOS ignores a bare
+// ?body=. Reusing that rather than re-deciding it.
+//
+// HER WORDS GO ACROSS UNTOUCHED. The frame is one line and the date; nothing is
+// summarised, tidied or relabelled (standing law: their words are the entry).
+//
+// THE RECIPIENT IS AN OPEN GAP, stated rather than hidden: the client's app does
+// not know Yusuf's number, and it must not — phone numbers came out of this file
+// on purpose, because anyone can read the page source. Until his number reaches a
+// client through their session, this opens Messages with the text ready and no
+// recipient, and she picks the thread. One extra tap, nothing lost, no number
+// published. _ciTrainerNumber is the single place to wire it when it exists.
+function _ciTrainerNumber(){
+  try{
+    // Whatever the session hands this client, if it ever carries it. Never the
+    // roster, never a constant in this file.
+    var n=(window.cl && (cl.coach_phone||cl.trainer_phone)) || '';
+    return String(n||'').replace(/[^0-9+]/g,'');
+  }catch(e){ return ''; }
+}
+function ciTextToYusuf(rid){
+  var r=null;
+  try{
+    var pool=(window._journalRecent||[]).concat(window._myEntries||[]);
+    for(var i=0;i<pool.length;i++){ if(pool[i] && String(pool[i].id)===String(rid)){ r=pool[i]; break; } }
+  }catch(e){}
+  if(!r || !String(r.body||'').trim()){ try{ showToast('Couldn\u2019t find that check-in'); }catch(e){} return; }
+  var when='';
+  try{
+    var d=new Date(/[Z+]/.test(r.logged_at||'')?r.logged_at:(r.logged_at||'')+'Z');
+    if(!isNaN(d.getTime())) when=d.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+  }catch(e){}
+  if(!when) when=String(r.date_str||'');
+  var body='My check-in for you'+(when?(' - '+when):'')+':\n\n'+String(r.body||'').trim();
+  var num=_ciTrainerNumber();
+  try{ window.location.href='sms:'+num+'?&body='+encodeURIComponent(body); }catch(e){
+    try{ showToast('Couldn\u2019t open your messages'); }catch(_){}
+  }
+}
 async function loadJournal(){
   _jHost={comp:'jPageComposer', ent:'jPageEntries'};
   if(!cl) return;
@@ -8935,7 +9059,14 @@ async function loadJournal(){
     var since=new Date(); since.setDate(since.getDate()-14); since.setHours(0,0,0,0);
     var foods=await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(cl.code)+'&order=id.desc&limit=300')||[];
     var wos=await sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(cl.code)+'&order=id.desc&limit=120')||[];
-    var entries=await sbSelect('journal_entries','client_code=eq.'+encodeURIComponent(cl.code)+'&order=logged_at.desc&limit=100')||[];
+    // NEVER-ASSERT (standing rule). sbSelect answers [] on a FAILED read, which is
+    // indistinguishable from an empty table — and "Nothing written yet" is a
+    // statement about her, made here without establishing it. The read is done
+    // through a path that can tell the two apart, so an unreachable server says
+    // so and offers a retry instead of telling a client she has never checked in.
+    var _ciRead=await _ciFetchEntries(cl.code);
+    var entries=_ciRead.rows;
+    window._ciReadFailed=!_ciRead.ok;
     try{ window._journalRecent=entries.slice(0,12); }catch(e){}
     function dk(ds){ var d=new Date(ds); return isNaN(d.getTime())?null:d; }
     function within(ds){ var d=dk(ds); return d && d.getTime()>=since.getTime(); }
@@ -8952,6 +9083,11 @@ async function loadJournal(){
     if(sub) sub.textContent = (cl && isTrainer(cl.code))
       ? 'Your last 14 days'
       : 'This goes straight to Yusuf. Tell him how it\u2019s going, give him feedback, or flag anything that needs sorting.';
+    if(!keys.length && window._ciReadFailed){
+      holder.innerHTML='<div style="padding:34px 20px;text-align:center;color:var(--m2);font-size:13.5px;line-height:1.6;">'
+        +'Couldn\u2019t load your check-ins just now.<br><span onclick="loadJournal()" style="color:var(--gold);font-weight:800;cursor:pointer;">Try again</span></div>';
+      return;
+    }
     if(!keys.length){ holder.innerHTML='<div style="padding:34px 20px;text-align:center;color:var(--m2);font-size:13.5px;line-height:1.6;">Nothing written yet — your first entry goes above.</div>'; return; }
     var html='';
     keys.forEach(function(k){
@@ -11990,7 +12126,12 @@ function ciPhoto(input){
 }
 function ciClearPhoto(){ _ciPhoto=null; var p=document.getElementById('checkinPhotoPrev'); if(p){ p.style.display='none'; p.innerHTML=''; } var i=document.getElementById('checkinPhotoInput'); if(i) i.value=''; }
 // ===== JOURNAL v1 — collection first =====
-var J_TYPES=[{k:'food',n:'Food'},{k:'training',n:'Fitness'},{k:'progress',n:'Progress'},{k:'sleep',n:'Sleep'},{k:'mood',n:'General'}];
+// Yusuf's four categories, in his order (17 Aug): progress, fitness, food, a
+// question. The KEYS are unchanged where they match — entry_type is stored on
+// every entry already written, so renaming a key orphans history for a wording
+// change. Sleep and General come off the row; rows already carrying those keys
+// still read back fine, they just aren't offered as a starting point any more.
+var J_TYPES=[{k:'progress',n:'Progress'},{k:'training',n:'Fitness'},{k:'food',n:'Food'},{k:'question',n:'A question'}];
 // Tappable starters so the page is never blank. They open a line, they don't finish it.
 var J_PROMPTS={
   '':        ['What today asked of me','One thing I did right','What I kept putting off','Where my head was at'],
@@ -11998,7 +12139,10 @@ var J_PROMPTS={
   food:      ['What I ate and why','Where the hunger came from','A meal I actually enjoyed','What I reached for and why'],
   sleep:     ['How I slept','What kept me up','How I felt waking up','What I did before bed'],
   mood:      ['Where my head was today','What set me off','What steadied me','What I needed and did not ask for'],
-  progress:  ['What is different than a month ago','What the mirror said','What the numbers said','What I keep proving to myself']
+  progress:  ['What is different than a month ago','What the mirror said','What the numbers said','What I keep proving to myself'],
+  // Starters for the question chip. They open a line, they never finish it, and
+  // none of them are asks — same rule as every other row here.
+  question:  ['Something I want to change','Something I am not sure about','Something that is not working','Something I want to ask you']
 };
 function jPickPrompt(enc){
   var t=''; try{ t=decodeURIComponent(enc); }catch(e){ return; }
@@ -12019,7 +12163,6 @@ function _jPromptRow(){
       }).join('')
     +'</div>';
 }
-var J_MOODS=['\u{1F624}','\u{1F614}','\u{1F610}','\u{1F642}','\u{1F525}'];
 var _jType='', _jMood='', _jDate='';
 // PARKED: the "Let Jim write back" toggle is hidden, not removed. _jMode() returns a
 // hardcoded 'quiet', so _jReplyOn() is always false and the switch can never turn on —
@@ -12046,14 +12189,10 @@ function renderJournalComposer(){
       return '<span onclick="jSetType(\''+t.k+'\')" class="jChip'+(_jType===t.k?' on':'')+'">'+t.n+'</span>';
     }).join('');
   }
-  var mr=document.getElementById('jMoodRow');
-  if(mr){
-    mr.innerHTML='<div style="display:flex;gap:7px;justify-content:center;">'
-      +J_MOODS.map(function(m){
-        var on=(_jMood===m);
-        return '<span onclick="jSetMood(\''+m+'\')" style="width:40px;height:40px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:19px;cursor:pointer;background:'+(on?'rgba(224,196,152,0.16)':'transparent')+';border:1px solid '+(on?'rgba(224,196,152,0.5)':'#282828')+';opacity:'+(on?'1':'0.55')+';">'+m+'</span>';
-      }).join('')+'</div>';
-  }
+  // The five-emoji mood row is deleted, not hidden (17 Aug). House law is no emoji
+  // anywhere, and this composer is shared with the revived Check-in surface — a
+  // dormant emoji row next to a screen we just gave a door to is exactly how it
+  // comes back. Its host div never existed in the markup, so nothing rendered it.
   var rr=document.getElementById('jReplyRow');
   // Hidden rather than skipped: the host div carries its own margin, so leaving it empty
   // would leave a gap where the row used to be.
@@ -12155,7 +12294,9 @@ async function publishEntry(){
       var _title='';
       try{ _title=await _jAutoTitle(body); }catch(e){}
       var _base={ client_code: cl.code, body: body, date_str: ds, logged_at: isoNow };
-      var _rich=Object.assign({}, _base, {entry_type:_jType, title:_title, title_edited:false, mood:(_jType==='mood'?'mood':null), shared:false});
+      // shared:true — same ruling. This path hardcoded false, so a check-in sent
+      // from here never reached Yusuf either.
+      var _rich=Object.assign({}, _base, {entry_type:_jType, title:_title, title_edited:false, mood:(_jType==='mood'?'mood':null), shared:true});
       if(_ed) _rich.entry_date=_ed;
       var attempts=[];
       if(_ciPhoto) attempts.push(Object.assign({}, _rich, {photo:_ciPhoto}));
@@ -12287,6 +12428,7 @@ function _entryCardHtml(r){
     + '<span onclick="event.stopPropagation();_entryMenuToggle(\''+rid+'\')" style="font-size:19px;color:var(--muted);cursor:pointer;padding:0 4px;line-height:1;">\u22ef</span>'
     + '<div class="entry-menu" id="emenu_'+rid+'" style="display:none;position:absolute;right:0;top:24px;background:#1e1e1e;border:1px solid var(--border);border-radius:10px;padding:5px;z-index:60;min-width:118px;box-shadow:0 10px 28px rgba(0,0,0,0.55);">'
     +   '<div onclick="event.stopPropagation();_entryMenuToggle(\''+rid+'\');openEntryEdit(\''+rid+'\')" style="'+_mi+'color:var(--text);">Edit</div>'
+    +   '<div onclick="event.stopPropagation();_entryMenuToggle(\''+rid+'\');ciTextToYusuf(\''+rid+'\')" style="'+_mi+'color:var(--text);">Text to Yusuf</div>'
     +   '<div onclick="event.stopPropagation();_entryMenuToggle(\''+rid+'\');copyEntry(\''+rid+'\')" style="'+_mi+'color:var(--text);">Copy</div>'
     +   '<div onclick="event.stopPropagation();_entryMenuToggle(\''+rid+'\');deleteEntry(\''+rid+'\')" style="'+_mi+'color:#f5c518;">Delete</div>'
     + '</div></div>') : '';
@@ -12431,34 +12573,30 @@ function _labelAskTab(){
       var cIc=document.getElementById('bnAskIc'), cLb=document.getElementById('bnAskLb');
       if(cIc) cIc.innerHTML=_NAV_ICON_CHAT;
       if(cLb) cLb.textContent='Jim';
-      // CORRECTED 11 Aug — the comment this replaced claimed booking's
-      // replacement lived behind "Past notes" in the Jim tab. That never
-      // existed (checked: the only similarly-named thing is "Past updates",
-      // the unrelated broadcast history), so this hide had been quietly
-      // orphaning call-booking with no real door in since whenever it was
-      // written. The actual replacement is the Program tab's calls card
-      // (_pgCallsCard) — always visible, not behind a nav tap at all.
-      // This tab (#tTraining) is hidden for an unrelated reason: it's now the
-      // client's own journal/feedback page (openMyJournal), not a booking
-      // surface. That repurposing is real and predates this comment, but the
-      // journal itself has no other reachable entry point for a client either
-      // — flagged, not fixed here, out of scope for the calls-card build.
+      // CHECK-IN GETS ITS DOOR BACK (Yusuf, 17 Aug). This tab is the client's
+      // check-in page and it has been complete but unreachable — hidden here by
+      // one line since "Check-in folds into Jim" on 5 Aug, which moved the
+      // gesture into the chat. Twelve days of the app later the call is that a
+      // check-in ACCUMULATES — a file that grows, that the profile renders, that
+      // Yusuf reads — and a conversation scrolls away. So it is a place again.
+      // Centre slot, and the DOM order already gives the ruled one:
+      // Day · Jim · Check-in · Program · Profile.
       try{
         var tr2=document.getElementById('bnTraining');
-        if(tr2) tr2.style.display='none';
+        if(tr2) tr2.style.display='';
       }catch(e){}
       // The Yusuf tab is gone: it was a window into a room Yusuf isn't in, and it
       // made the app read as half-empty. #tFollow, renderFollowCalendar and the day
       // navigation are all still here and still work — nothing navigates to them.
       if(follow) follow.style.display='none';
       try{ var _pg=document.getElementById('bnProgram'); if(_pg) _pg.style.display=''; }catch(e){}
-      // Still four: Day, Profile, Jim, Program. Yusuf left as Program arrived, so the
-      // v4 grid the other session added is right either way — don't touch it.
-      // sit in five and leave a hole. Only touches the client case; the trainer
-      // grid and the Yusuf slot are left alone for the session working there.
+      // Five again, with Check-in in the middle. The four-column class has to come
+      // OFF or the fifth slot has no column to sit in. Its own comment records
+      // that this decision was made in two places once and whichever ran last
+      // won — so this clears the class rather than trusting the other site.
       try{
         var _nv=document.getElementById('bnav');
-        if(_nv && !_nv.classList.contains('trainer-mode')) _nv.classList.add('v4');
+        if(_nv) _nv.classList.remove('v4');
       }catch(e){}
     }
   }catch(e){}
@@ -27271,7 +27409,7 @@ function switchTab(t){
   try{ renderGoalsPage(); }catch(e){}
   if(t==='Clients'){ if(typeof loadTrainerDashboard === 'function') loadTrainerDashboard(); try{ _admApply(); admRenderNeeds(); }catch(e){} }
   if(t==='Jarvis'){ try{ jtOpen(); }catch(e){ console.error('jtOpen',e); } }
-  if(t==='Training' && typeof loadTrainingHistory === 'function'){ loadTrainingHistory(); if(typeof loadProfileTab==='function') loadProfileTab(); }
+  if(t==='Training' && typeof loadTrainingHistory === 'function'){ loadTrainingHistory(); if(typeof loadProfileTab==='function') loadProfileTab(); try{ _pgCallsCard(); }catch(e){} }
   if(t==='Follow'){ if(typeof renderMyJournalOnFollow==='function' && renderMyJournalOnFollow()){ /* trainer: own journal */ } else if(typeof renderFollowCalendar==='function'){ renderFollowCalendar(); } else if(typeof loadFollowDay === 'function'){ followViewDate = new Date(); loadFollowDay(); } }
   if(t==='Program'){ try{ renderProgramTab(); }catch(e){} try{ _pgCallsCard(); }catch(e){} }
   if(t==='Feed'){ if(typeof loadFeedTab==='function') loadFeedTab();
@@ -38119,10 +38257,37 @@ function _pcCardHtml(next, state, credits){
 }
 // Trainer sees nothing here \u2014 Admin manages this from Call access, and the
 // trainer's own "My Availability" stays reachable through the Account modal.
+// The call and the written check-in are the same relationship, so this card
+// surfaces on the Check-in tab as well as Program (Yusuf, 17 Aug). ONE card, two
+// hosts, one source — it renders into whichever hosts exist and both get the same
+// markup from the same read. Never two systems: there is no second copy of this
+// card's state anywhere, so they cannot drift.
+function _pcHosts(){
+  return ['pgCallsCard','ciCallsCard']
+    .map(function(id){ return document.getElementById(id); })
+    .filter(Boolean);
+}
+// A stand-in for the single host this function used to write to. Every
+// assignment below fans out to all of them, so the two cards are the same card
+// rather than two that have to be kept in step by hand.
+function _pcHostShim(){
+  var hs=_pcHosts();
+  return {
+    n: hs.length,
+    set innerHTML(v){ hs.forEach(function(h){ h.innerHTML=v; }); },
+    set onclick(f){ hs.forEach(function(h){ h.onclick=f; }); },
+    style:{
+      set display(v){ hs.forEach(function(h){ h.style.display=v; }); },
+      set cursor(v){ hs.forEach(function(h){ h.style.cursor=v; }); }
+    }
+  };
+}
 async function _pgCallsCard(){
-  var host=document.getElementById('pgCallsCard');
-  if(!host || !cl) return;
-  if(typeof isTrainer==='function' && isTrainer(cl.code)){ host.style.display='none'; return; }
+  if(!cl) return;
+  var hosts=_pcHosts();
+  if(!hosts.length) return;
+  if(typeof isTrainer==='function' && isTrainer(cl.code)){ hosts.forEach(function(h){ h.style.display='none'; }); return; }
+  var host=_pcHostShim();
   host.style.display=''; host.onclick=null; host.style.cursor='';
   host.innerHTML=_pcCardHtml(null,'loading');
   // Force a fresh session check before trusting calls_enabled/call_credits.
