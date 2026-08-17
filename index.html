@@ -22785,6 +22785,116 @@ async function tlLoadEarlier(){
     if(b2){ b2.disabled=false; b2.textContent='See earlier days'; }
   }
 }
+// ===== THE DAY'S APPOINTMENT ROW: ONE ROW, EITHER SYSTEM =================
+// A client's calls come from two unrelated tables — the one-off `bookings`
+// they pick themselves, and `vip_calls`, the standing block a trainer sets
+// (Blake's daily accountability calls). The calls card has always unioned the
+// two for "your next call"; the DAY page drew only the one-off half, so a
+// client on a standing block saw nothing on the day it actually happened.
+//
+// Both halves come through the session-scoped door now (myBookings /
+// myVipCalls), which also retires the raw read this used to do: loadBookings
+// asks the anon key for the whole `bookings` table and every client's rows
+// came back over the wire to be filtered here, on the client, afterwards.
+//
+// ONE TREATMENT, and a client can never tell which table answered — the row
+// reads "Check-in call" either way, exactly as the card does. Where both land
+// on one day they are ordered by the clock, because `m` is the minute of the
+// day and the day's rows are already sorted on it.
+//
+// NEVER-ASSERT: a failed read is not an empty diary. Each half carries its own
+// ok and a failure leaves _tlCallsOk false, so nothing downstream can turn an
+// unreadable day into "nothing booked".
+//
+// The trainer's own Day page keeps the old whole-table path deliberately:
+// myBookings is scoped to the SESSION's own code, so on Yusuf's page it would
+// answer with calls booked against HIM as a client rather than the day's work
+// with his clients.
+//
+// Exception-aware, through _pcOccurrenceOn — the same one fact the card, the
+// public grid and consult-availability.js all apply, never a second copy.
+function _tlVipOccurrencesIn(rows, start, end){
+  var out=[];
+  // The window as whole local DAYS. The scan below deliberately runs a week
+  // wider so a moved occurrence can be caught, so what it finds has to be cut
+  // back to the days actually on screen — otherwise the ±7 days of slack
+  // become rows on dates nobody asked for.
+  var lo=new Date(start.getTime()); lo.setHours(0,0,0,0);
+  var hi=new Date(end.getTime()); hi.setHours(0,0,0,0); hi=new Date(hi.getTime()+86400000);
+  (rows||[]).forEach(function(r){
+    if(!r) return;
+    // This rule's per-occurrence moves didn't load, so its own time_local can't
+    // be trusted for any day in the window. A row an hour off is worse than no
+    // row: it would put the client on the call after it had started.
+    if(r.exceptions_ok===false) return;
+    var exMap={};
+    (r.exceptions||[]).forEach(function(x){
+      if(x && x.occurrence_date) exMap[String(x.occurrence_date).slice(0,10)]=x;
+    });
+    var rs=new Date(String(r.start_date||'')+'T00:00:00.000Z');
+    if(isNaN(rs.getTime())) return;                       // no start is not a start of forever
+    // An open-ended block is open-ended, not broken. Reading a null end_date as
+    // an Invalid Date would have compared false against every day and silently
+    // drawn nothing at all.
+    var re=r.end_date ? new Date(String(r.end_date)+'T00:00:00.000Z') : null;
+    if(re && isNaN(re.getTime())) re=null;
+    // A week either side: a move can carry an occurrence INTO the window from a
+    // rule date outside it, so scanning only the visible days would miss it.
+    var d=new Date(Math.max(start.getTime()-7*86400000, rs.getTime()));
+    d.setUTCHours(0,0,0,0);
+    var stop=end.getTime()+7*86400000;
+    for(var i=0;i<400 && d.getTime()<=stop;i++){
+      if(!re || d.getTime()<=re.getTime()){
+        var dow=((d.getUTCDay()+6)%7)+1;
+        if(Array.isArray(r.weekdays) && r.weekdays.indexOf(dow)>-1){
+          var occ=_pcOccurrenceOn(r, d, exMap);
+          if(occ && !isNaN(occ.getTime()) && occ.getTime()>=lo.getTime() && occ.getTime()<hi.getTime()) out.push(occ);
+        }
+      }
+      d.setUTCDate(d.getUTCDate()+1);
+    }
+  });
+  return out;
+}
+async function _tlLoadDayCalls(start, end){
+  window._bookByDay={};
+  window._tlCallsOk=true;
+  function put(at, row){
+    if(!at || isNaN(at.getTime())) return;
+    var k=_tlDateStr(at);
+    (window._bookByDay[k]=window._bookByDay[k]||[]).push(row);
+  }
+  if(typeof isTrainer==='function' && isTrainer(cl.code)){
+    try{
+      var _bk=await loadBookings(true);
+      (_bk||[]).forEach(function(b){ put(new Date(b.starts_at), b); });
+    }catch(e){ window._bookByDay={}; window._tlCallsOk=false; }
+    return;
+  }
+  var bk={ok:false,rows:[]}, vp={ok:false,rows:[]};
+  try{
+    var both=await Promise.all([trainerOpChecked('myBookings',{}), trainerOpChecked('myVipCalls',{})]);
+    bk=both[0]||bk; vp=both[1]||vp;
+  }catch(e){ window._tlCallsOk=false; return; }
+  if(!bk.ok || !vp.ok){
+    window._tlCallsOk=false;
+    // The client is told nothing about status codes; this is for whoever is
+    // debugging it at 6am.
+    try{ console.error('day calls: read failed', 'bookings', (bk.status||''), (bk.err||''), 'vip', (vp.status||''), (vp.err||'')); }catch(e){}
+  }
+  (bk.rows||[]).forEach(function(b){
+    if(!b || String(b.status||'booked')==='cancelled') return;
+    put(new Date(b.starts_at), {id:b.id, client_code:cl.code, starts_at:b.starts_at, status:b.status||'booked'});
+  });
+  // A standing occurrence has no booking row and must never borrow a booking's
+  // id — the uid the row builds from it would collide with a real one. The
+  // synthetic id is a string and names the rule and the instant.
+  try{
+    _tlVipOccurrencesIn(vp.rows, start, end).forEach(function(at){
+      put(at, {id:'vip_'+at.getTime(), client_code:cl.code, starts_at:at.toISOString(), status:'booked'});
+    });
+  }catch(e){ window._tlCallsOk=false; }
+}
 async function renderDayTimeline(soft){
   // Nothing should carry an inline height into a fresh render. One stuck value
   // plus overflow:hidden is how the card clipped into a black bar.
@@ -22862,16 +22972,9 @@ async function renderDayTimeline(soft){
   foods.forEach(function(f){ (fByDay[f.date_str]=fByDay[f.date_str]||[]).push(f); });
   workouts.forEach(function(w){ (wByDay[w.date_str]=wByDay[w.date_str]||[]).push(w); });
   weights.forEach(function(g){ var d=_rowDs(g); if(d){ (gByDay[d]=gByDay[d]||[]).push(g); } });
-  try{
-    var _bk = await loadBookings(!soft);
-    window._bookByDay={};
-    (_bk||[]).forEach(function(b){
-      if(b.trainer_code && b.client_code!==cl.code && !(typeof isTrainer==='function' && isTrainer(cl.code))) return;
-      var d=new Date(b.starts_at);
-      var k=_tlDateStr(d);
-      (window._bookByDay[k]=window._bookByDay[k]||[]).push(b);
-    });
-  }catch(e){ window._bookByDay={}; }
+  // Both kinds of call, through the session-scoped door — see _tlLoadDayCalls.
+  try{ await _tlLoadDayCalls(start, end); }
+  catch(e){ window._bookByDay={}; window._tlCallsOk=false; }
   var jByDay={};
   journals.forEach(function(j){
     if(/walk journal entry/i.test(String(j.title||''))) return;  // already shown as the walk itself
