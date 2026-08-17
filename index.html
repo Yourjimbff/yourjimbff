@@ -14806,8 +14806,93 @@ function _jvFindClientIn(text){
   return {hits:[], tried:toks.join(' ')};
 }
 // Returns HTML when it handled the sentence, or null to fall through.
+// ===== ASK-AND-ANSWER IS ONE EXCHANGE, NOT TWO STRANGERS ==================
+// The worst bug this assistant has had. It asked "who is that call with",
+// received "Blakeb1", and had no idea it had asked — so the answer was parsed
+// as a brand new sentence and fell through to the model, which replied with a
+// status line. Ask-then-forget is WORSE than guessing: guessing is wrong once,
+// while a dead ask loop cannot be escaped no matter how correctly he answers.
+//
+// So an unanswered question is STATE. The unresolved intent waits in a slot
+// with the pieces it already has, the next message is tried as the missing
+// piece first, and the action then completes or states itself back.
+//
+// THREE WAYS IT CLEARS, all deliberate:
+//   - answered (it completes)
+//   - superseded, when the next message is plainly a new command of its own
+//   - stale: 3 turns or 4 minutes, whichever comes first. A question he walked
+//     away from must not silently capture something he says ten minutes later.
+var _JV_ASK_MS=4*60*1000, _JV_ASK_TURNS=3;
+function _jvAskSet(a){ a.at=Date.now(); a.turns=0; window._jvPendingAsk=a; }
+function _jvAskClear(){ window._jvPendingAsk=null; }
+function _jvAskFresh(){
+  var a=window._jvPendingAsk;
+  if(!a) return null;
+  if((Date.now()-a.at)>_JV_ASK_MS || a.turns>=_JV_ASK_TURNS){ _jvAskClear(); return null; }
+  return a;
+}
+// A message that is plainly its own instruction supersedes the question rather
+// than being eaten by it — a change of subject is not an answer, the same rule
+// the held-write queue already follows.
+function _jvAskSuperseded(t){
+  if(_JV_BOOK_RE.test(t)) return true;
+  try{ if(_ccParseStatement(t)) return true; }catch(e){}
+  return false;
+}
+// Returns HTML when it consumed the message as the answer, else null.
+async function _jvAskReply(t){
+  var a=_jvAskFresh(); if(!a) return null;
+  if(_jvAskSuperseded(t)){ _jvAskClear(); return null; }
+  a.turns++;
+  if(a.need==='who'){
+    // The whole message is the answer — a name, a code, or a code said aloud
+    // with spaces. Try it as a bare answer first, then look inside it.
+    var hits=_jvResolveClient(t);
+    if(!hits.length){ var f=_jvFindClientIn(t); hits=f.hits; }
+    if(hits.length>1){
+      return '<b>'+_escHtml(t)+'</b> matches '+hits.length+' clients — '
+        + hits.map(function(h){ return _escHtml(String((CLIENTS[h]||{}).name||h)); }).join(', ')+'. Which one?';
+    }
+    if(!hits.length){
+      if(a.turns>=_JV_ASK_TURNS){ _jvAskClear(); return null; }   // stop looping at him
+      return 'I still don’t have anyone called <b>'+_escHtml(t)+'</b>. Their code looks like blakeb1 — or say the name as it is on the roster.';
+    }
+    a.code=hits[0];
+    a.need = a.dayTs ? null : 'when';
+  } else if(a.need==='when' || a.need==='time'){
+    var w=_jvParseWhen(t);
+    if(!w || w.needsTime){
+      // A bare hour with a day already held: apply it to the day he gave.
+      if(a.dayTs && w && w.needsTime && w.day){ a.dayTs=w.day; }
+      if(a.turns>=_JV_ASK_TURNS){ _jvAskClear(); return null; }
+      return 'I need a time as well — say something like 9am, or 3:30.';
+    }
+    if(a.dayTs){
+      // Keep the day he already gave and take only the clock from this reply.
+      var got=new Date(w.ts), day=new Date(a.dayTs);
+      day.setHours(got.getHours(), got.getMinutes(), 0, 0);
+      a.ts=day.getTime();
+    } else { a.ts=w.ts; a.dayTs=w.ts; }
+    a.need = a.code ? null : 'who';
+  } else { _jvAskClear(); return null; }
+
+  if(a.need==='when' || a.need==='time'){
+    return 'Got it — '+_escHtml(String((CLIENTS[a.code]||{}).name||a.code))+'. What day and time?';
+  }
+  if(a.need==='who'){ return 'And who is that call with?'; }
+  var code=a.code, name=String((CLIENTS[code]||{}).name||code);
+  var when=(a.ts!=null) ? {ts:a.ts, iso:new Date(a.ts).toISOString()} : null;
+  if(!when){ a.need='when'; return 'What day and time?'; }
+  _jvAskClear();
+  return await _jvBookAct(a.kind, code, name, when, !!a.skip);
+}
 async function _jvBookCommand(text){
   var t=String(text||'').trim();
+  // The answer to an outstanding question is consulted BEFORE the verb test —
+  // "Blakeb1" carries no booking verb, so without this it never reached this
+  // layer at all. Inside _jvBookCommand rather than at five call sites, so
+  // every box gets it and none can forget it.
+  try{ var _ar=await _jvAskReply(t); if(_ar) return _ar; }catch(e){ console.error('ask reply',e); }
   var wantsBook=_JV_BOOK_RE.test(t), wantsMove=_JV_MOVE_RE.test(t);
   if(!wantsBook && !wantsMove) return null;
   if(!/\bcall\b|\bbook\b|\bschedule\b|\bpencil\b/i.test(t)) return null;   // "cancel that" is not a booking
@@ -14816,25 +14901,46 @@ async function _jvBookCommand(text){
   var hits=found.hits;
   // Say what could NOT be understood and ask for the missing piece by name.
   // Never mangle the sentence into a client who does not exist.
-  if(!hits.length) return 'I couldn’t tell who that call is with. Give me their name or their code and I’ll set it up.';
+  var _isMove = wantsMove && !wantsBook;
+  var _skip = /\bskip\b|\bcancel\b/i.test(t);
+  var _w0=_jvParseWhen(t);
+  // EVERY QUESTION NOW LEAVES A SLOT BEHIND. What it already understood is kept
+  // so his answer only has to carry the piece that was missing.
+  if(!hits.length){
+    _jvAskSet({kind:(_isMove?'move':'book'), skip:_skip, code:null,
+               ts:(_w0&&!_w0.needsTime)?_w0.ts:null, dayTs:(_w0?(_w0.ts||_w0.day||null):null), need:'who'});
+    return 'I couldn’t tell who that call is with. Give me their name or their code and I’ll set it up.';
+  }
   if(hits.length>1){
     return '<b>'+_escHtml(found.tried)+'</b> matches '+hits.length+' clients — '
       + hits.map(function(h){ return _escHtml(String((CLIENTS[h]||{}).name||h)); }).join(', ')
       + '. Which one?';
   }
   var code=hits[0], name=String((CLIENTS[code]||{}).name||code);
-  var w=_jvParseWhen(t);
-  if(!w) return 'When? Give me a day and a time and I’ll set it up with '+_escHtml(name)+'.';
-  if(w.needsTime) return 'What time'+(w.day?(' on '+new Date(w.day).toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})):'')+'? I won’t guess an hour.';
-
+  var w=_w0;
+  if(!w){
+    _jvAskSet({kind:(_isMove?'move':'book'), skip:_skip, code:code, ts:null, dayTs:null, need:'when'});
+    return 'When? Give me a day and a time and I’ll set it up with '+_escHtml(name)+'.';
+  }
+  if(w.needsTime){
+    _jvAskSet({kind:(_isMove?'move':'book'), skip:_skip, code:code, ts:null, dayTs:(w.day||null), need:'time'});
+    return 'What time'+(w.day?(' on '+new Date(w.day).toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})):'')+'? I won’t guess an hour.';
+  }
+  _jvAskClear();
+  return await _jvBookAct((_isMove?'move':'book'), code, name, w, _skip);
+}
+// The half that acts once who and when are both known — shared by the sentence
+// that said everything at once and by the answer that completed a question.
+async function _jvBookAct(kind, code, name, w, skip){
+  var isMove=(kind==='move');
   // Moving a standing call is a different table and a different sentence.
-  var isMove = wantsMove && !wantsBook;
+  // skip/cancel is decided by the CALLER now and passed in — it used to be
+  // re-derived from the sentence text, which no longer exists down here.
   if(isMove){
     var d=new Date(w.ts);
     var dateStr=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
     var hhmm=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
-    var skip=/\bskip\b|\bcancel\b/i.test(t);
-    window._jvPendingWrite={kind:'vipmove', code:code, name:name, date:dateStr, time:hhmm, skip:skip,
+    window._jvPendingWrite={kind:'vipmove', code:code, name:name, date:dateStr, time:hhmm, skip:!!skip,
       parts:[], payload:{}, at:Date.now()};
     // "on tomorrow" is not a sentence. Only a weekday name takes the "on".
     var dayWord=_jvWhenLabel(d).split(' at ')[0];
