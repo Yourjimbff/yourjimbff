@@ -82,23 +82,36 @@ exports.handler = async function (event) {
   let temperature = Number(body.temperature);
   if (!isFinite(temperature) || temperature < 0 || temperature > 1) temperature = 0.2;
 
-  try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+  // TEMPERATURE SELF-HEAL. Newer models reject `temperature` outright
+  // ("`temperature` is deprecated for this model"), and this function has
+  // always sent it unconditionally — so every nutrition-label read, which asks
+  // for claude-sonnet-5, has been 400ing and silently falling back to haiku via
+  // _mbAskLabel's own retry. Nothing ever said so; the label just came back
+  // read by a smaller model. Caught while verifying the session gate.
+  // Same shape as the door's unknown-column recovery: try, and if the upstream
+  // names this exact problem, drop the field and go again once.
+  const send = async (withTemperature) => {
+    const payload = { model: model, max_tokens: maxTokens, messages: body.messages };
+    if (withTemperature) payload.temperature = temperature;
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify({
-        model: model,
-        max_tokens: maxTokens,
-        temperature: temperature,
-        messages: body.messages,
-      }),
+      body: JSON.stringify(payload),
     });
+    return { res: r, data: await r.json() };
+  };
 
-    const data = await response.json();
+  try {
+    let { res: response, data } = await send(true);
+    if (!response.ok && /temperature[\s\S]{0,40}deprecated/i.test(
+        (data && data.error && data.error.message) || '')) {
+      console.warn('analyze:', model, 'rejects temperature — retrying without it');
+      ({ res: response, data } = await send(false));
+    }
     // If Anthropic rejected the call, pass the real status + message through
     // instead of masking it as a 200 the app can't interpret.
     if (!response.ok || (data && data.type === 'error')) {
