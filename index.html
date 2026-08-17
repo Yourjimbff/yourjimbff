@@ -1228,6 +1228,32 @@ body.jv-on.jv-paneOff #jvPaneEdge{
 .jvJnUndo:hover{color:var(--gold);}
 .jvJnUndo[disabled]{opacity:0.4;cursor:default;}
 
+/* ===== SHARED CALL NOTES ================================================
+   The rail's quiet register: no card inside a card, authorship on every line,
+   and his own notes tinted so the two voices are never confused. */
+.cnoHead{display:flex;align-items:baseline;gap:8px;margin:0 0 8px;}
+.cnoHead b{font-size:11px;font-weight:800;letter-spacing:0.7px;text-transform:uppercase;color:var(--gold);}
+.cnoHead span{font-size:11.5px;color:rgba(240,236,228,0.42);}
+.cnoNote{position:relative;background:#151515;border:1px solid #212121;border-radius:10px;
+  padding:8px 26px 9px 11px;margin-bottom:6px;}
+.cnoNote.mine{background:rgba(224,196,152,0.07);border-color:rgba(224,196,152,0.2);}
+.cnoWho{font-size:9.5px;font-weight:800;letter-spacing:0.5px;text-transform:uppercase;
+  color:rgba(240,236,228,0.5);margin-bottom:3px;}
+.cnoNote.mine .cnoWho{color:var(--gold);}
+.cnoWho span{font-weight:600;letter-spacing:0;text-transform:none;color:rgba(240,236,228,0.34);}
+.cnoBody{font-size:13px;color:#f0ece4;line-height:1.55;white-space:pre-wrap;}
+.cnoDel{position:absolute;top:6px;right:6px;-webkit-appearance:none;appearance:none;cursor:pointer;
+  background:transparent;border:0;color:rgba(240,236,228,0.34);font-size:15px;line-height:1;padding:2px 4px;}
+.cnoDel:hover{color:#ff8a5c;}
+.cnoWait{font-size:12.5px;color:rgba(240,236,228,0.42);line-height:1.5;padding:6px 0;}
+.cnoAdd{display:flex;align-items:flex-end;gap:7px;margin-top:8px;}
+.cnoAdd textarea{flex:1 1 auto;min-width:0;resize:none;background:#131313;border:1px solid #232323;
+  border-radius:10px;color:#f0ece4;font:inherit;font-size:13px;padding:9px 11px;max-height:90px;outline:none;line-height:1.45;}
+.cnoAdd textarea:focus{border-color:rgba(245,197,24,0.42);}
+.cnoAdd button{flex:0 0 auto;-webkit-appearance:none;appearance:none;cursor:pointer;background:#1c1c1c;
+  border:1px solid #2a2a2a;border-radius:10px;color:#f0ece4;font:inherit;font-size:12.5px;font-weight:800;padding:9px 13px;}
+.cnoAdd button:hover{border-color:rgba(245,197,24,0.42);}
+
 /* ===== THE WEEK =========================================================
    One row per client, seven cells, three bands per cell. Density over detail:
    the whole point is reading twenty-five people's rhythm in one pass, so a row
@@ -9410,6 +9436,9 @@ async function _jvFeedCommand(text){
   try{ var _pr=await _jvPendingReply(t); if(_pr){ _jvSay(_pr.replace(/\n/g,'<br>')); return true; } }catch(e){ console.error('pending reply',e); }
   try{ var _bk=await _jvBookCommand(t); if(_bk){ _jvSay(_bk); return true; } }catch(e){ console.error('book command',e); }
   try{ var _cc=await _ccHandleStatement(t); if(_cc){ _jvSay(_cc); return true; } }catch(e){ console.error('contact command',e); }
+  // Call notes: the tier-one write and the pre-call read. One insertion point,
+  // so every box gets both — the tab, the pane, the phone bar and the feed.
+  try{ var _cn=await _jvCallNoteCommand(t); if(_cn){ _jvSay(_cn); return true; } }catch(e){ console.error('call note command',e); }
   var kindWord=function(w){ return /workout|session|training|lift|pull|push|legs/i.test(w||'') ? 'wo' : (/meal|food|breakfast|lunch|dinner|ate/i.test(w||'') ? 'food' : null); };
 
   // like <who>['s <what>]
@@ -14899,6 +14928,203 @@ function _jvFindClientIn(text){
   return {hits:[], tried:toks.join(' ')};
 }
 // Returns HTML when it handled the sentence, or null to fall through.
+// ===== SHARED CALL NOTES, THE TRAINER'S HALF ==============================
+// Program & Profile own the door; this calls it and never writes it. The ops
+// are callNotes (read), callNoteAdd (write) and callNoteDelete — note the
+// SINGULAR "Note" on the writes, which is not what the brief called them.
+//
+// TARGETING. A booking thread is keyed on booking_id. A VIP thread is keyed on
+// vip_call_id PLUS occurrence_date, and that date is the RULE date — the day
+// the standing block fires — not the day a moved occurrence landed on. The
+// door proves it: it expands the rule and keeps the occurrence whose rule_date
+// equals what you sent. Send the moved date and you get no_occurrence_on_that_date,
+// or worse, a thread nothing ever surfaces.
+var _CNO_STATE={};                    // code -> {target, notes, state:'ok'|'failed'|'none'}
+function _cnoKey(t){
+  if(!t) return '';
+  return t.source==='booking' ? ('b:'+t.booking_id) : ('v:'+t.vip_call_id+':'+t.occurrence_date);
+}
+// The next call this client actually has, from both sources. Returns null when
+// there genuinely is none, and throws nothing — but the CALLER is told which of
+// the two reads failed, because "no upcoming call" and "could not look" are
+// different sentences.
+async function _cnoNextCall(code){
+  var best=null, failed=false, now=Date.now();
+  try{
+    var bk=await loadBookings();
+    (bk||[]).forEach(function(b){
+      if(String(b.client_code)!==String(code)) return;
+      if(String(b.status||'booked')==='cancelled') return;
+      var t=Date.parse(b.starts_at); if(isNaN(t) || t<now) return;
+      if(!best || t<best.ms) best={ms:t, target:{source:'booking', booking_id:b.id, vip_call_id:null,
+        occurrence_date:null, occurs_at:b.starts_at}};
+    });
+  }catch(e){ failed=true; }
+  try{
+    var w=await trainerWrite('vipOccurrences',{client_code:code, days:21});
+    if(!w.ok) failed=true;
+    else (w.rows||[]).forEach(function(o){
+      if(o.skipped) return;
+      var t=Date.parse(o.at); if(isNaN(t) || t<now) return;
+      // rule_date, not date — see the note above. date is where a moved one landed.
+      if(!best || t<best.ms) best={ms:t, target:{source:'vip', booking_id:null, vip_call_id:o.vip_call_id,
+        occurrence_date:(o.rule_date||o.date), occurs_at:o.at}};
+    });
+  }catch(e){ failed=true; }
+  return {target:best?best.target:null, failed:failed};
+}
+// Read the thread for that occurrence. THREE STATES, as everywhere: ok, failed,
+// or genuinely empty. An empty render for a read that did not land would tell
+// him neither of them wrote anything before a call, which is a claim about two
+// people.
+async function _cnoLoad(code, force){
+  if(!force && _CNO_STATE[code] && (Date.now()-_CNO_STATE[code].at)<20000) return _CNO_STATE[code];
+  var next=await _cnoNextCall(code);
+  var out={target:next.target, notes:[], state:'ok', at:Date.now()};
+  if(!next.target){ out.state = next.failed ? 'failed' : 'none'; _CNO_STATE[code]=out; return out; }
+  var w=null;
+  try{ w=await trainerWrite('callNotes',{client_code:code}); }catch(e){}
+  if(!w || !w.ok){ out.state='failed'; _CNO_STATE[code]=out; return out; }
+  var key=_cnoKey(next.target);
+  out.notes=(w.rows||[]).filter(function(n){
+    return _cnoKey({source:n.source, booking_id:n.booking_id, vip_call_id:n.vip_call_id,
+                    occurrence_date:n.occurrence_date})===key;
+  });
+  _CNO_STATE[code]=out;
+  return out;
+}
+function _cnoWhen(t){
+  try{ return t && t.occurs_at ? _jvWhenLabel(new Date(t.occurs_at)) : ''; }catch(e){ return ''; }
+}
+// AUTHORSHIP IS VISIBLE, always. Two people write into this and a note with no
+// name on it is worse than no note — he would act on her words thinking they
+// were his own, or the reverse.
+function cnoRenderInto(hostId, code){
+  var host=document.getElementById(hostId); if(!host) return;
+  var s=_CNO_STATE[code];
+  if(!s){ host.innerHTML='<div class="cnoWait">Reading the call notes…</div>'; return; }
+  if(window._jvShareMode){ host.innerHTML='<div class="cnoWait">Hidden while sharing mode is on.</div>'; return; }
+  if(s.state==='failed'){
+    host.innerHTML='<div class="cnoWait">Could not read the call notes — that is a read that failed, not an empty thread.</div>';
+    return;
+  }
+  if(s.state==='none'){
+    host.innerHTML='<div class="cnoWait">No call booked yet. Notes attach to a call, so there is nowhere to put one.</div>';
+    return;
+  }
+  var first=String((CLIENTS[code]||{}).name||code).split(' ')[0];
+  var rows=s.notes.map(function(n){
+    var mine=(n.author==='trainer');
+    var when=''; try{ when=_jvSpokenDay(new Date(n.created_at))+' · '+_jvSpokenTime(new Date(n.created_at)); }catch(e){}
+    return '<div class="cnoNote'+(mine?' mine':'')+'">'
+      + '<div class="cnoWho">'+(mine?'You':_escHtml(first))+(when?('<span> · '+_escHtml(when)+'</span>'):'')+'</div>'
+      + '<div class="cnoBody">'+_escHtml(String(n.body||''))+'</div>'
+      + (mine?('<button class="cnoDel" onclick="cnoDelete(\''+code+'\','+(n.id!=null?n.id:'null')+')" title="Remove">×</button>'):'')
+    + '</div>';
+  }).join('');
+  host.innerHTML='<div class="cnoHead"><b>Before the call</b><span>'+_escHtml(_cnoWhen(s.target))+'</span></div>'
+    + (rows || '<div class="cnoWait">Nothing from either of you yet.</div>')
+    + '<div class="cnoAdd">'
+    +   '<textarea id="cnoIn_'+code+'" rows="1" placeholder="Add a note for this call…" '
+    +     'onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();cnoAdd(\''+code+'\');}"></textarea>'
+    +   '<button onclick="cnoAdd(\''+code+'\')">Add</button>'
+    + '</div>';
+}
+async function cnoOpen(hostId, code, force){
+  var host=document.getElementById(hostId); if(!host) return;
+  host.innerHTML='<div class="cnoWait">Reading the call notes…</div>';
+  try{ await _cnoLoad(code, force); }catch(e){ _CNO_STATE[code]={target:null,notes:[],state:'failed',at:Date.now()}; }
+  cnoRenderInto(hostId, code);
+}
+// The door answers a write with the WHOLE thread, so the render after a write
+// is the server's answer rather than a local guess that could disagree with it.
+async function cnoAdd(code, bodyText){
+  var s=_CNO_STATE[code]; if(!s || !s.target) return null;
+  var el=document.getElementById('cnoIn_'+code);
+  var body=String(bodyText!=null?bodyText:(el?el.value:'')).trim();
+  if(!body) return null;
+  var args={source:s.target.source, body:body};
+  if(s.target.source==='booking') args.booking_id=s.target.booking_id;
+  else { args.vip_call_id=s.target.vip_call_id; args.occurrence_date=s.target.occurrence_date; }
+  var w=null; try{ w=await trainerWrite('callNoteAdd', args); }catch(e){}
+  if(!w || !w.ok){
+    var why=(w&&w.err)||'';
+    try{ showToast(why==='notes_table_missing' ? 'Call notes need their table created' : 'That note did not save'); }catch(e){}
+    return {ok:false, err:why};
+  }
+  if(el) el.value='';
+  // Read back from what the door returned, not from what was sent.
+  s.notes=(w.rows||[]).filter(function(n){ return _cnoKey({source:n.source, booking_id:n.booking_id,
+    vip_call_id:n.vip_call_id, occurrence_date:n.occurrence_date})===_cnoKey(s.target); });
+  s.state='ok'; s.at=Date.now();
+  ['cnoRail_'+code,'cnoCall_'+code].forEach(function(h){ if(document.getElementById(h)) cnoRenderInto(h, code); });
+  return {ok:true, count:s.notes.length};
+}
+async function cnoDelete(code, id){
+  if(id==null) return;
+  var w=null; try{ w=await trainerWrite('callNoteDelete',{id:id}); }catch(e){}
+  if(!w || !w.ok){ try{ showToast('Could not remove that note'); }catch(e){} return; }
+  await _cnoLoad(code, true);
+  ['cnoRail_'+code,'cnoCall_'+code].forEach(function(h){ if(document.getElementById(h)) cnoRenderInto(h, code); });
+}
+// ===== JARVIS AND THE PRE-CALL PICTURE ====================================
+// The piece the whole thread was for. "What's Blake's call about?" is answered
+// from what BOTH of them actually wrote, in the ear-format everything else
+// uses — spoken day and time, short lines, and her words quoted plainly
+// rather than performed.
+//
+// The WRITE is tier one: "add to Blake's call notes: bring the new split" is a
+// stated fact, it is one line he can see and delete, and it goes in on saying.
+// Same test as contacts and the profile note — would a wrong one be invisible?
+// It would not: it is right there on the call, with a remove on it.
+var _CNO_ADD_RE=/^\s*(?:add|put|note)\b[^:]*?\bcall notes?\b\s*[:,-]?\s*(.+)$/i;
+var _CNO_ASK_RE=/\b(?:what(?:'s| is|s)?|whats)\b.*\bcall\b.*\b(?:about|notes?|say)\b|\bcall notes? for\b|\bwhat'?s on\b.*\bcall\b/i;
+async function _jvCallNoteCommand(t){
+  var s=String(t||'').trim();
+  // ---- WRITE ------------------------------------------------------------
+  var m=_CNO_ADD_RE.exec(s);
+  if(m){
+    var body=String(m[1]||'').trim();
+    // The name lives in the words BEFORE the note body — "add to Blake's call
+    // notes: bring the new split". Searching the whole sentence would let the
+    // note's own text supply a name, which is how a note about one client ends
+    // up on another's call.
+    var head=s.slice(0, s.lastIndexOf(m[1]));
+    var who=_jvFindClientIn(head);
+    var hits=(who&&who.hits)||[];
+    if(!hits.length) return 'Whose call should that note go on? Give me their name or code.';
+    if(hits.length>1) return 'That matches '+hits.length+' clients — '
+      + hits.map(function(h){ return _escHtml(String((CLIENTS[h]||{}).name||h)); }).join(', ')+'. Which one?';
+    if(!body) return 'What should the note say?';
+    var code=hits[0], name=String((CLIENTS[code]||{}).name||code);
+    var st=await _cnoLoad(code, true);
+    if(st.state==='failed') return 'I couldn’t reach '+_escHtml(name)+'’s calls just now, so nothing was written.';
+    if(!st.target) return _escHtml(name)+' has no call booked, and a note has to attach to one. Book the call and I’ll take the note.';
+    var r=await cnoAdd(code, body);
+    if(!r || !r.ok) return 'That note did not save. Nothing was written to '+_escHtml(name)+'’s call.';
+    try{ jvActRecord('Added a note to '+name+'’s call', null); }catch(e){}
+    return '✓ On '+_escHtml(name)+'’s call '+_escHtml(_cnoWhen(st.target))+': “'+_escHtml(body)+'”';
+  }
+  // ---- READ -------------------------------------------------------------
+  if(!_CNO_ASK_RE.test(s)) return null;
+  var f=_jvFindClientIn(s);
+  if(!f.hits.length) return null;                 // not about a person — let the model have it
+  if(f.hits.length>1) return 'That matches '+f.hits.length+' clients. Which one?';
+  var c2=f.hits[0], n2=String((CLIENTS[c2]||{}).name||c2), first=n2.split(' ')[0];
+  var st2=await _cnoLoad(c2, true);
+  if(st2.state==='failed') return 'I couldn’t read '+_escHtml(first)+'’s call notes just now — that is a read that failed, not an empty call.';
+  if(!st2.target) return _escHtml(first)+' has no call booked.';
+  var when=_cnoWhen(st2.target);
+  if(!st2.notes.length) return _escHtml(first)+'’s call is '+_escHtml(when)+'. Neither of you has written anything on it yet.';
+  // Her words first, because that is what he is asking for, and quoted flat.
+  var theirs=st2.notes.filter(function(n){ return n.author!=='trainer'; });
+  var mine=st2.notes.filter(function(n){ return n.author==='trainer'; });
+  var out=_escHtml(first)+'’s call is '+_escHtml(when)+'. ';
+  if(theirs.length) out+='She wrote: '+theirs.map(function(n){ return '“'+_escHtml(String(n.body||'').trim())+'”'; }).join(' ');
+  else out+='Nothing from '+_escHtml(first)+' yet.';
+  if(mine.length) out+=' You put down: '+mine.map(function(n){ return '“'+_escHtml(String(n.body||'').trim())+'”'; }).join(' ');
+  return out;
+}
 // ===== ASK-AND-ANSWER IS ONE EXCHANGE, NOT TWO STRANGERS ==================
 // The worst bug this assistant has had. It asked "who is that call with",
 // received "Blakeb1", and had no idea it had asked — so the answer was parsed
@@ -19369,6 +19595,9 @@ function jvOpenDeep(code){
       + '<div class="jvBlockLabel">Progress</div>'
       + _jvProgress(code)
     + '</div>'
+    // BEFORE THE CALL, above what they have been doing — it is the thing with a
+    // deadline on it, and it is the only block here that both of them write into.
+    + '<div class="jvBlock" id="cnoRail_'+code+'"><div class="cnoWait">Reading the call notes…</div></div>'
     + '<div class="jvBlock">'
       + '<div class="jvBlockLabel">Recent food and training</div>'
       + '<div id="jvDeepDays"><div class="jvBlockMuted">Loading…</div></div>'
@@ -19412,6 +19641,9 @@ function jvOpenDeep(code){
   // arrive, so the card stops answering a question it has not asked yet.
   _jvEnsureTriage(code);
   _jvDeepHistory(code);
+  // Fired alongside the rest, not awaited — the card opens instantly and the
+  // thread fills in, same as Progress and the day list above it.
+  try{ cnoOpen('cnoRail_'+code, code); }catch(e){ console.error('call notes rail',e); }
   _jvLoadSplitFlag(code);
   // Re-read on open so a note added on the phone shows up here, then repaint in place.
   try{ cnLoadCoaching(code).then(function(){ cnAddCancel(code); }); }catch(e){}
