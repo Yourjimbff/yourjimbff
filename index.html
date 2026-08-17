@@ -38489,6 +38489,11 @@ function _pcCardHtml(next, state, credits, opts){
   opts=opts||{};
   if(state==='loading'){
     body='<div style="font-size:12.5px;color:var(--m2);">Loading\u2026</div>';
+  } else if(state==='unloaded'){
+    // Says one thing only: this card doesn't know yet. It must never drift toward
+    // "you have no call" \u2014 that sentence is what broke on Blake.
+    body='<div style="font-size:13.5px;color:var(--m2);line-height:1.5;">Couldn\u2019t load your calls just now.</div>'
+      +'<div style="font-size:12.5px;color:var(--gold);font-weight:700;margin-top:8px;">Try again</div>';
   } else if(state==='standing'){
     // Two facts, in this order: the plan, then the next occurrence of it. The
     // occurrence comes from _pcNextVipOccurrence, which is exception-aware \u2014 a
@@ -38560,7 +38565,32 @@ function _pcHostShim(){
     }
   };
 }
-async function _pgCallsCard(){
+// NEVER-ASSERT, ON A CARD THAT WAS ASSERTING (Yusuf, 17 Aug — Blake's daily call
+// not showing). Both stores behind this card answered a FAILED read with an empty
+// array: trainerOp returns [] for a missing session token, a 401, a 403, a 502 and
+// a timeout alike, and sbSelect does the same for `bookings`. So "the door did not
+// answer" arrived here wearing the exact shape of "this client has no calls", and
+// the card went on to render its closed state — telling a client with a standing
+// daily block that calls are "not part of your plan yet". A store that has not
+// loaded now renders as loading, and never as no call.
+//
+// The client's own upcoming bookings, read through a path that can tell an empty
+// table from an unreachable one. Same reasoning and same {ok, rows} shape as
+// _ciFetchEntries above; scoped server-side to their own code rather than filtered
+// after the fact.
+async function _pcFetchBookings(){
+  try{
+    var from=new Date(Date.now()-60000).toISOString();
+    var q='client_code=eq.'+encodeURIComponent(cl.code)
+      +'&starts_at=gte.'+encodeURIComponent(from)
+      +'&select=id,client_code,starts_at,status&order=starts_at.asc&limit=50';
+    var res=await fetch(SB_URL+'/rest/v1/bookings?'+q,{headers:sbHeaders()});
+    if(!res.ok) return {ok:false, rows:[]};
+    var rows=await res.json();
+    return {ok:true, rows:(Array.isArray(rows)?rows:[])};
+  }catch(e){ return {ok:false, rows:[]}; }
+}
+async function _pgCallsCard(_retried){
   if(!cl) return;
   var hosts=_pcHosts();
   if(!hosts.length) return;
@@ -38577,11 +38607,12 @@ async function _pgCallsCard(){
   // natural renewal. This card asks every time it's opened instead.
   try{ await sessEnsure(cl.code, true); }catch(e){}
   var now=new Date();
-  var nextBooking=null, nextVip=null;
+  var nextBooking=null, nextVip=null, bookOk=true, vipOk=true;
+  var _bk=await _pcFetchBookings();
+  bookOk=_bk.ok;
   try{
-    var booked=await loadBookings(true);
-    var mine=(booked||[]).filter(function(b){
-      return String(b.client_code)===String(cl.code) && new Date(b.starts_at).getTime()>now.getTime();
+    var mine=(_bk.rows||[]).filter(function(b){
+      return String(b.status||'booked')!=='cancelled' && new Date(b.starts_at).getTime()>now.getTime();
     }).sort(function(a,b){ return new Date(a.starts_at)-new Date(b.starts_at); });
     if(mine.length) nextBooking=new Date(mine[0].starts_at);
   }catch(e){}
@@ -38592,7 +38623,16 @@ async function _pgCallsCard(){
   // about the plan because one time is unknown is the worse of the two failures.
   var vipRow=null, stWeekdays=null, exOk=true;
   try{
-    var vipRows=await trainerOp('myVipCalls', {});
+    // trainerOpChecked, not trainerOp: {ok, rows} instead of a bare array, so a
+    // refused or unreachable door can never read as "no standing block".
+    var _vp=await trainerOpChecked('myVipCalls', {});
+    vipOk=_vp.ok;
+    if(!_vp.ok){
+      // The sentence the client sees says nothing about status codes; the detail
+      // is for whoever is debugging this at 6am.
+      try{ console.error('calls card: myVipCalls failed', _vp.status||'', _vp.err||''); }catch(e){}
+    }
+    var vipRows=_vp.rows;
     (vipRows||[]).forEach(function(r){
       if(!r) return;
       // exceptions_ok:false means this rule's per-occurrence moves didn't load, so
@@ -38605,7 +38645,7 @@ async function _pgCallsCard(){
       if(!stWeekdays) stWeekdays=r.weekdays;
       if(!nextVip || occ.getTime()<nextVip.getTime()){ nextVip=occ; vipRow=r; }
     });
-  }catch(e){}
+  }catch(e){ vipOk=false; }
   var standing=!!(nextVip || !exOk);
   var next = (nextBooking && nextVip) ? (nextBooking.getTime()<=nextVip.getTime()?nextBooking:nextVip) : (nextBooking||nextVip);
   if(next || standing){
@@ -38625,6 +38665,22 @@ async function _pgCallsCard(){
       host.onclick=function(){ openBooking(); };
       host.style.cursor='pointer';
     }
+    return;
+  }
+  // NOTHING FOUND — but "nothing found" is only sayable if both stores actually
+  // answered. If either didn't, the card stays on loading and tries once more;
+  // a second failure leaves a line that offers a retry and still refuses to say
+  // anything about whether this client has a call. This is the branch Blake's
+  // missing daily call fell through, straight into "not part of your plan yet".
+  if(!bookOk || !vipOk){
+    if(!_retried){
+      host.innerHTML=_pcCardHtml(null,'loading');
+      setTimeout(function(){ try{ _pgCallsCard(true); }catch(e){} }, 2500);
+      return;
+    }
+    host.innerHTML=_pcCardHtml(null,'unloaded');
+    host.onclick=function(){ _pgCallsCard(); };
+    host.style.cursor='pointer';
     return;
   }
   if(weeklyCallsFor(cl.code)){
