@@ -14980,6 +14980,12 @@ function _jvBuildPendingLog(lg, code, name){
 // name, because a booking's parts array is deliberately empty.
 function _jvPendingSummary(p){
   if(p.kind==='workingon') return 'I am about to put this on '+p.name+' ('+p.code+') as what they are working on: \u201c'+p.text+'\u201d. Right client?';
+  // A consult held behind another confirmation must state ITSELF back, with the
+  // kind said out loud \u2014 it is the one booking that costs nothing.
+  if(p.kind==='consult'){
+    return 'Booking a consult with '+p.name+' for '+(p.when||'')
+      + '. That spends nothing \u2014 it is a consult, not one of their calls. Yes?';
+  }
   if(p.kind==='booking'){
     var when=p.when||'';
     var cost = p.spend==='weekly' ? ' That uses their weekly call.'
@@ -15021,6 +15027,29 @@ function _jvIsNo(t){ return /^\s*(n|no|nope|nah|cancel|stop|don'?t|do not|wrong|
 // the door answers with the row it wrote, so "it saved" is something this can
 // actually see rather than infer from the absence of an error.
 async function _jvCommitPending(p){
+  if(p.kind==='consult'){
+    // "Yes" after a clash takes the ALTERNATIVE the door offered, exactly as a
+    // client booking does — doubling up needs its own sentence.
+    var ciso=(p.conflict && p.offer) ? p.offer : p.iso;
+    var cw=await trainerWrite('consultInsert',{name:p.name, requested_at:ciso, force:!!p.force});
+    window._jvPendingWrite=null;
+    if(!cw.ok){
+      if(cw.status===409 || cw.err==='slot_taken')
+        return 'That time went while we were talking. Nothing booked — say it again and I\u2019ll re-check.';
+      if(cw.err==='availability_unknown')
+        return 'I couldn\u2019t read the calendar, so nothing was booked for '+p.name+'.';
+      return 'That did not book. Nothing was written for '+p.name+'.';
+    }
+    var crow=(cw.rows&&cw.rows[0])||{};
+    var cwhen=_jvWhenLabel(new Date(crow.requested_at||ciso));
+    // Undo is a real one: consultSetStatus cancels the row, which also hands
+    // the slot back to the public grid.
+    try{ jvActRecord('Booked a consult with '+p.name+', '+cwhen,
+      {kind:'consult', id:(crow.id!=null?crow.id:null), name:p.name}); }catch(e){}
+    try{ if(typeof loadConsults==='function') loadConsults(true); }catch(e){}
+    try{ jvPaneRender(); }catch(e){}
+    return '\u2713 Booked. '+_escHtml(p.name)+', '+_escHtml(cwhen)+'.';
+  }
   if(p.kind==='booking'){
     // "Yes" after a clash means the ALTERNATIVE the door offered, not the time
     // that was taken. Doubling up needs its own sentence.
@@ -15546,14 +15575,132 @@ async function _jvAskReply(t){
     return 'Got it — '+_escHtml(String((CLIENTS[a.code]||{}).name||a.code))+'. What day and time?';
   }
   if(a.need==='who'){ return 'And who is that call with?'; }
-  var code=a.code, name=String((CLIENTS[code]||{}).name||code);
   var when=(a.ts!=null) ? {ts:a.ts, iso:new Date(a.ts).toISOString()} : null;
   if(!when){ a.need='when'; return 'What day and time?'; }
+  // A consult has a NAME and no client code — it must never reach _jvBookAct,
+  // which is the client-call path and would look the lead up on the roster.
+  if(a.kind==='consult'){ var cn=a.consultName; _jvAskClear(); return await _csConsultAct(cn, when); }
+  var code=a.code, name=String((CLIENTS[code]||{}).name||code);
   _jvAskClear();
   return await _jvBookAct(a.kind, code, name, when, !!a.skip);
 }
+// ===== BOOKING A CONSULT BY VOICE =========================================
+// Yusuf's convention decides this, not inference: he ALWAYS says "consult",
+// "consultation" or "sales call" when the person is not in the app. So the
+// trigger word is the whole routing rule, and it is HIS to invoke:
+//   - trigger present -> a LEAD. The name is taken exactly as said. It is
+//     never resolved against the roster and never guess-matched to a client.
+//   - no trigger -> a client call, the existing flow, which fails loudly on a
+//     name it cannot resolve.
+// The second half matters as much as the first: an unresolved name in a
+// non-trigger sentence must NEVER fall back to booking a lead, or a mistyped
+// client name quietly becomes a stranger on the calendar.
+var _CS_TRIGGER_RE=/\b(consult(?:ation)?s?|sales\s+call)\b/i;
+// The name is what is left once the instruction is taken away. Deliberately
+// NOT _jvStripBookWords: that one exists to feed the roster resolver and
+// strips things a real name may contain. This keeps the original casing,
+// because it is a person's name and it is going on a calendar as typed.
+// FIND THE NAME, DON'T SUBTRACT EVERYTHING ELSE. Deleting non-name words is a
+// blocklist that never ends, and it failed on his real sentence exactly as that
+// predicts: "Can you book Halie - a consultation, tomorrow for me at 4:00pm on
+// my calendar" left "Can you Halie - on calendar". The trailing clauses he
+// naturally speaks — "for me", "on my calendar" — and the polite opener "can
+// you" all survived the strip, and an em-dash came through as its own token.
+//
+// So the name is CAPTURED first, from the two places it actually sits: right
+// after "with", or right after the booking verb. The strip is only the
+// fallback, and it now cleans its own edges.
+// DIGITS BELONG IN A NAME HERE. Leads arrive as "TestLead2" in testing and as
+// "Sarah K2" in his own shorthand; excluding digits silently truncated the name
+// to "TestLead" and would have booked the wrong label on a real calendar.
+var _CS_NAMEISH="([A-Za-z][A-Za-z0-9'’\\-]*(?:\\s+[A-Z][A-Za-z0-9'’\\-]*)?)";
+function _csTidyName(s){
+  return String(s||'')
+    .replace(/^[\s\-–—,:;]+/,'').replace(/[\s\-–—,:;.]+$/,'')
+    // A capture can still run into the next clause; cut at the first word that
+    // cannot be part of a name.
+    // A WEEKDAY IS NOT A SURNAME. "with TestLead Thursday at 3" captured
+    // "TestLead Thursday", because a capitalised day looks exactly like one.
+    .replace(/\s+(?:on|for|at|tomorrow|today|tonight|next|this|please|about|re|in|my)\b[\s\S]*$/i,'')
+    .replace(/\s+(?:sun|mon|tues?|wed(?:nes)?|thur?s?|fri|sat(?:ur)?)(?:day)?\b[\s\S]*$/i,'')
+    .replace(/\s+/g,' ').trim();
+}
+function _csNameFrom(t){
+  var s=_jvNormAmPm(t);
+  // 1. after "with" — "a consult WITH Halie tomorrow"
+  var m=new RegExp('\\bwith\\s+'+_CS_NAMEISH,'i').exec(s);
+  if(m){ var n1=_csTidyName(m[1]); if(n1) return n1; }
+  // 2. straight after the booking verb — "book HALIE - a consultation"
+  m=new RegExp('\\b(?:book|schedule|pencil(?:\\s+in)?|set\\s*up|put\\s+(?:in|down))\\s+(?:a\\s+|an\\s+|the\\s+)?'+_CS_NAMEISH,'i').exec(s);
+  if(m){
+    var n2=_csTidyName(m[1]);
+    // "book a consultation with X" would capture the trigger word itself.
+    if(n2 && !_CS_TRIGGER_RE.test(n2) && !/^(call|meeting|session|appointment)$/i.test(n2)) return n2;
+  }
+  // 3. fallback: subtract, then clean the edges the subtraction leaves behind.
+  return _csTidyName(s
+    .replace(_JV_BOOK_RE,' ').replace(_CS_TRIGGER_RE,' ')
+    .replace(/\bcall\b/ig,' ')
+    .replace(/\b(can|could|would|will|you|please|kindly)\b/ig,' ')
+    .replace(/\bon\s+my\s+calendar\b/ig,' ').replace(/\bfor\s+me\b/ig,' ')
+    .replace(/\b(tomorrow|today|tonight|morning|afternoon|evening|night|noon)\b/ig,' ')
+    .replace(/\b(next\s+)?(sun|mon|tues|tue|wednes|wed|thurs|thu|fri|satur|sat)(day)?\b/ig,' ')
+    .replace(/\bin\s+\d+\s+days?\b/ig,' ').replace(/\b\d+\s+days?\s+from\s+now\b/ig,' ')
+    .replace(/\b(at|for|around|by|to)\s+\d{1,2}(:\d{2})?\s*(am|pm)?\b/ig,' ')
+    .replace(/\b\d{1,2}\s*(am|pm)\b/ig,' ')
+    .replace(/\b\d{1,2}:\d{2}\s*(am|pm)?\b/ig,' ')
+    .replace(/\b(with|for|a|an|the|new|lead|prospect|my|me|in|on|calendar)\b/ig,' ')
+    .replace(/[.,;!?]+/g,' ')
+    .replace(/\s+/g,' '));
+}
+async function _csConsultCommand(t){
+  if(!_CS_TRIGGER_RE.test(t)) return null;
+  if(!_JV_BOOK_RE.test(t)) return null;              // "the consult went well" is not a booking
+  var name=_csNameFrom(t);
+  var w=_jvParseWhen(t);
+  if(!name) return 'Who is the consult with? Give me their name and I’ll put it in.';
+  if(!w) return 'When? Give me a day and a time and I’ll book the consult with '+_escHtml(name)+'.';
+  if(w.needsTime){
+    _jvAskSet({kind:'consult', consultName:name, code:null, ts:null, dayTs:(w.day||null), need:'time'});
+    var _cd=w.day?_jvSpokenDay(new Date(w.day)):'';
+    return 'What time'+(_cd?(/^(today|tomorrow)$/i.test(_cd)?(' '+_cd):(' on '+_cd)):'')+'? I won’t guess an hour.';
+  }
+  return await _csConsultAct(name, w);
+}
+// The door's own preview decides the words, exactly as bookCallForClient does —
+// same dry_run, same conflict shape, same nearest_open, so a consult and a
+// client call collide identically and neither can be booked over the other.
+async function _csConsultAct(name, w){
+  var pv=null;
+  try{
+    var w1=await trainerWrite('consultInsert',{name:name, requested_at:w.iso, dry_run:true});
+    pv=(w1.ok && w1.rows && w1.rows[0]) ? w1.rows[0] : null;
+    if(!pv && w1 && w1.err==='availability_unknown')
+      return 'I couldn’t read the calendar just now, so I haven’t booked anything.';
+  }catch(e){}
+  if(!pv) return 'I couldn’t check that time just now, so I haven’t booked anything. Try again in a moment.';
+  var when=_jvWhenLabel(new Date(pv.requested_at||w.iso));
+  window._jvPendingWrite={kind:'consult', name:name, iso:(pv.requested_at||w.iso), when:when,
+    conflict:pv.conflict||null, nearest:(pv.nearest_open||[]), force:false,
+    parts:[], payload:{}, at:Date.now()};
+  if(pv.conflict){
+    var c=pv.conflict;
+    var whoElse=(c.client_code && CLIENTS[c.client_code] && CLIENTS[c.client_code].name) || c.label || 'something else';
+    var n0=(pv.nearest_open||[])[0];
+    var offer=n0 ? (' <b>'+_escHtml(_jvWhenLabel(new Date(n0.starts_at||n0)))+'</b> is open — want that?')
+                 : ' Nothing near it is open.';
+    if(n0) window._jvPendingWrite.offer=(n0.starts_at||n0);
+    return _escHtml(when)+' is '+_escHtml(whoElse)+'’s.'+offer
+      +'<br><span style="opacity:0.7;">Say yes for that time, or “book it anyway” to double up.</span>';
+  }
+  return 'Booking a consult with <b>'+_escHtml(name)+'</b> for '+_escHtml(when)
+    +'. That spends nothing — it is a consult, not one of their calls. Yes?';
+}
 async function _jvBookCommand(text){
   var t=String(text||'').trim();
+  // The trigger word routes BEFORE any roster resolution, so a lead's name is
+  // never handed to the client resolver in the first place.
+  try{ var _cs=await _csConsultCommand(t); if(_cs) return _cs; }catch(e){ console.error('consult command',e); }
   // The answer to an outstanding question is consulted BEFORE the verb test —
   // "Blakeb1" carries no booking verb, so without this it never reached this
   // layer at all. Inside _jvBookCommand rather than at five call sites, so
@@ -18062,6 +18209,12 @@ async function jvActUndo(i){
     var back=r.refunded||r.refund||'none';
     try{ showToast(back==='none' ? 'Cancelled — no credit was returned' : 'Cancelled — '+back+' credit returned'); }catch(e){}
     try{ if(typeof loadBookings==='function') loadBookings(true); }catch(e){}
+  } else if(x.undo.kind==='consult'){
+    if(x.undo.id==null){ try{ showToast('No id on that consult — cancel it from the panel'); }catch(e){} return; }
+    var wc=null; try{ wc=await trainerWrite('consultSetStatus',{id:x.undo.id, status:'cancelled'}); }catch(e){}
+    if(!wc || !wc.ok){ try{ showToast('Could not cancel that consult'); }catch(e){} return; }
+    try{ showToast('Consult cancelled — the slot is open again'); }catch(e){}
+    try{ if(typeof loadConsults==='function') loadConsults(true); }catch(e){}
   } else if(x.undo.kind==='vipmove'){
     // Put the occurrence back where the series says it should be. Reported from
     // what came back, not from the fact that a request was sent — if the restore
