@@ -38874,7 +38874,10 @@ async function _pcFetchBookings(){
     var q='client_code=eq.'+encodeURIComponent(cl.code)
       +'&starts_at=gte.'+encodeURIComponent(from)
       +'&select=id,client_code,starts_at,status&order=starts_at.asc&limit=50';
-    var res=await fetch(SB_URL+'/rest/v1/bookings?'+q,{headers:sbHeaders()});
+    // With the app's read timeout, like every other read here. Without it a read
+    // that never answers leaves the whole card sitting on "Loading…" for as long
+    // as the tab is open — which is honest, and useless.
+    var res=await fetch(SB_URL+'/rest/v1/bookings?'+q,{headers:sbHeaders(), signal:_sbTimeout(SB_READ_MS)});
     if(!res.ok) return {ok:false, rows:[]};
     var rows=await res.json();
     return {ok:true, rows:(Array.isArray(rows)?rows:[])};
@@ -38956,7 +38959,11 @@ async function _pgCallsCard(_retried){
     }
     if(standing) host.innerHTML=_pcCardHtml(exOk?next:null,'standing',null,{weekdays:(vipRow&&vipRow.weekdays)||stWeekdays, notes:!!target});
     else host.innerHTML=_pcCardHtml(next,'booked',null,{notes:!!target});
-    if(target) _pcNotesMount(target);
+    // THE CALL STATE IS NOT THE NOTES' TO BREAK. The thread is an addition to this
+    // card; the sentence telling a client she has a daily call is the card's whole
+    // job. Anything the notes layer throws is caught here and logged, and the call
+    // still reads. (Proven not to break it today — this is so it stays that way.)
+    if(target){ try{ _pcNotesMount(target); }catch(e){ try{ console.error('calls card: notes render failed', e&&e.message); }catch(_){} } }
     // Only tappable when a one-off booking is what's showing — that's the only
     // side openBooking()'s picker knows how to cancel or add another slot to.
     // A vip_calls occurrence is a trainer-managed recurring block; there's
@@ -39059,9 +39066,22 @@ function _pcNotesMount(target){
 async function _pcNotesLoad(){
   if(_pcN.loading) return;
   _pcN.loading=true;
-  var r=await trainerOpChecked('myCallNotes', {});
-  _pcN.loading=false;
-  if(!r.ok){
+  var r;
+  // THE IN-FLIGHT FLAG HAS TO COME BACK DOWN, whatever happens. Found on the
+  // deployed build: if this read threw rather than answering {ok:false} — a
+  // stubbed door, a wrapper mid-throw, anything unexpected — `loading` stayed
+  // true for the life of the page and every later attempt returned at the guard
+  // above. The thread then sat on "loading…" forever, including after the door
+  // had recovered. Never-assert kept it from lying about having no notes; it did
+  // not keep it from never coming back.
+  try{
+    r=await trainerOpChecked('myCallNotes', {});
+  }catch(e){
+    r={ok:false, rows:[], err:(e&&e.message)||'threw'};
+  }finally{
+    _pcN.loading=false;
+  }
+  if(!r || !r.ok){
     // NEVER-ASSERT. An unloaded thread is not an empty thread: leave `loaded`
     // false so the collapsed line keeps saying it's still reading, and say why
     // in the console for whoever is debugging.
