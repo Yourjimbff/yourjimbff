@@ -68,6 +68,12 @@ anything reading `_lastActivity` is empty there. Prefer `jvTriage.per`.
   is a one-liner (`function f(){ ... }`), silently swallowing whatever follows.
   `check.sh` catches it only if the result is invalid syntax. Many helpers here are
   one-liners — delete by line range, not by brace.
+- A lone apostrophe inside a **regex literal** (`/don'?t/`) reads as an opening quote
+  to `check.sh`'s string-stripper, which then blanks every line down to the next
+  apostrophe. Two of them a few lines apart hide the `_UPPER` constants in between
+  and the check reports them as orphaned when they are defined right there. Build
+  such a pattern with `new RegExp("…")` — inside a double-quoted string the stripper
+  blanks the contents anyway, so the apostrophes are invisible to it (17 Aug).
 - `<input type="date">` renders in the **OS region setting**, not `navigator.language`
   and not anything the page can set. If a date must be unambiguous, echo it beneath the
   field with `_usDate()`. There are seven of these inputs; only the contract one echoes.
