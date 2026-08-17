@@ -15029,9 +15029,13 @@ async function _cnoNextCall(code){
 // or genuinely empty. An empty render for a read that did not land would tell
 // him neither of them wrote anything before a call, which is a claim about two
 // people.
-async function _cnoLoad(code, force){
-  if(!force && _CNO_STATE[code] && (Date.now()-_CNO_STATE[code].at)<20000) return _CNO_STATE[code];
-  var next=await _cnoNextCall(code);
+// `target` pins the thread to ONE named occurrence. Without it this resolves
+// the next upcoming call, which is right when opening a client cold and wrong
+// when opening a specific call — a 9am tapped at 2pm would otherwise show
+// tomorrow's thread.
+async function _cnoLoad(code, force, target){
+  if(!force && !target && _CNO_STATE[code] && (Date.now()-_CNO_STATE[code].at)<20000) return _CNO_STATE[code];
+  var next = target ? {target:target, failed:false} : await _cnoNextCall(code);
   var out={target:next.target, notes:[], state:'ok', at:Date.now()};
   if(!next.target){ out.state = next.failed ? 'failed' : 'none'; _CNO_STATE[code]=out; return out; }
   var w=null;
@@ -15044,6 +15048,96 @@ async function _cnoLoad(code, force){
   });
   _CNO_STATE[code]=out;
   return out;
+}
+// ===== HIS DAY'S CALLS ====================================================
+// Every standing occurrence and one-off booking landing today, across the whole
+// roster, time-ordered. The door's vipOccurrences already applies the exception
+// layer, so a moved call arrives at its moved time and a skipped day does not
+// arrive at all — nothing here re-derives that.
+//
+// exceptions_ok IS PART OF THE ANSWER. The door sets it false when it could not
+// read the exception table, which means the times it just handed back may be the
+// UNMOVED ones. A list of times that quietly ignores a move is worse than no
+// list, so that case says so out loud rather than rendering confidently.
+var _JVTC=null;
+async function _jvTodayCalls(force){
+  if(!force && _JVTC && (Date.now()-_JVTC.at)<60000) return _JVTC;
+  var out={rows:[], state:'ok', exceptionsOk:true, at:Date.now()};
+  var okAny=false, failed=false;
+  var d0=new Date(); d0.setHours(0,0,0,0);
+  var d1=new Date(d0); d1.setDate(d1.getDate()+1);
+  var lo=d0.getTime(), hi=d1.getTime();
+  var hidden={}; try{ hidden=getHiddenClientSet(); }catch(e){}
+  function keep(code){
+    var r=CLIENTS[code]||{};
+    if(!code || r.isTrainer || hidden[code] || r.hidden) return false;
+    return true;
+  }
+  try{
+    var bk=await loadBookings();
+    okAny=true;
+    (bk||[]).forEach(function(b){
+      if(!keep(b.client_code)) return;
+      if(String(b.status||'booked')==='cancelled') return;
+      var t=Date.parse(b.starts_at); if(isNaN(t) || t<lo || t>=hi) return;
+      out.rows.push({code:b.client_code, at:t, source:'booking', booking_id:b.id,
+                     vip_call_id:null, occurrence_date:null, occurs_at:b.starts_at, kind:'booking'});
+    });
+  }catch(e){ failed=true; }
+  try{
+    var w=await trainerWrite('vipOccurrences',{days:2});
+    if(!w.ok) failed=true;
+    else {
+      okAny=true;
+      (w.rows||[]).forEach(function(o){
+        if(o.skipped) return;                        // a skipped day is simply absent
+        if(!keep(o.client_code)) return;
+        var t=Date.parse(o.at); if(isNaN(t) || t<lo || t>=hi) return;
+        if(o.exceptions_ok===false) out.exceptionsOk=false;
+        out.rows.push({code:o.client_code, at:t, source:'vip', booking_id:null,
+                       vip_call_id:o.vip_call_id, occurrence_date:(o.rule_date||o.date),
+                       occurs_at:o.at, kind:'vip', moved:!!o.moved});
+      });
+    }
+  }catch(e){ failed=true; }
+  if(!okAny || failed) out.state='failed';
+  out.rows.sort(function(a,b){ return a.at-b.at; });
+  _JVTC=out;
+  return out;
+}
+function _jvTodayCallsHtml(){
+  var s=_JVTC;
+  var head='<div class="jvNeedGroup"><div class="jvNeedHead"><b>Today’s calls</b></div>';
+  if(!s) return head+'<div class="jvPaneWait">Reading today’s calls…</div></div>';
+  if(s.state==='failed')
+    return head+'<div class="jvPaneWait">Could not read today’s calls — that is a read that failed, not a clear day.</div></div>';
+  if(!s.rows.length) return head+'<div class="jvPaneClear">Nothing booked today.</div></div>';
+  var body=s.rows.map(function(r){
+    var nm=window._jvShareMode ? _jvShareDemoLine(r.code) : String((CLIENTS[r.code]||{}).name||r.code);
+    var t=_jvSpokenTime(new Date(r.at));
+    var tag=(r.kind==='vip') ? (r.moved?'standing · moved':'standing') : 'one-off';
+    return '<button class="jvNeedRow" onclick="jvOpenCall(\''+r.code+'\',\''+_jvCallTargetId(r)+'\')">'
+      + '<b>'+_escHtml(t)+' · '+_escHtml(nm)+'</b>'
+      + '<span>'+_escHtml(tag)+' · tap for the call notes</span>'
+    + '</button>';
+  }).join('');
+  var warn = s.exceptionsOk ? ''
+    : '<div class="jvPaneWait">One-off moves could not be read, so a time here may be the standing one.</div>';
+  return head+warn+body+'</div>';
+}
+// The target is carried on the row rather than re-derived on tap: tapping a
+// 9am call at 2pm must open THAT call's thread, and "the next upcoming one"
+// would by then be tomorrow's.
+window._JV_CALL_TARGETS={};
+function _jvCallTargetId(r){
+  var id=(r.source==='booking') ? ('b'+r.booking_id) : ('v'+r.vip_call_id+'_'+r.occurrence_date);
+  window._JV_CALL_TARGETS[id]={source:r.source, booking_id:r.booking_id, vip_call_id:r.vip_call_id,
+                               occurrence_date:r.occurrence_date, occurs_at:r.occurs_at};
+  return id;
+}
+function jvOpenCall(code, targetId){
+  var t=window._JV_CALL_TARGETS[targetId]||null;
+  try{ jvOpenDeep(code, t); }catch(e){ console.error('jvOpenCall',e); }
 }
 function _cnoWhen(t){
   try{ return t && t.occurs_at ? _jvWhenLabel(new Date(t.occurs_at)) : ''; }catch(e){ return ''; }
@@ -15082,10 +15176,10 @@ function cnoRenderInto(hostId, code){
     +   '<button onclick="cnoAdd(\''+code+'\')">Add</button>'
     + '</div>';
 }
-async function cnoOpen(hostId, code, force){
+async function cnoOpen(hostId, code, force, target){
   var host=document.getElementById(hostId); if(!host) return;
   host.innerHTML='<div class="cnoWait">Reading the call notes…</div>';
-  try{ await _cnoLoad(code, force); }catch(e){ _CNO_STATE[code]={target:null,notes:[],state:'failed',at:Date.now()}; }
+  try{ await _cnoLoad(code, force, target); }catch(e){ _CNO_STATE[code]={target:null,notes:[],state:'failed',at:Date.now()}; }
   cnoRenderInto(hostId, code);
 }
 // The door answers a write with the WHOLE thread, so the render after a write
@@ -17675,6 +17769,9 @@ function jvRenderNeeds(hostId){
       +'</div>';
     }
   }
+  // HIS OWN DAY, before anyone else's. The calls he is actually on today come
+  // first in the pane — they are the only thing here with a clock on them.
+  html+=_jvTodayCallsHtml();
   // CONSULTS. Same rule: never a count off a read that has not happened.
   html+='<div class="jvNeedGroup"><div class="jvNeedHead"><b>Consults booked</b></div>';
   if(_consultRows===null){
@@ -17796,7 +17893,17 @@ function jvTogglePane(){
 }
 // The pane is about TODAY. It does not follow the feed's day navigation —
 // two panes about two different days is fine as long as both say which.
+// Today's calls are a read, so they are fetched once and the pane repainted
+// when they land — the first paint says "reading", never "nothing booked".
+// _jvTodayCalls caches for a minute, so the repaint cannot loop.
+function _jvTodayCallsWarm(after){
+  if(window._jvTCLoading) return;
+  window._jvTCLoading=true;
+  Promise.resolve(_jvTodayCalls()).catch(function(){})
+    .then(function(){ window._jvTCLoading=false; try{ after&&after(); }catch(e){} });
+}
 function jvPaneRender(){
+  try{ _jvTodayCallsWarm(function(){ try{ jvRenderNeeds(); }catch(e){} }); }catch(e){}
   try{
     var d=document.getElementById('jvPaneDay');
     if(d) d.textContent='Today · '+new Date().toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
@@ -17878,6 +17985,8 @@ async function jvPaneSend(){
 // both exist without sharing an id, which getElementById would resolve to
 // whichever came first.
 function admRenderNeeds(){
+  // Both surfaces or it only half exists — the phone gets today's calls too.
+  try{ _jvTodayCallsWarm(function(){ try{ jvRenderNeeds('mobNeeds'); }catch(e){} }); }catch(e){}
   try{
     var d=document.getElementById('admNeedsDay');
     if(d) d.textContent='Today \u00b7 '+new Date().toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
@@ -19636,7 +19745,7 @@ function _jvRepaintProgress(code){
     +'<div class="ovCard ovSm"><div class="ovEy">Progress</div>'
     +'<div class="ovMetaTop">'+_escHtml(_jvNoStore('their weigh-ins'))+'</div></div>';
 }
-function jvOpenDeep(code){
+function jvOpenDeep(code, callTarget){
   _jvHydratePhones();
   var info=CLIENTS[code]; if(!info) return;
   // Belt and braces, same as the feed: every list that could lead here already
@@ -19724,7 +19833,7 @@ function jvOpenDeep(code){
   _jvDeepHistory(code);
   // Fired alongside the rest, not awaited — the card opens instantly and the
   // thread fills in, same as Progress and the day list above it.
-  try{ cnoOpen('cnoRail_'+code, code); }catch(e){ console.error('call notes rail',e); }
+  try{ cnoOpen('cnoRail_'+code, code, !!callTarget, callTarget||null); }catch(e){ console.error('call notes rail',e); }
   _jvLoadSplitFlag(code);
   // Re-read on open so a note added on the phone shows up here, then repaint in place.
   try{ cnLoadCoaching(code).then(function(){ cnAddCancel(code); }); }catch(e){}
