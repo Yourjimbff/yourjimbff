@@ -9073,7 +9073,7 @@ function _feedWeekControls(){
   + '</div>';
   return '<div class="jvFeedCtrl">'
     + '<div class="jvFeedH1">Week</div>'
-    + '<div style="flex:1;"></div>' + nav + _feedModeSegs() + lensRow
+    + '<div style="flex:1;"></div>' + nav + _feedModeSegs() + _fwSortSegs() + lensRow
   + '</div>';
 }
 // ===== THE FEED, WHEN NOBODY HAS LOGGED YET =================================
@@ -9378,7 +9378,9 @@ function _feedLensRow(){
     // only is the single most repeated mistake in this file's history, and on a
     // week grid the phone is the EASIER half — seven short cells per row is a
     // vertical list, which is what a phone is good at.
-    + '<div class="fwModeRow">'+_feedModeSegs()+'</div>';
+    // Sort belongs to the week, so it only appears in week mode — and it appears
+    // on the phone too. Both surfaces or it only half exists.
+    + '<div class="fwModeRow">'+_feedModeSegs()+(_fwOn()?_fwSortSegs():'')+'</div>';
 }
 function _feedDayLabel(d){
   if(!d) return '';
@@ -9912,6 +9914,21 @@ function _sbAtCap(rows, limit){
 var FW_LIMIT=1500;                 // per table, per week
 var FW_BANDS=[{k:'food', label:'Food'},{k:'wo', label:'Training'},{k:'wt', label:'Weigh-in'}];
 function _fwOn(){ return window._feedMode==='week'; }
+// SORT. Default is exactly what the week has always done — alphabetical, silent
+// rows flagged where they sit — so nothing moves under anyone's muscle memory
+// until the control is touched. Remembered per device, not per account.
+function fwSort(){
+  try{ var v=localStorage.getItem('yjb_fw_sort'); return (v==='most'||v==='least')?v:'default'; }catch(e){ return 'default'; }
+}
+function setFwSort(v){
+  try{ localStorage.setItem('yjb_fw_sort', (v==='most'||v==='least')?v:'default'); }catch(e){}
+  _feedRepaint();
+}
+function _fwSortSegs(){
+  var s=fwSort();
+  function seg(v,label){ return '<div onclick="setFwSort(\''+v+'\')" class="jvSeg2'+(s===v?' on':'')+'">'+label+'</div>'; }
+  return '<div class="jvSegs">'+seg('default','A–Z')+seg('most','Most logged')+seg('least','Least logged')+'</div>';
+}
 // MONDAY ALWAYS, including the week that contains today — a week is a week
 // regardless of where he is standing in it.
 function _fwMonday(weeksBack){
@@ -10026,17 +10043,29 @@ function _fwCellState(k, band, dayTs, dayData, todayKey){
 // fully read for every day — if anything is unread the answer is 'unsure', and
 // an unsure client is never counted, never named and never flagged. A week that
 // has not loaded is not an empty week.
-function _fwSilent(code, wk, bands, todayKey){
-  var g=wk.grid[code]||{};
+// ONE MEASURE, read once, used by the flag, the banner and the sort — so the
+// number the sort orders by is the same number the grid draws. days = days with
+// ANY log among the bands on show. unsure = some band did not fully load, in
+// which case days is NOT a count of anything and must never be treated as one.
+function _fwWeekStat(code, wk, bands, todayKey){
+  var g=wk.grid[code]||{}, days=0, unsure=false;
   for(var i=0;i<wk.days.length;i++){
-    var dayTs=wk.days[i], dd=g[dayTs]||null;
+    var dayTs=wk.days[i], dd=g[dayTs]||null, lit=false;
     for(var j=0;j<bands.length;j++){
       var st=_fwCellState(bands[j].k, wk.band, dayTs, dd, todayKey);
-      if(st==='on') return 'active';
-      if(st==='unread') return 'unsure';     // cannot claim silence off a read that did not land
+      if(st==='on') lit=true;
+      else if(st==='unread') unsure=true;
     }
+    if(lit) days++;
   }
-  return 'silent';
+  return {days:days, unsure:unsure, silent:(!unsure && days===0)};
+}
+function _fwSilent(code, wk, bands, todayKey){
+  var s=_fwWeekStat(code, wk, bands, todayKey);
+  // A day that IS lit settles it even if a later day did not load — activity
+  // seen is activity seen. Silence is the claim that needs the whole week read.
+  if(s.days>0) return 'active';
+  return s.unsure ? 'unsure' : 'silent';
 }
 function _fwCardHtml(code, wk, bands, todayKey){
   var g=wk.grid[code]||{};
@@ -10132,10 +10161,35 @@ function _fwRenderInto(holder, wk){
     // shows the in-term roster, because the client map carries stale codes.
     try{ var t=_jvTermState(c); if(!(t && t.active)) return false; }catch(e){ return false; }
     return true;
-  }).sort(function(a,b){
-    var an=String((CLIENTS[a]||{}).name||a), bn=String((CLIENTS[b]||{}).name||b);
-    return an.localeCompare(bn);
   });
+  function _nm(c){ return String((CLIENTS[c]||{}).name||c); }
+  // ORDER. Alphabetical is the default and the tie-break in every mode — it is
+  // STABLE, so a row does not jump between repaints the way a recency tie-break
+  // would, and it matches the order the eye already learned.
+  //
+  // AN EXPLICIT SORT IS HONOURED, WHOLE. There is no pinned group to yield —
+  // the week has never pinned one; silent rows are flagged where they sit, per
+  // the one-list ruling. So the intent lands by itself: sort by least and the
+  // silent people ARE the top, sort by most and they fall to the bottom where
+  // least-logged belongs. Nothing is held above the order that was asked for.
+  //
+  // AND AN UNREAD WEEK SORTS NOWHERE. A client whose week did not fully load
+  // has no count — placing them among the numbers would be asserting one, and
+  // placing them at zero would say "logged nothing" in the loudest possible
+  // way. They go to the end, alphabetically, still named in their own banner.
+  var sortMode=fwSort();
+  if(sortMode!=='default'){
+    var _stat={};
+    roster.forEach(function(c){ _stat[c]=_fwWeekStat(c, wk, bands, todayKey); });
+    roster.sort(function(a,b){
+      var sa=_stat[a], sb=_stat[b];
+      if(sa.unsure!==sb.unsure) return sa.unsure?1:-1;          // unread to the end, always
+      if(!sa.unsure && sa.days!==sb.days) return sortMode==='most' ? (sb.days-sa.days) : (sa.days-sb.days);
+      return _nm(a).localeCompare(_nm(b));
+    });
+  } else {
+    roster.sort(function(a,b){ return _nm(a).localeCompare(_nm(b)); });
+  }
   var legend='<div class="fwLegend">'+bands.map(function(b){
       return '<span><i class="fwB fw-on"></i>'+b.label+'</span>'; }).join('')
     + '<span><i class="fwB fw-unread"></i>Not read</span></div>';
