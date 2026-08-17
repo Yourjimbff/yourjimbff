@@ -1999,6 +1999,43 @@ async function handleClientPlanSetDay(URL, SERVICE, args) {
   }
 }
 
+// CLIENT-SESSION-GATED, the same exception and the same reasoning as
+// myVipCalls — a client reading their OWN one-off booked calls, so the Day
+// page can show a booked call the day it happens the way it already shows a
+// standing one. client_code is ALWAYS the session's own claim; there is no
+// argument that names a client and adding one would make this a shared table
+// read wearing a narrow name.
+//
+// `note` is deliberately never selected, exactly as vip_calls.notes is not:
+// it is the trainer's own text about the booking, not the client's to read.
+// `spent` likewise — what a call cost against their plan is the door's
+// bookkeeping, not something to put on their screen.
+//
+// Upcoming and uncancelled only. A cancelled booking is not a call, and a past
+// one belongs to the Day page's own history, which reads it from elsewhere.
+async function handleMyBookings(URL, SERVICE, code) {
+  try {
+    const from = new Date(Date.now() - 60 * 60000).toISOString();  // an hour's grace: a call in progress is still today's call
+    const r = await fetch(`${URL}/rest/v1/bookings?client_code=eq.${encodeURIComponent(code)}`
+      + `&starts_at=gte.${encodeURIComponent(from)}`
+      + '&select=id,starts_at,duration_min,status,client_tz,created_at&order=starts_at.asc&limit=100',
+      { headers: svc(SERVICE) });
+    const text = await r.text();
+    if (!r.ok) {
+      console.error('trainer: myBookings query failed', r.status, text.slice(0, 300));
+      return json(502, { error: 'query_failed', op: 'myBookings' });
+    }
+    let rows = []; try { rows = JSON.parse(text) || []; } catch (e) { rows = []; }
+    // Filtered here rather than in the query so a null status — which means
+    // booked, the same way loadBookings has always read it — is not silently
+    // dropped by a status=neq.cancelled filter that never matches null.
+    return json(200, rows.filter((b) => String(b.status || 'booked') !== 'cancelled'));
+  } catch (e) {
+    console.error('trainer: myBookings threw', e && e.message);
+    return json(502, { error: 'query_failed', op: 'myBookings' });
+  }
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return json(405, { error: 'POST only' });
 
@@ -2029,6 +2066,9 @@ exports.handler = async (event) => {
   }
   if (op === 'myVipCalls') {
     return handleMyVipCalls(URL, SERVICE, claims.client_code);
+  }
+  if (op === 'myBookings') {
+    return handleMyBookings(URL, SERVICE, claims.client_code);
   }
   // Shared call notes, the client's own half. Same exception and the same
   // discipline as the three above: the account acted on is ALWAYS
