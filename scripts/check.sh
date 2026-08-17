@@ -81,5 +81,76 @@ if (failed) {
   console.error(`\ncheck.sh: ${failed} block(s) failed, ${blocks.length - failed} ok, ${skipped} skipped.`);
   process.exit(1);
 }
-console.log(`check.sh: ok — ${blocks.length} inline JS block(s) passed, ${skipped} skipped.`);
+
+// ---- ORPHANED CONSTANTS -------------------------------------------------
+// node --check proves SYNTAX ONLY. It passes code that throws the moment it
+// runs, which is how deleting a dead function on 16 Aug took the two lines
+// under it — _MICSVG and _STOPSVG, both still used — and shipped a live
+// "_MICSVG is not defined" that killed the Feed page mid-render.
+//
+// Deliberately narrow: only SCREAMING_SNAKE module constants, which is where
+// this class of bug lives (they are defined once, at top level, next to the
+// helpers that get deleted). A broad undefined-identifier check would drown
+// in browser globals and be turned off within a week.
+// Strings and comments are STRIPPED first (kept newline-for-newline so the
+// reported line numbers still point at index.html). Without this the scan reads
+// prompt text and object keys as identifiers — the first run flagged eleven
+// things like FOOD_LOG, which live inside model-prompt strings, and MF.CARB_CEIL,
+// which is an object property. A check with false positives gets switched off.
+const strip = (s) => {
+  let out = '', i = 0;
+  const keepNl = (t) => t.replace(/[^\n]/g, ' ');
+  while (i < s.length) {
+    const c = s[i], n = s[i + 1];
+    if (c === '/' && n === '/') { const j = s.indexOf('\n', i); const e = j < 0 ? s.length : j; out += keepNl(s.slice(i, e)); i = e; continue; }
+    if (c === '/' && n === '*') { const j = s.indexOf('*/', i + 2); const e = j < 0 ? s.length : j + 2; out += keepNl(s.slice(i, e)); i = e; continue; }
+    if (c === '"' || c === "'" || c === '`') {
+      let j = i + 1;
+      while (j < s.length) { if (s[j] === '\\') { j += 2; continue; } if (s[j] === c) break; j++; }
+      const e = Math.min(j + 1, s.length);
+      out += c + keepNl(s.slice(i + 1, e));                  // quote kept, contents blanked
+      i = e; continue;
+    }
+    out += c; i++;
+  }
+  return out;
+};
+// Property accesses (MF.CARB_CEIL, obj?.FOO) are not free identifiers either.
+const js = strip(blocks.map(b => b.body).join('\n;\n')).replace(/\??\.\s*[A-Za-z_$][A-Za-z0-9_$]*/g, m => ' '.repeat(m.length));
+const declared = new Set();
+for (const d of js.matchAll(/(?:\bvar\b|\blet\b|\bconst\b)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) declared.add(d[1]);
+for (const d of js.matchAll(/\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) declared.add(d[1]);
+// Anything assigned onto window counts as declared too.
+for (const d of js.matchAll(/\bwindow\.([A-Za-z_$][A-Za-z0-9_$]*)\s*=/g)) declared.add(d[1]);
+// ...and anything ASSIGNED anywhere, which covers the second and later names in
+// a multi-declarator statement (`var _POST=3e6, _PRE=3e6`) that the regex above
+// only sees the first of. A constant taken out by a delete has no assignment
+// left anywhere, so this stays sharp for the case that matters.
+for (const d of js.matchAll(/(^|[^.\w$])([A-Za-z_$][A-Za-z0-9_$]*)\s*=(?!=)/g)) declared.add(d[2]);
+
+// SCOPED TO THE _UPPER CONVENTION this file uses for module-private constants
+// — _MICSVG, _STOPSVG, _CC_VERB, _JT_ANCHOR and friends. Bare SCREAMING_SNAKE
+// names are also object-literal keys (MF.CARB_CEIL) and marker names inside
+// regex literals ([FOOD_LOG]), and telling those apart needs a real lexer. The
+// leading underscore is the line between "a constant that can be orphaned by a
+// delete" and "noise", and it catches the exact bug that shipped.
+const used = new Map();
+const useRe = /(^|[^.\w$])(_[A-Z][A-Z0-9_]{2,})\b(?!\s*:)/g;
+let um;
+while ((um = useRe.exec(js)) !== null) {
+  const name = um[2];
+  if (declared.has(name) || used.has(name)) continue;
+  // Real line in index.html, found by looking the name up in the source rather
+  // than counting into the stripped copy, whose offsets do not line up.
+  const at = html.indexOf(name);
+  used.set(name, at < 0 ? 0 : lineAt(at));
+}
+if (used.size) {
+  console.error('\n✗ check.sh: constant(s) used but never defined — this passes node --check and throws at runtime:');
+  for (const [n, line] of used) console.error(`    ${n}  (${file}:${line})`);
+  console.error('\nIf one was just removed, it was probably taken by a neighbouring delete.');
+  process.exit(1);
+}
+
+console.log(`check.sh: ok — ${blocks.length} inline JS block(s) passed, ${skipped} skipped, no orphaned constants.`);
 NODE

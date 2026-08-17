@@ -1277,6 +1277,20 @@ body.jv-on.jv-paneOff #jvPaneEdge{
 .fwLegend span:nth-child(1) .fwB.fw-on{background:var(--gold);}
 .fwLegend span:nth-child(2) .fwB.fw-on{background:#4ea96f;}
 .fwLegend span:nth-child(3) .fwB.fw-on{background:#7d9fc4;}
+/* WHO LOGGED NOTHING. Named at the top so the answer is read once, and flagged
+   on the row where it already sits — the list is not regrouped, because the
+   gaps lining up down the page is the whole view. */
+.fwSilentHead{background:rgba(255,138,92,0.07);border:1px solid rgba(255,138,92,0.26);
+  border-radius:11px;padding:9px 13px;margin:0 0 10px;}
+.fwSilentHead b{display:block;font-size:12px;font-weight:800;letter-spacing:0.3px;color:#ff8a5c;}
+.fwSilentHead span{display:block;font-size:11.5px;color:rgba(240,236,228,0.6);line-height:1.5;margin-top:3px;}
+.fwSilentHead.ok{background:rgba(78,169,111,0.06);border-color:rgba(78,169,111,0.24);}
+.fwSilentHead.ok b{color:#4ea96f;}
+.fwSilentHead.warnRow{background:transparent;border-style:dashed;}
+/* The flag on the row itself: a gold edge, so it is findable while scrolling
+   without the row changing size or leaving its place in the list. */
+.fwCard.fwSilent{border-left:3px solid #ff8a5c;}
+.fwCard.fwSilent .fwFacts{color:#ff8a5c;}
 .fwModeRow{margin-bottom:18px;}
 /* Desktop: the day feed's column layout would break a week strip in half
    mid-row, so the week is always one column of full-width rows. */
@@ -10000,6 +10014,30 @@ function _fwCellState(k, band, dayTs, dayData, todayKey){
   if(dayTs>todayKey) return 'future';
   return (dayData && dayData[k]) ? 'on' : 'off';
 }
+// WHO LOGGED NOTHING ALL WEEK — the one question the grid answered only by
+// reading twenty-five rows one at a time.
+//
+// It is surfaced WITHOUT regrouping the list, because the one-list ruling still
+// stands: the gaps are the information and sinking these rows to the bottom
+// sorts away exactly what he opened the week to see. So they are counted and
+// NAMED at the top, and each row is flagged where it already sits.
+//
+// THREE ANSWERS, NOT TWO. 'silent' is only ever returned when every band was
+// fully read for every day — if anything is unread the answer is 'unsure', and
+// an unsure client is never counted, never named and never flagged. A week that
+// has not loaded is not an empty week.
+function _fwSilent(code, wk, bands, todayKey){
+  var g=wk.grid[code]||{};
+  for(var i=0;i<wk.days.length;i++){
+    var dayTs=wk.days[i], dd=g[dayTs]||null;
+    for(var j=0;j<bands.length;j++){
+      var st=_fwCellState(bands[j].k, wk.band, dayTs, dd, todayKey);
+      if(st==='on') return 'active';
+      if(st==='unread') return 'unsure';     // cannot claim silence off a read that did not land
+    }
+  }
+  return 'silent';
+}
 function _fwCardHtml(code, wk, bands, todayKey){
   var g=wk.grid[code]||{};
   var name=window._jvShareMode
@@ -10044,11 +10082,18 @@ function _fwCardHtml(code, wk, bands, todayKey){
   });
   var partial=bands.some(function(b){ return missed[b.k]>0 && missed[b.k]<wk.days.length; });
   var head=(partial?'at least ':'')+anyDays+' day'+(anyDays===1?'':'s')+' logged';
+  // Four zeros in a row is something you have to READ. Say it in words instead,
+  // and say it differently for the week he is standing in — on a Monday
+  // "nothing all week" is a verdict on a week that is one day old.
+  var silent=_fwSilent(code, wk, bands, todayKey);
+  var isThisWeek=(wk.days[wk.days.length-1]>=todayKey);
+  if(silent==='silent') head = isThisWeek ? 'Nothing logged yet this week' : 'Nothing logged all week';
   var warn=[];
   if(lost.length) warn.push(lost.join(' and ')+' not read');
   if(part.length) warn.push(part.join(' and ')+' only partly read');
   if(unread) warn.push(unread+' day'+(unread===1?'':'s')+' not fully read');
-  return '<div class="fwCard" data-code="'+_escHtml(code)+'">'
+  if(silent==='silent') bits=[];                    // the words replace the zeros
+  return '<div class="fwCard'+(silent==='silent'?' fwSilent':'')+'" data-code="'+_escHtml(code)+'">'
     + '<button class="fwName" onclick="jvOpenDeep(\''+code+'\')">'+_escHtml(name)+'</button>'
     + '<div class="fwGrid">'+cells+'</div>'
     + '<div class="fwFacts">'+_escHtml(head)+(bits.length?(' · '+_escHtml(bits.join(' · '))):'')
@@ -10091,7 +10136,34 @@ function _fwRenderInto(holder, wk){
     holder.innerHTML=legend+'<div class="jvPaneClear">No clients match the filters you have on.</div>';
     return;
   }
-  holder.innerHTML=legend
+  // The answer to "who logged nothing", at the top, by name — so it is read
+  // once rather than reconstructed row by row. Counted from FETCHED DATA ONLY:
+  // anyone whose week is not fully read is 'unsure' and is left out of both the
+  // count and the names, and said so separately rather than folded in.
+  var silent=[], unsure=[];
+  roster.forEach(function(c){
+    var s=_fwSilent(c, wk, bands, todayKey);
+    if(s==='silent') silent.push(c); else if(s==='unsure') unsure.push(c);
+  });
+  var isThisWeek=(wk.days[wk.days.length-1]>=todayKey);
+  var banner='';
+  if(silent.length){
+    var names=silent.map(function(c){
+      return window._jvShareMode ? _jvShareDemoLine(c) : String((CLIENTS[c]||{}).name||c);
+    });
+    banner='<div class="fwSilentHead"><b>'+silent.length+' logged nothing '
+      + (isThisWeek?'yet this week':'all week')+'</b><span>'+_escHtml(names.join(' · '))+'</span></div>';
+  } else if(!unsure.length){
+    banner='<div class="fwSilentHead ok"><b>Everyone logged something '
+      + (isThisWeek?'this week':'that week')+'</b></div>';
+  }
+  // Never folded into the count above — "3 logged nothing" must mean three
+  // people, not three people plus however many could not be read.
+  if(unsure.length){
+    banner+='<div class="fwSilentHead warnRow"><b>'+unsure.length+' could not be checked</b>'
+      + '<span>Their week did not fully load, so they are not counted either way.</span></div>';
+  }
+  holder.innerHTML=legend + banner
     + '<div class="fwWrap">'+roster.map(function(c){ return _fwCardHtml(c, wk, bands, todayKey); }).join('')+'</div>';
 }
 // The drill-in. Sets the day the existing day view already understands and
@@ -14668,6 +14740,18 @@ function _jarvisSyncThreads(){
   var html=_jarvisThreadHtml();
   ['jarvisThread','clJarvisThread'].forEach(function(id){ var e=document.getElementById(id); if(e) e.innerHTML=html; });
 }
+// THESE ARE LIVE AND SHARED — DO NOT DELETE THEM WITH THEIR NEIGHBOUR.
+// They sat directly under _jarvisCardHtml, which was dead code and was removed
+// on 16 Aug BY LINE RANGE — and the range ran two lines long and took both of
+// these with it. _MICSVG has three callers (_jarvisMicReset, the workout
+// dictation button, and the Jim bar's mic) and _STOPSVG one (jarvisVoiceToggle),
+// so the Jim bar threw "_MICSVG is not defined" mid-render and killed
+// everything after it on the Feed page.
+// check.sh did not and cannot catch this: an undefined variable is a RUNTIME
+// error and node --check proves syntax only. That is the landmine in CLAUDE.md
+// almost word for word, walked into while cleaning up dead code.
+var _MICSVG='<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="#f5c518" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"></rect><path d="M5 10a7 7 0 0 0 14 0"></path><line x1="12" y1="19" x2="12" y2="22"></line></svg>';
+var _STOPSVG='<svg width="19" height="19" viewBox="0 0 24 24" fill="#f0ece4"><rect x="5" y="5" width="14" height="14" rx="3"></rect></svg>';
 var jarvisRec=null, jarvisListening=false;
 function _jarvisMicReset(btn){
   if(!btn) return;
