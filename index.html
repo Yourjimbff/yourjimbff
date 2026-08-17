@@ -9603,6 +9603,9 @@ function _jvNewestItem(code, kind){
 // the rendering, rather than at each call site where it kept being forgotten.
 function _jvSay(msg){
   var out=document.getElementById('jvReadOut'); if(!out) return;
+  // An abandoned confirmation is announced by whichever box speaks next, and in
+  // the cockpit that is always this one.
+  try{ var _ab=_jvTakeAbandonNote(); if(_ab) msg=_escHtml(_ab)+'<br><br>'+msg; }catch(e){}
   out.innerHTML='<div class="jvChatA">'+msg+'</div>';
   try{ _jvSpeakLine(msg); }catch(e){}
 }
@@ -15092,8 +15095,71 @@ function _jvPendingFresh(){
   var p=window._jvPendingWrite;
   return (p && (Date.now()-p.at)<_JV_PENDING_MS) ? p : null;
 }
-function _jvIsYes(t){ return /^\s*(y|yes|yep|yeah|yup|confirm(ed)?|do it|go ahead|go|correct|right|that'?s right|send it|log it)\b/i.test(String(t||'')); }
-function _jvIsNo(t){ return /^\s*(n|no|nope|nah|cancel|stop|don'?t|do not|wrong|never ?mind|forget it)\b/i.test(String(t||'')); }
+// EVERY tier-two write reaches the table through here, so a second one can never
+// quietly replace the first. It used to: `window._jvPendingWrite = …` was written
+// at four sites, and a booking stated back but not yet answered was overwritten
+// by the next one without a word. He had agreed to nothing and lost nothing he
+// could see — the write simply never happened.
+// The one already there is pushed onto the held-write queue and NAMED, which is
+// what a batch has always done with it. Returns the sentence to append, plain
+// text, so the caller escapes it the same way it escapes everything else.
+function _jvPendSet(p){
+  var old=_jvPendingFresh();
+  window._jvPendingWrite=p;
+  if(old && old!==p){
+    _jvQueueAdd(old);
+    return ' I’ve kept the one before it waiting — '+_jvPendStem(old)+'.';
+  }
+  return '';
+}
+// A held write states itself back as a question. Quoted inside another sentence
+// it must not still be asking one, or the reply carries two.
+function _jvPendStem(p){
+  try{ return String(_jvPendingSummary(p)).replace(/\s*(?:Yes\?|Right client\?)\s*$/,'').trim(); }
+  catch(e){ return 'the one before it'; }
+}
+// ===== ONE ANSWER RECOGNISER FOR THE ONE STATE MACHINE ====================
+// He does not answer a confirmation with the bare word "yes". He answers it the
+// way anyone answers a person: "yeah, this is not one of their calls", "ok do
+// it", "sure", "that works". The old pattern matched a short list of openers and
+// nothing else, so every one of those was NOT an answer — it fell through as a
+// brand new sentence while the confirmation stayed on the table unanswered.
+//
+// AFFIRMATIVE-LEADING IS THE YES. What follows the affirmative is him explaining
+// himself, not amending the booking — unless it actually amends it, which is
+// what _JV_AMEND_RE is for. An amendment re-asks; it never commits, because
+// committing "yes but make it 10" books the time he was in the middle of
+// changing.
+var _JV_LEAD='(?:ok(?:ay)?|alright|right(?:o)?|well|so|erm+|um+|hmm+|yeah)?[\\s,\\.]*';
+var _JV_YES_RE=new RegExp('^\\s*'+_JV_LEAD+"(?:y|yes|yeah|yep|yup|ye|aye|sure|certainly|definitely|absolutely|correct|confirm(?:ed)?|do it|go ahead|go on|go|send it|log it|book it|put it in|that'?s right|that'?s it|that works|sounds (?:good|right)|please do|perfect|spot on|fine by me)\\b",'i');
+// BUILT FROM A QUOTED STRING, NOT A REGEX LITERAL, and that is not a style
+// choice. An apostrophe inside a regex literal — don't, that's — reads as an
+// OPENING QUOTE to check.sh's string-stripper, which then blanks every line
+// down to the next apostrophe. Two of those a few lines apart swallowed the
+// three constants between them and the check reported them as orphaned. Inside
+// a double-quoted string the stripper blanks the contents anyway, so the
+// apostrophes are invisible to it and the scan stays sharp for the real thing.
+var _JV_NO_RE=new RegExp("^\\s*(?:ok(?:ay)?|alright|well|so|erm+|um+|hmm+)?[\\s,\\.]*(?:n|no|nope|nah|negative|cancel|stop|don'?t|do not|wrong|not right|never ?mind|forget it|leave it|scrap it|drop it)\\b",'i');
+// A yes that changes the terms is not a yes.
+var _JV_AMEND_RE=/\b(instead|rather|but\s+(?:make|move|change|put|book|do)|make it|move it|change it|different|actually)\b/i;
+// The same three shapes _jvParseWhen reads a clock from, including the bare
+// hour behind a preposition — "yes, tomorrow at 4" carries a time whether or not
+// it bothers with an am.
+var _JV_CLOCK_RE=/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\b(?:at|to|for|around|by)\s+\d{1,2}\b/i;
+// Non-committal. He is thinking, not answering — and the worst possible reading
+// of "hold on" is "this is a new instruction", which is what dropped the
+// confirmation he was still considering.
+var _JV_MAYBE_RE=new RegExp("^\\s*(?:maybe|perhaps|possibly|not sure|unsure|dunno|don'?t know|i think so|think so|probably|hold on|hang on|wait|hmm+|erm+|um+|what|huh|eh|sorry|\\?)[\\s\\?\\.]*$",'i');
+function _jvIsYes(t){
+  var s=String(t||'');
+  if(!_JV_YES_RE.test(s)) return false;
+  if(_JV_AMEND_RE.test(s)) return false;
+  // "Yes, tomorrow at 4" carries a time the confirmation on the table may not
+  // have. Ambiguous, so it re-asks rather than booking one of the two.
+  if(_JV_CLOCK_RE.test(s)) return false;
+  return true;
+}
+function _jvIsNo(t){ return _JV_NO_RE.test(String(t||'')); }
 // Writes the held action. Every row goes through the door and is read back —
 // the door answers with the row it wrote, so "it saved" is something this can
 // actually see rather than infer from the absence of an error.
@@ -15600,17 +15666,62 @@ function _jvAskFresh(){
 // A message that is plainly its own instruction supersedes the question rather
 // than being eaten by it — a change of subject is not an answer, the same rule
 // the held-write queue already follows.
-function _jvAskSuperseded(t){
+function _jvAskSuperseded(t, need){
   if(_JV_BOOK_RE.test(t)) return true;
+  // A LEAD'S NAME IS JUST A NAME. Handing "Halie" to the statement parser to
+  // decide whether it supersedes gives a name the chance to be read as an
+  // instruction — and the question outstanding is the one that asked for it.
+  if(need==='lead') return false;
   try{ if(_ccParseStatement(t)) return true; }catch(e){}
   return false;
 }
+// What the outstanding question was, said back to him. Used when the question
+// has died and he needs to know the thread it belonged to is gone.
+function _jvAskWhatFor(a){
+  if(!a) return 'something';
+  if(a.need==='lead') return 'who that consult was with';
+  if(a.need==='who') return 'who that call was with';
+  if(a.need==='time') return 'what time';
+  return 'what day and time';
+}
+// The shape of an ANSWER: short, not a question, not an instruction of its own.
+// "Halie". "4pm". "blakeb1". Anything longer is him moving on, and a notice
+// about a question he has already left behind would just be noise.
+function _jvAskAnswerShaped(t){
+  var s=String(t||'').trim();
+  if(!s || /\?\s*$/.test(s)) return false;
+  if(s.split(/\s+/).length>5) return false;
+  return !_jvAskSuperseded(s);
+}
 // Returns HTML when it consumed the message as the answer, else null.
 async function _jvAskReply(t){
-  var a=_jvAskFresh(); if(!a) return null;
-  if(_jvAskSuperseded(t)){ _jvAskClear(); return null; }
+  var raw=window._jvPendingAsk;
+  var a=_jvAskFresh();
+  // A QUESTION THAT AGES OUT MUST NOT SWALLOW THE ANSWER IN SILENCE. It expired
+  // between the asking and the answering, and the old code cleared it and
+  // returned null — so a bare "Halie" went to the model and came back as
+  // something about Halie, with no sign the consult had ever been on the table.
+  if(!a){
+    if(raw && _jvAskAnswerShaped(t))
+      return 'I’d asked '+_jvAskWhatFor(raw)+' and left it too long — nothing is waiting now. Say the whole thing again and I’ll take it.';
+    return null;
+  }
+  if(_jvAskSuperseded(t, a.need)){ _jvAskClear(); return null; }
   a.turns++;
-  if(a.need==='who'){
+  if(a.need==='lead'){
+    // A LEAD IS NOT ON THE ROSTER, which is the whole point of a consult. Sending
+    // this through the client resolver — the legacy clarify — answers "I don't
+    // have anyone called Halie" about exactly the person the consult exists to
+    // book. The name is taken AS GIVEN, the same rule the one-line consult uses.
+    var _lt=String(t||'').replace(/^\s*(?:it'?s|that'?s|the name is|her name is|his name is|their name is|name is|call (?:her|him|them))\s+/i,'');
+    var ln=_csTidyName(_csNameFrom(_lt)||_lt);
+    if(!ln){
+      if(a.turns>=_JV_ASK_TURNS){ _jvAskClear(); return 'I still haven’t got a name for that consult, so I’ve let it go. Say it again with the name in it and I’ll book it.'; }
+      return 'I need a name for the consult — the person’s name on its own is enough.';
+    }
+    a.consultName=ln;
+    a.need = a.dayTs ? null : 'when';
+  } else if(a.need==='who'){
     // The whole message is the answer — a name, a code, or a code said aloud
     // with spaces. Try it as a bare answer first, then look inside it.
     var hits=_jvResolveClient(t);
@@ -15620,7 +15731,13 @@ async function _jvAskReply(t){
         + hits.map(function(h){ return _escHtml(String((CLIENTS[h]||{}).name||h)); }).join(', ')+'. Which one?';
     }
     if(!hits.length){
-      if(a.turns>=_JV_ASK_TURNS){ _jvAskClear(); return null; }   // stop looping at him
+      // Stop looping at him — but SAY that the thread is being let go. Returning
+      // null here dropped the whole intent on the floor and sent his answer to
+      // the model, so the last thing he saw was an answer about someone else.
+      if(a.turns>=_JV_ASK_TURNS){
+        _jvAskClear();
+        return 'I still can’t place <b>'+_escHtml(t)+'</b> on the roster, so I’ve let that one go — nothing was booked. Say it again with their code and I’ll set it up.';
+      }
       return 'I still don’t have anyone called <b>'+_escHtml(t)+'</b>. Their code looks like blakeb1 — or say the name as it is on the roster.';
     }
     a.code=hits[0];
@@ -15630,7 +15747,10 @@ async function _jvAskReply(t){
     if(!w || w.needsTime){
       // A bare hour with a day already held: apply it to the day he gave.
       if(a.dayTs && w && w.needsTime && w.day){ a.dayTs=w.day; }
-      if(a.turns>=_JV_ASK_TURNS){ _jvAskClear(); return null; }
+      if(a.turns>=_JV_ASK_TURNS){
+        _jvAskClear();
+        return 'I’ve asked twice for a time and still haven’t got one, so I’ve let that one go — nothing was booked. Say the whole thing again and I’ll take it.';
+      }
       return 'I need a time as well — say something like 9am, or 3:30.';
     }
     if(a.dayTs){
@@ -15639,12 +15759,17 @@ async function _jvAskReply(t){
       day.setHours(got.getHours(), got.getMinutes(), 0, 0);
       a.ts=day.getTime();
     } else { a.ts=w.ts; a.dayTs=w.ts; }
-    a.need = a.code ? null : 'who';
+    // A consult carries a NAME and no code, so "do I still need a who" is a
+    // different question for it. Asking `a.code` alone sent every consult back
+    // round to the roster clarify it must never reach.
+    a.need = (a.kind==='consult') ? (a.consultName ? null : 'lead') : (a.code ? null : 'who');
   } else { _jvAskClear(); return null; }
 
   if(a.need==='when' || a.need==='time'){
-    return 'Got it — '+_escHtml(String((CLIENTS[a.code]||{}).name||a.code))+'. What day and time?';
+    var _hold=(a.kind==='consult') ? String(a.consultName||'') : String((CLIENTS[a.code]||{}).name||a.code||'');
+    return 'Got it'+(_hold?(' — '+_escHtml(_hold)):'')+'. What day and time?';
   }
+  if(a.need==='lead'){ return 'And who is that consult with?'; }
   if(a.need==='who'){ return 'And who is that call with?'; }
   var when=(a.ts!=null) ? {ts:a.ts, iso:new Date(a.ts).toISOString()} : null;
   if(!when){ a.need='when'; return 'What day and time?'; }
@@ -15729,8 +15854,20 @@ async function _csConsultCommand(t){
   if(!_JV_BOOK_RE.test(t)) return null;              // "the consult went well" is not a booking
   var name=_csNameFrom(t);
   var w=_jvParseWhen(t);
-  if(!name) return 'Who is the consult with? Give me their name and I’ll put it in.';
-  if(!w) return 'When? Give me a day and a time and I’ll book the consult with '+_escHtml(name)+'.';
+  // EVERY QUESTION LEAVES A SLOT BEHIND — consults included. These two asked and
+  // remembered NOTHING, so his answer ("Halie", "tomorrow at 4") arrived with no
+  // consult anywhere in sight, fell past every stage and reached the model,
+  // which replied with a status line. That is the ask-then-forget loop the
+  // client-call path had already been fixed for, still live on this one path.
+  if(!name){
+    _jvAskSet({kind:'consult', consultName:null, code:null,
+               ts:(w&&!w.needsTime)?w.ts:null, dayTs:(w?(w.ts||w.day||null):null), need:'lead'});
+    return 'Who is the consult with? Give me their name and I’ll put it in.';
+  }
+  if(!w){
+    _jvAskSet({kind:'consult', consultName:name, code:null, ts:null, dayTs:null, need:'when'});
+    return 'When? Give me a day and a time and I’ll book the consult with '+_escHtml(name)+'.';
+  }
   if(w.needsTime){
     _jvAskSet({kind:'consult', consultName:name, code:null, ts:null, dayTs:(w.day||null), need:'time'});
     var _cd=w.day?_jvSpokenDay(new Date(w.day)):'';
@@ -15751,9 +15888,9 @@ async function _csConsultAct(name, w){
   }catch(e){}
   if(!pv) return 'I couldn’t check that time just now, so I haven’t booked anything. Try again in a moment.';
   var when=_jvWhenLabel(new Date(pv.requested_at||w.iso));
-  window._jvPendingWrite={kind:'consult', name:name, iso:(pv.requested_at||w.iso), when:when,
+  var _cpark=_jvPendSet({kind:'consult', name:name, iso:(pv.requested_at||w.iso), when:when,
     conflict:pv.conflict||null, nearest:(pv.nearest_open||[]), force:false,
-    parts:[], payload:{}, at:Date.now()};
+    parts:[], payload:{}, at:Date.now()});
   if(pv.conflict){
     var c=pv.conflict;
     var whoElse=(c.client_code && CLIENTS[c.client_code] && CLIENTS[c.client_code].name) || c.label || 'something else';
@@ -15761,11 +15898,11 @@ async function _csConsultAct(name, w){
     var offer=n0 ? (' <b>'+_escHtml(_jvWhenLabel(new Date(n0.starts_at||n0)))+'</b> is open — want that?')
                  : ' Nothing near it is open.';
     if(n0) window._jvPendingWrite.offer=(n0.starts_at||n0);
-    return _escHtml(when)+' is '+_escHtml(whoElse)+'’s.'+offer
+    return _escHtml(when)+' is '+_escHtml(whoElse)+'’s.'+offer+_escHtml(_cpark)
       +'<br><span style="opacity:0.7;">Say yes for that time, or “book it anyway” to double up.</span>';
   }
   return 'Booking a consult with <b>'+_escHtml(name)+'</b> for '+_escHtml(when)
-    +'. That spends nothing — it is a consult, not one of their calls. Yes?';
+    +'. That spends nothing — it is a consult, not one of their calls. Yes?'+_escHtml(_cpark);
 }
 async function _jvBookCommand(text){
   var t=String(text||'').trim();
@@ -15827,15 +15964,15 @@ async function _jvBookAct(kind, code, name, w, skip){
     var d=new Date(w.ts);
     var dateStr=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
     var hhmm=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
-    window._jvPendingWrite={kind:'vipmove', code:code, name:name, date:dateStr, time:hhmm, skip:!!skip,
-      parts:[], payload:{}, at:Date.now()};
+    var _mpark=_jvPendSet({kind:'vipmove', code:code, name:name, date:dateStr, time:hhmm, skip:!!skip,
+      parts:[], payload:{}, at:Date.now()});
     // "on tomorrow" is not a sentence. Only a weekday name takes the "on".
     var dayWord=_jvWhenLabel(d).split(' at ')[0];
     var dayPhrase=/^(today|tomorrow)$/i.test(dayWord) ? dayWord : ('on '+dayWord);
     var newTime=_jvSpokenTime(d);
     return (skip
       ? 'Skipping '+_escHtml(name)+'’s standing call '+_escHtml(dayPhrase)+' — that day only, the rest of the series stays as it is. Yes?'
-      : 'Moving '+_escHtml(name)+'’s standing call '+_escHtml(dayPhrase)+' to '+_escHtml(newTime)+' — that day only, next week stays as it was. Yes?');
+      : 'Moving '+_escHtml(name)+'’s standing call '+_escHtml(dayPhrase)+' to '+_escHtml(newTime)+' — that day only, next week stays as it was. Yes?')+_escHtml(_mpark);
   }
 
   // The door's own preview. Nothing is written by this call.
@@ -15850,9 +15987,9 @@ async function _jvBookAct(kind, code, name, w, skip){
                 : pv.will_spend==='credit' ? 'This uses one of '+_escHtml(name.split(' ')[0])+'’s call credits.'
                 : (pv.credit_note ? _escHtml(pv.credit_note.replace(/\s*—.*$/,''))+' — it books anyway.' : 'This spends nothing.');
 
-  window._jvPendingWrite={kind:'booking', code:code, name:pv.client_name||name, iso:pv.starts_at,
+  var _bpark=_jvPendSet({kind:'booking', code:code, name:pv.client_name||name, iso:pv.starts_at,
     when:_jvWhenLabel(new Date(pv.starts_at)), spend:pv.will_spend, conflict:pv.conflict||null,
-    nearest:(pv.nearest_open||[]), force:false, parts:[], payload:{}, at:Date.now()};
+    nearest:(pv.nearest_open||[]), force:false, parts:[], payload:{}, at:Date.now()});
 
   if(pv.conflict){
     var c=pv.conflict;
@@ -15861,11 +15998,11 @@ async function _jvBookAct(kind, code, name, w, skip){
     var offer=n0 ? (' <b>'+_escHtml(_jvWhenLabel(new Date(n0.starts_at||n0)))+'</b> is open — want that?')
                  : ' Nothing near it is open.';
     if(n0) window._jvPendingWrite.offer=(n0.starts_at||n0);
-    return _escHtml(_jvWhenLabel(new Date(pv.starts_at)))+' is '+_escHtml(whoElse)+'’s.'+offer
+    return _escHtml(_jvWhenLabel(new Date(pv.starts_at)))+' is '+_escHtml(whoElse)+'’s.'+offer+_escHtml(_bpark)
       +'<br><span style="opacity:0.7;">Say yes for that time, or “book it anyway” to double up.</span>';
   }
   return 'Booking <b>'+_escHtml(pv.client_name||name)+'</b> for '+_escHtml(_jvWhenLabel(new Date(pv.starts_at)))
-    +'. '+spendLine+' Yes?';
+    +'. '+spendLine+' Yes?'+_escHtml(_bpark);
 }
 // ===== THE QUEUE OF HELD WRITES ===========================================
 // One monologue can carry three things that each need a yes. They are held as a
@@ -15893,17 +16030,56 @@ function _jvQueueNext(label){
 // Consulted by every assistant box before its model is involved, so a "yes"
 // means the same thing wherever it is typed.
 async function _jvPendingReply(t){
+  var raw=window._jvPendingWrite;
   var p=_jvPendingFresh();
+  // A CONFIRMATION THAT TIMED OUT MUST NOT DIE QUIETLY. He answers "yes" to
+  // something he watched Jarvis state back; if the ten minutes ran out in
+  // between, the old code returned null, the "yes" was re-parsed as a fresh
+  // sentence, and the booking he believed he had just made had never existed.
+  // Now the lapse is what he is told, and only the thing itself is lost.
+  if(!p && raw){
+    window._jvPendingWrite=null;
+    if(_jvIsYes(t) || _jvIsNo(t) || _JV_YES_RE.test(String(t||'')) || _JV_MAYBE_RE.test(String(t||'')))
+      return 'That one sat too long and timed out, so nothing was written — '+_jvPendStem(raw)
+        +'. Say it again and I’ll re-check the time.'+_jvQueueNext();
+    return null;
+  }
   if(!p) return null;
   if(_jvIsNo(t)){ window._jvPendingWrite=null; return 'Dropped it. Nothing was written.'+_jvQueueNext(); }
   // Force is only ever an explicit yes to the conflict he was just told about.
-  if(p.kind==='booking' && p.conflict && /\b(anyway|double|both|regardless|do it anyway|book it anyway)\b/i.test(t)){
+  // A CONSULT CLASHES THE SAME WAY a client call does — same dry_run, same
+  // nearest_open, same "or book it anyway" offered in the reply — but only the
+  // booking kind could ever act on it, so the sentence Jarvis suggested did
+  // nothing on a consult.
+  if((p.kind==='booking'||p.kind==='consult') && p.conflict && /\b(anyway|double|both|regardless)\b/i.test(t)){
     p.force=true; p.offer=null;
     return (await _jvCommitPending(p))+_jvQueueNext();
   }
-  if(!_jvIsYes(t)) return null;          // anything else is a new thought, not an answer
-  return (await _jvCommitPending(p))+_jvQueueNext();
+  if(_jvIsYes(t)) return (await _jvCommitPending(p))+_jvQueueNext();
+  // Neither yes nor no. If he is plainly still thinking — "maybe", "hold on" —
+  // or he said yes and changed the terms in the same breath, ASK AGAIN and keep
+  // the write on the table. The clock restarts, because a re-ask is the question
+  // being put to him again.
+  if(_JV_MAYBE_RE.test(String(t||'')) || _JV_YES_RE.test(String(t||''))){
+    p.at=Date.now();
+    return 'I need a straight yes or no on that one. '+_jvPendingSummary(p);
+  }
+  // A TOPIC CHANGE ABANDONS IT — CLEANLY, AND OUT LOUD. Leaving it on the table
+  // meant a "yes" four messages later committed something he had stopped
+  // thinking about. Dropping it in silence meant a confirmation he had watched
+  // Jarvis state back simply evaporated. So it goes, the queue behind it goes,
+  // and the next thing Jarvis says leads with the fact that it went.
+  var _qn=(window._jvPendingQueue||[]).length;
+  window._jvPendingWrite=null;
+  window._jvPendingQueue=[];
+  window._jvAbandonNote='Leaving that one — nothing was written for '+_jvPendStem(p)
+    + (_qn ? (', and the '+_qn+' behind it '+(_qn===1?'has':'have')+' gone with it') : '')+'.';
+  return null;          // the message itself is a new thought, and routes as one
 }
+// One-shot, because it belongs to the turn that abandoned the write and to no
+// other. Every box takes it before it renders, so the abandonment is said once
+// wherever he happened to be typing.
+function _jvTakeAbandonNote(){ var n=window._jvAbandonNote||''; window._jvAbandonNote=null; return n; }
 async function jarvisIngest(ns){
   ns=ns||'feed'; var ID=_jarvisIds(ns);
   var inp=document.getElementById(ID.inp); if(!inp) return;
@@ -16144,7 +16320,9 @@ async function jvClientJarvisSend(code){
   // screen — but a statement naming somebody else still resolves to that person,
   // by name, in code, exactly as it does everywhere else.
   var rbEarly=document.getElementById('jvClientJarvisReply');
-  function _cjSay(msg){ if(rbEarly) rbEarly.innerHTML='<div style="background:rgba(224,196,152,0.08);border:1px solid rgba(224,196,152,0.28);border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0ece4;line-height:1.55;">'+msg+'</div>'; }
+  // Same one-shot as the cockpit's _jvSay: an abandoned confirmation is said by
+  // whichever box speaks next, and this is a box.
+  function _cjSay(msg){ try{ var _ab=_jvTakeAbandonNote(); if(_ab) msg=_escHtml(_ab)+'<br><br>'+msg; }catch(e){} if(rbEarly) rbEarly.innerHTML='<div style="background:rgba(224,196,152,0.08);border:1px solid rgba(224,196,152,0.28);border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0ece4;line-height:1.55;">'+msg+'</div>'; }
   try{ var _pr=await _jvPendingReply(t); if(_pr){ _cjSay(_pr.replace(/\n/g,'<br>')); inp.value=''; return; } }catch(e){ console.error('pending reply (client jarvis)',e); }
   try{ var _cc=await _ccHandleStatement(t); if(_cc){ _cjSay(_cc); inp.value=''; return; } }catch(e){ console.error('contact command (client jarvis)',e); }
   var btn=document.getElementById('jvClientJarvisBtn'); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='Thinking…'; }
@@ -18765,8 +18943,9 @@ async function _jtRunItem(t, capture, ctx){
     if(!pend && mo.working_on) pend=_jvBuildPendingWorkingOn(String(mo.working_on), code, name);
   }catch(e){}
   if(pend){
-    if(capture) _jvQueueAdd(pend); else window._jvPendingWrite=pend;
-    return {status:'wait', modelled:true, line:_escHtml(_jvPendingSummary(pend)), html:true, src:t};
+    var _lpark='';
+    if(capture) _jvQueueAdd(pend); else _lpark=_jvPendSet(pend);
+    return {status:'wait', modelled:true, line:_escHtml(_jvPendingSummary(pend)+_lpark), html:true, src:t};
   }
   if(code && CLIENTS[code] && mo.note){
     var saved=null;
@@ -18962,11 +19141,19 @@ async function _jtTurn(t){
     var pr=await _jvPendingReply(t);
     if(pr) return {html:_escHtml(pr).replace(/\n/g,'<br>'), speak:pr};
   }catch(e){ console.error('jt pending',e); }
+  // Taken HERE, before the route runs, so the abandonment leads the reply rather
+  // than trailing whatever the new sentence turned out to be.
+  var ab=_jvTakeAbandonNote();
   // 2. The batch gate. A question is one thing being asked, whatever its length.
-  if(_jtIsQuestion(t)) return await _jtSingle(t);
-  var items=_jtSplit(t);
-  if(items.length<=1) return await _jtSingle(items[0]||t);
-  return await _jtBatch(items);
+  var out=null;
+  if(_jtIsQuestion(t)) out=await _jtSingle(t);
+  else {
+    var items=_jtSplit(t);
+    out=(items.length<=1) ? await _jtSingle(items[0]||t) : await _jtBatch(items);
+  }
+  if(ab && out) return {html:_escHtml(ab)+'<br><br>'+(out.html||''), speak:(ab+' '+(out.speak||''))};
+  if(ab && !out) return {html:_escHtml(ab), speak:ab};
+  return out;
 }
 function _jtIds(which){
   return which==='desk'
