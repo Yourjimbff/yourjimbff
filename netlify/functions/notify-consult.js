@@ -51,6 +51,27 @@ exports.handler = async (event) => {
   }
 
   const r = payload.record || {};
+
+  // TRAINER-BOOKED CONSULTS DO NOT EMAIL YUSUF HIS OWN BOOKING.
+  // This alert exists to tell him something happened that he did not do — a
+  // stranger booked, go look. A consult he just booked himself through
+  // consultInsert (Jarvis, mid-text with the lead, already confirmed to him on
+  // screen) fails that test completely, and an alert that fires for things you
+  // already know is how you learn to ignore the alert that matters.
+  //
+  // The test is "source is set at all", not "source equals trainer",
+  // deliberately: the offer page never writes this column and never will —
+  // it belongs to a separate repo that knows nothing about it — so null is
+  // reliably a stranger. Any value at all came from something on this side of
+  // the wall, and an unknown future source is far likelier to be another
+  // trainer surface than a stranger. Defaulting an unknown to "skip" fails
+  // toward silence; defaulting to "send" would fail toward crying wolf, on the
+  // one notification Yusuf has.
+  if (r.source) {
+    console.log('notify-consult: skipped, source =', r.source);
+    return json(200, { skipped: true, reason: 'trainer_booked', source: r.source });
+  }
+
   let when = 'an unspecified time';
   try {
     if (r.requested_at) {

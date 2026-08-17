@@ -396,10 +396,13 @@ const WRITE_OPS = {
   noteDeleteAll: (a) => ({ method: 'DELETE', path: `coach_notes?client_code=eq.${enc(a.client_code)}` }),
 
   // ---- consult_requests (offer-page booking mailbox) ----------------------------
-  // No consultInsert here on purpose: strangers write this table with the public
-  // key directly (it's INSERT-only for anon, nothing else), before any session
-  // exists to sign them into. Booking is auto-accept, no review step — this op
-  // is Yusuf's cancel lever and the only write this door makes to the table.
+  // Strangers still write this table with the public key directly (INSERT-only
+  // for anon, nothing else), before any session exists to sign them into, and
+  // that carve-out is untouched — the offer page depends on it.
+  // consultInsert (a handler, not an entry here, because it reads the calendar
+  // before it writes) is a SECOND door beside that one for the trainer's own
+  // bookings, never a widening of anon's.
+  // Booking is auto-accept, no review step — this op is Yusuf's cancel lever.
   consultSetStatus: (a) => ({
     method: 'PATCH', path: `consult_requests?id=eq.${encId(a.id)}`,
     body: { status: consultStatus(a.status) },
@@ -1111,6 +1114,124 @@ async function handleBookCallForClient(URL, SERVICE, args, trainerCode) {
   } catch (e) {
     console.error('trainer: bookCallForClient threw', e && e.message);
     return json(502, { error: 'write_failed', op: 'bookCallForClient' });
+  }
+}
+
+// ---- consultInsert ----------------------------------------------------------
+// Yusuf booking a consult for a lead he is already mid-text with, without
+// touching the offer page. Sits beside consultList and consultSetStatus and is
+// NOT a widening of anon's carve-out: strangers still INSERT this table with
+// the public key exactly as documented, and that stays load-bearing for the
+// offer page. This is a second door beside it, trainer-gated.
+//
+// args: { name, phone?, requested_at (ISO instant), dry_run?, force? }
+//
+// STATUS IS ALWAYS 'accepted', NEVER 'pending'. consult-availability.js filters
+// the public busy list on status=eq.accepted and nothing else, so a row written
+// as pending leaves its slot on sale to strangers and double-books the very
+// lead it was booked for. There is no review step in this system anyway — every
+// row the offer page writes lands accepted too — so 'pending' would be a state
+// nothing produces and nothing consumes, and it is not offered as an option
+// here at all.
+//
+// EVERY INTAKE ANSWER IS LEFT NULL. There are no answers: nobody filled in a
+// form. Writing a placeholder into goal or main_problem would be inventing a
+// prospect's words. The panel handles it — _cqRowHtml guards every intake
+// field individually, so a bare row renders as name, time and Cancel with no
+// empty labels, and _cqGroups sorts only on requested_at and status.
+//
+// IT COLLIDES LIKE bookCallForClient, deliberately the same contract. The whole
+// reason 'accepted' matters is double-booking; an op that could itself book a
+// consult on top of a client's call would recreate the exact failure it exists
+// to prevent. Same dry_run preview, same conflict + nearest_open, same force.
+async function handleConsultInsert(URL, SERVICE, args) {
+  let name, phone, startMs;
+  try {
+    name = str(args.name, 200);
+    if (!name) throw new Error('bad_arg');
+    phone = args.phone != null && args.phone !== '' ? nullableStr(args.phone, 40) : null;
+    startMs = new Date(isoTs(args.requested_at)).getTime();
+  } catch (e) { return json(400, { error: 'bad_arg' }); }
+  if (startMs < Date.now() - 60 * 60000) return json(400, { error: 'in_the_past' });
+
+  try {
+    const pad = (NEAR_SPAN_MIN + 24 * 60) * 60000;
+    const b = await collectBusy(URL, SERVICE, startMs - pad, startMs + pad);
+    if (!b.ok) return json(502, { error: 'availability_unknown', source: b.source });
+
+    const clash = firstClash(startMs, CONSULT_MIN, b.busy);
+    const near = clash ? nearestOpen(startMs, CONSULT_MIN, b.busy, 3) : [];
+    const shape = {
+      name: name, phone: phone,
+      requested_at: new Date(startMs).toISOString(),
+      ends_at: new Date(startMs + CONSULT_MIN * 60000).toISOString(),
+      duration_minutes: CONSULT_MIN, status: 'accepted', source: 'trainer',
+      conflict: clash ? { kind: clash.kind, client_code: clash.client_code || null,
+        label: clash.label || null, starts_at: new Date(clash.starts).toISOString(),
+        ends_at: new Date(clash.ends).toISOString() } : null,
+      nearest_open: near,
+    };
+
+    if (args.dry_run === true) return json(200, [Object.assign({ preview: true }, shape)]);
+    if (clash && args.force !== true) {
+      return json(409, { error: 'slot_taken', conflict: shape.conflict, nearest_open: near });
+    }
+
+    // Exactly the columns the offer page writes, plus source. Every intake
+    // answer is simply absent rather than null-valued — the column default
+    // does the rest, and an absent key is what keeps this identical to a row
+    // the page wrote.
+    const row = {
+      name: name, phone: phone,
+      requested_at: shape.requested_at,
+      status: 'accepted',
+      source: 'trainer',
+    };
+    let w = await fetch(`${URL}/rest/v1/consult_requests`, {
+      method: 'POST',
+      headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+      body: JSON.stringify(row),
+    });
+    let text = await w.text();
+    // Same schema self-heal as bookings.spent: `source` ships in this pass and
+    // the SQL does not land at the instant the deploy does. Without the column
+    // the row still books — it just cannot be told apart from a page booking,
+    // which is a smaller problem than not booking at all.
+    if (!w.ok && badColumn(text) === 'source') {
+      console.warn('trainer: consult_requests has no column "source" — writing without it');
+      delete row.source;
+      w = await fetch(`${URL}/rest/v1/consult_requests`, {
+        method: 'POST',
+        headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+        body: JSON.stringify(row),
+      });
+      text = await w.text();
+    }
+    if (!w.ok) {
+      console.error('trainer: consultInsert write failed', w.status, text.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'consultInsert', detail: text.slice(0, 200) });
+    }
+    let landed = []; try { landed = JSON.parse(text); } catch (e) {}
+    const id = landed[0] && landed[0].id;
+    if (id == null) return json(502, { error: 'unconfirmed', op: 'consultInsert' });
+
+    // Read it back off the table, selecting exactly what consultList selects
+    // so what comes back here is what the panel will show.
+    const rb = await fetch(`${URL}/rest/v1/consult_requests?id=eq.${encodeURIComponent(id)}`
+      + '&select=id,name,phone,requested_at,status,created_at&limit=1', { headers: svc(SERVICE) });
+    if (!rb.ok) return json(502, { error: 'unconfirmed', op: 'consultInsert', id: id });
+    const back = (await rb.json() || [])[0];
+    if (!back || back.status !== 'accepted') {
+      return json(502, { error: 'unconfirmed', op: 'consultInsert', id: id, read_back: back || null });
+    }
+    return json(200, [Object.assign({}, back, {
+      source: landed[0].source != null ? landed[0].source : null,
+      source_column_missing: landed[0].source === undefined,
+      conflict: shape.conflict, forced: !!(clash && args.force === true),
+    })]);
+  } catch (e) {
+    console.error('trainer: consultInsert threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'consultInsert' });
   }
 }
 
@@ -1935,6 +2056,7 @@ exports.handler = async (event) => {
   // client, which is exactly why they sit here and not with the three
   // session-scoped ops above.
   if (op === 'bookCallForClient') return handleBookCallForClient(URL, SERVICE, args, claims.client_code);
+  if (op === 'consultInsert') return handleConsultInsert(URL, SERVICE, args);
   if (op === 'cancelCallForClient') return handleCancelCallForClient(URL, SERVICE, args);
   if (op === 'vipOccurrences') return handleVipOccurrences(URL, SERVICE, args);
   // The trainer's half of the same threads. forCode null: any client's call.
