@@ -38695,7 +38695,13 @@ function _pcOccurrenceOn(row, d, exMap){
   var p=useDate.split('-'), t=useTime.split(':');
   return _zonedToUtc(+p[0], (+p[1])-1, +p[2], +t[0], +t[1], row.tz);
 }
-function _pcNextVipOccurrence(row, from){
+// Returns {at, ruleDate} — the instant, and the date the RULE fired to produce
+// it. Both matter: `at` is what the client turns up at, and ruleDate is the
+// occurrence's NAME. call_notes and vip_call_exceptions both key a single
+// occurrence on (vip_call_id, rule date), which is exactly why a note survives
+// the call being moved to another time or another day — the thread is attached
+// to the occurrence, not to the clock. Never use the moved date as the key.
+function _pcNextVipOccurrenceFull(row, from){
   try{
     var ruleEnd=new Date(row.end_date+'T00:00:00.000Z');
     var ruleStart=new Date(row.start_date+'T00:00:00.000Z');
@@ -38706,17 +38712,19 @@ function _pcNextVipOccurrence(row, from){
     var scanFrom=new Date(from.getTime()-7*86400000);
     var d=new Date(Math.max(scanFrom.getTime(), ruleStart.getTime()));
     d.setUTCHours(0,0,0,0);
-    var best=null;
+    var best=null, bestRule=null;
     for(var i=0;i<70;i++){
       if(d.getTime()>ruleEnd.getTime()) break;
       var dow=((d.getUTCDay()+6)%7)+1;
       if(Array.isArray(row.weekdays) && row.weekdays.indexOf(dow)>-1){
         var occ=_pcOccurrenceOn(row, d, exMap);
-        if(occ && occ.getTime()>=from.getTime() && (!best || occ.getTime()<best.getTime())) best=occ;
+        if(occ && occ.getTime()>=from.getTime() && (!best || occ.getTime()<best.getTime())){
+          best=occ; bestRule=d.toISOString().slice(0,10);
+        }
       }
       d.setUTCDate(d.getUTCDate()+1);
     }
-    if(best) return best;
+    if(best) return {at:best, ruleDate:bestRule};
     // Nothing in the next ten weeks — fall back to the long plain scan for a
     // block that starts much later. Exceptions are near-term by nature (a
     // trainer moves tomorrow, not a date in June), so the rule alone is the
@@ -38729,12 +38737,17 @@ function _pcNextVipOccurrence(row, from){
       var dow2=((d2.getUTCDay()+6)%7)+1;
       if(Array.isArray(row.weekdays) && row.weekdays.indexOf(dow2)>-1){
         var occ2=_zonedToUtc(d2.getUTCFullYear(), d2.getUTCMonth(), d2.getUTCDate(), +t2[0], +t2[1], row.tz);
-        if(occ2.getTime()>=from.getTime()) return occ2;
+        if(occ2.getTime()>=from.getTime()) return {at:occ2, ruleDate:d2.toISOString().slice(0,10)};
       }
       d2.setUTCDate(d2.getUTCDate()+1);
     }
     return null;
   }catch(e){ return null; }
+}
+// The instant alone, for everything that only ever wanted the time.
+function _pcNextVipOccurrence(row, from){
+  var f=_pcNextVipOccurrenceFull(row, from);
+  return f ? f.at : null;
 }
 // THE CARD STATES THE PLAN THE CLIENT ACTUALLY HAS (Yusuf, 17 Aug). A client with
 // a standing block has nothing to schedule, so "Schedule your check-in call" was a
@@ -38808,6 +38821,11 @@ function _pcCardHtml(next, state, credits, opts){
   } else {
     body='<div style="font-size:13.5px;color:var(--m2);line-height:1.6;">A 1:1 call with Yusuf \u2014 check-ins, form, whatever\u2019s on your mind. Not part of your plan yet.</div>';
   }
+  // The notes thread hangs off the card whenever the card is showing a real
+  // occurrence to hang it off. No id on it: this markup goes into BOTH hosts, and
+  // a duplicate id would hand every lookup the Program tab's copy while the
+  // client is looking at the Check-in tab's. Classes, and both get written.
+  if(opts.notes) body+='<div class="pcNotes" style="margin-top:14px;padding-top:13px;border-top:1px solid var(--border);" onclick="event.stopPropagation()"></div>';
   return '<div style="font-size:10px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:rgba(240,236,228,0.5);margin-bottom:8px;">'+_pcEyebrow(state)+'</div>'+body;
 }
 // Trainer sees nothing here \u2014 Admin manages this from Call access, and the
@@ -38880,20 +38898,20 @@ async function _pgCallsCard(_retried){
   try{ await sessEnsure(cl.code, true); }catch(e){}
   var now=new Date();
   var nextBooking=null, nextVip=null, bookOk=true, vipOk=true;
-  var _bk=await _pcFetchBookings();
+  var _bk=await _pcFetchBookings(), nextBookingId=null;
   bookOk=_bk.ok;
   try{
     var mine=(_bk.rows||[]).filter(function(b){
       return String(b.status||'booked')!=='cancelled' && new Date(b.starts_at).getTime()>now.getTime();
     }).sort(function(a,b){ return new Date(a.starts_at)-new Date(b.starts_at); });
-    if(mine.length) nextBooking=new Date(mine[0].starts_at);
+    if(mine.length){ nextBooking=new Date(mine[0].starts_at); nextBookingId=mine[0].id; }
   }catch(e){}
   // A standing block is a STATE, not just a date: the card has to keep the rule
   // that won, because the sentence it prints ("daily" / "weekly") comes from that
   // rule's own weekdays. Also kept: a rule that is live but whose next occurrence
   // couldn't be computed — the client still HAS a daily call, and saying nothing
   // about the plan because one time is unknown is the worse of the two failures.
-  var vipRow=null, stWeekdays=null, exOk=true;
+  var vipRow=null, stWeekdays=null, exOk=true, vipRuleDate=null;
   try{
     // trainerOpChecked, not trainerOp: {ok, rows} instead of a bare array, so a
     // refused or unreachable door can never read as "no standing block".
@@ -38912,10 +38930,11 @@ async function _pgCallsCard(_retried){
       // a fact and still gets said; the time doesn't — see _pcCardHtml's standing
       // branch. Every rule is checked, so one unreadable rule doesn't hide another.
       if(r.exceptions_ok===false){ exOk=false; if(!stWeekdays) stWeekdays=r.weekdays; return; }
-      var occ=_pcNextVipOccurrence(r, now);
+      var full=_pcNextVipOccurrenceFull(r, now);
+      var occ=full && full.at;
       if(!occ) return;
       if(!stWeekdays) stWeekdays=r.weekdays;
-      if(!nextVip || occ.getTime()<nextVip.getTime()){ nextVip=occ; vipRow=r; }
+      if(!nextVip || occ.getTime()<nextVip.getTime()){ nextVip=occ; vipRow=r; vipRuleDate=full.ruleDate; }
     });
   }catch(e){ vipOk=false; }
   var standing=!!(nextVip || !exOk);
@@ -38925,8 +38944,19 @@ async function _pgCallsCard(_retried){
     // client sees their cadence and the soonest thing on the calendar — whether
     // that instant came from the recurring block or from a one-off they booked on
     // top of it. Everyone else sees the booking on its own, as before.
-    if(standing) host.innerHTML=_pcCardHtml(exOk?next:null,'standing',null,{weekdays:(vipRow&&vipRow.weekdays)||stWeekdays});
-    else host.innerHTML=_pcCardHtml(next,'booked');
+    // WHICH OCCURRENCE IS ON SCREEN is what the notes thread keys on. `next` is
+    // whichever of the two systems won, so the target follows it rather than
+    // assuming: a standing client with a sooner one-off writes into that
+    // booking's thread, not into her block's.
+    var target=null;
+    if(next && next===nextBooking && nextBookingId!=null){
+      target={source:'booking', booking_id:nextBookingId};
+    } else if(next && next===nextVip && vipRow && vipRuleDate){
+      target={source:'vip', vip_call_id:vipRow.id, occurrence_date:vipRuleDate};
+    }
+    if(standing) host.innerHTML=_pcCardHtml(exOk?next:null,'standing',null,{weekdays:(vipRow&&vipRow.weekdays)||stWeekdays, notes:!!target});
+    else host.innerHTML=_pcCardHtml(next,'booked',null,{notes:!!target});
+    if(target) _pcNotesMount(target);
     // Only tappable when a one-off booking is what's showing — that's the only
     // side openBooking()'s picker knows how to cancel or add another slot to.
     // A vip_calls occurrence is a trainer-managed recurring block; there's
@@ -38977,6 +39007,206 @@ async function _pgCallsCard(_retried){
     return;
   }
   host.innerHTML=_pcCardHtml(null,'closed');
+}
+
+// ===== SHARED CALL NOTES — the client's half (Yusuf, 17 Aug) ================
+// Both sides write into the same call before it happens: she drops what she wants
+// to cover, Yusuf drops what he's bringing, and both read both. There is no share
+// control and no private half, because under the founding law there is nothing to
+// hide — and here that law is finally working FOR her rather than just meaning
+// she can't keep anything back.
+//
+// One state object, two hosts. The card's markup goes into #pgCallsCard and
+// #ciCallsCard alike, so nothing in here may use an id: the notes containers are
+// found by class and every paint writes to all of them. The draft lives in state
+// rather than in the textarea, or a background refresh landing mid-sentence would
+// take her words with it.
+//
+// THREADS ARE KEYED ON THE OCCURRENCE, exactly as the door keys them:
+// 'booking:<id>' for a one-off, 'vip:<rule id>:<rule date>' for one day of a
+// standing block. The rule date, never the moved date — that's what makes a note
+// survive the call being moved, and it's the same identity vip_call_exceptions
+// already uses.
+var _pcN={ target:null, key:null, rows:[], loaded:false, ok:true, loading:false,
+           open:false, openKey:null, draft:{}, sending:false, err:{} };
+function _pcThreadKey(t){
+  if(!t) return null;
+  return t.source==='booking' ? ('booking:'+t.booking_id)
+    : ('vip:'+t.vip_call_id+':'+String(t.occurrence_date||'').slice(0,10));
+}
+function _pcTargetOf(row){
+  return row.source==='booking'
+    ? {source:'booking', booking_id:row.booking_id}
+    : {source:'vip', vip_call_id:row.vip_call_id, occurrence_date:String(row.occurrence_date||'').slice(0,10)};
+}
+function _pcNotesHosts(){
+  return _pcHosts().map(function(h){ return h.querySelector('.pcNotes'); }).filter(Boolean);
+}
+function _pcNotesFor(key){
+  return (_pcN.rows||[]).filter(function(r){ return (r.thread_key||_pcThreadKey(_pcTargetOf(r)))===key; });
+}
+function _pcRowsSig(rows){
+  return (rows||[]).length+':'+(rows||[]).map(function(r){ return r.id; }).join(',');
+}
+function _pcNotesMount(target){
+  var key=_pcThreadKey(target);
+  var changed=(key!==_pcN.key);
+  _pcN.target=target;
+  if(changed){ _pcN.key=key; _pcN.open=false; _pcN.openKey=null; }
+  _pcNotesPaint();
+  _pcNotesLoad();
+}
+async function _pcNotesLoad(){
+  if(_pcN.loading) return;
+  _pcN.loading=true;
+  var r=await trainerOpChecked('myCallNotes', {});
+  _pcN.loading=false;
+  if(!r.ok){
+    // NEVER-ASSERT. An unloaded thread is not an empty thread: leave `loaded`
+    // false so the collapsed line keeps saying it's still reading, and say why
+    // in the console for whoever is debugging.
+    _pcN.ok=false;
+    try{ console.error('call notes: read failed', r.status||'', r.err||''); }catch(e){}
+    _pcNotesPaint();
+    return;
+  }
+  var before=_pcRowsSig(_pcN.rows), was=_pcN.loaded;
+  _pcN.ok=true; _pcN.loaded=true; _pcN.rows=r.rows||[];
+  // Only repaint when something actually changed, so a refresh can't jump the
+  // caret of someone mid-sentence.
+  if(!was || before!==_pcRowsSig(_pcN.rows)) _pcNotesPaint();
+}
+function _pcNoteWhen(ts){
+  try{
+    var d=new Date(ts); if(isNaN(d.getTime())) return '';
+    var today=new Date(); today.setHours(0,0,0,0);
+    var t=d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    return d.getTime()>=today.getTime() ? t : (d.toLocaleDateString('en-US',{month:'short',day:'numeric'})+', '+t);
+  }catch(e){ return ''; }
+}
+function _pcNoteRowHtml(r){
+  var mine=(r.author!=='trainer');
+  return '<div style="margin-top:12px;border-left:2px solid '+(mine?'rgba(240,236,228,0.14)':'rgba(224,196,152,0.42)')+';padding-left:10px;">'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:1.1px;text-transform:uppercase;color:rgba(240,236,228,0.45);">'
+      +(mine?'You':'Yusuf')+(_pcNoteWhen(r.created_at)?(' · '+_escHtml(_pcNoteWhen(r.created_at))):'')+'</div>'
+    +'<div style="font-size:13.5px;color:var(--text);line-height:1.55;margin-top:3px;white-space:pre-wrap;">'+_escHtml(r.body||'')+'</div>'
+  +'</div>';
+}
+function _pcComposerHtml(key){
+  var draft=_pcN.draft[key]||'';
+  var err=_pcN.err[key]||'';
+  return '<div style="margin-top:13px;">'
+    +'<textarea class="pcNoteBox" data-key="'+_escHtml(key)+'" rows="3" placeholder="Anything you want to cover"'
+      +' oninput="_pcNoteDraft(this.getAttribute(\'data-key\'),this.value)"'
+      +' style="width:100%;box-sizing:border-box;background:#1c1c1c;border:1px solid var(--border);border-radius:12px;padding:11px;'
+      +'font-family:inherit;font-size:13.5px;color:var(--text);line-height:1.5;resize:vertical;">'+_escHtml(draft)+'</textarea>'
+    +'<div style="display:flex;align-items:center;gap:10px;margin-top:8px;">'
+      +'<button onclick="_pcNoteSend(\''+_escHtml(key)+'\')"'+(_pcN.sending?' disabled':'')
+        +' style="background:var(--gold);color:var(--onaccent);border:none;border-radius:11px;padding:9px 15px;'
+        +'font-family:inherit;font-size:12.5px;font-weight:800;cursor:pointer;'+(_pcN.sending?'opacity:0.6;':'')+'">'
+        +(_pcN.sending?'Sending…':'Add note')+'</button>'
+      // A failed send says so and KEEPS saying so, with her words still in the box.
+      +(err?'<div style="font-size:12.5px;color:#e5a3a3;">'+_escHtml(err)+'</div>':'')
+    +'</div>'
+  +'</div>';
+}
+function _pcNotesPaint(){
+  var hosts=_pcNotesHosts(); if(!hosts.length) return;
+  var key=_pcN.key;
+  var mine=_pcN.loaded?_pcNotesFor(key):[];
+  var count=mine.length;
+  var suffix = !_pcN.loaded ? ' · loading…' : (count?(' · '+count):'');
+  var html='<div onclick="_pcNotesToggle()" style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;">'
+    +'<div style="font-size:12.5px;font-weight:700;color:var(--m2);">Notes for this call'
+      +'<span style="color:rgba(240,236,228,0.42);font-weight:600;">'+suffix+'</span></div>'
+    +'<div style="font-size:15px;color:rgba(240,236,228,0.42);line-height:1;">'+(_pcN.open?'⌄':'›')+'</div>'
+  +'</div>';
+  if(_pcN.open){
+    if(!_pcN.loaded){
+      html+= _pcN.ok
+        ? '<div style="font-size:12.5px;color:var(--m2);margin-top:12px;">Loading…</div>'
+        : '<div style="margin-top:12px;"><div style="font-size:13px;color:var(--m2);line-height:1.5;">Couldn’t load the notes just now.</div>'
+          +'<div onclick="_pcNotesRetry()" style="font-size:12.5px;color:var(--gold);font-weight:700;margin-top:6px;cursor:pointer;">Try again</div></div>';
+    } else {
+      html+=mine.map(_pcNoteRowHtml).join('');
+      html+=_pcComposerHtml(key);
+      html+=_pcEarlierHtml();
+    }
+  }
+  hosts.forEach(function(h){ h.innerHTML=html; });
+}
+// Every earlier occurrence she or Yusuf wrote on, newest first. The thread stays
+// with its call — it is that call's record, so it is still here afterwards
+// instead of being wiped when the card moves on to the next occurrence.
+function _pcEarlierHtml(){
+  var groups={};
+  (_pcN.rows||[]).forEach(function(r){
+    var k=r.thread_key||_pcThreadKey(_pcTargetOf(r));
+    if(k===_pcN.key) return;
+    (groups[k]=groups[k]||{key:k, rows:[], at:null}).rows.push(r);
+    // First non-null wins. Every note on one occurrence carries the same resolved
+    // instant, so a later row disagreeing means something is off — and the date on
+    // a call she's looking back at should not be decided by whichever note came last.
+    if(!groups[k].at && r.occurs_at) groups[k].at=r.occurs_at;
+  });
+  var keys=Object.keys(groups).sort(function(a,b){
+    return (new Date(groups[b].at||0))-(new Date(groups[a].at||0));
+  });
+  if(!keys.length) return '';
+  var html='<div style="font-size:10px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:rgba(240,236,228,0.42);margin:18px 0 2px;">Earlier calls</div>';
+  keys.slice(0,8).forEach(function(k){
+    var g=groups[k], on=(_pcN.openKey===k);
+    var when=g.at ? new Date(g.at).toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'}) : 'That call';
+    html+='<div onclick="_pcNotesOpenKey(\''+_escHtml(k)+'\')" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);cursor:pointer;">'
+      +'<div style="font-size:13px;color:var(--text);">'+_escHtml(when)+'</div>'
+      +'<div style="font-size:12px;color:rgba(240,236,228,0.42);">'+g.rows.length+'</div>'
+    +'</div>';
+    if(on){
+      html+='<div style="padding:2px 0 6px;">'+g.rows.map(_pcNoteRowHtml).join('')+_pcComposerHtml(k)+'</div>';
+    }
+  });
+  return html;
+}
+function _pcNotesToggle(){ _pcN.open=!_pcN.open; _pcNotesPaint(); if(_pcN.open && !_pcN.loaded) _pcNotesLoad(); }
+function _pcNotesRetry(){ _pcN.ok=true; _pcNotesPaint(); _pcNotesLoad(); }
+function _pcNotesOpenKey(k){ _pcN.openKey=(_pcN.openKey===k)?null:k; _pcNotesPaint(); }
+function _pcNoteDraft(k,v){ _pcN.draft[k]=v; }
+async function _pcNoteSend(key){
+  var body=String(_pcN.draft[key]||'').trim();
+  if(!body) return;
+  // Target the thread being written to, not whatever the card happens to show:
+  // an earlier call's composer writes into that call.
+  var target=(key===_pcN.key) ? _pcN.target : (function(){
+    var rows=_pcNotesFor(key); return rows.length?_pcTargetOf(rows[0]):null;
+  })();
+  if(!target) return;
+  _pcN.sending=true; _pcN.err[key]=''; _pcNotesPaint();
+  var args=Object.assign({body:body}, target);
+  var w=await trainerOpChecked('myCallNoteAdd', args);
+  _pcN.sending=false;
+  // A WRITE IS NOT DONE BECAUSE IT DIDN'T ERROR. The door answers with the whole
+  // thread and flags the row it just wrote; anything else is treated as not sent,
+  // her words stay in the box, and the failure stays on screen.
+  var landed=(w.ok && (w.rows||[]).some(function(r){ return r.just_added===true; }));
+  if(!landed){
+    _pcN.err[key]='That didn’t send. Try again.';
+    try{ console.error('call notes: write failed', w.status||'', w.err||''); }catch(e){}
+    _pcNotesPaint();
+    return;
+  }
+  _pcN.draft[key]='';
+  // Swap this thread for the one the door just handed back. Rows are dropped by
+  // KEY and by ID: keying alone would double every row if a response ever carried
+  // a note from another thread, and a note appearing twice in her own words is
+  // the kind of wrong that looks like the app talking to itself.
+  var retIds={};
+  (w.rows||[]).forEach(function(r){ retIds[String(r.id)]=1; });
+  var others=(_pcN.rows||[]).filter(function(r){
+    return (r.thread_key||_pcThreadKey(_pcTargetOf(r)))!==key && !retIds[String(r.id)];
+  });
+  _pcN.rows=others.concat(w.rows);
+  _pcN.loaded=true; _pcN.ok=true;
+  _pcNotesPaint();
 }
 // ---------- availability editor (trainer) ----------
 var _availDraft = null;
