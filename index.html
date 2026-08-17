@@ -1273,6 +1273,50 @@ body.jv-on.jv-paneOff #jvPaneEdge{
   border:1px solid #2a2a2a;border-radius:10px;color:#f0ece4;font:inherit;font-size:12.5px;font-weight:800;padding:9px 13px;}
 .cnoAdd button:hover{border-color:rgba(245,197,24,0.42);}
 
+/* ===== THE DAY PEEK =====================================================
+   A peek, not a page: it sits OVER the week so the sort and his place in it
+   survive. Roughly half the day card's weight — smaller type scale, tighter
+   rhythm, each entry one compact line of time + what + detail. The client's
+   own Day page and the feed's day card are untouched; this is the wrapper's
+   own compact treatment, which keeps DAY & JIM's renderer out of it. */
+#fwDayScrim{display:none;position:fixed;inset:0;background:rgba(6,6,6,0.62);
+  -webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px);z-index:6100;}
+/* Shown by a class, not by an inline style an attribute selector has to
+   sniff for — that read the literal spacing of a style string and would have
+   broken the day any browser normalised it differently. */
+#fwDayPop{
+  display:none;position:fixed;z-index:6101;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:min(420px, 92vw);max-height:76vh;overflow:hidden;flex-direction:column;
+  background:#101010;border:1px solid #262626;border-radius:16px;
+  box-shadow:0 26px 70px rgba(0,0,0,0.62);
+}
+#fwDayPop.on{display:flex;}
+#fwDayScrim.on{display:block;}
+.fwdHead{flex:0 0 auto;display:flex;align-items:baseline;gap:9px;
+  padding:13px 15px 11px;border-bottom:1px solid #1c1c1c;}
+.fwdWho{font-size:14px;font-weight:800;color:#f0ece4;}
+.fwdWhen{flex:1 1 auto;min-width:0;font-size:11.5px;color:rgba(240,236,228,0.44);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.fwdX{flex:0 0 auto;-webkit-appearance:none;appearance:none;cursor:pointer;background:transparent;
+  border:0;color:rgba(240,236,228,0.44);font-size:19px;line-height:1;padding:0 2px;}
+.fwdX:hover{color:#f0ece4;}
+.fwdBody{flex:1 1 auto;min-height:0;overflow-y:auto;padding:8px 15px 12px;}
+.fwdRow{display:flex;gap:10px;padding:7px 0;border-bottom:1px solid #191919;}
+.fwdRow:last-child{border-bottom:0;}
+.fwdRow time{flex:0 0 52px;font-size:11px;color:rgba(240,236,228,0.34);padding-top:2px;}
+.fwdRow > div{flex:1 1 auto;min-width:0;}
+.fwdRow b{display:block;font-size:12.5px;font-weight:700;color:#f0ece4;line-height:1.4;}
+.fwdRow span{display:block;font-size:11.5px;color:rgba(240,236,228,0.52);line-height:1.45;margin-top:1px;}
+/* Same band colours as the grid, so a row reads as the cell it came from. */
+.fwdRow.k-food b{color:var(--gold);}
+.fwdRow.k-wo b{color:#4ea96f;}
+.fwdRow.k-wt b{color:#7d9fc4;}
+.fwdWait,.fwdEmpty{font-size:12.5px;color:rgba(240,236,228,0.42);line-height:1.5;padding:14px 15px;}
+.fwdOpen{flex:0 0 auto;-webkit-appearance:none;appearance:none;cursor:pointer;width:100%;
+  background:#161616;border:0;border-top:1px solid #1c1c1c;color:rgba(240,236,228,0.72);
+  font:inherit;font-size:12px;font-weight:800;padding:11px;}
+.fwdOpen:hover{color:var(--gold);}
+
 /* ===== THE WEEK =========================================================
    One row per client, seven cells, three bands per cell. Density over detail:
    the whole point is reading twenty-five people's rhythm in one pass, so a row
@@ -10543,16 +10587,132 @@ function _fwRenderInto(holder, wk){
 // The drill-in. Sets the day the existing day view already understands and
 // hands straight back to it — _feedPeopleHtml and _pfCard, unchanged. There is
 // no second day renderer and there is not going to be one.
-function _fwOpenDay(code, dayTs){
-  try{
-    var today=_feedDayStart(Date.now()).getTime();
-    var back=Math.round((today-dayTs)/86400000);
-    if(back<0) return;                                  // a day that has not happened
-    window._feedMode='day';
-    window._feedDay=Math.min(FEED_MAX_DAYS_BACK, Math.max(0, back));
-    _feedRepaint();
-  }catch(e){ console.error('_fwOpenDay',e); }
+// ===== THE DAY PEEK =======================================================
+// THIS REPLACES A PATH THAT BROKE THE RENDERER IDENTITY LAW three ways, and it
+// is worth writing down because all three came from the same mistake: routing
+// a DATE through _feedDay, which is not a date at all — it is "how many days
+// back from today", a scalar offset that can only address the past.
+//   1. CLAMPED TO THE WRONG DAY. Math.min(FEED_MAX_DAYS_BACK=13, back) meant
+//      any day more than a fortnight back rendered as the 13-days-ago feed
+//      instead. Three weeks back in the week view, every cell in the row
+//      opened the same wrong date, silently. That is exactly "the day view
+//      ignored its input and rendered a default".
+//   2. FUTURE DAYS WERE A DEAD CONTROL. back<0 returned early, so tapping any
+//      day later this week did nothing at all — no day, no message, nothing.
+//   3. IT CHANGED THE SCREEN, losing the sort and his place in it.
+// A popup that takes the client AND the date as explicit arguments cannot have
+// any of these: there is no offset to clamp, no default to fall back to, and
+// no navigation to lose. The week grid stays exactly where it was underneath.
+var _FWD_CACHE={};
+function _fwDayKeyOf(code, dayTs){ return code+'|'+dayTs; }
+async function _fwDayDetail(code, dayTs){
+  var k=_fwDayKeyOf(code, dayTs);
+  if(_FWD_CACHE[k]) return _FWD_CACHE[k];
+  var lo=new Date(dayTs-12*3600000).toISOString();
+  var hi=new Date(dayTs+36*3600000).toISOString();
+  var q='client_code=eq.'+encodeURIComponent(code)
+      + '&logged_at=gte.'+encodeURIComponent(lo)+'&logged_at=lt.'+encodeURIComponent(hi);
+  function pull(table, sel, limit){
+    return sbSelect(table,'select='+sel+q+'&order=logged_at.asc&limit='+limit)
+      .then(function(r){ return {rows:r||[], ok:true, capped:_sbAtCap(r,limit)}; })
+      .catch(function(){ return {rows:[], ok:false, capped:false}; });
+  }
+  var mark=_sbFailMark();
+  var res=await Promise.all([
+    pull('food_logs','id,client_code,name,calories,protein,carbs,fat,logged_at,date_str',200),
+    pull('workout_logs','id,client_code,title,description,exercises,logged_at,date_str',80),
+    pull('weight_logs','client_code,weight,logged_at',40)
+  ]);
+  var netFailed=_sbFailedSince(mark);
+  var bad=res.some(function(r){ return !r.ok; }) || (netFailed && res.every(function(r){ return !r.rows.length; }));
+  // Only rows whose OWN bucket is this day — the same _feedDayStart the grid
+  // used, so the peek can never disagree with the cell that opened it.
+  function mine(rows){ return rows.filter(function(r){ return _feedDayStart(_feedTs(r)).getTime()===dayTs; }); }
+  var out={state:(bad?'failed':'ok'), food:mine(res[0].rows), wo:mine(res[1].rows), wt:mine(res[2].rows),
+           capped:res.some(function(r){ return r.capped; })};
+  _FWD_CACHE[k]=out;
+  return out;
 }
+function _fwDayPopHtml(code, dayTs, d){
+  var nm=window._jvShareMode ? _jvShareDemoLine(code) : String((CLIENTS[code]||{}).name||code);
+  var when=_jvSpokenDay(new Date(dayTs));
+  var full=new Date(dayTs).toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+  var head='<div class="fwdHead"><div class="fwdWho">'+_escHtml(nm)+'</div>'
+    + '<div class="fwdWhen">'+_escHtml(when==full?when:(when+' · '+full))+'</div>'
+    + '<button class="fwdX" onclick="fwCloseDayPop()" aria-label="Close">×</button></div>';
+  if(!d) return head+'<div class="fwdWait">Reading the day…</div>';
+  if(d.state==='failed')
+    return head+'<div class="fwdWait">Could not read this day — that is a read that failed, not an empty day.</div>';
+  var rows=[];
+  d.food.forEach(function(f){
+    var macro=[]; if(+f.calories) macro.push(Math.round(+f.calories)+' cal');
+    if(+f.protein) macro.push(Math.round(+f.protein)+'g protein');
+    rows.push({t:_feedTs(f), k:'food', main:String(f.name||'Meal'), sub:macro.join(' · ')});
+  });
+  d.wo.forEach(function(w){
+    var items=[]; try{ items=(typeof _bfItemsFor==='function')?_bfItemsFor(w):[]; }catch(e){}
+    // exercises FIRST, description only when it is absent — the house rule that
+    // stopped a five-exercise session rendering as one run-on line.
+    if(!items.length){
+      var ex=w.exercises; try{ if(typeof ex==='string') ex=JSON.parse(ex); }catch(e){ ex=null; }
+      if(Array.isArray(ex)) items=ex.map(function(e){ return (e&&e.name)?((e.name)+(e.detail?(' — '+e.detail):'')):''; }).filter(Boolean);
+      else if(w.description) items=String(w.description).split('\n').map(function(x){ return x.replace(/^[•\-\s]+/,'').trim(); }).filter(Boolean);
+    }
+    rows.push({t:_feedTs(w), k:'wo', main:String(w.title||'Training'), sub:items.join(' · ')});
+  });
+  d.wt.forEach(function(x){
+    if(x.weight==null) return;
+    rows.push({t:_feedTs(x), k:'wt', main:(Math.round((typeof wToDisp==='function'?wToDisp(x.weight):x.weight)*10)/10)
+      +' '+(typeof wUnit==='function'?wUnit():'lbs'), sub:'weigh-in'});
+  });
+  rows.sort(function(a,b){ return a.t-b.t; });
+  if(!rows.length){
+    // A day that has not happened is not a day nobody logged — the same
+    // distinction the grid's own cells make.
+    var todayK=_feedDayStart(Date.now()).getTime();
+    return head+'<div class="fwdEmpty">'
+      + (dayTs>todayK ? 'This day hasn’t happened yet.' : 'Nothing logged this day.')
+      + '</div>';
+  }
+  var body=rows.map(function(r){
+    return '<div class="fwdRow k-'+r.k+'">'
+      + '<time>'+_escHtml(_jvSpokenTime(new Date(r.t)))+'</time>'
+      + '<div><b>'+_escHtml(r.main)+'</b>'+(r.sub?('<span>'+_escHtml(r.sub)+'</span>'):'')+'</div>'
+    + '</div>';
+  }).join('');
+  var warn = d.capped ? '<div class="fwdWait">A read came back at its limit, so there may be more than this.</div>' : '';
+  return head+'<div class="fwdBody">'+body+warn+'</div>'
+    + '<button class="fwdOpen" onclick="fwCloseDayPop();jvOpenDeep(\''+code+'\')">Open '+_escHtml(String(nm).split(' ')[0])+'</button>';
+}
+function fwCloseDayPop(){
+  try{
+    var p=document.getElementById('fwDayPop'), s=document.getElementById('fwDayScrim');
+    if(p) p.classList.remove('on');
+    if(s) s.classList.remove('on');
+  }catch(e){}
+}
+// EXPLICIT INPUTS, both of them, all the way down. Nothing here reads today,
+// nothing reads login state, and nothing consults the feed's own day.
+async function fwOpenDayPop(code, dayTs){
+  dayTs=Number(dayTs);
+  if(!code || !isFinite(dayTs)) return;
+  var p=document.getElementById('fwDayPop'), s=document.getElementById('fwDayScrim');
+  if(!p){
+    p=document.createElement('div'); p.id='fwDayPop'; document.body.appendChild(p);
+    s=document.createElement('div'); s.id='fwDayScrim'; s.onclick=fwCloseDayPop; document.body.appendChild(s);
+  }
+  s=document.getElementById('fwDayScrim');
+  p.classList.add('on'); if(s) s.classList.add('on');
+  p.innerHTML=_fwDayPopHtml(code, dayTs, null);
+  var d=null;
+  try{ d=await _fwDayDetail(code, dayTs); }catch(e){ d={state:'failed'}; }
+  // Still the same day the user asked for — a slow read must not paint over a
+  // peek he has since closed or moved off.
+  if(!p.classList.contains('on')) return;
+  p.innerHTML=_fwDayPopHtml(code, dayTs, d);
+}
+// Kept as the name the grid calls, now a peek rather than a navigation.
+function _fwOpenDay(code, dayTs){ return fwOpenDayPop(code, dayTs); }
 function setFeedMode(m){
   window._feedMode=(m==='week')?'week':'day';
   if(window._feedMode==='week' && window._feedWeek==null) window._feedWeek=0;
