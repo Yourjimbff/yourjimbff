@@ -5893,6 +5893,46 @@ function _sbRenderDown(){
   };
 })();
 
+// ===== THE ASSISTANT PROXY'S SESSION HEADER =====
+// SEPARATE FROM THE WRAPPER ABOVE, AND IT MUST STAY SEPARATE. That one gates
+// SB_URL and carries a scar about session tokens reaching Supabase; this one
+// never sees a Supabase request at all. It matches exactly one path,
+// /.netlify/functions/analyze, and hands literally everything else straight
+// through — including every SB_URL call, which reaches the wrapper above
+// untouched, still on the plain public key. sbHeaders() is not involved and
+// must never be.
+//
+// Why it exists: /.netlify/functions/analyze was an OPEN PROXY to the
+// Anthropic API — no session, CORS wildcard, model and max_tokens taken from
+// the request body. Anyone who found the URL had a free LLM billed to Yusuf's
+// key. It now requires a signed session. This file reaches it from thirty
+// separate call sites, each building its own headers, and adding the header in
+// thirty places is thirty chances to miss one. One seam, one condition.
+//
+// No token means no header and the function answers 401. Deliberately no
+// retry and no sign-out on that: every caller already treats a non-ok response
+// as "the assistant is unavailable" and degrades, and a retry-then-sign-out
+// branch is precisely what caused the incident the comment above describes.
+// The next natural sessEnsure() renews; nothing here forces anything.
+(function(){
+  if(typeof window === 'undefined' || !window.fetch) return;
+  var _prevFetch = window.fetch.bind(window);
+  var AI_PATH = '/.netlify/functions/analyze';
+  window.fetch = function(input, opts){
+    var u='';
+    try{ u = (typeof input === 'string') ? input : (input && input.url) || ''; }catch(e){}
+    if(!u || u.indexOf(AI_PATH) === -1) return _prevFetch(input, opts);
+    var t=null; try{ t=_sessToken(); }catch(e){}
+    if(!t) return _prevFetch(input, opts);
+    var o={}; for(var k in (opts||{})) o[k]=opts[k];
+    var h={}; var src=(o.headers||{});
+    for(var hk in src) h[hk]=src[hk];
+    h['Authorization']='Bearer '+t;
+    o.headers=h;
+    return _prevFetch(input, o);
+  };
+})();
+
 // ALWAYS THE PUBLIC KEY. This attached the session token whenever one existed, on the
 // theory that it would be inert until the lock was pasted — WRONG, and it took the
 // entire roster's sign-in down within an hour of SUPABASE_JWT_SECRET being set. A
