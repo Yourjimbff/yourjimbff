@@ -1117,6 +1117,139 @@ async function handleBookCallForClient(URL, SERVICE, args, trainerCode) {
   }
 }
 
+// ---- logPhoto ---------------------------------------------------------------
+// A trainer putting a progress photo onto a NAMED client's record. Same
+// species as logWeight/logFood/logSteps above — the assistant acting on
+// somebody else's data, which is a privileged act and had no authority behind
+// it while both existing photo writes used the public key.
+//
+// args: { client_code, photo_url, date_str, angle, weight?, logged_at? }
+//
+// THE date_str TRAP IS CLOSED BY CONSTRUCTION, NOT BY A COMMENT.
+// progress_photos.date_str is a DISPLAY string — "Aug 14, 2026", produced by
+// toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) —
+// and every surface groups a day's photos by matching it exactly. An ISO date
+// lands a photo that silently forms its own group of one, next to the client's
+// own photos from the same morning, and looks like it worked.
+// So this op does not merely document the format and hope: it ACCEPTS either
+// form and normalises to the display string itself. A caller that sends
+// "2026-08-17" and a caller that sends "Aug 17, 2026" produce the identical
+// row. The trap cannot be sprung through this door, by Jarvis or anyone else.
+// Built from an explicit month table rather than toLocaleDateString so it
+// cannot drift with a runtime's locale data.
+const PP_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function photoDateStr(v) {
+  const s = String(v == null ? '' : v).trim();
+  if (!s) throw new Error('bad_arg');
+  // Already the display form: "Aug 14, 2026". Normalised through the same
+  // table anyway, so "aug 4, 2026" or a stray double space cannot make a
+  // second group for one day.
+  let m = /^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})$/.exec(s);
+  if (m) {
+    const idx = PP_MONTHS.findIndex((x) => x.toLowerCase() === m[1].slice(0, 3).toLowerCase());
+    if (idx < 0) throw new Error('bad_arg');
+    const d = Number(m[2]);
+    if (!(d >= 1 && d <= 31)) throw new Error('bad_arg');
+    return PP_MONTHS[idx] + ' ' + d + ', ' + m[3];
+  }
+  // ISO, which is what a voice layer will reach for every time.
+  m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (m) {
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+    if (!(mo >= 1 && mo <= 12) || !(d >= 1 && d <= 31)) throw new Error('bad_arg');
+    return PP_MONTHS[mo - 1] + ' ' + d + ', ' + m[1];
+  }
+  throw new Error('bad_arg');
+}
+function photoAngle(v) {
+  const s = String(v == null ? '' : v).trim();
+  const hit = ['Front', 'Side', 'Back'].find((a) => a.toLowerCase() === s.toLowerCase());
+  if (!hit) throw new Error('bad_arg');
+  return hit;
+}
+// These render as <img src> inside a client's own app. An unconstrained
+// string here would let a trainer session point a client's progress record at
+// any host on the internet — a beacon on someone's private screen, and not
+// something this op has any reason to allow. Two shapes only: this project's
+// own public storage, or the inline data URI the client's own uploader
+// already falls back to when the bucket is unreachable.
+function photoUrl(v, projectUrl) {
+  const s = String(v == null ? '' : v).trim();
+  if (!s) throw new Error('bad_arg');
+  if (/^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(s)) {
+    if (s.length > 3000000) throw new Error('bad_arg');
+    return s;
+  }
+  const prefix = String(projectUrl || '').replace(/\/+$/, '') + '/storage/v1/object/public/';
+  if (s.length <= 2000 && s.indexOf(prefix) === 0 && s.indexOf('..') === -1) return s;
+  throw new Error('bad_arg');
+}
+
+async function handleLogPhoto(URL, SERVICE, args) {
+  let code, url, dateStr, angle, weight, loggedAt;
+  try {
+    code = enc_raw(args.client_code);
+    url = photoUrl(args.photo_url, URL);
+    dateStr = photoDateStr(args.date_str);
+    angle = photoAngle(args.angle);
+    weight = args.weight != null && args.weight !== '' ? num(args.weight) : null;
+    loggedAt = isoTs(args.logged_at || new Date().toISOString());
+  } catch (e) { return json(400, { error: 'bad_arg' }); }
+
+  try {
+    // The client must be real. Writing a photo onto a code that has no row is
+    // an orphan nothing will ever render and nothing will ever clean up.
+    const who = await readClientRow(URL, SERVICE, code);
+    if (!who) return json(404, { error: 'no_such_client' });
+
+    // Exactly the shape the client's own uploader produces on its first
+    // attempt — same columns, same order of meaning — so every surface renders
+    // a trainer-added photo identically to one the client added.
+    const row = { client_code: code, photo: url, date_str: dateStr,
+      weight: weight, angle: angle, logged_at: loggedAt };
+    const w = await fetch(`${URL}/rest/v1/progress_photos`, {
+      method: 'POST',
+      headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+      body: JSON.stringify(row),
+    });
+    const text = await w.text();
+    if (!w.ok) {
+      console.error('trainer: logPhoto write failed', w.status, text.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'logPhoto', detail: text.slice(0, 200) });
+    }
+    let landed = []; try { landed = JSON.parse(text); } catch (e) {}
+    const id = landed[0] && landed[0].id;
+    if (id == null) return json(502, { error: 'unconfirmed', op: 'logPhoto' });
+
+    // READ BACK THE WHOLE DAY, not just the row. Grouping is the thing that
+    // silently fails here, so the answer proves it rather than asserting it:
+    // if this photo did not land in the same group as the client's own photos
+    // from that day, it is visible right here in `day_group`.
+    const rb = await fetch(`${URL}/rest/v1/progress_photos?client_code=eq.${encodeURIComponent(code)}`
+      + `&date_str=eq.${encodeURIComponent(dateStr)}`
+      + '&select=id,client_code,date_str,angle,weight,logged_at&order=logged_at.asc&limit=50',
+      { headers: svc(SERVICE) });
+    if (!rb.ok) return json(502, { error: 'unconfirmed', op: 'logPhoto', id: id });
+    const group = await rb.json() || [];
+    if (!group.some((p) => String(p.id) === String(id))) {
+      return json(502, { error: 'unconfirmed', op: 'logPhoto', id: id });
+    }
+    return json(200, [{
+      id: id, client_code: code, client_name: who.name || code,
+      date_str: dateStr, date_str_normalised: String(args.date_str) !== dateStr,
+      angle: angle, weight: weight, logged_at: loggedAt,
+      day_group: group.map((p) => ({ id: p.id, angle: p.angle, logged_at: p.logged_at })),
+      day_group_size: group.length,
+      confirmed_by_read_back: true,
+    }]);
+  } catch (e) {
+    console.error('trainer: logPhoto threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'logPhoto' });
+  }
+}
+
 // ---- consultInsert ----------------------------------------------------------
 // Yusuf booking a consult for a lead he is already mid-text with, without
 // touching the offer page. Sits beside consultList and consultSetStatus and is
@@ -2097,6 +2230,7 @@ exports.handler = async (event) => {
   // session-scoped ops above.
   if (op === 'bookCallForClient') return handleBookCallForClient(URL, SERVICE, args, claims.client_code);
   if (op === 'consultInsert') return handleConsultInsert(URL, SERVICE, args);
+  if (op === 'logPhoto') return handleLogPhoto(URL, SERVICE, args);
   if (op === 'cancelCallForClient') return handleCancelCallForClient(URL, SERVICE, args);
   if (op === 'vipOccurrences') return handleVipOccurrences(URL, SERVICE, args);
   // The trainer's half of the same threads. forCode null: any client's call.
