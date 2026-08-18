@@ -15858,6 +15858,23 @@ function _jvPendStem(p){
     return s.replace(/[\s.,;:—-]+$/,'');
   }catch(e){ return 'the one before it'; }
 }
+// ACTS EXECUTE, THEY DO NOT ASK (Yusuf, ruling, 18 Aug) — the entry point
+// every unambiguous act now fires through instead of _jvPendSet+"Yes?".
+// _jvCommitPending clears window._jvPendingWrite unconditionally as its
+// first move in every branch, which is exactly right when a "yes" just
+// answered it — but calling it directly, cold, would silently drop
+// whatever confirmation was ALREADY on the table (a still-unanswered
+// conflict-ask from a moment ago) with no queueing and no word said. This
+// preserves that one piece of the old machinery: park anything genuinely
+// still waiting, commit the new act, then promote the parked one back
+// exactly as a "yes" always has, so nothing he was mid-answering vanishes
+// just because a second, unrelated, unambiguous command arrived first.
+async function _jvFireNow(p){
+  var existing=_jvPendingFresh();
+  if(existing) _jvQueueAdd(existing);
+  var line=await _jvCommitPending(p);
+  return line+_jvQueueNext('Also waiting');
+}
 // ===== ONE ANSWER RECOGNISER FOR THE ONE STATE MACHINE ====================
 // He does not answer a confirmation with the bare word "yes". He answers it the
 // way anyone answers a person: "yeah, this is not one of their calls", "ok do
@@ -16856,11 +16873,18 @@ function schAddConsult(dayTs, hostId){
     + '<div class="schFormD" id="schCsEcho"></div>'
     + '<div class="schFormA">'
     +   '<button class="schFormCancel" onclick="document.getElementById(\''+hid+'\').innerHTML=\'\'">Cancel</button>'
-    +   '<button class="schFormGo" onclick="schConsultCheck(\''+ds+'\')">Check this time</button>'
+    +   '<button class="schFormGo" onclick="schConsultBook(\''+ds+'\')">Book</button>'
     + '</div><div id="schCsOut"></div></div>';
   try{ document.getElementById('schCsName').focus(); }catch(e){}
 }
-async function schConsultCheck(ds){
+// ACTS EXECUTE, THEY DO NOT ASK (Yusuf, ruling, 18 Aug) — swept onto this
+// surface too, for the same reason it was swept off the chat path: a name
+// typed into a field and a time picked on a clock are not a guess, and a
+// second "yes, book it" tap on top of the "Book" tap he already gave is a
+// confirmation of a confirmation. One tap books, unless the door itself
+// finds a real collision — that's still the one thing worth a beat, same
+// as everywhere else this ruling reaches.
+async function schConsultBook(ds){
   var nm=(document.getElementById('schCsName')||{}).value||'';
   var tm=(document.getElementById('schCsTime')||{}).value||'';
   var out=document.getElementById('schCsOut'); if(!out) return;
@@ -16870,24 +16894,31 @@ async function schConsultCheck(ds){
   if(p.length!==3 || t.length<2){ out.innerHTML='<div class="schFormErr">Pick a real time.</div>'; return; }
   var when=new Date(+p[0], (+p[1])-1, +p[2], +t[0], +t[1], 0, 0);
   if(isNaN(when.getTime())){ out.innerHTML='<div class="schFormErr">Pick a real time.</div>'; return; }
-  out.innerHTML='<div class="schFormD">Checking that time…</div>';
+  out.innerHTML='<div class="schFormD">Booking…</div>';
   var line='';
   try{ line=await _schCsCheck(nm, {ts:when.getTime(), iso:when.toISOString()}); }
   catch(e){ line=''; }
   if(!line){ out.innerHTML='<div class="schFormErr">I couldn’t check that time, so nothing was booked.</div>'; return; }
   var held=window._schCsPending;
-  // The conflict copy from _schCsCheck says "or 'book it anyway'" — a phrase
-  // that means something in a chat, where he can type it, and nothing in a
-  // button UI that has no text field. A THIRD BUTTON says the same thing the
-  // way this surface actually works, mirroring the trainer booking sheet's
-  // own conflict pattern (tbkRenderPreview) rather than inventing new copy.
-  out.innerHTML='<div class="schFormAsk">'+line+'</div>'
-    + (held ? ('<div class="schFormA">'
-    +   '<button class="schFormCancel" onclick="schConsultAnswer(\'no\')">No</button>'
-    +   (held.conflict
-          ? '<button class="schFormGo" onclick="schConsultAnswer(\'yes\',true)">Book it anyway</button>'
-          : '<button class="schFormGo" onclick="schConsultAnswer(\'yes\')">Yes, book it</button>')
-    + '</div>') : '');
+  if(held && held.conflict){
+    // The conflict copy says "or 'book it anyway'" — a phrase that means
+    // something in a chat, where he can type it, and nothing in a button UI
+    // that has no text field. Two buttons say the same thing the way this
+    // surface actually works.
+    out.innerHTML='<div class="schFormAsk">'+line+'</div><div class="schFormA">'
+      +   '<button class="schFormCancel" onclick="schConsultAnswer(\'no\')">No</button>'
+      +   '<button class="schFormGo" onclick="schConsultAnswer(\'yes\',true)">Book it anyway</button>'
+      + '</div>';
+    return;
+  }
+  // No clash — the whole reason this used to stop and ask. Books immediately.
+  var done='';
+  try{ done=await _schCsCommit(false); }catch(e){}
+  out.innerHTML='<div class="schFormAsk">'+_escHtml(String(done||'Nothing happened — say it again.'))+'</div>';
+  if(String(done||'').indexOf('✓')===0){
+    try{ _SCH_SRC=null; }catch(e){}
+    setTimeout(function(){ try{ schRefresh(); }catch(e){} }, 900);
+  }
 }
 // force=true only from the conflict offer's "book it anyway" — a separate
 // button from plain Yes, same distinction the conversation path draws.
@@ -17506,13 +17537,13 @@ async function _apApptCommand(t){
   }
   return _apApptAct(title, w);
 }
-// States it back EXACTLY as it will be written, and holds it — tier two.
-function _apApptAct(title, w){
-  var when=_jvWhenLabel(new Date(w.ts));
-  var park=_jvPendSet({kind:'appt', title:String(title).slice(0,120), iso:new Date(w.ts).toISOString(),
-    when:when, parts:[], payload:{}, at:Date.now()});
-  return 'Putting <b>'+_escHtml(title)+'</b> on your calendar for '+_escHtml(when)
-    +' — an hour held, and it blocks your booking page. Yes?'+_escHtml(park);
+// ACTS EXECUTE, THEY DO NOT ASK — a generic appointment carries no clash
+// check at all (no dry_run exists for this kind), so there is nothing here
+// that still counts as a genuine collision worth a beat. Fires immediately.
+async function _apApptAct(title, w){
+  var p={kind:'appt', title:String(title).slice(0,120), iso:new Date(w.ts).toISOString(),
+    when:_jvWhenLabel(new Date(w.ts)), parts:[], payload:{}, at:Date.now()};
+  return await _jvFireNow(p);
 }
 // ===== BOOKING A CONSULT BY VOICE =========================================
 // Yusuf's convention decides this, not inference: he ALWAYS says "consult",
@@ -17642,21 +17673,24 @@ async function _csConsultAct(name, w){
   }catch(e){}
   if(!pv) return 'I couldn’t check that time just now, so I haven’t booked anything. Try again in a moment.';
   var when=_jvWhenLabel(new Date(pv.requested_at||w.iso));
-  var _cpark=_jvPendSet({kind:'consult', name:name, iso:(pv.requested_at||w.iso), when:when,
+  var _cp={kind:'consult', name:name, iso:(pv.requested_at||w.iso), when:when,
     conflict:pv.conflict||null, nearest:(pv.nearest_open||[]), force:false,
-    parts:[], payload:{}, at:Date.now()});
+    parts:[], payload:{}, at:Date.now()};
+  // ACTS EXECUTE, THEY DO NOT ASK — same ruling as the client-call path. A
+  // clash is still the one thing worth a beat, since it means doubling
+  // someone up on a real slot.
   if(pv.conflict){
     var c=pv.conflict;
     var whoElse=(c.client_code && CLIENTS[c.client_code] && CLIENTS[c.client_code].name) || c.label || 'something else';
     var n0=(pv.nearest_open||[])[0];
     var offer=n0 ? (' <b>'+_escHtml(_jvWhenLabel(new Date(n0.starts_at||n0)))+'</b> is open — want that?')
                  : ' Nothing near it is open.';
+    var _cpark=_jvPendSet(_cp);
     if(n0) window._jvPendingWrite.offer=(n0.starts_at||n0);
     return _escHtml(when)+' is '+_escHtml(whoElse)+'’s.'+offer+_escHtml(_cpark)
       +'<br><span style="opacity:0.7;">Say yes for that time, or “book it anyway” to double up.</span>';
   }
-  return 'Booking a consult with <b>'+_escHtml(name)+'</b> for '+_escHtml(when)
-    +'. That spends nothing — it is a consult, not one of their calls. Yes?'+_escHtml(_cpark);
+  return await _jvFireNow(_cp);
 }
 async function _jvBookCommand(text){
   var t=String(text||'').trim();
@@ -17720,19 +17754,22 @@ async function _jvBookAct(kind, code, name, w, skip){
   // Moving a standing call is a different table and a different sentence.
   // skip/cancel is decided by the CALLER now and passed in — it used to be
   // re-derived from the sentence text, which no longer exists down here.
+  // ACTS EXECUTE, THEY DO NOT ASK (Yusuf, ruling, 18 Aug). A name and a time
+  // are not a guess — the guess was ever which CLIENT ("two Anthonys") or
+  // which HOUR (nothing said), and both of those still stop and ask, above
+  // this point, before a name or a time is even in hand. Once both are
+  // known, asking "Yes?" over a fact he already stated is a second
+  // confirmation on top of the one he already gave by speaking clearly. He
+  // sees the result on his own calendar instantly, and every one of these
+  // kinds carries a real undo — that is the safety net now, not a gate
+  // before the act.
   if(isMove){
     var d=new Date(w.ts);
     var dateStr=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
     var hhmm=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
-    var _mpark=_jvPendSet({kind:'vipmove', code:code, name:name, date:dateStr, time:hhmm, skip:!!skip,
-      parts:[], payload:{}, at:Date.now()});
-    // "on tomorrow" is not a sentence. Only a weekday name takes the "on".
-    var dayWord=_jvWhenLabel(d).split(' at ')[0];
-    var dayPhrase=/^(today|tomorrow)$/i.test(dayWord) ? dayWord : ('on '+dayWord);
-    var newTime=_jvSpokenTime(d);
-    return (skip
-      ? 'Skipping '+_escHtml(name)+'’s standing call '+_escHtml(dayPhrase)+' — that day only, the rest of the series stays as it is. Yes?'
-      : 'Moving '+_escHtml(name)+'’s standing call '+_escHtml(dayPhrase)+' to '+_escHtml(newTime)+' — that day only, next week stays as it was. Yes?')+_escHtml(_mpark);
+    var _mp={kind:'vipmove', code:code, name:name, date:dateStr, time:hhmm, skip:!!skip,
+      parts:[], payload:{}, at:Date.now()};
+    return await _jvFireNow(_mp);
   }
 
   // The door's own preview. Nothing is written by this call.
@@ -17747,22 +17784,28 @@ async function _jvBookAct(kind, code, name, w, skip){
                 : pv.will_spend==='credit' ? 'This uses one of '+_escHtml(name.split(' ')[0])+'’s call credits.'
                 : (pv.credit_note ? _escHtml(pv.credit_note.replace(/\s*—.*$/,''))+' — it books anyway.' : 'This spends nothing.');
 
-  var _bpark=_jvPendSet({kind:'booking', code:code, name:pv.client_name||name, iso:pv.starts_at,
+  var _bp={kind:'booking', code:code, name:pv.client_name||name, iso:pv.starts_at,
     when:_jvWhenLabel(new Date(pv.starts_at)), spend:pv.will_spend, conflict:pv.conflict||null,
-    nearest:(pv.nearest_open||[]), force:false, parts:[], payload:{}, at:Date.now()});
+    nearest:(pv.nearest_open||[]), force:false, parts:[], payload:{}, at:Date.now()};
 
+  // A CLASH IS NOT AMBIGUITY, IT IS A COLLISION — the one case still worth a
+  // beat before writing, because "book it anyway" doubles a client up on a
+  // real appointment. This still fires the ATTEMPT (the dry-run already
+  // ran); it only holds the WRITE, and only because two different people's
+  // time is now actually in question, which is a different thing than not
+  // being sure who he meant.
   if(pv.conflict){
     var c=pv.conflict;
     var whoElse=(c.client_code && CLIENTS[c.client_code] && CLIENTS[c.client_code].name) || c.label || 'something else';
     var n0=(pv.nearest_open||[])[0];
     var offer=n0 ? (' <b>'+_escHtml(_jvWhenLabel(new Date(n0.starts_at||n0)))+'</b> is open — want that?')
                  : ' Nothing near it is open.';
+    var _bpark=_jvPendSet(_bp);
     if(n0) window._jvPendingWrite.offer=(n0.starts_at||n0);
     return _escHtml(_jvWhenLabel(new Date(pv.starts_at)))+' is '+_escHtml(whoElse)+'’s.'+offer+_escHtml(_bpark)
       +'<br><span style="opacity:0.7;">Say yes for that time, or “book it anyway” to double up.</span>';
   }
-  return 'Booking <b>'+_escHtml(pv.client_name||name)+'</b> for '+_escHtml(_jvWhenLabel(new Date(pv.starts_at)))
-    +'. '+spendLine+' Yes?'+_escHtml(_bpark);
+  return await _jvFireNow(_bp);
 }
 // ===== THE QUEUE OF HELD WRITES ===========================================
 // One monologue can carry three things that each need a yes. They are held as a
@@ -20198,7 +20241,19 @@ function jvRenderNeeds(hostId){
 // things that were tried is not a record of what happened. Each line carries
 // its own undo where one honestly exists.
 var JV_ACTLOG_MAX=12;
-function _jvActLog(){ try{ return JSON.parse(localStorage.getItem('yjb_jv_actlog')||'[]')||[]; }catch(e){ return []; } }
+// A LOW-VOLUME DAY LET A STALE LINE SIT IN "JUST NOW" (Yusuf, live — a
+// 21-hour-old move read as current and cost a whole round of "is this
+// live or scrollback"). The count cap alone doesn't bound AGE — twelve
+// actions can span days on a quiet account. "Just now" only means that if
+// entries older than a day are dropped on read, same idea as the river's
+// own 10-day prune, just a much shorter window for a much shorter-lived
+// list.
+var JV_ACTLOG_MAX_AGE_MS=24*60*60*1000;
+function _jvActLog(){
+  var a=[]; try{ a=JSON.parse(localStorage.getItem('yjb_jv_actlog')||'[]')||[]; }catch(e){ return []; }
+  var cut=Date.now()-JV_ACTLOG_MAX_AGE_MS;
+  return a.filter(function(x){ return x && (+x.t||0)>cut; });
+}
 function _jvActSave(a){ try{ localStorage.setItem('yjb_jv_actlog', JSON.stringify(a.slice(0,JV_ACTLOG_MAX))); }catch(e){} }
 function jvActRecord(text, undo){
   try{
@@ -20801,15 +20856,28 @@ async function _jtRunItem(t, capture, ctx){
   // the cap counts round trips, so a failed one counts too.
   if(!mo) return {status:'lost', modelled:true, line:'“'+_escHtml(t)+'” — I couldn’t reach Jarvis for that one, so nothing was done with it.', html:true, src:t};
   var code=mo.code, name=mo.name||((CLIENTS[code]||{}).name||code);
+  // A NUMBER STILL WAITS. Not named in the ruling, and its own reasoning
+  // doesn't hold for a number the way it does for a call or a note: there
+  // is no calendar to check it against on sight, and a weight log has no
+  // undo at all — a wrong one sits in a real history looking like data for
+  // weeks. This is the one write that keeps asking.
   var pend=null;
-  try{
-    pend=_jvBuildPendingLog(mo.log, code, name);
-    if(!pend && mo.working_on) pend=_jvBuildPendingWorkingOn(String(mo.working_on), code, name);
-  }catch(e){}
+  try{ pend=_jvBuildPendingLog(mo.log, code, name); }catch(e){}
   if(pend){
     var _lpark='';
     if(capture) _jvQueueAdd(pend); else _lpark=_jvPendSet(pend);
     return {status:'wait', modelled:true, line:_escHtml(_jvPendingSummary(pend)+_lpark), html:true, src:t};
+  }
+  // WORKING ON IS A NOTE, NOT A NUMBER — same class as mo.note two branches
+  // down, which has always fired immediately. Fires now too, for the same
+  // reason: one line on a profile he can see and delete.
+  if(mo.working_on){
+    var _wop=null;
+    try{ _wop=_jvBuildPendingWorkingOn(String(mo.working_on), code, name); }catch(e){}
+    if(_wop){
+      var _woLine=await _jvFireNow(_wop);
+      return {status:(/^\s*✓/.test(_woLine)?'done':'lost'), modelled:true, line:_escHtml(_woLine), html:true, src:t};
+    }
   }
   if(code && CLIENTS[code] && mo.note){
     var saved=null;
@@ -21131,11 +21199,28 @@ function _jvOvlDrag(ev){
 // The glyph exists only for a trainer. Polled rather than hooked into every
 // login path — the same pattern the feed's boot watchdog uses, because session
 // state lands at different moments on different routes.
+// NO PLACEHOLDER ANYWHERE ON HIS ACCOUNT (Yusuf, live). The rail's own
+// composer was emptied earlier; the tab and the overlay share the same
+// static "Say the word — or type it" markup and were missed. He built the
+// app — every one of the three Jarvis composers goes quiet for a trainer,
+// once, the moment a session is known; client accounts keep the line.
+var _JV_QUIET_INPUTS=['jtInputMob','jtInputDesk','jtInputOvl'];
+function _jvQuietComposers(){
+  try{
+    var ok=!!(window.cl && typeof isTrainer==='function' && isTrainer(cl.code));
+    if(!ok) return;
+    _JV_QUIET_INPUTS.forEach(function(id){
+      var el=document.getElementById(id);
+      if(el && el.placeholder) el.placeholder='';
+    });
+  }catch(e){}
+}
 function _jvOvlBoot(){
   try{
     var ok=!!(window.cl && typeof isTrainer==='function' && isTrainer(cl.code));
     document.body.classList.toggle('jv-ovl-ok', ok);
     if(!ok && document.body.classList.contains('jv-ovl-on')) jvOvlClose();
+    _jvQuietComposers();
   }catch(e){}
 }
 try{ setInterval(_jvOvlBoot, 4000); setTimeout(_jvOvlBoot, 1500); }catch(e){}
