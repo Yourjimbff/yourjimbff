@@ -6456,6 +6456,25 @@ async function trainerOpChecked(op, args, _retried){
     return {ok:true, rows:(Array.isArray(d) ? d : (d?[d]:[]))};
   }catch(e){ return {ok:false, rows:[]}; }
 }
+// A DOOR FAILURE NAMES ITSELF. Every one of these three lines used to collapse
+// into "That did not book" regardless of WHY — a 403 not_a_trainer, a 502
+// write_failed with the server's own detail text, a dead network, a timeout —
+// all read identically to him. A real lead's booking failed three times across
+// two surfaces and every attempt produced this same uninformative sentence, so
+// the investigation had to start from nothing instead of from a status code
+// the door had been returning correctly the whole time. Never technical
+// jargon dumped raw — named plainly, with the detail the door gave when it
+// gave one.
+function _jvDoorFailReason(w){
+  if(!w) return 'The request never reached the server — check your connection.';
+  if(w.status===403 || w.err==='not_a_trainer') return 'The door says this session is not signed in as a trainer.';
+  if(w.status===401 || w.err==='no_session') return 'The door says this session has expired — sign in again.';
+  if(w.status===400 || w.err==='bad_arg') return 'The door rejected what was sent — a name or time it couldn’t read.';
+  if(w.err==='write_failed') return 'The write itself failed on the server'+(w.detail&&w.detail.detail?(': '+_escHtml(String(w.detail.detail).slice(0,140))):'')+'.';
+  if(w.err==='unconfirmed') return 'The write may have landed but could not be read back to confirm it.';
+  if(w.status) return 'The door answered '+w.status+(w.err?(' ('+_escHtml(w.err)+')'):'')+'.';
+  return 'The door gave no reason — likely a dropped connection.';
+}
 // The write side of the door. Same shape as trainerOpChecked — {ok, rows} — because a
 // write has no safe "just say empty" fallback at all: every caller needs to know
 // definitively whether it landed, and `rows` is the row PostgREST actually wrote or
@@ -15826,7 +15845,12 @@ async function _jvCommitPending(p){
         return 'That time went while we were talking. Nothing booked — say it again and I\u2019ll re-check.';
       if(cw.err==='availability_unknown')
         return 'I couldn\u2019t read the calendar, so nothing was booked for '+p.name+'.';
-      return 'That did not book. Nothing was written for '+p.name+'.';
+      // NAME THE FAILURE. A flat "that did not book" was the exact reason a
+      // real broken write went three attempts, two surfaces, and one whole
+      // investigation without a single diagnostic clue \u2014 status/err/detail
+      // were always THERE on the door's own response, just never shown.
+      return 'That did not book \u2014 nothing was written for '+p.name+'. '
+        +_jvDoorFailReason(cw)+' Say it again once that\u2019s fixed.';
     }
     var crow=(cw.rows&&cw.rows[0])||{};
     var cwhen=_jvWhenLabel(new Date(crow.requested_at||ciso));
@@ -15846,7 +15870,8 @@ async function _jvCommitPending(p){
     window._jvPendingWrite=null;
     if(!w.ok){
       if(w.status===409 || w.err==='slot_taken') return 'That time went while we were talking. Nothing booked — say it again and I’ll re-check.';
-      return 'That did not book. Nothing was written for '+p.name+'.';
+      return 'That did not book — nothing was written for '+p.name+'. '
+        +_jvDoorFailReason(w)+' Say it again once that’s fixed.';
     }
     var got=(w.rows&&w.rows[0])||{};
     var when=_jvWhenLabel(new Date(got.starts_at||iso));
@@ -16673,7 +16698,8 @@ async function _schCsCommit(force){
   if(!cw || !cw.ok){
     if(cw && (cw.status===409 || cw.err==='slot_taken'))
       return 'That time went while we were checking. Nothing booked — say it again.';
-    return 'That did not book. Nothing was written for '+_escHtml(p.name)+'.';
+    return 'That did not book — nothing was written for '+_escHtml(p.name)+'. '
+      +_jvDoorFailReason(cw)+' Try again once that’s fixed.';
   }
   var crow=(cw.rows&&cw.rows[0])||{};
   var cwhen=_jvWhenLabel(new Date(crow.requested_at||iso));
