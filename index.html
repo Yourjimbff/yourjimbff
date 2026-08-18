@@ -15145,7 +15145,35 @@ function _jvParseWhen(text, now){
   if(!sawDay){ day=new Date(base); }        // a bare time means today...
   day.setHours(hh, mm, 0, 0);
   if(!sawDay && day.getTime()<base.getTime()){ day.setDate(day.getDate()+1); }  // ...unless it has gone
+  // A SPOKEN TIMEZONE INFORMS THE TIME. "4pm EST" said from another zone must
+  // land at 4pm EASTERN, not 4pm wherever the phone happens to be. Before this
+  // the token did NOTHING — it fell through every pattern and, on the consult
+  // path, ended up harvested into the lead's name. The abbreviation maps to
+  // the IANA zone (EST means Eastern prevailing time, DST included — the human
+  // meaning, not the literal standard offset), and "my time" is the viewer's
+  // own zone, which is already what the math assumed.
+  var tzm=_jvParseTzWord(t);
+  if(tzm && tzm!==_myTz()){
+    try{
+      var zd=_zonedToUtc(day.getFullYear(), day.getMonth(), day.getDate(), hh, mm, tzm);
+      if(zd && !isNaN(zd.getTime())) day=zd;
+    }catch(e){}
+  }
   return {ts:day.getTime(), iso:new Date(day.getTime()).toISOString(), label:_jvWhenLabel(day)};
+}
+// The four US zones by any of their spoken names. Answers an IANA name, or
+// null when nothing timezone-shaped was said. "my/our time" answers the
+// viewer's own zone — a statement, not a shift.
+var _JV_TZ_RE=/\b(est|edt|eastern|cst|cdt|central|mst|mdt|mountain|pst|pdt|pacific)\b(?:\s+time)?|\b(?:my|our)\s+time\b/i;
+function _jvParseTzWord(t){
+  var m=_JV_TZ_RE.exec(String(t||'').toLowerCase());
+  if(!m) return null;
+  var w=m[1]||'';
+  if(!w) return _myTz();                                   // "my time"
+  if(/^e/.test(w)) return 'America/New_York';
+  if(/^c/.test(w)) return 'America/Chicago';
+  if(/^m/.test(w)) return 'America/Denver';
+  return 'America/Los_Angeles';
 }
 // ===== EVERYTHING JARVIS SAYS IS WRITTEN FOR THE EAR ======================
 // RULING (Yusuf, 17 Aug). Every line here gets read aloud, so a confirmation
@@ -16838,6 +16866,8 @@ function _apTitleFrom(s){
     .replace(/\b(next\s+)?(sun|mon|tues|tue|wednes|wed|thurs|thu|fri|satur|sat)(day)?\b/ig,' ')
     .replace(/\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sept|sep|october|oct|november|nov|december|dec)\.?\s+\d{1,2}(st|nd|rd|th)?\b/ig,' ')
     .replace(/\bthe\s+\d{1,2}(st|nd|rd|th)\b/ig,' ')
+    .replace(/\b(est|edt|cst|cdt|mst|mdt|pst|pdt|eastern|central|mountain|pacific)(\s+time)?\b/ig,' ')
+    .replace(/\b(my|our|her|his|their)\s+time\b/ig,' ')
     .replace(/\bin\s+\d+\s+days?\b/ig,' ').replace(/\b\d+\s+days?\s+from\s+now\b/ig,' ')
     .replace(/\b(at|for|around|by|to)\s+\d{1,2}(:\d{2})?\s*(am|pm)?\b/ig,' ')
     .replace(/\b\d{1,2}(:\d{2})?\s*(am|pm)\b/ig,' ')
@@ -16920,27 +16950,45 @@ function _csTidyName(s){
     // cannot be part of a name.
     // A WEEKDAY IS NOT A SURNAME. "with TestLead Thursday at 3" captured
     // "TestLead Thursday", because a capitalised day looks exactly like one.
+    // AND A TIMEZONE IS NOT ONE EITHER — "4pm EST" left "EST" standing after
+    // the clock was stripped, and it was appended to a lead's name on Yusuf's
+    // real sentence. Timezone words belong to the time parse, never a name.
     .replace(/\s+(?:on|for|at|tomorrow|today|tonight|next|this|please|about|re|in|my)\b[\s\S]*$/i,'')
     .replace(/\s+(?:sun|mon|tues?|wed(?:nes)?|thur?s?|fri|sat(?:ur)?)(?:day)?\b[\s\S]*$/i,'')
+    .replace(/\s+(?:est|edt|cst|cdt|mst|mdt|pst|pdt|eastern|central|mountain|pacific)\b[\s\S]*$/i,'')
     .replace(/\s+/g,' ').trim();
+}
+// REQUEST FRAMING IS NOT A PERSON. "Can you help me schedule a consultation
+// tomorrow at 4pm EST?" left "help" (the framing) and "EST" (the timezone)
+// as the only tokens standing, and Jarvis stated back a lead called
+// "help EST" — the tier-two read-back caught it, but the parse must not lean
+// on his eyes. A candidate made ONLY of framing, timezone or leftover time
+// words is NO NAME, and no-name asks through the unified machine.
+var _CS_JUNK_WORD=/^(help|helps|please|kindly|can|could|would|will|you|me|my|our|us|i|hey|hi|hello|thanks|thank|just|really|maybe|time|zone|est|edt|cst|cdt|mst|mdt|pst|pdt|eastern|central|mountain|pacific|am|pm|oclock|o'clock)$/i;
+function _csNameJunk(name){
+  var toks=String(name||'').trim().split(/\s+/).filter(Boolean);
+  if(!toks.length) return true;
+  return toks.every(function(w){ return _CS_JUNK_WORD.test(w.replace(/[^A-Za-z']/g,'')); });
 }
 function _csNameFrom(t){
   var s=_jvNormAmPm(t);
   // 1. after "with" — "a consult WITH Halie tomorrow"
   var m=new RegExp('\\bwith\\s+'+_CS_NAMEISH,'i').exec(s);
-  if(m){ var n1=_csTidyName(m[1]); if(n1) return n1; }
+  if(m){ var n1=_csTidyName(m[1]); if(n1 && !_csNameJunk(n1)) return n1; }
   // 2. straight after the booking verb — "book HALIE - a consultation"
   m=new RegExp('\\b(?:book|schedule|pencil(?:\\s+in)?|set\\s*up|put\\s+(?:in|down))\\s+(?:a\\s+|an\\s+|the\\s+)?'+_CS_NAMEISH,'i').exec(s);
   if(m){
     var n2=_csTidyName(m[1]);
     // "book a consultation with X" would capture the trigger word itself.
-    if(n2 && !_CS_TRIGGER_RE.test(n2) && !/^(call|meeting|session|appointment)$/i.test(n2)) return n2;
+    if(n2 && !_CS_TRIGGER_RE.test(n2) && !/^(call|meeting|session|appointment)$/i.test(n2) && !_csNameJunk(n2)) return n2;
   }
   // 3. fallback: subtract, then clean the edges the subtraction leaves behind.
-  return _csTidyName(s
+  var n3=_csTidyName(s
     .replace(_JV_BOOK_RE,' ').replace(_CS_TRIGGER_RE,' ')
     .replace(/\bcall\b/ig,' ')
-    .replace(/\b(can|could|would|will|you|please|kindly)\b/ig,' ')
+    .replace(/\b(can|could|would|will|you|please|kindly|help|helps)\b/ig,' ')
+    .replace(/\b(est|edt|cst|cdt|mst|mdt|pst|pdt|eastern|central|mountain|pacific)(\s+time)?\b/ig,' ')
+    .replace(/\b(my|our|her|his|their)\s+time\b/ig,' ')
     .replace(/\bon\s+my\s+calendar\b/ig,' ').replace(/\bfor\s+me\b/ig,' ')
     .replace(/\b(tomorrow|today|tonight|morning|afternoon|evening|night|noon)\b/ig,' ')
     .replace(/\b(next\s+)?(sun|mon|tues|tue|wednes|wed|thurs|thu|fri|satur|sat)(day)?\b/ig,' ')
@@ -16951,6 +16999,8 @@ function _csNameFrom(t){
     .replace(/\b(with|for|a|an|the|new|lead|prospect|my|me|in|on|calendar)\b/ig,' ')
     .replace(/[.,;!?]+/g,' ')
     .replace(/\s+/g,' '));
+  // A residue of framing words is NOT a name — no-name asks instead.
+  return (n3 && !_csNameJunk(n3)) ? n3 : null;
 }
 async function _csConsultCommand(t){
   if(!_CS_TRIGGER_RE.test(t)) return null;
