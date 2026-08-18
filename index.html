@@ -25028,6 +25028,21 @@ function _tlDaySectionHtml(cur, ctx){
       }
     }
     rows.forEach(function(r){ html+=_drawRow(r); });
+    // THE FLAG THAT NOBODY READ. _tlCallsOk has been set in five places since the
+    // calls row shipped and read in none of them, so the never-assert protection
+    // it was supposed to provide did not exist: a refused appointments read drew
+    // exactly the same day as a genuinely clear one. On his own page that is the
+    // phantom gap he books over.
+    //
+    // Today only. The read covers the whole timeline, so saying it once is saying
+    // it — a line repeated down nineteen days is noise, and noise is how a warning
+    // stops being read.
+    if(isToday && window._tlCallsOk===false){
+      html+='<div style="font-size:12px;color:rgba(240,236,228,0.5);padding:2px 2px 10px;line-height:1.45;">'
+        +'Your appointments did not load, so this day may be missing some. That is a read that failed, not a clear day. '
+        +'<span data-tl="callsretry" style="color:var(--gold);cursor:pointer;border-bottom:1px solid rgba(212,175,55,0.5);">Try again</span>'
+      +'</div>';
+    }
     // Any day that has already happened can still be caught up on — that's what the
     // empty boxes allowed and it mustn't quietly narrow to today. A day ahead is a
     // plan, not a log, so it gets nothing.
@@ -25306,10 +25321,46 @@ async function _tlLoadDayCalls(start, end){
     var k=_tlDateStr(at);
     (window._bookByDay[k]=window._bookByDay[k]||[]).push(row);
   }
+  // HIS DAY PAGE SHOWS HIS DAY (Yusuf, 18 Aug). This branch used to read the
+  // whole `bookings` table and stop there, so his own page drew one-off calls
+  // and nothing else: every standing vip_calls occurrence on his roster, and
+  // every booked consult, was invisible on the one page he actually works from.
+  // Blake's moved 9:00 was live in the door's answer the whole time.
+  //
+  // REUSED, NOT RE-EXPANDED. _schSources is the schedule view's own union and
+  // already does all three through the trainer door, with exceptions applied at
+  // the door (a moved occurrence arrives moved, a skipped one does not arrive)
+  // and a per-source ok. A second expansion here would be a fourth copy of the
+  // recurrence arithmetic and the first one free to disagree with the schedule.
   if(typeof isTrainer==='function' && isTrainer(cl.code)){
     try{
-      var _bk=await loadBookings(true);
-      (_bk||[]).forEach(function(b){ put(new Date(b.starts_at), b); });
+      var s=await _schSources(true);
+      // Never-assert, per source: any one of the three failing means this page
+      // cannot claim to know his day. It is not "no appointments".
+      if(s.state.bookings!=='ok' || s.state.vip!=='ok' || s.state.consults!=='ok') window._tlCallsOk=false;
+      // THE STANDING-CALL DOOR ONLY ANSWERS FORWARD. vipOccurrences expands from
+      // today and drops what has already passed, so a past day has no standing
+      // answer at all and today has only the rest of itself. The day section says
+      // that out loud rather than drawing a clear morning he would book over.
+      window._tlVipFrom = s.vipFrom;
+      window._tlVipTo   = s.vipFrom + _SCH_VIP_DAYS*86400000;
+      window._tlVipCutMs = Date.now();
+      s.bookings.forEach(function(b){
+        put(new Date(b.at), {id:b.booking_id, client_code:b.code, kind:'booking',
+                             starts_at:b.occurs_at||new Date(b.at).toISOString(), status:'booked'});
+      });
+      // A standing occurrence has no booking row, so it cannot borrow a booking's
+      // id — the uid the row builds would collide with a real one.
+      s.vip.forEach(function(v){
+        put(new Date(v.at), {id:'vip_'+v.at, client_code:v.code, kind:'vip', moved:!!v.moved,
+                             starts_at:v.occurs_at||new Date(v.at).toISOString(), status:'booked'});
+      });
+      // A consult is a lead, not a client on the roster: it carries its own name
+      // and there is no code to resolve.
+      s.consults.forEach(function(c){
+        put(new Date(c.at), {id:'cs_'+c.consult_id, client_code:null, who:c.who, kind:'consult',
+                             starts_at:new Date(c.at).toISOString(), status:'booked'});
+      });
     }catch(e){ window._bookByDay={}; window._tlCallsOk=false; }
     return;
   }
@@ -26147,11 +26198,22 @@ function _tlSlot(key, label, filled, ds, plan){
       slotName = String(it.title||'').trim() || 'Workout';
       title = String(it.client_text||'').trim() || (it.description||'').split('\n')[0].trim();
     } else if(isCall){
-      slotName = 'Check-in call';
+      // NAMES, NOT CODES (Yusuf, 18 Aug). This read "haydenh1" on his own page.
+      // A code is the database's name for someone, never the app's.
+      //
+      // A consult is a lead with no roster row, so it carries its own name and
+      // says what it is. Check-in calls all read the same whether they came from
+      // a one-off booking or a standing block — which system answered is not
+      // something the page has any business showing.
+      var _cb=it._call||{};
+      slotName = (_cb.kind==='consult') ? 'Consult' : 'Check-in call';
       title = (function(){
         try{
-          var b=it._call;
-          if(typeof isTrainer==='function' && isTrainer(cl.code)) return (b&&b.client_code)||'Client';
+          if(typeof isTrainer==='function' && isTrainer(cl.code)){
+            if(_cb.who) return String(_cb.who);
+            var c=_cb.client_code;
+            return (c && (CLIENTS[c]||{}).name) || c || 'Client';
+          }
           return 'With Yusuf';
         }catch(e){ return 'Check-in call'; }
       })();
@@ -26892,6 +26954,16 @@ function _tlBindTaps(){
       return;
     }
     if(a==='wo'){ tlToggleWorkout(el.getAttribute('data-ds')); return; }
+    // The retry on the failed-appointments line. renderDayTimeline re-runs the
+    // calls read, so the line clears itself when the read succeeds.
+    if(a==='callsretry'){
+      try{ el.textContent='Trying…'; }catch(e){}
+      // _tlCache is cleared first because renderDayTimeline(true) otherwise
+      // repaints from cache without re-reading — a retry that redraws the same
+      // failure. This is the file's own idiom for forcing a real reload.
+      try{ window._tlCache=null; renderDayTimeline(true); }catch(e){}
+      return;
+    }
     if(a==='zoom'){ try{ openPhotoLightbox(el.getAttribute('data-src')); }catch(e){} return; }
     if(a==='weighview'){ try{ tlWeighIn(el.getAttribute('data-ds')); }catch(e){} return; }
     // Sleep left the Profile page, so this has nowhere to go. The chip still reports
