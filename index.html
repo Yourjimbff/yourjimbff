@@ -612,6 +612,12 @@ body.jv-ovl-on #jvOvlWrap{display:flex;align-items:flex-end;justify-content:cent
   display:flex;align-items:center;justify-content:center;}
 .lrAct:hover{color:var(--gold);background:rgba(245,197,24,0.08);}
 .lrAct svg{width:14px;height:14px;}
+/* LIKING STICKS NOW — read back from `reviews` on load, not just painted at
+   the moment of the tap. Gold and filled, so a liked line stays visibly
+   different across renders, reloads, polls — everywhere, not just for the
+   few seconds before the next repaint. */
+.lrAct.liked{color:var(--gold);}
+.lrAct.liked svg{fill:currentColor;}
 /* #jarvisDesktop is display:none under 1024px — the river never reaches a
    phone width at all — but the cockpit itself runs as narrow as 1024, where
    fixed name/kind columns are a bigger bite of the row. Narrower there. */
@@ -1405,19 +1411,22 @@ body.jv-split #jvWallCol{flex:1 1 auto;min-width:0;}
    relocate, only the two order values to swap. */
 body.jv-split #jvWallCol{order:2;}
 body.jv-split #jvOrbCol{order:1;}
-/* THE DRAG HANDLE, on the rail's inner edge (the seam with the feed). A
-   thin hit target, invisible until it matters — a gold hairline only while
-   actually hovering or dragging, so it doesn't read as a standing border
-   the rest of the time. Same order as the rail (see the note above the
-   markup) so it lands directly after it, before the feed. */
+/* THE DRAG HANDLE, on the rail's inner edge (the seam with the feed). Yusuf
+   could not find it live — fully transparent at rest gave zero reason to
+   ever hover there in the first place, so "brightens on hover" never got a
+   chance to fire. A faint standing hairline now marks the seam always
+   (barely there, a hint rather than a border), and it still brightens gold
+   on hover/drag as before — discoverable AND still quiet the rest of the
+   time. Same order as the rail (see the note above the markup) so it lands
+   directly after it, before the feed. */
 #jvPaneResize{display:none;}
 body.jv-split #jvPaneResize{
   display:block;order:1;flex:0 0 6px;width:6px;margin:0 -3px;cursor:col-resize;
   position:relative;z-index:5;background:transparent;
 }
 #jvPaneResize::after{content:"";position:absolute;top:0;bottom:0;left:2px;width:2px;
-  background:transparent;transition:background .12s ease;}
-#jvPaneResize:hover::after,body.jv-resizing #jvPaneResize::after{background:rgba(245,197,24,0.55);}
+  background:rgba(240,236,228,0.10);transition:background .12s ease, width .12s ease;}
+#jvPaneResize:hover::after,body.jv-resizing #jvPaneResize::after{background:rgba(245,197,24,0.6);width:2px;}
 body.jv-resizing{cursor:col-resize !important;user-select:none;}
 body.jv-resizing #jvWallCol{pointer-events:none;}
 /* The feed's own single-column state, asked for rather than inferred. Its
@@ -17053,8 +17062,23 @@ async function _lrLoad(dayTs, force){
   // board loader, because a river missing its workouts reads as a quiet day.
   if(_sbFailedSince(mark)){ out.state={food:'failed', wo:'failed', wt:'failed', ph:'failed'}; _LR_CACHE=out; return out; }
   out.capped=_sbAtCap(res[0],600)||_sbAtCap(res[1],300)||_sbAtCap(res[2],200)||_sbAtCap(res[3],150);
-  (res[0]||[]).forEach(function(r){ if(keep(r.client_code)) out.events.push({k:'food', id:r.id, code:r.client_code, ts:_lrTs(r), d:r}); });
-  (res[1]||[]).forEach(function(r){ if(keep(r.client_code)) out.events.push({k:'wo',   id:r.id, code:r.client_code, ts:_lrTs(r), d:r}); });
+  // LIKING NEVER STUCK (Yusuf, live) because nothing here ever read it back —
+  // quickReact writes to `reviews` and paints its OWN button state at the
+  // moment of the tap, but the river's own fetch never asked `reviews`
+  // anything at all, so every render — a poll tick, a reload, even just
+  // re-opening — drew a fresh, never-liked-looking heart regardless of what
+  // was actually saved. Fetched here, once, matched by kind+ref_id exactly
+  // the way quickReact wrote it. A failed read degrades to "shows unliked"
+  // rather than blocking the river — a decorative heart is not the class of
+  // fact never-assert exists to protect, unlike the food/workout rows
+  // themselves, which still fail loudly above.
+  var likedSet={};
+  try{
+    var revRows=await sbSelect('reviews', 'select=kind,ref_id&reaction=eq.like&kind=in.(food,workout)&author_code=eq.'+encodeURIComponent((cl&&cl.code)||'')+'&limit=2000');
+    (revRows||[]).forEach(function(r){ if(r&&r.ref_id!=null) likedSet[r.kind+':'+String(r.ref_id)]=true; });
+  }catch(e){}
+  (res[0]||[]).forEach(function(r){ if(keep(r.client_code)) out.events.push({k:'food', id:r.id, code:r.client_code, ts:_lrTs(r), d:r, liked:!!likedSet['food:'+String(r.id)]}); });
+  (res[1]||[]).forEach(function(r){ if(keep(r.client_code)) out.events.push({k:'wo',   id:r.id, code:r.client_code, ts:_lrTs(r), d:r, liked:!!likedSet['workout:'+String(r.id)]}); });
   (res[2]||[]).forEach(function(r){ if(keep(r.client_code) && r.weight!=null) out.events.push({k:'wt', id:r.id, code:r.client_code, ts:_lrTs(r), d:r}); });
   (res[3]||[]).forEach(function(r){ if(keep(r.client_code)) out.events.push({k:'ph', id:r.id, code:r.client_code, ts:_lrTs(r), d:r}); });
   // The lens chips apply here the way they do everywhere: Food shows meals,
@@ -17157,7 +17181,7 @@ function _lrRender(host, data, opts){
       var likeable=(e.k==='wo'||e.k==='food');
       var _lid=_lrIdLit(e.id);
       var likeBtn=likeable
-        ? '<button class="lrAct" onclick="event.stopPropagation();lrLike(\''+e.k+'\','+_lid+',\''+e.code+'\')" title="Like" aria-label="Like">'+_LR_HEART+'</button>'
+        ? '<button class="lrAct'+(e.liked?' liked':'')+'" onclick="event.stopPropagation();lrLike(\''+e.k+'\','+_lid+',\''+e.code+'\')" title="'+(e.liked?'Liked':'Like')+'" aria-label="'+(e.liked?'Liked':'Like')+'" aria-pressed="'+(e.liked?'true':'false')+'">'+_LR_HEART+'</button>'
         : '<span class="lrAct" aria-hidden="true"></span>';
       var textBtn='<button class="lrAct" onclick="event.stopPropagation();lrText(\''+e.k+'\','+_lid+',\''+e.code+'\')" title="Text" aria-label="Text">'+_LR_TEXT+'</button>';
       return '<div class="lrLine'+(isDone?' done':'')+'" data-lrkey="'+_escHtml(key)+'" onclick="openClientDay(\''+e.code+'\','+(e.ts||0)+')">'
@@ -17237,7 +17261,19 @@ function lrDone(k,id){
   _lrRender(null, _LR_CACHE, {pin:false, focusKey:(k+':'+id)});
 }
 async function lrLike(k,id,code){
-  try{ await quickReact(k==='wo'?'workout':'food', id, code, 'like', null); }catch(e){}
+  var ok=false;
+  try{ ok=await quickReact(k==='wo'?'workout':'food', id, code, 'like', null); }catch(e){}
+  // MARK IT LIKED IN THE CACHE ITSELF, not just at the moment of the tap —
+  // this is the actual fix for "liking does not stick". quickReact already
+  // reads its own write back before returning true, so this is not a bare
+  // optimistic guess; it is reflecting a write already confirmed landed.
+  // Only on true — a failed write must never paint as liked.
+  if(ok){
+    try{
+      var ev=(_LR_CACHE&&_LR_CACHE.events||[]).find(function(e){ return e.k===k && String(e.id)===String(id); });
+      if(ev) ev.liked=true;
+    }catch(e){}
+  }
   lrDone(k,id);
 }
 function lrText(k,id,code){
@@ -28592,7 +28628,7 @@ async function quickReact(kind, refId, code, reaction, el){
   }
   try{
     var ok = await sbInsert('reviews', {client_code:code, author_code:(cl&&cl.code), kind:kind, ref_id:(refId!=null&&refId!==''?String(refId):null), reaction:reaction, comment:null, seen:false});
-    if(ok===false){ _revert('That like did not save. Tap the heart to try again.'); if(typeof showToast==='function') showToast('Could not save'); return; }
+    if(ok===false){ _revert('That like did not save. Tap the heart to try again.'); if(typeof showToast==='function') showToast('Could not save'); return false; }
     // It reached the client, so it is engagement. Recorded only after the write
     // came back — a like that failed never happened.
     try{ jvLogEngagement(code, (reaction==='like'?'like':'comment'), ''); }catch(e){}
@@ -28603,13 +28639,14 @@ async function quickReact(kind, refId, code, reaction, el){
         +'&kind=eq.'+encodeURIComponent(kind)
         +'&ref_id=eq.'+encodeURIComponent(String(refId))
         +'&reaction=eq.like&limit=1');
-      if(!back || !back.length){ _revert('That like did not save. Tap the heart to try again.'); if(typeof showToast==='function') showToast('Could not confirm that like'); return; }
+      if(!back || !back.length){ _revert('That like did not save. Tap the heart to try again.'); if(typeof showToast==='function') showToast('Could not confirm that like'); return false; }
     }
     if(el) el._busy=false;
     var nm=(CLIENTS[code]&&CLIENTS[code].name)||code;
     if(typeof showToast==='function') showToast((isLike?'\u2665 Liked':'\u2713 Reviewed')+' \u2014 '+nm+' will see it');
     try{ if(typeof jvMarkHandled==='function') jvMarkHandled(code); }catch(e){}
-  }catch(e){ _revert('That like did not save. Tap the heart to try again.'); if(typeof showToast==='function') showToast('Could not save'); }
+    return true;
+  }catch(e){ _revert('That like did not save. Tap the heart to try again.'); if(typeof showToast==='function') showToast('Could not save'); return false; }
 }
 async function markReviewed(kind, refId, code, btnId){
   var btn = btnId?document.getElementById(btnId):null;
