@@ -139,21 +139,26 @@ html{overscroll-behavior-y:none;}
 .bnav.v{display:grid;grid-template-columns:repeat(5,1fr);}
 .bnav.v.v4{grid-template-columns:repeat(4,1fr);}
 body.hasnav{padding-bottom:86px;}
-.bnav.trainer-mode{grid-template-columns:repeat(6,1fr);}
+.bnav.trainer-mode{grid-template-columns:repeat(5,1fr);}
 .bnav.trainer-mode .bni-lb{font-size:8px;letter-spacing:0.1px;}
 .bni.trainer-only{display:none;}
-/* Trainer bar reads Day · Jarvis · Jim · Profile · Activity · Admin. The order lives
+/* JIM IS DEAD WEIGHT ON HIS OWN ACCOUNT (Yusuf, ruling). His Day composer
+   already runs the Jarvis pipeline and he has a Jarvis tab of his own — a
+   second assistant slot for the same conversation is a slot he never needs.
+   Client accounts are untouched: .bni#bnAsk still shows for them, this rule
+   is scoped to trainer-mode alone. Six columns become five. */
+.bnav.trainer-mode #bnAsk{display:none !important;}
+/* Trainer bar reads Day · Jarvis · Profile · Activity · Admin. The order lives
    HERE and not in the markup, because the client's bar is built from the same elements —
    moving them in the DOM would reorder the client's too.
    Jarvis sits second, one thumb-reach from Day, because it is the surface he opens
-   most. The grid was already six columns with five filled, so it costs nothing. */
+   most. */
 .bnav.trainer-mode #bnFeed{order:1;}
 .bnav.trainer-mode #bnJarvis{order:2;}
 /* THE JARVIS TAB IS A PHONE SURFACE ONLY. At desktop width Jarvis is the pane,
    permanently — so the nav slot goes rather than offering a second way to the
    same assistant. One surface per width, one shared conversation under both. */
 @media (min-width:1024px){ .bnav #bnJarvis{display:none !important;} }
-.bnav.trainer-mode #bnAsk{order:3;}
 .bnav.trainer-mode #bnToday{order:4;}
 .bnav.trainer-mode #bnTraining{order:5;}
 .bnav.trainer-mode #bnClients{order:6;}
@@ -496,6 +501,12 @@ body.jv-ovl-on #jvOvlWrap{display:flex;align-items:flex-end;justify-content:cent
   background:rgba(16,16,16,0.94);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
   border:1px solid rgba(240,236,228,0.12);border-bottom:none;border-radius:18px 18px 0 0;
   padding:0 14px calc(10px + env(safe-area-inset-bottom,0px));box-shadow:0 -18px 60px rgba(0,0,0,0.55);}
+/* ON A PHONE THE SHEET IS THE ROOM (Yusuf, live). 78vh left a dimmed third of
+   the screen doing nothing above it — fine as a proportion on desktop, where
+   the summoned sheet is still visibly "over" a large screen, but on a phone
+   that gap just reads as wasted height. Near-full, a thin strip above the
+   grip so the dimmed page and the dismiss gesture both stay legible. */
+@media(max-width:1023px){ #jvOvlSheet{height:92vh;} }
 #jvOvlGrip{flex:0 0 auto;padding:9px 0 3px;cursor:grab;touch-action:none;}
 #jvOvlGrip i{display:block;width:42px;height:4px;border-radius:2px;background:#3d3d3d;margin:0 auto;}
 #jvOvlSheet .jtHead{flex:0 0 auto;}
@@ -25451,13 +25462,31 @@ function _tlVipOccurrencesIn(rows, start, end){
   });
   return out;
 }
+// APPOINTMENTS WERE STACKING ON RE-RENDER (Yusuf, live — Blake 9am twice,
+// Halie 4pm twice, one real Aug 14 consult six times over). The reset used
+// to run at the TOP of this function, on the shared window._bookByDay
+// itself — so two overlapping calls (tap around fast enough, or navigate
+// away and back before the first render's await had resolved) raced: call
+// B's reset ran AFTER call A had already started filling that same object,
+// wiping nothing, and then BOTH calls' rows landed in it — a merge, not a
+// replace, however clean each call looked in isolation. Every render this
+// function feeds is unconditional per call (see renderDayTimeline), so
+// overlap was never rare.
+// FIX: build into a LOCAL object nobody else can touch mid-flight, and
+// swap it into window._bookByDay in one atomic assignment at the very end.
+// A token guards the swap itself — if a newer call has started since this
+// one began, this call's own (possibly-late) result is dropped rather than
+// overwriting what the newer call already produced, so the last call to
+// actually FINISH never loses to a straggler that finishes even later.
+var _tlCallsToken=0;
 async function _tlLoadDayCalls(start, end){
-  window._bookByDay={};
+  var myToken=++_tlCallsToken;
+  var out={};
   window._tlCallsOk=true;
   function put(at, row){
     if(!at || isNaN(at.getTime())) return;
     var k=_tlDateStr(at);
-    (window._bookByDay[k]=window._bookByDay[k]||[]).push(row);
+    (out[k]=out[k]||[]).push(row);
   }
   // HIS DAY PAGE SHOWS HIS DAY (Yusuf, 18 Aug). This branch used to read the
   // whole `bookings` table and stop there, so his own page drew one-off calls
@@ -25499,14 +25528,15 @@ async function _tlLoadDayCalls(start, end){
         put(new Date(c.at), {id:'cs_'+c.consult_id, client_code:null, who:c.who, kind:'consult',
                              starts_at:new Date(c.at).toISOString(), status:'booked'});
       });
-    }catch(e){ window._bookByDay={}; window._tlCallsOk=false; }
+    }catch(e){ out={}; window._tlCallsOk=false; }
+    if(myToken===_tlCallsToken) window._bookByDay=out;
     return;
   }
   var bk={ok:false,rows:[]}, vp={ok:false,rows:[]};
   try{
     var both=await Promise.all([trainerOpChecked('myBookings',{}), trainerOpChecked('myVipCalls',{})]);
     bk=both[0]||bk; vp=both[1]||vp;
-  }catch(e){ window._tlCallsOk=false; return; }
+  }catch(e){ window._tlCallsOk=false; if(myToken===_tlCallsToken) window._bookByDay=out; return; }
   if(!bk.ok || !vp.ok){
     window._tlCallsOk=false;
     // The client is told nothing about status codes; this is for whoever is
@@ -25525,6 +25555,7 @@ async function _tlLoadDayCalls(start, end){
       put(at, {id:'vip_'+at.getTime(), client_code:cl.code, starts_at:at.toISOString(), status:'booked'});
     });
   }catch(e){ window._tlCallsOk=false; }
+  if(myToken===_tlCallsToken) window._bookByDay=out;
 }
 async function renderDayTimeline(soft){
   // Nothing should carry an inline height into a fresh render. One stuck value
@@ -53817,7 +53848,13 @@ function _tlSyncDock(){
   var fab=document.getElementById('jimFab'); if(!fab) return;
   var onFeed=false;
   try{ var f=document.getElementById('tFeed'); onFeed=!!(f&&f.classList.contains('active')); }catch(e){}
-  fab.classList.toggle('on', !!(onFeed && cl && document.getElementById('tlScroll')));
+  // THE SECOND FLOATING GLYPH (Yusuf, live). This fab opens Jim by name — a
+  // second door to an assistant that no longer exists separately on his
+  // account, sitting a few pixels from the Jarvis summon overlay's own
+  // glyph. His Day composer already routes to Jarvis; a fab to "open Jim"
+  // has nothing left to open for him. Client accounts are unaffected.
+  var butler=!!(cl && typeof isTrainer==='function' && isTrainer(cl.code));
+  fab.classList.toggle('on', !butler && !!(onFeed && cl && document.getElementById('tlScroll')));
 }
 // The door opens Jim ready to take anything — typing, photo, voice — which is
 // the Jim tab itself, untouched on the nav.
