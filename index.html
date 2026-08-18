@@ -1308,12 +1308,16 @@ body.jv-split .jvFeedGrid{column-count:1 !important;}
    take the bottom and scroll. This is the whole point of the ruling: not a
    widget above a list, a permanent assistant docked in the corner. */
 #jvOrbCol{--pnPad:14px; --pnGap:10px; --pnSect:22px; --pnR:12px; --pnRule:#1a1a1a;}
+/* 65/35, was 50/50 (Yusuf, 17 Aug — the assistant-coach ruling). His answers
+   are paragraphs now, not confirmations, and at half-height a two-paragraph
+   read scrolled inside a box five lines tall. The lists keep just over a third:
+   Needs You is a glance, the conversation is a read. Tokens unchanged. */
 #jvPaneBar{
-  order:1;display:flex;flex-direction:column;flex:1 1 50%;min-height:0;
+  order:1;display:flex;flex-direction:column;flex:1 1 65%;min-height:0;
   padding:var(--pnPad);background:#0b0b0b;border-bottom:1px solid var(--pnRule);
 }
 #jvPaneScroll{
-  order:2;flex:1 1 50%;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  order:2;flex:1 1 35%;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;
   padding:var(--pnSect) var(--pnPad) var(--pnSect);
 }
 /* Sections inside the scroll use the named rhythm rather than five paddings. */
@@ -15092,6 +15096,108 @@ function _jvSpokenHhmm(hhmm){
 // converges is what sits behind them: this builder, and the two action layers
 // above it. Ensures the board is loaded first, because the whole point is that
 // it should not have to ask for what it can go and read.
+// ===== THE COACHING READ ==================================================
+// "Tell me about the workouts today" used to be answered with a headcount,
+// because a headcount was all the board snapshot carried. An assistant coach
+// reads QUALITY — which sessions carry real detail, which are one line, whose
+// food day looks off — and that needs the rows themselves, not the tallies.
+//
+// THE FACTS ARE COMPUTED HERE, IN CODE; the model only judges. Detail flags,
+// one-liner counts and the seven-day pattern are counted from fetched rows, so
+// the model cannot invent a thin logger — and NEVER-ASSERT APPLIES TO
+// JUDGMENTS: a failed read produces a digest that says it failed and forbids
+// critique this turn, and a capped read says it may be missing people. Unread
+// never counts as thin.
+var _JV_COACH_RE=/\b(workout|workouts|train|trained|training|lift|lifted|session|sessions|gym|food|meal|meals|eat|eating|ate|nutrition|macro|macros|calorie|calories|protein|log|logs|logged|logging)\b/i;
+// A workout carries detail when it has structured exercises or a description
+// with real body — the same reading _bfItemsFor gives a card.
+function _jvWoDetail(w){
+  var exs=w&&w.exercises;
+  if(Array.isArray(exs) && exs.length){
+    var n=exs.length, weighted=0;
+    exs.forEach(function(e){ if(e && (e.weight!=null || e.reps!=null || e.sets!=null)) weighted++; });
+    return {n:n, weighted:weighted, words:String(w.description||'').trim().length, thin:false};
+  }
+  var d=String((w&&w.description)||'').trim();
+  var lines=d?d.split(/\n+/).filter(function(s){ return s.trim(); }).length:0;
+  // One line and nothing structured is a thin entry — the marker format's own
+  // one-line description only counts as thin when exercises is ALSO absent.
+  return {n:lines, weighted:0, words:d.length, thin:(lines<=1)};
+}
+async function _jvCoachDigest(){
+  try{
+    if(window._jvCoachD && (Date.now()-window._jvCoachD.at)<60000) return window._jvCoachD.text;
+    var hidden={}; try{ hidden=getHiddenClientSet(); }catch(e){}
+    var since=new Date(Date.now()-7*86400000).toISOString();
+    var mark=_sbFailMark();
+    var res=await Promise.all([
+      sbSelect('workout_logs','select=client_code,date_str,logged_at,title,description,exercises&logged_at=gte.'+encodeURIComponent(since)+'&order=logged_at.desc&limit=1200'),
+      sbSelect('food_logs','select=client_code,date_str,logged_at,name,calories,protein,carbs,fat&logged_at=gte.'+encodeURIComponent(since)+'&order=logged_at.desc&limit=1500')
+    ]);
+    if(_sbFailedSince(mark)){
+      var failTxt='\n\nTODAY IN DETAIL: the detail read FAILED just now. Do not judge anyone’s logging or eating this turn — you cannot see it. If asked, say the read failed rather than guessing.';
+      window._jvCoachD={text:failTxt, at:Date.now()};
+      return failTxt;
+    }
+    var wos=res[0]||[], foods=res[1]||[];
+    var capped=_sbAtCap(wos,1200)||_sbAtCap(foods,1500);
+    var tk=_jvTodayKey();
+    function isToday(r){
+      if(r.date_str===tk) return true;
+      try{ return _jvDayKey(new Date(/[Z+]/.test(r.logged_at)?r.logged_at:r.logged_at+'Z'))===tk; }catch(e){ return false; }
+    }
+    function keep(c){ return c && CLIENTS[c] && !CLIENTS[c].isTrainer && !hidden[c]; }
+    // seven-day thinness per client, so "thin today" can be told apart from
+    // "always logs like this" — counted, never guessed.
+    var hist={};
+    wos.forEach(function(w){
+      if(!keep(w.client_code)) return;
+      var d=_jvWoDetail(w);
+      var h=(hist[w.client_code]=hist[w.client_code]||{n:0,thin:0});
+      h.n++; if(d.thin) h.thin++;
+    });
+    var perW={}, perF={};
+    wos.filter(isToday).forEach(function(w){
+      if(!keep(w.client_code)) return;
+      (perW[w.client_code]=perW[w.client_code]||[]).push(w);
+    });
+    foods.filter(isToday).forEach(function(f){
+      if(!keep(f.client_code)) return;
+      (perF[f.client_code]=perF[f.client_code]||[]).push(f);
+    });
+    var lines=[];
+    Object.keys(perW).forEach(function(c){
+      var arr=perW[c], parts=[];
+      arr.forEach(function(w){
+        var d=_jvWoDetail(w);
+        var t=''; try{ t=_jvSpokenTime(new Date(/[Z+]/.test(w.logged_at)?w.logged_at:w.logged_at+'Z')); }catch(e){}
+        parts.push('"'+String(w.title||'workout').slice(0,40)+'"'+(t?(' at '+t):'')
+          +(d.thin ? ' — ONE-LINE, no exercises recorded'
+                   : (' — '+d.n+' exercises, '+d.weighted+' with weights/reps'
+                      +(d.words>120?', wrote their own notes':''))));
+      });
+      var h=hist[c]||{n:0,thin:0};
+      var pat=h.n>=3 ? (' [7-day pattern: '+h.thin+' of '+h.n+' entries one-line]') : ' [under 3 entries this week — too few to call a pattern]';
+      lines.push('WORKOUTS — '+((CLIENTS[c]||{}).name||c)+': '+parts.join('; ')+pat);
+    });
+    Object.keys(perF).forEach(function(c){
+      var arr=perF[c].slice().sort(function(a,b){ return String(a.logged_at||'').localeCompare(String(b.logged_at||'')); });
+      var cal=0, pro=0;
+      var meals=arr.map(function(f){
+        cal+=(+f.calories||0); pro+=(+f.protein||0);
+        var t=''; try{ t=_jvSpokenTime(new Date(/[Z+]/.test(f.logged_at)?f.logged_at:f.logged_at+'Z')); }catch(e){}
+        return String(f.name||'meal').slice(0,30)+(t?(' ('+t+')'):'');
+      });
+      lines.push('FOOD — '+((CLIENTS[c]||{}).name||c)+': '+arr.length+' meal'+(arr.length===1?'':'s')
+        +' ['+meals.slice(0,6).join(', ')+'] '+Math.round(cal)+' cal, '+Math.round(pro)+'g protein so far');
+    });
+    var head='\n\nTODAY IN DETAIL (counted from the actual rows — judge ONLY from what is written here; anyone not listed has not logged today'
+      +(capped?', though this read came back at its limit so it may be missing people — say so if you are asked for a total':'')+'):\n';
+    var txt=lines.length ? head+lines.join('\n') : '\n\nTODAY IN DETAIL: nothing logged by anyone yet today (the read succeeded — this is a real quiet, not a failed read).';
+    window._jvCoachD={text:txt, at:Date.now()};
+    return txt;
+  }catch(e){ console.error('coach digest',e); return ''; }
+}
 async function _jvAssistantContext(opts){
   opts=opts||{};
   try{ if(!_jvTriageReady() && typeof _jvEnsureTriage==='function'){ if(!window._jvTriagePending && typeof jvLoadTriage==='function'){ window._jvTriagePending=Promise.resolve(jvLoadTriage(true)).catch(function(){}); } if(window._jvTriagePending){ await window._jvTriagePending; window._jvTriagePending=null; } } }catch(e){}
@@ -15271,6 +15377,12 @@ function _jvPendingSummary(p){
     var clash = p.conflict ? ' That time is taken \u2014 yes takes the open slot instead.' : '';
     return 'Booking '+p.name+' for '+when+'.'+cost+clash+' Yes?';
   }
+  if(p.kind==='textprop'){
+    return 'I have a text drafted for '+p.name+': “'+p.body+'” — nothing is sent until you say yes. Send it?';
+  }
+  if(p.kind==='deeper'){
+    return 'I offered to go deeper on '+p.name+'’s '+p.topic+' today. Want that?';
+  }
   if(p.kind==='vipmove'){
     // Said, not printed: "tomorrow", not "2026-08-18"; "9am", not "09:00".
     var _sd=_jvSpokenDateStr(p.date);
@@ -15376,6 +15488,35 @@ function _jvIsNo(t){ return _JV_NO_RE.test(String(t||'')); }
 // the door answers with the row it wrote, so "it saved" is something this can
 // actually see rather than infer from the absence of an error.
 async function _jvCommitPending(p){
+  if(p.kind==='textprop'){
+    window._jvPendingWrite=null;
+    // The phone check is HERE, not assumed: textClient toasts and returns on a
+    // missing number, and this must not then claim a text was opened.
+    try{ _jvHydratePhones(); }catch(e){}
+    if(!((CLIENTS[p.code]||{}).phone)){
+      return 'There’s no number saved for '+p.name+', so I can’t open a text. The draft was: “'+p.body+'” — add their number on the roster and say it again.';
+    }
+    // Opens Messages with the draft AND logs the contact — the same tap-logs-it
+    // machinery the rail uses, two-minute double-tap grace included.
+    try{ textClient(p.code, p.body); }catch(e){ return 'That did not open. Nothing was sent or logged.'; }
+    try{ jvActRecord('Drafted a text to '+p.name, null); }catch(e){}
+    try{ jvPaneRender(); }catch(e){}
+    return '✓ Messages is open with the draft to '+p.name+' — read it once more and hit send. I’ve logged the contact.';
+  }
+  if(p.kind==='deeper'){
+    window._jvPendingWrite=null;
+    // A further model turn with that client's data pulled in — the board, the
+    // schedule-aware context for that code, and the detail rows.
+    var dctx='';
+    try{ dctx=await _jvAssistantContext({code:p.code}); }catch(e){}
+    try{ dctx+=await _jvCoachDigest(); }catch(e){}
+    var dm=null;
+    try{ dm=await _jtModel('Go deeper on '+p.name+'’s '+p.topic+' today — what is actually there, what reads well, what is missing, and what you would do about it.', dctx); }catch(e){}
+    if(!dm || !dm.reply) return 'I couldn’t reach the model for that closer read just now. Ask me again in a moment.';
+    // The follow-up can carry its own door — hold it exactly like any other.
+    try{ var _o=_jvBuildPendingOffer(dm.offer); if(_o) _jvPendSet(_o); }catch(e){}
+    return dm.reply;
+  }
   if(p.kind==='consult'){
     // "Yes" after a clash takes the ALTERNATIVE the door offered, exactly as a
     // client booking does — doubling up needs its own sentence.
@@ -19523,6 +19664,17 @@ async function _jtRunItem(t, capture, ctx){
     }
     return {status:'lost', modelled:true, line:'“'+_escHtml(t)+'” — that note did not save. Nothing was written to '+_escHtml(name)+'.', html:true, src:t};
   }
+  // THE DOOR AT THE END OF THE ANSWER. The reply's last sentence is the offer
+  // in words; this is the same offer as STATE, so his "yes" — now or three
+  // messages from now — completes it through the pending machine instead of
+  // reaching the model with no idea what it agrees to.
+  var _door=null;
+  try{ _door=_jvBuildPendingOffer(mo.offer); }catch(e){}
+  if(_door && mo.reply){
+    var _dpark='';
+    if(capture) _jvQueueAdd(_door); else _dpark=_jvPendSet(_door);
+    return {status:'wait', modelled:true, line:_escHtml(mo.reply+_dpark).replace(/\n/g,'<br>'), html:true, src:t};
+  }
   if(mo.reply) return {status:'talk', modelled:true, line:_escHtml(mo.reply).replace(/\n/g,'<br>'), html:true, src:t};
   return {status:'lost', modelled:true, line:'“'+_escHtml(t)+'” — I couldn’t place that one. Say it again on its own and I’ll take it.', html:true, src:t};
 }
@@ -19550,13 +19702,27 @@ async function _jtModel(t, ctx){
   var today=new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
   var sys="You are Jarvis, fitness coach Yusuf's private work assistant. "
     +"ANSWER FROM WHAT YOU CAN SEE. The board below is live and yours to read. Never ask him to paste, share or describe his own board or roster — if it is not below, say plainly you cannot see it. "
-    +"Return ONLY JSON, no markdown: {\"client_code\":\"\",\"client_name\":\"\",\"note\":\"\",\"log\":null,\"working_on\":\"\",\"reply\":\"\"}. "
+    +"Return ONLY JSON, no markdown: {\"client_code\":\"\",\"client_name\":\"\",\"note\":\"\",\"log\":null,\"working_on\":\"\",\"reply\":\"\",\"offer\":null}. "
     +"note = anything NEW worth recording on that client's profile from this line. Use real dates (today is "+today+"); NEVER write placeholders in brackets. Leave note EMPTY when there is nothing new to record. "
     +"log = ONLY when he is explicitly recording numbers FOR a client. An object with food (name, calories, protein, carbs, fat — or null), weight (a number or null), steps (a number or null). NEVER invent a number he did not say. "
     +"working_on = ONLY when he states what a client is working on right now. A short phrase in his own terms. "
     +"reply = your answer to him when this line is a question or a thought rather than something to record. Direct, human, a sharp coach's voice. Leave EMPTY when you have recorded something and have nothing to add. "
     +"client_code and client_name = who this is about, matched from the roster, or empty if unclear.\n\n"
+    +"WHEN HE ASKS ABOUT WORKOUTS OR FOOD, READ QUALITY, NOT HEADCOUNTS. You are his assistant coach looking over the day's logs, and TODAY IN DETAIL below is the actual rows. "
+    +"Name which sessions read well and say WHY — weights and reps recorded, several exercises, their own words. Name which are thin — a one-line entry with nothing structured — and use the 7-day pattern given to say whether thin is how that client always logs or new today. "
+    +"Food the same way: who is eating well by what was logged, whose day looks off — one meal by evening, macros far short of a day's worth — and which entry you genuinely liked. "
+    +"JUDGE ONLY FROM THE ROWS WRITTEN BELOW. If the detail block says a read failed, say that instead of judging. Anyone not listed simply has not logged — that is a fact you may state, never a criticism. "
+    +"TONE: plain sentences, names, specifics. Times like 9am, never 09:00. No scores, no grades, no percentages, and no shame words about clients — 'thin detail' and 'one line' are facts; 'lazy' and 'sloppy' are banned. Two short paragraphs at most.\n"
+    +"END EVERY SUBSTANTIVE ANSWER WITH ONE DOOR — one concrete offer he can take with a yes, in the reply's last sentence. Examples: 'Want me to go deeper on anyone's food?', 'Andrea's entries are one-liners again — want me to draft her a text?'. Then PUT THE SAME OFFER IN offer: "
+    +"{\"kind\":\"text\",\"client_code\":\"...\",\"body\":\"the exact message you propose, in Yusuf's plain voice, under 300 characters\"} to draft a text — nothing is sent until he approves; or "
+    +"{\"kind\":\"deeper\",\"client_code\":\"...\",\"topic\":\"food\" or \"workouts\"} to offer a closer read of one client. "
+    +"One offer per answer. offer stays null on small talk, on recordings, and when the reply is not substantive. The door in the reply and the offer object must match — never ask a question the offer cannot deliver.\n\n"
     +(ctx||'');
+  // The detail rows ride in only when the question is about them — they are the
+  // largest block in the prompt and a booking question does not need them.
+  if(_JV_COACH_RE.test(t)){
+    try{ sys+=await _jvCoachDigest(); }catch(e){}
+  }
   var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({messages:[{role:'user',content:sys},{role:'assistant',content:'Ready.'},{role:'user',content:t}]})});
   var data=await res.json();
@@ -19568,7 +19734,32 @@ async function _jtModel(t, ctx){
   var code=String(obj.client_code||'').trim();
   return {reply:String(obj.reply||'').trim(), note:String(obj.note||'').trim(), code:code,
           name:String(obj.client_name||'').trim()||((CLIENTS[code]||{}).name||''),
-          log:obj.log||null, working_on:String(obj.working_on||'').trim()};
+          log:obj.log||null, working_on:String(obj.working_on||'').trim(),
+          offer:(obj.offer&&typeof obj.offer==='object')?obj.offer:null};
+}
+// The model's door, made into a held write the pending machine can carry — so
+// "want me to draft her a text?" four messages ago is answerable with a plain
+// yes, exactly like a booking, instead of a dangling question that forgot
+// itself. The two kinds:
+//   textprop — tier two by nature: he SEES the draft, says yes, and only then
+//              does sms open with it and the contact get logged (textClient
+//              does both — the same tap-logs-it machinery as the rail).
+//   deeper   — a further model turn with that one client's data pulled in.
+function _jvBuildPendingOffer(off){
+  if(!off || !off.kind) return null;
+  var code=String(off.client_code||'').trim();
+  if(!code || !CLIENTS[code] || CLIENTS[code].isTrainer) return null;
+  var name=String((CLIENTS[code]||{}).name||code);
+  if(off.kind==='text'){
+    var body=String(off.body||'').trim().slice(0,300);
+    if(!body) return null;
+    return {kind:'textprop', code:code, name:name, body:body, parts:[], payload:{}, at:Date.now()};
+  }
+  if(off.kind==='deeper'){
+    var topic=(String(off.topic||'')==='workouts')?'workouts':'food';
+    return {kind:'deeper', code:code, name:name, topic:topic, parts:[], payload:{}, at:Date.now()};
+  }
+  return null;
 }
 // ===== A BATCH ============================================================
 var JT_MODEL_CAP=5;      // model turns per batch; the rest are NAMED, not dropped
