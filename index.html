@@ -10638,6 +10638,53 @@ function _pfDayList(evs){
   });
   return out;
 }
+// ONE RENDERER FOR A DAY (Yusuf, ruling — reversing an earlier one). The day
+// peek used to reuse the CLIENT'S OWN page rendering (_tlSlot) deliberately,
+// on the reasoning that their tap handlers should behave exactly as they do
+// on their own page. That produced gold-for-food/green-for-training colour
+// coding lifted straight off the client-facing palette — which is not the
+// trainer palette at all (gold is action-only there; green isn't in it) —
+// and a workout description rendered as raw prose instead of the per-
+// exercise lines the feed card has used since the triplication fix. Two
+// renderers for the same fact meant they could only ever drift apart. This
+// builds the SAME {ts,kind,code,data} item shape the multi-client feed
+// builds (meal-grouped the same way — one post per breakfast, not one row
+// per food), scoped to one client's one day, so _pfDayRow — already fixed,
+// already carrying the hero-card reuse for expanded workouts — is the only
+// place a day's content is ever assembled from raw rows.
+function _pfDayItemsFor(code, foods, wos, weights, photos, journals){
+  var items=[];
+  var groups={};
+  (foods||[]).forEach(function(f){
+    var meal=_feedMealGroupKey(f), day=String(f.date_str||'').trim();
+    var k=day+'|'+meal;
+    (groups[k]=groups[k]||[]).push(f);
+  });
+  Object.keys(groups).forEach(function(k){
+    var g=groups[k].sort(_mealDayOrder);
+    if(g.length===1){ items.push({ts:_feedTs(g[0]),kind:'food',code:code,data:g[0]}); return; }
+    var tot={calories:0,protein:0,carbs:0,fat:0}, photo=null;
+    g.forEach(function(f){
+      tot.calories+=(+f.calories||0); tot.protein+=(+f.protein||0);
+      tot.carbs+=(+f.carbs||0);       tot.fat+=(+f.fat||0);
+      if(!photo && (f.photo_url||f.photo)) photo=(f.photo_url||f.photo);
+    });
+    var names=g.map(function(f){ return String(f.name||'').trim(); }).filter(Boolean);
+    var label = names.length ? names.join(' · ') : (g.length+' foods');
+    var merged=Object.assign({}, g[0], {
+      name: label, calories:Math.round(tot.calories), protein:Math.round(tot.protein),
+      carbs:Math.round(tot.carbs), fat:Math.round(tot.fat), photo_url:photo,
+      _groupCount:g.length, _groupIds:g.map(function(f){return f.id;}), _groupRows:g
+    });
+    items.push({ts:_feedTs(g[g.length-1]),kind:'food',code:code,data:merged});
+  });
+  (wos||[]).forEach(function(w){ items.push({ts:_feedTs(w),kind:'wo',code:code,data:w}); });
+  (weights||[]).forEach(function(w){ items.push({ts:_feedTs(w),kind:'weight',code:code,data:w}); });
+  (photos||[]).forEach(function(ph){ items.push({ts:_feedTs(ph),kind:'photo',code:code,data:ph}); });
+  (journals||[]).forEach(function(j){ items.push({ts:_feedTs(j),kind:'journal',code:code,data:j}); });
+  items.sort(function(a,b){ return a.ts-b.ts; });
+  return items;
+}
 function _pfDayRow(it){
   var d=it.data||{};
   var time=''; try{ time = (it.kind==='food') ? (_mealTimeStr(d)||_feedTimeStr(it.ts)) : _feedTimeStr(it.ts); }catch(e){}
@@ -53809,11 +53856,68 @@ function renderJimTodayBar(){
   host.innerHTML=html;
   host.style.display=html?'':'none';
 }
+// ON HIS OWN ACCOUNT, JIM IS JARVIS (Yusuf, ruling). One composer, one send
+// handler, one pipeline deciding — the documented routing order, stopping
+// one stage short of where it normally lands. "Move Blake's call to 8:45",
+// "schedule a consult with X at 4", "texted Kelly yesterday", a call note,
+// a program change — every one of those is a TRAINER verb and belongs to
+// Jarvis exactly as it does on the rail. Anything none of those stages
+// claim is a personal log ("chicken and rice, 620 cal") and falls through
+// to the untouched jimSend/jimTurn pipeline below — Day & Jim's own path,
+// called, never rewritten. The generic model step (_jtModel) is
+// deliberately NOT tried here: it resolves a NAMED CLIENT off the roster,
+// which is the wrong tool for logging against his own account — Jim's own
+// engine is the correct "last resort" on this one account, replacing it.
+async function _jimJarvisTry(t){
+  try{ var pr=await _jvPendingReply(t); if(pr) return pr; }catch(e){}
+  try{ var bk=await _jvBookCommand(t); if(bk) return bk; }catch(e){}
+  try{ var cc=await _ccHandleStatement(t); if(cc) return cc; }catch(e){}
+  try{ var cn=await _jvCallNoteCommand(t); if(cn) return cn; }catch(e){}
+  if(typeof _JT_PROG_RE!=='undefined' && _JT_PROG_RE.test(t)){
+    try{ var pg=await _jtProgram(t); if(pg) return pg; }catch(e){}
+  }
+  return null;
+}
 async function jimSend(ds) {
   var el = document.getElementById('jimIn_' + (ds || ''));
   var raw = el ? String(el.value || '').trim() : '';
   if (!raw && !window._jimPhoto) { if (el) el.focus(); return; }
   if (!cl) { showToast('Not logged in'); return; }
+
+  var butler = !!(cl && typeof isTrainer === 'function' && isTrainer(cl.code));
+  if (butler && raw && !window._jimPhoto) {
+    var _jv = null;
+    try{ _jv = await _jimJarvisTry(raw); }catch(e){}
+    if (_jv != null) {
+      if (el) {
+        el.value = ''; el.blur(); try{ jimGrow(el); }catch(e){}
+        (function(node){
+          var n=0, iv=setInterval(function(){
+            if(node.value!==''){ node.value=''; try{ jimGrow(node); }catch(e){} }
+            if(++n>=8) clearInterval(iv);
+          }, 80);
+        })(el);
+      }
+      try{ jimReady(ds); }catch(e){}
+      // JIM'S BUBBLE RENDERS PLAIN TEXT (buildBubble: txt.textContent=m.content),
+      // never HTML — the Jarvis rail's replies carry deliberate <b> tags and
+      // pre-escaped entities. Pushed in raw, angle brackets and &quot; would
+      // show up literally, the exact bleed just fixed on the rail's own
+      // surface. Stripped through a detached element the same way
+      // _jvSpeakStrip already does, so tags vanish and entities decode
+      // properly in one pass.
+      var _jvPlain=''; try{
+        var _d=document.createElement('div'); _d.innerHTML=String(_jv).replace(/<br\s*\/?>/gi,'\n');
+        _jvPlain=(_d.textContent||'').trim();
+      }catch(e){ _jvPlain=String(_jv); }
+      var _jvA = {role:'assistant', content:_jvPlain, logged_at:new Date().toISOString()};
+      try{ chatHistory.push(_jvA); if(chatFullHistoryCache) chatFullHistoryCache.push(_jvA); }catch(e){}
+      sbInsert('chat_messages',{client_code:cl.code, role:'assistant', content:_jvPlain, has_image:false});
+      try{ if(typeof renderChatMessages==='function') renderChatMessages(); }catch(e){}
+      try{ showToast(_jvPlain.split('\n')[0].slice(0,90)); }catch(e){}
+      return;
+    }
+  }
 
   // ---- WHICH DAY THIS WRITES TO --------------------------------------------
   // The bar used to be rendered once per day, INSIDE that day's section, so the
@@ -54228,25 +54332,20 @@ function _jimAsk(ds) {
   // behind the camera/mic buttons. Every line below is sized to sit on one line
   // next to both buttons at 390px. Don't add a longer line back without checking
   // it fits at that width \u2014 this is the whole fix.
+  // JIM IS JARVIS ON HIS OWN ACCOUNT (Yusuf, ruling): he built the app, so
+  // this composer does not instruct him \u2014 empty field, no line, on every
+  // branch below. Every client-facing line is untouched.
   if (m < 9 * 60 && !done.walk)
-    return butler ? "Morning. Say it, I'll log it."
-                  : "Walked yet? Say it, it's logged.";
+    return butler ? "" : "Walked yet? Say it, it's logged.";
   if (m < 11 * 60 && !done.breakfast)
-    return butler ? "Tell me, I'll log it."
-                  : "Breakfast? Say it, it's logged.";
+    return butler ? "" : "Breakfast? Say it, it's logged.";
   if (m >= 10 * 60 && m < 16 * 60 && !done.lunch)
-    return butler ? "Whatever it was \u2014 I'll log it."
-                  : "Lunch? Say it, it's logged.";
+    return butler ? "" : "Lunch? Say it, it's logged.";
   if (m >= 15 * 60 && m < 20 * 60 && !done.workout)
-    return butler ? "Trained today? Say the word."
-                  : "Trained? Say it, it's logged.";
+    return butler ? "" : "Trained? Say it, it's logged.";
   if (m >= 15 * 60 && m < 21 * 60 && !done.dinner)
-    return butler ? "Dinner? However you like."
-                  : "Dinner? Say it, it's logged.";
-  // THE IDENTITY LINE (ruled 10 Aug): the bar's own name for itself, said once
-  // nothing more specific applies \u2014 butler register, hyphen not em-dash.
-  return butler ? "Anything \u2014 I'll handle it."
-                : "Tell me anything - I'll log it.";
+    return butler ? "" : "Dinner? Say it, it's logged.";
+  return butler ? "" : "Tell me anything - I'll log it.";
 }
 
 // ---- reading a screenshot from another app ----
