@@ -557,6 +557,31 @@ body.jv-ovl-on #jvOvlWrap{display:flex;align-items:flex-end;justify-content:cent
 .schAddB{flex:1;min-width:150px;background:transparent;color:var(--gold);
   border:1px solid rgba(245,197,24,0.42);border-radius:12px;padding:13px;font-size:13px;
   font-weight:800;cursor:pointer;font-family:inherit;}
+/* THE PROGRAM LAYER. The quiet background rhythm: no card, no border, a muted
+   range and a muted label, visibly a different species from an appointment.
+   Appointments keep their cards and sit ON this. */
+.schRowP{display:flex;align-items:baseline;gap:12px;padding:7px 14px;}
+.schTP{font-size:11.5px;font-weight:700;color:rgba(240,236,228,0.38);min-width:66px;flex-shrink:0;white-space:nowrap;}
+.schPLbl{font-size:12.5px;color:rgba(240,236,228,0.44);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.schProgNote{padding:10px 14px;font-size:12px;color:rgba(240,236,228,0.5);}
+.schAddGhost{color:rgba(240,236,228,0.62);border-color:#2d2d2d;}
+.schAddGhost:hover{color:var(--gold);border-color:rgba(245,197,24,0.42);}
+/* the smallest editor */
+.pwBlock{padding:11px 0;border-bottom:1px solid #232323;}
+.pwLbl{margin:0 0 8px;font-size:13.5px;width:100%;box-sizing:border-box;}
+.pwTimes{display:flex;align-items:center;gap:8px;}
+.pwTimes .ifield{margin:0;flex:1;text-align:center;font-size:13.5px;}
+.pwTimes span{color:rgba(240,236,228,0.4);}
+.pwDel{flex-shrink:0;background:transparent;border:none;color:rgba(240,236,228,0.4);font-size:19px;cursor:pointer;padding:2px 7px;font-family:inherit;}
+.pwDel:hover{color:var(--red);}
+.pwDays{display:flex;gap:5px;margin-top:8px;}
+.pwDay{flex:1;background:transparent;border:1px solid #2d2d2d;border-radius:8px;color:rgba(240,236,228,0.45);
+  font-size:11px;font-weight:800;padding:7px 0;cursor:pointer;font-family:inherit;}
+.pwDay.on{background:rgba(245,197,24,0.10);border-color:rgba(245,197,24,0.45);color:var(--gold);}
+@media(min-width:1024px){
+  .schRowP{padding:7px 18px;}
+  .schTP{min-width:86px;}
+}
 .schForm{margin-top:12px;background:#141414;border:1px solid #2b2b2b;border-radius:14px;padding:14px;}
 .schFormT{font-size:13.5px;font-weight:800;color:#f0ece4;margin-bottom:10px;}
 .schFormD{font-size:12px;color:rgba(240,236,228,0.6);margin-top:8px;line-height:1.5;}
@@ -6442,7 +6467,11 @@ async function uploadMealPhoto(blob, clientCode){
 // two rows. Losing it outright is plainly worse than a line arriving out of order.
 var SB_QUEUE_TABLES={saved_foods:1, weight_logs:1, step_logs:1, food_logs:1,
                      meals:1, meal_components:1, journal_entries:1, workout_logs:1,
-                     chat_messages:1};
+                     chat_messages:1,
+                     // A voice-booked appointment must have the queued-will-sync
+                     // outcome for real, not as a phrase — only failure queues,
+                     // so a retry can never duplicate a row that landed.
+                     trainer_blocks:1};
 
 // ===== UNKNOWN-COLUMN RECOVERY =========================================
 // PostgREST rejects the WHOLE request when it's handed a column that isn't there, and
@@ -15452,6 +15481,9 @@ function _jvPendingSummary(p){
   if(p.kind==='textprop'){
     return 'I have a text drafted for '+p.name+': “'+p.body+'” — nothing is sent until you say yes. Send it?';
   }
+  if(p.kind==='appt'){
+    return 'Putting “'+p.title+'” on your calendar for '+(p.when||'')+' — an hour held, and it blocks your booking page. Yes?';
+  }
   if(p.kind==='deeper'){
     return 'I offered to go deeper on '+p.name+'’s '+p.topic+' today. Want that?';
   }
@@ -15560,6 +15592,34 @@ function _jvIsNo(t){ return _JV_NO_RE.test(String(t||'')); }
 // the door answers with the row it wrote, so "it saved" is something this can
 // actually see rather than infer from the absence of an error.
 async function _jvCommitPending(p){
+  if(p.kind==='appt'){
+    window._jvPendingWrite=null;
+    var _ast=new Date(p.iso), _aen=new Date(_ast.getTime()+60*60000);
+    var _arow={trainer_code:_trainerCode(), starts_at:_ast.toISOString(), ends_at:_aen.toISOString(),
+               kind:'appt', label:p.title};
+    // THREE OUTCOMES, AND HE HEARS WHICH. Landed is proven by the server's own
+    // representation coming back — the read-back law, done in one round trip.
+    // The fallback insert queues the row on refusal (trainer_blocks is in
+    // SB_QUEUE_TABLES), which is the honest queued-will-sync middle state.
+    var _got=null;
+    try{ _got=await sbInsertReturning('trainer_blocks', _arow); }catch(e){}
+    if(_got && _got.id!=null){
+      try{ (window._tbAll=window._tbAll||[]).push(_got); }catch(e){}
+      try{ _SCH_SRC=null; }catch(e){}
+      try{ jvActRecord('Put “'+p.title+'” on your calendar, '+p.when, {kind:'apptblock', id:_got.id, label:p.title}); }catch(e){}
+      try{ jvPaneRender(); }catch(e){}
+      try{ if(window._schDayTs!=null && typeof schRefresh==='function') schRefresh(); }catch(e){}
+      return '✓ On your calendar. '+p.title+', '+_jvWhenLabel(new Date(_got.starts_at||p.iso))
+        +'. That hour is blocked on your booking page too.';
+    }
+    var _q=false;
+    try{ _q=await sbInsert('trainer_blocks', _arow); }catch(e){}
+    try{ _SCH_SRC=null; }catch(e){}
+    if(_q) return 'Written — but I could not read it back to prove it. Check the schedule in a moment; if “'+p.title+'” is not there, say it again.';
+    if(typeof sqCount==='function' && sqCount()>0)
+      return 'The server is not answering, so “'+p.title+'” is QUEUED on this device and will sync when it comes back. It is not on the calendar yet.';
+    return 'That did not save. Nothing was written — say it again and I’ll retry.';
+  }
   if(p.kind==='textprop'){
     window._jvPendingWrite=null;
     // The phone check is HERE, not assumed: textClient toasts and returns on a
@@ -15931,6 +15991,117 @@ function jvOpenCall(code, targetId){
   var t=window._JV_CALL_TARGETS[targetId]||null;
   try{ jvOpenDeep(code, t); }catch(e){ console.error('jvOpenCall',e); }
 }
+// ===== THE PROGRAM WEEK ===================================================
+// A premium client hand-wrote his week on paper because nothing renders a life
+// as a calendar with health blocks in it. This is that calendar's RHYTHM
+// layer: recurring daily blocks — walk, deep work, training, recovery — that
+// draw on the schedule every day WITHOUT re-entry, quiet, with appointments
+// sitting on top of them in their existing treatment.
+//
+// THE DATA SHAPE IS DELIBERATELY NOT TRAINER-ONLY. Each block carries an
+// owner_code and a hidden flag, because the product direction is per-CLIENT
+// program weeks visible to their coach. Only the trainer half is built; the
+// shape just refuses to paint the client half into a corner.
+//
+// STORAGE, honestly: localStorage for now, under a versioned key. A program
+// week belongs in a table (spec routed to P&P: program_blocks {owner_code,
+// days int[], start_local, end_local, label, hidden, sort} + trainer-gated
+// CRUD), and until that door exists the editor SAYS the save is device-local
+// rather than letting it pass for synced.
+var PW_KEY='yjb_program_week_v1';
+// Yusuf's reference week, the first implementation. days: 1=Mon..7=Sun.
+function _pwSeed(){
+  return [
+    {id:'walk-am', days:[1,2,3,4,5,6,7], start:'07:00', end:'08:00', label:'Morning walk', hidden:false},
+    {id:'deep-am', days:[1,2,3,4,5,6,7], start:'08:00', end:'12:00', label:'Deep work — calls, walking, sunlight', hidden:false},
+    {id:'train',   days:[1,2,3,4,5,6,7], start:'12:00', end:'14:00', label:'Workout + eat', hidden:false},
+    {id:'train2',  days:[1,2,3,4,5,6,7], start:'14:00', end:'15:00', label:'Finish workout, eat', hidden:false},
+    {id:'deep-pm', days:[1,2,3,4,5,6,7], start:'15:00', end:'18:00', label:'Deep work', hidden:false},
+    {id:'evening', days:[1,2,3,4,5,6,7], start:'18:00', end:'21:00', label:'Eat, walk, recovery', hidden:false},
+    {id:'bed',     days:[1,2,3,4,5,6,7], start:'21:00', end:'21:30', label:'Wind down — bed by 9:30', hidden:false}
+  ];
+}
+function pwLoad(){
+  try{
+    var raw=localStorage.getItem(PW_KEY);
+    if(raw){ var d=JSON.parse(raw); if(d && Array.isArray(d.blocks)) return d.blocks; }
+  }catch(e){}
+  return _pwSeed();
+}
+function pwSave(blocks){
+  try{ localStorage.setItem(PW_KEY, JSON.stringify({owner_code:'trainer', blocks:blocks, at:Date.now()})); }catch(e){}
+}
+function _pwHm(s){ var p=String(s||'').split(':'); var h=+p[0], m=+p[1]||0;
+  return (isFinite(h)&&h>=0&&h<24&&m>=0&&m<60) ? h*60+m : null; }
+// The blocks that fire on a given calendar day, placed at real local instants.
+// Monday is 1 — the same convention the vip door uses — and the WEEKDAY IS THE
+// VIEWED DAY'S OWN, never today's, which is the renderer-identity rule that
+// makes paging the strip safe.
+function pwForDay(dayTs){
+  var key=_schDayKey(dayTs);
+  var dow=((new Date(key).getDay()+6)%7)+1;
+  var out=[];
+  pwLoad().forEach(function(b){
+    if(b.hidden) return;
+    if(!Array.isArray(b.days) || b.days.indexOf(dow)<0) return;
+    var sm=_pwHm(b.start), em=_pwHm(b.end);
+    if(sm==null || em==null || em<=sm) return;   // midnight-crossing is refused at entry
+    out.push({prog:true, at:key+sm*60000, end:key+em*60000, label:String(b.label||'').slice(0,80)});
+  });
+  out.sort(function(a,b){ return a.at-b.at; });
+  return out;
+}
+function _pwRangeLabel(b){
+  return _jvSpokenTime(new Date(b.at))+'–'+_jvSpokenTime(new Date(b.end));
+}
+// ---- the smallest editor: label, start, end, weekday chips, remove, add ----
+function pwOpenEditor(){
+  var host=document.getElementById('schAddHost'); if(!host) return;
+  window._pwDraft=pwLoad().map(function(b){ return JSON.parse(JSON.stringify(b)); });
+  _pwRenderEditor();
+}
+function _pwRenderEditor(){
+  var host=document.getElementById('schAddHost'); if(!host) return;
+  var D=['M','T','W','T','F','S','S'];
+  var rows=(window._pwDraft||[]).map(function(b,i){
+    var chips=D.map(function(d,di){
+      var on=b.days.indexOf(di+1)>=0;
+      return '<button class="pwDay'+(on?' on':'')+'" onclick="pwTgl('+i+','+(di+1)+')">'+d+'</button>';
+    }).join('');
+    return '<div class="pwBlock">'
+      + '<input class="ifield pwLbl" value="'+_escHtml(b.label)+'" oninput="_pwDraft['+i+'].label=this.value" placeholder="What is it">'
+      + '<div class="pwTimes"><input class="ifield" type="time" value="'+_escHtml(b.start)+'" onchange="_pwDraft['+i+'].start=this.value">'
+      + '<span>–</span><input class="ifield" type="time" value="'+_escHtml(b.end)+'" onchange="_pwDraft['+i+'].end=this.value">'
+      + '<button class="pwDel" onclick="_pwDraft.splice('+i+',1);_pwRenderEditor()" title="Remove">×</button></div>'
+      + '<div class="pwDays">'+chips+'</div>'
+    + '</div>';
+  }).join('');
+  host.innerHTML='<div class="schForm"><div class="schFormT">Your program week</div>'
+    + rows
+    + '<button class="schAddB" style="width:100%;margin-top:4px;" onclick="_pwDraft.push({id:\'b\'+Date.now(),days:[1,2,3,4,5,6,7],start:\'09:00\',end:\'10:00\',label:\'\',hidden:false});_pwRenderEditor()">Add a block</button>'
+    + '<div class="schFormD">Saved on this device for now — it syncs once the program table ships.</div>'
+    + '<div class="schFormA">'
+    +   '<button class="schFormCancel" onclick="document.getElementById(\'schAddHost\').innerHTML=\'\'">Cancel</button>'
+    +   '<button class="schFormGo" onclick="pwSaveEditor()">Save the week</button>'
+    + '</div><div id="pwErr"></div></div>';
+}
+function pwTgl(i,d){
+  var b=(window._pwDraft||[])[i]; if(!b) return;
+  var at=b.days.indexOf(d);
+  if(at>=0) b.days.splice(at,1); else b.days.push(d);
+  _pwRenderEditor();
+}
+function pwSaveEditor(){
+  var err=document.getElementById('pwErr');
+  var bad=(window._pwDraft||[]).find(function(b){
+    var sm=_pwHm(b.start), em=_pwHm(b.end);
+    return !String(b.label||'').trim() || sm==null || em==null || em<=sm || !b.days.length;
+  });
+  if(bad){ if(err) err.innerHTML='<div class="schFormErr">Every block needs a name, an end after its start, and at least one day.</div>'; return; }
+  pwSave(window._pwDraft);
+  document.getElementById('schAddHost').innerHTML='';
+  try{ schRefresh(); }catch(e){}
+}
 // ===== THE SCHEDULE =======================================================
 // His appointments live in THREE tables and nothing ever unioned them for him:
 // consult_requests (leads), bookings (one-offs), and vip_calls expanded through
@@ -15958,8 +16129,8 @@ var _SCH_VIP_DAYS=21;
 // card, because a schedule he is looking at should not re-fetch under him.
 async function _schSources(force){
   if(!force && _SCH_SRC && (Date.now()-_SCH_SRC.at)<60000) return _SCH_SRC;
-  var s={at:Date.now(), consults:[], bookings:[], vip:[],
-         state:{consults:'ok', bookings:'ok', vip:'ok'},
+  var s={at:Date.now(), consults:[], bookings:[], vip:[], blocks:[],
+         state:{consults:'ok', bookings:'ok', vip:'ok', blocks:'ok'},
          exceptionsOk:true, consultsCapped:false, bookingsCapped:false,
          vipFrom:_schTodayTs()};
   var hidden={}; try{ hidden=getHiddenClientSet(); }catch(e){}
@@ -16023,6 +16194,27 @@ async function _schSources(force){
                   occurs_at:o.at, moved:!!o.moved});
     });
   }catch(e){ s.state.vip='failed'; }
+  // --- his own blocks: time off AND generic appointments. trainer_blocks is
+  // the table the Block-time-off sheet has always written and the door's
+  // conflict engine has always read — a dentist appointment is native here
+  // (kind 'appt' predates this view), not faked in. Same []-vs-failure
+  // discipline as bookings, and a future `hidden` column is honored the day
+  // it exists without being required today.
+  try{
+    var _tmark=_sbFailMark();
+    var tb=await loadTrainerBlocks(force);
+    if(_sbFailedSince(_tmark)) s.state.blocks='failed';
+    else {
+      if(_sbAtCap(tb,500)) s.blocksCapped=true;
+      (tb||[]).forEach(function(b){
+        if(b && b.hidden===true) return;
+        var st=Date.parse(b.starts_at), en=Date.parse(b.ends_at);
+        if(isNaN(st)) return;
+        s.blocks.push({kind:'block', at:st, end:(isNaN(en)?null:en), block_id:b.id,
+                       tkind:String(b.kind||'busy'), label:String(b.label||b.kind||'Blocked')});
+      });
+    }
+  }catch(e){ s.state.blocks='failed'; }
   _SCH_SRC=s;
   return s;
 }
@@ -16031,9 +16223,9 @@ async function _schSources(force){
 async function _schDay(dayTs, force){
   var key=_schDayKey(dayTs), lo=key, hi=key+86400000;
   var s=await _schSources(force);
-  var out={day:key, rows:[], state:{consults:s.state.consults, bookings:s.state.bookings, vip:s.state.vip},
+  var out={day:key, rows:[], state:{consults:s.state.consults, bookings:s.state.bookings, vip:s.state.vip, blocks:s.state.blocks},
            exceptionsOk:s.exceptionsOk, consultsCapped:s.consultsCapped, bookingsCapped:s.bookingsCapped,
-           vipBeforeWindow:false, vipEarlierToday:false, at:s.at};
+           blocksCapped:!!s.blocksCapped, vipBeforeWindow:false, vipEarlierToday:false, at:s.at};
   // THE DOOR CANNOT ANSWER FOR A DAY THAT HAS PASSED. vipOccurrences always
   // expands from today forward, and inside today it drops what has already
   // happened. So a past day has NO standing-call answer, and today has only the
@@ -16045,13 +16237,22 @@ async function _schDay(dayTs, force){
   var within=function(r){ return r.at>=lo && r.at<hi; };
   out.rows = s.consults.filter(within)
     .concat(s.bookings.filter(within))
-    .concat(s.vip.filter(within));
+    .concat(s.vip.filter(within))
+    .concat(s.blocks.filter(within));
   out.rows.sort(function(a,b){ return a.at-b.at; });
+  // The rhythm layer, computed for THIS day from ITS weekday — local, purely
+  // deterministic, no read to fail. Kept separate from rows so a program block
+  // can never be mistaken for an appointment by any counter.
+  out.program=pwForDay(key);
   return out;
 }
 function _schKindChip(r){
   if(r.kind==='consult') return 'consult';
   if(r.kind==='vip') return r.moved ? 'standing · moved' : 'standing';
+  if(r.kind==='block'){
+    var K={appt:'appointment', work:'work', family:'family', walk:'walk', busy:'blocked'};
+    return K[r.tkind]||'blocked';
+  }
   return 'check-in call';
 }
 function _schWho(r){
@@ -16113,6 +16314,8 @@ function _schDayHtml(data, counts){
   if(data.state.consults==='failed') gaps.push('Consults did not load, so any lead booked for this day is missing from the list.');
   if(data.state.bookings==='failed') gaps.push('One-off calls did not load, so any booked call is missing from the list.');
   if(data.state.vip==='failed') gaps.push('Standing calls did not load, so the weekly ones are missing from the list.');
+  if(data.state.blocks==='failed') gaps.push('Your own blocks did not load, so appointments and time off are missing from the list.');
+  if(data.blocksCapped) gaps.push('The blocks list came back at its limit, so there may be more than this.');
   if(data.state.vip!=='failed' && data.vipBeforeWindow) gaps.push('Standing calls can only be read from today forward, so this day shows none of them.');
   if(data.state.vip!=='failed' && data.vipEarlierToday) gaps.push('Standing calls that have already happened today are not in this list — only the rest of the day.');
   if(!data.exceptionsOk) gaps.push('One-off moves could not be read, so a standing time here may be the unmoved one.');
@@ -16120,13 +16323,29 @@ function _schDayHtml(data, counts){
   if(data.bookingsCapped) gaps.push('The booking list came back at its limit, so there may be more than this.');
   if(gaps.length) html+='<div class="schGaps">'+gaps.map(function(g){ return '<div>'+_escHtml(g)+'</div>'; }).join('')+'</div>';
 
+  // THE MERGED DAY: appointments and program blocks interleaved by clock, one
+  // list — the program as the quiet background rhythm, appointments sitting on
+  // it in their existing treatment. A program row is display only: no tap, no
+  // arrow, muted, its time a RANGE. It is drawn even on an empty day, because
+  // the rhythm is the point of the day having a shape at all.
+  var merged=data.rows.map(function(r){ return {at:r.at, prog:false, r:r}; })
+    .concat((data.program||[]).map(function(p){ return {at:p.at, prog:true, p:p}; }));
+  merged.sort(function(a,b){ return a.at-b.at || (a.prog?-1:1); });
   if(!data.rows.length){
     var allDark=(data.state.consults==='failed'&&data.state.bookings==='failed'&&data.state.vip==='failed');
     html += allDark
       ? '<div class="schEmpty">Nothing could be read for this day. That is three reads that failed, not a clear day.</div>'
-      : '<div class="schEmpty">Nothing booked'+(gaps.length?' in what could be read':'')+' for this day.</div>';
-  } else {
-    html+='<div class="schList">'+data.rows.map(function(r){
+      : (merged.length
+          ? '<div class="schProgNote">No appointments'+(gaps.length?' in what could be read':'')+' — just your program.</div>'
+          : '<div class="schEmpty">Nothing booked'+(gaps.length?' in what could be read':'')+' for this day.</div>');
+  }
+  if(merged.length){
+    html+='<div class="schList">'+merged.map(function(m){
+      if(m.prog){
+        return '<div class="schRowP"><span class="schTP">'+_escHtml(_pwRangeLabel(m.p))+'</span>'
+          + '<span class="schPLbl">'+_escHtml(m.p.label)+'</span></div>';
+      }
+      var r=m.r;
       var t=_jvSpokenTime(new Date(r.at));
       var who=_schWho(r);
       var chip=_schKindChip(r);
@@ -16139,6 +16358,16 @@ function _schDayHtml(data, counts){
           + (clean&&!window._jvShareMode
               ? ('<a class="schAct" href="sms:'+_escHtml(clean)+'">Text</a>')
               : '<span class="schActOff">'+(window._jvShareMode?'':'no number')+'</span>')
+        + '</div>';
+      }
+      // His own block — an appointment that is nobody's call, or time off. Its
+      // own quiet type: flat row, the label as the name, no door to open.
+      if(r.kind==='block'){
+        return '<div class="schRow schRowFlat">'
+          + '<span class="schT">'+_escHtml(t)+'</span>'
+          + '<span class="schMid"><b>'+_escHtml(r.label)+'</b>'
+          +   '<span class="schKind">'+_escHtml(chip)
+          +   (r.end?(' · until '+_escHtml(_jvSpokenTime(new Date(r.end)))):'')+'</span></span>'
         + '</div>';
       }
       // The kind, and nothing else. "tap for the call notes" was on every row
@@ -16159,6 +16388,7 @@ function _schDayHtml(data, counts){
   html+='<div class="schAdd">'
     + '<button class="schAddB" onclick="schAddCall('+data.day+')">Book a client call</button>'
     + '<button class="schAddB" onclick="schAddConsult('+data.day+')">Book a consult</button>'
+    + '<button class="schAddB schAddGhost" onclick="pwOpenEditor()">Edit program</button>'
   + '</div><div id="schAddHost"></div>';
   return html;
 }
@@ -16169,11 +16399,12 @@ function _schCounts(s, weekStart){
   for(var i=0;i<7;i++){
     var lo=weekStart+i*86400000, hi=lo+86400000;
     var complete=(s.state.consults==='ok' && s.state.bookings==='ok' && s.state.vip==='ok'
+                  && s.state.blocks==='ok'
                   && lo>=s.vipFrom && lo<s.vipFrom+_SCH_VIP_DAYS*86400000 && lo!==s.vipFrom);
     if(!complete){ out[lo]=null; continue; }
     var n=0;
     var count=function(arr){ arr.forEach(function(r){ if(r.at>=lo&&r.at<hi) n++; }); };
-    count(s.consults); count(s.bookings); count(s.vip);
+    count(s.consults); count(s.bookings); count(s.vip); count(s.blocks);
     out[lo]=n;
   }
   return out;
@@ -16435,6 +16666,7 @@ function _jvAskSuperseded(t, need){
 // has died and he needs to know the thread it belonged to is gone.
 function _jvAskWhatFor(a){
   if(!a) return 'something';
+  if(a.kind==='appt') return 'when that appointment was';
   if(a.need==='lead') return 'who that consult was with';
   if(a.need==='who') return 'who that call was with';
   if(a.need==='time') return 'what time';
@@ -16517,8 +16749,12 @@ async function _jvAskReply(t){
     } else { a.ts=w.ts; a.dayTs=w.ts; }
     // A consult carries a NAME and no code, so "do I still need a who" is a
     // different question for it. Asking `a.code` alone sent every consult back
-    // round to the roster clarify it must never reach.
-    a.need = (a.kind==='consult') ? (a.consultName ? null : 'lead') : (a.code ? null : 'who');
+    // round to the roster clarify it must never reach. An appointment carries
+    // only a TITLE — there is no who at all, and asking for one would send a
+    // dentist to the roster.
+    a.need = (a.kind==='consult') ? (a.consultName ? null : 'lead')
+           : (a.kind==='appt') ? (a.apptTitle ? null : 'when')
+           : (a.code ? null : 'who');
   } else { _jvAskClear(); return null; }
 
   if(a.need==='when' || a.need==='time'){
@@ -16532,9 +16768,79 @@ async function _jvAskReply(t){
   // A consult has a NAME and no client code — it must never reach _jvBookAct,
   // which is the client-call path and would look the lead up on the roster.
   if(a.kind==='consult'){ var cn=a.consultName; _jvAskClear(); return await _csConsultAct(cn, when); }
+  // An appointment has a TITLE and no person at all.
+  if(a.kind==='appt'){ var _at=a.apptTitle; _jvAskClear(); return _apApptAct(_at, when); }
   var code=a.code, name=String((CLIENTS[code]||{}).name||code);
   _jvAskClear();
   return await _jvBookAct(a.kind, code, name, when, !!a.skip);
+}
+// ===== A GENERIC APPOINTMENT BY VOICE =====================================
+// "Dentist at 2 Thursday" is an appointment that is nobody's call and no
+// lead's consult. It lands in trainer_blocks — the table the Block-time-off
+// sheet has always written, whose 'appt' kind predates this feature and which
+// the door's conflict engine already reads — so a dentist appointment blocks
+// his booking page exactly as it should, with no new table faked in.
+//
+// TWO SHAPES ONLY, both narrow on purpose:
+//   - a booking verb WITH the word "appointment": "book a dentist appointment
+//     Thursday at 2". Call/consult words are excluded — those flows own them.
+//   - the BARE form: a short title straight into a time phrase, no verb at
+//     all. Guarded hard: the title must not resolve to a client (a client's
+//     name is a call), must not be question-shaped, and the sentence must
+//     carry a real clock — otherwise it is just words and falls to the model
+//     exactly as it did before this stage existed.
+var _AP_WORD_RE=/\b(appointment|appt)\b/i;
+var _AP_CALLISH=/\bcall\b|\bcheck-?in\b|consult|sales\s+call|\bsession\b|\bmeeting with\b/i;
+function _apTitleFrom(s){
+  var x=_jvNormAmPm(s)
+    .replace(_JV_BOOK_RE,' ').replace(_AP_WORD_RE,' ')
+    .replace(/\bon\s+my\s+calendar\b/ig,' ').replace(/\bfor\s+me\b/ig,' ')
+    .replace(/\b(tomorrow|today|tonight|morning|afternoon|evening|night|noon|midnight)\b/ig,' ')
+    .replace(/\b(next\s+)?(sun|mon|tues|tue|wednes|wed|thurs|thu|fri|satur|sat)(day)?\b/ig,' ')
+    .replace(/\bin\s+\d+\s+days?\b/ig,' ').replace(/\b\d+\s+days?\s+from\s+now\b/ig,' ')
+    .replace(/\b(at|for|around|by|to)\s+\d{1,2}(:\d{2})?\s*(am|pm)?\b/ig,' ')
+    .replace(/\b\d{1,2}(:\d{2})?\s*(am|pm)\b/ig,' ')
+    .replace(/\b(a|an|the|my|me|i|with|please|can|could|you|have|got|need|put|down|in|on)\b/ig,' ')
+    .replace(/[.,;!?\-–—]+/g,' ').replace(/\s+/g,' ').trim();
+  return x||null;
+}
+async function _apApptCommand(t){
+  var s=String(t||'').trim();
+  if(!s || _AP_CALLISH.test(s)) return null;
+  var hasWord=_AP_WORD_RE.test(s), hasVerb=_JV_BOOK_RE.test(s);
+  var title=null, w=_jvParseWhen(s);
+  if(hasVerb && hasWord){
+    title=_apTitleFrom(s);
+    if(!title) return 'What is the appointment? Give it a name and I’ll put it on your calendar.';
+  } else if(!hasVerb && !hasWord){
+    // the bare form
+    var m=/^([A-Za-z][A-Za-z'’ \-]{1,29}?)\s+(?:at|on|this|next|tomorrow|today)\b/i.exec(s);
+    if(!m) return null;
+    var cand=m[1].trim();
+    if(!w || w.needsTime) return null;                 // no clock — not an appointment claim
+    if(/^(who|what|when|where|why|how|is|are|was|do|does|did|can|could|i|we|he|she|they|it)$/i.test(cand.split(/\s+/)[0])) return null;
+    try{ if(_jvResolveClient(cand).length) return null; }catch(e){}
+    title=cand;
+  } else return null;                                  // a verb without the word is the call flows' territory
+  // Missing pieces ask through the SAME unified machine as everything else.
+  if(!w){
+    _jvAskSet({kind:'appt', apptTitle:title, code:null, ts:null, dayTs:null, need:'when'});
+    return 'When? Give me a day and a time and I’ll put “'+_escHtml(title)+'” on your calendar.';
+  }
+  if(w.needsTime){
+    _jvAskSet({kind:'appt', apptTitle:title, code:null, ts:null, dayTs:(w.day||null), need:'time'});
+    var _ad=w.day?_jvSpokenDay(new Date(w.day)):'';
+    return 'What time'+(_ad?(/^(today|tomorrow)$/i.test(_ad)?(' '+_ad):(' on '+_ad)):'')+'? I won’t guess an hour.';
+  }
+  return _apApptAct(title, w);
+}
+// States it back EXACTLY as it will be written, and holds it — tier two.
+function _apApptAct(title, w){
+  var when=_jvWhenLabel(new Date(w.ts));
+  var park=_jvPendSet({kind:'appt', title:String(title).slice(0,120), iso:new Date(w.ts).toISOString(),
+    when:when, parts:[], payload:{}, at:Date.now()});
+  return 'Putting <b>'+_escHtml(title)+'</b> on your calendar for '+_escHtml(when)
+    +' — an hour held, and it blocks your booking page. Yes?'+_escHtml(park);
 }
 // ===== BOOKING A CONSULT BY VOICE =========================================
 // Yusuf's convention decides this, not inference: he ALWAYS says "consult",
@@ -16670,6 +16976,12 @@ async function _jvBookCommand(text){
   // layer at all. Inside _jvBookCommand rather than at five call sites, so
   // every box gets it and none can forget it.
   try{ var _ar=await _jvAskReply(t); if(_ar) return _ar; }catch(e){ console.error('ask reply',e); }
+  // A GENERIC APPOINTMENT — neither a consult nor anyone's call. "dentist at 2
+  // Thursday" used to fall all the way to the model and come back as talk.
+  // After the ask-reply (so an answer to a held question is never stolen),
+  // before the call verbs (which would ask "who is that call with" about a
+  // dentist).
+  try{ var _ap=await _apApptCommand(t); if(_ap) return _ap; }catch(e){ console.error('appt command',e); }
   var wantsBook=_JV_BOOK_RE.test(t), wantsMove=_JV_MOVE_RE.test(t);
   if(!wantsBook && !wantsMove) return null;
   if(!/\bcall\b|\bbook\b|\bschedule\b|\bpencil\b/i.test(t)) return null;   // "cancel that" is not a booking
@@ -19219,7 +19531,7 @@ function jvRenderJustNow(hostId){
         // Undo only where one really exists. A contact log can be taken back;
         // a weight through the door cannot, because that op deliberately has no
         // delete. Saying so beats a button that quietly does nothing.
-        var btn = (x.undo && (x.undo.kind==='contact' || x.undo.kind==='booking' || x.undo.kind==='vipmove'))
+        var btn = (x.undo && (x.undo.kind==='contact' || x.undo.kind==='booking' || x.undo.kind==='vipmove' || x.undo.kind==='apptblock'))
           ? '<button class="jvJnUndo" onclick="jvActUndo('+i+')">Undo</button>'
           : '<button class="jvJnUndo" disabled title="This one cannot be taken back from here">&nbsp;</button>';
         return '<div class="jvJnRow"><time>'+_escHtml(_jvActWhen(x.t))+'</time>'
@@ -19248,6 +19560,19 @@ async function jvActUndo(i){
     if(!wc || !wc.ok){ try{ showToast('Could not cancel that consult'); }catch(e){} return; }
     try{ showToast('Consult cancelled — the slot is open again'); }catch(e){}
     try{ if(typeof loadConsults==='function') loadConsults(true); }catch(e){}
+  } else if(x.undo.kind==='apptblock'){
+    // Delete the block and BELIEVE THE STATUS, not the attempt — a DELETE that
+    // did not land leaving the row on his calendar must keep its undo line.
+    var okDel=false;
+    try{
+      var rd=await fetch(SB_URL+'/rest/v1/trainer_blocks?id=eq.'+encodeURIComponent(x.undo.id),
+        {method:'DELETE', headers:sbHeaders()});
+      okDel=!!(rd&&rd.ok);
+    }catch(e){}
+    if(!okDel){ try{ showToast('Could not take that off the calendar'); }catch(e){} return; }
+    window._tbAll=(window._tbAll||[]).filter(function(b){ return String(b.id)!==String(x.undo.id); });
+    try{ _SCH_SRC=null; if(window._schDayTs!=null && typeof schRefresh==='function') schRefresh(); }catch(e){}
+    try{ showToast('Taken off your calendar'); }catch(e){}
   } else if(x.undo.kind==='vipmove'){
     // Put the occurrence back where the series says it should be. Reported from
     // what came back, not from the fact that a request was sent — if the restore
