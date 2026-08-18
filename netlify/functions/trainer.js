@@ -1117,6 +1117,58 @@ async function handleBookCallForClient(URL, SERVICE, args, trainerCode) {
   }
 }
 
+// ---- consultDelete ----------------------------------------------------------
+// A HARD delete, trainer-gated, one row by id. consultSetStatus is the soft
+// path and stays the normal one: a real lead who cancels is history worth
+// keeping, and nothing in this door deletes them.
+//
+// This exists for rows that were never a person — diagnostics, test inserts,
+// spam through the offer page's open INSERT. Before it, consult_requests was
+// the one table behind this door with no reverse gear at all: anon can insert
+// but cannot delete, and the door had no delete either, so anything junk that
+// landed was permanent. Same reasoning already written above repostDelete —
+// a table with no reverse gear on the only road in is permanent-mistake
+// territory.
+//
+// Loud on purpose: this is the one op here that destroys a row rather than
+// changing its state, and the log line is what makes that reviewable later.
+async function handleConsultDelete(URL, SERVICE, args) {
+  let id;
+  try { id = encId(args.id); }
+  catch (e) { return json(400, { error: 'bad_arg' }); }
+  try {
+    const sel = `${URL}/rest/v1/consult_requests?id=eq.${encodeURIComponent(id)}`;
+    // Read it first so the answer can say WHAT was destroyed, not just that
+    // something was.
+    const pre = await fetch(sel + '&select=id,name,phone,requested_at,status,source&limit=1', { headers: svc(SERVICE) });
+    if (!pre.ok) return json(502, { error: 'query_failed', op: 'consultDelete' });
+    const was = (await pre.json() || [])[0];
+    if (!was) return json(404, { error: 'no_such_consult', id: id });
+
+    const d = await fetch(sel, {
+      method: 'DELETE',
+      headers: Object.assign({}, svc(SERVICE), { Prefer: 'return=representation' }),
+    });
+    const text = await d.text();
+    if (!d.ok) {
+      console.error('trainer: consultDelete failed', d.status, text.slice(0, 300));
+      return json(502, { error: 'delete_failed', op: 'consultDelete', detail: text.slice(0, 200) });
+    }
+    // Confirm it is GONE by asking again, rather than trusting the
+    // representation of what was removed.
+    const post = await fetch(sel + '&select=id&limit=1', { headers: svc(SERVICE) });
+    if (!post.ok) return json(502, { error: 'unconfirmed', op: 'consultDelete', id: id });
+    const still = (await post.json() || [])[0];
+    if (still) return json(502, { error: 'unconfirmed', op: 'consultDelete', id: id });
+
+    console.warn('trainer: consultDelete removed row', id, JSON.stringify(was).slice(0, 200));
+    return json(200, [{ id: id, deleted: true, confirmed_gone: true, was: was }]);
+  } catch (e) {
+    console.error('trainer: consultDelete threw', e && e.message);
+    return json(502, { error: 'delete_failed', op: 'consultDelete' });
+  }
+}
+
 // ---- logPhoto ---------------------------------------------------------------
 // A trainer putting a progress photo onto a NAMED client's record. Same
 // species as logWeight/logFood/logSteps above — the assistant acting on
@@ -1314,8 +1366,18 @@ async function handleConsultInsert(URL, SERVICE, args) {
     // answer is simply absent rather than null-valued — the column default
     // does the rest, and an absent key is what keeps this identical to a row
     // the page wrote.
+    // phone is NOT NULL on this table with no default, so a null here fails
+    // the whole insert with 23502 — which is exactly what happened: every
+    // in-app booking failed from the moment this op shipped, because no
+    // trainer-side caller supplies a number (booking a lead by name alone
+    // never asks for one) while the offer page's own form always does.
+    // '' is the honest value: no contact info on file, not a fabricated one.
+    // Every consumer already tests phone for truthiness rather than for null
+    // — the panel row, its action strip, the cancel prompt and the notify
+    // email — so '' and null render identically as "none", and nothing
+    // anywhere queries this column for IS NULL. Checked, not assumed.
     const row = {
-      name: name, phone: phone,
+      name: name, phone: phone || '',
       requested_at: shape.requested_at,
       status: 'accepted',
       source: 'trainer',
@@ -2230,6 +2292,7 @@ exports.handler = async (event) => {
   // session-scoped ops above.
   if (op === 'bookCallForClient') return handleBookCallForClient(URL, SERVICE, args, claims.client_code);
   if (op === 'consultInsert') return handleConsultInsert(URL, SERVICE, args);
+  if (op === 'consultDelete') return handleConsultDelete(URL, SERVICE, args);
   if (op === 'logPhoto') return handleLogPhoto(URL, SERVICE, args);
   if (op === 'cancelCallForClient') return handleCancelCallForClient(URL, SERVICE, args);
   if (op === 'vipOccurrences') return handleVipOccurrences(URL, SERVICE, args);
