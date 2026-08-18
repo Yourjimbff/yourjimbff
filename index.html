@@ -15912,10 +15912,17 @@ async function _schSources(force){
       });
     }
   }catch(e){ s.state.consults='failed'; }
-  // --- one-off bookings. loadBookings already drops cancelled rows.
+  // --- one-off bookings. loadBookings already drops cancelled rows — and it
+  // also swallows a NETWORK failure into [], because sbSelect never throws. []
+  // is truthy, so "the read died" was marked ok and rendered as a clean day,
+  // which is the exact phantom gap this view exists to never show. The failure
+  // counter is the only way to tell those two empties apart. (A concurrent
+  // failing read elsewhere in the app could false-flag this — that errs toward
+  // "could not read", which is the honest direction.)
   try{
+    var _bmark=_sbFailMark();
     var bk=await loadBookings();
-    if(!bk) s.state.bookings='failed';
+    if(!bk || _sbFailedSince(_bmark)) s.state.bookings='failed';
     else {
       if(_sbAtCap(bk, 400)) s.bookingsCapped=true;
       bk.forEach(function(b){
@@ -19671,9 +19678,20 @@ async function _jtRunItem(t, capture, ctx){
   var _door=null;
   try{ _door=_jvBuildPendingOffer(mo.offer); }catch(e){}
   if(_door && mo.reply){
+    var _dline=String(mo.reply).trim();
+    // THE QUESTION IS APPENDED IN CODE, NOT TRUSTED TO THE MODEL. Seen live on
+    // the first production run: the offer object arrived, the door sentence did
+    // not — a held offer he never saw, answerable by a yes to nothing. And a
+    // drafted text is tier two BECAUSE HE SEES THE DRAFT before the yes, so if
+    // the reply does not quote it, the summary — which does — is added.
+    if(_door.kind==='textprop'){
+      if(_dline.indexOf(_door.body)<0) _dline+='\n\n'+_jvPendingSummary(_door);
+    } else if(!/\?\s*$/.test(_dline)){
+      _dline+=' '+_jvPendingSummary(_door);
+    }
     var _dpark='';
     if(capture) _jvQueueAdd(_door); else _dpark=_jvPendSet(_door);
-    return {status:'wait', modelled:true, line:_escHtml(mo.reply+_dpark).replace(/\n/g,'<br>'), html:true, src:t};
+    return {status:'wait', modelled:true, line:_escHtml(_dline+_dpark).replace(/\n/g,'<br>'), html:true, src:t};
   }
   if(mo.reply) return {status:'talk', modelled:true, line:_escHtml(mo.reply).replace(/\n/g,'<br>'), html:true, src:t};
   return {status:'lost', modelled:true, line:'“'+_escHtml(t)+'” — I couldn’t place that one. Say it again on its own and I’ll take it.', html:true, src:t};
