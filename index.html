@@ -1785,6 +1785,10 @@ body.jv-jarvis #jvTabHost{display:flex;flex-direction:column;flex:1 1 auto;min-h
    Just Now scrolls inside itself either way — nothing is lost, only folded. */
 .jtAct{flex:0 0 auto;max-height:96px;overflow-y:auto;margin-top:0;
   padding:10px 16px calc(8px + env(safe-area-inset-bottom,0px));border-top:1px solid #1a1a1a;}
+/* jtActMob is never rendered into any more — Just Now dissolved into the
+   mobile tab's own merged thread — but the empty box still carried its
+   padding and hairline for nothing. Gone rather than left as a dead gap. */
+#jtActMob{display:none;}
 /* In Jarvis mode the feed column stops scrolling and becomes the frame the
    conversation sits inside — otherwise the pinned bar scrolls with the thread. */
 body.jv-jarvis #jvWallCol{display:flex;flex-direction:column;overflow:hidden;padding-bottom:0;}
@@ -15873,7 +15877,34 @@ async function _jvFireNow(p){
   var existing=_jvPendingFresh();
   if(existing) _jvQueueAdd(existing);
   var line=await _jvCommitPending(p);
+  try{ _jvRefreshAllSurfaces(); }catch(e){}
   return line+_jvQueueNext('Also waiting');
+}
+// AN ACT IS NOT FINISHED UNTIL ITS RESULT IS ON SCREEN (Yusuf, live — the
+// 8:45 move, a booking, three separate times today). Every surface an act
+// can touch is force-read here, once, from a single call site, so no
+// future act can forget one. renderDayTimeline(true) is a SOFT render — it
+// reuses cached food/workout/weight rows — but it ALWAYS re-runs
+// _tlLoadDayCalls unconditionally, which itself always forces _schSources,
+// so the Day page's own calls are genuinely fresh every time this runs,
+// not just visually re-painted from stale state. Each surface is wrapped
+// alone so one missing DOM host (a screen he isn't currently on) can never
+// stop the rest from refreshing.
+function _jvRefreshAllSurfaces(){
+  try{ _SCH_SRC=null; }catch(e){}
+  try{ if(typeof renderDayTimeline==='function' && document.getElementById('feedTabBody') && window.cl) renderDayTimeline(true); }catch(e){}
+  try{ if(window._schDayTs!=null && typeof schRefresh==='function') schRefresh(); }catch(e){}
+  try{
+    if(typeof _lrLoad==='function' && typeof _lrRender==='function' && window._LR_CACHE){
+      _lrLoad(window._lrDayTs||_schTodayTs(), true).then(function(d){ try{ _lrRender(null, d); }catch(e){} });
+    }
+  }catch(e){}
+  try{ if(typeof loadBookings==='function') loadBookings(true); }catch(e){}
+  try{ if(typeof loadConsults==='function') loadConsults(true); }catch(e){}
+  try{ jvPaneRender(); }catch(e){}
+  try{ if(typeof admRenderNeeds==='function') admRenderNeeds(); }catch(e){}
+  try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+  try{ jtRenderAll(); }catch(e){}
 }
 // ===== ONE ANSWER RECOGNISER FOR THE ONE STATE MACHINE ====================
 // He does not answer a confirmation with the bare word "yes". He answers it the
@@ -17692,6 +17723,127 @@ async function _csConsultAct(name, w){
   }
   return await _jvFireNow(_cp);
 }
+// ===== CANCELLING A CALL =================================================
+// "Cancel my 10am" reached the model with no cancel verb anywhere in the
+// pipeline — _JV_MOVE_RE matched "cancel" as a MOVE word, but _jvBookCommand
+// only ever runs its move branch when the sentence also names a client AND
+// contains "call/book/schedule/pencil", so a bare "cancel my 10am" never
+// reached ANY of it. It fell all the way through to the model, which
+// answered a real-world action with a conversational "Done." — the never-
+// assert law broken at its most basic, a success claim with nothing behind
+// it. This is a first-class act now: fires immediately with undo, reads
+// back through the same door ops everything else uses, and refreshes every
+// surface exactly like every other act.
+var _JV_CANCEL_RE=/\bcancel(?:led|ling|s)?\b/i;
+function _jvCancelTodayCalls(s){
+  var d0=new Date(); d0.setHours(0,0,0,0);
+  var d1=d0.getTime()+86400000;
+  function within(list){ return (list||[]).filter(function(x){ return x.at>=d0.getTime() && x.at<d1; }); }
+  return {bookings:within(s.bookings), vip:within(s.vip), consults:within(s.consults)};
+}
+async function _jvCancelBooking(code, name, booking_id){
+  var w=await trainerWrite('cancelCallForClient',{booking_id:booking_id});
+  if(!w.ok) return 'That did not cancel — nothing changed for '+_escHtml(name)+'. '+_jvDoorFailReason(w);
+  var row=(w.rows&&w.rows[0])||{};
+  if(row.already_cancelled) return _escHtml(name)+'’s call was already cancelled — nothing to do.';
+  try{ jvActRecord('Cancelled '+name+'’s call today', {kind:'booking', code:code, id:booking_id}); }catch(e){}
+  var refund=row.refund;
+  return '✓ Cancelled '+_escHtml(name)+'’s call today'
+    + (refund && refund!=='none' ? (' — '+_escHtml(refund)+' credit returned.') : '.');
+}
+async function _jvCancelConsult(who, consult_id){
+  var w=await trainerWrite('consultSetStatus',{id:consult_id, status:'cancelled'});
+  if(!w.ok) return 'That did not cancel — nothing changed for the consult with '+_escHtml(who)+'. '+_jvDoorFailReason(w);
+  try{ jvActRecord('Cancelled the consult with '+who, {kind:'consult', id:consult_id, name:who}); }catch(e){}
+  return '✓ Cancelled the consult with '+_escHtml(who)+'.';
+}
+async function _jvCancelCommand(t){
+  if(!_JV_CANCEL_RE.test(t)) return null;
+  var s=null;
+  try{ s=await _schSources(true); }catch(e){}
+  if(!s || s.state.bookings!=='ok' || s.state.vip!=='ok' || s.state.consults!=='ok')
+    return 'I couldn’t read today’s calls just now, so nothing was cancelled. Try again in a moment.';
+  var today=_jvCancelTodayCalls(s);
+  var line=null;
+
+  // "the consult with X" / "X's consult" — the trigger word decides, exactly
+  // as booking one does.
+  if(_CS_TRIGGER_RE.test(t)){
+    var cname=_csNameFrom(t.replace(_JV_CANCEL_RE,' '));
+    if(cname){
+      var poolC=s.consults.filter(function(c){
+        var w1=String(c.who||'').toLowerCase(), w2=cname.toLowerCase();
+        return w1.indexOf(w2)>=0 || w2.indexOf(w1)>=0;
+      });
+      if(!poolC.length) return 'I don’t see a consult with '+_escHtml(cname)+' on the calendar.';
+      if(poolC.length>1) return 'That matches '+poolC.length+' consults with '+_escHtml(cname)+'. Say the day or time too.';
+      line=await _jvCancelConsult(poolC[0].who, poolC[0].consult_id);
+      try{ _jvRefreshAllSurfaces(); }catch(e){}
+      return line;
+    }
+  }
+
+  // A NAMED CLIENT — "cancel Blake's call [today]". Booking first (a real,
+  // one-off appointment); a standing occurrence falls to a skip, the same
+  // machinery a spoken "skip Blake's call" already uses — the series is
+  // untouched, only today's instance goes, with the same real undo.
+  var found=_jvFindClientIn(t);
+  if(found.hits.length>1){
+    return '<b>'+_escHtml(found.tried)+'</b> matches '+found.hits.length+' clients — '
+      + found.hits.map(function(h){ return _escHtml(String((CLIENTS[h]||{}).name||h)); }).join(', ')+'. Which one?';
+  }
+  if(found.hits.length===1){
+    var code=found.hits[0], name=String((CLIENTS[code]||{}).name||code);
+    var hitsB=today.bookings.filter(function(b){ return b.code===code; });
+    var hitsV=today.vip.filter(function(v){ return v.code===code; });
+    if(hitsB.length){
+      line=await _jvCancelBooking(code, name, hitsB[0].booking_id);
+      try{ _jvRefreshAllSurfaces(); }catch(e){}
+      return line;
+    }
+    if(hitsV.length){
+      var dv=new Date(hitsV[0].at);
+      var dateStr=dv.getFullYear()+'-'+String(dv.getMonth()+1).padStart(2,'0')+'-'+String(dv.getDate()).padStart(2,'0');
+      var p={kind:'vipmove', code:code, name:name, date:dateStr, time:'', skip:true, parts:[], payload:{}, at:Date.now()};
+      return await _jvFireNow(p);
+    }
+    return _escHtml(name)+' has no call on the calendar today — nothing to cancel.';
+  }
+
+  // NO NAME AT ALL — "cancel my 10am" / "cancel the 10am". Resolve by
+  // TIME OF DAY against everything on today's calendar, union of client
+  // calls, standing occurrences and consults — the same union the schedule
+  // and the Day page already read.
+  var tm=/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i.exec(String(t).replace(_JV_CANCEL_RE,' '));
+  if(!tm) return null;   // nothing this can resolve — let the model try, honestly
+  var hh=parseInt(tm[1],10), mm=tm[2]?parseInt(tm[2],10):0, ap=(tm[3]||'').toLowerCase();
+  if(ap==='pm'&&hh<12) hh+=12; if(ap==='am'&&hh===12) hh=0;
+  if(!ap && hh>=1 && hh<=7) hh+=12;
+  if(hh<0||hh>23||mm<0||mm>59) return null;
+  var target=new Date(); target.setHours(hh,mm,0,0);
+  var all=today.bookings.map(function(b){ return {k:'booking', at:b.at, x:b}; })
+    .concat(today.vip.map(function(v){ return {k:'vip', at:v.at, x:v}; }))
+    .concat(today.consults.map(function(c){ return {k:'consult', at:c.at, x:c}; }));
+  var best=null, bestDiff=15*60000;
+  all.forEach(function(it){ var d=Math.abs(it.at-target.getTime()); if(d<bestDiff){ bestDiff=d; best=it; } });
+  if(!best) return 'I don’t see anything at '+_escHtml(_jvSpokenTime(target))+' today.';
+  if(best.k==='booking'){
+    var nmB=String((CLIENTS[best.x.code]||{}).name||best.x.code);
+    line=await _jvCancelBooking(best.x.code, nmB, best.x.booking_id);
+    try{ _jvRefreshAllSurfaces(); }catch(e){}
+    return line;
+  }
+  if(best.k==='vip'){
+    var nmV=String((CLIENTS[best.x.code]||{}).name||best.x.code);
+    var dV=new Date(best.x.at);
+    var dsV=dV.getFullYear()+'-'+String(dV.getMonth()+1).padStart(2,'0')+'-'+String(dV.getDate()).padStart(2,'0');
+    var pV={kind:'vipmove', code:best.x.code, name:nmV, date:dsV, time:'', skip:true, parts:[], payload:{}, at:Date.now()};
+    return await _jvFireNow(pV);
+  }
+  line=await _jvCancelConsult(best.x.who, best.x.consult_id);
+  try{ _jvRefreshAllSurfaces(); }catch(e){}
+  return line;
+}
 async function _jvBookCommand(text){
   var t=String(text||'').trim();
   // The trigger word routes BEFORE any roster resolution, so a lead's name is
@@ -17702,6 +17854,12 @@ async function _jvBookCommand(text){
   // layer at all. Inside _jvBookCommand rather than at five call sites, so
   // every box gets it and none can forget it.
   try{ var _ar=await _jvAskReply(t); if(_ar) return _ar; }catch(e){ console.error('ask reply',e); }
+  // CANCELLING IS FIRST-CLASS, before the appointment/move parsing below —
+  // "cancel" overlaps _JV_MOVE_RE's own trigger words, and the move branch's
+  // secondary verb test ("call/book/schedule/pencil") would otherwise have
+  // silently swallowed some cancel sentences and dropped others straight to
+  // the model. One dedicated stage, one dedicated act.
+  try{ var _cn=await _jvCancelCommand(t); if(_cn) return _cn; }catch(e){ console.error('cancel command',e); }
   // A GENERIC APPOINTMENT — neither a consult nor anyone's call. "dentist at 2
   // Thursday" used to fall all the way to the model and come back as talk.
   // After the ask-reply (so an answer to a held question is never stolen),
@@ -17856,9 +18014,15 @@ async function _jvPendingReply(t){
   // nothing on a consult.
   if((p.kind==='booking'||p.kind==='consult') && p.conflict && /\b(anyway|double|both|regardless)\b/i.test(t)){
     p.force=true; p.offer=null;
-    return (await _jvCommitPending(p))+_jvQueueNext();
+    var _fLine=await _jvCommitPending(p);
+    try{ _jvRefreshAllSurfaces(); }catch(e){}
+    return _fLine+_jvQueueNext();
   }
-  if(_jvIsYes(t)) return (await _jvCommitPending(p))+_jvQueueNext();
+  if(_jvIsYes(t)){
+    var _yLine=await _jvCommitPending(p);
+    try{ _jvRefreshAllSurfaces(); }catch(e){}
+    return _yLine+_jvQueueNext();
+  }
   // Neither yes nor no. If he is plainly still thinking — "maybe", "hold on" —
   // or he said yes and changed the terms in the same breath, ASK AGAIN and keep
   // the write on the table. The clock restarts, because a re-ask is the question
@@ -20558,7 +20722,15 @@ async function admMicSend(){
 // three-boxes problem one size larger, so it is designed out: there is one
 // store, one renderer, and the pane simply shows the tail of it.
 var JT_THREAD_MAX=40;
-var JT_HOSTS={thread:['jtThreadDesk','jtThreadMob','jtThreadOvl'], act:['jtActDesk','jtActMob'],
+// JUST NOW DISSOLVES INTO THE MOBILE TAB TOO (Yusuf, live — "should not sit
+// under the composer as its own section"). Applied to jtThreadMob/jtActMob
+// specifically: the mobile tab is his room the same way the rail is his
+// room, so it gets the same merged stream. jtThreadDesk/jtActDesk stay pure
+// — that surface is the retired desktop Jarvis tab, effectively dead code,
+// and jtThreadOvl (the summon overlay) stays pure conversation as ruled
+// when the rail itself was built ("the rail is two things" was framing for
+// that one surface, not every surface).
+var JT_HOSTS={thread:['jtThreadDesk','jtThreadOvl'], merged:['jtThreadMob'], act:['jtActDesk'],
               scroll:['jtScrollDesk','jtScrollMob','jtScrollOvl'], tail:['admMicOut']};
 function _jtLoad(){
   if(window._jtThread) return window._jtThread;
@@ -20658,6 +20830,13 @@ function jtRenderAll(thinking){
   // both surfaces are in the DOM at once and one shared id would have
   // getElementById quietly picking whichever came first.
   JT_HOSTS.act.forEach(function(id){ if(document.getElementById(id)) jvRenderJustNow(id); });
+  // THE MOBILE TAB'S JUST NOW DISSOLVES INTO ITS OWN THREAD TOO — same
+  // merged renderer the rail uses, same reason: it isn't a section sitting
+  // between him and anything on that surface either.
+  JT_HOSTS.merged.forEach(function(id){
+    var e=document.getElementById(id); if(!e) return;
+    e.innerHTML=_jtPaneMergedHtml(thinking);
+  });
   // THE RAIL IS THE ROOM NOW, not a glance at a tail — it shows the SAME full
   // history the tab does, merged with the action log into one stream (see
   // _jtPaneMergedHtml above). The old 6-hour tail-only behaviour applied when
@@ -20955,6 +21134,7 @@ async function _jtModel(t, ctx){
     +"{\"kind\":\"text\",\"client_code\":\"...\",\"body\":\"the exact message you propose, in Yusuf's plain voice, under 300 characters\"} to draft a text — nothing is sent until he approves; or "
     +"{\"kind\":\"deeper\",\"client_code\":\"...\",\"topic\":\"food\" or \"workouts\"} to offer a closer read of one client. "
     +"One offer per answer. offer stays null on small talk, on recordings, and when the reply is not substantive. The door in the reply and the offer object must match — never ask a question the offer cannot deliver.\n\n"
+    +"NEVER CLAIM A SUCCESS THAT DID NOT HAPPEN. You cannot cancel, book, move or write anything yourself — you can only fill note/log/working_on, which this app writes for you. If he asks you to DO something (cancel, book, move, delete) and none of those three fields captures it, say plainly that you cannot do that from here — never answer with 'Done', 'Cancelled', 'Booked', 'Sure', or any other word that claims the thing happened. A reply that sounds like a completed action with nothing in note/log/working_on to back it is a lie to him.\n\n"
     +(ctx||'');
   // The detail rows ride in only when the question is about them — they are the
   // largest block in the prompt and a booking question does not need them.
@@ -20968,12 +21148,28 @@ async function _jtModel(t, ctx){
   var clean=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
   var obj=null;
   try{ obj=JSON.parse(clean); }catch(e){ var mm=clean.match(/\{[\s\S]*\}/); if(mm){ try{ obj=JSON.parse(mm[0]); }catch(e2){} } }
-  if(!obj) return clean ? {reply:clean, note:'', code:'', name:'', log:null, working_on:''} : null;
+  if(!obj) return clean ? {reply:_jvNoFalseSuccess(clean, false), note:'', code:'', name:'', log:null, working_on:''} : null;
   var code=String(obj.client_code||'').trim();
-  return {reply:String(obj.reply||'').trim(), note:String(obj.note||'').trim(), code:code,
+  var _hadWrite=!!(String(obj.note||'').trim() || obj.log || String(obj.working_on||'').trim());
+  return {reply:_jvNoFalseSuccess(String(obj.reply||'').trim(), _hadWrite), note:String(obj.note||'').trim(), code:code,
           name:String(obj.client_name||'').trim()||((CLIENTS[code]||{}).name||''),
           log:obj.log||null, working_on:String(obj.working_on||'').trim(),
           offer:(obj.offer&&typeof obj.offer==='object')?obj.offer:null};
+}
+// NEVER ASSERT WHAT DID NOT HAPPEN — the hard backstop, not just the prompt
+// instruction above it. A prompt is a request; this is the thing that
+// actually stops "Cancel my 10am" from ever reaching him as "Done." again
+// if the model ignores the instruction, has an off day, or a future prompt
+// edit drops the line. Any SHORT reply that reads as a bare completed
+// action — Done, Cancelled, Booked, Moved, Sure — with NOTHING actually
+// written behind it is replaced with an honest refusal. A longer,
+// substantive reply is never touched by this; only the shape that looks
+// exactly like the failure that started this.
+var _JV_FALSE_SUCCESS_RE=/^\s*(?:done|okay,?\s*done|sure,?\s*done|cancelled|canceled|booked|moved|scheduled|it'?s\s+done|all\s+set|got\s+it,?\s*done)[!.\s]*$/i;
+function _jvNoFalseSuccess(reply, hadWrite){
+  if(hadWrite) return reply;
+  if(!_JV_FALSE_SUCCESS_RE.test(reply)) return reply;
+  return 'I can’t actually do that from here — I can only record a note, a number, or what someone’s working on. Nothing changed.';
 }
 // The model's door, made into a held write the pending machine can carry — so
 // "want me to draft her a text?" four messages ago is answerable with a plain
