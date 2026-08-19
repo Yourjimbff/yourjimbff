@@ -620,6 +620,16 @@ body.jv-ovl-on #jvOvlWrap{display:flex;align-items:flex-end;justify-content:cent
 .wkWait{padding:50px 14px;text-align:center;font-size:13px;color:rgba(240,236,228,0.5);}
 .wkFail{padding:11px 14px;font-size:11.5px;line-height:1.5;color:rgba(240,236,228,0.78);
   background:#141414;border-bottom:1px solid #2b2b2b;}
+/* THE TRAINING SPLIT ROW — day-level, pinned above the hourly grid, never
+   inside it: program_workouts carries no time-of-day, so this is never
+   positioned by hour, only by day. Same 7-column grid as the header. */
+.wkProgRow{display:grid;grid-template-columns:52px repeat(7,1fr);border-bottom:1px solid #1c1c1c;}
+.wkProgCell{padding:6px 4px;min-width:0;}
+.wkProgChip{background:rgba(107,182,255,0.10);border:1px solid rgba(107,182,255,0.45);border-radius:7px;
+  padding:5px 7px;font-size:10.5px;font-weight:700;color:#f0ece4;cursor:pointer;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;}
+.wkProgChip.done{background:rgba(99,222,180,0.12);border-color:rgba(99,222,180,0.5);opacity:0.75;}
+.wkProgChip.done::before{content:"✓ ";}
 /* ===== THE CALENDAR BLOCK LAYER (Job 1, 19 Aug) — a person's own week,
    everything with a time placeable on it: training, meals, classes,
    cardio, walks, reminders, checkpoints. Same block-in-a-day-column
@@ -17159,8 +17169,10 @@ async function _wkLoad(weekStartTs, force, subject){
   }
   var cb=null;
   try{ cb=await _cbLoad(subject); }catch(e){}
+  var prog=null;
+  try{ prog=await _wkLoadProgramFor(subject); }catch(e){}
   return {weekStart:weekStartTs, days:apptDays, logged:logged, loggedFailed:loggedFailed, at:Date.now(), owner:subject,
-          cb:(cb||{blocks:[],exByBlock:{},failed:false})};
+          cb:(cb||{blocks:[],exByBlock:{},failed:false}), prog:(prog||{program:null,days:[]})};
 }
 // Blocks/appointments carry no duration in this data shape except
 // trainer_blocks (real start+end). Everything else gets a STATED default
@@ -17245,6 +17257,7 @@ function _wkGridHtml(wk){
   if(anyApptFail) gaps.push('At least one appointment source did not load for part of this week — some calls may be missing.');
   if(wk.cb && wk.cb.failed) gaps.push('The planned week (training, meals, classes…) did not load — that is a read that failed, not an empty week.');
   var warn = gaps.length ? ('<div class="wkFail">'+gaps.map(_escHtml).join('<br>')+'</div>') : '';
+  var progRow=_wkProgChipRow(ws, wk.prog, wk.logged||[]);
 
   var hourLines='', hourLbls='';
   for(var h=0; h<=24; h++) hourLines+='<div class="wkHourLine" style="top:'+(h*WK_HOUR_PX)+'px;"></div>';
@@ -17285,7 +17298,7 @@ function _wkGridHtml(wk){
   // they float above the grid rather than being clipped by wkWrap's own
   // overflow:hidden — mounted fresh on every render, closed by default.
   var floaters='<div id="wkPanelScrim" onclick="wkPanelClose()"></div><div id="wkPanel"></div>';
-  return '<div class="wkWrap">'+top+head+warn+body+'</div>'+floaters;
+  return '<div class="wkWrap">'+top+head+warn+progRow+body+'</div>'+floaters;
 }
 async function _wkLoad2(el, force){
   var ws=_wkSunStart(window._schDayTs||_schTodayTs());
@@ -17807,6 +17820,134 @@ async function _jtCalendarTurn(t){
   try{ parsed=await _jtCalendarExtract(t); }catch(e){}
   if(!parsed || !parsed.action || parsed.action==='none') return null;
   return await _jvJarvisCalendarAct(parsed);
+}
+// ===== THE TRAINING SPLIT ON THE GRID (Job 1, items 1-3, 19 Aug) ==========
+// "His programmed days render as blocks on the week" — named four times.
+// program_workouts has no time-of-day column at all (confirmed against the
+// live schema in the CREATE TABLE text this file itself carries), so these
+// are day-level chips above the hourly grid, never positioned by hour — a
+// split with no hour is still the plan, never nothing.
+//
+// REUSE, NOT A SECOND EDITOR (Yusuf, ruling). openProgramWorkoutEditor/
+// saveProgramDay ALREADY EXIST — the same modal the client Program tab
+// uses, direct-fetch to programs/program_workouts, no trainer.js
+// involvement (P&P's door is untouched; this table has always been read
+// and written straight, same anon-open pattern as every other program
+// call site in this file). _wkLoadProgramFor only loads the SAME globals
+// that editor already reads (activeProgram/activeProgramDays) for
+// whichever code the calendar is currently showing, then calls the real
+// editor unmodified. Two doors, one write — never a parallel one.
+//
+// THE DANGEROUS PART, SOLVED EXPLICITLY (Yusuf, ruling): program_workouts
+// IS the split — editing a Thursday row changes EVERY Thursday, forever.
+// There is no per-occurrence override in that table at all, unlike
+// calendar_blocks' exceptions. So a click never edits anything by
+// itself — it always asks first: "log what happened today" (a real
+// logged session, THIS occurrence only, never touching program_workouts)
+// or "edit the split" (the real editor, which the existing modal's own
+// copy already frames as "your rotation" — every occurrence, on purpose).
+// The calendar itself never writes the plan as a side effect of a
+// per-day tap.
+async function _wkLoadProgramFor(code){
+  if(!code) return {program:null, days:[]};
+  try{
+    var url=SB_URL+'/rest/v1/programs?client_code=eq.'+encodeURIComponent(code)+'&is_active=eq.true&order=created_at.desc&limit=1';
+    var res=await fetch(url, {headers:sbHeaders()});
+    if(!res.ok) return {program:null, days:[]};
+    var rows=await res.json();
+    if(!rows || !rows.length) return {program:null, days:[]};
+    var program=rows[0];
+    var pwRes=await fetch(SB_URL+'/rest/v1/program_workouts?program_id=eq.'+program.id+'&order=day_of_week.asc', {headers:sbHeaders()});
+    // Same sentinel this file's OWN loadProgram() already uses: 7 means
+    // "not assigned a day yet," remapped to null, never a real weekday.
+    var days=pwRes.ok ? (await pwRes.json()).map(function(r){ if(r.day_of_week===7) r.day_of_week=null; return r; }) : [];
+    return {program:program, days:days};
+  }catch(e){ return {program:null, days:[]}; }
+}
+function _wkProgChipRow(ws, prog, logged){
+  if(!prog || !prog.program || !prog.days.length) return '';
+  var byDow={};
+  prog.days.forEach(function(d){ if(d.day_of_week!=null) byDow[d.day_of_week]=d; });
+  var cells='<div class="wkProgCell"></div>';   // aligns with the hour-gutter column
+  for(var i=0;i<7;i++){
+    var dayStart=ws+i*86400000, dow=new Date(dayStart).getDay();
+    var d=byDow[dow];
+    if(!d){ cells+='<div class="wkProgCell"></div>'; continue; }
+    // FILLS IN ON A REAL LOG — the same workout_logs marks the grid
+    // already fetches for the logged-activity layer, cross-referenced
+    // by date, not a second read.
+    var done=logged.some(function(e){ return e.k==='wo' && e.ts>=dayStart && e.ts<dayStart+86400000; });
+    cells+='<div class="wkProgCell"><div class="wkProgChip'+(done?' done':'')+'"'
+      +' onclick="wkProgChipClick(event,'+dayStart+','+dow+','+(d.id!=null?d.id:'null')+')"'
+      +' title="'+_escHtml(d.title||'Training')+'">'+_escHtml(d.title||'Training')+'</div></div>';
+  }
+  return '<div class="wkProgRow">'+cells+'</div>';
+}
+function wkProgChipClick(ev, dayStart, dow, workoutId){
+  window._wkProgChoice={dayStart:dayStart, dow:dow, workoutId:workoutId};
+  var p=document.getElementById('wkPanel'), s=document.getElementById('wkPanelScrim');
+  if(!p||!s) return;
+  var dayName=new Date(dayStart).toLocaleDateString('en-US',{weekday:'long'});
+  var owner=window._wkOwner||((window.cl||{}).code||'');
+  var isMe=(owner===((window.cl||{}).code||''));
+  p.innerHTML='<h4>'+_escHtml(dayName)+'’s training</h4>'
+    +'<div style="font-size:12px;color:rgba(240,236,228,0.65);margin-bottom:12px;">'
+    +(isMe ? 'Log what actually happened today, or edit the split itself — that changes every '+_escHtml(dayName)+', not just this one.'
+           : 'Edit the split — that changes every '+_escHtml(dayName)+' in the program, not just this one.')
+    +'</div>'
+    +'<div class="wkPanelBtns" style="flex-direction:column;">'
+    +(isMe ? '<button class="wkPanelSave" onclick="wkProgLogToday()">Log what happened today</button>' : '')
+    +'<button onclick="wkProgEditSplit()">Edit the '+_escHtml(dayName)+' split</button>'
+    +'<button onclick="wkPanelClose()">Cancel</button>'
+    +'</div>';
+  s.classList.add('on'); p.classList.add('on');
+  _wkPanelPosition(ev.clientX, ev.clientY);
+}
+// "LOG WHAT HAPPENED TODAY" — Jim's own parser, reused outright, never a
+// second one (Yusuf, ruling). _jimJarvisTry already exists for exactly
+// this ("Jim is Jarvis" on his own account) and already falls through to
+// jimTurn's real workout-log parsing for a personal log — this only opens
+// the door to it from the calendar's own panel instead of typing into
+// the Jarvis composer first.
+function wkProgLogToday(){
+  var p=document.getElementById('wkPanel'); if(!p) return;
+  p.innerHTML='<h4>What actually happened?</h4>'
+    +'<textarea id="wkLogText" placeholder="e.g. bench 185 for 8, 8, 6, incline dumbbell 60s for 10, three sets, cable flys 3x12" style="min-height:90px;"></textarea>'
+    +'<div class="wkPanelBtns"><button onclick="wkPanelClose()">Cancel</button>'
+    +'<button class="wkPanelSave" onclick="wkProgLogSubmit()">Log it</button></div>';
+  setTimeout(function(){ var t=document.getElementById('wkLogText'); if(t) t.focus(); }, 30);
+}
+async function wkProgLogSubmit(){
+  var t=document.getElementById('wkLogText');
+  var text=(t&&t.value||'').trim();
+  if(!text) return;
+  var btn=document.querySelector('#wkPanel .wkPanelSave');
+  if(btn){ btn.disabled=true; btn.textContent='Logging…'; }
+  var reply=null;
+  try{ reply=await _jimJarvisTry(text); }catch(e){ console.error('wk prog log',e); }
+  wkPanelClose();
+  var plain='';
+  try{ var d=document.createElement('div'); d.innerHTML=String(reply||'').replace(/<br\s*\/?>/gi,'\n'); plain=(d.textContent||'').trim(); }catch(e){ plain=String(reply||''); }
+  try{ showToast(plain ? plain.split('\n')[0].slice(0,90) : 'Could not log that — try again'); }catch(e){}
+  try{ schRefresh(); }catch(e){}
+}
+// "EDIT THE SPLIT" — the real, existing editor, unchanged. Only loads the
+// globals it already reads, for whichever code the calendar is showing,
+// and pre-selects the weekday that was actually tapped.
+async function wkProgEditSplit(){
+  var ch=window._wkProgChoice; if(!ch) return;
+  wkPanelClose();
+  var owner=window._wkOwner||((window.cl||{}).code||'');
+  var loaded=await _wkLoadProgramFor(owner);
+  if(!loaded.program){ try{ showToast('No program to edit yet'); }catch(e){} return; }
+  activeProgram=loaded.program;
+  activeProgramDays=loaded.days;
+  var existing=loaded.days.filter(function(d){ return d.day_of_week===ch.dow; })[0];
+  openProgramWorkoutEditor(existing?existing.id:null);
+  // A day with nothing programmed yet still needs the tapped weekday
+  // pre-selected — openProgramWorkoutEditor only pre-selects a day when
+  // editing an EXISTING row, and this was deliberately opened from one.
+  if(!existing && typeof selectProgramDayChip==='function') selectProgramDayChip(ch.dow);
 }
 // ===== THE FORM'S OWN CONSULT STATE — NOT JARVIS'S ========================
 // TWO SEPARATE OWNERS, RULED (Yusuf, 17 Aug, from a real tangle). This form
