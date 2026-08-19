@@ -497,6 +497,14 @@ const WRITE_OPS = {
   // vip_calls, which would cover most deletions on their own — this is the
   // belt to that pair of braces, because "most" is not the standard the delete
   // guard is held to.
+  // The standing delete-guard companion. bookings joins JV_CLIENT_TABLES's
+  // door-op maps precisely so this gets called: once the lock is on, the anon
+  // DELETE that jvRemoveClient's fallback used is gone, and without an op here
+  // every future client deletion would silently orphan their bookings forever.
+  // That is the faithparker1 failure mode exactly, caused by the door this time
+  // rather than by a missing table.
+  bookingsDeleteAll: (a) => ({ method: 'DELETE', path: `bookings?client_code=eq.${enc(a.client_code)}` }),
+
   callNoteDeleteAll: (a) => ({ method: 'DELETE', path: `call_notes?client_code=eq.${enc(a.client_code)}` }),
 };
 
