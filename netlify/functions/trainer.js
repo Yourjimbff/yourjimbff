@@ -110,6 +110,13 @@ const OPS = {
   // One named client's own call bookings — what the trainer's cancel/undo
   // surface lists. Deliberately not the whole table: `bookings` is broad and
   // this is a per-client question.
+  // The roster-wide booking list loadBookings used to pull with the public key.
+  // Trainer only — a CLIENT asking this would be asking for every other
+  // client's name, date and time, which is precisely the leak being closed.
+  // A client's own equivalents are myBookings (theirs, in full) and
+  // bookingsBusy (everyone's slots, nobody's identity).
+  bookingsAll: () => 'bookings?select=id,client_code,trainer_code,starts_at,duration_min,status,client_tz,note,spent,created_at&order=starts_at.asc&limit=400',
+
   clientBookings: (a) => `bookings?client_code=eq.${enc(a.code)}&select=id,client_code,trainer_code,starts_at,duration_min,status,client_tz,note,spent,created_at&order=starts_at.desc&limit=200`,
 };
 
@@ -1166,6 +1173,133 @@ async function handleConsultDelete(URL, SERVICE, args) {
   } catch (e) {
     console.error('trainer: consultDelete threw', e && e.message);
     return json(502, { error: 'delete_failed', op: 'consultDelete' });
+  }
+}
+
+// Which code trainer-owned shared rows hang off. Resolved from the table the
+// same way the page's own _trainerCode() resolves it (clients.is_primary),
+// never a literal — the page has been bitten by a hardcoded trainer code
+// before. Falls back to the first trainer row, then to a null the caller can
+// still write, because a booking with no trainer_code is a booking that still
+// exists and can be repaired, while a refused booking is a call that never
+// happened.
+let _primaryCache = null;
+async function primaryTrainerCode(URL, SERVICE) {
+  if (_primaryCache) return _primaryCache;
+  try {
+    const r = await fetch(`${URL}/rest/v1/clients?is_trainer=eq.true&select=code,is_primary&limit=20`,
+      { headers: svc(SERVICE) });
+    if (!r.ok) return null;
+    const rows = await r.json() || [];
+    const hit = rows.find((x) => x.is_primary === true) || rows[0];
+    _primaryCache = hit ? hit.code : null;
+    return _primaryCache;
+  } catch (e) { return null; }
+}
+
+// ---- bookingsBusy / myBookingCreate / myBookingCancel -----------------------
+// The three client-side halves of the bookings table, so nothing on a client's
+// screen needs the public key for it any more.
+//
+// WHY bookingsBusy EXISTS AT ALL. The picker has to know which slots are gone,
+// and it used to learn that by reading EVERY booking in the table — every other
+// client's name, date and time, handed to anyone signed in, and to anyone at
+// all with the key from the page source. But a picker never needed the names.
+// It needed the instants. This returns instants and durations and nothing else:
+// no client_code, no note, no id. A client learns that 2pm is taken and cannot
+// learn whose it is.
+async function handleBookingsBusy(URL, SERVICE) {
+  try {
+    const from = new Date(Date.now() - 14 * 86400000).toISOString();
+    const r = await fetch(`${URL}/rest/v1/bookings?starts_at=gte.${encodeURIComponent(from)}`
+      + '&select=starts_at,duration_min,status&order=starts_at.asc&limit=400', { headers: svc(SERVICE) });
+    if (!r.ok) return json(502, { error: 'query_failed', op: 'bookingsBusy' });
+    const rows = await r.json() || [];
+    return json(200, rows
+      .filter((b) => String(b.status || 'booked') !== 'cancelled')
+      .map((b) => ({ starts_at: b.starts_at, duration_min: b.duration_min })));
+  } catch (e) {
+    console.error('trainer: bookingsBusy threw', e && e.message);
+    return json(502, { error: 'query_failed', op: 'bookingsBusy' });
+  }
+}
+
+// A client booking their OWN call. client_code is the session's claim, never an
+// argument — the same law as every other my* op here. Collision-checked
+// server-side, because the old anon path checked nothing and leaned entirely on
+// the picker having offered a free slot, which is a check living on the wrong
+// side of the wall.
+//
+// Entitlement is deliberately NOT spent here. confirmBooking still calls
+// spendWeeklyCall or spendCallCredit exactly as it does today; moving that
+// inside this op would change the credit flow in the same pass as closing a
+// hole, and those are two different risks. This op is the anon write's
+// replacement and nothing more.
+async function handleMyBookingCreate(URL, SERVICE, args, code) {
+  let startMs, tz, dur;
+  try {
+    startMs = new Date(isoTs(args.starts_at)).getTime();
+    tz = args.client_tz ? tzName(args.client_tz) : 'America/New_York';
+    dur = args.duration_min != null ? posInt(args.duration_min, 240) : 30;
+  } catch (e) { return json(400, { error: 'bad_arg' }); }
+  if (startMs < Date.now() - 60000) return json(400, { error: 'in_the_past' });
+  try {
+    const pad = 24 * 60 * 60000;
+    const b = await collectBusy(URL, SERVICE, startMs - pad, startMs + pad);
+    if (!b.ok) return json(502, { error: 'availability_unknown', source: b.source });
+    const clash = firstClash(startMs, dur, b.busy);
+    if (clash) return json(409, { error: 'slot_taken' });
+
+    const row = { client_code: code, trainer_code: await primaryTrainerCode(URL, SERVICE),
+      starts_at: new Date(startMs).toISOString(), duration_min: dur,
+      status: 'booked', client_tz: tz };
+    const w = await fetch(`${URL}/rest/v1/bookings`, {
+      method: 'POST',
+      headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+      body: JSON.stringify(row),
+    });
+    const text = await w.text();
+    if (!w.ok) {
+      console.error('trainer: myBookingCreate failed', w.status, text.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'myBookingCreate' });
+    }
+    let landed = []; try { landed = JSON.parse(text); } catch (e) {}
+    const got = landed[0];
+    if (!got || !got.id) return json(502, { error: 'unconfirmed', op: 'myBookingCreate' });
+    return json(200, [{ id: got.id, starts_at: got.starts_at, duration_min: got.duration_min,
+      status: got.status, client_tz: got.client_tz }]);
+  } catch (e) {
+    console.error('trainer: myBookingCreate threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'myBookingCreate' });
+  }
+}
+
+// A client cancelling their OWN booking. The id comes from the caller, so the
+// filter carries client_code as well — a session naming somebody else's booking
+// id matches zero rows and is told so, rather than cancelling it.
+async function handleMyBookingCancel(URL, SERVICE, args, code) {
+  let id;
+  try { id = encId(args.id); }
+  catch (e) { return json(400, { error: 'bad_arg' }); }
+  try {
+    const filter = `bookings?id=eq.${encodeURIComponent(id)}&client_code=eq.${encodeURIComponent(code)}`;
+    const w = await fetch(`${URL}/rest/v1/${filter}`, {
+      method: 'PATCH',
+      headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+      body: JSON.stringify({ status: 'cancelled' }),
+    });
+    const text = await w.text();
+    if (!w.ok) {
+      console.error('trainer: myBookingCancel failed', w.status, text.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'myBookingCancel' });
+    }
+    let rows = []; try { rows = JSON.parse(text); } catch (e) {}
+    if (!rows.length) return json(404, { error: 'not_yours_or_missing', id: id });
+    if (rows[0].status !== 'cancelled') return json(502, { error: 'unconfirmed', op: 'myBookingCancel' });
+    return json(200, [{ id: rows[0].id, status: 'cancelled' }]);
+  } catch (e) {
+    console.error('trainer: myBookingCancel threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'myBookingCancel' });
   }
 }
 
@@ -2261,6 +2395,15 @@ exports.handler = async (event) => {
   }
   if (op === 'myVipCalls') {
     return handleMyVipCalls(URL, SERVICE, claims.client_code);
+  }
+  if (op === 'bookingsBusy') {
+    return handleBookingsBusy(URL, SERVICE);
+  }
+  if (op === 'myBookingCreate') {
+    return handleMyBookingCreate(URL, SERVICE, args, claims.client_code);
+  }
+  if (op === 'myBookingCancel') {
+    return handleMyBookingCancel(URL, SERVICE, args, claims.client_code);
   }
   if (op === 'myBookings') {
     return handleMyBookings(URL, SERVICE, claims.client_code);
