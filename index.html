@@ -21628,6 +21628,33 @@ async function _jtRunItem(t, capture, ctx){
       return {status:(/✓/.test(line)?'done':'lost'), line:(line||'Done.'), html:true, src:t};
     }
   }catch(e){ console.error('jt feed cmd',e); }
+  // THE SELF-DESCRIPTION IS THE WIRED CAPABILITY LIST (Yusuf, ruling, 19 Aug —
+  // "none of this is actually what he can do"). Deterministic, no model call:
+  // checked here, before the program gate and the model fallback, so "what
+  // can you do" can never fall through to a hand-written prompt paragraph
+  // that oversells or a truncatable model call at all.
+  if(_JV_HELP_RE.test(t)) return {status:'talk', line:_jvCapabilitySummary(), html:true, src:t};
+  // REINSTATE A FORMER CLIENT — intent, not a keyword (Yusuf, ruling, 19 Aug).
+  // Its own resolver, not _jtModel's roster context — _jvAssistantContext
+  // deliberately filters OUT inactive/hidden clients, so the model never
+  // even sees who is inactive to match against.
+  try{
+    var _re=_jvReinstateMatch(t);
+    if(_re){
+      var _rr=await _jvReinstateClient(_re.code);
+      return {status:(_rr.ok?'done':'lost'), line:_rr.line, html:true, src:t};
+    }
+  }catch(e){ console.error('jt reinstate',e); }
+  // ADD A CLIENT (+ A SALE, IN ONE SENTENCE) — together or not at all
+  // (Yusuf, ruling, 19 Aug). Own dedicated extraction call, not folded into
+  // _jtModel's JSON contract: a wrong field here is a real account and real
+  // money, not a note he can delete with a tap.
+  if(_JT_NEWCLIENT_RE.test(t)){
+    try{
+      var _nc=await _jtNewClientTurn(t);
+      if(_nc) return {status:(_nc.ok?'done':'lost'), line:_nc.line, html:true, src:t};
+    }catch(e){ console.error('jt new client',e); }
+  }
   // PROGRAMS. Not rebuilt here — handed to the cockpit chat, which already owns
   // the marker machinery that writes a program into a client's app, and gets its
   // answer back into this thread. This is what the pane used to do for EVERY
@@ -21710,12 +21737,206 @@ async function _jtRunItem(t, capture, ctx){
   if(mo.reply) return {status:'talk', modelled:true, line:_escHtml(mo.reply).replace(/\n/g,'<br>'), html:true, src:t};
   return {status:'lost', modelled:true, line:'“'+_escHtml(t)+'” — I couldn’t place that one. Say it again on its own and I’ll take it.', html:true, src:t};
 }
+// ===== THE SELF-DESCRIPTION IS THE WIRED CAPABILITY LIST, NOT A PARAGRAPH ===
+// Yusuf, ruling, 19 Aug: "none of this is actually what he can do." A prompt
+// describing Jarvis in prose both oversells (implies things never wired) and
+// undersells (never mentions half of what actually works, since most of it
+// lives in stages a system prompt has no visibility into). This array is the
+// single source of truth for "what can you help me do" — every line names a
+// real stage in THIS file. When a capability is added, add its line here too;
+// nothing formats this through a model, so there is nothing left to drift or
+// to truncate.
+var JV_CAPABILITIES=[
+  {v:'book a call, a consult, or a generic appointment', d:'exact name and a clear time — I do it, no confirmation unless the time is already taken'},
+  {v:'move or cancel a call, a consult, or a standing call for one day', d:'same — I just do it and tell you'},
+  {v:'add a new client', d:'name (and phone, tier, term, fee if you say them) — code checked and picked for you, and if you mention a fee it lands as a real sale or the whole thing rolls back and I say so'},
+  {v:'reinstate a former client', d:'“put Marcus back on”, “reactivate Kevin” — no new code, no sale needed'},
+  {v:'log a call note, a working-on, a like, a comment, or open a text', d:'straight onto their profile'},
+  {v:'log a number', d:'weight, steps, or food for a named client — this is the one write I still ask you to confirm, since a wrong one sits in real history with no undo'},
+  {v:'draft a text to a client', d:'you see it before anything sends'},
+  {v:'build, edit, patch, or remove a client’s workout program', d:'say the split and the constraints, I write it into their app'},
+  {v:'answer a question about your board', d:'who’s quiet, who logged well, a client’s schedule, their weigh-ins'}
+];
+function _jvCapabilitySummary(){
+  var lines=JV_CAPABILITIES.map(function(c){ return '• '+_escHtml(c.v)+' — '+_escHtml(c.d); });
+  return 'Here’s what actually works right now:<br><br>'+lines.join('<br>')
+    +'<br><br>Ask for any of it in plain language — no special phrasing needed.';
+}
+var _JV_HELP_RE=new RegExp('\\b(what can you (help me )?do|what do you do|what are you (able to |capable of )?do(ing)?|what\\u2019?s your (job|role)|how (do|can) (you|i use you) work)\\b','i');
+// REINSTATE A FORMER CLIENT — intent, not a keyword (Yusuf, ruling, 19 Aug).
+// _jvAssistantContext deliberately filters inactive/hidden clients OUT of
+// the roster it shows the model, so this can't be folded into _jtModel's
+// existing name resolution — the model literally never sees who's inactive.
+// \\u0027 instead of a bare apostrophe inside the character class: a stray
+// apostrophe in a REGEX LITERAL reads as an opening string to check.sh's
+// stripper and blanks everything after it (see CLAUDE.md's landmine
+// register) — new RegExp() with the escape sidesteps it entirely.
+var _JV_REINSTATE_RE=new RegExp(
+  '\\b(?:put|bring)\\s+([a-z][a-z .\\u0027-]{1,40}?)\\s+back\\s*(?:on|in)?\\b'
+  +'|\\b(?:reinstat(?:e|ing)|reactivat(?:e|ing))\\s+([a-z][a-z .\\u0027-]{1,40})'
+  +'|\\b([a-z][a-z .\\u0027-]{1,40}?)\\s+is\\s+(?:coming back|back)\\b', 'i');
+function _jvReinstateMatch(t){
+  var m=_JV_REINSTATE_RE.exec(String(t||''));
+  if(!m) return null;
+  var name=(m[1]||m[2]||m[3]||'').trim();
+  if(!name) return null;
+  var hit=_jvResolveInactiveOne(name);
+  if(!hit) return null;
+  return {code:hit, name:name};
+}
+// Same shape as _jvResolveOne (exact code, then full/first name) but over
+// EVERY client regardless of the hidden-set filter, restricted to
+// active===false — reinstating an already-active client is a no-op that
+// should say so, not silently "succeed."
+function _jvResolveInactiveOne(name){
+  var q=String(name||'').trim().toLowerCase().replace(/[^a-z0-9 ]/g,'');
+  if(!q) return null;
+  if(CLIENTS[q] && !CLIENTS[q].isTrainer && CLIENTS[q].active===false) return q;
+  var hits=[];
+  Object.keys(CLIENTS||{}).forEach(function(c){
+    var r=CLIENTS[c]||{}; if(r.isTrainer || r.active!==false) return;
+    var full=String(r.name||'').toLowerCase();
+    var first=full.split(' ')[0];
+    if(full===q || first===q) hits.push(c);
+  });
+  return hits.length===1 ? hits[0] : null;
+}
+async function _jvReinstateClient(code){
+  var r=CLIENTS[code]||{};
+  if(!r || r.active!==false) return {ok:false, line:'I couldn’t find an inactive client matching that — say the name again, or check the roster.'};
+  var name=_escHtml(r.name||code);
+  var ok=false;
+  try{ ok=await _rsSetActive(code, true); }catch(e){}
+  if(!ok) return {ok:false, line:name+' didn’t restore — the door refused it. Try again in a moment.'};
+  try{ jvLoadRoster(true); }catch(e){}
+  return {ok:true, line:'✓ '+name+' is back on the roster.'};
+}
+// ADD A CLIENT (+ A SALE, IN ONE SENTENCE) — together or not at all (Yusuf,
+// ruling, 19 Aug — this is what he's actually blocked on daily). Own
+// dedicated extraction call rather than folded into _jtModel's JSON
+// contract: a wrong field here is a real account and real money, not a
+// note that's one tap to delete.
+var _JT_NEWCLIENT_RE=new RegExp(
+  '\\bnew client\\b'
+  +'|\\badd(?:ed)?\\s+(?:a\\s+|another\\s+)?(?:new\\s+)?client\\b'
+  +'|\\bcreate\\s+(?:a\\s+|another\\s+)?(?:new\\s+)?client\\b'
+  +'|\\bsign(?:ed)?\\s+[a-z]+\\s+up\\b'
+  +'|\\bonboard(?:ing)?\\s+(?:a\\s+|another\\s+)?(?:new\\s+)?client\\b'
+  +'|\\bgot a new client\\b', 'i');
+async function _jtNewClientExtract(t){
+  var sys='Extract a new-client sign-up from this trainer’s sentence. Return ONLY JSON, no markdown: '
+    +'{"name":"","phone":"","gender":"male|female|","tier":"1on1|vip|","term_months":0,"paid":0}. '
+    +'name is required — leave everything else empty/0 when not stated, never invent a number or a tier he did not say. '
+    +'"vip" only if he says VIP, unlimited calls, or similar; otherwise "1on1". paid is the fee in dollars, a plain number, 0 if none was mentioned. '
+    +'term_months is the length he stated (e.g. "6 months" -> 6), 0 if not stated.';
+  var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({messages:[{role:'user',content:sys},{role:'assistant',content:'Ready.'},{role:'user',content:t}],max_tokens:300})});
+  var data=await res.json();
+  var txt=data&&data.content?(Array.isArray(data.content)?data.content.map(function(b){return b.text||'';}).join(''):data.content):(data.text||data.completion||'');
+  var clean=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
+  try{ return JSON.parse(clean); }catch(e){ var mm=clean.match(/\{[\s\S]*\}/); if(mm){ try{ return JSON.parse(mm[0]); }catch(e2){} } }
+  return null;
+}
+// Checked live against the door's own roster, not just the local cache — a
+// stale CLIENTS object must never pick a code that already exists there.
+async function _jvNextClientCode(base){
+  base=(base||'client').replace(/[^a-z0-9]/g,'')||'client';
+  var live={};
+  try{ (await trainerOp('roster',{})||[]).forEach(function(r){ if(r&&r.code) live[r.code]=1; }); }catch(e){}
+  for(var n=1;n<=50;n++){
+    var cand=base+n;
+    if(!CLIENTS[cand] && !live[cand]) return cand;
+  }
+  return null;
+}
+function _jvOnboardingBody(name, code){
+  var first=String(name||'').trim().split(/\s+/)[0]||name;
+  return 'Hey '+first+' — you’re all set. Get the app here: https://yourjimbff.netlify.app\n\n'
+    +'Your code to sign in: '+code+'\n\n'
+    +'On iPhone: open that link in Safari, tap the Share icon, then “Add to Home Screen” — it’ll sit right on your home screen like any other app.\n\n'
+    +'Text me if you get stuck.';
+}
+async function _jvJarvisAddClient(nc){
+  var name=String((nc&&nc.name)||'').trim();
+  if(!name) return {ok:false, line:'I didn’t catch a name for the new client — say it again with their name.'};
+  var tier=(nc.tier==='vip') ? 'vip' : '1on1';
+  var term=Number(nc.term_months)||6;
+  var paid=(nc.paid!=null && isFinite(+nc.paid) && +nc.paid>0) ? +nc.paid : null;
+  var gender=(nc.gender==='male'||nc.gender==='female') ? nc.gender : null;
+  var initials=(name.split(/\s+/).map(function(w){return w[0]||'';}).join('').slice(0,2)||name.slice(0,2)).toUpperCase();
+  var parts=name.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  var base=(parts[0]||'client')+(parts[1]?parts[1][0]:'');
+  var code=await _jvNextClientCode(base);
+  if(!code) return {ok:false, line:'Couldn’t find an open code for '+_escHtml(name)+' — add them by hand this once.'};
+  var acc=acAccessFor(tier);
+  var w=null;
+  try{
+    w=await trainerWrite('clientInsert', {code:code, name:name, initials:initials,
+      tier:tier, term_months:term, paid:paid,
+      started_at:new Date().toISOString().slice(0,10),
+      calls_enabled:acc.calls_enabled, call_credits:acc.call_credits});
+  }catch(e){}
+  if(!w || !w.ok) return {ok:false, line:'Could not create '+_escHtml(name)+' — nothing was written. Try again in a moment.'};
+  CLIENTS[code]=Object.assign({name:name, initials:initials, coach_code:(cl&&cl.code)||'', active:true,
+    tier:tier, term_months:term, paid:paid, started_at:new Date().toISOString().slice(0,10)}, acc);
+  var saleOk=true;
+  if(paid){ try{ saleOk=await _ensureSaleFor(code, paid, new Date().toISOString().slice(0,10)); }catch(e){ saleOk=false; } }
+  if(paid && !saleOk){
+    // TOGETHER OR NOT AT ALL. Roll back rather than leave a client on the
+    // roster with no sale behind the fee he just quoted.
+    try{ await trainerWrite('clientDelete', {code:code}); }catch(e){}
+    try{ delete CLIENTS[code]; }catch(e){}
+    return {ok:false, line:'The sale didn’t save, so I didn’t create '+_escHtml(name)+' either — say it again.'};
+  }
+  try{ if(nc.phone) await trainerWrite('clientPatch', {code:code, phone:String(nc.phone).trim()}); }catch(e){}
+  try{
+    var pd=(typeof PHASES!=='undefined') && PHASES.comp;
+    var days=(pd && pd.days && pd.days[gender]) || 5;
+    var seed={client_code:code, name:name, train_days:days};
+    if(gender) seed.gender=gender;
+    await sbUpsert('profiles', seed, 'client_code');
+  }catch(e){}
+  try{ _rosterLoadPromise=null; await loadRosterFromDB(); }catch(e){}
+  var line='✓ '+_escHtml(name)+' added · '+code+' · '+(tier==='vip'?'VIP':'1:1, 2 calls')+' · '+term+' mo';
+  if(paid) line+=' · '+_sMoney(paid)+' logged as a sale';
+  // THE ONBOARDING MESSAGE — drafted, never auto-sent (RULING 1: an
+  // actually-sent text still asks, undo can't unsend an SMS). Reuses the
+  // exact textprop pending-write flow every other drafted text already
+  // goes through — say yes, Messages opens prefilled with this.
+  try{
+    var body=_jvOnboardingBody(name, code);
+    var pend={kind:'textprop', code:code, name:name, body:body, parts:[], payload:{}, at:Date.now()};
+    var park=_jvPendSet(pend);
+    line+='<br><br>I’ve drafted their onboarding text — say yes and I’ll open Messages with it.'+(park||'');
+  }catch(e){}
+  return {ok:true, line:line};
+}
+async function _jtNewClientTurn(t){
+  var nc=null;
+  try{ nc=await _jtNewClientExtract(t); }catch(e){}
+  if(!nc || !nc.name) return null;   // didn't actually parse as a new-client sentence — fall through
+  return await _jvJarvisAddClient(nc);
+}
 // Anything program-shaped goes to the cockpit chat rather than to the generic
 // model, because that is where [PROGRAM]/[PROGRAM_PATCH] are understood and
 // written into a client's app. What comes back is whatever it appended to its
 // own history — including its "couldn't save, it came back malformed" line, so
 // a program that did NOT land still says so here rather than reading as done.
-var _JT_PROG_RE=/\b(program|programme|workout|routine|split|assign|unassign|leg day|rest day|push day|pull day|swap|superset|day\s?[1-9])\b/i;
+// ONE CONSTANT, NOT TWO (Yusuf, ruling, 19 Aug — interim fix while the full
+// jvChatSend/_jtTurn unification waits as its own job). This used to be two
+// independently-maintained regexes — this one, and a second inline literal
+// at jvChatSend's own gate — and they drifted: the other was missing
+// "unassign" and "superset", so a rail message matching THIS gate got
+// handed to jvChatSend with none of the PROGRAM instructions in its prompt,
+// and it just talked instead of acting. Every consumer (_jtRunItem,
+// jvChatSend, Jim-is-Jarvis's _jimJarvisTry) now reads this one object, so
+// there is nothing left to drift apart. Union of both former patterns —
+// deliberately the broader set, since by the time any of these three call
+// sites reach this check, cancel/book/contact/call-note/consult-keyword
+// have already had their turn and returned if they matched, so widening
+// this only affects the residual "didn't match anything more specific"
+// space, not anything already claimed higher up.
+var _JT_PROG_RE=/\b(program|programme|workout|routine|split|assign|unassign|superset|schedule|plan (her|him|them)|build (her|him|them|a|out)|give (her|him|them|leandra)|add (a|an|her|him|them|in|leg|rest|push|pull|another)|swap|leg day|rest day|push day|pull day|extra day|change (her|his|their|the)|remove (her|his|the|a|their)|edit (her|his|their|the)|rename|relabel|retitle|reorder|name (the|her|his|their) (day|days)|day ?[1-9])\b/i;
 async function _jtProgram(t){
   var box=document.getElementById('jvChatInput'); if(!box) return null;
   var n=(window.jvChatHistory||[]).length;
@@ -28795,19 +29016,14 @@ async function jvChatSend(){
   var sys='You are Jarvis \u2014 Yusuf\'s running mate inside YOURJIMBFF. Not a copilot that nods along: a co-coach who knows how he operates and works to offset him. When he\'s flat, lift him. When he\'s spun up or scattered, ground him and narrow it to the one thing that matters. Keep him honest and keep him steady. You can see a live snapshot of his client board below: who is active, who has gone quiet and for how long, and what each person logged today. Use it directly \u2014 real names, real numbers. If it is early and few have logged today yet, say that plainly, but you still know who has been consistent and who is slipping, so coach from that. Never tell him you cannot see his data \u2014 the snapshot is right here. ANSWER WHAT HE ASKS, FIRST AND DIRECTLY: if he asks a specific question \u2014 a client\\u2019s schedule, a number, a yes/no, one person \u2014 answer THAT precisely before anything else. Do NOT open with the who-needs-you roster rundown unless he actually asks for it (\\u201cwho needs me\\u201d, \\u201cdebrief\\u201d, \\u201crun the board\\u201d, \\u201cwhat should I do today\\u201d). Leading with an unrequested briefing when he asked one narrow thing is exactly what frustrates him. Talk like a sharp, loyal friend who\'s in it with him \u2014 direct, specific, real. Use real names and numbers. Never a yes-man: if he\'s avoiding something or about to overdo it, say so plainly and kindly. No corporate or AI-sounding language, no fluff, no hype padding. Push him toward real action and real conversations with his clients and the people in his life \u2014 you point him at the work, you don\'t replace it. WHEN YOU DRAFT A TEXT TO A CLIENT (a check-in, a reply, or reaching out): write ONE real text message in plain human voice \u2014 no headers, no bold, no bullet points, no section labels, never a memo. If the client asked about or was confused by something, answer THAT first. Then find the SINGLE most real thing in what they said and speak to that one thing; do not acknowledge every point they made. Praise ONCE and mean it \u2014 never stack superlatives, never say things like "this is gold" or "that is the whole thing," no hype padding. Match their length and energy: a four-sentence text gets three or four sentences back, warm and direct, the way Yusuf actually texts. Output ONLY the message itself, ready to send \u2014 no preamble, no options, no explaining your choices. Current day context:\n'+(await _jvAssistantContext({}));
   try{ var _sched = await _jvClientScheduleBlock(msg); if(_sched) sys += _sched; }catch(e){}
   try{ sys += _jvClientWeightBlock(msg); }catch(e){}
-  // Kept in step with _jtTurn's OWN program-detection gate (_JT_PROG_RE) —
-  // they used to be two independently-maintained regexes and drifted: this
-  // one was missing "unassign" and "superset", so "unassign her" typed at
-  // the rail matched _JT_PROG_RE (handing off here) but not this gate, so
-  // the PROGRAM_REMOVE instructions never got appended to the prompt and
-  // the model just talked about it with nothing actually removed — no
-  // backstop catches that here (confirmed 19 Aug, this file's own capability
-  // audit). Not literally shared as one constant because this gate also
-  // matches phrasings _JT_PROG_RE doesn't need (schedule/plan/build/give/
-  // remove/edit/rename...) that would over-trigger the batch-splitting
-  // pipeline if hoisted there — but every word _JT_PROG_RE matches on MUST
-  // also be matched here, or a rail request silently does nothing.
-  if(/\b(program|programme|workout|routine|split|assign|unassign|superset|schedule|plan (her|him|them)|build (her|him|them|a|out)|give (her|him|them|leandra)|add (a|an|her|him|them|in|leg|rest|push|pull|another)|swap|leg day|rest day|push day|pull day|extra day|change (her|his|their|the)|remove (her|his|the|a|their)|edit (her|his|their|the)|rename|relabel|retitle|reorder|name (the|her|his|their) (day|days)|day ?[1-9])\b/i.test(msg)){
+  // ONE CONSTANT WITH _jtTurn's gate NOW (Yusuf, ruling, 19 Aug — was two
+  // independently-maintained regexes that had already drifted once, missing
+  // "unassign"/"superset" here and silently no-op'ing "unassign her" typed
+  // at the rail). _JT_PROG_RE is defined once, above _jtRunItem, and read
+  // by every consumer — this one included — so there is nothing left to
+  // drift apart. (The full unification of these two pipelines into one
+  // prompt/one history is its own separate job, not this line.)
+  if(_JT_PROG_RE.test(msg)){
     var _hiddenPB=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
     var _roster=Object.keys(CLIENTS).filter(function(k){return !CLIENTS[k].isTrainer && !_hiddenPB[k];}).map(function(k){ return k+' = '+(CLIENTS[k].name||k); }).join('\n');
     sys += '\n\n=== BUILDING A WORKOUT PROGRAM ===\nYou can build and assign a full workout program straight into a client\u2019s app. When Yusuf asks you to create / assign / schedule / build a program or workouts for a specific client, actually do it. Speak to him normally first \u2014 a short, plain confirmation of what you built (the split, the days, and any constraint you honored like equipment or moves to avoid) \u2014 then end your reply with a hidden marker on its own final line, exactly this shape:\n[PROGRAM client=CLIENT_CODE]{"name":"Short program name","description":"one-line summary","workouts":[{"day":1,"title":"Push","exercises":[{"name":"Dumbbell bench press","sets":4,"detail":"8-10 reps"},{"name":"Incline DB press","sets":3,"detail":"10-12"}],"notes":"optional cue"}]}[/PROGRAM]\nRules:\n- client MUST be the exact code from the roster below, never the display name.\n- day: 1=Mon, 2=Tue ... 7=Sun. One object per training day. Skip pure rest days - one object per training day only. When Yusuf asks for active rest days, step goals, or cardio on the non-lifting days, do NOT pin specific rest days. Instead add ONE top-level number to the program JSON: "restSteps":5000. That becomes a checkable +5k steps task that shows on every day she does not lift, and she ticks it off herself. You may also include an optional "restNote" string with the exact wording to display, for example "restNote":"5,000 steps, or 40 min of sauna, swimming, Pilates, or yoga - any movement counts". The task appears automatically on EVERY non-lifting day, so you never pin or name specific rest days. Keep doing exactly what Yusuf asks - just express it as restSteps, never as pinned rest-day objects.\n- Honor every constraint Yusuf gives \u2014 equipment on hand, moves to avoid, days per week, the split he wants.\n- Each exercise needs name + sets (a number); detail (reps/weight/tempo) is optional. Keep detail SHORT (like \"4x10\") and aim for 4 exercises per day. For any program of 3 or more days, keep your spoken confirmation to ONE short sentence and then place the marker immediately - a long chatty intro before a multi-day program is what eats the room and gets the program cut off. One short line plus compact JSON always lands.\n- NEVER describe or mention the marker to Yusuf. Talk like a coach, then place the marker last.\n- Only emit a marker when he actually wants it built/assigned. If he\u2019s just asking or thinking out loud, talk it through with no marker.\n\n=== EDITING AN EXISTING PROGRAM ===\nWhen Yusuf wants to CHANGE a client\u2019s current program rather than replace the whole thing \u2014 \u201cadd a leg day\u201d, \u201cswap her Wednesday\u201d, \u201cgive him an extra day\u201d, \u201cmake Friday rest\u201d \u2014 do NOT rebuild from scratch. Use this marker instead, which surgically edits just the days you name and leaves everything else intact:\n[PROGRAM_EDIT client=CLIENT_CODE]{\"changes\":[{\"day\":3,\"title\":\"Legs\",\"exercises\":[{\"name\":\"Goblet squat\",\"sets\":4,\"detail\":\"10-12\"},{\"name\":\"RDL\",\"sets\":3,\"detail\":\"10\"}],\"notes\":\"optional cue\"},{\"day\":5,\"remove\":true}]}[/PROGRAM_EDIT]\nRules:\n- Each change targets ONE weekday (1=Mon ... 7=Sun). title+exercises adds or replaces that day; \"remove\":true clears that day to rest.\n- Same exercise shape as above (name + sets, optional detail).\n- Use [PROGRAM_EDIT] for tweaks to an existing plan; use [PROGRAM] only for a brand-new full program. Never describe the marker to him \u2014 confirm in plain coach language, then place it last.\n\n=== TARGETED PATCH (preferred for most changes) ===\nThe FULL current program above includes each day\u2019s exercises AND its coaching notes. When Yusuf wants to CHANGE specific exercises \u2014 \u201cswap all the barbell work to machines\u201d, \u201cchange her hip thrust to the machine version\u201d, \u201cdrop the kickbacks on Monday\u201d, \u201cbump the squats to 4 sets\u201d, \u201cadd cable hyperextensions to leg day\u201d \u2014 use THIS marker. It edits only the moves you name and keeps every other exercise, every set/rep, every day title and every coaching note exactly as-is. This is almost always what he wants, and because it is tiny it never gets cut off:\n[PROGRAM_PATCH client=CLIENT_CODE]{"days":[{"day":1,"swaps":[{"from":"Barbell Hip Thrust","to":"Hip Thrust Machine"},{"from":"Dumbbell RDL","to":"Machine RDL"}]},{"day":5,"add":[{"name":"Cable Hyperextension","sets":3,"reps":"12"}],"remove":["Leg Curl"]}]}[/PROGRAM_PATCH]\nOps per day, all optional, combine freely: swaps:[{from,to,sets?,reps?}] renames/replaces a movement (match \u201cfrom\u201d loosely to a move in the program above); set:[{name,sets?,reps?}] changes sets or reps of an existing move; add:[{name,sets,reps}] adds a move; remove:[\u201cname\u201d,...] removes moves; \u201cremove\u201d:true on a day clears it to rest; title and notes overwrite that day\u2019s heading or note.\n- Use PROGRAM_PATCH for swaps and targeted edits \u2014 it preserves notes and structure automatically. Use PROGRAM_EDIT only to rewrite a whole day. Use PROGRAM only for a brand-new program from scratch.\n- A RENAME is only a title change: emit a PROGRAM_PATCH with {\"day\":N,\"title\":\"New Name\"} for each day being renamed, nothing else needed.\n- CRITICAL: when Yusuf names a client, the full current program for that client is ALREADY shown to you above and you can read it right now. NEVER say you need to see it first, never ask him to pull it up or re-confirm the day names \u2014 just read the program above and act immediately with the right marker. Asking to see what you already have is the stalling that frustrates him most.\n- If the client is on a shared template, the first patch automatically clones it into their OWN program so the change is theirs alone.\n- For a sweeping request like \u201cconvert everything to machines,\u201d list every needed swap across the days in one PROGRAM_PATCH \u2014 that is exactly what it is built for.\n- Never mention the marker; confirm in plain coach language, then place it last.\n\n=== TAKING A CLIENT OFF A PROGRAM ===\nWhen Yusuf wants to remove, unassign, clear, end, or take a client OFF their program -- for example "take Leandra off her program", "unassign him", "clear her plan", "she is done with this program", "put her back on rest" -- use this marker. It deactivates their current program and clears their assignment so their app shows no program. It does NOT delete anything, so you can reassign or rebuild later:\n[PROGRAM_REMOVE client=CLIENT_CODE][/PROGRAM_REMOVE]\nRules:\n- client MUST be the exact roster code, never the display name.\n- Use this ONLY when Yusuf clearly wants the client OFF their program. If he wants to CHANGE the program use PROGRAM_PATCH or PROGRAM_EDIT; if he wants a NEW program use PROGRAM. Removing is not editing.\n- Confirm in ONE plain sentence (for example: Took her off the program, you can reassign anytime), then place the marker last. Never describe the marker itself.\n\nCLIENT ROSTER (code = name):\n'+_roster;
