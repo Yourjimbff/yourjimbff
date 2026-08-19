@@ -28932,22 +28932,36 @@ async function jvChatSend(){
   var msgs=[{role:'user',content:sys}];
   jvChatHistory.slice(-6).forEach(function(m){ msgs.push(m); });
   try{
-    var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:msgs})});
+    var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:msgs, max_tokens:1400})});
     var data=await res.json();
     var txt = data && data.content ? (Array.isArray(data.content)?data.content.map(function(b){return b.text||'';}).join(''):data.content) : (data.text||data.completion||'');
     if(!txt) txt='(no response)';
-    // Auto-continue if a [PROGRAM] block got cut off mid-JSON (hit the response length ceiling).
+    // TRUNCATION MUST NEVER BE INVISIBLE (Yusuf, 19 Aug — a plain conversational
+    // reply, no [PROGRAM] marker in sight, cut off mid-word with nothing on
+    // screen to say so). The old check here only looked for an unterminated
+    // [PROGRAM] tag; a truncated ordinary answer had no marker to notice and
+    // just rendered as-is, stopped mid-sentence. stop_reason is the API's own
+    // word for it — Anthropic sets it to 'max_tokens' the instant generation
+    // is cut short, whether the text was JSON, a marker, or plain prose — so
+    // this checks that directly instead of guessing from shape. Same
+    // continuation loop as before, just no longer gated on PROGRAM specifically.
     var _contTries=0;
-    while(/\[PROGRAM\b/i.test(txt) && !/\[\/PROGRAM\]/i.test(txt) && _contTries<2){
+    while(data && data.stop_reason==='max_tokens' && _contTries<2){
       _contTries++;
       try{
-        var _cmsgs=msgs.concat([{role:'assistant',content:txt},{role:'user',content:'Continue the [PROGRAM] block from EXACTLY where you stopped. Output ONLY the remaining characters needed to finish the JSON and the closing [/PROGRAM] tag. Do not repeat anything already sent and add no commentary.'}]);
-        var _res2=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:_cmsgs})});
+        var _cmsgs=msgs.concat([{role:'assistant',content:txt},{role:'user',content:'Continue exactly where you left off — mid-word if that is where you stopped. Output ONLY the remaining text, nothing already sent, no preamble.'}]);
+        var _res2=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:_cmsgs, max_tokens:1400})});
         var _data2=await _res2.json();
         var _txt2 = _data2 && _data2.content ? (Array.isArray(_data2.content)?_data2.content.map(function(b){return b.text||'';}).join(''):_data2.content) : (_data2.text||_data2.completion||'');
         if(!_txt2) break;
         txt = txt + _txt2;
+        data = _data2;                    // re-check the NEW stop_reason, not the old one
       }catch(e){ break; }
+    }
+    // Two tries used and it is STILL cut off (a truly long answer) — say so
+    // rather than let a still-unfinished sentence pass as a complete one.
+    if(data && data.stop_reason==='max_tokens'){
+      txt = txt.replace(/[\s.,;:—-]*$/,'') + '… (cut off — say “keep going” and I’ll finish it)';
     }
     var _pg = await _jvApplyPrograms(txt);
     var _pe = await _jvApplyProgramEdits(_pg.clean);

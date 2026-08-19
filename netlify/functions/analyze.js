@@ -76,8 +76,16 @@ exports.handler = async function (event) {
   }
 
   const model = ALLOWED_MODELS[String(body.model || '')] ? String(body.model) : DEFAULT_MODEL;
+  // The default was 700 until a live truncation bug (19 Aug — a plain
+  // conversational Jarvis reply, no JSON, cut off mid-word with nothing to
+  // signal it) turned up ~15 call sites across index.html that never set
+  // their own max_tokens and were silently riding this floor. Raised to
+  // 1200 rather than hand-tuning every call site individually — callers
+  // that deliberately want a small, cheap completion (40, 60, ...) already
+  // pass their own explicit value and are unaffected; this only raises the
+  // ceiling for the ones that were never thinking about it.
   let maxTokens = Number(body.max_tokens);
-  if (!isFinite(maxTokens) || maxTokens <= 0) maxTokens = 700;
+  if (!isFinite(maxTokens) || maxTokens <= 0) maxTokens = 1200;
   maxTokens = Math.min(Math.round(maxTokens), MAX_TOKENS_CAP);
   let temperature = Number(body.temperature);
   if (!isFinite(temperature) || temperature < 0 || temperature > 1) temperature = 0.2;
