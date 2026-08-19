@@ -260,6 +260,48 @@ Scoped and rejected. The blockers:
 
 It's a rewrite of the app's wiring for no user-visible gain.
 
+## 13. Jarvis adversarial test suite — BEFORE MORE JARVIS FEATURES
+
+*Yusuf's ruling, 18 Aug: build this as a standing regression suite before adding
+more to the Jarvis pipeline. Report which cases pass, which fail, and which get
+fixed — a named failure is worth more than an assumed pass.*
+
+Runs against the real pipeline (`_jtTurn`/`_jtRunItem`/`_jvBookCommand`/the
+model turn), not a mock of it. Cases, grouped:
+
+- **Time/date:** "next Tuesday" said on a Tuesday; "at 12" (noon vs midnight
+  ambiguity); "the 3rd" with no month named; a DST-crossing standing occurrence;
+  "tonight"; "first thing tomorrow".
+- **Ambiguity:** "cancel Blake" when she has both a standing call today AND a
+  one-off booking Thursday; "book Anthony" with two Anthonys on the roster;
+  "move her call" with no antecedent in the conversation.
+- **Compound/conditional:** "book Halie at 4 and text her the link"; "cancel
+  everything after 3"; "move Blake unless she already moved it".
+- **Mid-flight correction** (acts fire immediately now, §4 of the successor
+  brief — this is the real stress case for that ruling): "move Blake to 9 — no
+  wait, 8:45" (the second write must win, and the first must be undoable);
+  "actually cancel that" said straight after a booking.
+- **Spoken numbers:** "thirty-five hundred"; "eight forty-five"; "half past
+  nine"; "quarter to ten".
+- **Names that are words:** clients literally named Mark, May, Will, Chase,
+  Grant — confirm the command-verb scan never consumes the name as a verb.
+- **Empty/hostile states:** a client with zero history; a name not on the
+  roster at all; a board question when the reads FAIL (must say the read
+  failed — never "nobody trained today", which is the empty-vs-failed
+  confusion `sbSelect` already burned this codebase on once).
+- **Undo by voice:** "undo that", "put Blake back" — undo exists as a button
+  today; make it answerable as a sentence too.
+- **Long dictation:** one 90-second monologue covering four clients with mixed
+  acts and statements in it — the batch layer's real stress test, and close to
+  what he actually does while driving.
+
+No test harness exists for this app today (see item 12's "no safety net" —
+check.sh proves syntax only). This item is also the first real answer to that
+gap for the Jarvis surface specifically: extract the pipeline functions by name
+the same way the CLAUDE.md testing section already describes for plain logic,
+and drive them with these cases against stubs, since a real trainer session
+still is not reliably available session to session.
+
 ## Standing rules for every item
 
 - Plan before writing. Show the plan, get approval, then build, commit and push in one go.
