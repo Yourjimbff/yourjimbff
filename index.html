@@ -15976,6 +15976,19 @@ function _jvSpeakStrip(html){
 // Clips are cached by their own text so a replay costs nothing the second time;
 // the cache is small and per page, and a miss simply re-fetches.
 var _JV_CLIPS={}, _JV_CLIP_MAX=12;
+// A FAILURE MUST SAY SO ONCE, VISIBLY (Yusuf, 19 Aug — voice confirmed on,
+// gold icon, and replies going silent with nothing on screen to explain it).
+// Every dead-end below used to be a bare return or a console.warn nobody but
+// devtools ever saw. One toast per new failure, not one per line — a whole
+// silent batch would otherwise stack toasts. Clears the moment a line
+// actually plays, so a later, different failure still gets its own notice.
+var _jvSpeakFailNoted=false;
+function _jvSpeakFail(reason){
+  console.warn('[jarvis-speak] '+reason);
+  if(_jvSpeakFailNoted) return;
+  _jvSpeakFailNoted=true;
+  try{ if(typeof showToast==='function') showToast('Voice failed — '+reason); }catch(e){}
+}
 async function _jvSpeakLine(textOrHtml, opts){
   opts=opts||{};
   try{
@@ -15994,18 +16007,36 @@ async function _jvSpeakLine(textOrHtml, opts){
         if(!_jvAudioEl) _jvAudioEl=new Audio();
         _jvAudioEl.src=_JV_CLIPS[t];
         var pc=_jvAudioEl.play();
-        if(pc && pc.catch) pc.catch(function(){ console.warn('[jarvis-speak] blocked by the browser'); });
+        if(pc && pc.catch) pc.catch(function(){ _jvSpeakFail('blocked by the browser'); });
         return;
       }catch(e){}
     }
     var tok=null; try{ tok=_sessToken(); }catch(e){}
-    if(!tok) return;                       // no session, no voice, no noise about it
+    if(!tok){
+      // THE SUSPECT: a long-open session can let this lapse with nothing else
+      // to trigger renewal. Every other authenticated call in the app either
+      // rides the SB_URL wrapper's own retry-on-401 or, like trainerOp, forces
+      // one via sessOnDenied() before it gives up — this one just read a dead
+      // token and quit. Same recovery, here, before it counts as a failure.
+      try{ await sessOnDenied(); }catch(e){}
+      try{ tok=_sessToken(); }catch(e){}
+    }
+    if(!tok){ _jvSpeakFail('not signed in'); return; }
     var res=await fetch('/.netlify/functions/jarvis-speak',{
       method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},
       body:JSON.stringify({text:t})});
-    if(!res.ok){ console.warn('[jarvis-speak] '+res.status+' — line not spoken'); return; }
+    if(res.status===401 || res.status===403){
+      var recovered=false; try{ recovered=await sessOnDenied(); }catch(e){}
+      if(recovered){
+        try{ tok=_sessToken(); }catch(e){}
+        if(tok) res=await fetch('/.netlify/functions/jarvis-speak',{
+          method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},
+          body:JSON.stringify({text:t})});
+      }
+    }
+    if(!res.ok){ _jvSpeakFail('server said '+res.status); return; }
     var buf=await res.arrayBuffer();
-    if(!buf || !buf.byteLength) return;
+    if(!buf || !buf.byteLength){ _jvSpeakFail('came back empty'); return; }
     var url=URL.createObjectURL(new Blob([buf],{type:'audio/mpeg'}));
     // Held for replay. Capped, and the oldest url is revoked as it goes so a
     // long session cannot leak blobs.
@@ -16017,11 +16048,12 @@ async function _jvSpeakLine(textOrHtml, opts){
     if(!_jvAudioEl) _jvAudioEl=new Audio();
     _jvAudioEl.src=url;
     var pl=_jvAudioEl.play();
-    if(pl && pl.catch) pl.catch(function(err){ console.warn('[jarvis-speak] blocked by the browser — line not spoken'); });
+    if(pl && pl.catch) pl.catch(function(err){ _jvSpeakFail('blocked by the browser'); });
     // NOT revoked on end any more — the url is the cached clip now, and
     // revoking it made the second play of the same line silent.
     try{ _jvAudioEl.onended=null; }catch(e){}
-  }catch(e){ console.warn('[jarvis-speak] failed — line not spoken'); }
+    _jvSpeakFailNoted=false; // a line actually played — a fresh failure earns its own toast
+  }catch(e){ _jvSpeakFail('unexpected error'); }
 }
 var _JV_PENDING_MS=10*60*1000;      // a confirmation older than this is not a confirmation
 function _jvBuildPendingLog(lg, code, name){
@@ -21878,13 +21910,38 @@ async function _jtModel(t, ctx){
   }
   try{ sys+=_jvClientWeightBlock(t); }catch(e){}
   var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({messages:[{role:'user',content:sys},{role:'assistant',content:'Ready.'},{role:'user',content:t}]})});
+    body:JSON.stringify({messages:[{role:'user',content:sys},{role:'assistant',content:'Ready.'},{role:'user',content:t}],max_tokens:1200})});
   var data=await res.json();
   var txt=data&&data.content?(Array.isArray(data.content)?data.content.map(function(b){return b.text||'';}).join(''):data.content):(data.text||data.completion||'');
   var clean=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
   var obj=null;
   try{ obj=JSON.parse(clean); }catch(e){ var mm=clean.match(/\{[\s\S]*\}/); if(mm){ try{ obj=JSON.parse(mm[0]); }catch(e2){} } }
-  if(!obj) return clean ? {reply:_jvNoFalseSuccess(clean, false), note:'', code:'', name:'', log:null, working_on:''} : null;
+  if(!obj){
+    // A max_tokens cutoff lands here with the JSON scaffold itself unterminated —
+    // confirmed 19 Aug: a long coach answer hit the old 700-token server default
+    // and the raw JSON blob (client_code, reply, ...) leaked into the chat as if
+    // it were the answer, cut off mid-sentence with nothing after it. Only treat
+    // it as a cutoff when it actually looks like our JSON scaffold; a model reply
+    // that never wrapped in JSON at all still shows as before. String methods
+    // only here, not a regex literal with a bare quote in it — that reads as an
+    // opening string to check.sh's stripper the same way a stray apostrophe does
+    // (see CLAUDE.md's landmine register) and blanks everything after it.
+    var REPLY_KEY='"reply"';
+    var looksTruncated = clean.charAt(0)==='{' && clean.indexOf(REPLY_KEY)!==-1;
+    if(looksTruncated){
+      console.warn('_jtTurn: model JSON reply did not parse (likely truncated)', clean);
+      var salvaged='';
+      var ci=clean.indexOf(':', clean.indexOf(REPLY_KEY));
+      var qi=ci!==-1 ? clean.indexOf('"', ci+1) : -1;
+      if(qi!==-1){
+        salvaged=clean.slice(qi+1).replace(/\\n/g,'\n').replace(/\\\\/g,'\x00')
+          .split('\\"').join('"').split('\x00').join('\\').trim();
+      }
+      return {reply: salvaged ? _jvNoFalseSuccess(salvaged+' …', false) : 'Got cut off answering that — ask me again.',
+              note:'', code:'', name:'', log:null, working_on:''};
+    }
+    return clean ? {reply:_jvNoFalseSuccess(clean, false), note:'', code:'', name:'', log:null, working_on:''} : null;
+  }
   var code=String(obj.client_code||'').trim();
   var _hadWrite=!!(String(obj.note||'').trim() || obj.log || String(obj.working_on||'').trim());
   return {reply:_jvNoFalseSuccess(String(obj.reply||'').trim(), _hadWrite), note:String(obj.note||'').trim(), code:code,
