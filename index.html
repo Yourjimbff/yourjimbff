@@ -17110,19 +17110,43 @@ function schToggleWeek(){
   window._schWeekOn=!window._schWeekOn;
   schRefresh();
 }
+// THE GRID'S SUBJECT (Yusuf, scope correction, 19 Aug): pass 1 defaulted to
+// the roster's week — every client's logs plus his calls. What he actually
+// asked for is HIS OWN week first: his training, his meals, his walks, his
+// calls. 'me' = the trainer's own account (client_code === cl.code, the
+// exact INVERSE of the roster filter — his own logs live in the same
+// tables under his own code, same as any client). 'all' = the roster view
+// pass 1 built, kept as a second subject, not thrown away. Anything else
+// is treated as a literal client_code — the shape per-client needs, not
+// surfaced as a switchable option yet (that's the product direction, not
+// today's UI).
+window._wkSubject = window._wkSubject || 'me';
+function _wkKeep(subject, code, hidden){
+  if(!code || !CLIENTS[code]) return false;
+  if(subject==='me') return code===((window.cl||{}).code||'');
+  if(subject==='all') return !CLIENTS[code].isTrainer && !hidden[code];
+  return code===subject;
+}
+function _wkSetSubject(s){
+  window._wkSubject=s;
+  schRefresh();
+}
 // Appointments: _schDay called once per day of the week. _schSources caches
 // for 60s underneath it, so this is ONE real read across all seven calls,
-// not seven — the exact reuse the brief asked for. Logged: the same four
+// not seven — the exact reuse the brief asked for. These are never
+// subject-filtered — they're his calls regardless of whose week is showing,
+// the same as the single-day schedule always was. Logged: the same four
 // tables the river reads, same never-assert failure tracking, widened to
-// the week span instead of one day.
-async function _wkLoad(weekStartTs, force){
+// the week span instead of one day, and now filtered by subject.
+async function _wkLoad(weekStartTs, force, subject){
+  subject = subject || 'me';
   var days=[]; for(var i=0;i<7;i++) days.push(weekStartTs+i*86400000);
   var apptDays=await Promise.all(days.map(function(t){ return _schDay(t, force); }));
   var lo=weekStartTs, hi=weekStartTs+7*86400000;
   var loIso=encodeURIComponent(new Date(lo).toISOString()), hiIso=encodeURIComponent(new Date(hi).toISOString());
   var span='logged_at=gte.'+loIso+'&logged_at=lt.'+hiIso+'&order=logged_at.asc';
   var hidden={}; try{ hidden=getHiddenClientSet(); }catch(e){}
-  function keep(c){ return c && CLIENTS[c] && !CLIENTS[c].isTrainer && !hidden[c]; }
+  function keep(c){ return _wkKeep(subject, c, hidden); }
   var mark=_sbFailMark();
   var res=await Promise.all([
     sbSelect('food_logs','select=id,client_code,name,calories,logged_at,date_str&'+span+'&limit=1200'),
@@ -17138,7 +17162,7 @@ async function _wkLoad(weekStartTs, force){
     (res[2]||[]).forEach(function(r){ if(keep(r.client_code) && r.weight!=null) logged.push({k:'wt', id:r.id, code:r.client_code, ts:_lrTs(r), d:r}); });
     (res[3]||[]).forEach(function(r){ if(keep(r.client_code)) logged.push({k:'ph', id:r.id, code:r.client_code, ts:_lrTs(r), d:r}); });
   }
-  return {weekStart:weekStartTs, days:apptDays, logged:logged, loggedFailed:loggedFailed, at:Date.now()};
+  return {weekStart:weekStartTs, days:apptDays, logged:logged, loggedFailed:loggedFailed, at:Date.now(), subject:subject};
 }
 // Blocks/appointments carry no duration in this data shape except
 // trainer_blocks (real start+end). Everything else gets a STATED default
@@ -17156,11 +17180,14 @@ function _wkApptBlockHtml(r, dayStartMs){
     + ' title="'+who+' — '+chip+'"><b>'+who+'</b><span>'+chip+'</span></div>';
 }
 function _wkLoggedLabel(e){
-  var nm=String((CLIENTS[e.code]||{}).name||e.code).split(' ')[0];
-  if(e.k==='food') return nm+' · '+String(e.d.name||'meal');
-  if(e.k==='wo') return nm+' · '+String(e.d.title||'workout');
-  if(e.k==='wt') return nm+' · weigh-in';
-  return nm+' · photo';
+  // Own-week markers skip the name — every mark on "Me" is already his, and
+  // repeating "Yusuf ·" on every single one is noise, not information.
+  var mine=(e.code===((window.cl||{}).code||''));
+  var nm=mine?'':(String((CLIENTS[e.code]||{}).name||e.code).split(' ')[0]+' · ');
+  if(e.k==='food') return nm+String(e.d.name||'meal');
+  if(e.k==='wo') return nm+String(e.d.title||'workout');
+  if(e.k==='wt') return nm+'weigh-in';
+  return nm+'photo';
 }
 // Same routing law as the river/day-peek/feed-card: a weigh-in opens the
 // weight history, everything else opens the day, with date_str preferred
@@ -17179,15 +17206,29 @@ function _wkMarkHtml(e, dayStartMs){
 function _wkGridHtml(wk){
   var ws=wk.weekStart, todayKey=_schTodayTs();
   var monthLbl=new Date(ws).toLocaleDateString('en-US',{month:'long',year:'numeric'});
+  // THE SUBJECT SWITCH — default "Me" (his own week: his logs, his own
+  // account, same tables every client writes to). "Everyone" is pass 1's
+  // roster view, kept as a second subject rather than replaced. A specific
+  // client_code is the third subject the shape already supports — not
+  // surfaced as a button yet, per the ruling ("do not surface it to
+  // clients yet").
+  var subj=wk.subject||'me';
+  var subjSwitch='<div style="display:flex;gap:6px;">'
+    + '<button class="schJumpB'+(subj==='me'?' on':'')+'" onclick="_wkSetSubject(\'me\')">Me</button>'
+    + '<button class="schJumpB'+(subj==='all'?' on':'')+'" onclick="_wkSetSubject(\'all\')">Everyone</button>'
+    + '</div>';
   var top='<div class="wkHeadTop">'
     + '<div style="display:flex;align-items:baseline;gap:10px;">'
     +   '<span class="schBig" style="font-size:17px;">'+_escHtml(monthLbl)+'</span>'
     + '</div>'
-    + '<div style="display:flex;gap:8px;align-items:center;">'
-    +   '<button class="schNav" onclick="schGo('+(ws-7*86400000)+')" aria-label="Previous week">‹</button>'
-    +   '<button class="schJumpB" onclick="schGo('+_wkSunStart(_schTodayTs())+')">This week</button>'
-    +   '<button class="schNav" onclick="schGo('+(ws+7*86400000)+')" aria-label="Next week">›</button>'
-    +   '<button class="schJumpB" onclick="schToggleWeek()">Day view</button>'
+    + '<div style="display:flex;gap:14px;align-items:center;">'
+    +   subjSwitch
+    +   '<div style="display:flex;gap:8px;align-items:center;">'
+    +     '<button class="schNav" onclick="schGo('+(ws-7*86400000)+')" aria-label="Previous week">‹</button>'
+    +     '<button class="schJumpB" onclick="schGo('+_wkSunStart(_schTodayTs())+')">This week</button>'
+    +     '<button class="schNav" onclick="schGo('+(ws+7*86400000)+')" aria-label="Next week">›</button>'
+    +     '<button class="schJumpB" onclick="schToggleWeek()">Day view</button>'
+    +   '</div>'
     + '</div></div>';
   var head='<div class="wkHeadRow"><div class="wkHeadCell"></div>'
     + Array.from({length:7}).map(function(_,i){
@@ -17226,7 +17267,7 @@ async function _wkLoad2(el, force){
   var ws=_wkSunStart(window._schDayTs||_schTodayTs());
   el.innerHTML='<div class="wkWrap"><div class="wkWait">Reading the week…</div></div>';
   var wk=null;
-  try{ wk=await _wkLoad(ws, force); }catch(e){ console.error('_wkLoad',e); }
+  try{ wk=await _wkLoad(ws, force, window._wkSubject||'me'); }catch(e){ console.error('_wkLoad',e); }
   if(!wk || (wk.loggedFailed && wk.days.every(function(d){ return d.state.consults==='failed'&&d.state.bookings==='failed'&&d.state.vip==='failed'&&d.state.blocks==='failed'; }))){
     el.innerHTML='<div class="wkWrap"><div class="wkWait">This week did not load. That is a read that failed, not a clear week — try again.</div></div>';
     return;
