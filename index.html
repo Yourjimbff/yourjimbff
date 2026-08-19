@@ -42744,39 +42744,65 @@ async function saveAvailabilityRows(rows){
 }
 
 // ---- bookings ----
+// THROUGH THE DOOR, and by two different roads depending on who is asking.
+// This used to be one anon read of the WHOLE table, which is how every client's
+// name, date and time became readable by anyone holding the key from the page
+// source — and by any signed-in client, from inside the app, just by opening
+// the picker.
+//
+// A trainer still gets the whole list, because the cockpit genuinely shows it.
+// A CLIENT gets two things that add up to everything a client actually needed:
+// their own bookings in full, and everyone else's as instants with no identity
+// attached. The picker only ever wanted to know which slots were gone.
+// Placeholder rows carry client_code:null on purpose — renderBookingSlots
+// filters "yours" on client_code===cl.code, so they can never be mistaken for
+// the client's own, and buildOpenSlots only ever reads starts_at.
 async function loadBookings(force){
   if(_bookCache && !force) return _bookCache;
-  var from = new Date(Date.now() - 14*86400000).toISOString();
   var rows=[];
-  try{ rows = await sbSelect('bookings','starts_at=gte.'+encodeURIComponent(from)+'&order=starts_at.asc&limit=400') || []; }
-  catch(e){ rows=[]; }
+  try{
+    if(typeof isTrainer==='function' && cl && isTrainer(cl.code)){
+      rows = await trainerOp('bookingsAll', {}) || [];
+    } else {
+      var mine=await trainerOp('myBookings', {}) || [];
+      var busy=await trainerOp('bookingsBusy', {}) || [];
+      var mineAt={};
+      mine.forEach(function(b){ mineAt[new Date(b.starts_at).getTime()]=1; });
+      rows = mine.map(function(b){ return Object.assign({client_code:(cl&&cl.code)||null}, b); })
+        .concat(busy.filter(function(b){ return !mineAt[new Date(b.starts_at).getTime()]; })
+          .map(function(b){ return {client_code:null, starts_at:b.starts_at, duration_min:b.duration_min, status:'booked'}; }));
+    }
+  }catch(e){ rows=[]; }
   _bookCache = rows.filter(function(b){ return String(b.status||'booked')!=='cancelled'; });
   // Kept where the engagement derivation can see it — same rows, no second read.
   try{ window._bookCacheAll=_bookCache; }catch(e){}
   return _bookCache;
 }
+// Through the door. trainer_code is resolved server-side now rather than from
+// _trainerCode() here, and the slot is collision-checked on the far side of the
+// wall instead of trusting that the picker only ever offered a free one.
 async function createBooking(startISO){
-  var row = { client_code: cl.code, trainer_code: _trainerCode(),
-              starts_at: startISO, duration_min: BOOK_SLOT_MIN,
-              status: 'booked', client_tz: _myTz() };
-  try{
-    var r = await fetch(SB_URL+'/rest/v1/bookings',{method:'POST',
-      headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=representation'}),
-      body:JSON.stringify(row)});
-    if(!r.ok) return {ok:false, taken:(r.status===409)};
-    var d=null; try{ d=await r.json(); }catch(e){}
-    if(_bookCache) _bookCache.push(Array.isArray(d)&&d[0] ? d[0] : row);
-    return {ok:true};
-  }catch(e){ return {ok:false}; }
+  var w=await trainerWrite('myBookingCreate', {starts_at:startISO, duration_min:BOOK_SLOT_MIN, client_tz:_myTz()});
+  if(!w.ok || !w.rows[0]){
+    // trainerWrite collapses every non-2xx to ok:false, and 409 is the one that
+    // means something specific to a person standing at a picker: somebody took
+    // it while they were deciding. Re-read rather than guess which it was — if
+    // the slot is genuinely gone the next render will show it gone.
+    return {ok:false, taken:true};
+  }
+  if(_bookCache) _bookCache.push(Object.assign({client_code:cl.code}, w.rows[0]));
+  return {ok:true};
 }
+// Through the door, and the door filters on the session's own client_code as
+// well as the id — so a booking id that is not theirs matches nothing and is
+// refused, where the anon PATCH would happily have cancelled anyone's.
+// It also stops lying: the old version returned true even when the write
+// failed, because nothing checked the response at all.
 async function cancelBooking(id){
-  try{
-    await fetch(SB_URL+'/rest/v1/bookings?id=eq.'+encodeURIComponent(id),{method:'PATCH',
-      headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
-      body:JSON.stringify({status:'cancelled'})});
-    _bookCache = (_bookCache||[]).filter(function(b){ return String(b.id)!==String(id); });
-    return true;
-  }catch(e){ return false; }
+  var w=await trainerWrite('myBookingCancel', {id:id});
+  if(!w.ok || !w.rows[0] || w.rows[0].status!=='cancelled') return false;
+  _bookCache = (_bookCache||[]).filter(function(b){ return String(b.id)!==String(id); });
+  return true;
 }
 
 // ---- the client picker's own collision check: accepted consults + vip_calls ----
@@ -43089,17 +43115,14 @@ function _pcHostShim(){
 // after the fact.
 async function _pcFetchBookings(){
   try{
-    var from=new Date(Date.now()-60000).toISOString();
-    var q='client_code=eq.'+encodeURIComponent(cl.code)
-      +'&starts_at=gte.'+encodeURIComponent(from)
-      +'&select=id,client_code,starts_at,status&order=starts_at.asc&limit=50';
-    // With the app's read timeout, like every other read here. Without it a read
-    // that never answers leaves the whole card sitting on "Loading…" for as long
-    // as the tab is open — which is honest, and useless.
-    var res=await fetch(SB_URL+'/rest/v1/bookings?'+q,{headers:sbHeaders(), signal:_sbTimeout(SB_READ_MS)});
-    if(!res.ok) return {ok:false, rows:[]};
-    var rows=await res.json();
-    return {ok:true, rows:(Array.isArray(rows)?rows:[])};
+    // Through the door (myBookings), which is already scoped to the session's
+    // own client_code server-side and already carries the app's read timeout.
+    // trainerOpChecked, not trainerOp, because this card must be able to tell
+    // "no calls booked" from "the door did not answer" — the whole reason this
+    // function returns {ok, rows} rather than a bare array.
+    var r=await trainerOpChecked('myBookings', {});
+    if(!r.ok) return {ok:false, rows:[]};
+    return {ok:true, rows:r.rows.map(function(b){ return Object.assign({client_code:cl.code}, b); })};
   }catch(e){ return {ok:false, rows:[]}; }
 }
 async function _pgCallsCard(_retried){
