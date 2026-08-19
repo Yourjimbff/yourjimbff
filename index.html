@@ -10937,9 +10937,18 @@ function _pfDayRow(it){
   // whichever row was actually tapped, one gesture with one meaning everywhere.
   // A workout row is the one exception: its own tap expands the hero card in
   // place instead, since the day sheet's own version of it is right here now.
+  // A weigh-in row opens the weight history, same ruling as the river and
+  // the feed card: a single number is meaningless without the line it sits
+  // on, and this reuses jvOpenDeep's own chart rather than opening a day.
   var rowClick = (it.kind==='wo')
     ? ('_pfToggleWo(\''+String(d.date_str||'').replace(/'/g,"\\'")+'\',\''+it.code+'\')')
-    : ('openClientDay(\''+it.code+'\','+(+it.ts||0)+')');
+    : (it.kind==='weight')
+    ? ('jvOpenWeightHistory(\''+it.code+'\')')
+    // THE DAY IS THEIRS, THE CLOCK IS HIS — d.date_str is this row's own
+    // client-written local day; pass it through so the sheet resolves the
+    // day it actually belongs to instead of flooring the timestamp in
+    // whichever zone the trainer's browser happens to be in.
+    : ('openClientDay(\''+it.code+'\','+(+it.ts||0)+(d.date_str?(",'"+String(d.date_str).replace(/'/g,"\\'")+"'"):'')+')');
   // RULING (Yusuf, live): rail's dead. Rows go flush left; the tile is out of
   // flow (absolute, see CSS) so document order no longer matters for it. The
   // time is a social-post-style timestamp on the meta line now, not a rail
@@ -11416,13 +11425,29 @@ async function _fwDayDetail(code, dayTs){
   var res=await Promise.all([
     pull('food_logs','id,client_code,name,calories,protein,carbs,fat,logged_at,date_str',200),
     pull('workout_logs','id,client_code,title,description,exercises,logged_at,date_str',80),
-    pull('weight_logs','client_code,weight,logged_at',40)
+    pull('weight_logs','client_code,weight,logged_at,date_str',40)
   ]);
   var netFailed=_sbFailedSince(mark);
   var bad=res.some(function(r){ return !r.ok; }) || (netFailed && res.every(function(r){ return !r.rows.length; }));
-  // Only rows whose OWN bucket is this day — the same _feedDayStart the grid
-  // used, so the peek can never disagree with the cell that opened it.
-  function mine(rows){ return rows.filter(function(r){ return _feedDayStart(_feedTs(r)).getTime()===dayTs; }); }
+  // THE DAY IS THEIRS, THE CLOCK IS HIS (Yusuf, ruling, 19 Aug). _feedDayStart
+  // floors a raw timestamp in THIS BROWSER'S zone — wrong the instant the
+  // client logging isn't in it, and this is the peek that gets opened
+  // exactly when someone wants to check what a specific day held, so a
+  // late-evening entry landing in the wrong cell here reads as "they logged
+  // nothing." date_str is the client's own device's own local day, written
+  // at log time with no zone math involved — trust it outright when a row
+  // has one (food/workout do; weight_logs writes none yet, so it still
+  // falls back to the old approximation there — a real remaining gap, not
+  // silently called fixed). wantDs is the day THIS peek was asked to show,
+  // in the same "MMM d, yyyy" shape date_str is always written in — plain
+  // string equality, nobody's clock involved on either side of it.
+  var wantDs=_tlDateStr(new Date(dayTs));
+  function mine(rows){
+    return rows.filter(function(r){
+      if(r.date_str) return r.date_str===wantDs;
+      return _feedDayStart(_feedTs(r)).getTime()===dayTs;
+    });
+  }
   var out={state:(bad?'failed':'ok'), food:mine(res[0].rows), wo:mine(res[1].rows), wt:mine(res[2].rows),
            capped:res.some(function(r){ return r.capped; })};
   _FWD_CACHE[k]=out;
@@ -11474,8 +11499,13 @@ function _fwDayPopHtml(code, dayTs, d){
       + (dayTs>todayK ? 'This day hasn’t happened yet.' : 'Nothing logged this day.')
       + '</div>';
   }
+  // A weigh-in row opens the weight history, same as the river and the feed
+  // card (Yusuf, ruling, 19 Aug — "a single number is meaningless without
+  // the line it sits on"). Every other row here has never been individually
+  // tappable and stays that way; only the weigh-in gets its own handler.
   var body=rows.map(function(r){
-    return '<div class="fwdRow k-'+r.k+'">'
+    var tap = (r.k==='wt') ? (' onclick="fwCloseDayPop();jvOpenWeightHistory(\''+code+'\')" style="cursor:pointer;"') : '';
+    return '<div class="fwdRow k-'+r.k+'"'+tap+'>'
       + '<time>'+_escHtml(_jvSpokenTime(new Date(r.t)))+'</time>'
       + '<div><b>'+_escHtml(r.main)+'</b>'+(r.sub?('<span>'+_escHtml(r.sub)+'</span>'):'')+'</div>'
     + '</div>';
@@ -11740,8 +11770,11 @@ function _pfCard(b, hour, now, isToday, viewDayTs){
   // RULING (Yusuf, live): the name is the profile door now — View profile as its
   // own button is gone. The card itself still opens the day on one tap, exactly
   // as before.
+  // THE DAY IS THEIRS, THE CLOCK IS HIS — newest.data.date_str, when present,
+  // is this entry's own client-written local day.
+  var _newestDs = (newest.data && newest.data.date_str) ? String(newest.data.date_str).replace(/'/g,"\\'") : '';
   return '<div class="pfCard" data-name="'+String(info.name||'').toLowerCase().replace(/"/g,'')+'"'
-    +' onclick="openClientDay(\''+b.code+'\','+(+newest.ts||0)+')">'
+    +' onclick="openClientDay(\''+b.code+'\','+(+newest.ts||0)+(_newestDs?(",'"+_newestDs+"'"):'')+')">'
     +'<div class="pfHead"><span class="pfName" onclick="event.stopPropagation();jvOpenDeep(\''+b.code+'\')">'+nm+'</span><span class="pfWhen">'+_pfEsc(_feedTimeStr(newest.ts))+'</span></div>'
     +'<div class="pfDay">'+_pfDayList(evs)+'</div>'
     + outreach
@@ -12483,6 +12516,16 @@ function _cdEsc(s){ return String(s==null?'':s).replace(/</g,'&lt;'); }
 // What is mine: the entry point (a name tap), this wrapper, and the date navigation.
 var _cdState={code:null, date:null};
 function _cdDateOf(ts){ var d=new Date(ts||Date.now()); d.setHours(0,0,0,0); return d; }
+// THE DAY IS THEIRS, THE CLOCK IS HIS (Yusuf, ruling, 19 Aug). _cdDateOf's
+// setHours(0,0,0,0) floors in THIS BROWSER'S zone — wrong the moment the
+// client isn't in it: a log stamped 1:26am his time (10:26pm theirs) floors
+// to HIS local midnight and opens HIS Aug 19, a day barely started for
+// them, instead of their actual Aug 18. date_str sidesteps the whole
+// problem — it's the client's own device writing its own local day
+// directly at log time, no zone math to get wrong. Every caller that has
+// one (food_logs/workout_logs/progress_photos rows all carry it already)
+// should pass it; this is what actually resolves the day when they do.
+function _cdDateFromStr(s){ var d=new Date(s); if(isNaN(d.getTime())) return _cdDateOf(Date.now()); d.setHours(0,0,0,0); return d; }
 function cdStepDay(dir){
   if(!_cdState.code) return;
   var d=new Date(_cdState.date); d.setDate(d.getDate()+dir);
@@ -12490,10 +12533,14 @@ function cdStepDay(dir){
   if(d.getTime()>today.getTime()) return;          // no navigating into the future
   openClientDay(_cdState.code, d.getTime());
 }
-async function openClientDay(code, ts){
+// dateStr, when the caller has one, wins outright over ts — see the note on
+// _cdDateFromStr above. Every existing caller that only ever had a ts still
+// works exactly as before; this is additive, not a behavior change for
+// anything not yet updated to pass one.
+async function openClientDay(code, ts, dateStr){
   var info=(typeof CLIENTS!=='undefined'&&CLIENTS[code])||{};
   var name=info.name||code;
-  var day=_cdDateOf(ts);
+  var day=dateStr ? _cdDateFromStr(dateStr) : _cdDateOf(ts);
   _cdState.code=code; _cdState.date=day;
   var o=document.getElementById('cdOv');
   if(!o){
@@ -13076,7 +13123,10 @@ function _feedItemHtml(it){
   // only remaining route to the client's whole day is this pill — same destination
   // the name used to open, just renamed to match the door's name everywhere else
   // in the app ("Open today").
-  var _dayPill = '<span onclick="event.stopPropagation();openClientDay(\''+code+'\','+(+it.ts||0)+')" title="Open today" style="'+_pill+'">Open today</span>';
+  // THE DAY IS THEIRS, THE CLOCK IS HIS — it.data.date_str, when this item
+  // has one, is its own client-written local day.
+  var _dayDs = (it.data && it.data.date_str) ? String(it.data.date_str).replace(/'/g,"\\'") : '';
+  var _dayPill = '<span onclick="event.stopPropagation();openClientDay(\''+code+'\','+(+it.ts||0)+(_dayDs?(",'"+_dayDs+"'"):'')+')" title="Open today" style="'+_pill+'">Open today</span>';
   var _rmk=(window._reviewedMap&&window._reviewedMap[_rk+':'+_rid])||null;
   var _seenD=!!(_rmk&&(_rmk.seen||_rmk.comment)); var _likeD=!!(_rmk&&_rmk.like);
   // The like time is read here, not down by the old floating label, because the
@@ -13136,9 +13186,10 @@ function _feedItemHtml(it){
   var _myCmt = (_rmk && _rmk.comment_text) ? '<div style="margin-top:10px;display:flex;gap:8px;align-items:flex-start;"><div style="width:23px;height:23px;border-radius:50%;background:var(--gold);color:#000;font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;">Y</div><div style="min-width:0;"><div style="font-weight:800;color:#f0ece4;font-size:12.5px;">Yusuf'+((_rmk&&_rmk.comment_ts&&_revTimeStr(_rmk.comment_ts))?'<span style="color:var(--muted);font-weight:600;font-size:11px;"> \u00b7 '+_revTimeStr(_rmk.comment_ts)+'</span>':'')+'</div><div style="font-size:12.5px;line-height:1.45;color:#f0ece4;margin-top:1px;">'+String(_rmk.comment_text).replace(/</g,'&lt;')+'</div></div></div>' : '';
   return '<div class="feedCard '+(photoUrl?'feedCard--photo':'feedCard--text')+'" style="border-radius:14px;padding:13px 14px;margin-bottom:9px;">'
     // A weigh-in has no reviewable ref, so _rk is null and this card carried no tap at
-    // all. It now opens the client's whole weigh-in history — a single number means
+    // all. It now opens the SAME weight history the client expansion overlay already
+    // builds (jvOpenWeightHistory), not a second chart — a single number means
     // nothing without the run behind it.
-    +'<div class="fcHead"'+(_rk?(' onclick="jvCardTap(this,\''+_rk+'\',\''+_rid+'\',\''+code+'\','+it._idx+')" ondblclick="event.stopPropagation();jvCardDbl(this,\''+_rk+'\',\''+_rid+'\',\''+code+'\')"'):(it.kind==='weight'?(' onclick="openWeighIns(\''+code+'\')"'):''))+' style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;cursor:pointer;">'
+    +'<div class="fcHead"'+(_rk?(' onclick="jvCardTap(this,\''+_rk+'\',\''+_rid+'\',\''+code+'\','+it._idx+')" ondblclick="event.stopPropagation();jvCardDbl(this,\''+_rk+'\',\''+_rid+'\',\''+code+'\')"'):(it.kind==='weight'?(' onclick="jvOpenWeightHistory(\''+code+'\')"'):''))+' style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;cursor:pointer;">'
       // RULING (Yusuf, live): the name is the profile door now, everywhere. Single
       // click on the card still opens the log — this stops propagation so both
       // survive. Their whole day of food moved to the "Open today" pill in the
@@ -13146,7 +13197,7 @@ function _feedItemHtml(it){
       +'<div class="fcWho" style="font-size:13px;color:rgba(240,236,228,0.82);font-weight:500;min-width:0;"><span class="fcNameLink" onclick="event.stopPropagation();jvOpenDeep(\''+code+'\')" title="View '+String(nm).split(' ')[0].replace(/[^A-Za-z0-9 ]/g,'')+'’s profile" style="color:var(--text);font-weight:800;">'+nm.replace(/</g,'&lt;')+'</span> <span style="color:var(--gold);font-weight:700;">'+_verb+'</span></div>'
       +'<div class="fcTime" style="font-size:11px;color:var(--muted);white-space:nowrap;flex-shrink:0;">'+when+'</div>'
     +'</div>'
-    +'<div'+(_rk?(' onclick="jvCardTap(this,\''+_rk+'\',\''+_rid+'\',\''+code+'\','+it._idx+')" ondblclick="event.stopPropagation();jvCardDbl(this,\''+_rk+'\',\''+_rid+'\',\''+code+'\')"'):(it.kind==='weight'?(' onclick="openWeighIns(\''+code+'\')"'):''))+' class="fcBody" style="cursor:pointer;margin-top:8px;">'+line+'</div>'
+    +'<div'+(_rk?(' onclick="jvCardTap(this,\''+_rk+'\',\''+_rid+'\',\''+code+'\','+it._idx+')" ondblclick="event.stopPropagation();jvCardDbl(this,\''+_rk+'\',\''+_rid+'\',\''+code+'\')"'):(it.kind==='weight'?(' onclick="jvOpenWeightHistory(\''+code+'\')"'):''))+' class="fcBody" style="cursor:pointer;margin-top:8px;">'+line+'</div>'
     +'<div class="fcExtra">'+rawHtml+woHtml+noteHtml+_myCmt+'</div>'
     +photoHtml+actRow
   +'</div>';
@@ -17185,11 +17236,17 @@ async function _lrLoad(dayTs, force){
   function keep(c){ return c && CLIENTS[c] && !CLIENTS[c].isTrainer && !hidden[c] && _jvPassesFilters(c); }
   var out={day:key, at:Date.now(), events:[], state:{food:'ok', wo:'ok', wt:'ok', ph:'ok'}, capped:false};
   var mark=_sbFailMark();
+  // date_str ADDED to food/weight/photo (workout already had it) — the
+  // client's own device writes it at log time, so it's the day an entry
+  // actually belongs to with no zone math needed (see openClientDay's
+  // dateStr param). Harmless to ask for on weight_logs even if that column
+  // turns out not to exist there — sbSelect drops an unknown column and
+  // retries rather than failing the whole read.
   var res=await Promise.all([
-    sbSelect('food_logs','select=id,client_code,name,calories,protein,photo,logged_at&'+span+'&limit=600'),
+    sbSelect('food_logs','select=id,client_code,name,calories,protein,photo,logged_at,date_str&'+span+'&limit=600'),
     sbSelect('workout_logs','select=id,client_code,title,description,exercises,photo,logged_at,date_str&'+span+'&limit=300'),
-    sbSelect('weight_logs','select=id,client_code,weight,logged_at&'+span+'&limit=200'),
-    sbSelect('progress_photos','select=id,client_code,photo,angle,logged_at&'+span+'&limit=150')
+    sbSelect('weight_logs','select=id,client_code,weight,logged_at,date_str&'+span+'&limit=200'),
+    sbSelect('progress_photos','select=id,client_code,photo,angle,logged_at,date_str&'+span+'&limit=150')
   ]);
   // sbSelect answers [] for a refusal AND an empty morning. The counter is the
   // only witness — one failure marks every source suspect, same law as the
@@ -17307,7 +17364,11 @@ function _lrRender(host, data, opts){
   } else {
     // LINES DO NOT EXPAND (Yusuf, ruling — "destroys the flow, which is the
     // whole point of a river"). Fixed inline Like/Text, always there;
-    // tapping the row opens the client's day, exactly as it always could.
+    // tapping the row opens the client's day — EXCEPT a weigh-in, which
+    // opens their weight history instead (Yusuf, ruling: "a single number
+    // is meaningless without the line it sits on"). Reuses jvOpenDeep's own
+    // weight chart (scaled to their weigh-ins, not their goal) rather than
+    // building a second one — see jvOpenWeightHistory.
     html+='<div class="lrRiver" id="lrRiver">'+data.events.map(function(e){
       var key=_lrKey(e);
       var isDone=!!done[key];
@@ -17318,7 +17379,15 @@ function _lrRender(host, data, opts){
         ? '<button class="lrAct'+(e.liked?' liked':'')+'" onclick="event.stopPropagation();lrLike(\''+e.k+'\','+_lid+',\''+e.code+'\')" title="'+(e.liked?'Liked':'Like')+'" aria-label="'+(e.liked?'Liked':'Like')+'" aria-pressed="'+(e.liked?'true':'false')+'">'+_LR_HEART+'</button>'
         : '<span class="lrAct" aria-hidden="true"></span>';
       var textBtn='<button class="lrAct" onclick="event.stopPropagation();lrText(\''+e.k+'\','+_lid+',\''+e.code+'\')" title="Text" aria-label="Text">'+_LR_TEXT+'</button>';
-      return '<div class="lrLine'+(isDone?' done':'')+'" data-lrkey="'+_escHtml(key)+'" onclick="openClientDay(\''+e.code+'\','+(e.ts||0)+')">'
+      // THE DAY IS THEIRS, THE CLOCK IS HIS. date_str, when this row has one
+      // (food/workout/photo — weight_logs writes none yet), is the day this
+      // actually belongs to on the CLIENT'S device, not wherever a raw
+      // timestamp floors in the trainer's own browser zone.
+      var _ds=(e.d && e.d.date_str) ? String(e.d.date_str).replace(/'/g,"\\'") : '';
+      var _tapAction=(e.k==='wt')
+        ? ('jvOpenWeightHistory(\''+e.code+'\')')
+        : ('openClientDay(\''+e.code+'\','+(e.ts||0)+(_ds?(",'"+_ds+"'"):'')+')');
+      return '<div class="lrLine'+(isDone?' done':'')+'" data-lrkey="'+_escHtml(key)+'" onclick="'+_tapAction+'">'
         + '<time>'+_escHtml(_jvSpokenTime(new Date(e.ts)))+'</time>'
         + '<span class="lrWho">'+_escHtml(nm)+'</span>'
         + '<span class="lrKind">'+_lrActivityLabel(e)+'</span>'
@@ -23162,6 +23231,20 @@ function _jvContactInner(code, about){
 // How this client asked to be coached. Saves inert on their side for this ship —
 // this is the whole reason Turbo Roast went out as a placeholder, so it has to be
 // visible here or shipping it early bought nothing.
+// A WEIGH-IN OPENS THE WEIGHT HISTORY, NOT THAT DAY'S FEED (Yusuf, ruling,
+// 19 Aug) — "a single number is meaningless without the line it sits on."
+// Reuses the chart jvOpenDeep already builds (_jvLoadDeepWeight, scaled to
+// the client's own weigh-ins, not their goal) rather than writing a second
+// one — openWeighIns is a genuinely separate chart implementation of the
+// same data and is NOT what this routes to; two charts of one thing will
+// drift. window._jvDeepExpanded is the SAME global toggle "Everything
+// else" already uses, forced on here so the weight block actually renders
+// on open rather than staying collapsed — jvOpenDeep's own "Open today"
+// button keeps their full day one tap away, unchanged.
+function jvOpenWeightHistory(code){
+  window._jvDeepExpanded=true;
+  jvOpenDeep(code);
+}
 function _jvCoachStyle(code){
   var k=''; try{ k=(window._coachStyleBy||{})[code]||''; }catch(e){}
   if(!k) return '';
