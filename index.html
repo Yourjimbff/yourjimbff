@@ -669,6 +669,22 @@ body.jv-ovl-on #jvOvlWrap{display:flex;align-items:flex-end;justify-content:cent
 .wkProgRow{position:relative;display:grid;grid-template-columns:52px repeat(7,1fr);
   border-bottom:1px solid rgba(255,255,255,0.06);}
 .wkProgCell{padding:8px 5px;min-width:0;}
+/* THE DAILY-TOTALS STRIP — steps and weigh-ins, which belong to a day and
+   not to an hour (see _wkDailyRow). Same 52px+7 geometry as the header and
+   the split row so a cell sits exactly over its own column. Deliberately
+   quiet: these are facts about the day, sitting under the day's plan, not
+   competing with the real timed blocks below. */
+.wkDailyRow{position:relative;display:grid;grid-template-columns:52px repeat(7,1fr);
+  border-bottom:1px solid rgba(255,255,255,0.06);background:rgba(255,255,255,0.015);}
+.wkDailyCell{padding:5px 5px;min-width:0;display:flex;flex-direction:column;gap:3px;
+  border-left:1px solid rgba(255,255,255,0.05);}
+.wkDailyGut{border-left:0;}
+.wkDaily{border-radius:6px;padding:3px 6px;font-size:9.5px;font-weight:700;letter-spacing:0.2px;
+  cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  border:1px solid transparent;transition:border-color 0.1s,color 0.1s;}
+.wkDaily-steps{background:rgba(245,197,24,0.10);border-color:rgba(245,197,24,0.20);color:#e8c96a;}
+.wkDaily-wt{background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,0.09);color:var(--m2);}
+.wkDaily:hover{border-color:rgba(245,197,24,0.45);color:#f0ece4;}
 /* THE SAME CARD LANGUAGE AS THE DAY PAGE'S OWN SESSION HERO (Yusuf, live,
    20 Aug — "that IS the standard... can every day on the calendar look like
    that"). .tlHero's exact recipe (radial-gradient glass, gold corner glow,
@@ -815,6 +831,13 @@ body.jv-ovl-on #jvOvlWrap{display:flex;align-items:flex-end;justify-content:cent
    text only until the next keystroke (_wkPanelRefreshStatus overwrites it
    unconditionally on every input, which is what clears it). */
 #wkPanel .wkPanelStatus.err{color:#ff6b6b;background:rgba(255,107,107,0.1);}
+/* A LANDED ENTRY SAYS WHERE IT WENT AND STAYS SAID (Yusuf, ruling, 20 Aug —
+   a step total typed into a slot vanished with nothing shown at all). Gold,
+   like the Logging state it replaces, and allowed to wrap: this one is a
+   real sentence naming what was recorded and on which day, not a two-word
+   label. See _wkPanelLogLanded. */
+#wkPanel .wkPanelStatus.ok{color:var(--gold);background:rgba(245,197,24,0.12);
+  border:1px solid rgba(245,197,24,0.28);line-height:1.45;white-space:normal;}
 /* flex-end, not stretch — the mic stays a circle anchored to the bottom as
    the title field grows into a real multi-line composer instead of
    stretching into an oval with it. */
@@ -17459,10 +17482,13 @@ function schGo(dayTs){
 // instead of the trainer's Week tab. One refresh function, branching on
 // which surface is actually open, rather than teaching every shared
 // caller which one it's running under.
+// Returns the reload's promise so a caller that must not speak until the
+// grid actually shows the new row can await it — everything else can keep
+// calling it fire-and-forget exactly as before.
 function schRefresh(){
   var mw=document.getElementById('mwOverlay');
-  if(mw && mw.classList.contains('on')){ try{ _mwRefresh(); }catch(e){} return; }
-  schLoad(window._schDayTs||_schTodayTs(), (window._schHostId?document.getElementById(window._schHostId):null)||document.getElementById('jvWall'), true);
+  if(mw && mw.classList.contains('on')){ try{ return _mwRefresh(); }catch(e){ return; } }
+  return schLoad(window._schDayTs||_schTodayTs(), (window._schHostId?document.getElementById(window._schHostId):null)||document.getElementById('jvWall'), true);
 }
 // The client path: the booking sheet that already exists, opened on this day.
 function schAddCall(dayTs){
@@ -17573,7 +17599,8 @@ async function _wkLoad(weekStartTs, force, subject){
     sbSelect('food_logs','select=id,client_code,name,calories,protein,carbs,fat,eat_time,logged_at,date_str&'+span+'&limit=1200'),
     sbSelect('workout_logs','select=id,client_code,title,logged_at,date_str&'+span+'&limit=600'),
     sbSelect('weight_logs','select=id,client_code,weight,logged_at,date_str&'+span+'&limit=400'),
-    sbSelect('progress_photos','select=id,client_code,angle,logged_at,date_str&'+span+'&limit=300')
+    sbSelect('progress_photos','select=id,client_code,angle,logged_at,date_str&'+span+'&limit=300'),
+    sbSelect('step_logs','select=id,client_code,steps,date_str&'+_wkDayStrFilter(weekStartTs)+'&limit=400')
   ]);
   var loggedFailed=_sbFailedSince(mark);
   var logged=[];
@@ -17583,12 +17610,54 @@ async function _wkLoad(weekStartTs, force, subject){
     (res[2]||[]).forEach(function(r){ if(keep(r.client_code) && r.weight!=null) logged.push({k:'wt', id:r.id, code:r.client_code, ts:_lrTs(r), d:r}); });
     (res[3]||[]).forEach(function(r){ if(keep(r.client_code)) logged.push({k:'ph', id:r.id, code:r.client_code, ts:_lrTs(r), d:r}); });
   }
+  var daily=_wkDailyFrom(res[4], weekStartTs, keep);
   var cb=null;
   try{ cb=await _cbLoad(subject); }catch(e){}
   var prog=null;
   try{ prog=await _wkLoadDisplayDaysFor(subject, weekStartTs); }catch(e){}
   return {weekStart:weekStartTs, days:apptDays, logged:logged, loggedFailed:loggedFailed, at:Date.now(), owner:subject,
+          daily:daily,
           cb:(cb||{blocks:[],exByBlock:{},failed:false}), prog:(prog||{program:null,days:[]})};
+}
+// ===== DAILY TOTALS BELONG TO THE DAY, NOT TO AN HOUR ======================
+// Yusuf logged "5200 steps by 8:30" into a Tuesday slot on Blake's week and
+// it vanished from the calendar (live, 20 Aug). The row landed correctly —
+// blakeb1 / 5200 / "Aug 20, 2026", confirmed against the real table — the
+// calendar simply had nowhere to put it: _wkLoad never read step_logs at
+// all, so no refresh was ever going to show it.
+//
+// step_logs is {id, client_code, steps, date_str, updated_at} — there is NO
+// time of day on it, anywhere, and date_str is a DISPLAY string ("Aug 20,
+// 2026"), not ISO. Two consequences, both load-bearing:
+//   1. It cannot ride the logged_at span every other logged table uses, and
+//      it cannot be range-queried lexically either — the week's seven real
+//      date_str values go in as an explicit in.() list. Each value contains
+//      a comma, so each must be double-quoted or PostgREST reads one date
+//      as two. encodeURIComponent is applied to the whole list: PostgREST
+//      URL-decodes before it parses, so the quotes survive to do their job.
+//   2. Positioning it by updated_at would be a lie — that is when it was
+//      SAVED, not when it was walked. A step total is a fact about a DAY.
+//      So it renders in its own day-aligned strip above the hour grid
+//      (_wkDailyRow), never as a timed block or a .wkMark at a fake hour.
+function _wkDayStr(ts){
+  return new Date(ts).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+}
+function _wkDayStrFilter(ws){
+  var list=[]; for(var i=0;i<7;i++) list.push('"'+_wkDayStr(ws+i*86400000)+'"');
+  return 'date_str=in.('+encodeURIComponent(list.join(','))+')';
+}
+// keep() is optional — the client's own surface already fetched only its
+// own rows, so it passes nothing and everything is kept.
+function _wkDailyFrom(stepRows, ws, keep){
+  var byDay={};
+  for(var i=0;i<7;i++) byDay[_wkDayStr(ws+i*86400000)]=[];
+  (stepRows||[]).forEach(function(r){
+    if(keep && !keep(r.client_code)) return;
+    var n=Number(r.steps)||0; if(n<=0) return;
+    var slot=byDay[r.date_str]; if(!slot) return;
+    slot.push({k:'steps', code:r.client_code, steps:n, date_str:r.date_str});
+  });
+  return byDay;
 }
 // Blocks/appointments carry no duration in this data shape except
 // trainer_blocks (real start+end). Everything else gets a STATED default
@@ -17769,6 +17838,51 @@ function _wkLoggedClick(e){
   var ds=(e.d && e.d.date_str) ? String(e.d.date_str).replace(new RegExp("'","g"),"\\'") : '';
   return "openClientDay('"+e.code+"',"+(e.ts||0)+(ds?(",'"+ds+"'"):'')+")";
 }
+// One day-aligned strip above the hour grid, same 52px+7 column geometry as
+// .wkHeadRow and .wkProgRow so a cell sits exactly over its own day. Holds
+// the facts that belong to a DAY rather than a moment: step totals (no time
+// column exists at all) and weigh-ins (Yusuf, ruling, 20 Aug — "steps,
+// weigh-ins, and any daily total... a small marker on the day rather than a
+// timed block"). Weigh-ins DO carry a real logged_at, so this is a
+// deliberate demotion on his instruction, not a data limitation; progress
+// photos stay on the timed .wkMark, since a photo is a moment and not a
+// total. Renders nothing at all when the week has no daily facts — an empty
+// strip on every week would just be permanent furniture.
+function _wkDailyCellHtml(dayStart, entries){
+  if(!entries.length) return '<div class="wkDailyCell"></div>';
+  return '<div class="wkDailyCell">'+entries.map(function(e){
+    if(e.k==='steps'){
+      var ds=String(e.date_str||'').replace(new RegExp("'","g"),"\\'");
+      var code=String(e.code||'').replace(new RegExp("'","g"),"\\'");
+      var lbl=Number(e.steps).toLocaleString()+' steps';
+      return '<div class="wkDaily wkDaily-steps" title="'+_escHtml(lbl)+'"'
+        +' onclick="event.stopPropagation();openClientDay(\''+code+'\','+dayStart+',\''+ds+'\')">'
+        +_escHtml(lbl)+'</div>';
+    }
+    var wlbl=_wkLoggedLabel(e);
+    return '<div class="wkDaily wkDaily-wt" title="'+_escHtml(wlbl)+'"'
+      +' onclick="event.stopPropagation();'+_wkLoggedClick(e)+'">'+_escHtml(wlbl)+'</div>';
+  }).join('')+'</div>';
+}
+function _wkDailyEntriesFor(dayStart, daily, logged){
+  var entries=((daily||{})[_wkDayStr(dayStart)]||[]).slice();
+  (logged||[]).forEach(function(e){
+    if(e.k==='wt' && e.ts>=dayStart && e.ts<dayStart+86400000) entries.push(e);
+  });
+  return entries;
+}
+function _wkDailyRow(ws, daily, logged){
+  var cells='<div class="wkDailyCell wkDailyGut"></div>', any=false, out=[];
+  for(var i=0;i<7;i++){
+    var dayStart=ws+i*86400000;
+    var entries=_wkDailyEntriesFor(dayStart, daily, logged);
+    if(entries.length) any=true;
+    out.push({dayStart:dayStart, entries:entries});
+  }
+  if(!any) return '';
+  out.forEach(function(o){ cells+=_wkDailyCellHtml(o.dayStart, o.entries); });
+  return '<div class="wkDailyRow">'+cells+'</div>';
+}
 function _wkMarkHtml(e, dayStartMs){
   var top=_wkPxFromMins((e.ts-dayStartMs)/60000);
   var lbl=_escHtml(_wkLoggedLabel(e));
@@ -17868,7 +17982,9 @@ function _wkGridHtml(wk){
     // single-instant facts, not sessions, so they keep the quiet mark.
     var logBlocks=dayLogged.filter(function(e){ return e.k==='wo'||e.k==='food'; })
       .map(function(e){ return _wkLoggedBlockHtml(e, dayStart); }).join('');
-    var marks=dayLogged.filter(function(e){ return e.k!=='wo'&&e.k!=='food'; })
+    // Weigh-ins moved up to the daily strip (_wkDailyRow) — .wkMark is now
+    // photos only, the one logged fact here that is genuinely a moment.
+    var marks=dayLogged.filter(function(e){ return e.k==='ph'; })
       .map(function(e){ return _wkMarkHtml(e, dayStart); }).join('');
     var calBlocks=occs.filter(function(o){ return o.dayStart===dayStart; }).map(_cbBlockHtml).join('');
     // THE NOW-LINE — today's column only, live position from the actual
@@ -17890,6 +18006,7 @@ function _wkGridHtml(wk){
   // fixed-height wall column at his profile without that column needing to
   // scroll — only this inner body does, exactly the 17h range now behind
   // it, never the full page.
+  var dailyRow=_wkDailyRow(ws, wk.daily, wk.logged||[]);
   var body='<div class="wkBody" id="wkScrollBody" style="height:'+Math.round(8.5*WK_HOUR_PX)+'px;">'
     + '<div class="wkGrid">'+gutter+cols+'</div></div>';
   // THE PANEL AND SCRIM live outside .wkWrap (position:fixed, own layer) so
@@ -17908,7 +18025,7 @@ function _wkGridHtml(wk){
   // today's whole day, ambient, nothing here the only way to reach
   // anything: see _wkTodayAgendaHtml.
   var detail='<div id="wkDetailCol">'+_wkTodayAgendaHtml(wk)+'</div>';
-  return '<div class="wkWrap">'+top+head+warn+progRow+body+'</div>'+detail+floaters;
+  return '<div class="wkWrap">'+top+head+warn+progRow+dailyRow+body+'</div>'+detail+floaters;
 }
 async function _wkLoad2(el, force){
   var ws=_wkSunStart(window._schDayTs||_schTodayTs());
@@ -18097,6 +18214,15 @@ function wkPanelClose(){
   var s=document.getElementById('wkPanelScrim'), p=document.getElementById('wkPanel');
   if(s) s.classList.remove('on'); if(p){ p.classList.remove('on'); p.classList.remove('wkPanelWide'); }
   window._wkPanelState=null;
+  // A LOG REDRAWS THE WEEK ON DISMISS, NOT BEFORE IT. Both grid renderers
+  // rebuild #wkPanel from scratch (it ships inside their own markup), so
+  // refreshing while the panel is still up would delete the very sentence
+  // telling him where his entry went. The flag defers that redraw to the
+  // moment he closes it — still no reload, ever (Yusuf, ruling, 20 Aug).
+  if(window._wkPanelNeedsRefresh){
+    window._wkPanelNeedsRefresh=false;
+    try{ schRefresh(); }catch(e){}
+  }
 }
 // KIND, GUESSED FROM THE WORDS THEMSELVES (Yusuf, live, 20 Aug — "kind
 // should auto-select from what he typed and stay changeable"). A cheap
@@ -18423,13 +18549,71 @@ function wkPanelToggleDone(){
 // swapped to an honest red state instead of the usual Logging/Planning
 // line. Shared by wkPanelSave and _mwPanelSave — same failure, same fix,
 // once.
+// THE PANEL NEVER SWALLOWS AN ENTRY (Yusuf, ruling, 20 Aug — "5200 steps by
+// 8:30" typed into a slot on Blake's week, gone: not on the calendar, not
+// after a refresh, no error, nothing telling him where it went. "Silence is
+// the worst possible outcome and it is what happened").
+//
+// So a successful log now SAYS what landed and where, in plain words, and
+// the panel stays open holding that sentence until he dismisses it — a
+// toast alone is exactly the transient nothing that failed him here. The
+// words come from _jimLastTurn.landed, which jimTurn fills from the writes
+// it actually performed; never from the reply text, which has already been
+// caught claiming a log that never happened.
+//
+// It also states the DATE HONESTLY. jimTurn always writes to the current
+// day and never to the clicked slot's date — a standing, unresolved gap
+// (see the panel's own "Logging Tuesday 12:45pm" promise). Rather than
+// quietly implying the backfill worked, the panel now names the day the
+// rows really carry whenever it differs from the slot he clicked.
+function _wkPanelLogLanded(btn0, st, whoPossessive){
+  var lt=window._jimLastTurn||{};
+  var phrases=(lt.landed||[]).filter(Boolean);
+  var landedDay=lt.landedDay||'';
+  var who=whoPossessive||'your';
+  var what=phrases.length
+    ? phrases.slice(0,3).join(', ')+(phrases.length>3?(' and '+(phrases.length-3)+' more'):'')
+    : 'that';
+  var slotDay=(st && st.dateStr) ? String(st.dateStr) : '';
+  function _lbl(dstr){
+    var d=new Date(dstr);
+    return isNaN(d.getTime()) ? dstr : d.toLocaleDateString('en-US',{weekday:'long'});
+  }
+  var msg;
+  if(landedDay && slotDay && landedDay!==slotDay){
+    msg='Logged '+what+' to '+who+' '+_lbl(landedDay)+' ('+landedDay+') — not to '+_lbl(slotDay)+'. '
+      +'Anything logged here saves to the day you log it.';
+  } else {
+    msg='Logged '+what+' to '+who+' '+(landedDay?_lbl(landedDay):'day')+'.';
+  }
+  try{
+    var el=document.getElementById('wkPanelStatus');
+    if(el){ el.textContent=msg; el.className='wkPanelStatus ok'; el.style.display=''; }
+  }catch(e){}
+  if(btn0){ btn0.disabled=false; btn0.textContent='Done'; btn0.setAttribute('onclick','wkPanelClose()'); }
+  // GROW FIRST, RECLAMP SECOND (the standing law) — this sentence wraps to
+  // two or three lines where a "Logging Tuesday 12:45pm" label was one, so
+  // a panel opened low on the screen grows straight past the fold unless
+  // it is repositioned from its ORIGINAL anchor afterwards.
+  _wkPanelReclamp();
+  try{ showToast(msg.split('—')[0].trim().slice(0,90)); }catch(e){}
+}
+// One reclamp, same cached anchor every time — never a fresh click point.
+function _wkPanelReclamp(){
+  try{
+    if(window._wkPanelOpenXY) _wkPanelPosition(window._wkPanelOpenXY.x, window._wkPanelOpenXY.y);
+  }catch(e){}
+}
 function _wkPanelLogFailed(btn0, savedLabel, msg){
   if(btn0){ btn0.disabled=false; btn0.textContent=savedLabel; }
   var text=msg || 'Could not log that — nothing was lost, try again.';
   try{
     var el=document.getElementById('wkPanelStatus');
-    if(el){ el.textContent=text; el.className='wkPanelStatus err'; }
+    if(el){ el.textContent=text; el.className='wkPanelStatus err'; el.style.display=''; }
   }catch(e){}
+  // Same grow-then-reclamp reason as the landed state: Jim's own clarifying
+  // question can be several lines long where the label was one.
+  _wkPanelReclamp();
   try{ showToast(text.split('\n')[0].slice(0,90)); }catch(e){}
 }
 async function wkPanelSave(){
@@ -18507,9 +18691,16 @@ async function wkPanelSave(){
       _wkPanelLogFailed(btn0, 'Log it', reply!=null ? _wkPlainText(reply) : null);
       return;
     }
-    wkPanelClose();
-    try{ showToast(_wkPlainText(reply) ? _wkPlainText(reply).split('\n')[0].slice(0,90) : 'Logged.'); }catch(e){}
-    try{ schRefresh(); }catch(e){}
+    window._wkPanelNeedsRefresh=true;
+    var _who='your';
+    try{
+      var _oc=window._wkOwner||'';
+      var _me=(window.cl||{}).code||'';
+      if(_oc && _oc!==_me && _oc!=='me' && _oc!=='all'){
+        _who=String((CLIENTS[_oc]&&CLIENTS[_oc].name)||_oc)+"'s";
+      }
+    }catch(e){}
+    _wkPanelLogLanded(btn0, st, _who);
     return;
   }
   var owner=window._wkOwner||((window.cl||{}).code||'');
@@ -19148,7 +19339,8 @@ async function _mwFetchLogged(code, ws){
     sbSelect('food_logs','select=id,name,calories,protein,carbs,fat,eat_time,logged_at,date_str&'+span+'&limit=400'),
     sbSelect('workout_logs','select=id,title,logged_at,date_str&'+span+'&limit=200'),
     sbSelect('weight_logs','select=id,weight,logged_at,date_str&'+span+'&limit=200'),
-    sbSelect('progress_photos','select=id,angle,logged_at,date_str&'+span+'&limit=150')
+    sbSelect('progress_photos','select=id,angle,logged_at,date_str&'+span+'&limit=150'),
+    sbSelect('step_logs','select=id,client_code,steps,date_str&client_code=eq.'+encodeURIComponent(code)+'&'+_wkDayStrFilter(ws)+'&limit=20')
   ]);
   var failed=_sbFailedSince(mark);
   var logged=[];
@@ -19158,7 +19350,7 @@ async function _mwFetchLogged(code, ws){
     (res[2]||[]).forEach(function(r){ if(r.weight!=null) logged.push({k:'wt', id:r.id, code:code, ts:_lrTs(r), d:r}); });
     (res[3]||[]).forEach(function(r){ logged.push({k:'ph', id:r.id, code:code, ts:_lrTs(r), d:r}); });
   }
-  return {logged:logged, failed:failed};
+  return {logged:logged, failed:failed, daily:_wkDailyFrom(res[4], ws, null)};
 }
 async function _mwLoad(){
   var ws=window._mwWeekStart, code=(window.cl||{}).code||'';
@@ -19170,6 +19362,7 @@ async function _mwLoad(){
   ]);
   var wk={weekStart:ws, prog:res[0]||{program:null,days:[]}, cb:res[1]||{blocks:[],exByBlock:{},failed:false},
     logged:(res[2]&&res[2].logged)||[], loggedFailed:!!(res[2]&&res[2].failed),
+    daily:(res[2]&&res[2].daily)||{},
     appts:(res[3]&&res[3].rows)||[], apptsFailed:!!(res[3]&&res[3].failed), owner:code};
   window._mwData=wk;
   // Reused verbatim by wkOpenSplitPanel/wkDetailShowDay (_wkDetailSplitHtml/
@@ -19292,9 +19485,10 @@ async function _mwPanelSave(){
       _wkPanelLogFailed(btn0, 'Log it', reply!=null ? _wkPlainText(reply) : null);
       return;
     }
-    wkPanelClose();
-    try{ showToast(_wkPlainText(reply) ? _wkPlainText(reply).split('\n')[0].slice(0,90) : 'Logged.'); }catch(e){}
-    _mwRefresh();
+    // Same as wkPanelSave's twin branch — the redraw waits for dismiss so
+    // it cannot delete the sentence saying where the entry went.
+    window._wkPanelNeedsRefresh=true;
+    _wkPanelLogLanded(btn0, st, 'your');
     return;
   }
   var owner=(window.cl||{}).code||'', coach=(window.cl||{}).coach_code||'';
@@ -19349,7 +19543,7 @@ function _mwGridHtml(wk){
     var blocks=apptRows.map(function(r){ return _mwApptBlockHtml(r, dayStart); }).join('');
     var dayLogged=wk.logged.filter(function(e){ return e.ts>=dayStart && e.ts<dayStart+86400000; });
     var logBlocks=dayLogged.filter(function(e){ return e.k==='wo'||e.k==='food'; }).map(function(e){ return _wkLoggedBlockHtml(e, dayStart); }).join('');
-    var marks=dayLogged.filter(function(e){ return e.k!=='wo'&&e.k!=='food'; }).map(function(e){ return _wkMarkHtml(e, dayStart); }).join('');
+    var marks=dayLogged.filter(function(e){ return e.k==='ph'; }).map(function(e){ return _wkMarkHtml(e, dayStart); }).join('');
     var calBlocks=occs.filter(function(o){ return o.dayStart===dayStart; }).map(_cbBlockHtml).join('');
     var isToday=(dayStart===todayKey);
     var nowLine=(isToday && nowMs>=dayStart && nowMs<dayStart+86400000)
@@ -19374,11 +19568,12 @@ function _mwGridHtml(wk){
       cells+=_wkProgChipCell(dayStart, dow, byDow[dow], wk.logged);
     }
     var progRow='<div class="wkProgRow">'+cells+'</div>';
+    var dailyRow=_wkDailyRow(ws, wk.daily, wk.logged||[]);
     var cols='';
     for(var j=0;j<7;j++) cols+=dayColHtml(ws+j*86400000);
     var body='<div class="wkBody" id="wkScrollBody" style="height:'+Math.round(8.5*WK_HOUR_PX)+'px;">'
       +'<div class="wkGrid">'+gutter+cols+'</div></div>';
-    return '<div class="wkWrap">'+head+progRow+body+'</div>'+floaters;
+    return '<div class="wkWrap">'+head+progRow+dailyRow+body+'</div>'+floaters;
   }
 
   var sel=window._mwSelectedDay;
@@ -19397,9 +19592,16 @@ function _mwGridHtml(wk){
   var selDow=new Date(sel).getDay();
   var progCell=_wkProgChipCell(sel, selDow, byDow[selDow], wk.logged);
   var progRow2='<div class="wkProgRow" style="grid-template-columns:52px 1fr;"><div class="wkProgCell"></div>'+progCell+'</div>';
+  // The same daily strip, one column wide — a step total has to be findable
+  // at phone width too, which is exactly where Yusuf lost his (20 Aug).
+  var selDaily=_wkDailyEntriesFor(sel, wk.daily, wk.logged||[]);
+  var dailyRow2=selDaily.length
+    ? ('<div class="wkDailyRow" style="grid-template-columns:52px 1fr;"><div class="wkDailyCell wkDailyGut"></div>'
+       +_wkDailyCellHtml(sel, selDaily)+'</div>')
+    : '';
   var body2='<div class="wkBody mwOneDay" id="wkScrollBody" style="height:'+Math.round(8.5*WK_HOUR_PX)+'px;">'
     +'<div class="wkGrid">'+gutter+dayColHtml(sel)+'</div></div>';
-  return '<div class="mwTabs">'+tabs+'</div><div class="wkWrap">'+progRow2+body2+'</div>'+floaters;
+  return '<div class="mwTabs">'+tabs+'</div><div class="wkWrap">'+progRow2+dailyRow2+body2+'</div>'+floaters;
 }
 // ONE DAY'S CHIP, factored out (20 Aug) so the client's single-day mobile
 // view (_mwGridHtml) can render exactly the same chip a 7-across desktop
@@ -19622,6 +19824,10 @@ function wkProgLogToday(){
     +'<h3>Log what happened</h3>'
     +'<div class="wkDetSub">Tell me like you would a friend — sets, reps, weight. I’ll log it.</div>'
     +'<textarea id="wkLogText" placeholder="e.g. bench 185 for 8, 8, 6, incline dumbbell 60s for 10, three sets, cable flys 3x12"></textarea>'
+    // The same status line the add panel carries, so this door can say
+    // where an entry landed (or that it failed) instead of relying on a
+    // toast that is gone before it is read. Empty until something happens.
+    +'<div id="wkPanelStatus" class="wkPanelStatus" style="display:none;"></div>'
     +'<div class="wkDetBtns"><button class="wkDetBtn" onclick="'+back+'">Cancel</button>'
     +'<button class="wkDetBtn wkDetBtnGold" onclick="wkProgLogSubmit()">Log it</button></div>';
   setTimeout(function(){ var t=document.getElementById('wkLogText'); if(t) t.focus(); }, 30);
@@ -19654,11 +19860,21 @@ async function wkProgLogSubmit(){
     _wkPanelLogFailed(btn, 'Log it', reply!=null ? _wkPlainText(reply) : null);
     return;
   }
-  wkPanelClose();
-  var plain='';
-  try{ var d=document.createElement('div'); d.innerHTML=String(reply||'').replace(/<br\s*\/?>/gi,'\n'); plain=(d.textContent||'').trim(); }catch(e){ plain=String(reply||''); }
-  try{ showToast(plain ? plain.split('\n')[0].slice(0,90) : 'Logged.'); }catch(e){}
-  try{ schRefresh(); }catch(e){}
+  // Says where it landed and holds the sentence until dismissed, exactly
+  // like the add panel — the day whose chip he opened is passed through so
+  // a log that jimTurn pinned to today instead says so plainly.
+  window._wkPanelNeedsRefresh=true;
+  var _ch=window._wkProgChoice;
+  var _st=_ch ? {dateStr:_tlDateStr(new Date(_ch.dayStart))} : null;
+  var _who='your';
+  try{
+    var _oc=window._wkOwner||'';
+    var _me=(window.cl||{}).code||'';
+    if(_oc && _oc!==_me && _oc!=='me' && _oc!=='all'){
+      _who=String((CLIENTS[_oc]&&CLIENTS[_oc].name)||_oc)+"'s";
+    }
+  }catch(e){}
+  _wkPanelLogLanded(btn, _st, _who);
 }
 // "EDIT THE SPLIT" — the real, existing editor, unchanged. Only loads the
 // globals it already reads, for whichever code the calendar is showing,
@@ -52770,6 +52986,26 @@ async function jimTurn(text, photos, opts){
     + foodEdits.items.length + foodDeletes.items.length + stepsLogs.items.length
     + weightLogs.items.length + sessionTimes.items.length + swapDay.items.length
     + (extractedNote.note?1:0) + (extractedEdit.edit?1:0);
+  // WHAT LANDED, IN PLAIN WORDS, FROM THE WRITE AND NOT FROM THE PROSE.
+  // "5200 steps by 8:30" went into a slot on Blake's week and disappeared
+  // with nothing said (Yusuf, live, 20 Aug). The row was fine; the calendar
+  // just had no way to say where it went. Callers that take a real typed
+  // sentence (wkPanelSave, _mwPanelSave) read this to tell him exactly what
+  // was recorded — never the reply text, which is a model's prose and has
+  // already been caught claiming a log that never happened.
+  // landedDay is the date the rows ACTUALLY carry: jimTurn always writes to
+  // the current day, never to a clicked slot's date, so a caller working
+  // from a past slot can compare and say so instead of implying otherwise.
+  var landed=[];
+  workoutLogs.items.forEach(function(w){ landed.push(String((w&&(w.title||w.name))||'that workout')); });
+  foodAdds.items.forEach(function(f){ landed.push(String((f&&f.name)||'that meal')); });
+  if(stepsLogs.items.length && !_stepsFailed){
+    var _lsN=parseInt(stepsLogs.items[stepsLogs.items.length-1].steps,10);
+    if(!isNaN(_lsN)) landed.push(_lsN.toLocaleString()+' steps');
+  }
+  if(_wtVerified>0) landed.push('your weigh-in');
+  _jimLastTurn.landed=landed;
+  _jimLastTurn.landedDay=todayDateStr;
   return reply;
 }
 
