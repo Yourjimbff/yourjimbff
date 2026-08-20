@@ -809,8 +809,24 @@ body.jv-ovl-on #jvOvlWrap{display:flex;align-items:flex-end;justify-content:cent
   border-radius:9px;margin-bottom:2px;}
 #wkPanel .wkPanelStatus.log{color:var(--gold);background:rgba(245,197,24,0.08);}
 #wkPanel .wkPanelStatus.plan{color:rgba(240,236,228,0.68);background:rgba(255,255,255,0.04);}
-#wkPanel .wkPanelTitleRow{display:flex;gap:7px;align-items:stretch;margin:11px 0 5px;}
-#wkPanel .wkPanelTitleRow input{margin:0;flex:1;}
+/* A FAILED WRITE IS AN HONEST STATE, NOT A CLOSED PANEL (Yusuf, live, 20
+   Aug — a real workout, dictated, vanished on "Could not log that"). Same
+   status line, red instead of gold/quiet, replacing the Logging/Planning
+   text only until the next keystroke (_wkPanelRefreshStatus overwrites it
+   unconditionally on every input, which is what clears it). */
+#wkPanel .wkPanelStatus.err{color:#ff6b6b;background:rgba(255,107,107,0.1);}
+/* flex-end, not stretch — the mic stays a circle anchored to the bottom as
+   the title field grows into a real multi-line composer instead of
+   stretching into an oval with it. */
+#wkPanel .wkPanelTitleRow{display:flex;gap:7px;align-items:flex-end;margin:11px 0 5px;}
+#wkPanel .wkPanelTitleRow input,#wkPanel .wkPanelTitleRow textarea{margin:0;flex:1;}
+/* GROWS LIKE A REAL COMPOSER (Yusuf, live, 20 Aug — "one thin strip,"
+   dictating multi-sentence workouts into a single-line field). Auto-grow
+   is handled in JS (_wkPanelReadForm); this just turns off the generic
+   #wkPanel textarea manual resize handle for this one field and caps it,
+   scrolling inside itself past that so the most recent words stay in
+   view rather than the box growing forever. */
+#wkPanel textarea#wkPanelTitle{resize:none;min-height:0;max-height:160px;overflow-y:auto;line-height:1.4;}
 #wkPanel .wkPanelMic{flex:0 0 auto;width:36px;background:#0d0d0d;border:1px solid #2a2a2a;border-radius:10px;
   color:rgba(240,236,228,0.55);cursor:pointer;display:flex;align-items:center;justify-content:center;
   transition:border-color 0.12s,color 0.12s;}
@@ -18046,6 +18062,11 @@ function wkPanelOpenAdd(dayStart, mins, x, y){
     kind:'training', manualOverride:false, adjustOpen:false, title:'', cleanTitle:'', notes:'',
     startLocal:_cbMinutesToHHMM(mins), durationMinutes:60,
     days:[_cbWeekday(dayStart)], recurring:false, done:false, occKey:null};
+  // Cached BEFORE the first render — _wkRenderPanel's own reclamp (Edit
+  // details, Repeats, growing the title field) and _wkPanelReadForm both
+  // read this, and both no-op without it. Same fix as _cbMaybeOpen/
+  // wkApptClick already have; this was the one open path missing it.
+  window._wkPanelOpenXY={x:x, y:y};
   _wkRenderPanel();
   // .on BEFORE positioning — _wkPanelPosition reads the panel's real
   // offsetHeight now, which is 0 on a display:none element.
@@ -18152,8 +18173,20 @@ function _wkInferFromSentence(text){
 }
 function _wkPanelReadForm(){
   var st=window._wkPanelState; if(!st) return;
-  st.title=(document.getElementById('wkPanelTitle')||{}).value||'';
+  var titleEl=document.getElementById('wkPanelTitle');
+  st.title=(titleEl||{}).value||'';
   st.notes=(document.getElementById('wkPanelNotes')||{}).value||'';
+  // GROWS WITH REAL DICTATION (Yusuf, live, 20 Aug) — every path that
+  // changes the title (typing, wkPanelVoice's live interim results) runs
+  // through this function, so growing it here covers both without two
+  // copies of the same scrollHeight math. Same _cnoGrow-style reclamp:
+  // the panel is repositioned off its ORIGINAL open coordinates, never a
+  // new point, so growth mid-dictation can't drift the panel around.
+  if(titleEl){
+    titleEl.style.height='auto'; titleEl.style.height=Math.min(160,titleEl.scrollHeight)+'px';
+    titleEl.scrollTop=titleEl.scrollHeight;
+    if(window._wkPanelOpenXY) _wkPanelPosition(window._wkPanelOpenXY.x, window._wkPanelOpenXY.y);
+  }
   if(st.manualOverride){
     // He corrected something by hand — the sentence keeps typing, but it no
     // longer overwrites what he just fixed.
@@ -18300,16 +18333,21 @@ function _wkRenderPanel(){
     + '<div id="wkPanelStatus" class="wkPanelStatus '+(isPast?'log':'plan')+'">'+_escHtml(statusLine)+'</div>'
     // NO PLACEHOLDER (Yusuf, ruling — Jim's "bench 185 for 8, 8, 6 — or
     // Lunch" is his language for a CLIENT's log, not what Yusuf writes on
-    // his own calendar). Empty until he writes something real.
-    + '<div class="wkPanelTitleRow"><input id="wkPanelTitle" type="text" placeholder="" value="'+_escHtml(st.title)+'" oninput="_wkPanelReadForm()">'
+    // his own calendar). Empty until he writes something real. A TEXTAREA,
+    // not an input (Yusuf, live, 20 Aug) — a dictated multi-sentence
+    // workout needs to grow and wrap, which a single-line <input> can
+    // never do regardless of any CSS on top of it.
+    + '<div class="wkPanelTitleRow"><textarea id="wkPanelTitle" rows="1" oninput="_wkPanelReadForm()">'+_escHtml(st.title)+'</textarea>'
     +   '<button type="button" class="wkPanelMic" id="wkPanelMic" onclick="wkPanelVoice()" aria-label="Dictate">'
     +     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><rect x="9" y="2.5" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3.5"/></svg>'
     +   '</button></div>'
     // SMALL AND CORRECTABLE, UNDERNEATH (Yusuf, ruling) — never a form asked
     // up front. Tapping this line is the only way to the actual fields.
+    // "Edit details" (Yusuf, live, 20 Aug — "Adjust" didn't say what
+    // tapping it does).
     + '<div class="wkPanelInferredRow" onclick="wkPanelToggleAdjust()">'
     +   '<span id="wkPanelInferred">'+_escHtml(inferredLine)+'</span>'
-    +   '<span class="wkPanelAdjustCaret">'+(st.adjustOpen?'Hide':'Adjust')+'</span>'
+    +   '<span class="wkPanelAdjustCaret">'+(st.adjustOpen?'Hide':'Edit details')+'</span>'
     + '</div>'
     + (st.adjustOpen ? _wkPanelAdjustHtml(st) : '')
     // ONE PANEL, TWO SAVE PATHS (Job: Admin & Activity, queue item 2, 20
@@ -18325,6 +18363,26 @@ function _wkRenderPanel(){
     +   '<button class="wkPanelSave" onclick="'+((typeof isTrainer==='function'&&isTrainer((window.cl||{}).code))?'wkPanelSave()':'_mwPanelSave()')+'">'+(st.mode==='add'&&isPast?'Log it':'Save')+'</button>'
     + '</div>';
   p.innerHTML=html;
+  // Sized BEFORE the reclamp below, not after (Yusuf, live, 20 Aug — a
+  // fresh <textarea> from innerHTML renders at its bare rows="1" height
+  // until this runs; reclamping first measured the panel WITHOUT the
+  // grown title field, then the field grew a moment later and pushed the
+  // bottom of the panel below the fold anyway — the exact "Edit details
+  // opens fields he can't see" bug, caused by measuring height before the
+  // content that changes it was actually sized).
+  var _te=document.getElementById('wkPanelTitle');
+  if(_te){ _te.style.height='auto'; _te.style.height=Math.min(160,_te.scrollHeight)+'px'; }
+  // RECLAMPS ON GROWTH — every content-growing re-render of this panel
+  // (Edit details, Repeats, a day-of-week toggle) runs through this one
+  // function, so fixing it here fixes all of them at once. Same pattern
+  // already proven for the call-notes thread (_cnoGrow). Only when the
+  // panel is ALREADY open (.on) — on a genuinely fresh open it's still
+  // display:none here and offsetHeight reads 0; the caller's own
+  // _wkPanelPosition call, right after adding .on, does that first
+  // positioning exactly as before (see wkPanelOpenAdd/_cbMaybeOpen).
+  if(p.classList.contains('on') && window._wkPanelOpenXY){
+    _wkPanelPosition(window._wkPanelOpenXY.x, window._wkPanelOpenXY.y);
+  }
 }
 // THE FOLD-OUT (Yusuf, ruling) — the exact fields that used to sit open on
 // the form's face, now reached by tapping the inferred line instead of
@@ -18355,6 +18413,23 @@ function _wkPanelAdjustHtml(st){
 function wkPanelToggleDone(){
   var st=window._wkPanelState; if(!st) return;
   st.done=!!(document.getElementById('wkPanelDone')||{}).checked;
+}
+// HIS WORDS ARE NEVER LOST (Yusuf, live, 20 Aug — a real dictated workout
+// vanished behind "Could not log that — try again"). On a genuine failure
+// the panel stays open exactly as it was — text untouched, since neither
+// this nor its callers ever clear the field before the write resolves —
+// the Save/Log it button re-enabled, and the status line (which every
+// keystroke already overwrites unconditionally, see _wkPanelRefreshStatus)
+// swapped to an honest red state instead of the usual Logging/Planning
+// line. Shared by wkPanelSave and _mwPanelSave — same failure, same fix,
+// once.
+function _wkPanelLogFailed(btn0, savedLabel){
+  if(btn0){ btn0.disabled=false; btn0.textContent=savedLabel; }
+  try{
+    var el=document.getElementById('wkPanelStatus');
+    if(el){ el.textContent='Could not log that — nothing was lost, try again.'; el.className='wkPanelStatus err'; }
+  }catch(e){}
+  try{ showToast('Could not log that — nothing was lost, try again'); }catch(e){}
 }
 async function wkPanelSave(){
   _wkPanelReadForm();
@@ -18404,9 +18479,21 @@ async function wkPanelSave(){
     var btn0=document.querySelector('#wkPanel .wkPanelSave');
     if(btn0){ btn0.disabled=true; btn0.textContent='Logging…'; }
     var reply=null;
-    try{ reply=await _jimJarvisTry(title); }catch(e){ console.error('wk slot log',e); }
+    try{
+      // _jimJarvisTry's OWN header comment says it: "anything none of
+      // those [trainer-verb] stages claim... falls through to the
+      // untouched jimSend/jimTurn pipeline." An ordinary workout/meal log
+      // ("I hit legs, eight sets of leg press...") matches none of them —
+      // null is _jimJarvisTry correctly saying "not mine," not a failure.
+      // jimSend already does this fallthrough; this call site was the one
+      // place that instead treated null as an error and closed the panel,
+      // discarding a real dictated workout (Yusuf, live, 20 Aug).
+      reply=await _jimJarvisTry(title);
+      if(reply==null) reply=await jimTurn(title);
+    }catch(e){ console.error('wk slot log',e); }
+    if(reply==null){ _wkPanelLogFailed(btn0, 'Log it'); return; }
     wkPanelClose();
-    try{ showToast(_wkPlainText(reply) ? _wkPlainText(reply).split('\n')[0].slice(0,90) : 'Could not log that — try again'); }catch(e){}
+    try{ showToast(_wkPlainText(reply) ? _wkPlainText(reply).split('\n')[0].slice(0,90) : 'Logged.'); }catch(e){}
     try{ schRefresh(); }catch(e){}
     return;
   }
@@ -19180,8 +19267,12 @@ async function _mwPanelSave(){
     if(btn0){ btn0.disabled=true; btn0.textContent='Logging…'; }
     var reply=null;
     try{ reply=await jimTurn(title); }catch(e){ console.error('mw slot log',e); }
+    // HIS WORDS ARE NEVER LOST — same fix as wkPanelSave's twin branch:
+    // on a genuine failure the panel stays open, the text stays exactly as
+    // typed (never cleared before this resolves), the button re-enables.
+    if(reply==null){ _wkPanelLogFailed(btn0, 'Log it'); return; }
     wkPanelClose();
-    try{ showToast(_wkPlainText(reply) ? _wkPlainText(reply).split('\n')[0].slice(0,90) : 'Could not log that — try again'); }catch(e){}
+    try{ showToast(_wkPlainText(reply) ? _wkPlainText(reply).split('\n')[0].slice(0,90) : 'Logged.'); }catch(e){}
     _mwRefresh();
     return;
   }
@@ -19527,11 +19618,19 @@ async function wkProgLogSubmit(){
   // reuses this exact panel, so a client here means an ordinary log —
   // jimTurn, the same parser every other client log entry point calls.
   var trainerAcct=(typeof isTrainer==='function' && isTrainer((window.cl||{}).code));
-  try{ reply = trainerAcct ? await _jimJarvisTry(text) : await jimTurn(text); }catch(e){ console.error('wk prog log',e); }
+  try{
+    // Same fallthrough as wkPanelSave's twin branch: _jimJarvisTry
+    // returning null means "not a trainer verb," not "failed" — an
+    // ordinary workout log falls through to jimTurn exactly as its own
+    // header comment says it should.
+    reply = trainerAcct ? await _jimJarvisTry(text) : null;
+    if(reply==null) reply=await jimTurn(text);
+  }catch(e){ console.error('wk prog log',e); }
+  if(reply==null){ _wkPanelLogFailed(btn, 'Log it'); return; }
   wkPanelClose();
   var plain='';
   try{ var d=document.createElement('div'); d.innerHTML=String(reply||'').replace(/<br\s*\/?>/gi,'\n'); plain=(d.textContent||'').trim(); }catch(e){ plain=String(reply||''); }
-  try{ showToast(plain ? plain.split('\n')[0].slice(0,90) : 'Could not log that — try again'); }catch(e){}
+  try{ showToast(plain ? plain.split('\n')[0].slice(0,90) : 'Logged.'); }catch(e){}
   try{ schRefresh(); }catch(e){}
 }
 // "EDIT THE SPLIT" — the real, existing editor, unchanged. Only loads the
