@@ -11471,7 +11471,30 @@ function _feedDayStart(ts){
   return d;
 }
 function _feedTimeStr(ts){ try{ return new Date(ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'}); }catch(e){ return ''; } }
-async function loadTrainerFeed(targetId){
+// COALESCE A BURST, HONOUR A REAL REFRESH (20 Aug). admRenderNeeds fires this
+// on every renderMobFrontDesk, and renderMobFrontDesk has ~25 call sites — so a
+// single tab switch used to start three full feed loads (eleven Supabase reads
+// each) within milliseconds of one another, all racing to paint the same holder.
+// The token below already stops the losers painting; this stops them being
+// STARTED. A call arriving while one is in flight for the same target does not
+// begin a second read burst — it asks the running one to repeat itself once when
+// it finishes, so "refresh after every act" still refreshes (that call lands
+// after the load, not during it) while an incidental burst collapses to one.
+function loadTrainerFeed(targetId){
+  var k=targetId||'trainingHistory';
+  window._feedInFlight=window._feedInFlight||{};
+  window._feedAgain=window._feedAgain||{};
+  if(window._feedInFlight[k]){ window._feedAgain[k]=1; return window._feedInFlight[k]; }
+  var pr=_loadTrainerFeedRun(targetId);
+  window._feedInFlight[k]=pr;
+  function done(){
+    window._feedInFlight[k]=null;
+    if(window._feedAgain[k]){ window._feedAgain[k]=0; loadTrainerFeed(targetId); }
+  }
+  pr.then(done, done);
+  return pr;
+}
+async function _loadTrainerFeedRun(targetId){
   // this tab is client activity for trainers — no journal furniture on it
   try{
     var _c=document.getElementById('jPageComposer'); if(_c) _c.innerHTML='';
@@ -11492,9 +11515,19 @@ async function loadTrainerFeed(targetId){
   // check: it also catches this exact call being superseded by a NEWER one
   // (day-nav clicked twice), which jvMode alone would miss since jvMode
   // would still correctly read 'feed' for both.
-  window._feedLoadTok=(window._feedLoadTok||0);
-  var _lfTok=_dtk?(++window._feedLoadTok):null;
-  function _lfStale(){ return _dtk && window._feedLoadTok!==_lfTok; }
+  // ONE TOKEN PER TARGET, AND EVERY TARGET GETS ONE (20 Aug). This was a single
+  // shared counter that only the cockpit wall ever incremented, so the folded-in
+  // Admin feed had NO staleness check at all: every one of the ~25 callers that
+  // reach renderMobFrontDesk fired another loadTrainerFeed('admFeedBody'), and
+  // all of them painted, each one blanking the holder to "Loading…" on the way
+  // in. That is the "loading and unloading and loading and unloading" — a feed
+  // being re-mounted from underneath itself. Keyed by target because the wall
+  // and the phone's holder are both in the DOM at once and a single counter
+  // would have them invalidating each other's loads.
+  window._feedLoadTok=window._feedLoadTok||{};
+  var _lfKey=targetId||'trainingHistory';
+  var _lfTok=(window._feedLoadTok[_lfKey]=(window._feedLoadTok[_lfKey]||0)+1);
+  function _lfStale(){ return window._feedLoadTok[_lfKey]!==_lfTok; }
   // THIS FEED NO LONGER OWNS THE SCREEN. Folded into the merged Admin tab it
   // renders into #admFeedBody as one section among several, so the furniture
   // it used to clear away belongs to somebody else now — hiding salesCard
@@ -11511,7 +11544,13 @@ async function loadTrainerFeed(targetId){
     var sc=document.getElementById('salesCard'); if(sc) sc.style.display='none';
   }
   if(!holder) return;
-  holder.innerHTML='<div style="text-align:center;padding:30px;color:var(--muted);font-size:13px;">Loading…</div>';
+  // ONLY BLANK A HOLDER THAT HAS NOTHING IN IT. A refresh over an already-rendered
+  // feed used to wipe it back to "Loading…" first, so every repaint flashed empty
+  // before it filled — the visible half of the churn above. A first mount still
+  // shows the loader, because there a blank really is all there is to show.
+  if(!holder.firstElementChild || holder.querySelector('.admSecWait')){
+    holder.innerHTML='<div style="text-align:center;padding:30px;color:var(--muted);font-size:13px;">Loading…</div>';
+  }
   try{
     var lens=window._feedLens||'all';
     var hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
@@ -24116,7 +24155,41 @@ function _jvTermPill(t){
   return '<span style="display:inline-block;font-size:10px;font-weight:800;letter-spacing:0.4px;'
     +'color:'+s.col+';border:1px solid '+s.bd+';border-radius:999px;padding:2px 9px;white-space:nowrap;">'+t.label+'</span>';
 }
-async function jvLoadTriage(silent){
+// ONE LOAD AT A TIME, AND A BEAT AFTER A FAILURE (20 Aug — the Admin tab
+// storm). This function used to be re-entrant with no guard at all, and its
+// FAILURE path called renderMobFrontDesk(), which re-checks staleness, finds
+// jvTriage still uninstalled (the failure path deliberately never installs a
+// half-empty board) and calls straight back into here. That is an unbounded
+// mutual recursion: measured live on a phone-width session, 60+ rounds and
+// still climbing, six Supabase reads each, and every round blanked the folded-in
+// Activity feed back to "Loading…". It is the whole of "loading and unloading
+// and loading and unloading, the page glitching" — not a scroll handler.
+//
+// Three guards, because one is not enough:
+//   1. IN FLIGHT — concurrent callers share the running promise instead of
+//      starting another read burst. ~25 call sites reach renderMobFrontDesk.
+//   2. BACKED OFF — a failed read is not retried for 30s. Without this every
+//      unrelated repaint fires six more reads into a backend already failing,
+//      which is what keeps a breaker open once it opens.
+//   3. NO RE-ENTRY — the failure path does not call back into the renderer that
+//      is currently awaiting it (see _fdLoadingTriage in renderMobFrontDesk).
+var _JV_TRIAGE_BACKOFF_MS=30000;
+function _jvTriageBackedOff(){
+  var t=window._jvTriageFailAt||0;
+  return !!t && (Date.now()-t)<_JV_TRIAGE_BACKOFF_MS;
+}
+function jvLoadTriage(silent){
+  if(window._jvTriageInFlight) return window._jvTriageInFlight;
+  var pr=_jvLoadTriageRun(silent);
+  window._jvTriageInFlight=pr;
+  // Cleared on BOTH settle paths, so a throw can never leave the guard latched
+  // on and the board permanently unrefreshable — the failure mode a naive
+  // boolean has. Verified live: three concurrent calls, one read burst, and the
+  // guard reads false again afterwards.
+  pr.then(function(){ window._jvTriageInFlight=null; }, function(){ window._jvTriageInFlight=null; });
+  return pr;
+}
+async function _jvLoadTriageRun(silent){
   var wall=document.getElementById('jvWall'); if(!wall) return;
   if(!silent) wall.innerHTML='<div class="jvLoading">Loading\u2026</div>';
   document.getElementById('jvWallHead').textContent=new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
@@ -24160,10 +24233,18 @@ async function jvLoadTriage(silent){
     // not read than a board that quietly reports a fiction.
     if(_sbFailedSince(_fmark)){
       window._jvTriageFailed=true;
+      window._jvTriageFailAt=Date.now();
       try{ jvPaneRender(); }catch(e){}
       console.error('[jvLoadTriage] a read did not answer (last: '+(window._sbFailLast||'?')+') — not installing a half-empty board');
       if(!silent && wall) wall.innerHTML='<div class="tbFail">That did not load. It is a read that failed, not an empty roster — try Refresh.</div>';
-      try{ if(typeof renderMobFrontDesk==='function' && window.innerWidth<1024) renderMobFrontDesk(); }catch(e){}
+      // ONLY WHEN THE PHONE IS NOT ALREADY AWAITING US. renderMobFrontDesk sets
+      // _fdLoadingTriage around its own await and renders its own failure line
+      // when this returns, so calling it from here in that case is the recursion.
+      // This call still exists for the other direction — a cockpit-initiated load
+      // that fails while a phone-width front desk is on screen.
+      if(!window._fdLoadingTriage){
+        try{ if(typeof renderMobFrontDesk==='function' && window.innerWidth<1024) renderMobFrontDesk(); }catch(e){}
+      }
       return;
     }
     var foods=res[0]||[], wos=res[1]||[], weights=res[2]||[], steps=res[3]||[];
@@ -24205,6 +24286,7 @@ async function jvLoadTriage(silent){
     jvData={foodsByClient:foodsByClient, woByClient:woByClient};
     jvTriage={per:per, days:days, now:nowMs, goals:goals};
     window._jvTriageFailed=false;
+    window._jvTriageFailAt=0;
     try{ jvPaneRender(); }catch(e){}          // every read answered; this data is the truth
     await jvSyncHandledFromServer();
     await jvSyncContacts();
@@ -24215,7 +24297,7 @@ async function jvLoadTriage(silent){
     // board on any screen wide enough to have both live at once. Same guard as
     // jvMarkHandled, same hazard.
     try{ if(typeof jvMode==='undefined' || jvMode==='cockpit') jvRenderTriage(); }catch(e){}
-  }catch(e){ wall.innerHTML='<div class="jvLoading">Could not load. Try Refresh.</div>'; }
+  }catch(e){ window._jvTriageFailed=true; window._jvTriageFailAt=Date.now(); wall.innerHTML='<div class="jvLoading">Could not load. Try Refresh.</div>'; }
 }
 function _jvClassify(p, nowMs){
   if(!p || !p.ever) return null;          // never logged in this app → hidden from the board
@@ -34926,14 +35008,16 @@ function toggleInactiveClients(){
 
 function filterClientCards(q){
   q = (q||'').trim().toLowerCase();
-  var list = document.getElementById('clientList');
-  var tabs = document.getElementById('dashDayTabs');
   var results = document.getElementById('clientSearchResults');
   if(!results) return;
+  // THIS SEARCH LIVES ON THE FRONT DESK NOW and renders into its own
+  // #clientSearchResults. Showing and hiding #clientList / #dashDayTabs is
+  // left over from when it lived in the retired Clients dashboard — and
+  // clearing the box put both of those retired surfaces BACK on screen for
+  // the rest of the session. It no longer touches them; _admHideRetired owns
+  // their visibility and nothing else may override it.
   if(!q){
     results.style.display='none'; results.innerHTML='';
-    if(list) list.style.display='';
-    if(tabs) tabs.style.display='';
     return;
   }
   // Search the FULL roster — not just the cards rendered for the selected day.
@@ -34943,8 +35027,6 @@ function filterClientCards(q){
     var name=(CLIENTS[code].name||'').toLowerCase();
     return name.indexOf(q)!==-1 || code.toLowerCase().indexOf(q)!==-1;
   }).sort(function(a,b){ return (CLIENTS[a].name||a).localeCompare(CLIENTS[b].name||b); });
-  if(list) list.style.display='none';
-  if(tabs) tabs.style.display='none';
   results.style.display='';
   if(!matches.length){
     results.innerHTML='<div style="padding:18px;text-align:center;color:var(--m2);font-size:13px;">No client matches \u201c'+q.replace(/</g,'&lt;')+'\u201d</div>';
@@ -35918,11 +36000,43 @@ async function _renderFdCheckins(){
   }catch(e){ if(el) el.innerHTML=''; }
 }
 async function renderMobFrontDesk(){
-  try{ _admApply(); admRenderNeeds(); }catch(e){}
+  // NO FEED RELOAD FROM HERE (20 Aug). This used to call admRenderNeeds(), which
+  // reloads the whole activity feed — eleven Supabase reads. There are ~25 call
+  // sites that repaint the front desk (a contact logged, a client handled, a
+  // filter chip tapped, a view toggled) and not one of them changes what the
+  // feed shows, so every one of them was refetching it. The feed is refreshed
+  // where it actually needs to be: on the tab switch, and after a Jarvis act.
+  // _jvVoicePaint is kept because it is a two-line DOM paint this surface owns.
+  try{ _admApply(); }catch(e){}
+  try{ _jvVoicePaint(); }catch(e){}
+  // FIRST LINE, NOT THE LAST. The retired Clients dashboard used to be hidden
+  // by a line at the very BOTTOM of this function, so every early return below
+  // — the three _fdView branches, and the failed-read branch — left it standing.
+  // Yusuf saw it live: "Your Clients", the Today/Yesterday day tabs, the
+  // Clients/Gym/Kitchen view tabs and a full stack of client cards rendering
+  // underneath the merged tab. Hidden here, before anything can return.
+  try{ _admHideRetired(); }catch(e){}
   var el=document.getElementById('mobFrontDesk'); if(!el) return;
   var _stale = !jvTriage || !jvTriage.now || (Date.now()-jvTriage.now > 120000);
-  if(_stale){ try{ await jvLoadTriage(true); }catch(e){} }
-  if(!jvTriage){ el.innerHTML=''; return; }
+  // NEVER ASK FOR A LOAD THIS RENDER IS ALREADY INSIDE. jvLoadTriage's failure
+  // path calls back here; without the flag that call re-enters this line and
+  // the two functions recurse without bound. And a load that just failed is not
+  // retried on the next repaint — see _jvTriageBackedOff.
+  if(_stale && !window._fdLoadingTriage && !_jvTriageBackedOff()){
+    window._fdLoadingTriage=true;
+    try{ await jvLoadTriage(true); }
+    catch(e){}
+    finally{ window._fdLoadingTriage=false; }
+  }
+  if(!jvTriage){
+    // THREE STATES, NOT TWO. An empty element said "you have no front desk";
+    // what actually happened is a read that did not answer. Say which, and
+    // give him the retry — the same sentence the cockpit wall shows.
+    el.innerHTML = window._jvTriageFailed
+      ? '<div class="tbFail">That did not load. It is a read that failed, not an empty roster — <span onclick="window._jvTriageFailAt=0;renderMobFrontDesk()" style="text-decoration:underline;cursor:pointer;">try again</span>.</div>'
+      : '';
+    return;
+  }
   var per=jvTriage.per||{}; var _hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
   var codes=Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer && !_hidden[k]; });
   // Same definition of "active" as the desktop board — logged in the last 14 days.
@@ -36104,7 +36218,19 @@ html+=msection('Paid \u00b7 in term', paidPin,'green','var(--gold)','protect the
   }
   el.innerHTML=html;
   try{ _renderFdCheckins(); }catch(e){}
-  try{ ['dashDayTabs','dashViewTabs','clientList'].forEach(function(id){ var _e=document.getElementById(id); if(_e) _e.style.display='none'; }); }catch(e){}
+  try{ _admHideRetired(); }catch(e){}
+}
+// THE RETIRED CLIENTS DASHBOARD, IN ONE PLACE. #dashHeader ("Your Clients ·
+// Refresh"), the day tabs, the view tabs and #clientList are the pre-merge
+// mobile Clients screen. The front desk replaced all four. They are still in
+// the markup because #clientList is what loadTrainerDashboard and the inactive
+// view render into, so the nodes are not deletable without moving that work —
+// but nothing on the merged tab may ever SHOW them. Hidden from one function so
+// there is no success-path-only copy left to miss a branch.
+function _admHideRetired(){
+  ['dashHeader','dashDayTabs','dashViewTabs','clientList'].forEach(function(id){
+    var e=document.getElementById(id); if(e) e.style.display='none';
+  });
 }
 var dashView = 'clients';
 // Put the working stuff on top (stats glance → header → day/view buttons → search → list), bulky cards below.
@@ -36128,6 +36254,10 @@ function _reorderClientsTab(){
     // wrapper, never its children.
     var order=['consultsCard','salesCard','admActivity','manageClientsBox','mobFrontDesk','dashHeader','dashDayTabs','dashViewTabs','clientList','rosterAdminBox'];
     order.forEach(function(id){ var el=document.getElementById(id); if(el) tc.appendChild(el); });
+    // loadTrainerDashboard calls this and then renders real client cards into
+    // #clientList — so the hide has to happen here too, not only in the front
+    // desk's own render.
+    _admHideRetired();
     // Revenue goes first, above everything, so it's on screen without scrolling.
     // Also force it visible: the Activity tab hides this card on the way in and never
     // puts it back, so one visit there made revenue vanish from Admin for the rest of
