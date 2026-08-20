@@ -18423,13 +18423,14 @@ function wkPanelToggleDone(){
 // swapped to an honest red state instead of the usual Logging/Planning
 // line. Shared by wkPanelSave and _mwPanelSave — same failure, same fix,
 // once.
-function _wkPanelLogFailed(btn0, savedLabel){
+function _wkPanelLogFailed(btn0, savedLabel, msg){
   if(btn0){ btn0.disabled=false; btn0.textContent=savedLabel; }
+  var text=msg || 'Could not log that — nothing was lost, try again.';
   try{
     var el=document.getElementById('wkPanelStatus');
-    if(el){ el.textContent='Could not log that — nothing was lost, try again.'; el.className='wkPanelStatus err'; }
+    if(el){ el.textContent=text; el.className='wkPanelStatus err'; }
   }catch(e){}
-  try{ showToast('Could not log that — nothing was lost, try again'); }catch(e){}
+  try{ showToast(text.split('\n')[0].slice(0,90)); }catch(e){}
 }
 async function wkPanelSave(){
   _wkPanelReadForm();
@@ -18478,7 +18479,7 @@ async function wkPanelSave(){
     }
     var btn0=document.querySelector('#wkPanel .wkPanelSave');
     if(btn0){ btn0.disabled=true; btn0.textContent='Logging…'; }
-    var reply=null;
+    var reply=null, viaJimTurn=false;
     try{
       // _jimJarvisTry's OWN header comment says it: "anything none of
       // those [trainer-verb] stages claim... falls through to the
@@ -18489,9 +18490,23 @@ async function wkPanelSave(){
       // place that instead treated null as an error and closed the panel,
       // discarding a real dictated workout (Yusuf, live, 20 Aug).
       reply=await _jimJarvisTry(title);
-      if(reply==null) reply=await jimTurn(title);
+      if(reply==null){ viaJimTurn=true; reply=await jimTurn(title); }
     }catch(e){ console.error('wk slot log',e); }
-    if(reply==null){ _wkPanelLogFailed(btn0, 'Log it'); return; }
+    // A REPLY IS NOT THE SAME AS A WRITE (confirmed live, 20 Aug — jimTurn
+    // came back with "Logged your Leg Day... Did I get that right?" for a
+    // real dictated workout and wrote NOTHING; the model asked instead of
+    // logging, and the panel closed on a truthy-but-empty reply, showing a
+    // success-shaped toast for a log that never happened). jimTurn sets
+    // _jimLastTurn.wrote to the real count of rows it wrote this call —
+    // the same signal jimSend already checks before deciding whether it
+    // has something to celebrate. Only checked on the jimTurn leg:
+    // _jimJarvisTry's own replies (booking/consult/call-note) are already
+    // real completed actions in their own right, no marker-count involved.
+    var wroteNothing = viaJimTurn && (!window._jimLastTurn || !window._jimLastTurn.wrote);
+    if(reply==null || wroteNothing){
+      _wkPanelLogFailed(btn0, 'Log it', reply!=null ? _wkPlainText(reply) : null);
+      return;
+    }
     wkPanelClose();
     try{ showToast(_wkPlainText(reply) ? _wkPlainText(reply).split('\n')[0].slice(0,90) : 'Logged.'); }catch(e){}
     try{ schRefresh(); }catch(e){}
@@ -19267,10 +19282,16 @@ async function _mwPanelSave(){
     if(btn0){ btn0.disabled=true; btn0.textContent='Logging…'; }
     var reply=null;
     try{ reply=await jimTurn(title); }catch(e){ console.error('mw slot log',e); }
-    // HIS WORDS ARE NEVER LOST — same fix as wkPanelSave's twin branch:
-    // on a genuine failure the panel stays open, the text stays exactly as
-    // typed (never cleared before this resolves), the button re-enables.
-    if(reply==null){ _wkPanelLogFailed(btn0, 'Log it'); return; }
+    // HIS WORDS ARE NEVER LOST — same fix as wkPanelSave's twin branch. A
+    // reply is not the same as a write: jimTurn can come back with a
+    // clarifying question instead of a completed log, truthy text but
+    // nothing actually saved — _jimLastTurn.wrote is the real signal
+    // (same one jimSend already checks), not just "did it answer."
+    var wroteNothing = !window._jimLastTurn || !window._jimLastTurn.wrote;
+    if(reply==null || wroteNothing){
+      _wkPanelLogFailed(btn0, 'Log it', reply!=null ? _wkPlainText(reply) : null);
+      return;
+    }
     wkPanelClose();
     try{ showToast(_wkPlainText(reply) ? _wkPlainText(reply).split('\n')[0].slice(0,90) : 'Logged.'); }catch(e){}
     _mwRefresh();
@@ -19618,15 +19639,21 @@ async function wkProgLogSubmit(){
   // reuses this exact panel, so a client here means an ordinary log —
   // jimTurn, the same parser every other client log entry point calls.
   var trainerAcct=(typeof isTrainer==='function' && isTrainer((window.cl||{}).code));
+  var viaJimTurn=false;
   try{
     // Same fallthrough as wkPanelSave's twin branch: _jimJarvisTry
     // returning null means "not a trainer verb," not "failed" — an
     // ordinary workout log falls through to jimTurn exactly as its own
     // header comment says it should.
     reply = trainerAcct ? await _jimJarvisTry(text) : null;
-    if(reply==null) reply=await jimTurn(text);
+    if(reply==null){ viaJimTurn=true; reply=await jimTurn(text); }
   }catch(e){ console.error('wk prog log',e); }
-  if(reply==null){ _wkPanelLogFailed(btn, 'Log it'); return; }
+  // A REPLY IS NOT THE SAME AS A WRITE — see wkPanelSave's twin branch.
+  var wroteNothing = viaJimTurn && (!window._jimLastTurn || !window._jimLastTurn.wrote);
+  if(reply==null || wroteNothing){
+    _wkPanelLogFailed(btn, 'Log it', reply!=null ? _wkPlainText(reply) : null);
+    return;
+  }
   wkPanelClose();
   var plain='';
   try{ var d=document.createElement('div'); d.innerHTML=String(reply||'').replace(/<br\s*\/?>/gi,'\n'); plain=(d.textContent||'').trim(); }catch(e){ plain=String(reply||''); }
