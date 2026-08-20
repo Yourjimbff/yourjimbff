@@ -8713,6 +8713,31 @@ function sqBadge(){
 // "waiting to sync" when it is really never going anywhere. 401/403 are auth
 // and can come back, so those keep retrying.
 function _sqPermanent(status){ return status===400 || status===422; }
+// THE REJECTED SHELF. A row the server refused outright is not retryable, but it
+// is still something he said, so it is kept here rather than deleted. Read by
+// _sqRejectedText so any surface can say what was lost and quote it back.
+var _SQ_REJ_KEY='yjb_saverejected';
+function _sqRejected(){ try{ return JSON.parse(localStorage.getItem(_SQ_REJ_KEY)||'[]'); }catch(e){ return []; } }
+function _sqReject(item, status, why){
+  try{
+    var a=_sqRejected();
+    a.push({table:item.table, row:item.row, status:status||0,
+            why:String(why||'').slice(0,300), at:Date.now()});
+    localStorage.setItem(_SQ_REJ_KEY, JSON.stringify(a.slice(-40)));
+  }catch(e){}
+}
+function _sqRejectedCount(){ return _sqRejected().length; }
+// What was refused, in his words where the row carries them. Used by the honest
+// failure copy — a refusal names the thing, never just a count.
+function _sqRejectedText(){
+  var a=_sqRejected(); if(!a.length) return '';
+  return a.slice(-3).map(function(x){
+    var r=x.row||{};
+    var what=r.name || r.title || r.label || (r.weight!=null?(r.weight+' lb'):'') || (r.steps!=null?(r.steps+' steps'):'') || x.table;
+    return String(what);
+  }).join(', ');
+}
+function sqClearRejected(){ try{ localStorage.removeItem(_SQ_REJ_KEY); }catch(e){} try{ sqBadge(); }catch(e){} }
 // Try everything in the queue. Anything that still fails stays put — unless the
 // server has told us it will never accept it.
 var _sqLastFlush=0;
@@ -8739,7 +8764,16 @@ async function sqFlush(manual){
       if(r.ok){ sent++; continue; }
       if(_sqPermanent(r.status)){
         var why=''; try{ why=await r.text(); }catch(_){}
-        console.warn('sync queue dropped a row the server refused', item.table, r.status, why);
+        console.warn('sync queue: server refused a row', item.table, r.status, why);
+        // HIS WORDS ARE NEVER LOST (Yusuf, ruling, 20 Aug). This used to
+        // `dropped++; continue;` — the row was deleted from the queue and the
+        // only trace was a console line nobody reads. A meal he dictated could
+        // disappear between the reply and the database with nothing said.
+        // A permanent refusal is now KEPT, with its text intact, moved to a
+        // rejected shelf that surfaces on screen. It is out of the retry loop
+        // (retrying a 400 forever is pointless) but it is not gone, and he can
+        // see what it was and say it again.
+        try{ _sqReject(item, r.status, why); }catch(e){}
         dropped++; continue;
       }
       item.tries=(item.tries||0)+1;
@@ -8753,8 +8787,11 @@ async function sqFlush(manual){
   if(manual){
     // "can't reach the server" was the catch-all, and it lied about a 400 \u2014
     // the server was reachable and answering, it just refused the row.
+    // COPY TELLS THE TRUTH. "cleared" said the words were gone; they are kept
+    // now, and a refusal is a refusal, not an unreachable server.
+    var _rt=''; try{ _rt=_sqRejectedText(); }catch(e){}
     showToast(sent ? ('Synced '+sent)
-            : dropped ? (dropped+' couldn\u2019t be saved \u2014 cleared')
+            : dropped ? ('The server refused '+dropped+' \u2014 '+(_rt?('“'+_rt+'” is'):'it is')+' still here, not saved. Say it again and I will retry.')
             : 'Still can\u2019t reach the server');
   }
   return sent;
@@ -17549,8 +17586,21 @@ async function _jvCommitPending(p){
     try{ _q=await sbInsert('trainer_blocks', _arow); }catch(e){}
     try{ _SCH_SRC=null; }catch(e){}
     if(_q) return 'Written — but I could not read it back to prove it. Check the schedule in a moment; if “'+p.title+'” is not there, say it again.';
+    // THE COPY TELLS THE TRUTH ABOUT WHICH FAILURE THIS IS (Yusuf, ruling,
+    // 20 Aug). This said "the server is not answering" whenever anything at all
+    // sat in the queue — including when the server answered perfectly and
+    // REFUSED the row. He was told to wait for a sync that was never coming.
+    // Three states, said apart: refused (it answered and said no, nothing is
+    // retrying), offline (genuinely unreachable, it really will sync), and
+    // neither (it simply did not save).
+    var _rej=0; try{ _rej=(typeof _sqRejectedCount==='function')?_sqRejectedCount():0; }catch(e){}
+    if(_rej>0)
+      return 'The server refused \u201c'+p.title+'\u201d — it answered, it just would not take it. It is NOT on your calendar and nothing is retrying it. Your words are kept — say it again and I will retry.';
+    var _offline=false; try{ _offline=(typeof navigator!=='undefined' && navigator.onLine===false) || (typeof sbBlocked==='function' && sbBlocked()); }catch(e){}
+    if(_offline && typeof sqCount==='function' && sqCount()>0)
+      return 'I cannot reach the server, so \u201c'+p.title+'\u201d is QUEUED on this device and will sync when it comes back. It is not on the calendar yet.';
     if(typeof sqCount==='function' && sqCount()>0)
-      return 'The server is not answering, so “'+p.title+'” is QUEUED on this device and will sync when it comes back. It is not on the calendar yet.';
+      return '\u201c'+p.title+'\u201d did not go through and is held on this device. It is not on the calendar yet — I will retry it, and if the server refuses it I will tell you.';
     return 'That did not save. Nothing was written — say it again and I’ll retry.';
   }
   if(p.kind==='textprop'){
@@ -20205,6 +20255,33 @@ function wkOwnerPick(code){
 // pipeline already runs on. Own dedicated extraction call, same shape as
 // _jtNewClientExtract: a wrong field here writes onto a real calendar, not
 // a note he can delete with a tap.
+// A MEAL HE HAS ALREADY EATEN IS FOOD, WHATEVER THE CLOCK SAYS (Yusuf, ruling,
+// 20 Aug — the stolen breakfast). _JT_CAL_RE's first alternative matches a meal
+// noun followed within 30 characters by "at" or "on", so "I had 3 eggs and
+// oatmeal for breakfast at 9am" was read as a CALENDAR instruction, handed to
+// the appointment path, and answered with the queued-will-sync line that ends
+// "It is not on the calendar yet." His breakfast never reached the food engine
+// at all — proven against the deployed file before this was written.
+//
+// This is a VETO, not a rewrite of the gate: the calendar keeps every genuinely
+// schedule-shaped sentence it already claimed, and only loses the ones that are
+// plainly a report of something already eaten. A scheduling verb still wins —
+// "schedule my lunch at 1pm tomorrow" is a placement even though "lunch" is a
+// meal noun, and "I am eating lunch at noon every day" is a standing block.
+var _JT_PAST_MEAL_RE=new RegExp(
+  '\\b(?:i|we)\\s*(?:\u2019ve|ve)?\\s*(?:just\\s+|already\\s+)?(?:had|ate|eaten|grabbed|made|cooked|finished|demolished|smashed|drank)\\b'
+  +'|\\b(?:breakfast|lunch|dinner|snack|meal)\\s+(?:was|were)\\b'
+  +'|\\bfor\\s+(?:breakfast|lunch|dinner|a\\s+snack|snack)\\s+(?:i|we)\\b'
+  +'|\\bjust\\s+(?:had|ate|finished)\\b', 'i');
+var _JT_SCHED_INTENT_RE=new RegExp(
+  '\\b(every|schedule|scheduling|book|booking|move|moving|remind|reminder|set\\s*up|cancel|reschedule|from now on|going forward)\\b'
+  +'|\\bput\\s+[a-z]+.?s?\\s+[a-z]+\\s+at\\b', 'i');
+// True when the calendar may keep this sentence.
+function _jtCalendarClaims(t){
+  if(!_JT_CAL_RE.test(t)) return false;
+  if(_JT_PAST_MEAL_RE.test(t) && !_JT_SCHED_INTENT_RE.test(t)) return false;
+  return true;
+}
 var _JT_CAL_RE=new RegExp(
   '\\b(lunch|dinner|breakfast|meal|workout|working out|training|leg day|push day|pull day|cardio|pilates|yoga|class|walk|reminder|checkpoint)\\b[\\s\\S]{0,30}\\b(every|at|on)\\b'
   +'|\\bmove (my|his|her)\\b'
@@ -26211,7 +26288,7 @@ async function _jtRunItem(t, capture, ctx){
   // at 6am on Tuesdays". Checked before PROGRAMS below: "workout" alone
   // would otherwise match _JT_PROG_RE and get handed to the program builder,
   // which is the wrong system entirely for a personal-calendar sentence.
-  if(_JT_CAL_RE.test(t)){
+  if(_jtCalendarClaims(t)){
     try{
       var _ca=await _jtCalendarTurn(t);
       if(_ca) return {status:(_ca.ok?'done':'lost'), line:_ca.line, html:true, src:t};
