@@ -11287,9 +11287,21 @@ async function _jvLoadGender(){
   window._jvGenderMap=m;
   return m;
 }
+// ONE VOCABULARY, WHATEVER THE ROW SAYS. This app writes 'male'/'female', but
+// profiles.gender is an open text column that other doors (onboarding, imports)
+// have written to, and an unrecognised spelling silently drops that client out
+// of BOTH filters — invisible, and indistinguishable from "not set". Normalised
+// to the two values the filter actually compares, or null for genuinely unknown.
+function _jvNormSex(v){
+  var t=String(v==null?'':v).trim().toLowerCase();
+  if(!t) return null;
+  if(t==='m'||t==='male'||t==='man'||t==='men'||t==='boy') return 'male';
+  if(t==='f'||t==='female'||t==='woman'||t==='women'||t==='girl') return 'female';
+  return null;
+}
 function _jvGenderOf(code){
   var m=window._jvGenderMap; if(!m) return null;
-  return m[code]||null;
+  return _jvNormSex(m[code]);
 }
 // ===== SEX, SET BY HAND ON THE CLIENT CARD =================================
 // Never inferred, never guessed, never defaulted. It is blank until Yusuf taps one of
@@ -12061,7 +12073,24 @@ async function _pfToggleWo(ds, code){
 // "Yet"/"so far" say the day is still open — true for today, false for a day
 // already over. isToday keeps this from telling Yusuf a client is still short
 // on time to log a day that's already three days gone.
-function _pfQuietWords(hour, isToday){
+// THE CARD SPEAKS ABOUT THEIR DAY, NEVER ABOUT THE FILTERED VIEW (Yusuf,
+// ruling, 20 Aug). "Nothing logged so far today" was a flat lie under a lens:
+// the Food lens does not even FETCH workout_logs (see loadTrainerFeed's _wosP),
+// so a client who trained this morning and ate nothing yet had an empty card
+// claiming she had done nothing at all. The claim is now scoped to what the
+// view actually read, which makes it true under every lens instead of only
+// under All — and more useful, because "no meals yet" is the question the Food
+// lens is being asked in the first place.
+function _pfQuietWords(hour, isToday, lens){
+  var L=String(lens||'all');
+  var what = L==='kitchen' ? 'meals' : (L==='gym' ? 'training' : null);
+  if(what){
+    var cap=what.charAt(0).toUpperCase()+what.slice(1);
+    if(!isToday) return 'No '+what+' logged that day.';
+    if(hour<12) return 'No '+what+' logged yet this morning.';
+    if(hour<17) return 'No '+what+' logged so far today.';
+    return 'No '+what+' logged today.';
+  }
   if(!isToday) return 'Nothing logged that day.';
   if(hour<12) return 'Nothing logged yet this morning.';
   if(hour<17) return 'Nothing logged so far today.';
@@ -12090,15 +12119,25 @@ function _feedPeopleHtml(items, hidden, viewDayTs){
   (items||[]).forEach(function(it){
     if(!it || !it.code || it.kind==='moment') return;
     if(_pfBarred(it.code)) return;
+    // Enforced HERE too, not only upstream — same reasoning as _pfBarred's own
+    // header: a card built straight from an event must not depend on the caller
+    // having filtered first. The phone calls this with an unfiltered item list.
+    try{ if(!_jvPassesFilters(it.code)) return; }catch(e){}
     if(_feedDayStart(it.ts).getTime()!==today) return;          // today's card only
     if(!byClient[it.code]){ byClient[it.code]={code:it.code, evs:[], newest:0}; order.push(it.code); }
     var b=byClient[it.code];
     b.evs.push(it);
     if(it.ts>b.newest) b.newest=it.ts;
   });
-  // Every in-term client gets a card, whether or not they have done anything.
+  // Every in-term client gets a card, whether or not they have done anything —
+  // EXCEPT anyone the active filters exclude. THE MEMBERSHIP BUG (Yusuf, ruling,
+  // 20 Aug): with the Male filter on, a female client's EVENTS were filtered out
+  // of `items` upstream but this roster loop still handed her a card, so the
+  // filter appeared to show a female client AND that card then claimed she had
+  // logged nothing all day. One missing check caused both halves of it.
   var roster=Object.keys(CLIENTS).filter(function(c){
     if(_pfBarred(c)) return false;
+    try{ if(!_jvPassesFilters(c)) return false; }catch(e){}
     var t=null; try{ t=_jvTermState(c); }catch(e){}
     return !!(t && t.active);
   });
@@ -12788,7 +12827,7 @@ function _pfCard(b, hour, now, isToday, viewDayTs){
     var todayC=null; if(isToday){ try{ todayC=_ccToday(b.code); }catch(e){} }
     var body = todayC
       ? _pfContactLine(b.code, todayC)
-      : '<div class="pfQuietWords">'+_pfQuietWords(hour, isToday)+'</div>'
+      : '<div class="pfQuietWords">'+_pfQuietWords(hour, isToday, (window._feedLens||'all'))+'</div>'
         +(isToday ? '<div onclick="event.stopPropagation();"><textarea class="pfOutreachIn" id="pfOut_'+b.code+'">'+_pfEsc(_pfSuggestLine(b.code))+'</textarea></div>'
           +'<div class="pfActs" onclick="event.stopPropagation();">'
             +(info.phone?('<span class="pfAct" onclick="textClient(\''+b.code+'\')">Say hello to '+_pfEsc(first)+'</span>'):'<span class="pfAct" onclick="jvOpenDeep(\''+b.code+'\')">Open '+_pfEsc(first)+'</span>')
@@ -24291,7 +24330,7 @@ async function _jvLoadTriageRun(silent){
       sbSelect('workout_logs','select=client_code,date_str,logged_at,title&order=logged_at.desc&limit=3000'),
       sbSelect('weight_logs','order=logged_at.desc&limit=3000'),
       sbSelect('step_logs','order=updated_at.desc&limit=4000'),
-      sbSelect('profiles','select=client_code,goal_weight&limit=2000'),
+      sbSelect('profiles','select=client_code,goal_weight,start_weight&limit=2000'),
       // Coaching notes for the whole board in one go. Per-card this would be forty
       // requests to put one line on forty cards, and load already fires around 25.
       trainerOp('clientNotesAll',{})
@@ -24319,10 +24358,27 @@ async function _jvLoadTriageRun(silent){
       return;
     }
     var foods=res[0]||[], wos=res[1]||[], weights=res[2]||[], steps=res[3]||[];
-    var goals={};
+    var goals={}, starts={};
     (res[4]||[]).forEach(function(pr){
       if(pr && pr.client_code && pr.goal_weight!=null) goals[pr.client_code]=parseFloat(pr.goal_weight);
+      // ONE DEFINITION OF START, BOTH SIDES (Yusuf, ruling, 20 Aug). The trainer
+      // surfaces used to call the OLDEST WEIGH-IN "started" while the client's own
+      // Progress tab called profiles.start_weight "started" — two different numbers
+      // for the same person, and he would quote one on a call while she held the
+      // other. The recorded start is the truth now; the oldest weigh-in is only a
+      // fallback and says so wherever it is used.
+      if(pr && pr.client_code && pr.start_weight!=null) starts[pr.client_code]=parseFloat(pr.start_weight);
     });
+    // SCHEMA FROM ROW SHAPE, NEVER FROM "rows came back" (the standing sbSelect
+    // landmine: a missing SELECT column is silently dropped and the read retried,
+    // so a successful read proves nothing about the column). If not one profile
+    // row carries the key, the column is not there — record that, so the surfaces
+    // fall back to the oldest weigh-in and SAY they are doing so, rather than
+    // silently reporting everyone as having no recorded start.
+    try{
+      var _pr0=(res[4]||[]);
+      window._jvHasStartWeight = _pr0.some(function(r){ return r && ('start_weight' in r); });
+    }catch(e){ window._jvHasStartWeight=false; }
     try{
       var _cn={};
       (res[5]||[]).forEach(function(n){
@@ -24355,7 +24411,7 @@ async function _jvLoadTriageRun(silent){
     foods.forEach(function(f){ if(dayOf(f.date_str,f.logged_at||f.created_at)===0)(foodsByClient[f.client_code]=foodsByClient[f.client_code]||[]).push(f); });
     wos.forEach(function(w){ if(dayOf(w.date_str,w.logged_at||w.created_at)===0)(woByClient[w.client_code]=woByClient[w.client_code]||[]).push(w); });
     jvData={foodsByClient:foodsByClient, woByClient:woByClient};
-    jvTriage={per:per, days:days, now:nowMs, goals:goals};
+    jvTriage={per:per, days:days, now:nowMs, goals:goals, starts:starts};
     window._jvTriageFailed=false;
     window._jvTriageFailAt=0;
     try{ jvPaneRender(); }catch(e){}          // every read answered; this data is the truth
@@ -27529,20 +27585,64 @@ function _jvWeightLine(code){
   // "which way are they moving" is a present-tense question.
   if(mv) return '<b>'+(mv.flat?'No change':((mv.diff<0?'Down ':'Up ')+amt(mv.diff)))+'</b>'+tail;
   // Too short a run to call a trend. Say the lifetime change, or just where they are.
-  var fw=p&&p.firstWeight, n=(p&&p.wCount)||1;
-  if(fw && !isNaN(+fw.val) && n>1){
-    var moved=Math.round(((+lw.val)-(+fw.val))*10)/10;
-    if(Math.abs(moved)>=0.1) return '<b>'+(moved>0?'Up ':'Down ')+amt(moved)+'</b>'+tail;
-    return '<b>No change</b>'+tail;
+  // ONE START, BOTH SIDES — the recorded start weight, not the oldest weigh-in.
+  var sw=_jvStartWeight(code), n=(p&&p.wCount)||1;
+  if(sw.ok && (sw.source==='recorded' || n>1)){
+    var moved=Math.round(((+lw.val)-sw.val)*10)/10;
+    var _sn=_startNote(sw);
+    if(Math.abs(moved)>=0.1) return '<b>'+(moved>0?'Up ':'Down ')+amt(moved)+'</b>'+_escHtml(_sn)+tail;
+    return '<b>No change</b>'+_escHtml(_sn)+tail;
   }
   return '<b>'+wToDisp(+lw.val)+' '+wUnit()+'</b>'+tail;
+}
+// ===== ONE START WEIGHT, ONE DERIVATION (Yusuf, ruling, 20 Aug) ===========
+// The bug this ends: a client's Progress tab said "down 11.8" while his own
+// drawer said "down 10.6" about the same person on the same day, because the
+// client side read profiles.start_weight and the trainer side read the oldest
+// weigh-in, and BOTH called it "start". He would quote one number on a call
+// while she was holding the other.
+//
+// THE RULE, everywhere: the recorded start weight is the truth. The oldest
+// weigh-in is a fallback used ONLY when no start weight exists — and every
+// surface that falls back says "since first weigh-in" out loud, so a delta can
+// never quietly mean two different things.
+//
+// Deliberately a PURE function of its three inputs: the client side has a
+// profile object, the trainer side has a board keyed by code, and neither
+// should have to know about the other's shape to agree on the answer.
+//   -> {val, source:'recorded'|'first'|'none', note, ok}
+function _startWeightOf(recorded, firstVal, firstTs){
+  var r=parseFloat(recorded);
+  if(!isNaN(r) && r>0) return {val:r, source:'recorded', note:'', ok:true};
+  var f=parseFloat(firstVal);
+  if(!isNaN(f) && f>0) return {val:f, source:'first', note:'since first weigh-in', ts:(firstTs!=null?firstTs:null), ok:true};
+  return {val:null, source:'none', note:'', ok:false};
+}
+// The trainer side's accessor: same answer, read off the board.
+function _jvStartWeight(code){
+  var p=null, rec=null;
+  try{ p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null; }catch(e){}
+  try{ rec=(jvTriage&&jvTriage.starts)?jvTriage.starts[code]:null; }catch(e){}
+  var fw=p&&p.firstWeight;
+  return _startWeightOf(rec, fw&&fw.val, fw&&fw.ts);
+}
+// The client side's accessor: same answer, read off their own profile and the
+// oldest row of their own weigh-in history.
+function _pgStartWeight(prof, oldestVal, oldestTs){
+  return _startWeightOf(prof && prof.start_weight, oldestVal, oldestTs);
+}
+// The phrase, so no surface invents its own wording for the same fallback.
+// Empty when the number is the recorded one, which is the ordinary case.
+function _startNote(sw, brackets){
+  if(!sw || !sw.note) return '';
+  return brackets===false ? sw.note : (' (' + sw.note + ')');
 }
 function _jvProgress(code, size){
   var sz=(size===undefined)?'ovSm':size;
   var cls='ovCard'+(sz?(' '+sz):'');
   var p=null, goal=null;
   try{ p=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null; goal=(jvTriage&&jvTriage.goals)?jvTriage.goals[code]:null; }catch(e){}
-  var lw=p&&p.lastWeight, fw=p&&p.firstWeight;
+  var lw=p&&p.lastWeight;
 
   // Nothing has fetched their numbers yet. That is a fact about this page, not
   // about them, so the card says so and jvOpenDeep repaints this block the
@@ -27562,7 +27662,10 @@ function _jvProgress(code, size){
     +'</div>';
   }
 
-  var cw=+lw.val, sw=(fw&&!isNaN(+fw.val))?+fw.val:cw;
+  // ONE START, BOTH SIDES — this card is what he reads out on a call, so it has
+  // to be the same number her own Progress tab is showing her.
+  var _sw=_jvStartWeight(code);
+  var cw=+lw.val, sw=_sw.ok?_sw.val:cw;
   var n=(p&&p.wCount)||1;
   var moved=Math.round((cw-sw)*10)/10;
   var meta=[];
@@ -27571,6 +27674,9 @@ function _jvProgress(code, size){
   var lifeTxt='';
   if(Math.abs(moved)>=0.1) lifeTxt='<b>'+(moved>0?'Up ':'Down ')+wToDisp(Math.abs(moved))+' '+wUnit()+'</b>';
   else if(n>1) lifeTxt='<b>No net change</b>';
+  // A delta measured from the oldest weigh-in instead of a recorded start is a
+  // DIFFERENT CLAIM and says which, right where the number is.
+  if(lifeTxt) lifeTxt+=_escHtml(_startNote(_sw));
   if(lifeTxt) meta.push(lifeTxt+(n>1?(' over <b>'+n+'</b> weigh-ins'):''));
   else if(n>1) meta.push('<b>'+n+'</b> weigh-ins');
   var when=_jvWhenDay(lw.ts); if(when) meta.push('last one '+when);
@@ -27748,16 +27854,19 @@ function _jvExportOne(code, D){
 
   // --- weight ---
   L.push(''); L.push('WEIGHT');
-  var lw=p&&p.lastWeight, fw=p&&p.firstWeight;
+  var lw=p&&p.lastWeight;
   // Belt to the caller's braces. If the store still is not there — the caller
   // skipped the wait, or the read failed — this says which, rather than printing
   // "No weigh-ins recorded" into a document that gets pasted to a human being.
   if(!_jvTriageReady()){ L.push(_jvNoStore('their weigh-ins')); }
   else if(!lw || isNaN(+lw.val)){ L.push('No weigh-ins recorded.'); }
   else {
-    var cw=+lw.val, sw=(fw&&!isNaN(+fw.val))?+fw.val:cw, n=(p&&p.wCount)||1;
+    // ONE START, BOTH SIDES. This document gets pasted to a human being, so
+    // "Started" here has to mean what it means on her own screen.
+    var _swE=_jvStartWeight(code);
+    var cw=+lw.val, sw=_swE.ok?_swE.val:cw, n=(p&&p.wCount)||1;
     var moved=Math.round((cw-sw)*10)/10;
-    var wl='Started '+wToDisp(sw)+' '+wUnit()+', now '+wToDisp(cw)+' '+wUnit();
+    var wl='Started '+wToDisp(sw)+' '+wUnit()+(_swE.source==='first'?' (first weigh-in on file)':'')+', now '+wToDisp(cw)+' '+wUnit();
     if(goal!=null && !isNaN(+goal)) wl+=', goal '+wToDisp(+goal)+' '+wUnit();
     L.push(wl);
     if(Math.abs(moved)>=0.1) L.push((moved>0?'Up ':'Down ')+wToDisp(Math.abs(moved))+' '+wUnit()+' over '+n+' weigh-in'+(n===1?'':'s'));
@@ -33620,10 +33729,17 @@ function _jvClientWeightBlock(msg){
     }
     var when=''; try{ when=_jvWhenDay(lw.ts)||''; }catch(e){}
     var line=best.name+'\u2019s most recent weigh-in: '+wToDisp(+lw.val)+' '+wUnit()+(when?(', logged '+when):'')+'.';
-    var fw=p&&p.firstWeight, n=(p&&p.wCount)||1;
-    if(fw && !isNaN(+fw.val) && n>1){
-      var moved=Math.round(((+lw.val)-(+fw.val))*10)/10;
-      line += (Math.abs(moved)>=0.1) ? (' '+(moved>0?'Up ':'Down ')+Math.abs(moved)+' '+wUnit()+' over '+n+' weigh-ins.') : (' No net change over '+n+' weigh-ins.');
+    // ONE START, BOTH SIDES. Jarvis is asked "how much has she lost" constantly
+    // and his answer has to be the number she is looking at, not a third one.
+    var _swJ=_jvStartWeight(best.code), n=(p&&p.wCount)||1;
+    if(_swJ.ok && (_swJ.source==='recorded' || n>1)){
+      var moved=Math.round(((+lw.val)-_swJ.val)*10)/10;
+      var _from=(_swJ.source==='recorded')
+        ? (' from her recorded start of '+wToDisp(_swJ.val)+' '+wUnit()+'.')
+        : (' measured from her FIRST WEIGH-IN of '+wToDisp(_swJ.val)+' '+wUnit()+', because no start weight is on file — say "since her first weigh-in", never "since she started".');
+      line += (Math.abs(moved)>=0.1)
+        ? (' '+(moved>0?'Up ':'Down ')+Math.abs(moved)+' '+wUnit()+' over '+n+' weigh-in'+(n===1?'':'s')+','+_from)
+        : (' No net change over '+n+' weigh-in'+(n===1?'':'s')+','+_from);
     }
     return head+line+' Use THIS to answer \u2014 do not say you cannot see a weight entry.';
   }catch(e){ return ''; }
@@ -55541,7 +55657,13 @@ function renderWeightCard(){
   }
   // _wtAll is sorted ascending: oldest first, newest last
   var latest=+rows[rows.length-1].weight, first=+rows[0].weight;
-  var start = (profile && profile.start_weight) ? +profile.start_weight : first;
+  // ONE START, BOTH SIDES (Yusuf, ruling, 20 Aug). Same derivation his drawer,
+  // his roster, the export doc and Jarvis all use — so the number she reads here
+  // is the number he quotes on a call. This side already preferred the recorded
+  // start; what it never did was SAY when it had fallen back to her first
+  // weigh-in, which is a different claim wearing the same word.
+  var _swC = _pgStartWeight(profile, first, (rows[0]&&rows[0].logged_at)||null);
+  var start = _swC.ok ? _swC.val : first;
   var goal = parseFloat(profile && (profile.goal_weight||profile.goalWeight))||0;
   var diff = _pgW(latest) - _pgW(start);
   var up = diff > 0, flat = Math.abs(diff) < 0.15;
@@ -55565,9 +55687,10 @@ function renderWeightCard(){
     +'</svg>';
   }
 
+  var _sinceWhat = (_swC.source==='first') ? ' since your first weigh-in' : ' since start';
   var deltaTxt = flat ? 'holding steady'
-    : ((up?'up ':'down ')+(Math.round(Math.abs(diff)*10)/10)+' since start');
-  var sub = _pgW(start)+' at the start \u2192 '+_pgW(latest)+' today'
+    : ((up?'up ':'down ')+(Math.round(Math.abs(diff)*10)/10)+_sinceWhat);
+  var sub = _pgW(start)+((_swC.source==='first')?' at your first weigh-in':' at the start')+' \u2192 '+_pgW(latest)+' today'
           + (goal ? (' \u00b7 target '+_pgW(goal)) : '');
 
   host.innerHTML='<div class="pgCard" data-pg="weight">'
