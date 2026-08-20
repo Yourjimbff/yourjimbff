@@ -7814,10 +7814,15 @@ async function sbInsertStrict(table, data){
 }
 
 // Like sbInsert but returns the created row (so we can grab its id immediately).
-async function sbInsertReturning(table, data){
+// `sel` narrows what comes BACK, and on client_notes that is a security property,
+// not a nicety: return=representation asks for every column, so a row written to a
+// table whose private column the public key may not read would be refused on the
+// way out. Callers that only need the id say so.
+async function sbInsertReturning(table, data, sel){
   try{
     var h = sbHeaders(); h['Prefer'] = 'return=representation';
-    var res = await fetch(SB_URL+'/rest/v1/'+table, { method:'POST', headers:h, body:JSON.stringify(data) });
+    var q = sel ? ('?select='+encodeURIComponent(sel)) : '';
+    var res = await fetch(SB_URL+'/rest/v1/'+table+q, { method:'POST', headers:h, body:JSON.stringify(data) });
     if(!res.ok) return null;
     var rows = await res.json();
     return (rows && rows.length) ? rows[0] : null;
@@ -17424,7 +17429,7 @@ async function _jvCommitPending(p){
   if(p.kind==='workingon'){
     var saved=null;
     try{ saved=await sbInsertReturning('client_notes',
-      {client_code:p.code, note:_cnMark(p.text,'coaching'), logged_at:new Date().toISOString()}); }catch(e){}
+      {client_code:p.code, note:_cnMark(p.text,'coaching'), logged_at:new Date().toISOString()}, 'id'); }catch(e){}
     window._jvPendingWrite=null;
     if(!saved) return 'That did not save. Nothing was written to '+p.name+'.';
     try{ (window._cnCoach[p.code]=window._cnCoach[p.code]||[]).unshift({id:(saved&&saved.id)||null, body:p.text, ts:new Date().toISOString(), sharedAt:null, sharedNote:null}); }catch(e){}
@@ -22688,7 +22693,7 @@ async function jarvisIngest(ns){
     // not: a weight on the wrong client is a silent corruption of a real history
     // that nobody catches for weeks, and it is the assistant, not Yusuf, choosing
     // who it belongs to. Numbers get stated back and wait.
-    if(code && CLIENTS[code] && note){ try{ await sbInsertReturning('client_notes',{client_code:code, note:'[Jarvis] '+note, logged_at:new Date().toISOString()}); }catch(e){} try{ await _postMomentText((name?(name+': '):'')+note); }catch(e){} loggedTo=name||code; }
+    if(code && CLIENTS[code] && note){ try{ await sbInsertReturning('client_notes',{client_code:code, note:'[Jarvis] '+note, logged_at:new Date().toISOString()}, 'id'); }catch(e){} try{ await _postMomentText((name?(name+': '):'')+note); }catch(e){} loggedTo=name||code; }
     try{
       var _pend=_jvBuildPendingLog(obj&&obj.log, code, name, t);
       if(!_pend && obj && obj.working_on) _pend=_jvBuildPendingWorkingOn(String(obj.working_on), code, name);
@@ -22830,7 +22835,7 @@ async function jvBuildClientMemory(code){
     var data=await res.json();
     var txt=data&&data.content?(Array.isArray(data.content)?data.content.map(function(b){return b.text||'';}).join(''):data.content):(data.text||data.completion||'');
     txt=(txt||'').trim();
-    if(txt){ try{ await sbInsertReturning('client_notes',{client_code:code, note:'[MEMORY] '+txt, logged_at:new Date().toISOString()}); }catch(e){} }
+    if(txt){ try{ await sbInsertReturning('client_notes',{client_code:code, note:'[MEMORY] '+txt, logged_at:new Date().toISOString()}, 'id'); }catch(e){} }
     _jvLoadClientMemory(code);
     if(typeof showToast==='function') showToast('🧠 Built from '+msgs.length+' messages');
   }catch(e){ console.error('jvBuildClientMemory',e); if(typeof showToast==='function') showToast('Could not build memory'); }
@@ -22885,7 +22890,7 @@ async function jvClientJarvisSend(code){
     var obj=null; try{ obj=JSON.parse(clean); }catch(e){ var m=clean.match(/\{[\s\S]*\}/); if(m){ try{ obj=JSON.parse(m[0]); }catch(e2){} } }
     var note=(obj&&obj.note)?String(obj.note).trim():t;
     var reply=(obj&&obj.reply)?String(obj.reply).trim():'';
-    try{ await sbInsertReturning('client_notes',{client_code:code, note:'[Jarvis] '+note, logged_at:new Date().toISOString()}); }catch(e){}
+    try{ await sbInsertReturning('client_notes',{client_code:code, note:'[Jarvis] '+note, logged_at:new Date().toISOString()}, 'id'); }catch(e){}
     var rb=document.getElementById('jvClientJarvisReply'); if(rb){ rb.innerHTML = reply ? '<div style="background:rgba(224,196,152,0.08);border:1px solid rgba(224,196,152,0.28);border-radius:10px;padding:10px 12px;font-size:12.5px;color:#f0ece4;line-height:1.55;">'+reply.replace(/</g,'&lt;')+'</div>' : ''; }
     inp.value='';
     _jvLoadClientNotes(code);
@@ -25865,7 +25870,7 @@ async function _jtRunItem(t, capture, ctx){
   }
   if(code && CLIENTS[code] && mo.note){
     var saved=null;
-    try{ saved=await sbInsertReturning('client_notes',{client_code:code, note:'[Jarvis] '+mo.note, logged_at:new Date().toISOString()}); }catch(e){}
+    try{ saved=await sbInsertReturning('client_notes',{client_code:code, note:'[Jarvis] '+mo.note, logged_at:new Date().toISOString()}, 'id'); }catch(e){}
     // Read back, never trusted. A note that did not land is reported as not
     // landed rather than counted under Done.
     if(saved){
@@ -35401,7 +35406,7 @@ async function cnAddSave(code){
   var txt=el?String(el.value||'').trim():'';
   if(!txt){ cnAddCancel(code); return; }
   var saved=await sbInsertReturning('client_notes',
-    {client_code:code, note:_cnMark(txt,'coaching'), logged_at:new Date().toISOString()});
+    {client_code:code, note:_cnMark(txt,'coaching'), logged_at:new Date().toISOString()}, 'id');
   if(saved){
     (window._cnCoach[code]=window._cnCoach[code]||[]).unshift({id:(saved&&saved.id)||null, body:txt, ts:new Date().toISOString(), sharedAt:null, sharedNote:null});
     try{ showToast('Noted'); }catch(e){}
@@ -35515,7 +35520,9 @@ function nsShareCancel(code){
 async function _nsPatch(id, body){
   try{
     var h=Object.assign({}, sbHeaders(), {'Prefer':'return=representation'});
-    var res=await fetch(SB_URL+'/rest/v1/client_notes?id=eq.'+encodeURIComponent(id),
+    // select=id for the same reason as sbInsertReturning above — never ask the
+    // server to hand back a column the public key is not allowed to read.
+    var res=await fetch(SB_URL+'/rest/v1/client_notes?select=id&id=eq.'+encodeURIComponent(id),
       {method:'PATCH', headers:h, body:JSON.stringify(body), signal:_sbTimeout(SB_READ_MS)});
     if(!res.ok){
       var msg=''; try{ var j=await res.json(); msg=j.message||j.hint||j.details||''; }catch(e){}
@@ -35700,7 +35707,7 @@ async function saveClientNote(){
   var ta=document.getElementById('newNoteInput'); if(!ta) return;
   var txt=ta.value.trim(); if(!txt){ showToast('Type a note first'); return; }
   if(!_notesClientCode) return;
-  var saved = await sbInsertReturning('client_notes', { client_code:_notesClientCode, note:_cnMark(txt,'private'), logged_at:new Date().toISOString() });
+  var saved = await sbInsertReturning('client_notes', { client_code:_notesClientCode, note:_cnMark(txt,'private'), logged_at:new Date().toISOString() }, 'id');
   if(saved){ ta.value=''; loadClientNotes(_notesClientCode); showToast('✓ Note saved'); }
   else { showToast('⚠️ Could not save — the note is still in the box'); }
 }
