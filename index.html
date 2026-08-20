@@ -26229,6 +26229,72 @@ async function _jtRunItem(t, capture, ctx){
       if(pg) return {status:'done', modelled:true, line:pg, html:true, src:t};
     }catch(e){ console.error('jt program',e); }
   }
+  // ===== JIM'S ENGINE IS THE LOGGING ENGINE (Yusuf, ruling, 20 Aug) ========
+  // ONE ENGINE, TWO DOORS. Jim was built first and owns every logging capability
+  // in this app: the food parser, saved-food and meal-library matching, label
+  // knowledge, macro reconciliation against stated calories, per-item macros,
+  // meal slots, backdating, accumulation across a message, and the honest
+  // three-outcome write with its read-back. Jarvis was built later for a
+  // different job and, when logging came up, got a NEWER, THINNER stage written
+  // fresh — a JSON {food, weight, steps} the model filled in. Every gap he has
+  // hit is Jarvis reimplementing, badly, something Jim already does right.
+  //
+  // So the rail hands anything log-shaped to Jim, unchanged. Not a port, not a
+  // copy — jimTurn itself, the same call the Day bar makes, writing to the
+  // signed-in account, which on this account is exactly where his own food and
+  // training belong. If Jim can log it from the Day bar, this logs it from the
+  // rail, identically, because it IS the same function.
+  //
+  // WHEN: his own account, not a question, and no client named. A sentence that
+  // names a client keeps the existing confirmed path — a wrong client is a real
+  // person's history, and that write still states itself back and waits.
+  // A FALLTHROUGH, NOT A GATE: if Jim writes nothing, this falls to the model
+  // exactly as before. Narrow keyword triggers are what caused half the misses
+  // in this file's history, so there is no keyword list here at all.
+  try{
+    var _selfAcct=(window.cl && typeof isTrainer==='function' && isTrainer(cl.code));
+    if(_selfAcct && !_jtIsQuestion(t)){
+      var _named=null;
+      try{ var _f=_jvFindClientIn(t); _named=(_f && _f.hits && _f.hits.length===1) ? _f.hits[0] : null; }catch(e){}
+      if(!_named){
+        var _jimReply=null;
+        try{ _jimReply=await jimTurn(t, []); }catch(e){ console.error('jt jim', e); }
+        var _wrote=0, _landed=[];
+        try{ _wrote=(window._jimLastTurn&&window._jimLastTurn.wrote)||0; }catch(e){}
+        try{ _landed=(window._jimLastTurn&&window._jimLastTurn.landed)||[]; }catch(e){}
+        if(_wrote>0){
+          // A REPLY IS NOT A WRITE, AND A MARKER IS NOT A WRITE EITHER. _wrote
+          // counts what the engine parsed out of the message; _jimLastTurn.ok is
+          // what the database actually accepted. Reporting "Logged" off the
+          // first is how a refused write got announced as a success — caught on
+          // this exact seam before it shipped.
+          var _ok=true; try{ _ok=(window._jimLastTurn && window._jimLastTurn.ok!==false); }catch(e){}
+          var _rest=String(_jimReply||'').trim();
+          if(!_ok){
+            // THE FAILURE LEADS. Jim's reply opens with his own "Logged — X"
+            // line and only then admits the row did not land, which is the
+            // self-contradicting shape this whole thread has been about
+            // ("nothing was written" next to "every line landed"). His success
+            // claim is cut so the honest half is the first thing read.
+            var _fail=_rest;
+            try{ _fail=_fail.replace(/^\s*(?:logged|got it|done|added|saved)\b[^\n\.!]*[\.!]?\s*/i,'').trim(); }catch(e){}
+            if(!_fail) _fail='That did not save \u2014 tell me again and I will take it.';
+            return {status:'lost', line:_escHtml(_fail).replace(/\n/g,'<br>'), html:true, src:t};
+          }
+          var _head=_landed.length ? ('Logged \u2014 '+_landed.join(', ')+'.') : 'Logged.';
+          try{ _rest=_rest.replace(/^\s*(logged|got it|done)\b[^\n]*\n*/i,'').trim(); }catch(e){}
+          return {status:'done', line:_escHtml(_head)+(_rest?('<br><br>'+_escHtml(_rest).replace(/\n/g,'<br>')):''),
+                  html:true, src:t};
+        }
+        // Jim answered but wrote nothing AND asked something — that is a real
+        // logging conversation ("what were the macros?"), and it belongs to Jim,
+        // not to a second model turn that has never seen the food.
+        if(_jimReply && typeof _jimWantsReply==='function' && _jimWantsReply(_jimReply)){
+          return {status:'wait', line:_escHtml(String(_jimReply).trim()).replace(/\n/g,'<br>'), html:true, src:t};
+        }
+      }
+    }
+  }catch(e){ console.error('jt jim seam', e); }
   // The model, last. It can place a note, a number or a Working on — and a note
   // is tier one because it is one line on a profile he can see and delete,
   // while a number waits, because a wrong weight sits in a real history looking
@@ -26966,7 +27032,42 @@ function _jtIsQuestion(t){
   if(/\?\s*$/.test(s)) return true;
   return /^(who|whose|what|whats|what's|when|where|which|why|how|is|are|was|were|do|does|did|any|anyone|anything|show|tell)\b/i.test(s);
 }
+// ===== STOP MEANS STOP (Yusuf, ruling, 20 Aug) ===========================
+// "Stop", "wipe that", "drop it", "forget it", "never mind", "scratch that" —
+// any dismissal, at any moment, ends whatever is pending or in flight with ONE
+// quiet acknowledgement. What happened before: a dismissal only registered
+// while a confirmation was live (inside _jvPendingReply). With nothing pending
+// it fell through to the model, which asked what he meant, which he answered
+// by saying stop again — the loop he hit live.
+// \u2019 escaped, never a bare apostrophe inside a regex literal (the standing
+// check.sh landmine).
+var _JT_STOP_RE=new RegExp(
+  '^\\s*(?:ok(?:ay)?|alright|no|nope)?[\\s,\\.]*'
+  +'(?:stop|stop it|wipe that|wipe it|scratch that|scrap that|scrap it|drop it|drop that'
+  +'|forget it|forget that|never ?mind|leave it|cancel that|cancel it|abort|delete that|undo that)'
+  +'[\\s\\.!]*$', 'i');
+function _jtIsStop(t){ return _JT_STOP_RE.test(String(t||'').trim()); }
+// Everything a turn can be holding, cleared together. Anything added to the
+// pending family later belongs in here too — a dismissal that clears three of
+// four states is the loop again, one state smaller.
+function _jtStopAll(){
+  var had=false;
+  try{ if(window._jvPendingWrite){ had=true; window._jvPendingWrite=null; } }catch(e){}
+  try{ if(window._jvPendingAsk){ had=true; window._jvPendingAsk=null; } }catch(e){}
+  try{ if((window._jvPendingQueue||[]).length){ had=true; window._jvPendingQueue=[]; } }catch(e){}
+  try{ window._jvAbandonNote=null; }catch(e){}
+  try{ window._jimAwaiting=null; }catch(e){}
+  return had;
+}
 async function _jtTurn(t){
+  // A DISMISSAL IS ANSWERED BEFORE ANYTHING ELSE LOOKS AT IT. Above the pending
+  // reply, above the batch split, above every parser — so it can never be read
+  // as a fresh instruction, a client name, or a topic change.
+  if(_jtIsStop(t)){
+    var _had=_jtStopAll();
+    var _line=_had ? 'Dropped it. Nothing was written.' : 'Nothing in flight.';
+    return {html:_escHtml(_line), speak:_line};
+  }
   // 0. An answer to a held write is never a batch and is never re-parsed.
   try{
     var pr=await _jvPendingReply(t);
@@ -53834,6 +53935,25 @@ async function buildTrainerRosterContext(){
 // Wrapper kept for backwards-compat with the chat code path
 async function buildChatContext(){ return await buildDayContext(); }
 
+// ===== ASK LIKE A PERSON, ONCE (Yusuf, ruling, 20 Aug) ===================
+// The fallback is a CONVERSATION, not a form. What it was doing: asking for
+// numbers that were in the sentence he had just dictated, asking who "I" was,
+// and reciting its own machinery back at him. Every one of those is the same
+// failure — not reading the whole message before speaking.
+var JIM_ASK_RULES =
+  '\n\n=== WHEN SOMETHING IS MISSING ===\n'
+ +'READ THE WHOLE MESSAGE BEFORE YOU SAY ANYTHING. Use every number and every food in it.\n'
+ +'NEVER ask for something that is already in the message. If they said the calories, the calories are known. '
+ +'If they gave per-item macros, add them up yourself rather than asking for a total. '
+ +'A number that arrived mangled by dictation ("$775 calories", "775 cals") is still that number \u2014 read it, do not ask again.\n'
+ +'NEVER ask who "I", "me" or "my" refers to. It is the person typing. There is no other answer.\n'
+ +'ASK ONCE, FOR THE SMALLEST THING. If one figure is genuinely missing and you cannot estimate it honestly, '
+ +'log what you can and ask ONE short question for the rest \u2014 never a list of questions, never the same question twice.\n'
+ +'If you can estimate a common food confidently from your own knowledge, DO, and say it is an estimate. '
+ +'Only ask for a label when it is a specific packaged product you genuinely cannot know.\n'
+ +'NEVER recite machinery. No status categories, no "Done / Waiting / Could not place", no describing your own steps. '
+ +'One plain sentence about what you did, in a coach\u2019s voice.\n'
+ +'If they dismiss you \u2014 "stop", "drop it", "never mind" \u2014 that is the end of it. Acknowledge once and stop.\n';
 function buildCoachVoice(){
   // Time of day context
   var hr = new Date().getHours();
@@ -54636,10 +54756,20 @@ var _jimLastTurn = {wrote:0};
 // Beans" share every content word \u2014 they only differ in connectors and
 // punctuation, which a plain substring check treats as a mismatch.
 var _JIM_STOPWORDS={with:1,and:1,for:1,the:1,a:1,an:1,of:1,some:1,my:1,usual:1,plus:1,had:1,ate:1,just:1,i:1,again:1,today:1,this:1,morning:1,afternoon:1,evening:1,tonight:1,breakfast:1,lunch:1,dinner:1,snack:1};
+// A PLURAL IS THE SAME WORD, not a looser match. "2 protein donuts" failed to
+// match a saved "Protein Donut" because 'donuts' and 'donut' were counted as
+// different words and the all-of-it rule then fell one short. Normalising both
+// sides is not a relaxed threshold — every one of a candidate's words must
+// still appear — it just stops an -s deciding whether a food is the same food.
+// Only a trailing s, and only when what remains is still a real word (>=3),
+// so "gas"/"ga" and the like are untouched.
+function _jimDeplural(w){
+  return (w.length>3 && /[^s]s$/.test(w)) ? w.slice(0,-1) : w;
+}
 function _jimWordSet(s){
   return String(s||'').toLowerCase().replace(/[^a-z0-9\s]/g,' ').split(/\s+/).filter(function(w){
     return w.length>=3 && !_JIM_STOPWORDS[w];
-  });
+  }).map(_jimDeplural);
 }
 // What fraction of a candidate's own identifying words show up in her
 // message \u2014 not the other way around, so a longer message with extra
@@ -54673,16 +54803,65 @@ function _jimWordOverlap(rawWords, candidateName){
 // nothing and this falls through to the AI untouched \u2014 nothing here ever
 // half-logs. Gated to short, non-question text so "should I eat eggs" or a
 // multi-part day never takes this path at all.
+// STRIP THE SCAFFOLDING, NEVER THE THRESHOLD (Yusuf, ruling, 20 Aug).
+// "I ate 2 nutrition solutions protein donuts at 12pm today" matched NOTHING,
+// while the bare food phrase matched instantly — and the entry was sitting in
+// his saved foods the whole time. The matcher below is deliberately strict:
+// every one of a candidate's own words must appear, and the message may not run
+// more than three words longer than the candidate. That strictness is what
+// stopped "steamed broccoli" logging a saved "steamed carrots", and it is NOT
+// to be relaxed. The words that broke it were never food words at all — they
+// were the sentence's scaffolding: who ate it, when, and how many.
+// So the scaffolding comes off BEFORE matching and the threshold stays exactly
+// where it is. The quantity is kept separately, because it is a fact about the
+// portion and must come from the parser, never from a candidate's name.
+var _JIM_SCAFFOLD=[
+  // who and the verb
+  new RegExp('^\\s*(?:and\\s+)?(?:i|we)\\s+(?:just\\s+|already\\s+)?(?:ate|had|got|grabbed|made|took|did|finished|demolished|smashed)\\b','i'),
+  new RegExp('^\\s*(?:log|logging|add|put\\s+in|record)\\s+(?:me\\s+)?','i'),
+  new RegExp('\\b(?:for|to)\\s+(?:me|myself)\\b','ig'),
+  // when — the clock and the day
+  new RegExp('\\bat\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?\\b','ig'),
+  new RegExp('\\b(?:this\\s+)?(?:morning|afternoon|evening|tonight|today|yesterday|just now|earlier)\\b','ig'),
+  new RegExp('\\bfor\\s+(?:breakfast|lunch|dinner|a\\s+snack|snack)\\b','ig'),
+  // filler
+  new RegExp('\\b(?:please|thanks|thank you)\\b','ig')
+];
+function _jimStripScaffold(raw){
+  var t=String(raw||'');
+  _JIM_SCAFFOLD.forEach(function(re){ t=t.replace(re,' '); });
+  return t.replace(/\s+/g,' ').replace(/^[\s,\.]+|[\s,\.]+$/g,'').trim();
+}
+// A candidate's stored name may carry its own multiplier ("Protein Donut x2").
+// That is a label, not a portion: it matched "2 donuts" and returned 572 cal by
+// COINCIDENCE, and would have returned the same 572 for "3 donuts". The name is
+// matched and displayed without it; the number of them comes from _qtyParse.
+function _jimStripNameQty(n){
+  return String(n||'').replace(/\s*[x\u00d7]\s*\d+(?:\.\d+)?\s*$/i,'').trim();
+}
 function _jimQuickFoodMatch(raw){
-  var t=String(raw||'').trim();
-  if(!t || t.length>140) return null;
-  if(/[?]/.test(t)) return null;
-  if(/^(should|shouldn|what|why|when|where|do|does|did|can|could|is|are|will|how|log)\b/i.test(t)) return null;
+  var t0=String(raw||'').trim();
+  if(!t0 || t0.length>140) return null;
+  if(/[?]/.test(t0)) return null;
+  if(/^(should|shouldn|what|why|when|where|do|does|did|can|could|is|are|will|how)\b/i.test(t0)) return null;
+  // The portion is read off the ORIGINAL sentence, before anything is removed.
+  var _sc=_jimStripScaffold(t0);
+  var _q=(typeof _qtyParse==='function') ? _qtyParse(_sc) : {qty:1, name:_sc};
+  var _mult=(_q && +_q.qty>0) ? +_q.qty : 1;
+  // Match on the food phrase alone — scaffolding gone, quantity lifted off.
+  var t=(_q && _q.name) ? String(_q.name).trim() : _sc;
+  if(!t) return null;
+  function _scale(o){
+    if(!o || _mult===1) return o;
+    ['calories','protein','carbs','fat','sugar'].forEach(function(k){ o[k]=Math.round((+o[k]||0)*_mult); });
+    o.name=String(o.name||'')+' \u00d7'+_mult;
+    return o;
+  }
   var mLib=(typeof _mlibFindExact==='function') ? _mlibFindExact(t) : null;
   if(mLib && (+mLib.calories>0)){
-    return {name:String(mLib.name||'Saved meal'), emoji:'\ud83c\udf7d\ufe0f',
+    return _scale({name:_jimStripNameQty(mLib.name)||'Saved meal', emoji:'\ud83c\udf7d\ufe0f',
       calories:Math.round(+mLib.calories||0), protein:Math.round(+mLib.protein_g||0),
-      carbs:Math.round(+mLib.carbs_g||0), fat:Math.round(+mLib.fat_g||0), sugar:0, rating:'good'};
+      carbs:Math.round(+mLib.carbs_g||0), fat:Math.round(+mLib.fat_g||0), sugar:0, rating:'good'});
   }
   var rawWords=_jimWordSet(t);
   if(rawWords.length){
@@ -54697,24 +54876,40 @@ function _jimQuickFoodMatch(raw){
     // short saved snack shouldn't swallow a much longer, different sentence
     // just because it happens to share a few words. Propose-and-confirm means
     // a near-miss falls through to the AI, never logs on a guess.
+    // Matched against the name with any stored "x2" removed — otherwise the
+    // multiplier is a word the message has to contain, which is how a portion
+    // ended up being decided by a label instead of by what he said.
+    // THE UNIT ROW WINS A TIE. His saved foods carry both "Protein Donut" and
+    // "Protein Donut x2" — identical once the label's multiplier is stripped, so
+    // whichever happened to be newer won, and asking for ONE donut returned two
+    // donuts' macros. The row that represents a single serving is the one to
+    // scale from; a stored multiple is only used when nothing else matches.
+    function _isUnitRow(n){ return !/[x\u00d7]\s*\d+(?:\.\d+)?\s*$/i.test(String(n||'').trim()); }
     foodPool.forEach(function(f){
-      var nameWords=_jimWordSet(f.name);
+      var _n=_jimStripNameQty(f.name);
+      var nameWords=_jimWordSet(_n);
       if(!nameWords.length || rawWords.length>nameWords.length+3) return;
-      var s=_jimWordOverlap(rawWords, f.name);
-      if(s>=1 && s>bestScore){ bestScore=s; best={type:'food', item:f}; }
+      var s=_jimWordOverlap(rawWords, _n);
+      if(s<1) return;
+      var better = (s>bestScore) || (s===bestScore && best && !_isUnitRow(best.item.name) && _isUnitRow(f.name));
+      if(better){ bestScore=s; best={type:'food', item:f}; }
     });
     mealPool.forEach(function(m){
       if(!(+m.calories>0)) return;
-      var nameWords=_jimWordSet(m.name);
+      var _n2=_jimStripNameQty(m.name);
+      var nameWords=_jimWordSet(_n2);
       if(!nameWords.length || rawWords.length>nameWords.length+3) return;
-      var s=_jimWordOverlap(rawWords, m.name);
+      var s=_jimWordOverlap(rawWords, _n2);
       if(s>=1 && s>bestScore){ bestScore=s; best={type:'meal', item:m}; }
     });
     if(best){
       var it=best.item;
-      return (best.type==='meal')
-        ? {name:String(it.name||'Saved meal'), emoji:'\ud83c\udf7d\ufe0f', calories:Math.round(+it.calories||0), protein:Math.round(+it.protein_g||0), carbs:Math.round(+it.carbs_g||0), fat:Math.round(+it.fat_g||0), sugar:0, rating:'good'}
-        : {name:(typeof _tcase==='function'?_tcase(it.name):it.name), emoji:'\ud83c\udf7d\ufe0f', calories:Math.round(+it.calories||0), protein:Math.round(+it.protein||0), carbs:Math.round(+it.carbs||0), fat:Math.round(+it.fat||0), sugar:Math.round(+it.sugar||0), rating:(it.rating||'good')};
+      var _bn=_jimStripNameQty(it.name);
+      // The saved row is ONE of the thing. How many he had is _mult, from his
+      // own sentence — never from the row's label.
+      return _scale(best.type==='meal'
+        ? {name:String(_bn||'Saved meal'), emoji:'\ud83c\udf7d\ufe0f', calories:Math.round(+it.calories||0), protein:Math.round(+it.protein_g||0), carbs:Math.round(+it.carbs_g||0), fat:Math.round(+it.fat_g||0), sugar:0, rating:'good'}
+        : {name:(typeof _tcase==='function'?_tcase(_bn):_bn), emoji:'\ud83c\udf7d\ufe0f', calories:Math.round(+it.calories||0), protein:Math.round(+it.protein||0), carbs:Math.round(+it.carbs||0), fat:Math.round(+it.fat||0), sugar:Math.round(+it.sugar||0), rating:(it.rating||'good')});
     }
   }
   if(typeof _splitFoods!=='function' || typeof _matchHistory!=='function') return null;
@@ -54731,11 +54926,36 @@ function _jimQuickFoodMatch(raw){
     names.push((typeof _tcase==='function'?_tcase(hist.name):hist.name)+(mult!==1?(' \u00d7'+mult):''));
     if(hist.rating) rating=hist.rating;
   }
-  return {name:names.join(', '), emoji:'\ud83c\udf7d\ufe0f', calories:Math.round(cal), protein:Math.round(pro), carbs:Math.round(carb), fat:Math.round(fat), sugar:Math.round(sugar), rating:rating};
+  // Scaled here too. This pass does its OWN per-part quantity parsing, but it is
+  // reading a phrase whose leading quantity was already lifted off at the top of
+  // this function — so without this, "2 donuts" reached it as "donuts" and came
+  // back as one. Same portion rule as every other branch: from his sentence.
+  return _scale({name:names.join(', '), emoji:'\ud83c\udf7d\ufe0f', calories:Math.round(cal), protein:Math.round(pro), carbs:Math.round(carb), fat:Math.round(fat), sugar:Math.round(sugar), rating:rating});
+}
+// DICTATION MANGLES NUMBERS, AND A MANGLED NUMBER IS STILL A NUMBER HE SAID
+// (Yusuf, live, 20 Aug). He dictated a filet with "775 calories" and it arrived
+// as "$775 calories" — iOS hears a bare number before a unit and helpfully makes
+// it money. The parser then saw no calorie figure and asked him for the one he
+// had just given, which is the single most infuriating shape this can take.
+// Repaired ONLY where a currency symbol sits directly on a number that is
+// immediately followed by a nutrition word, so a real price ("$775 for the
+// month") is untouched. Same for the stray comma dictation puts in macros.
+var _JIM_UNIT='(?:cals?|calories|kcal|g|grams?|gr)\\b';
+function _jimNormalizeDictation(t){
+  var s=String(t||'');
+  try{
+    s=s.replace(new RegExp('[$\u00a3\u20ac](\\d[\\d,\\.]*)(\\s*)(?=' + _JIM_UNIT + ')','ig'), '$1$2');
+    // "$775 calories" with the unit a word later ("$775 total calories")
+    s=s.replace(new RegExp('[$\u00a3\u20ac](\\d[\\d,\\.]*)(\\s+\\w+\\s*)(?=' + _JIM_UNIT + ')','ig'), '$1$2');
+  }catch(e){ return String(t||''); }
+  return s;
 }
 async function jimTurn(text, photos, opts){
   opts = opts || {};
   photos = (photos||[]).filter(Boolean);
+  // Applied at the ENGINE, not at one door, so the Day bar and the rail both get
+  // it and neither can drift from the other.
+  try{ text=_jimNormalizeDictation(text); }catch(e){}
   _jimLastTurn = {wrote:0};
   var hasPhoto = photos.length>0;
   var photoSnapshot = photos[0] || null;
@@ -54764,6 +54984,8 @@ async function jimTurn(text, photos, opts){
   } else {
   var ctx=await buildChatContext();
   var systemBlock=buildCoachVoice();
+  // The fallback speaks like a capable assistant, not a form (Yusuf, ruling).
+  try{ systemBlock+=JIM_ASK_RULES; }catch(e){}
   if(ctx && ctx.length>0){
     systemBlock+='\n=== CLIENT DATA AVAILABLE ===\n'+ctx;
   }else{
@@ -55276,6 +55498,16 @@ async function jimTurn(text, photos, opts){
   if(_wtVerified>0) landed.push('your weigh-in');
   _jimLastTurn.landed=landed;
   _jimLastTurn.landedDay=todayDateStr;
+  // A REPLY IS NOT A WRITE, and neither is a MARKER. `wrote` and `landed` above
+  // both count what the model EMITTED, not what the database accepted — which is
+  // the right signal for "was this turn about logging at all" and the wrong one
+  // for "did it land". Callers that report an outcome need the second, so it is
+  // published here from the same verified counters this function already keeps.
+  // Without it the rail said "Logged — Protein Donut x2" over a refused write.
+  _jimLastTurn.shortfall = (_foodVerified < _foodExpected)
+    || (_wtVerified < _wtExpected)
+    || !!_stepsFailed;
+  _jimLastTurn.ok = !_jimLastTurn.shortfall;
   return reply;
 }
 
