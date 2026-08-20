@@ -45,6 +45,11 @@ const OPS = {
   // Not yet called from anywhere — banked, same as roster.
   clientProfile: (a) => `profiles?client_code=eq.${enc(a.code)}&limit=1`,
   clientNotes:   (a) => `client_notes?client_code=eq.${enc(a.code)}&select=id,note,logged_at,shared_at,shared_note&order=logged_at.desc&limit=300`,
+  // EVERY client's notes, for the board and the export. This exists because the
+  // private `note` column stopped being readable with the public key on 20 Aug —
+  // the trainer surfaces that used to read it directly now come through here, on
+  // the service role, where reading it is the whole point.
+  clientNotesAll: () => `client_notes?select=id,client_code,note,logged_at&order=logged_at.desc&limit=1500`,
   clientPlan:    (a) => `training_plans?client_code=eq.${enc(a.code)}&limit=1`,
   // Kept distinct from `contacts` below: this is "one client's contact timeline",
   // reached from a client deep-dive. `contacts` is "sync the whole log", reached from

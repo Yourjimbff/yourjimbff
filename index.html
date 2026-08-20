@@ -22823,7 +22823,8 @@ function jvToggleDeepJarvis(code,name){
 async function _jvLoadClientMemory(code){
   var el=document.getElementById('jvMemDossier'); if(!el) return;
   try{
-    var rows=await sbSelect('client_notes','client_code=eq.'+encodeURIComponent(code)+'&order=id.desc&limit=80')||[];
+    // Through the door: the private column is service-role only since 20 Aug.
+    var rows=await trainerOp('clientNotes',{code:code})||[];
     var mem=null; for(var i=0;i<rows.length;i++){ if((rows[i].note||'').indexOf('[MEMORY]')===0){ mem=rows[i]; break; } }
     var first=(((CLIENTS[code]&&CLIENTS[code].name)||'this client').split(' ')[0]).replace(/</g,'&lt;');
     if(!mem){ el.innerHTML='<div style="background:#191919;border:1px dashed #2d2d2d;border-radius:10px;padding:14px;font-size:12.5px;color:rgba(240,236,228,0.78);line-height:1.55;">No memory yet. Tap <b style="color:var(--gold);">Build from chats</b> and Jim reads every conversation with '+first+', drops the noise, and pulls out who they are, what matters, and where they\'re at.</div>'; return; }
@@ -22836,7 +22837,7 @@ async function jvBuildClientMemory(code){
   var btn=document.getElementById('jvMemBtn'); if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='Reading chats…'; }
   try{
     var msgs=await sbSelect('chat_messages','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.asc&limit=400')||[];
-    var notes=await sbSelect('client_notes','client_code=eq.'+encodeURIComponent(code)+'&order=id.asc&limit=80')||[];
+    var notes=(await trainerOp('clientNotes',{code:code})||[]).slice().reverse();
     var nm=(CLIENTS[code]&&CLIENTS[code].name)||'the client';
     var realNotes=notes.filter(function(n){return (n.note||'').indexOf('[MEMORY]')!==0;});
     if(msgs.length===0 && realNotes.length===0){
@@ -22865,7 +22866,7 @@ async function jvBuildClientMemory(code){
 async function _jvLoadClientNotes(code){
   var log=document.getElementById('jvClientJarvisLog'); if(!log) return;
   try{
-    var rows=await sbSelect('client_notes','client_code=eq.'+encodeURIComponent(code)+'&order=id.desc&limit=40')||[];
+    var rows=await trainerOp('clientNotes',{code:code})||[];
     rows=rows.filter(function(n){return (n.note||'').indexOf('[MEMORY]')!==0;});
     if(!rows.length){ log.innerHTML='<div style="font-size:11.5px;color:rgba(240,236,228,0.78);padding:4px 0;line-height:1.5;">Nothing here yet. Tell him about '+(((CLIENTS[code]&&CLIENTS[code].name)||'this client').split(' ')[0])+' above and it starts building.</div>'; return; }
     log.innerHTML='<div style="font-size:9.5px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:rgba(240,236,228,0.78);margin-bottom:7px;">Everything said about them</div>'+rows.map(function(n){
@@ -24176,7 +24177,7 @@ async function jvLoadTriage(silent){
       sbSelect('profiles','select=client_code,goal_weight&limit=2000'),
       // Coaching notes for the whole board in one go. Per-card this would be forty
       // requests to put one line on forty cards, and load already fires around 25.
-      sbSelect('client_notes','select=id,client_code,note,logged_at&order=logged_at.desc&limit=1500')
+      trainerOp('clientNotesAll',{})
     ]);
     // ANY read in this batch failing makes the WHOLE store untrustworthy, not
     // just the part that failed. A batch where weight_logs alone was refused
@@ -27543,7 +27544,7 @@ async function _jvExportGather(codes){
   var r=await Promise.all([
     sbSelect('food_logs','select=client_code,name,date_str,logged_at,calories,protein&client_code=in.'+inList+'&logged_at=gte.'+since+'&order=logged_at.desc&limit=4000'),
     sbSelect('workout_logs','select=client_code,title,date_str,logged_at&client_code=in.'+inList+'&logged_at=gte.'+since+'&order=logged_at.desc&limit=2000'),
-    sbSelect('client_notes','select=client_code,note,logged_at&client_code=in.'+inList+'&order=logged_at.desc&limit=1500'),
+    trainerOp('clientNotesAll',{}),
     // Through the trainer door: coach_notes goes dark to the public key once the lock
     // is on. Comes back roster-wide (the door's no-code shape) and filtered here to
     // just the codes this export asked for — same result the server-side `in.` filter
@@ -35428,9 +35429,14 @@ async function cnLoadCoaching(code){
   // select if it does. A column that isn't there 400s the WHOLE query and sbSelect
   // hands back [] — which would read as "nothing noted yet" on every card in the app.
   var cap = await _nsCap();
-  var cols = (cap===true) ? 'id,note,logged_at,shared_at,shared_note' : 'id,note,logged_at';
+  // `cols` is gone with the direct read — the door decides the select now. `cap`
+  // still matters: it is what decides whether the UI offers sharing at all.
   try{
-    var rows=await sbSelect('client_notes','select='+cols+'&client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=60')||[];
+    // Through the door since 20 Aug: the private column is service-role only.
+    // The `cols` capability dance above is now moot for the READ — the door
+    // returns the sharing columns whether or not this select would have named
+    // them — but `cap` still decides whether the UI offers sharing, so it stays.
+    var rows=await trainerOp('clientNotes',{code:code})||[];
     var mk=function(r){
       return {id:r.id, body:_cnBody(r.note), ts:r.logged_at,
               sharedAt:(cap===true?(r.shared_at||null):null),
