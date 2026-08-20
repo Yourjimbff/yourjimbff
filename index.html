@@ -53477,6 +53477,22 @@ var chatBusy=false;
 var chatShowingFullHistory = false;
 var chatFullHistoryCache = null; // cache full set so we don't re-fetch
 
+// THREE STATES, NEVER TWO. A read that failed and a thread nobody has written
+// in look identical once you assume success: both arrive as an empty array, and
+// the empty state then tells someone who has been talking to Jim for months
+// that there is nothing here. That is the founding law at its highest stakes on
+// this surface — the app never asserts what it has not established.
+//
+// Two separate bugs lived in the old version of this function:
+//   1. res.ok false assigned NOTHING, so a 4xx left the cache null and the
+//      thread empty with no error anywhere. Only a thrown error was caught, and
+//      a refused read does not throw.
+//   2. chatLoadedFor was stamped BEFORE the fetch, so once a load failed the
+//      early-return above made every later tab open a no-op. One bad read and
+//      the conversation was gone for the rest of the session with no way back.
+// The stamp now happens on success only, and a failure keeps whatever was
+// already on screen rather than replacing it with a lie.
+var chatHistoryState='idle';   // 'idle' | 'loading' | 'ok' | 'failed'
 async function loadChatHistory(){
   if(!cl)return;
   // Already loaded for this client? Just scroll and bail.
@@ -53484,10 +53500,12 @@ async function loadChatHistory(){
     setTimeout(scrollChatToBottom, 50);
     return;
   }
-  chatLoadedFor=cl.code;
   chatShowingFullHistory = false;
+  chatHistoryState='loading';
+  renderChatMessages();
   // Pull a wider window from the DB so we have both recent + full history available
   // 500 messages is plenty for active users — older lives in DB but isn't fetched
+  var ok=false;
   try{
     var url=SB_URL+'/rest/v1/chat_messages?client_code=eq.'+cl.code+'&order=logged_at.asc&limit=500';
     var res=await fetch(url,{method:'GET',headers:sbHeaders()});
@@ -53500,10 +53518,21 @@ async function loadChatHistory(){
         var t=m.logged_at?new Date(m.logged_at).getTime():0;
         return t>=cutoff;
       });
+      ok=true;
     }
-  }catch(e){ chatHistory=[]; chatFullHistoryCache=[]; }
+  }catch(e){ ok=false; }
+  chatHistoryState = ok ? 'ok' : 'failed';
+  if(ok) chatLoadedFor=cl.code;      // only a read that landed counts as loaded
   renderChatMessages();
   setTimeout(scrollChatToBottom, 50);
+}
+// The way back from a failed read. Clears the guard so the next call actually
+// refetches rather than early-returning on a stamp that should never have been
+// set in the first place.
+async function chatRetryHistory(){
+  if(!cl) return;
+  chatLoadedFor=null;
+  await loadChatHistory();
 }
 
 function toggleChatHistoryView(){
@@ -53521,11 +53550,73 @@ function toggleChatHistoryView(){
   renderChatMessages();
   setTimeout(scrollChatToBottom, 50);
 }
+// THE WAY BACK GOES TO THE DATABASE, NOT JUST TO THE CACHE. "View full history"
+// only ever revealed what the first read already held — 500 messages — and then
+// stopped with no way to say so. Past that the control walks real history a page
+// at a time, the same shape the Day timeline's "See earlier days" already uses,
+// and it is replaced by a plain marker once the beginning is actually reached
+// rather than sitting there as a control that does nothing.
+var chatEarliestReached=false;
+var chatPagingEarlier=false;
+async function chatLoadEarlier(){
+  if(chatPagingEarlier || !cl || !chatFullHistoryCache) return;
+  chatPagingEarlier=true;
+  renderChatMessages();
+  var ok=false;
+  try{
+    var oldest=chatFullHistoryCache.length ? chatFullHistoryCache[0].logged_at : null;
+    var q='client_code=eq.'+encodeURIComponent(cl.code)
+      + (oldest ? ('&logged_at=lt.'+encodeURIComponent(oldest)) : '')
+      + '&order=logged_at.desc&limit=200';
+    var res=await fetch(SB_URL+'/rest/v1/chat_messages?'+q,{method:'GET',headers:sbHeaders()});
+    if(res.ok){
+      var data=await res.json();
+      var older=(data||[]).map(function(m){return {role:m.role,content:m.content,logged_at:m.logged_at,has_image:!!m.has_image};}).reverse();
+      if(older.length) chatFullHistoryCache = older.concat(chatFullHistoryCache);
+      else chatEarliestReached=true;      // a read that LANDED and held nothing
+      ok=true;
+    }
+  }catch(e){ ok=false; }
+  chatPagingEarlier=false;
+  if(ok){
+    chatShowingFullHistory=true;
+    chatHistory=chatFullHistoryCache.slice();
+  }else{
+    // Never let a failed page read set chatEarliestReached — that would print
+    // "the start of your conversation" over a network error.
+    try{ showToast('Could not load earlier messages'); }catch(e){}
+  }
+  renderChatMessages();
+}
 
 function renderChatMessages(){
   var box=document.getElementById('chatScroll');
   if(!box)return;
-  var empty=document.getElementById('chatEmpty');
+  // A READ THAT FAILED IS NOT AN EMPTY THREAD, and it must not wear the empty
+  // thread's clothes. buildEmpty() is deliberately unreachable in both of these
+  // branches — it is an invitation to start talking, and showing it to someone
+  // whose conversation simply did not arrive is the app telling them something
+  // it does not know. It also burns a slot in the rotating prompt counter, so
+  // calling it while loading would quietly spend a line nobody read.
+  if(chatHistoryState==='loading' && !chatHistory.length){
+    box.innerHTML='<div class="chat-empty"><div class="jimWait">Getting your conversation…</div></div>';
+    return;
+  }
+  if(chatHistoryState==='failed' && !chatHistory.length){
+    // .chat-empty is a centring FLEX ROW, so the message and the retry have to
+    // be wrapped as one column child — dropped in as siblings they land side by
+    // side and the retry reads as a caption beside the sentence rather than the
+    // way out of it. Caught at 375px, in the pane.
+    box.innerHTML='<div class="chat-empty"><div style="display:flex;flex-direction:column;align-items:center;">'
+      +'<div class="jimWait">'
+      +'Your conversation did not load. That is a read that failed, not an empty thread '
+      +'\u2014 nothing you have said has gone anywhere.</div>'
+      +'<div id="chatHistRetry" style="margin-top:16px;color:var(--gold);font-size:14px;font-weight:800;'
+      +'cursor:pointer;padding:11px 18px;border:1.5px solid rgba(245,197,24,0.42);border-radius:12px;">Try again</div>'
+      +'</div></div>';
+    try{ document.getElementById('chatHistRetry').onclick=function(){ chatRetryHistory(); }; }catch(e){}
+    return;
+  }
   // Nothing said yet: show the top, not the bottom. Scrolling to the end of an
   // empty thread opened the page halfway down the greeting.
   if(chatHistory.length===0){
@@ -53535,19 +53626,49 @@ function renderChatMessages(){
     return;
   }
   box.innerHTML='';
+  // A FAILURE THAT ARRIVES ON TOP OF A THREAD still has to say so, rather than
+  // letting a stale window read as the whole conversation.
+  if(chatHistoryState==='failed'){
+    var warn=document.createElement('div');
+    warn.style.cssText='margin:8px auto 12px;max-width:88%;font-size:11.5px;line-height:1.5;color:var(--m2);text-align:center;';
+    warn.innerHTML='Some of this may be missing \u2014 the last read did not land. '
+      +'<span style="color:var(--gold);cursor:pointer;border-bottom:1px solid rgba(212,175,55,0.5);">Try again</span>';
+    try{ warn.querySelector('span').onclick=function(){ chatRetryHistory(); }; }catch(e){}
+    box.appendChild(warn);
+  }
 
-  // Show "View full history" / "Show recent only" button if there are older messages available
-  if(chatFullHistoryCache && chatFullHistoryCache.length > chatHistory.length || chatShowingFullHistory){
-    var hasMore = chatFullHistoryCache && chatFullHistoryCache.length > 0 && (chatFullHistoryCache.length !== chatHistory.length || chatShowingFullHistory);
-    if(hasMore){
+  // The way back, at the top of the thread. Three shapes and never a fourth:
+  // reveal what is cached, walk further back through the database, or say plainly
+  // that this is the beginning. A control that cannot do anything is replaced by
+  // a marker rather than left sitting there.
+  var _pillCss='background:transparent;border:1px solid var(--border);border-radius:20px;padding:7px 14px;font-size:11px;font-weight:600;color:var(--m2);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;letter-spacing:0.3px;margin:8px auto 4px;display:block;';
+  if(chatFullHistoryCache){
+    var _hidden = chatFullHistoryCache.length - chatHistory.length;
+    if(!chatShowingFullHistory && _hidden > 0){
       var toggleBtn = document.createElement('button');
       toggleBtn.onclick = toggleChatHistoryView;
-      toggleBtn.style.cssText = 'background:transparent;border:1px solid var(--border);border-radius:20px;padding:7px 14px;font-size:11px;font-weight:600;color:var(--m2);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;letter-spacing:0.3px;margin:8px auto 12px;display:block;';
-      var hiddenCount = chatFullHistoryCache.length - chatHistory.length;
-      toggleBtn.textContent = chatShowingFullHistory ?
-        '↑ Show recent only' :
-        '↑ View full history ('+hiddenCount+' older message'+(hiddenCount===1?'':'s')+')';
+      toggleBtn.style.cssText = _pillCss + 'margin-bottom:12px;';
+      toggleBtn.textContent = '\u2191 View full history ('+_hidden+' older message'+(_hidden===1?'':'s')+')';
       box.appendChild(toggleBtn);
+    } else if(chatShowingFullHistory){
+      if(chatEarliestReached){
+        var mark=document.createElement('div');
+        mark.style.cssText='margin:8px auto 4px;font-size:11.5px;color:var(--m2);text-align:center;opacity:0.8;';
+        mark.textContent='This is the start of your conversation';
+        box.appendChild(mark);
+      } else {
+        var moreBtn = document.createElement('button');
+        moreBtn.onclick = function(){ chatLoadEarlier(); };
+        moreBtn.disabled = chatPagingEarlier;
+        moreBtn.style.cssText = _pillCss + (chatPagingEarlier?'opacity:0.5;cursor:default;':'');
+        moreBtn.textContent = chatPagingEarlier ? 'Loading\u2026' : '\u2191 See earlier';
+        box.appendChild(moreBtn);
+      }
+      var backBtn = document.createElement('button');
+      backBtn.onclick = toggleChatHistoryView;
+      backBtn.style.cssText = _pillCss + 'border-color:transparent;margin-top:2px;margin-bottom:12px;';
+      backBtn.textContent = 'Show recent only';
+      box.appendChild(backBtn);
     }
   }
 
@@ -56353,6 +56474,10 @@ function resetChatState(){
   chatFullHistoryCache=null;
   chatShowingFullHistory=false;
   chatLoadedFor=null;
+  // The paging state belongs to whoever's thread this is — carrying one
+  // person's "start of your conversation" onto another's is the same class of
+  // bug _tlResetPaging exists to prevent on the timeline.
+  chatHistoryState='idle'; chatEarliestReached=false; chatPagingEarlier=false;
   chatPhotoData=null;
   chatBusy=false;
   if(chatListening && chatRecognition){ try{ chatRecognition.stop(); }catch(e){} }
