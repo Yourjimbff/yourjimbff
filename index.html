@@ -3407,7 +3407,12 @@ body.jv-deep-open #jvDeep,body.jv-deep-open #jvDeepScrim{display:block;}
 .plan-meal-name{font-size:13px;font-weight:700;color:var(--text);margin-bottom:4px;line-height:1.35;}
 .plan-meal-ing{font-size:12px;color:var(--m2);line-height:1.5;}
 .plan-meal-why{font-size:11px;color:var(--muted);font-style:italic;margin-top:5px;line-height:1.45;}
-.chat-ti{flex:1;background:var(--s2);border:1.5px solid var(--border);border-radius:20px;padding:9px 14px;font-size:14px;font-family:'Plus Jakarta Sans',sans-serif;color:var(--text);outline:none;resize:none;max-height:120px;min-height:38px;line-height:1.4;transition:border-color 0.15s;-webkit-text-fill-color:var(--text);}
+.chat-ti{flex:1;background:var(--s2);border:1.5px solid var(--border);border-radius:20px;padding:9px 14px;font-size:14px;font-family:'Plus Jakarta Sans',sans-serif;color:var(--text);outline:none;resize:none;overflow-y:hidden;min-height:38px;line-height:1.4;transition:border-color 0.15s, height .11s cubic-bezier(.4,0,.2,1);-webkit-text-fill-color:var(--text);}
+/* The 120px ceiling that used to sit on this line is gone for the reason given
+   on .jimIn and .jtType textarea: chatAutogrow owns the ceiling, and a CSS one
+   here silently overrode it. NOTE there is a SECOND .chat-ti rule earlier in
+   this file (line-height only) — this one is later and wins, which is exactly
+   how the old cap survived being looked for. */
 .chat-ti::placeholder{color:var(--muted);opacity:1;}
 .chat-ti::-webkit-input-placeholder{color:var(--muted);}
 .chat-ti:focus{border-color:var(--gold);}
@@ -4508,7 +4513,7 @@ body.jv-deep-open .jvBlock{margin-bottom:14px;}
 /* 16px, so iOS doesn't zoom the page when the field takes focus. Two lines at rest,
    because the rotating placeholders are whole sentences — at one line "Lunch? Tell
    me and I'll sort the numbers" was cut in half by the edge of the bar. */
-#tlJimDock .jimIn{flex:1 1 auto;min-height:48px;max-height:104px;font-size:16px;line-height:1.4;padding:6px 0 4px;}
+#tlJimDock .jimIn{flex:1 1 auto;min-height:48px;font-size:16px;line-height:1.4;padding:6px 0 4px;}
 #tlJimDock .jimIn::placeholder{color:var(--text);font-weight:700;opacity:1;}
 #tlJimDock .jimIcon{width:38px;height:38px;border-radius:12px;
   border:1px solid rgba(255,255,255,0.13);background:rgba(255,255,255,0.035);}
@@ -4927,9 +4932,17 @@ body.hasnav #tToday{padding-bottom:96px;}
 .jimRow:focus-within{border-color:rgba(245,197,24,0.62);
   box-shadow:0 0 0 1px rgba(245,197,24,0.16), 0 8px 22px rgba(0,0,0,0.42), inset 0 1px 0 rgba(245,197,24,0.16);}
 .jimBar.hasphoto .jimRow{border-color:rgba(245,197,24,0.5);}
-.jimIn{flex:1;min-width:0;background:transparent;border:none;outline:none;resize:none;overflow-y:auto;
+.jimIn{flex:1;min-width:0;background:transparent;border:none;outline:none;resize:none;overflow-y:hidden;
   font-family:'Plus Jakarta Sans',sans-serif;font-size:15px;line-height:1.45;color:#f0ece4;padding:8px 0;
-  max-height:132px;}   /* one line at rest, about five before it scrolls */
+  transition:height .11s cubic-bezier(.4,0,.2,1);}
+/* NO CSS max-height HERE, and none on #tlJimDock .jimIn either — jimGrow owns the
+   ceiling, the same way jtGrow owns the Jarvis composer's (see the note on
+   .jtType textarea, which was this exact bug). The 132px that used to sit on
+   this line, and the 104px on the dock, silently overrode the inline height:
+   dictate four sentences and the field stopped at five lines and scrolled his
+   own words out of sight however much screen was going spare.
+   overflow-y is hidden at rest for the same reason — the grow function turns it
+   on only once the text passes the cap, so a field that fits never shows a bar. */
 .jimRow{align-items:flex-end;}
 .jimIn::placeholder{color:rgba(240,236,228,0.78);}
 /* THE RULED LINE GETS ROOM, NOT A TRIM (Yusuf, 20 Aug). "Type or say any meal or
@@ -27037,6 +27050,29 @@ async function _jtSingle(t){
 // A one-line field makes a paragraph dump feel like typing through a keyhole,
 // and pouring notes in is exactly what this is for. Grows with the content —
 // typed or pasted — to a sane ceiling, then scrolls inside itself.
+// ONE CEILING FOR EVERY COMPOSER IN THIS APP. Jarvis's field and Jim's field are
+// the same control wearing different clothes, and two independently-maintained
+// numbers here is how one of them ends up at 132px while the other has the whole
+// screen. It reads the VISUAL viewport where one exists: on a phone the keyboard
+// halves the screen, and a field allowed a third of the FULL height would cover
+// the thread it is writing into.
+// scrollHeight counts padding but NEVER border, so height=scrollHeight under-sizes
+// a bordered field by exactly its border width. That was invisible while these
+// fields scrolled by default; with overflow hidden below the cap it starts eating
+// the bottom of the last line. .chat-ti has a 1.5px border and lost 3px to this.
+function _composerFit(el){
+  var extra=0;
+  try{
+    var cs=getComputedStyle(el);
+    if(cs.boxSizing==='border-box') extra=(parseFloat(cs.borderTopWidth)||0)+(parseFloat(cs.borderBottomWidth)||0);
+  }catch(e){}
+  return el.scrollHeight+extra;
+}
+function _composerMax(){
+  var vh=window.innerHeight;
+  try{ if(window.visualViewport && window.visualViewport.height) vh=window.visualViewport.height; }catch(e){}
+  return Math.max(140, Math.round(vh*0.32));
+}
 function jtGrow(el){
   try{
     if(!el) return;
@@ -27045,15 +27081,9 @@ function jtGrow(el){
     // be removed, not recalculated, or the field creeps up after every send.
     if(!String(el.value||'').length){ el.style.height=''; el.style.overflowY='hidden'; return; }
     el.style.height='auto';
-    // The ceiling reads the VISUAL viewport where one exists: on a phone the
-    // keyboard halves the screen, and a field allowed a third of the FULL
-    // height would cover the thread it is writing into.
-    var vh=window.innerHeight;
-    try{ if(window.visualViewport && window.visualViewport.height) vh=window.visualViewport.height; }catch(e){}
-    var max=Math.max(140, Math.round(vh*0.32));
-    var h=Math.min(el.scrollHeight, max);
-    el.style.height=h+'px';
-    el.style.overflowY=(el.scrollHeight>max)?'auto':'hidden';
+    var max=_composerMax(), sh=_composerFit(el);
+    el.style.height=Math.min(sh, max)+'px';
+    el.style.overflowY=(sh>max)?'auto':'hidden';
   }catch(e){}
 }
 // ENTER SENDS ON A REAL KEYBOARD, AND MAKES A NEWLINE ON A TOUCH ONE.
@@ -53621,11 +53651,31 @@ function chatAutogrow(el){
   // But without re-anchoring, the last messages slide up out of view, which
   // reads as the input covering them. If they were at the bottom before the
   // grow, keep them there.
+  if(!el) return;
   var sc=document.getElementById('chatScroll');
   var pinned=false;
   try{ pinned=!!sc && (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < 80; }catch(e){}
+  // EMPTY GOES BACK TO NOTHING — the inline height has to be removed, not
+  // recalculated, or the bar creeps taller after every send. Same contract as
+  // jtGrow and jimGrow, same ceiling (_composerMax): a third of the visual
+  // viewport, not a hard 120px that put four dictated sentences out of sight.
+  if(!String(el.value||'').length){
+    el.style.height=''; el.style.overflowY='hidden';
+    if(pinned){ try{ sc.scrollTop=sc.scrollHeight; }catch(e){} }
+    return;
+  }
+  var max=_composerMax();
+  // Measure with the height transition suppressed — height:auto is not
+  // animatable, so measuring live flashes the field shut on every keystroke.
+  var cur=el.style.height, prev=el.style.transition;
+  el.style.transition='none';
   el.style.height='auto';
-  el.style.height=Math.min(el.scrollHeight,120)+'px';
+  var sh=_composerFit(el);
+  el.style.height=cur;
+  void el.offsetHeight;
+  el.style.transition=prev;
+  el.style.height=Math.min(sh, max)+'px';
+  el.style.overflowY=(sh>max)?'auto':'hidden';
   if(pinned){ try{ sc.scrollTop=sc.scrollHeight; }catch(e){} }
 }
 
@@ -55892,9 +55942,11 @@ async function sendChatMessage(){
 
   // Clear the box immediately. iOS dictation can fire a late final result that
   // re-populates the field AFTER we clear it, so re-clear across a short window.
-  input.value=''; input.style.height='auto'; input.blur();
+  // chatAutogrow, not height='auto' — the reset lives in one place now and it
+  // also puts overflow-y back, which a field left scrolling past the cap needs.
+  input.value=''; chatAutogrow(input); input.blur();
   (function(el){ var n=0; var iv=setInterval(function(){
-    if(el.value!==''){ el.value=''; el.style.height='auto'; }
+    if(el.value!==''){ el.value=''; chatAutogrow(el); }
     if(++n>=8) clearInterval(iv); }, 80); })(input);
 
   var photos=(chatPhotos&&chatPhotos.length)?chatPhotos.slice():(chatPhotoData?[chatPhotoData]:[]);
@@ -61487,10 +61539,41 @@ async function jimReadShot(dataUrl, ds) {
 
 // The bar is the size of what you're saying. One line for "four eggs", five for
 // a whole day, then it scrolls rather than swallowing the screen.
+// HIS WORDS STAY ON SCREEN WHILE HE SPEAKS. Dictation is the way this field is
+// actually used, and it was fixed at five lines: sentence four pushed sentence
+// one out of sight, into a field with no reason to be that small. Same contract
+// as jtGrow now — one ceiling (_composerMax), empty goes back to nothing, and
+// the field only scrolls inside itself once it has genuinely run out of room.
 function jimGrow(el){
   try{
+    if(!el) return;
+    // EMPTY GOES BACK TO NOTHING — see jtGrow. Height must be REMOVED, not
+    // recalculated, or the bar creeps taller after every send.
+    if(!String(el.value||'').length){
+      el.style.height=''; el.style.overflowY='hidden';
+      try{ _jimFabDodge(); }catch(e){}
+      return;
+    }
+    var max=_composerMax();
+    // MEASURE WITHOUT ANIMATING THE MEASUREMENT. height:auto is not animatable,
+    // so measuring with the transition live flashes the field shut and back
+    // open on every keystroke. Suppress it, read the content height, put the
+    // old height back, flush the layout, then let the transition run to the
+    // new one — which is the only step that should be visible.
+    var cur=el.style.height, prev=el.style.transition;
+    el.style.transition='none';
     el.style.height='auto';
-    el.style.height=Math.min(el.scrollHeight, 132)+'px';
+    var sh=_composerFit(el);
+    el.style.height=cur;
+    void el.offsetHeight;
+    el.style.transition=prev;
+    el.style.height=Math.min(sh, max)+'px';
+    el.style.overflowY=(sh>max)?'auto':'hidden';
+    // The bar just changed shape under two floating controls. _jimFabDodge is
+    // driven by scroll and resize, and typing is neither — without this the fab
+    // sits on the grown field for up to a second, which is the exact collision
+    // the dodge exists to prevent.
+    try{ _jimFabDodge(); }catch(e){}
   }catch(e){}
 }
 
