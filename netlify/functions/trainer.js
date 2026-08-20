@@ -2203,6 +2203,193 @@ function currentWeekKey() {
   return d.toISOString().slice(0, 10);
 }
 
+// ---- clientPlanSetWeek ------------------------------------------------------
+// A trainer writing a NAMED client's whole training week in one upsert.
+//
+// WHY THIS EXISTS AT ALL. Nothing in the app can write another person's plan.
+// Every in-page training_plans writer builds its body around cl.code — the
+// signed-in account — so pointing any of them at a client would land the edit
+// on YUSUF'S OWN ROW, silently, while appearing to work. clientPlanSetDay was
+// the only cross-client writer and it refuses outright when the client has no
+// saved plan row, which is most of them: a client's week is derived from their
+// profile until somebody saves one. That refusal is why it was never usable
+// and never called.
+//
+// So this op does the thing that was actually blocked: seven days, one write,
+// and it CREATES the row when there is none instead of refusing.
+//
+// All seven days are REQUIRED, deliberately. The single-day op's own comment
+// explains the trap: a row containing one day and six holes resolves to
+// nothing on every other day, which is worse than the derived week it
+// replaced. Requiring the full week makes a hole impossible to write.
+//
+// The client_code is an ARGUMENT here, which the my* ops never allow — so the
+// gate is different in kind: this is dispatched after the is_trainer check,
+// and a client session cannot reach it at all. The argument names WHO is
+// edited; the verified session decides WHETHER anyone may be.
+function planWeekDays(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('bad_arg');
+  const out = {};
+  PLAN_DAYS.forEach((d) => {
+    // Accept any casing the caller used, so "mon" and "Mon" both land on Mon.
+    const key = Object.keys(v).find((k) => k.trim().toLowerCase() === d.toLowerCase());
+    if (key == null) throw new Error('missing_day:' + d);
+    const spec = v[key] || {};
+    const type = str(spec.type, 60);
+    if (!type) throw new Error('bad_arg');
+    let ex = planExercises(spec.exercises == null ? [] : spec.exercises);
+    if (ex == null) throw new Error('bad_arg');
+    if (type.toLowerCase() === 'rest') ex = [];
+    out[d] = { type: type, ex: ex };
+  });
+  return out;
+}
+// Two stored days are the same day when their values match, never when their
+// stringified JSON matches — JSONB hands keys back in whatever order Postgres
+// chose, and comparing blobs would report a false mismatch on a correct write.
+function planDaySame(landed, want) {
+  if (!landed || String(landed.type) !== String(want.type)) return false;
+  const a = Array.isArray(landed.ex) ? landed.ex : [];
+  if (a.length !== want.ex.length) return false;
+  return a.every((e, i) => String(e.n) === String(want.ex[i].n)
+    && (+e.s || 0) === (+want.ex[i].s || 0)
+    && String(e.r || '') === String(want.ex[i].r || ''));
+}
+
+async function handleClientPlanSetWeek(URL, SERVICE, args) {
+  let code, days;
+  try {
+    code = enc_raw(args.client_code);
+    days = planWeekDays(args.days);
+  } catch (e) {
+    const m = String(e && e.message || '');
+    if (m.indexOf('missing_day:') === 0) {
+      return json(400, { error: 'missing_day', day: m.split(':')[1],
+        detail: 'all seven days are required - a partial week would leave holes that resolve to nothing' });
+    }
+    return json(400, { error: 'bad_arg' });
+  }
+
+  try {
+    // The target must be a real client. A plan written against a code with no
+    // row is an orphan nothing renders and nothing cleans up.
+    const who = await readClientRow(URL, SERVICE, code);
+    if (!who) return json(404, { error: 'no_such_client', client_code: code });
+
+    const rRes = await fetch(`${URL}/rest/v1/training_plans?client_code=eq.${encodeURIComponent(code)}`
+      + '&select=id,client_code,plan,week_overrides,name,weeks&order=id.asc&limit=5', { headers: svc(SERVICE) });
+    if (!rRes.ok) return json(502, { error: 'query_failed', op: 'clientPlanSetWeek' });
+    const rows = await rRes.json() || [];
+    if (rows.length > 1) return json(409, { error: 'ambiguous_plan_rows', count: rows.length });
+    const row = rows[0] || null;
+    const creating = !row;
+
+    let plan = row ? row.plan : null;
+    if (typeof plan === 'string') { try { plan = JSON.parse(plan); } catch (e) { plan = null; } }
+    if (row && (!plan || typeof plan !== 'object')) return json(409, { error: 'plan_unreadable' });
+    plan = plan || {};
+
+    let ovs = row ? row.week_overrides : null;
+    if (typeof ovs === 'string') { try { ovs = JSON.parse(ovs); } catch (e) { ovs = {}; } }
+    ovs = ovs && typeof ovs === 'object' ? ovs : {};
+
+    // Anything on the row that is not one of the seven weekday keys is kept
+    // untouched — the '@YYYY-MM-DD' one-off day keys above all, which are a
+    // specific date's session and have nothing to do with the template week.
+    const oneOffs = Object.keys(plan).filter((k) => k.charAt(0) === '@');
+    const otherKeys = Object.keys(plan).filter((k) => PLAN_DAYS.indexOf(k) === -1);
+    const weekKey = currentWeekKey();
+    const shadowedNow = ovs[weekKey] ? Object.keys(ovs[weekKey]).filter((d) => PLAN_DAYS.indexOf(d) > -1) : [];
+
+    const before = {};
+    PLAN_DAYS.forEach((d) => { before[d] = plan[d] ? plan[d].type : null; });
+
+    if (args.dry_run === true) {
+      return json(200, [{
+        preview: true, client_code: code, client_name: who.name || code,
+        creating_new_row: creating,
+        before: before,
+        after: PLAN_DAYS.reduce((o, d) => { o[d] = days[d].type; return o; }, {}),
+        preserved_one_off_keys: oneOffs,
+        week_key: weekKey, shadowed_now: shadowedNow,
+      }]);
+    }
+
+    const nextPlan = Object.assign({}, plan);
+    PLAN_DAYS.forEach((d) => { nextPlan[d] = days[d]; });
+
+    const body = { client_code: code, plan: nextPlan, updated_at: new Date().toISOString() };
+    // Only supplied on CREATE. Overwriting an existing plan's name or length
+    // because a caller happened to pass one would be an edit nobody asked for.
+    if (creating) {
+      body.name = args.name != null ? str(args.name, 200) : '';
+      body.weeks = args.weeks != null ? posInt(args.weeks, 52) : 4;
+    }
+    let clearedOverride = null;
+    if (args.clear_week_overrides === true && ovs[weekKey]) {
+      const nextOvs = Object.assign({}, ovs);
+      delete nextOvs[weekKey];
+      body.week_overrides = nextOvs;
+      clearedOverride = weekKey;
+    }
+    // NEVER created_at — the column means "when this plan was first written",
+    // and every training_plans writer in the app leaves it out for that reason.
+    const wRes = await fetch(`${URL}/rest/v1/training_plans?on_conflict=client_code`, {
+      method: 'POST',
+      headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json',
+        Prefer: 'return=representation,resolution=merge-duplicates' }),
+      body: JSON.stringify(body),
+    });
+    const wText = await wRes.text();
+    if (!wRes.ok) {
+      console.error('trainer: clientPlanSetWeek write failed', wRes.status, wText.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'clientPlanSetWeek', detail: wText.slice(0, 200) });
+    }
+
+    // THE READ-BACK IS THE PROOF, for all seven, compared value by value. A
+    // partial write says exactly which days landed rather than reporting a
+    // whole week that is not there.
+    const vRes = await fetch(`${URL}/rest/v1/training_plans?client_code=eq.${encodeURIComponent(code)}`
+      + '&select=plan,week_overrides,name,weeks&order=id.asc&limit=5', { headers: svc(SERVICE) });
+    if (!vRes.ok) return json(502, { error: 'unconfirmed', op: 'clientPlanSetWeek' });
+    const vRows = await vRes.json() || [];
+    if (vRows.length !== 1) return json(502, { error: 'unconfirmed', op: 'clientPlanSetWeek', rows_found: vRows.length });
+    let stored = vRows[0].plan;
+    if (typeof stored === 'string') { try { stored = JSON.parse(stored); } catch (e) { stored = null; } }
+    if (!stored || typeof stored !== 'object') return json(502, { error: 'unconfirmed', op: 'clientPlanSetWeek' });
+
+    const landed = [], missed = [];
+    PLAN_DAYS.forEach((d) => { (planDaySame(stored[d], days[d]) ? landed : missed).push(d); });
+    const keptOneOffs = oneOffs.filter((k) => stored[k] !== undefined);
+    if (missed.length) {
+      return json(502, {
+        error: 'partial_write', op: 'clientPlanSetWeek', client_code: code,
+        days_landed: landed, days_missing: missed,
+        read_back: missed.reduce((o, d) => { o[d] = stored[d] || null; return o; }, {}),
+      });
+    }
+    if (keptOneOffs.length !== oneOffs.length) {
+      return json(502, { error: 'one_off_keys_lost', op: 'clientPlanSetWeek',
+        expected: oneOffs, still_present: keptOneOffs });
+    }
+
+    return json(200, [{
+      client_code: code, client_name: who.name || code,
+      created_new_row: creating,
+      days_landed: landed,
+      week: PLAN_DAYS.reduce((o, d) => { o[d] = { type: stored[d].type, exercises: (stored[d].ex || []).length }; return o; }, {}),
+      preserved_one_off_keys: keptOneOffs,
+      other_keys_preserved: otherKeys.filter((k) => stored[k] !== undefined),
+      week_key: weekKey, cleared_week_overrides: clearedOverride,
+      shadowed_now: args.clear_week_overrides === true ? [] : shadowedNow,
+      confirmed_by_read_back: true,
+    }]);
+  } catch (e) {
+    console.error('trainer: clientPlanSetWeek threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'clientPlanSetWeek' });
+  }
+}
+
 async function handleClientPlanSetDay(URL, SERVICE, args) {
   let code, day, type, ex;
   try {
@@ -2460,6 +2647,7 @@ exports.handler = async (event) => {
   if (op === 'callNoteDelete') return handleCallNoteDelete(URL, SERVICE, args, null);
   if (op === 'moveVipOccurrence') return handleMoveVipOccurrence(URL, SERVICE, args);
   if (op === 'clientPlanSetDay') return handleClientPlanSetDay(URL, SERVICE, args);
+  if (op === 'clientPlanSetWeek') return handleClientPlanSetWeek(URL, SERVICE, args);
 
   // READ. Unchanged from before writes existed, plus one recovery: a select=
   // naming a column that doesn't exist yet (see badColumn above) gets that
