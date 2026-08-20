@@ -6038,6 +6038,9 @@ body.hasnav #tToday{padding-bottom:96px;}
          they simply stack in this order. -->
     <div class="prgGrid">
       <div>
+        <!-- The week she RECEIVES leads the page: it is a record that arrived,
+             so it sits above the live numbers rather than beneath them. -->
+        <div id="prgWeekHost"></div>
         <div id="prgStatusHost"></div>
         <div id="pgCards"><div id="pgWeightCard"></div></div>
       </div>
@@ -55326,6 +55329,174 @@ async function _chatSave(row){
   }
   return false;
 }
+// ===== THE WEEKLY REPORT =================================================
+// The thing a client RECEIVES rather than visits (Yusuf, ruled). Her week
+// rendered as one quiet page: the rhythm, the training that happened, her
+// weigh-ins, her own check-in words, and one line from Yusuf at the top when he
+// has written one.
+//
+// TITLED BY ITS DATES ("Week of Aug 11 - Aug 17"), ruled: it reads as a record
+// rather than a feature name, and it avoids colliding with the Program tab's
+// "Your week", which is the training split and another lane's to rename.
+//
+// IT ARRIVES WHETHER OR NOT HE WROTE A LINE, ruled: holding it would turn his
+// busy Sunday into her missing artifact. The no-line week is not rendered as a
+// week with something missing — there is no empty slot where his words go, no
+// placeholder, no "no note this week". It simply starts at her own week, which
+// stands on its own.
+//
+// NO SHAME MATH, and this is the highest-stakes place that law applies. A light
+// week renders SHORTER and says nothing about being light: no counts, no
+// streaks, no grades, no comparison to last week. Quiet is allowed to mean quiet.
+//
+// WHICH IS EXACTLY WHY THE READS ARE ALL-OR-NOTHING. Everywhere else in this app
+// a failed read costs a missing card. Here it would render a nearly-empty page
+// that tells someone they did almost nothing all week — the app lying in the
+// most hurtful direction it has available. If ANY of the four reads does not
+// complete, no week is drawn at all and it says so with a retry.
+var _wkData=null, _wkBusy=false;
+function _wkRange(){
+  // The most recently COMPLETED week, Monday to Sunday. Today's week is still
+  // being lived and is not a record yet.
+  var now=new Date(); now.setHours(12,0,0,0);
+  var back=(now.getDay()+6)%7;                 // Monday = 0
+  var thisMon=new Date(now); thisMon.setDate(now.getDate()-back);
+  var start=new Date(thisMon); start.setDate(thisMon.getDate()-7);
+  var end=new Date(start); end.setDate(start.getDate()+6);
+  return {start:start, end:end};
+}
+function _wkTitle(r){
+  var mo=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var a=mo[r.start.getMonth()]+' '+r.start.getDate();
+  var b=(r.start.getMonth()===r.end.getMonth())
+        ? String(r.end.getDate())
+        : (mo[r.end.getMonth()]+' '+r.end.getDate());
+  return 'Week of '+a+' - '+b;
+}
+function _wkDays(r){
+  var out=[];
+  for(var i=0;i<7;i++){ var d=new Date(r.start); d.setDate(r.start.getDate()+i); out.push(_tlDateStr(d)); }
+  return out;
+}
+async function wkLoad(force){
+  if(_wkBusy) return _wkData;
+  if(_wkData && !force) return _wkData;
+  if(!cl || !cl.code) return null;
+  _wkBusy=true;
+  var r=_wkRange(), days=_wkDays(r);
+  var cc='client_code=eq.'+encodeURIComponent(cl.code);
+  // The failure counter is the only witness: sbSelect answers [] for a refused
+  // read exactly as it does for a genuinely quiet week, and those two must never
+  // render the same on this page.
+  var mark=null; try{ mark=_sbFailMark(); }catch(e){}
+  var res=[];
+  try{
+    res=await Promise.all([
+      sbSelect('workout_logs', cc+'&select=title,description,exercises,date_str,logged_at&order=logged_at.desc&limit=120'),
+      sbSelect('food_logs',    cc+'&select=date_str&order=logged_at.desc&limit=400'),
+      sbSelect('weight_logs',  cc+'&select=weight,logged_at&order=logged_at.desc&limit=60'),
+      sbSelect('journal_entries', cc+'&select=body,date_str,logged_at&order=logged_at.desc&limit=60')
+    ]);
+  }catch(e){ _wkBusy=false; _wkData={ok:false}; return _wkData; }
+  var failed=false; try{ failed=_sbFailedSince(mark); }catch(e){}
+  if(failed){ _wkBusy=false; _wkData={ok:false}; return _wkData; }
+  // Yusuf's line is NOT part of the all-or-nothing set. If it cannot be read the
+  // week is still her record — it just renders the way a week he wrote nothing
+  // for renders, which is complete.
+  var line=null;
+  try{
+    var url=SB_URL+'/rest/v1/client_notes?select=shared_note,shared_at&'+cc
+      +'&shared_at=not.is.null&order=shared_at.desc&limit=10';
+    var lr=await fetch(url,{method:'GET',headers:sbHeaders()});
+    if(lr && lr.ok){
+      var rows=await lr.json();
+      var lo=r.start.getTime(), hi=r.end.getTime()+86400000;
+      (rows||[]).forEach(function(n){
+        if(line) return;
+        var t=Date.parse(n.shared_at); if(isNaN(t)) return;
+        if(t>=lo && t<hi && String(n.shared_note||'').trim()) line=String(n.shared_note).trim();
+      });
+    }
+  }catch(e){}
+  var inWeek={}; days.forEach(function(d){ inWeek[d]=true; });
+  var lit={}, sessions=[], weighs=[], words=[];
+  (res[0]||[]).forEach(function(w){ if(w&&inWeek[w.date_str]){ lit[w.date_str]=1; sessions.push(w); } });
+  (res[1]||[]).forEach(function(f){ if(f&&inWeek[f.date_str]) lit[f.date_str]=1; });
+  (res[2]||[]).forEach(function(g){
+    if(!g||g.weight==null) return;
+    var d=null; try{ d=_tlDateStr(new Date(g.logged_at)); }catch(e){}
+    if(d&&inWeek[d]){ lit[d]=1; weighs.push({d:d, w:+g.weight}); }
+  });
+  (res[3]||[]).forEach(function(j){ if(j&&inWeek[j.date_str]&&String(j.body||'').trim()){ lit[j.date_str]=1; words.push(j); } });
+  sessions.reverse(); weighs.reverse(); words.reverse();
+  _wkData={ok:true, range:r, days:days, lit:lit, sessions:sessions, weighs:weighs, words:words, line:line};
+  _wkBusy=false;
+  return _wkData;
+}
+function wkHtml(){
+  var d=_wkData;
+  if(!d) return '';
+  if(!d.ok){
+    return '<div class="ovCard" style="margin-bottom:var(--prgGap);">'
+      +'<div class="ovEy">Your week</div>'
+      +'<div style="font-size:13.5px;color:var(--m2);line-height:1.6;margin-top:6px;">'
+      +'Your week didn\u2019t load. That is a read that failed, not a quiet week. '
+      +'<span onclick="wkRetry()" style="color:var(--gold);font-weight:800;cursor:pointer;">Try again</span></div>'
+    +'</div>';
+  }
+  var D=['M','T','W','T','F','S','S'];
+  var marks=d.days.map(function(ds,i){
+    var on=!!d.lit[ds];
+    return '<div style="flex:1;text-align:center;">'
+      +'<div style="height:26px;border-radius:7px;background:'
+        +(on?'linear-gradient(180deg,#e8bd1c,#c9a227)':'#242424')+';"></div>'
+      +'<div style="font-size:10px;font-weight:800;color:rgba(240,236,228,0.5);margin-top:6px;">'+D[i]+'</div>'
+    +'</div>';
+  }).join('');
+  var h='<div class="ovCard" style="margin-bottom:var(--prgGap);">'
+    +'<div class="ovEy">'+_escHtml(_wkTitle(d.range))+'</div>';
+  // His line leads when it exists. When it does not, nothing marks its absence.
+  if(d.line){
+    h+='<div style="font-size:15px;line-height:1.6;color:var(--text);margin:10px 0 4px;">'+_escHtml(d.line)+'</div>';
+  }
+  h+='<div style="display:flex;gap:6px;margin-top:16px;">'+marks+'</div>';
+  if(d.sessions.length){
+    h+='<div class="ovMeta"><b>Training</b><br>'
+      + d.sessions.map(function(w){
+          var day=''; try{ day=new Date(w.date_str).toLocaleDateString('en-US',{weekday:'long'}); }catch(e){}
+          var n=0; try{ n=(Array.isArray(w.exercises)?w.exercises.length:0); }catch(e){}
+          return _escHtml(day)+' \u00b7 '+_escHtml(String(w.title||'Session'))
+                 +(n>1?(' \u00b7 '+n+' exercises'):'');
+        }).join('<br>')
+    +'</div>';
+  }
+  if(d.weighs.length){
+    var first=d.weighs[0], last=d.weighs[d.weighs.length-1];
+    var unit=''; try{ unit=wUnit(); }catch(e){ unit='lbs'; }
+    h+='<div class="ovMeta"><b>Weigh-ins</b><br>'
+      + d.weighs.map(function(x){ return _escHtml(x.d.replace(/,\s*\d{4}$/,''))+' \u00b7 '+(Math.round(x.w*10)/10)+' '+unit; }).join('<br>')
+    +'</div>';
+  }
+  if(d.words.length){
+    h+='<div class="ovMeta"><b>In your words</b><br>'
+      + d.words.map(function(j){
+          return '<span style="color:var(--text);">\u201c'+_escHtml(String(j.body).trim())+'\u201d</span>';
+        }).join('<br><br>')
+    +'</div>';
+  }
+  h+='</div>';
+  return h;
+}
+function wkRetry(){
+  var host=document.getElementById('prgWeekHost'); if(host) host.innerHTML='';
+  _wkData=null;
+  wkRender(true);
+}
+async function wkRender(force){
+  var host=document.getElementById('prgWeekHost'); if(!host || !cl) return;
+  try{ await wkLoad(force); }catch(e){ _wkData={ok:false}; }
+  try{ host.innerHTML=wkHtml(); }catch(e){}
+}
 // ===== JIM'S OVERLAY =====================================================
 // Borrows the real chat nodes and gives them back. _jimOvlHome remembers where
 // they came from so dismissing puts them back in their own order rather than
@@ -55459,6 +55630,9 @@ async function renderProgressTab(){
   try{ await renderWeightJourney(); }catch(e){}
   try{ await loadProgressPhotos(); }catch(e){}
   try{ renderProgressCards(); }catch(e){}
+  // Last, and awaited by nothing above it: the week is a record that arrived,
+  // not a number the rest of this page depends on.
+  try{ wkRender(); }catch(e){}
 }
 function renderProgressCards(){
   try{ renderWeightCard(); }catch(e){}
