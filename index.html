@@ -723,6 +723,17 @@ body.jv-ovl-on #jvOvlWrap{display:flex;align-items:flex-end;justify-content:cent
 .wkCal span{display:block;font-size:9.5px;color:rgba(240,236,228,0.62);overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap;}
 .wkCal.dragging{opacity:0.85;z-index:9;box-shadow:0 6px 18px rgba(0,0,0,0.5);}
+/* DRAGGING A COMPLETED SESSION (see _logDragStart). The ghost is fixed and
+   pointer-events:none so it can cross columns without being clipped by
+   .wkBody's overflow, and so the column underneath is what answers the
+   hit-test rather than the thing being dragged. */
+.wkBlockLogDrag{cursor:grab;touch-action:none;}
+.wkBlockLogDrag:active{cursor:grabbing;}
+.wkLogDragSrc{opacity:0.3;}
+.wkLogGhost{position:fixed !important;left:0;top:0;z-index:9999;pointer-events:none;
+  opacity:0.95;box-shadow:0 10px 26px rgba(0,0,0,0.55);cursor:grabbing;}
+.wkDayCol.wkDropTarget{background:rgba(245,197,24,0.07);
+  box-shadow:inset 0 0 0 1px rgba(245,197,24,0.30);}
 .wkCal.done{opacity:0.55;}
 .wkCal.done b{text-decoration:line-through;}
 /* One accent per kind — training gold-adjacent (close kin to an
@@ -17920,9 +17931,132 @@ function _wkLoggedBlockHtml(e, dayStartMs){
   var pos=_wkTopH(e.ts, e.ts+mins*60000, dayStartMs);
   var lbl=_escHtml(_wkLoggedLabel(e));
   var sub=(e.k==='wo') ? 'Completed' : (_wkFoodMacroLine(e.d)||_jvSpokenTime(new Date(e.ts)));
-  return '<div class="wkBlock wkBlockLog wkBlockLog-'+e.k+'" style="top:'+pos.top.toFixed(1)+'px;height:'+pos.h.toFixed(1)+'px;"'
-    + ' onclick="event.stopPropagation();'+_wkLoggedClick(e)+'"'
+  // A COMPLETED SESSION MOVES TO WHEN IT ACTUALLY HAPPENED (Yusuf, ruling,
+  // 20 Aug — his Leg Day sat on Thursday because that is when he dictated
+  // it; he trained Wednesday). Workouts only for now: a meal's grid
+  // position is driven by eat_time while its row also carries logged_at,
+  // and food_logs.logged_at is a naive timestamp rather than a tz-aware
+  // one, so a cross-day meal move needs its own decision about which of
+  // the two is authoritative. Dragging a workout needs no such call —
+  // logged_at IS its position — so that is what ships here, and a meal
+  // keeps its existing click-to-open behaviour rather than a drag that
+  // would quietly write the wrong column.
+  var drag=(e.k==='wo');
+  if(drag){ window._wkLogIndex[e.k+':'+e.id]=e; }
+  return '<div class="wkBlock wkBlockLog wkBlockLog-'+e.k+(drag?' wkBlockLogDrag':'')+'" style="top:'+pos.top.toFixed(1)+'px;height:'+pos.h.toFixed(1)+'px;"'
+    + (drag ? (' onmousedown="_logDragStart(event,\''+e.k+':'+e.id+'\')" ontouchstart="_logDragStart(event,\''+e.k+':'+e.id+'\')"') : '')
+    + ' onclick="event.stopPropagation();'+(drag?'if(window._wkLogDragMoved)return;':'')+_wkLoggedClick(e)+'"'
     + ' title="'+lbl+(sub?(' — '+_escHtml(sub)):'')+'"><b>'+lbl+'</b><span>'+_escHtml(sub)+'</span></div>';
+}
+// ===== DRAGGING A COMPLETED SESSION TO WHEN IT HAPPENED =================
+// Day AND time, not just time — which is what makes this the real answer to
+// the backfill gap without going anywhere near jimTurn: log it whenever you
+// remember, then put it where it belongs. jimTurn still writes to the
+// current moment; this makes that harmless rather than wrong.
+//
+// A FLOATING GHOST, not the block itself. .wkBody is overflow-x:hidden and
+// each block is absolutely positioned inside its own column, so a block
+// dragged sideways is simply clipped at the column edge — it cannot be seen
+// crossing to another day. A fixed-position clone following the pointer has
+// no such ceiling, and leaves the original in place (dimmed) so the move
+// reads as "from here to there" rather than as a disappearance.
+window._wkLogIndex={};
+window._wkLogDrag=null;
+window._wkLogDragMoved=false;
+function _logDragStart(ev, key){
+  if(ev.button!=null && ev.button!==0) return;
+  var el=ev.currentTarget;
+  var p=ev.touches ? ev.touches[0] : ev;
+  var r=el.getBoundingClientRect();
+  window._wkLogDrag={key:key, el:el, startX:p.clientX, startY:p.clientY,
+    grabDX:p.clientX-r.left, grabDY:p.clientY-r.top, w:r.width, h:r.height, ghost:null};
+  window._wkLogDragMoved=false;
+  document.addEventListener('mousemove', _logDragMove);
+  document.addEventListener('touchmove', _logDragMove, {passive:false});
+  document.addEventListener('mouseup', _logDragEnd);
+  document.addEventListener('touchend', _logDragEnd);
+}
+function _logDragMove(ev){
+  var d=window._wkLogDrag; if(!d) return;
+  var p=ev.touches ? ev.touches[0] : ev;
+  if(!window._wkLogDragMoved){
+    if(Math.abs(p.clientX-d.startX)<=4 && Math.abs(p.clientY-d.startY)<=4) return;
+    window._wkLogDragMoved=true;
+    d.el.classList.add('wkLogDragSrc');
+    var g=d.el.cloneNode(true);
+    g.className=d.el.className.replace('wkLogDragSrc','')+' wkLogGhost';
+    g.style.width=d.w+'px'; g.style.height=d.h+'px';
+    g.style.top='0px'; g.style.left='0px';
+    document.body.appendChild(g);
+    d.ghost=g;
+  }
+  if(ev.cancelable) ev.preventDefault();
+  d.ghost.style.transform='translate('+(p.clientX-d.grabDX)+'px,'+(p.clientY-d.grabDY)+'px)';
+  var col=_logColAt(p.clientX, p.clientY);
+  Array.prototype.forEach.call(document.querySelectorAll('.wkDayCol.wkDropTarget'),
+    function(c){ c.classList.remove('wkDropTarget'); });
+  if(col) col.classList.add('wkDropTarget');
+}
+// The column under the pointer. The ghost is pointer-events:none, so it
+// never hit-tests as itself and the real column beneath is what answers.
+function _logColAt(x, y){
+  var els=document.elementsFromPoint(x, y)||[];
+  for(var i=0;i<els.length;i++){
+    var c=els[i].closest ? els[i].closest('.wkDayCol') : null;
+    if(c && c.getAttribute('data-daystart')) return c;
+  }
+  return null;
+}
+async function _logDragEnd(ev){
+  document.removeEventListener('mousemove', _logDragMove);
+  document.removeEventListener('touchmove', _logDragMove);
+  document.removeEventListener('mouseup', _logDragEnd);
+  document.removeEventListener('touchend', _logDragEnd);
+  var d=window._wkLogDrag; window._wkLogDrag=null;
+  if(!d) return;
+  d.el.classList.remove('wkLogDragSrc');
+  if(d.ghost && d.ghost.parentNode) d.ghost.parentNode.removeChild(d.ghost);
+  Array.prototype.forEach.call(document.querySelectorAll('.wkDayCol.wkDropTarget'),
+    function(c){ c.classList.remove('wkDropTarget'); });
+  if(!window._wkLogDragMoved){ setTimeout(function(){ window._wkLogDragMoved=false; },0); return; }
+  var p=(ev.changedTouches&&ev.changedTouches[0]) || (ev.touches&&ev.touches[0]) || ev;
+  var col=_logColAt(p.clientX, p.clientY);
+  var entry=window._wkLogIndex[d.key];
+  // Dropped outside the grid entirely — nothing moves, and the block is
+  // already back where it started.
+  if(col && entry){
+    var dayStart=parseInt(col.getAttribute('data-daystart'),10);
+    var topPx=(p.clientY-d.grabDY)-col.getBoundingClientRect().top;
+    var mins=Math.round(_wkMinsFromPx(topPx)/15)*15;
+    mins=Math.max(WK_START_HOUR*60, Math.min(WK_END_HOUR*60-15, mins));
+    await _wkLogCommitMove(entry, dayStart, mins);
+  }
+  setTimeout(function(){ window._wkLogDragMoved=false; }, 250);
+}
+// VERIFIED BY READING THE ROW BACK, never by the response alone (the
+// standing rule for every write in this file). A move that did not land
+// says so and leaves the calendar showing the truth after the refresh.
+async function _wkLogCommitMove(entry, dayStart, mins){
+  var when=new Date(dayStart+mins*60000);
+  var iso=when.toISOString();
+  var ds=_tlDateStr(new Date(dayStart));
+  var ok=false;
+  try{
+    var r=await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+encodeURIComponent(entry.id),
+      {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal','Content-Type':'application/json'}),
+       body:JSON.stringify({logged_at:iso, date_str:ds})});
+    ok=!!(r && r.ok);
+  }catch(e){ console.error('log move', e); }
+  if(ok){
+    var back=await sbSelect('workout_logs','select=id,logged_at,date_str&id=eq.'+encodeURIComponent(entry.id)+'&limit=1');
+    var row=(back&&back[0])||null;
+    ok=!!(row && Math.abs(_lrTs(row)-when.getTime())<60000);
+  }
+  try{
+    showToast(ok ? ('Moved to '+when.toLocaleDateString('en-US',{weekday:'long'})+' '+_jvSpokenTime(when))
+                 : 'Could not move that — it is still where it was.');
+  }catch(e){}
+  try{ schRefresh(); }catch(e){}
 }
 function _wkGridHtml(wk){
   var ws=wk.weekStart, todayKey=_schTodayTs();
@@ -17967,6 +18101,7 @@ function _wkGridHtml(wk){
   var warn = gaps.length ? ('<div class="wkFail">'+gaps.map(_escHtml).join('<br>')+'</div>') : '';
   var progRow=_wkProgChipRow(ws, wk.prog, wk.logged||[]);
   window._wkApptIndex={};
+  window._wkLogIndex={};
 
   var hourLines='', hourLbls='';
   for(var h=WK_START_HOUR; h<=WK_END_HOUR; h++) hourLines+='<div class="wkHourLine" style="top:'+((h-WK_START_HOUR)*WK_HOUR_PX)+'px;"></div>';
@@ -18007,7 +18142,7 @@ function _wkGridHtml(wk){
     // CLICK AN EMPTY SLOT TO ADD — the column itself is the hit target;
     // wkColClick bails out if the click actually landed on a child (a
     // block or mark already handled it) or just came off a drag.
-    cols+='<div class="wkDayCol" style="height:'+((WK_END_HOUR-WK_START_HOUR)*WK_HOUR_PX)+'px;" onclick="wkColClick(event,'+dayStart+')">'
+    cols+='<div class="wkDayCol" data-daystart="'+dayStart+'" style="height:'+((WK_END_HOUR-WK_START_HOUR)*WK_HOUR_PX)+'px;" onclick="wkColClick(event,'+dayStart+')">'
       +hourLines+blocks+calBlocks+logBlocks+marks+nowLine+'</div>';
   }
   // FRAMED, NOT SCROLLED PAST (Yusuf, ruling, 20 Aug — "no scrolling past
@@ -19535,6 +19670,7 @@ async function _mwPanelSave(){
 function _mwGridHtml(wk){
   var ws=wk.weekStart, todayKey=_schTodayTs(), desktop=_mwIsDesktop();
   window._mwApptIndex={};
+  window._wkLogIndex={};
   var occs=(wk.cb && wk.cb.blocks && wk.cb.blocks.length) ? _cbExpand(wk.cb, ws) : [];
   _wkIndexOccs(occs);
   var hourLines='', hourLbls='';
@@ -19558,7 +19694,7 @@ function _mwGridHtml(wk){
     var isToday=(dayStart===todayKey);
     var nowLine=(isToday && nowMs>=dayStart && nowMs<dayStart+86400000)
       ? '<div class="wkNowLine" id="wkNowLine" style="top:'+_wkPxFromMins((nowMs-dayStart)/60000).toFixed(1)+'px;"></div>' : '';
-    return '<div class="wkDayCol" style="height:'+((WK_END_HOUR-WK_START_HOUR)*WK_HOUR_PX)+'px;" onclick="wkColClick(event,'+dayStart+')">'
+    return '<div class="wkDayCol" data-daystart="'+dayStart+'" style="height:'+((WK_END_HOUR-WK_START_HOUR)*WK_HOUR_PX)+'px;" onclick="wkColClick(event,'+dayStart+')">'
       +hourLines+blocks+calBlocks+logBlocks+marks+nowLine+'</div>';
   }
 
