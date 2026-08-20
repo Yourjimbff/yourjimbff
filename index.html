@@ -55467,21 +55467,32 @@ async function wkLoad(force){
   _wkBusy=true;
   var r=_wkRange(), days=_wkDays(r);
   var cc='client_code=eq.'+encodeURIComponent(cl.code);
-  // The failure counter is the only witness: sbSelect answers [] for a refused
-  // read exactly as it does for a genuinely quiet week, and those two must never
-  // render the same on this page.
-  var mark=null; try{ mark=_sbFailMark(); }catch(e){}
-  var res=[];
-  try{
-    res=await Promise.all([
-      sbSelect('workout_logs', cc+'&select=title,description,exercises,date_str,logged_at&order=logged_at.desc&limit=120'),
-      sbSelect('food_logs',    cc+'&select=date_str&order=logged_at.desc&limit=400'),
-      sbSelect('weight_logs',  cc+'&select=weight,logged_at&order=logged_at.desc&limit=60'),
-      sbSelect('journal_entries', cc+'&select=body,date_str,logged_at&order=logged_at.desc&limit=60')
-    ]);
-  }catch(e){ _wkBusy=false; _wkData={ok:false}; return _wkData; }
-  var failed=false; try{ failed=_sbFailedSince(mark); }catch(e){}
-  if(failed){ _wkBusy=false; _wkData={ok:false}; return _wkData; }
+  // EACH READ ANSWERS FOR ITSELF. This used to ask the global failure counter
+  // whether anything had failed recently, and that was wrong in a way that made
+  // the whole feature useless the moment something ELSE broke: the counter is
+  // app-wide, so an unrelated trainer read failing on another surface made this
+  // page announce it could not load her week — while its own four reads had all
+  // come back fine. Seen live the day client_notes was locked down.
+  // These are raw fetches with their own status checks, the same shape
+  // _ciFetchEntries uses and for the same reason: sbSelect cannot tell a refused
+  // read from an empty one, and on this page those two must never look alike.
+  async function rd(path){
+    try{
+      var res=await fetch(SB_URL+'/rest/v1/'+path,{method:'GET',headers:sbHeaders()});
+      if(!res || !res.ok) return null;                 // null = this read failed
+      var j=await res.json();
+      return Array.isArray(j) ? j : null;
+    }catch(e){ return null; }
+  }
+  var res=await Promise.all([
+    rd('workout_logs?'+cc+'&select=title,description,exercises,date_str,logged_at&order=logged_at.desc&limit=120'),
+    rd('food_logs?'+cc+'&select=date_str&order=logged_at.desc&limit=400'),
+    rd('weight_logs?'+cc+'&select=weight,logged_at&order=logged_at.desc&limit=60'),
+    rd('journal_entries?'+cc+'&select=body,date_str,logged_at&order=logged_at.desc&limit=60')
+  ]);
+  if(res.some(function(x){ return x===null; })){
+    _wkBusy=false; _wkData={ok:false}; return _wkData;
+  }
   // Yusuf's line is NOT part of the all-or-nothing set. If it cannot be read the
   // week is still her record — it just renders the way a week he wrote nothing
   // for renders, which is complete.
