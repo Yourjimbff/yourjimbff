@@ -11128,6 +11128,66 @@ function _jvNormAmPm(t){
 function _jvDepossess(s){
   return String(s||'').replace(/[’']s\b/ig,'').replace(/s[’']\B|[’']\B/g,'');
 }
+// ===== THE RESOLVER KNOWS WHO IS SPEAKING (Yusuf, ruling, 20 Aug) ========
+// FOUR FAILURES IN ONE EVENING, ONE ROOT: this path had no concept of its own
+// user. His own sign-in code came back "I don't have a client with that name or
+// code on the roster." His own NAME resolved to Yusuf A [yusufa1] — a DIFFERENT,
+// REAL PERSON — and it kept drafting onto that client's record after being told
+// "I am the main trainer", because an apology is not a resolver. That was one
+// polite yes away from a wrong-client write, three times in one evening.
+//
+// The signed-in account resolves to SELF before any roster lookup, always:
+// first person, his code, his name, his first name. Self is never a client, and
+// a client who happens to share his first name can never be reached through it.
+function _jvSelfCode(){
+  try{ return (window.cl && cl.code) ? String(cl.code).trim().toLowerCase() : ''; }catch(e){ return ''; }
+}
+// His code, his full name and his first name — everything he might say meaning
+// himself. First name only when it is long enough to be distinctive, the same
+// bar the roster matcher uses.
+function _jvSelfNames(){
+  var out=[], c=_jvSelfCode(); if(!c) return out;
+  out.push(c);
+  try{
+    var nm=String(((typeof CLIENTS!=='undefined'&&CLIENTS[c])||{}).name||'').trim().toLowerCase();
+    if(nm){
+      out.push(nm);
+      var f=nm.split(/\s+/)[0];
+      if(f && f.length>=3 && out.indexOf(f)<0) out.push(f);
+    }
+  }catch(e){}
+  return out;
+}
+// Does this phrase NAME him? Exact against code/name/first name, so "Yusuf A"
+// (the client) is not swallowed by "Yusuf" (him) — a longer phrase that is not
+// an exact self name falls through to the roster where it belongs.
+function _jvNamesSelf(phrase){
+  var q=String(phrase||'').trim().toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ');
+  if(!q) return false;
+  var names=_jvSelfNames();
+  for(var i=0;i<names.length;i++){ if(q===names[i]) return true; }
+  // A code said out loud arrives with spaces and caps ("the goat" for thegoat).
+  var flat=q.replace(/\s+/g,'');
+  return names.indexOf(flat)>-1;
+}
+// \u2019 not a bare apostrophe: a lone apostrophe inside a REGEX LITERAL reads as
+// an opening quote to check.sh's stripper and blanks everything after it (the
+// standing landmine). new RegExp with the escape sidesteps it entirely.
+var _JV_FIRST_PERSON_RE=new RegExp('\\b(i|me|my|mine|myself|i\u2019m|im|ive|i\u2019ve)\\b','i');
+// Is this SENTENCE about him? First person anywhere, or his own name/code said
+// as the subject. This is the gate every client write is checked against.
+function _jvSaysSelf(text){
+  var t=String(text||'');
+  if(!t.trim()) return false;
+  if(_JV_FIRST_PERSON_RE.test(t)) return true;
+  var names=_jvSelfNames();
+  for(var i=0;i<names.length;i++){
+    var n=names[i]; if(!n || n.length<3) continue;
+    var re=new RegExp('\\b'+n.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b','i');
+    if(re.test(t)) return true;
+  }
+  return false;
+}
 function _jvResolveClient(name){
   var raw=String(name||'').trim();
   var hits=_jvResolveOne(raw);
@@ -17017,6 +17077,23 @@ async function _jvAssistantContext(opts){
       .map(function(c){ return (CLIENTS[c].name||c)+' ['+c+']'; }).join(', ');
   }catch(e){}
   if(roster) out+='\nROSTER (name [code]): '+roster+'.';
+  // WHO IS SPEAKING. The roster above deliberately excludes him, which left the
+  // model with no concept of its own user at all — so his own name matched the
+  // nearest roster entry and it kept drafting onto that client's record even
+  // after being told "I am the main trainer" (Yusuf, live, 20 Aug). Naming him
+  // here is the prompt half; _jvSaysSelf is the backstop that does not depend
+  // on the model reading it.
+  try{
+    var _meC=(window.cl&&cl.code)?cl.code:'';
+    var _meN=_meC?(((CLIENTS[_meC]||{}).name)||_meC):'';
+    if(_meC){
+      out+='\n\nWHO YOU ARE TALKING TO: '+_meN+' ['+_meC+'] — the trainer, the owner of this app, the account you are inside. '
+        +'He is NOT on the roster above and never can be. When he says "I", "me", "my", his own name ('+_meN+') or his own code ('+_meC+'), he means HIMSELF. '
+        +'Never resolve any of those to a client. If a client on the roster happens to share his name, they are a DIFFERENT PERSON — '
+        +'a bare "'+_meN+'" is him, and only the client\u2019s full roster name is that client. '
+        +'If he tells you who he is, believe him and act on it; do not apologise and then resolve him to a client anyway.';
+    }
+  }catch(e){}
   // The snapshot, or an honest word about why there isn't one. Never silence —
   // silence is what made it ask Yusuf to paste his own board back to it.
   var st=(typeof _jvTriageState==='function')?_jvTriageState():'never';
@@ -17193,7 +17270,20 @@ var _JV_PENDING_MS=10*60*1000;      // a confirmation older than this is not a c
 // so "yesterday", "Tuesday", "last Friday", "the 18th" and "two days ago"
 // all land without a second date parser existing anywhere.
 function _jvBuildPendingLog(lg, code, name, said){
-  if(!lg || !code || !CLIENTS[code]) return null;
+  if(!lg) return null;
+  // THE SPEAKER IS NEVER A CLIENT — the hard backstop, not the prompt line.
+  // A sentence about HIM that the model resolved onto a roster client was one
+  // confirmation away from writing his numbers into a real person's history,
+  // three times in one evening (Yusuf, live, 20 Aug). This runs whatever the
+  // model decided: if the sentence is first person, or names his own code or
+  // name, the target is his own account and nothing else can be agreed to.
+  try{
+    if(_jvSaysSelf(said)){
+      var _self=_jvSelfCode();
+      if(_self && CLIENTS[_self]){ code=_self; name=(CLIENTS[_self]||{}).name||_self; }
+    }
+  }catch(e){}
+  if(!code || !CLIENTS[code]) return null;
   var parts=[], payload={};
   // The model may name the day itself; failing that, read it off his own
   // sentence. Either way it is resolved here, once, and carried on the
@@ -17668,7 +17758,19 @@ function _jvStripBookWords(t){
 // people in one sentence is ambiguity and stops, which is the honest answer to
 // "book Kelly and Blake" — that is two bookings and he should say which.
 function _jvFindClientIn(text){
-  var stripped=_jvStripBookWords(text);
+  // HIS OWN NAME AND CODE ARE NOT A CLIENT. Stripped before the roster is even
+  // consulted, so "book me and Blake" can never resolve him onto the roster and
+  // a bare "Yusuf" can never land on the client who shares that first name.
+  var _selfF='';
+  try{ _selfF=_jvSelfCode(); }catch(e){}
+  var _pre=String(text||'');
+  try{
+    _jvSelfNames().forEach(function(n){
+      if(!n || n.length<3) return;
+      _pre=_pre.replace(new RegExp('\\b'+n.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b','ig'),' ');
+    });
+  }catch(e){}
+  var stripped=_jvStripBookWords(_pre);
   var toks=stripped.split(/\s+/).filter(Boolean)
     .filter(function(w){ return !/^(and|&|the|a|an|for|to|with|at|on|wants?|would|like|likes|please|us|him|her|them|is|was)$/i.test(w); });
   if(!toks.length) return {hits:[], tried:stripped};
@@ -26121,12 +26223,30 @@ async function _jtRunItem(t, capture, ctx){
   // reason: one line on a profile he can see and delete.
   if(mo.working_on){
     var _wop=null;
+    // Same speaker gate as the log and the note — code/name may already have
+    // been retargeted to self above, but a working-on can arrive on its own.
+    try{
+      if(_jvSaysSelf(t)){
+        var _selfW=_jvSelfCode();
+        if(_selfW && CLIENTS[_selfW]){ code=_selfW; name=(CLIENTS[_selfW]||{}).name||_selfW; }
+      }
+    }catch(e){}
     try{ _wop=_jvBuildPendingWorkingOn(String(mo.working_on), code, name); }catch(e){}
     if(_wop){
       var _woLine=await _jvFireNow(_wop);
       return {status:(/^\s*✓/.test(_woLine)?'done':'lost'), modelled:true, line:_escHtml(_woLine), html:true, src:t};
     }
   }
+  // THE SPEAKER IS NEVER A CLIENT — same backstop as the log write above, on
+  // the path that actually did the damage. "Noted on Yusuf A: Yusuf is a client
+  // on the roster" was THIS insert, onto a real person's record, after the model
+  // resolved him to the roster client who shares his first name.
+  try{
+    if(_jvSaysSelf(t)){
+      var _selfN=_jvSelfCode();
+      if(_selfN && CLIENTS[_selfN]){ code=_selfN; name=(CLIENTS[_selfN]||{}).name||_selfN; }
+    }
+  }catch(e){}
   if(code && CLIENTS[code] && mo.note){
     var saved=null;
     try{ saved=await sbInsertReturning('client_notes',{client_code:code, note:'[Jarvis] '+mo.note, logged_at:new Date().toISOString()}, 'id'); }catch(e){}
@@ -26666,19 +26786,39 @@ async function _jtBatch(items){
   var done=_jtGroup(res,'done'), wait=_jtGroup(res,'wait'), lost=_jtGroup(res,'lost'), talk=_jtGroup(res,'talk');
   var html='';
   if(talk.length) html+='<div>'+talk.map(function(x){ return x.line; }).join('<br><br>')+'</div>';
-  html+='<div class="jtSum">'
-    + _jtHeadHtml('done','Done', done, 'Nothing was written.')
-    + _jtHeadHtml('wait','Waiting on you', wait, 'Nothing is waiting.')
-    // THE ONE THAT MUST NEVER BE MISSING. An absent heading reads as "there was
-    // nothing"; an empty one present reads as "I checked". That difference is
-    // the whole difference between a batch he can trust and one he re-checks by
-    // hand, so all three are always drawn.
-    + _jtHeadHtml('lost','Could not place', lost, 'Nothing was left over — every line landed somewhere.')
-    + '</div>';
+  // THE LEDGER IS FOR A DICTATION, NOT FOR A SENTENCE (Yusuf, ruling, 20 Aug).
+  // "Done / Waiting on you / Could not place" recited after a two-item turn is
+  // machinery talking, not an assistant — and "Waiting on you: nothing" is
+  // saying nothing, out loud, every time. It appears when a turn carried THREE
+  // OR MORE items, or when something genuinely could not be placed. Otherwise
+  // the results speak for themselves, one plain line each.
+  //
+  // This does NOT weaken the earlier ruling the deleted comment protected — that
+  // an absent "Could not place" heading reads as "there was nothing". Anything
+  // lost still brings the whole ledger back, headings and all; the only turns
+  // that lose it are the small ones where every line landed and there was
+  // nothing to reconcile.
+  var _useLedger = (items.length>=3) || lost.length>0;
+  if(_useLedger){
+    html+='<div class="jtSum">'
+      + _jtHeadHtml('done','Done', done, 'Nothing was written.')
+      + _jtHeadHtml('wait','Waiting on you', wait, 'Nothing is waiting.')
+      + _jtHeadHtml('lost','Could not place', lost, 'Nothing was left over — every line landed somewhere.')
+      + '</div>';
+  } else {
+    var _plain=done.concat(wait).map(function(x){ return x.line; }).filter(Boolean);
+    if(_plain.length) html+='<div>'+_plain.join('<br><br>')+'</div>';
+  }
   var promoted=_jvQueueNext('First');
   if(promoted) html+='<div style="margin-top:12px;">'+_escHtml(promoted.trim()).replace(/\n/g,'<br>')+'</div>';
-  var spoken=done.length+' done, '+wait.length+' waiting on you, '+lost.length+' I could not place.'
-           + (promoted ? (' '+promoted.replace(/^\s*\n*(First|Next)\s+—\s*/,'')) : '');
+  // Spoken follows the same rule — the count recital is the ledger out loud.
+  var spoken;
+  if(_useLedger){
+    spoken=done.length+' done, '+wait.length+' waiting on you, '+lost.length+' I could not place.';
+  } else {
+    spoken=done.concat(wait).map(function(x){ return _jvSpeakStrip?_jvSpeakStrip(x.line):x.line; }).filter(Boolean).join(' ');
+  }
+  spoken+=(promoted ? (' '+promoted.replace(/^\s*\n*(First|Next)\s+—\s*/,'')) : '');
   return {html:html, speak:spoken};
 }
 // THE THREAD HAS THE CONTEXT; THE MODEL WAS NEVER GIVEN IT (Yusuf, live, 19
