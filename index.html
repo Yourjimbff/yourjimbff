@@ -1134,14 +1134,36 @@ body.jv-ovl-on #jvOvlWrap{display:flex;align-items:flex-end;justify-content:cent
    untouched and the wrap arithmetic the comment describes still holds
    exactly — this only stops the calendar from leaving 42px of the wall
    empty on his screen. */
-.wkWrap{flex:1 1 720px;min-width:0;}
-#wkDetailCol{position:relative;overflow:hidden;flex:0 1 200px;min-width:180px;max-width:280px;
+/* THE PLANNER NEEDS REAL WIDTH, AND THE SUM IS LOAD-BEARING. flex-wrap
+   decides off flex-BASIS before any shrinking, so 720+320+16 would wrap the
+   column below the grid however compressible either side is. 600+320+16 is
+   936 - the same total that has been proven to fit #jvWall's 956px at
+   1440x840 with the rail at its default. The calendar gives up the width;
+   that is the trade the ruling asks for. */
+.wkWrap{flex:1 1 600px;min-width:0;}
+#wkDetailCol{position:relative;overflow-y:auto;overflow-x:hidden;flex:0 0 320px;min-width:320px;max-width:320px;
   border-radius:20px;padding:22px 20px;font-size:12.5px;color:#f0ece4;
   background:radial-gradient(120% 140% at 0% 0%,#202020 0%,#161616 52%,#121212 100%);
   border:1px solid #292929;box-shadow:0 10px 28px rgba(0,0,0,0.35);}
 #wkDetailCol::after{content:'';position:absolute;inset:0;pointer-events:none;
   background:radial-gradient(90% 120% at 100% 0%,rgba(245,197,24,0.06),transparent 58%);}
 #wkDetailCol:empty{display:none;}
+/* THE PLANNER COLUMN's own chrome. The day cards inside are the program
+   builder's, untouched - only the frame around them is new. */
+.plHead{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:12px;}
+.plEy{font-size:10px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:var(--gold);}
+.plWho{font-size:17px;font-weight:800;color:#f0ece4;letter-spacing:-0.3px;margin-top:2px;}
+.plBtn{flex:0 0 auto;background:var(--gold);color:var(--onaccent);border:0;border-radius:10px;
+  padding:8px 12px;font-size:11.5px;font-weight:800;cursor:pointer;font-family:inherit;}
+.plBtn:disabled{background:#1e1e1e;color:rgba(240,236,228,0.35);cursor:default;}
+.plWait{font-size:12px;color:rgba(240,236,228,0.5);padding:14px 2px;line-height:1.5;}
+.plErr{font-size:11.5px;color:#ff6b6b;background:rgba(255,107,107,0.1);border-radius:9px;
+  padding:8px 10px;margin-bottom:10px;line-height:1.45;}
+/* The builder was built for a full-width phone page; in a 320px column its
+   cards need to give back their outer margins and shrink a step. */
+#wkDetailCol #plBody > div{margin-bottom:8px;}
+#wkDetailCol #plBody{font-size:13px;}
+
 #wkDetailCol h3{margin:0 0 4px;font-size:16px;font-weight:800;color:#f0ece4;letter-spacing:-0.2px;}
 #wkDetailCol .wkDetSub{font-size:11.5px;color:rgba(240,236,228,0.5);margin-bottom:16px;}
 #wkDetailCol .wkDetBack{background:transparent;border:0;color:var(--gold);font-size:11px;font-weight:700;
@@ -18645,7 +18667,10 @@ function _wkGridHtml(wk){
   // is empty and wants something... my read: the day's agenda") with
   // today's whole day, ambient, nothing here the only way to reach
   // anything: see _wkTodayAgendaHtml.
-  var detail='<div id="wkDetailCol">'+_wkTodayAgendaHtml(wk)+'</div>';
+  // THE RIGHT COLUMN IS THE PLANNER (Yusuf, ruling, 20 Aug) - where the split
+  // is viewed AND edited, all seven days, in place. "Today's agenda" repeated
+  // the grid beside it and did nothing; the agenda's own home is the rail.
+  var detail='<div id="wkDetailCol">'+_plColumnHtml(wk)+'</div>';
   return '<div class="wkWrap">'+top+head+warn+progRow+dailyRow+body+'</div>'+detail+floaters;
 }
 async function _wkLoad2(el, force){
@@ -18670,6 +18695,9 @@ async function _wkLoad2(el, force){
     if(sb) sb.scrollTop=0;
   }catch(e){}
   _wkNowLineStart();
+  // The column only exists once the grid has painted, and its content is a
+  // read, so it fills itself after rather than blocking the calendar on it.
+  try{ if(typeof _plOpen==='function' && document.getElementById('plBody')) _plOpen(); }catch(e){}
 }
 // Repositions the now-line every minute rather than redrawing the whole
 // grid — a full re-render on a timer would fight any scroll position or
@@ -20437,6 +20465,150 @@ function _wkDetailSplitHtml(wk){
 // without a single click. Ambient background exactly as this column has
 // always been; nothing here is the only way to reach anything. Reuses the
 // exact data _wkGridHtml already loaded for the grid — no second read.
+// ===== THE PLANNER COLUMN =================================================
+// The trainer's own seven-day editor for whoever's week is showing. It reuses
+// renderTrainingBuilder outright - the same day cards, day-type pills, swap,
+// add, reorder and drag the client's own program builder has always had -
+// rather than a second editor that would drift from it. What it does NOT
+// reuse is any of that builder's save paths: those all write cl.code. See
+// _plBlocked. Editing here changes nothing until "Save the week" goes through
+// clientPlanSetWeek, which names its client and proves the write by reading
+// all seven days back.
+window._plOwner=null;      // whose plan is in the _tp* globals right now
+window._plPrev=null;       // the trainer's own, held for restore
+window._plDirty=false;
+function _plCanEdit(){
+  try{ return !!(window.cl && typeof isTrainer==='function' && isTrainer(cl.code)); }catch(e){ return false; }
+}
+function _plTargetCode(){
+  var o=window._wkOwner||'';
+  var me=(window.cl||{}).code||'';
+  if(!o || o==='me' || o==='all' || o===me) return null;   // his own week is not a client's split
+  return o;
+}
+// Swapping the globals is how the builder can render somebody else at all -
+// it reads _tpPlan directly and always has. The swap is only ever entered
+// with the write guard already up, and _plClose always restores, so the
+// trainer's own plan cannot be left sitting in another client's session.
+async function _plOpen(){
+  var code=_plTargetCode(); if(!code || !_plCanEdit()) return;
+  var host=document.getElementById('plBody'); if(!host) return;
+  host.innerHTML='<div class="plWait">Reading their week…</div>';
+  var data=null;
+  try{ data=await _wkLoadTrainingPlanFor(code); }catch(e){}
+  if(!data || !data.plan){
+    host.innerHTML='<div class="plWait">Could not read their week. That is a read that failed, not an empty plan.</div>';
+    return;
+  }
+  window._plPrev={plan:_tpPlan, ov:_tpWeekOverrides, name:_tpName, weeks:_tpWeeks, canEdit:window._tpCanEdit, openDay:_tpOpenDay};
+  window._plEditing=true;                      // guard UP before the globals move
+  window._plOwner=code;
+  window._plDirty=false;
+  _tpPlan=JSON.parse(JSON.stringify(data.plan));   // a copy: nothing edits the loaded object
+  _tpWeekOverrides=data.weekOv||{};
+  _tpName=data.name||'';
+  window._tpCanEdit=true;
+  _plRender();
+}
+function _plClose(){
+  var p=window._plPrev;
+  window._plEditing=false;
+  window._plOwner=null;
+  window._plDirty=false;
+  if(p){
+    _tpPlan=p.plan; _tpWeekOverrides=p.ov; _tpName=p.name; _tpWeeks=p.weeks;
+    window._tpCanEdit=p.canEdit; _tpOpenDay=p.openDay;
+  }
+  window._plPrev=null;
+  try{ schRefresh(); }catch(e){}
+}
+function _plMark(){ window._plDirty=true; try{ var b=document.getElementById('plSave'); if(b){ b.disabled=false; b.textContent='Save the week'; } }catch(e){} }
+function _plRender(){
+  var host=document.getElementById('plBody'); if(!host) return;
+  try{ renderTrainingBuilder('plBody'); }catch(e){ host.innerHTML='<div class="plWait">Could not draw that.</div>'; }
+  _plMark();
+}
+// DRY RUN FIRST, ALWAYS (Yusuf, ruling). The op previews the whole resulting
+// week - every day's type before and after, whether a row is about to be
+// created, and anything still shadowing it - and none of that is guessed
+// here: it is what the door itself says it will do.
+async function _plSave(){
+  var code=window._plOwner; if(!code) return;
+  var btn=document.getElementById('plSave');
+  if(btn){ btn.disabled=true; btn.textContent='Checking…'; }
+  var days={};
+  WEEKDAYS.forEach(function(d){
+    var src=_tpPlan[d]||{type:'Rest',ex:[]};
+    var type=String(src.type||'Rest');
+    var ex=(type.toLowerCase()==='rest') ? [] : (src.ex||[]).slice(0,20).map(function(e){
+      // s must be an integer 1..20 or the door refuses the whole week.
+      var n=parseInt(e.s,10); if(!isFinite(n)||n<1) n=3; if(n>20) n=20;
+      return {n:String(e.n||'').slice(0,120), s:n, r:String(e.r==null?'':e.r).slice(0,40),
+              c:e.c?1:0, v:String(e.v==null?'':e.v).slice(0,200)};
+    }).filter(function(e){ return e.n; });
+    days[d]={type:type, exercises:ex};
+  });
+  var pre=null;
+  try{ pre=await trainerWrite('clientPlanSetWeek',{client_code:code, days:days, dry_run:true}); }catch(e){}
+  if(!pre || !pre.ok || !pre.rows || !pre.rows[0]){
+    _plSaveFailed(btn, pre);
+    return;
+  }
+  var pv=pre.rows[0];
+  var lines=WEEKDAYS.map(function(d){
+    var b=(pv.before||{})[d], a=(pv.after||{})[d];
+    return d+': '+(b==null?'nothing':b)+(String(b)===String(a)?'  (unchanged)':('  ->  '+a));
+  }).join('\n');
+  var msg=(pv.creating_new_row ? ('This creates '+(pv.client_name||code)+"'s first saved week.\n\n") : '')
+    + (pv.client_name||code)+"'s week after this save:\n\n"+lines
+    + ((pv.shadowed_now&&pv.shadowed_now.length) ? ('\n\nHeads up: '+pv.shadowed_now.join(', ')+' are overridden for THIS week, so the change shows from next week.') : '')
+    + '\n\nSave it?';
+  if(!confirm(msg)){ if(btn){ btn.disabled=false; btn.textContent='Save the week'; } return; }
+  if(btn) btn.textContent='Saving…';
+  var w=null;
+  try{ w=await trainerWrite('clientPlanSetWeek',{client_code:code, days:days}); }catch(e){}
+  if(!w || !w.ok || !w.rows || !w.rows[0] || !w.rows[0].confirmed_by_read_back){
+    _plSaveFailed(btn, w);
+    return;
+  }
+  window._plDirty=false;
+  if(btn){ btn.disabled=true; btn.textContent='Saved'; }
+  try{ showToast('Saved '+(w.rows[0].client_name||code)+"'s week"); }catch(e){}
+  try{ jvActRecord('Rewrote '+(w.rows[0].client_name||code)+"'s split", null); }catch(e){}
+  try{ schRefresh(); }catch(e){}
+}
+// A REFUSED WRITE SAYS WHICH REFUSAL IT WAS. partial_write in particular has
+// to name the days that did land, or the trainer re-saves a week that is
+// already half-changed.
+function _plSaveFailed(btn, w){
+  var err=(w&&w.err)||'';
+  var d=(w&&w.detail)||{};
+  var msg;
+  if(err==='partial_write') msg='Only part of that saved: '+(d.days_landed||[]).join(', ')+' landed, '+(d.days_missing||[]).join(', ')+' did not. Nothing has been re-tried.';
+  else if(err==='no_such_client') msg='That client code has no row. Nothing was written.';
+  else if(err==='missing_day') msg='A day was missing from the week ('+(d.day||'?')+'), so none of it was written.';
+  else if(err==='bad_arg') msg='The door refused the shape of that week. Nothing was written.';
+  else if(err==='ambiguous_plan_rows') msg='They have more than one saved plan row — that needs sorting out by hand before this can write.';
+  else if(err==='one_off_keys_lost') msg='Refused: that write would have dropped a one-off day already on their calendar.';
+  else msg=(typeof _jvDoorFailReason==='function' ? _jvDoorFailReason(w) : 'That did not save.')+' Nothing was written.';
+  try{ showToast(msg.slice(0,110)); }catch(e){}
+  try{ var el=document.getElementById('plErr'); if(el){ el.textContent=msg; el.style.display=''; } }catch(e){}
+  if(btn){ btn.disabled=false; btn.textContent='Save the week'; }
+}
+function _plColumnHtml(wk){
+  if(!_plCanEdit()) return _wkTodayAgendaHtml(wk);
+  var code=_plTargetCode();
+  if(!code){
+    // His own week has no client split to edit. The agenda is still the right
+    // thing to show there rather than an editor pointed at nobody.
+    return _wkTodayAgendaHtml(wk);
+  }
+  var nm=String((CLIENTS[code]&&CLIENTS[code].name)||code);
+  return '<div class="plHead"><div><div class="plEy">The split</div><div class="plWho">'+_escHtml(nm)+'</div></div>'
+    + '<button class="plBtn" id="plSave" onclick="_plSave()" disabled>Save the week</button></div>'
+    + '<div class="plErr" id="plErr" style="display:none;"></div>'
+    + '<div id="plBody"><div class="plWait">Reading their week…</div></div>';
+}
 function _wkTodayAgendaHtml(wk){
   var ws=wk.weekStart, todayKey=_schTodayTs();
   var dayStart=(todayKey>=ws && todayKey<ws+7*86400000) ? todayKey : ws;
@@ -45407,7 +45579,29 @@ async function tlRetryPlan(){
   // time, and loadTrainingPlan has just set it, so there is nothing to sync here.
   try{ window._tlCache=null; renderDayTimeline(); }catch(e){}
 }
+// ===== THE PLANNER'S HARD LINE ============================================
+// The trainer's planner column renders the SAME seven-day builder against
+// ANOTHER PERSON'S plan. Every write below this comment targets cl.code —
+// the signed-in trainer — and several of them fire on interaction with no
+// guard at all (the cardio rows, reset-to-default, undo-type), while the one
+// guard that does exist checks only that an element called tpBody is on
+// screen and says nothing about WHOSE plan is loaded. Left alone, editing
+// Blake's Tuesday would have written Blake's whole week onto Yusuf's own
+// training_plans row, silently, while appearing to work.
+//
+// So the flag is checked at every door rather than trusted at every call
+// site: while the planner holds another client's plan in the _tp* globals,
+// nothing writes anywhere except through clientPlanSetWeek, which names its
+// client explicitly and verifies by read-back. One flag, many doors, because
+// the failure is silent and permanent.
+window._plEditing=false;
+function _plBlocked(what){
+  if(!window._plEditing) return false;
+  try{ console.warn('[planner] blocked '+what+' - another client\'s plan is loaded'); }catch(e){}
+  return true;
+}
 async function saveTrainingPlan(){
+  if(_plBlocked('saveTrainingPlan')) return;
   if(!cl) return;
   try{
     // A 4xx/5xx here still resolves \u2014 fetch only rejects on a network failure. This
@@ -45471,6 +45665,7 @@ async function loadSetLogs(){
 // Verified against the live table: as shipped -> 409 duplicate key; with the
 // conflict target -> 200 and the row updated.
 async function tpSaveSet(day,exName,idx,field,val){
+  if(_plBlocked('tpSaveSet')) return;
   var arr=(_tpToday[exName]=_tpToday[exName]||[]);
   var cur=arr[idx]||{w:'',r:''};
   cur[field]=String(val||'').trim();
@@ -45532,7 +45727,7 @@ function tpAddSet(day,i){
   var planned=Math.max(1,parseInt(e.s,10)||1);
   var n=Math.max(arr.length, planned);
   arr[n]={w:'',r:''};
-  renderTrainingBuilder();
+  _tpRepaint();
 }
 function tpRemoveSet(day,i,k){
   var e=_tpPlan[day].ex[i]; if(!e) return;
@@ -45545,9 +45740,10 @@ function tpRemoveSet(day,i,k){
   if(arr.length < planned){ e.s=Math.max(1, arr.length); }
   _tpToday[e.n]=arr;
   tpPersistSets(day,e.n);
-  renderTrainingBuilder();
+  _tpRepaint();
 }
 async function tpPersistSets(day,exName){
+  if(_plBlocked('tpPersistSets')) return;
   if(!cl) return;
   var arr=_tpToday[exName]||[];
   try{
@@ -45565,6 +45761,7 @@ async function tpPersistSets(day,exName){
 }
 var _tpNotes={};
 async function tpSaveNote(exName,val){
+  if(_plBlocked('tpSaveNote')) return;
   _tpNotes[exName]=val;
   if(!cl) return;
   try{
@@ -45624,10 +45821,10 @@ function tpDrop(ev,day,to){
   var item=arr.splice(_tpDrag.from,1)[0];
   arr.splice(to,0,item);
   _tpDrag={day:null,from:-1};
-  renderTrainingBuilder();
+  _tpRepaint();
 }
-function tpToggleEx(day,i){ var k=day+'_'+i; _tpOpenEx[k]=!_tpOpenEx[k]; renderTrainingBuilder(); }
-function tpToggleDay(day){ _tpOpenDay = (_tpOpenDay===day) ? null : day; renderTrainingBuilder(); }
+function tpToggleEx(day,i){ var k=day+'_'+i; _tpOpenEx[k]=!_tpOpenEx[k]; _tpRepaint(); }
+function tpToggleDay(day){ _tpOpenDay = (_tpOpenDay===day) ? null : day; _tpRepaint(); }
 
 // ---- cardio sessions (separate from strength) ----
 var CARDIO_TYPES=['Stairmaster','Incline Walk','Treadmill Run','Bike','Rower','Elliptical','Jump Rope','Swim','Walk'];
@@ -45647,14 +45844,14 @@ function tpCardioOpen(day){
 function tpCardioAdd(day,type){
   _tpCardio(day).push({type:type, min:'', note:''});
   try{ closeM('mTpCardio'); }catch(e){}
-  renderTrainingBuilder();
+  _tpRepaint();
 }
 function tpCardioSet(day,i,k,v){
   var arr=_tpCardio(day); if(!arr[i]) return;
   arr[i][k]=(k==='min')?(parseInt(v,10)||''):v;
   saveTrainingPlan();
 }
-function tpCardioRemove(day,i){ _tpCardio(day).splice(i,1); renderTrainingBuilder(); saveTrainingPlan(); }
+function tpCardioRemove(day,i){ _tpCardio(day).splice(i,1); _tpRepaint(); saveTrainingPlan(); }
 function _tpCardioRows(day){
   var arr=_tpCardio(day);
   var rows=arr.map(function(cd,i){
@@ -45682,6 +45879,7 @@ function _tpSessionNote(day){
 var _tpSessNotes={};
 var _tpSessRec=null, _tpSessListening=false, _tpSessTx='', _tpSessDay=null;
 async function tpSaveSessNote(day,val){
+  if(_plBlocked('tpSaveSessNote')) return;
   _tpSessNotes[day]=val;
   if(!cl) return;
   try{
@@ -45756,6 +45954,7 @@ function _tpRestBlock(day){
 }
 var _tpStepsToday='';
 async function tpLogSteps(v){
+  if(_plBlocked('tpLogSteps')) return;
   _tpStepsToday=parseInt(v,10)||'';
   if(!cl) return;
   try{
@@ -45806,6 +46005,7 @@ function _tpDayCard(day){
   +'</div>';
 }
 async function tpCompleteDay(day){
+  if(_plBlocked('tpCompleteDay')) return;
   var d=_tpPlan[day]; if(!d) return;
   var lines=[];
   (d.ex||[]).forEach(function(e){
@@ -45824,7 +46024,7 @@ async function tpCompleteDay(day){
     if(!_r.ok){ showToast('Could not save workout'); return; }
     _tpDone[day]=true;
     showToast('\u2713 Workout logged');
-    renderTrainingBuilder();
+    _tpRepaint();
     try{ if(typeof loadWorkouts==='function') loadWorkouts(); }catch(e){}
     try{ await loadTpHistory(); }catch(e){}
   try{ await loadTpSteps(); }catch(e){}
@@ -45888,7 +46088,7 @@ function tpSwapPick(enc){
     try{ pgSavePlan('Your exercise swap', _note); }catch(e){}
     return;
   }
-  renderTrainingBuilder();
+  _tpRepaint();
   showToast('Swapped to '+x.n);
 }
 
@@ -45908,7 +46108,7 @@ function _fmtRange(r){
 function tpWeekNav(dir){
   if(dir>0 && _tpWeekOffset>=0) return;   // can't go into the future
   _tpWeekOffset+=dir;
-  renderTrainingBuilder();
+  _tpRepaint();
 }
 async function loadTpHistory(){
   if(!cl) return;
@@ -45967,7 +46167,7 @@ function _tpHistoryView(){
   }).join('');
 }
 var _tpHistOpen=null;
-function tpHistToggle(id){ _tpHistOpen=(_tpHistOpen===String(id))?null:String(id); renderTrainingBuilder(); }
+function tpHistToggle(id){ _tpHistOpen=(_tpHistOpen===String(id))?null:String(id); _tpRepaint(); }
 async function tpHistAppend(id){
   var el=document.getElementById('tpHistAdd_'+id); if(!el) return;
   var line=String(el.value||'').trim(); if(!line) return;
@@ -45975,7 +46175,7 @@ async function tpHistAppend(id){
   var desc=(w.description||'').trim();
   w.description = desc ? desc+'\n'+line : line;
   _tpHistOpen=null;
-  renderTrainingBuilder();
+  _tpRepaint();
   try{
     await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+id,{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),body:JSON.stringify({description:w.description})});
     showToast('\u2713 Added to that workout');
@@ -45997,8 +46197,26 @@ function _tpSexPrompt(){
       +'border-radius:10px;padding:9px 15px;cursor:pointer;">Set it in my goals</div>'
   +'</div>';
 }
-function renderTrainingBuilder(){
-  var el=document.getElementById('tpBody');
+// A HOST, NOT A HARDCODED ID. The planner column renders this same builder
+// into its own container — deliberately NOT called tpBody, because
+// _saveTrainingPlanQuiet's guard is a presence check on that exact id and
+// would have happily written another client's plan onto the trainer's row
+// the moment it found one. Default unchanged, so every existing caller
+// behaves exactly as before.
+// EVERY REPAINT GOES THROUGH ONE DOOR. The builder's controls all ended in a
+// bare _tpRepaint(), which looks for #tpBody and finds nothing when
+// the planner column is the thing on screen - so an edit applied to _tpPlan and
+// then appeared to do nothing. This routes the repaint to whichever host is
+// actually showing the builder.
+function _tpRepaint(){
+  try{
+    if(window._plEditing){ _plRender(); return; }
+    if(typeof _finRepaint==='function'){ _finRepaint(); return; }
+  }catch(e){}
+  try{ _tpRepaint(); }catch(e){}
+}
+function renderTrainingBuilder(hostId){
+  var el=document.getElementById(hostId||'tpBody');
   if(!el){
     // the same exercise rows are used inline on the Calendar — refresh that instead
     try{ if(document.getElementById('tlScroll')) renderDayTimeline(true); }catch(e){}
@@ -46052,7 +46270,7 @@ function tpSetType(day,t){
 function _tpAfterType(day, msg){
   try{ if(typeof _tpFinSave==='function') _tpFinSave(); }catch(e){}
   try{ if(typeof saveTrainingPlan==='function' && !window._tpQuiet) _saveTrainingPlanQuiet(); }catch(e){}
-  try{ if(typeof _finRepaint==='function') _finRepaint(); else renderTrainingBuilder(); }catch(e){ try{ renderTrainingBuilder(); }catch(_e){} }
+  try{ if(window._plEditing) _plRender(); else if(typeof _finRepaint==='function') _finRepaint(); else renderTrainingBuilder(); }catch(e){ try{ renderTrainingBuilder(); }catch(_e){} }
   try{ showToast(msg); }catch(e){}
 }
 
@@ -46065,7 +46283,7 @@ function tpUndoType(day){
   window._tpUndo[day]=null;
   try{ if(typeof _tpFinSave==='function') _tpFinSave(); }catch(e){}
   try{ _saveTrainingPlanQuiet(); }catch(e){}
-  try{ if(typeof _finRepaint==='function') _finRepaint(); else renderTrainingBuilder(); }catch(e){}
+  try{ if(window._plEditing) _plRender(); else if(typeof _finRepaint==='function') _finRepaint(); else renderTrainingBuilder(); }catch(e){}
   showToast('Back to '+(u.type||'your day'));
 }
 function tpSet(day,i,k,v){
@@ -46076,9 +46294,9 @@ function tpMove(day,i,dir){
   var a=_tpPlan[day].ex, j=i+dir;
   if(j<0||j>=a.length) return;
   var t=a[i]; a[i]=a[j]; a[j]=t;
-  renderTrainingBuilder();
+  _tpRepaint();
 }
-function tpRemove(day,i){ _tpPlan[day].ex.splice(i,1); renderTrainingBuilder(); }
+function tpRemove(day,i){ _tpPlan[day].ex.splice(i,1); _tpRepaint(); }
 function _tpAllEx(){
   var out=[];
   for(var cat in EX_LIB){ EX_LIB[cat].forEach(function(e){ out.push(Object.assign({cat:cat}, e)); }); }
@@ -58204,6 +58422,7 @@ function _finStore(){
   try{ return JSON.parse(localStorage.getItem(_finKey())||'{}'); }catch(e){ return {}; }
 }
 function _tpFinSave(){
+  if(_plBlocked('_tpFinSave')) return;
   try{
     var all=_finStore();
     Object.keys(_tpPlan||{}).forEach(function(d){
@@ -58229,6 +58448,7 @@ function _tpFinSave(){
 // edits are not affected: those go through pgSavePlan, which is a different
 // function, a verified write, and honest when it fails.
 async function _saveTrainingPlanQuiet(){
+  if(_plBlocked('_saveTrainingPlanQuiet')) return;
   if(!cl) return;
   if(!document.getElementById('tpBody')){
     try{ console.error('[hard line] refused a training_plans write with no program builder on screen — a client never writes the template'); }catch(e){}
