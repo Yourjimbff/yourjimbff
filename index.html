@@ -27136,14 +27136,53 @@ function _jtStopAll(){
   try{ window._jimAwaiting=null; }catch(e){}
   return had;
 }
+// Takes back what THIS session's last logging turn wrote, and nothing else.
+// Read back after deleting, because a delete that reports success and leaves the
+// row is the same lie as a write that does — and the reply here is a claim about
+// his day. Returns what was removed, or '' when there was nothing to remove.
+var _JT_UNDO_WINDOW_MS=10*60*1000;
+async function _jtUndoLastWrite(){
+  var w=[]; try{ w=(window._jimWrote||[]).slice(); }catch(e){}
+  if(!w.length) return '';
+  var when=0; try{ when=(window._jimLastTurn&&window._jimLastTurn.at)||0; }catch(e){}
+  if(when && (Date.now()-when)>_JT_UNDO_WINDOW_MS) return '';
+  var gone=[];
+  for(var i=0;i<w.length;i++){
+    var it=w[i];
+    if(it.table!=='food_logs' || it.id==null) continue;
+    var ok=false;
+    try{ ok=await applyFoodDelete(it.id); }catch(e){}
+    if(!ok) continue;
+    // Proven gone, not assumed.
+    var still=[];
+    try{ still=await sbSelect('food_logs','select=id&id=eq.'+encodeURIComponent(it.id)+'&limit=1')||[]; }catch(e){ still=[]; }
+    if(!still.length) gone.push(it.label||'that entry');
+  }
+  try{ window._jimWrote=[]; }catch(e){}
+  try{ if(typeof renderDayTimeline==='function') renderDayTimeline(true); }catch(e){}
+  return gone.join(', ');
+}
 async function _jtTurn(t){
   // A DISMISSAL IS ANSWERED BEFORE ANYTHING ELSE LOOKS AT IT. Above the pending
   // reply, above the batch split, above every parser — so it can never be read
   // as a fresh instruction, a client name, or a topic change.
   if(_jtIsStop(t)){
     var _had=_jtStopAll();
-    var _line=_had ? 'Dropped it. Nothing was written.' : 'Nothing in flight.';
-    return {html:_escHtml(_line), speak:_line};
+    if(_had){
+      var _l1='Dropped it. Nothing was written.';
+      return {html:_escHtml(_l1), speak:_l1};
+    }
+    // NOTHING PENDING, BUT SOMETHING JUST LANDED. "Wipe that" straight after a
+    // log means take that back — a confirmation he never gave is not the only
+    // thing a dismissal can be about. Bounded to the last few minutes and to
+    // rows THIS session wrote, so it can never reach into his real history.
+    var _undone=await _jtUndoLastWrite();
+    if(_undone){
+      var _l2='Wiped it — '+_undone+' is off your day. Nothing else was touched.';
+      return {html:_escHtml(_l2), speak:_l2};
+    }
+    var _l3='Nothing in flight.';
+    return {html:_escHtml(_l3), speak:_l3};
   }
   // 0. An answer to a held write is never a batch and is never re-parsed.
   try{
@@ -54568,6 +54607,12 @@ async function logFoodFromChat(offer, photo){
   if(_daysAgo>0) foodRow.logged_at = _isoForDateStr(_targetDate, eatTime);
   var _ins = await insertFoodLog(foodRow, savedPhoto);
   if(!_ins || !_ins.ok) return false;
+  // WHAT THIS TURN WROTE, WITH ITS ID. "Wipe that" has to be able to take back
+  // the thing just logged, and it cannot do that from prose — it needs the row.
+  // Collected here because this is the one place a food row's id is known.
+  try{
+    if(_ins.id!=null){ window._jimWrote=window._jimWrote||[]; window._jimWrote.push({table:'food_logs', id:_ins.id, label:r.name}); }
+  }catch(e){}
   // Remember it — this is the other half of matching her own history before
   // the AI round trip (see _jimQuickFoodMatch): a food logged only through
   // chat never used to reach saved_foods at all, so a client who never opens
@@ -55081,6 +55126,8 @@ async function jimTurn(text, photos, opts){
   // it and neither can drift from the other.
   try{ text=_jimNormalizeDictation(text); }catch(e){}
   _jimLastTurn = {wrote:0};
+  // Reset per turn, so "wipe that" can only ever take back THIS turn's rows.
+  try{ window._jimWrote=[]; }catch(e){}
   var hasPhoto = photos.length>0;
   var photoSnapshot = photos[0] || null;
   try{ noteBodyTalk(text); }catch(e){}
@@ -55676,6 +55723,7 @@ async function jimTurn(text, photos, opts){
   if(_wtVerified>0) landed.push('your weigh-in');
   _jimLastTurn.landed=landed;
   _jimLastTurn.landedDay=todayDateStr;
+  _jimLastTurn.at=Date.now();
   // A REPLY IS NOT A WRITE, and neither is a MARKER. `wrote` and `landed` above
   // both count what the model EMITTED, not what the database accepted — which is
   // the right signal for "was this turn about logging at all" and the wrong one
