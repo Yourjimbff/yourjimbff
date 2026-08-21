@@ -56568,6 +56568,28 @@ function _jimIsAdminOnly(t){
   for(var i=0;i<words.length;i++){ if(!_JIM_ADMIN_WORD.test(words[i])) return false; }
   return true;
 }
+// Does this sentence describe a training session? Deliberately broad — it only
+// decides whether to ASK the dedicated extractor, which answers with an empty
+// list when there is no workout in the text.
+var _JIM_WO_RE=new RegExp('\\b(?:\\d+|one|two|three|four|five|six|seven|eight|nine|ten)\\s+sets?\\b'
+  +'|\\b(?:reps?|superset|amrap|push-?ups?|pull-?ups?|squats?|deadlifts?|bench|curls?|rows?|press|raises?'
+  +'|pulldowns?|plank|lunges?|crunches?|sit-?ups?|dips?|flys?|extensions?|treadmill|elliptical|cardio'
+  +'|workout|worked out|trained|training|leg day|push day|pull day|session)\\b','i');
+function _jimLooksLikeWorkout(t){ return _JIM_WO_RE.test(String(t||'')); }
+// The day he named, counted BACKWARDS. The calendar helper elsewhere resolves a
+// weekday to its NEXT occurrence, which is right for booking and exactly wrong
+// for "on Tuesday I did" — that would file a past session in the future.
+var _JIM_DAYW={sunday:0,monday:1,tuesday:2,wednesday:3,thursday:4,friday:5,saturday:6};
+function _jimPastDaysAgo(text){
+  var s=String(text||'').toLowerCase();
+  if(/\byesterday\b/.test(s)) return 1;
+  if(/\btoday\b|\bthis morning\b|\bthis afternoon\b|\btonight\b/.test(s)) return 0;
+  var m=/\b(?:on\s+|last\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/.exec(s);
+  if(!m) return 0;
+  var want=_JIM_DAYW[m[1]]; if(want==null) return 0;
+  var now=new Date().getDay();
+  return (now-want+7)%7;
+}
 async function jimTurn(text, photos, opts){
   opts = opts || {};
   // WHOSE RECORD THIS TURN WRITES TO. Empty means the signed-in account, which
@@ -56658,6 +56680,10 @@ async function jimTurn(text, photos, opts){
       // for steps; the workout template still ended every session with "Did I get
       // that right?" — and worse, in the same breath as the word "Logged", so the
       // reply claimed and asked at once. That is law 3 broken at the template.
+      // REMOVE THE INSTRUCTION, do not merely argue with it. The template's
+      // "then ask plainly: Did I get that right" sits immediately after the
+      // itemise step, so the model follows both together. Cut for his sessions.
+      try{ systemBlock=systemBlock.replace(/2\. Then ask plainly:[^\n]*\n/i,''); }catch(e){}
       systemBlock+='\n\nTHIS IS YUSUF, THE TRAINER, ON HIS OWN ACCOUNT. Never ask him to confirm a log of his own — not "did I get that right", not "want me to change anything", not any confirmation question at the end of a log. State what landed and stop. Undo is always available and he can say "wipe that" or tell you what to change; asking for permission he has already given is exactly what he removed.\n';
     }
   }catch(e){}
@@ -56725,6 +56751,42 @@ async function jimTurn(text, photos, opts){
       workoutLogs.items=[];
     }
   }catch(e){}
+  // ===== A DESCRIBED SESSION MUST ACTUALLY LOG (Yusuf, the workout ghost) ===
+  // Proved on deployed against an EMPTY past day, with the raw model response
+  // captured: the system prompt is 87,600 characters, it demonstrably contains
+  // the marker rule AND the charter AND the trainer rule, and the model still
+  // answered with the itemisation and the question from steps 1 and 2 of the
+  // template while silently skipping the marker emission in step 0. wrote:0,
+  // nothing on his day, and a reply that read exactly like a successful log.
+  // A rule buried in 87KB of prompt is not a mechanism. So this stops relying on
+  // one: when HE describes a session and no marker came back, parseSpokenWorkout
+  // — a small single-purpose prompt that cannot get lost — parses it and the row
+  // is built from that. HIS SEQUENCE is preserved; nothing here reorders.
+  try{
+    var _selfWo=(!_forCode && window.cl && typeof isTrainer==='function' && isTrainer(cl.code));
+    if(_selfWo && !hasPhoto && !workoutLogs.items.length && !_jimIsAdminOnly(text)
+       && _jimLooksLikeWorkout(text) && typeof parseSpokenWorkout==='function'){
+      var _sw=null;
+      try{ _sw=await parseSpokenWorkout(String(text||'')); }catch(e){ _sw=null; }
+      var _swEx=(_sw && Array.isArray(_sw.exercises)) ? _sw.exercises.map(function(e){
+        var o={name:String((e&&e.name)||'').trim()};
+        var did=String((e&&e.did)||'').trim();
+        if(did) o.detail=did;
+        var ms=/(\d+)\s*sets?/i.exec(did) || /^(\d+)\s*[x\u00d7]/i.exec(did);
+        if(ms) o.sets=parseInt(ms[1],10);
+        return o;
+      }).filter(function(o){ return o.name; }) : [];
+      if(_swEx.length){
+        var _swOffer={title:(String((_sw&&_sw.title)||'').trim()||'Workout'), exercises:_swEx,
+          description:_swEx.map(function(o){ return o.name+(o.detail?(' '+o.detail):''); }).join(', '),
+          daysAgo:_jimPastDaysAgo(text)};
+        if(_sw && _sw.notes) _swOffer.notes=String(_sw.notes);
+        try{ var _swP=_jimParse(String(text||'')); if(_swP && _swP.mins!=null) _swOffer.time=_jimClock(_swP.mins); }catch(e){}
+        workoutLogs.items.push(_swOffer);
+        try{ console.info('jimTurn: no WORKOUT_LOG came back for a described session — extractor used instead'); }catch(e){}
+      }
+    }
+  }catch(e){ console.error('workout fallback', e); }
   // Typing on Tuesday's row means Tuesday, whatever the model guessed.
   function _pinDay(o){ if(o && opts.dateStr) o.dateStr=opts.dateStr; return o; }
   // THEIR WORDS ARE THE ENTRY (ruled 10 Aug): the display line is the raw
