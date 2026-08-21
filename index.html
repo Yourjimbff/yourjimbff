@@ -56622,6 +56622,29 @@ var _JIM_WO_RE=new RegExp('\\b(?:\\d+|one|two|three|four|five|six|seven|eight|ni
   +'|pulldowns?|plank|lunges?|crunches?|sit-?ups?|dips?|flys?|extensions?|treadmill|elliptical|cardio'
   +'|workout|worked out|trained|training|leg day|push day|pull day|session)\\b','i');
 function _jimLooksLikeWorkout(t){ return _JIM_WO_RE.test(String(t||'')); }
+// A PURE EXTRACTOR, because the existing one is not one. parseSpokenWorkout
+// looks like the right tool and is not: it is the manual workout SHEET's filler
+// — it writes into #woVoiceStatus, calls clearWoRows/addWoRow to populate the
+// modal, sets the sheet title, raises a toast, and RETURNS NOTHING. Calling it
+// from the engine did nothing at all and left the fallback silently inert, which
+// is how it was caught. Same prompt, same shape, no DOM, and it answers.
+async function _jimExtractWorkout(text){
+  var sys='You convert a spoken gym workout into structured JSON. Return ONLY valid JSON, no prose, no markdown. '
+    +'Shape: {"title":"short workout name like Leg Day or empty string","exercises":[{"name":"Exercise name","did":"what they did, e.g. 3x8 @ 155lbs, or 4 sets, or 50 reps"}],"notes":"any subjective remark about how it FELT, else empty string"}. '
+    +'KEEP THEM IN THE ORDER THEY WERE SAID — that order is how they trained and must never be regrouped or sorted. '
+    +'Use their actual numbers. Clean, capitalised exercise names. Do not invent exercises. If you cannot parse it, return {"title":"","exercises":[],"notes":""}.';
+  try{
+    var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({messages:[{role:'user',content:sys+'\n\nSPOKEN WORKOUT:\n'+String(text||'')+'\n\nReturn the JSON now.'}],max_tokens:700})});
+    if(!res.ok) return null;
+    var data=await res.json();
+    var raw=''; try{ raw=data&&data.content?(Array.isArray(data.content)?data.content.map(function(b){return b.text||'';}).join(''):data.content):(data.text||''); }catch(e){}
+    raw=String(raw||'').replace(/```json/gi,'').replace(/```/g,'').trim();
+    var parsed=null;
+    try{ parsed=JSON.parse(raw); }catch(e){ var m=raw.match(/\{[\s\S]*\}/); if(m){ try{ parsed=JSON.parse(m[0]); }catch(e2){} } }
+    return (parsed && Array.isArray(parsed.exercises)) ? parsed : null;
+  }catch(e){ console.error('_jimExtractWorkout', e); return null; }
+}
 // The day he named, counted BACKWARDS. The calendar helper elsewhere resolves a
 // weekday to its NEXT occurrence, which is right for booking and exactly wrong
 // for "on Tuesday I did" — that would file a past session in the future.
@@ -56811,9 +56834,9 @@ async function jimTurn(text, photos, opts){
   try{
     var _selfWo=(!_forCode && window.cl && typeof isTrainer==='function' && isTrainer(cl.code));
     if(_selfWo && !hasPhoto && !workoutLogs.items.length && !_jimIsAdminOnly(text)
-       && _jimLooksLikeWorkout(text) && typeof parseSpokenWorkout==='function'){
+       && _jimLooksLikeWorkout(text) && typeof _jimExtractWorkout==='function'){
       var _sw=null;
-      try{ _sw=await parseSpokenWorkout(String(text||'')); }catch(e){ _sw=null; }
+      try{ _sw=await _jimExtractWorkout(String(text||'')); }catch(e){ _sw=null; }
       var _swEx=(_sw && Array.isArray(_sw.exercises)) ? _sw.exercises.map(function(e){
         var o={name:String((e&&e.name)||'').trim()};
         var did=String((e&&e.did)||'').trim();
