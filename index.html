@@ -17443,9 +17443,30 @@ function jvVoiceToggle(){
   if(!jvVoiceOn()){ try{ if(_jvAudioEl){ _jvAudioEl.pause(); _jvAudioEl.src=''; } }catch(e){} }
   try{ _jvVoicePaint(); }catch(e){}
 }
+// ===== THE SPEAKER BUTTON THAT LIED (Yusuf, the auto-speak bug) ==========
+// THE SEAM, NAMED: this list held four ids, one of which — admVoiceBtn — has no
+// markup anywhere in the file, while jtVoiceBtnDesk, the desktop Jarvis tab's
+// speaker, was missing from it. The loop bails silently on a missing id, so the
+// omission was invisible.
+// Tapping THAT button wrote yjb_jv_voice2='off' like any other, but its icon
+// never gained .off: it kept the unslashed wave, the gold, and the "Mute Jarvis"
+// label. It read as ON while voice was OFF. Every reply after that died at the
+// mute gate in _jvSpeakLine with nothing on screen and nothing in the console —
+// which is exactly what "auto-speak is broken" looked like from his side.
+// Derived from the DOM now instead of hand-listed, so a fifth speaker button
+// added anywhere is painted the day it is added and this cannot rot again.
+function _jvVoiceBtnIds(){
+  var out=[];
+  try{
+    var n=document.querySelectorAll('.jvVoiceBtn[id]');
+    for(var i=0;i<n.length;i++) if(n[i].id) out.push(n[i].id);
+  }catch(e){}
+  if(!out.length) out=['jvVoiceBtn','jtVoiceBtnMob','jtVoiceBtnOvl','jtVoiceBtnDesk'];
+  return out;
+}
 function _jvVoicePaint(){
   var on=jvVoiceOn();
-  ['jvVoiceBtn','admVoiceBtn','jtVoiceBtnMob','jtVoiceBtnOvl'].forEach(function(id){
+  _jvVoiceBtnIds().forEach(function(id){
     var b=document.getElementById(id); if(!b) return;
     b.classList.toggle('off', !on);
     b.setAttribute('aria-label', on?'Mute Jarvis':'Unmute Jarvis');
@@ -17459,6 +17480,14 @@ function jvAudioUnlock(){
     if(_jvAudioReady) return;
     if(!_jvAudioEl){ _jvAudioEl=new Audio(); _jvAudioEl.preload='auto'; }
     _jvAudioEl.muted=true;
+    // THE FLAG COULD NEVER LATCH. The first call plays a brand-new Audio with NO
+    // src, so the promise always rejects (NotSupportedError) and _jvAudioReady
+    // stayed false forever — every later gesture re-entered and re-muted the
+    // shared element. A silent one-sample source gives the gesture something
+    // real to play, which is the whole point of unlocking inside a tap.
+    try{
+      if(!_jvAudioEl.src) _jvAudioEl.src='data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+    }catch(e){}
     var p=_jvAudioEl.play();
     if(p && p.then) p.then(function(){ try{ _jvAudioEl.pause(); _jvAudioEl.currentTime=0; }catch(e){} _jvAudioEl.muted=false; _jvAudioReady=true; })
                      .catch(function(){ _jvAudioEl.muted=false; });
@@ -17490,9 +17519,15 @@ var _JV_CLIPS={}, _JV_CLIP_MAX=12;
 // devtools ever saw. One toast per new failure, not one per line — a whole
 // silent batch would otherwise stack toasts. Clears the moment a line
 // actually plays, so a later, different failure still gets its own notice.
-var _jvSpeakFailNoted=false;
+var _jvSpeakFailNoted=false, _jvSpeakFailAt=0;
 function _jvSpeakFail(reason){
   console.warn('[jarvis-speak] '+reason);
+  // Only the FIRST failure in the page's life used to raise a toast, and the
+  // re-arm happened only on the fresh-fetch success path — never on the cached
+  // clip path. So a session that failed once and then played only cached clips
+  // went permanently quiet about its own failures. Re-armed on a clock instead.
+  try{ if(_jvSpeakFailAt && (Date.now()-_jvSpeakFailAt)>10*60*1000) _jvSpeakFailNoted=false; }catch(e){}
+  try{ _jvSpeakFailAt=Date.now(); }catch(e){}
   if(_jvSpeakFailNoted) return;
   _jvSpeakFailNoted=true;
   try{ if(typeof showToast==='function') showToast('Voice failed — '+reason); }catch(e){}
@@ -26566,8 +26601,15 @@ async function jtReplay(i){
 // on screen — never something the screen does not also say.
 function jtSay(html, speak){
   jtPush('jarvis', html);
-  jtRenderAll();
-  try{ _jvSpeakLine(speak!=null ? speak : html); }catch(e){}
+  // A THROW IN THE RENDER MUST NOT TAKE THE VOICE WITH IT. Unwrapped, any
+  // exception in jtRenderAll skipped the speak line entirely and the reply went
+  // out silent for a reason that had nothing to do with speech.
+  try{ jtRenderAll(); }catch(e){ console.error('jtSay render', e); }
+  // `speak != null` is TRUE for an empty string, and _jtBatch can return exactly
+  // that — its spoken line is '' when the ledger renders with every group empty.
+  // An empty string then died at the no-text guard inside _jvSpeakLine, silently.
+  var _say=(speak!=null && String(speak).trim()) ? speak : html;
+  try{ _jvSpeakLine(_say); }catch(e){}
 }
 // ===== THE RAIL'S CONVERSATION IS ONE STREAM (Yusuf, ruling) ==============
 // "His actions and his assistant's answers are one stream because they are
