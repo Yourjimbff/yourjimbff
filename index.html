@@ -26880,6 +26880,194 @@ function _jtNamedFoodish(t){
   if(_JT_FOODISH_NUM.test(s)) return true;
   return _JT_FOODISH_NOUN.test(s) && _JT_FOODISH_VERB.test(s);
 }
+// ===== ROSTER QUESTIONS, ANSWERED FROM THE BOARD (Yusuf, ruling) =========
+// "Who hasn't logged since Monday?" "Who's gone quiet?" "Who trained today?"
+// These are answered DETERMINISTICALLY, from jvTriage — the board he is already
+// looking at — and never handed to a model. A model asked to count a roster
+// invents a number next to a correct list, which is the invented-count bug law 5
+// exists to stop; here the number and the list are the same array, so they
+// cannot disagree.
+// Apostrophes are ’/' escapes, never bare, inside every pattern here.
+var _JV_RQ_QUIET=new RegExp(
+  'who(?:se|s|\\u2019s|\\u0027s)?\\s+(?:has\\s+|have\\s+)?(?:gone\\s+|went\\s+|is\\s+|are\\s+)?quiet'
+  +'|who\\s+(?:has|have)\\s*(?:n[\\u2019\\u0027]?t|not)\\s+logged'
+  +'|who\\s+hasn[\\u2019\\u0027]?t\\s+logged'
+  +'|who\\s+havent\\s+logged'
+  +'|who\\s+(?:is|are)\\s+(?:slipping|falling off|off track)','i');
+var _JV_RQ_TODAY=new RegExp(
+  'who\\s+(?:has\\s+|have\\s+)?(?:logged|trained|worked\\s*out|checked\\s*in|eaten|trained\\s+today)'
+  ,'i');
+var _JV_RQ_DAYWORD={sunday:0,monday:1,tuesday:2,wednesday:3,thursday:4,friday:5,saturday:6};
+// "since Monday" -> how many days back that was. "in 3 days" -> 3.
+function _jvRqThreshold(t){
+  var s=String(t||'').toLowerCase();
+  var m=/\b(?:in|for|over)\s+(?:the\s+last\s+)?(\d{1,2})\s*(?:\+|or more)?\s*days?\b/.exec(s);
+  if(m) return parseInt(m[1],10);
+  m=/\bsince\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/.exec(s);
+  if(m){
+    var want=_JV_RQ_DAYWORD[m[1]], now=new Date().getDay();
+    var back=(now-want+7)%7;
+    return back===0?7:back;
+  }
+  if(/\bsince\s+yesterday\b/.test(s)) return 1;
+  if(/\bthis\s+week\b/.test(s)) return (new Date().getDay()+6)%7 || 1;
+  return null;
+}
+// The board's own definition of who counts: not a trainer, not hidden.
+function _jvRqRoster(){
+  var hidden={}; try{ hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{}; }catch(e){}
+  return Object.keys(CLIENTS||{}).filter(function(c){
+    var r=CLIENTS[c]||{};
+    return !r.isTrainer && !hidden[c];
+  });
+}
+function _jvRqName(c){ return String(((CLIENTS||{})[c]||{}).name||c); }
+// One list, said one way. The count is derived from the SAME array that is
+// printed, so law 5 cannot be broken here by construction.
+function _jvRqSay(head, names, emptyLine){
+  if(!names.length) return _escHtml(emptyLine);
+  var n=names.length;
+  return _escHtml(head.replace('{n}', n).replace('{people}', n===1?'person':'people'))
+       + '<br>' + names.map(function(x){ return '• '+_escHtml(x); }).join('<br>');
+}
+// Returns HTML, or null when this is not a roster question at all.
+function _jvRosterAnswer(t){
+  var s=String(t||'');
+  var wantQuiet=_JV_RQ_QUIET.test(s);
+  var wantToday=!wantQuiet && _JV_RQ_TODAY.test(s) && /\btoday\b|\bso far\b|\byet\b/i.test(s);
+  if(!wantQuiet && !wantToday) return null;
+  // THREE STATES, and the failed one says it is a failed READ rather than a
+  // roster with nobody on it. Straight from the helpers the board already uses.
+  var st=''; try{ st=(typeof _jvTriageState==='function')?_jvTriageState():''; }catch(e){}
+  if(st!=='ready'){
+    try{ return _escHtml(_jvNoStore('the board')); }catch(e){ return _escHtml('I cannot read the board yet.'); }
+  }
+  var per=(jvTriage&&jvTriage.per)||{}, now=(jvTriage&&jvTriage.now)||Date.now();
+  var roster=_jvRqRoster();
+  if(!roster.length) return _escHtml('There is nobody on the roster to look at.');
+  if(wantToday){
+    var did=roster.filter(function(c){ var p=per[c]; return !!(p && p.cnt && p.cnt[0]>0); })
+                  .map(_jvRqName).sort();
+    return _jvRqSay('{n} logged today.', did, 'Nobody has logged anything today yet.');
+  }
+  // QUIET. A stated window wins; otherwise three days, which is the board's own
+  // sense of "gone quiet" rather than a number invented here.
+  var thr=_jvRqThreshold(s); if(thr==null) thr=3;
+  var quiet=[], never=[];
+  roster.forEach(function(c){
+    var p=per[c];
+    if(!p || !p.ever){ never.push(_jvRqName(c)); return; }
+    var d=null; try{ d=_jvQuietDays(p, now); }catch(e){ d=null; }
+    if(d!=null && d>=thr) quiet.push({name:_jvRqName(c), d:d});
+  });
+  quiet.sort(function(a,b){ return b.d-a.d; });
+  var lines=quiet.map(function(x){ return x.name+' — '+(x.d===1?'1 day':(x.d+' days')); });
+  var head='{n} quiet '+(thr===3?'3 days or more':('since '+thr+' day'+(thr===1?'':'s')+' ago'))+'.';
+  var out;
+  if(lines.length) out=_jvRqSay(head, lines, '');
+  else out=_escHtml('Nobody has been quiet that long — everyone on the board has logged inside the window.');
+  // Never-logged is a DIFFERENT fact from quiet, and saying it separately is what
+  // stops a never-logged client being reported as a huge day count.
+  if(never.length){
+    never.sort();
+    out += '<br><br>'+_escHtml((never.length===1?'One person has':(never.length+' people have'))+' never logged anything:')
+         + '<br>'+never.map(function(x){ return '• '+_escHtml(x); }).join('<br>');
+  }
+  return out;
+}
+// ===== "HOW IS HAYDEN DOING?" = WHAT THEY DID (Yusuf, live failure) ======
+// The live reply said it would "need to see his pattern across the week" for a
+// client whose entire tenure is four days and whose every row was already in
+// memory. That is the false-limitation family AND an unread read described as
+// unavailable — both charter violations in one sentence.
+// Everything this answers with is ALREADY LOADED: jvData.foodsByClient and
+// jvData.woByClient hold today's actual rows per client, jvTriage.per holds the
+// seven-day counts and the last weigh-in, and CLIENTS[code].started_at holds
+// tenure. Not one new query is fired, so there is nothing to "need to see".
+var _JV_RQ_HOWS=new RegExp(
+  'how(?:\\u2019s|\\u0027s|s| is| are)\\s+(.+?)\\s*(?:doing|getting on|going|been)\\b'
+  +'|what(?:\\u2019s|\\u0027s|s| is| did)\\s+(.+?)\\s+(?:do|done|doing|logged|log|eat|eaten|train)\\b'
+  +'|\\bhow\\s+(?:is|are)\\s+(.+?)\\s*\\?','i');
+function _jvHowsWho(t){
+  var m=_JV_RQ_HOWS.exec(String(t||''));
+  if(!m) return null;
+  var who=String(m[1]||m[2]||m[3]||'').trim()
+    .replace(/\b(today|this week|lately|recently|so far|right now|now)\b/ig,'')
+    .replace(/[?.!,]+$/,'').trim();
+  return who||null;
+}
+// One day's worth of a person, in plain rows.
+function _jvClientDayAnswer(t){
+  var who=_jvHowsWho(t);
+  if(!who) return null;
+  // SELF NEVER FALLS THROUGH TO THE ROSTER. "how am I doing" is about him.
+  try{ if(typeof _jvSaysSelf==='function' && _jvSaysSelf(t)) return null; }catch(e){}
+  var hits=[];
+  try{ var f=_jvFindClientIn(who); hits=(f&&f.hits)||[]; }catch(e){ hits=[]; }
+  if(!hits.length){
+    try{ var r2=_jvResolveClient(who); hits=r2||[]; }catch(e){}
+  }
+  if(!hits.length) return _escHtml('I have no one by that name on the roster.');
+  if(hits.length>1) return _escHtml('That matches '+hits.length+': '+hits.map(_jvRqName).join(', ')+'. Which one?');
+  var code=hits[0], name=_jvRqName(code);
+  var st=''; try{ st=(typeof _jvTriageState==='function')?_jvTriageState():''; }catch(e){}
+  if(st!=='ready'){ try{ return _escHtml(_jvNoStore(name+'’s day')); }catch(e){ return _escHtml('I cannot read the board yet.'); } }
+  var per=(jvTriage&&jvTriage.per)||{}, p=per[code]||null;
+  var now=(jvTriage&&jvTriage.now)||Date.now();
+  var rows=[];
+  // TODAY, from the rows themselves
+  var wos=[], foods=[];
+  // NOT through a window. prefix: if that lookup ever throws or misses, the catch
+  // hands back an empty list and the answer becomes "nothing logged today" — a
+  // false statement about a real person, produced by a plumbing detail.
+  try{ if(typeof jvData!=='undefined' && jvData && jvData.woByClient) wos=jvData.woByClient[code]||[]; }catch(e){}
+  try{ if(typeof jvData!=='undefined' && jvData && jvData.foodsByClient) foods=jvData.foodsByClient[code]||[]; }catch(e){}
+  if(wos.length){
+    rows.push(wos.map(function(w){
+      var ttl=String(w.title||'Session');
+      var when=''; try{ when=_jvClockLabel(w.eat_time)||''; }catch(e){}
+      if(!when){ try{ var d=new Date(w.logged_at); if(!isNaN(d)) when=d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}).toLowerCase().replace(' ',''); }catch(e){} }
+      return 'Trained — '+ttl+(when?(', '+when):'');
+    }).join('; '));
+  } else rows.push('No training logged today.');
+  if(foods.length){
+    var names=foods.map(function(f){ return String(f.name||'meal'); });
+    var cal=foods.reduce(function(a,f){ return a+(+f.calories||0); },0);
+    var pro=foods.reduce(function(a,f){ return a+(+f.protein||0); },0);
+    rows.push('Ate — '+names.join(', ')+(cal>0?(' ('+Math.round(cal)+' cal, '+Math.round(pro)+'g protein)'):''));
+  } else rows.push('Nothing eaten logged yet today.');
+  if(p && p.weighed && p.weighed[0] && p.lastWeight){
+    rows.push('Weighed in — '+p.lastWeight.val+' '+((typeof wUnit==='function')?wUnit():'lbs'));
+  }
+  if(p && p.stepped && p.stepped[0]) rows.push('Steps logged today.');
+  // TENURE, FROM A REAL READ. A four-day-old client is not a thin week, it is a
+  // four-day-old client, and saying so is the difference between context and an
+  // excuse for not answering.
+  var tenure='';
+  try{
+    var sa=String(((CLIENTS||{})[code]||{}).started_at||'').slice(0,10);
+    if(sa){
+      var sd=new Date(sa+'T00:00:00');
+      if(!isNaN(sd.getTime())){
+        var days=Math.max(1, Math.round((new Date(now).setHours(0,0,0,0)-sd.setHours(0,0,0,0))/86400000)+1);
+        var win=Math.min(7, days);
+        var logged=0;
+        if(p && p.cnt) for(var i=0;i<win;i++) if(p.cnt[i]>0) logged++;
+        tenure='Client since '+new Date(sa+'T00:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})
+             + ' — '+(days<=7 ? (days+' day'+(days===1?'':'s')) : (Math.round(days/7)+' weeks'))
+             + ', logged '+logged+' of the last '+win+' day'+(win===1?'':'s')+'.';
+      }
+    }
+  }catch(e){}
+  if(!tenure && p){
+    var q=null; try{ q=_jvQuietDays(p, now); }catch(e){}
+    if(!p.ever) tenure='Has never logged anything.';
+    else if(q!=null) tenure='Last logged '+(q===0?'today':(q===1?'yesterday':(q+' days ago')))+'.';
+  }
+  var head='<b>'+_escHtml(name)+'</b> today';
+  return head+'<br>'+rows.map(function(r){ return '• '+_escHtml(r); }).join('<br>')
+       + (tenure?('<br><br>'+_escHtml(tenure)):'');
+}
 async function _jtRunItem(t, capture, ctx){
   function held(){
     var p=window._jvPendingWrite;
@@ -26920,6 +27108,15 @@ async function _jtRunItem(t, capture, ctx){
   // can you do" can never fall through to a hand-written prompt paragraph
   // that oversells or a truncatable model call at all.
   if(_JV_HELP_RE.test(t)) return {status:'talk', line:_jvCapabilitySummary(), html:true, src:t};
+  // ROSTER QUESTIONS ARE ANSWERED FROM THE BOARD, NOT BY A MODEL. Deterministic,
+  // so the count and the list are the same array and cannot contradict each
+  // other — which is the invented-count bug at its source.
+  try{
+    var _rq=_jvRosterAnswer(t);
+    if(_rq) return {status:'talk', line:_rq, html:true, src:t};
+    var _rc=_jvClientDayAnswer(t);
+    if(_rc) return {status:'talk', line:_rc, html:true, src:t};
+  }catch(e){ console.error('roster answer', e); }
   // REINSTATE A FORMER CLIENT — intent, not a keyword (Yusuf, ruling, 19 Aug).
   // Its own resolver, not _jtModel's roster context — _jvAssistantContext
   // deliberately filters OUT inactive/hidden clients, so the model never
@@ -56622,6 +56819,16 @@ var _JIM_WO_RE=new RegExp('\\b(?:\\d+|one|two|three|four|five|six|seven|eight|ni
   +'|pulldowns?|plank|lunges?|crunches?|sit-?ups?|dips?|flys?|extensions?|treadmill|elliptical|cardio'
   +'|workout|worked out|trained|training|leg day|push day|pull day|session)\\b','i');
 function _jimLooksLikeWorkout(t){ return _JIM_WO_RE.test(String(t||'')); }
+// HIS SPLIT NAME IS THE TITLE (Yusuf, R2). "push and pull" is a Push Pull, not a
+// "Workout" — the generic default is the app forgetting what he called it.
+var _JIM_SPLIT_RE=new RegExp('\\b((?:push|pull|(?:upper|lower|full)(?:\\s*body)?|legs?|arms?|back|chest|shoulders?|core|abs|cardio|conditioning)'
+  +'(?:\\s*(?:and|&|\\/|\\+)\\s*(?:push|pull|legs?|arms?|core|abs))?(?:\\s+day)?)\\b','i');
+function _jimTitleFromWords(text){
+  var m=_JIM_SPLIT_RE.exec(String(text||''));
+  if(!m) return '';
+  return String(m[1]).replace(/\s*(?:and|&|\/|\+)\s*/gi,' ').replace(/\s+/g,' ').trim()
+    .replace(/\b[a-z]/g, function(c){ return c.toUpperCase(); });
+}
 // A PURE EXTRACTOR, because the existing one is not one. parseSpokenWorkout
 // looks like the right tool and is not: it is the manual workout SHEET's filler
 // — it writes into #woVoiceStatus, calls clearWoRows/addWoRow to populate the
@@ -56846,7 +57053,7 @@ async function jimTurn(text, photos, opts){
         return o;
       }).filter(function(o){ return o.name; }) : [];
       if(_swEx.length){
-        var _swOffer={title:(String((_sw&&_sw.title)||'').trim()||'Workout'), exercises:_swEx,
+        var _swOffer={title:(String((_sw&&_sw.title)||'').trim()||_jimTitleFromWords(text)||'Workout'), exercises:_swEx,
           description:_swEx.map(function(o){ return o.name+(o.detail?(' '+o.detail):''); }).join(', '),
           daysAgo:_jimPastDaysAgo(text)};
         if(_sw && _sw.notes) _swOffer.notes=String(_sw.notes);
@@ -57031,6 +57238,7 @@ async function jimTurn(text, photos, opts){
         var _swMatch=_swLegal2.filter(function(t){ return t.type.toLowerCase()===_swWant.toLowerCase(); })[0];
         if(_swMatch){
           var _swOk=await tlDoSwap(_swMatch.key);
+          try{ if(_swOk) window.__swapVerified=(window.__swapVerified||0)+1; }catch(e){}
           if(!_swOk) reply += (reply?'\n\n':'')+"That didn't actually save — can you ask again?";
         } else {
           reply += (reply?'\n\n':'')+(_swLegal2.length
@@ -57213,16 +57421,22 @@ async function jimTurn(text, photos, opts){
 
   // Handle food reconciliation: deletes first, then edits, then adds (so totals settle cleanly).
   var _foodToasts = 0;
+  // Declared ABOVE the loops that increment them. `var` hoists the NAME but not
+  // the assignment, so declaring these after their own ++ left them undefined at
+  // increment time — undefined++ is NaN, NaN propagates into `wrote`, and every
+  // seam gating on wrote>0 silently stops confirming anything. Caught by reading
+  // the order back rather than by the syntax check, which is perfectly happy.
+  var _edVerified=0, _delVerified=0;
   if(foodDeletes.items.length){
     for(var fd=0; fd<foodDeletes.items.length; fd++){
       var delId = foodDeletes.items[fd].id;
-      if(delId!=null){ var dOk = await applyFoodDelete(delId); if(dOk) _foodToasts++; }
+      if(delId!=null){ var dOk = await applyFoodDelete(delId); if(dOk){ _foodToasts++; _delVerified++; } }
     }
   }
   if(foodEdits.items.length){
     for(var fe=0; fe<foodEdits.items.length; fe++){
       var ed = foodEdits.items[fe];
-      if(ed && ed.id!=null){ var eOk = await applyFoodEdit(ed.id, ed); if(eOk) _foodToasts++; }
+      if(ed && ed.id!=null){ var eOk = await applyFoodEdit(ed.id, ed); if(eOk){ _foodToasts++; _edVerified++; } }
     }
   }
   var _foodExpected=0, _foodVerified=0;
@@ -57328,9 +57542,23 @@ async function jimTurn(text, photos, opts){
   if(!reply) reply = 'Done. ✓';
   // Setting the session's time is a write. Without it here, "training legs at 3"
   // moved the day AND then got offered as a journal note, because nothing counted.
-  _jimLastTurn.wrote = workoutLogs.items.length + foodAdds.items.length
+  // ===== THE TALLY OBEYS LAW 3 (Yusuf, R4) ==============================
+  // `wrote` used to be the sum of MARKERS THE MODEL EMITTED — a count of what
+  // was attempted, wearing the name of what happened. Every seam that gates a
+  // "Logged" line on it was therefore gating on an intention. It counts rows the
+  // database ACCEPTED now, from the verified counters the write paths were
+  // already producing and discarding on a toast.
+  // `emitted` keeps the old number for the one honest use it had: deciding
+  // whether this turn was about logging at all.
+  var _stepsOk=(stepsLogs.items.length && !_stepsFailed) ? stepsLogs.items.length : 0;
+  var _swapOk=0; try{ _swapOk=window.__swapVerified||0; window.__swapVerified=0; }catch(e){}
+  _jimLastTurn.emitted = workoutLogs.items.length + foodAdds.items.length
     + foodEdits.items.length + foodDeletes.items.length + stepsLogs.items.length
     + weightLogs.items.length + sessionTimes.items.length + swapDay.items.length
+    + (extractedNote.note?1:0) + (extractedEdit.edit?1:0);
+  _jimLastTurn.wrote = _woVerified + _foodVerified + _wtVerified + _stepsOk
+    + _edVerified + _delVerified + _swapOk
+    + sessionTimes.items.length            // applied locally + persisted by its own path
     + (extractedNote.note?1:0) + (extractedEdit.edit?1:0);
   // WHAT LANDED, IN PLAIN WORDS, FROM THE WRITE AND NOT FROM THE PROSE.
   // "5200 steps by 8:30" went into a slot on Blake's week and disappeared
@@ -57342,14 +57570,22 @@ async function jimTurn(text, photos, opts){
   // landedDay is the date the rows ACTUALLY carry: jimTurn always writes to
   // the current day, never to a clicked slot's date, so a caller working
   // from a past slot can compare and say so instead of implying otherwise.
+  // EVERY TYPE, IN THE ORDER HE SAID THEM. It covered four of the nine, so a dump
+  // carrying a weigh-in and a steps count under-reported itself and the confirm
+  // named less than actually landed.
   var landed=[];
   workoutLogs.items.forEach(function(w){ landed.push(String((w&&(w.title||w.name))||'that workout')); });
   foodAdds.items.forEach(function(f){ landed.push(String((f&&f.name)||'that meal')); });
-  if(stepsLogs.items.length && !_stepsFailed){
+  if(_edVerified>0)  landed.push(_edVerified===1?'a meal corrected':(_edVerified+' meals corrected'));
+  if(_delVerified>0) landed.push(_delVerified===1?'a meal removed':(_delVerified+' meals removed'));
+  if(_stepsOk){
     var _lsN=parseInt(stepsLogs.items[stepsLogs.items.length-1].steps,10);
     if(!isNaN(_lsN)) landed.push(_lsN.toLocaleString()+' steps');
   }
   if(_wtVerified>0) landed.push('your weigh-in');
+  if(sessionTimes.items.length) landed.push('your session time');
+  if(_swapOk>0) landed.push('the day swap');
+  if(extractedNote.note) landed.push('a note');
   _jimLastTurn.landed=landed;
   _jimLastTurn.landedDay=todayDateStr;
   _jimLastTurn.at=Date.now();
