@@ -7648,17 +7648,33 @@ function _sbRenderDown(){
   if(typeof window === 'undefined' || !window.fetch) return;
   var _prevFetch = window.fetch.bind(window);
   var AI_PATH = '/.netlify/functions/analyze';
+  // A HANGING REQUEST IS THE WORST DEAD AIR THERE IS (road-mode sweep, 20 Aug).
+  // Every call to this path was made with no AbortSignal, and this path is
+  // deliberately NOT gated by the SB_URL circuit breaker above — so on a flaky
+  // cell link a request that never completes never fails either. _sbNoted is
+  // never called, no breaker opens, no catch runs, and the turn simply never
+  // answers. Bounded only by the OS TCP timeout, which on a motorway is minutes
+  // of a man talking to a phone that is not going to reply.
+  // Sixty seconds is deliberately generous — it is a backstop against a hang,
+  // not a latency budget, and a photo turn or a full program build is allowed
+  // to be slow. What it guarantees is that the wait ENDS. Every caller already
+  // treats a throw or a non-ok response as "the assistant is unavailable" and
+  // says so, so this converts unbounded silence into an honest sentence.
+  // A caller that supplies its own signal keeps it — this only fills the gap.
+  var AI_TIMEOUT_MS = 60000;
   window.fetch = function(input, opts){
     var u='';
     try{ u = (typeof input === 'string') ? input : (input && input.url) || ''; }catch(e){}
     if(!u || u.indexOf(AI_PATH) === -1) return _prevFetch(input, opts);
-    var t=null; try{ t=_sessToken(); }catch(e){}
-    if(!t) return _prevFetch(input, opts);
     var o={}; for(var k in (opts||{})) o[k]=opts[k];
-    var h={}; var src=(o.headers||{});
-    for(var hk in src) h[hk]=src[hk];
-    h['Authorization']='Bearer '+t;
-    o.headers=h;
+    if(!o.signal){ var sig=null; try{ sig=_sbTimeout(AI_TIMEOUT_MS); }catch(e){} if(sig) o.signal=sig; }
+    var t=null; try{ t=_sessToken(); }catch(e){}
+    if(t){
+      var h={}; var src=(o.headers||{});
+      for(var hk in src) h[hk]=src[hk];
+      h['Authorization']='Bearer '+t;
+      o.headers=h;
+    }
     return _prevFetch(input, o);
   };
 })();
@@ -11264,7 +11280,7 @@ var JARVIS_CHARTER = [
 '2. OBEY FAST: a clear command executes immediately, undo always available. You ask a question back ONLY for: an ambiguous name, a missing material piece, a real clash, or a write on a named client. Never otherwise.',
 '3. A REPLY IS NOT A WRITE: you say "logged" only about a write that verifiably landed. If it landed, name exactly what and where. If it failed, say so plainly.',
 '4. HIS WORDS ARE NEVER LOST: on any failure, his text stays visible and you say what happened to it.',
-'5. NEVER INVENT: no fabricated names, numbers, macros, or states. Unknown is "I don\u2019t know yet" plus the fastest way to know. NEVER STATE A COUNT BESIDE A LIST \u2014 if you are naming people, the names ARE the count; do not also say a number, because when the two disagree the number is always the lie.',
+'5. NEVER INVENT: no fabricated names, numbers, macros, or states. Unknown is "I don\u2019t know yet" plus the fastest way to know. NEVER STATE A COUNT BESIDE A LIST \u2014 if you are naming people, the names ARE the count; do not also say a number, because when the two disagree the number is always the lie. A MACRO COUNT IS A FACT; A CHARACTER JUDGMENT IS NOT. Grams, calories, clock times, gaps since a last log and how long someone has been with him are read and stated plainly. What those numbers supposedly reveal about the PERSON is not in the data and is not yours to say \u2014 no \u201ceating with intention\u201d, no \u201creally committed\u201d, no \u201cletting herself go\u201d, no reading discipline, motivation or character out of a macro split. State the facts, the tenure and the gaps. The coaching is his.',
 '6. SELF: me / my / I / thegoat / Yusuf = the signed-in account. Never resolve those to a roster client.',
 '7. VOICE: short, warm, respectful, ear-format times ("one thirty", not 13:30), celebrates real work without laying it on thick. Plain language, zero machinery talk. NEVER MARKDOWN: no asterisks, no bold, no italics, no heading hashes, no bullet symbols \u2014 the chat renders raw, so a star is a star on his screen. Plain rows, one thought each.',
 '8. CLIENT SUCCESS: he never repeats himself. Carry the thread forward \u2014 what he just told you, you still know. When something lands, close the loop in ONE answer: what landed, where it went, and what it means for his day. Then stop. No second status, no ledger recital, no restating what he can already see.',
@@ -17509,15 +17525,49 @@ function jvAudioUnlock(){
 function _jvSpeakStrip(html){
   try{
     var d=document.createElement('div'); d.innerHTML=String(html||'');
-    var t=(d.textContent||'').replace(/\s+/g,' ').trim();
-    if(t.length<=300) return t;
-    // A long reply is cut at a SENTENCE, not mid-word — the server caps at 300
-    // and a butler trailing off halfway through a word sounds broken rather
-    // than brief. What is on screen is still the whole answer.
-    var cut=t.slice(0,300);
-    var end=Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '));
-    return (end>80 ? cut.slice(0,end+1) : cut.slice(0, cut.lastIndexOf(' '))).trim();
+    return (d.textContent||'').replace(/\s+/g,' ').trim();
   }catch(e){ return ''; }
+}
+// ===== THE ANSWER THAT SOUNDED FINISHED (Yusuf, live, 20 Aug) =============
+// Reported as a roster answer that "spoke its first half and died mid-reply,
+// stopped after bolognese." It was never dying. This function truncated to
+// 300 characters and PREFERRED A SENTENCE BOUNDARY to cut on, which is
+// precisely what made the fragment sound complete.
+// Measured on a six-client roster answer before the fix: 249 of 421
+// characters spoken, three of six clients named, and Faith — the one who had
+// gone quiet, the only fact in the answer that needed acting on — dropped in
+// silence. With eyes on the road and the screen unread, half an answer is
+// worse than no answer, because no answer is at least obviously no answer.
+// 300 IS THE SERVER'S OWN CEILING (netlify/functions/jarvis-speak.js rejects
+// anything longer with a 400), so it cannot be raised from here. The answer
+// is to say all of it, in order, one clip per piece.
+var _JV_SPEAK_MAX=300;
+function _jvSpeakChunks(t){
+  t=String(t||'').replace(/\s+/g,' ').trim();
+  var out=[];
+  if(!t) return out;
+  var guard=0;
+  while(t.length>_JV_SPEAK_MAX && guard++<64){
+    var win=t.slice(0,_JV_SPEAK_MAX);
+    // A sentence if there is one, then a clause, then a word. NEVER mid-word:
+    // a butler stopping halfway through a food name sounds broken, and the
+    // whole point of this pass is that a piece must never sound like an
+    // ending unless it actually is one.
+    var cut=Math.max(win.lastIndexOf('. '), win.lastIndexOf('? '), win.lastIndexOf('! '));
+    if(cut>40){ cut+=1; }
+    else{
+      cut=Math.max(win.lastIndexOf('; '), win.lastIndexOf(', '));
+      if(cut>40){ cut+=1; } else { cut=win.lastIndexOf(' '); }
+    }
+    // One unbroken 300-character token has no boundary to find. Hard-cut it
+    // rather than loop forever; nothing this app says looks like that, and the
+    // guard above is the backstop if something ever does.
+    if(!(cut>0)) cut=_JV_SPEAK_MAX;
+    out.push(t.slice(0,cut).trim());
+    t=t.slice(cut).trim();
+  }
+  if(t) out.push(t);
+  return out;
 }
 // `opts.force` is a DELIBERATE TAP — it plays while muted, because mute means
 // "do not speak at me unprompted", not "never speak". A replay he asked for is
@@ -17525,24 +17575,90 @@ function _jvSpeakStrip(html){
 // Clips are cached by their own text so a replay costs nothing the second time;
 // the cache is small and per page, and a miss simply re-fetches.
 var _JV_CLIPS={}, _JV_CLIP_MAX=12;
+// ONE ANSWER AT A TIME. A reply is now a SEQUENCE of clips, so a newer answer
+// can arrive while an older one is still speaking. The generation stamp is what
+// stops two replies interleaving out of the single shared audio element — the
+// same "one voice per turn" law the batch runner already keeps, extended to
+// cover a single reply that takes more than one clip to say.
+window._jvSpeakGen=0;
 // A FAILURE MUST SAY SO ONCE, VISIBLY (Yusuf, 19 Aug — voice confirmed on,
 // gold icon, and replies going silent with nothing on screen to explain it).
 // Every dead-end below used to be a bare return or a console.warn nobody but
 // devtools ever saw. One toast per new failure, not one per line — a whole
-// silent batch would otherwise stack toasts. Clears the moment a line
-// actually plays, so a later, different failure still gets its own notice.
-var _jvSpeakFailNoted=false, _jvSpeakFailAt=0;
+// silent batch would otherwise stack toasts.
+var _jvSpeakFailNoted=false, _jvSpeakToastAt=0;
 function _jvSpeakFail(reason){
   console.warn('[jarvis-speak] '+reason);
-  // Only the FIRST failure in the page's life used to raise a toast, and the
-  // re-arm happened only on the fresh-fetch success path — never on the cached
-  // clip path. So a session that failed once and then played only cached clips
-  // went permanently quiet about its own failures. Re-armed on a clock instead.
-  try{ if(_jvSpeakFailAt && (Date.now()-_jvSpeakFailAt)>10*60*1000) _jvSpeakFailNoted=false; }catch(e){}
-  try{ _jvSpeakFailAt=Date.now(); }catch(e){}
+  // THE RE-ARM MEASURED THE WRONG GAP (found 20 Aug, road-mode sweep). The
+  // timestamp was stamped on EVERY failure and then compared against itself,
+  // so the ten minutes was the gap between consecutive FAILURES rather than
+  // the time since the last TOAST. Patchy signal produces failures far closer
+  // together than ten minutes, so the flag never re-armed and a whole drive
+  // would get exactly one notice — every later failure console-only, which is
+  // silence. Stamped on the TOAST now, which is the thing being rate-limited.
+  var now=0; try{ now=Date.now(); }catch(e){}
+  if(_jvSpeakFailNoted && _jvSpeakToastAt && (now-_jvSpeakToastAt)>10*60*1000) _jvSpeakFailNoted=false;
   if(_jvSpeakFailNoted) return;
   _jvSpeakFailNoted=true;
+  _jvSpeakToastAt=now;
   try{ if(typeof showToast==='function') showToast('Voice failed — '+reason); }catch(e){}
+}
+// One clip for one piece of text. Returns the playable url, or null having
+// already said why — never throws its reason away.
+async function _jvClipFor(t){
+  if(_JV_CLIPS[t]) return _JV_CLIPS[t];
+  var tok=null; try{ tok=_sessToken(); }catch(e){}
+  if(!tok){
+    // THE SUSPECT: a long-open session can let this lapse with nothing else
+    // to trigger renewal. Every other authenticated call in the app either
+    // rides the SB_URL wrapper's own retry-on-401 or, like trainerOp, forces
+    // one via sessOnDenied() before it gives up — this one just read a dead
+    // token and quit. Same recovery, here, before it counts as a failure.
+    try{ await sessOnDenied(); }catch(e){}
+    try{ tok=_sessToken(); }catch(e){}
+  }
+  if(!tok){ _jvSpeakFail('not signed in'); return null; }
+  var res=await fetch('/.netlify/functions/jarvis-speak',{
+    method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},
+    body:JSON.stringify({text:t})});
+  if(res.status===401 || res.status===403){
+    var recovered=false; try{ recovered=await sessOnDenied(); }catch(e){}
+    if(recovered){
+      try{ tok=_sessToken(); }catch(e){}
+      if(tok) res=await fetch('/.netlify/functions/jarvis-speak',{
+        method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},
+        body:JSON.stringify({text:t})});
+    }
+  }
+  if(!res.ok){ _jvSpeakFail('server said '+res.status); return null; }
+  var buf=await res.arrayBuffer();
+  if(!buf || !buf.byteLength){ _jvSpeakFail('came back empty'); return null; }
+  var url=URL.createObjectURL(new Blob([buf],{type:'audio/mpeg'}));
+  // Held for replay. Capped, and the oldest url is revoked as it goes so a
+  // long session cannot leak blobs.
+  try{
+    _JV_CLIPS[t]=url;
+    var ks=Object.keys(_JV_CLIPS);
+    if(ks.length>_JV_CLIP_MAX){ var old0=ks[0]; try{ URL.revokeObjectURL(_JV_CLIPS[old0]); }catch(e){} delete _JV_CLIPS[old0]; }
+  }catch(e){}
+  return url;
+}
+// Resolves when the clip ends, errors, or is aborted — never hangs, so one bad
+// piece cannot strand the rest of an answer half-said. The url is NOT revoked
+// on end: it is the cached clip now, and revoking it made a second play of the
+// same line silent.
+function _jvPlayUrl(url){
+  return new Promise(function(res){
+    try{
+      if(!_jvAudioEl) _jvAudioEl=new Audio();
+      var el=_jvAudioEl, done=false;
+      function fin(){ if(done) return; done=true; try{ el.onended=null; el.onerror=null; el.onabort=null; }catch(e){} res(); }
+      el.onended=fin; el.onerror=fin; el.onabort=fin;
+      el.src=url;
+      var p=el.play();
+      if(p && p.catch) p.catch(function(){ _jvSpeakFail('blocked by the browser'); fin(); });
+    }catch(e){ res(); }
+  });
 }
 async function _jvSpeakLine(textOrHtml, opts){
   opts=opts||{};
@@ -17554,60 +17670,26 @@ async function _jvSpeakLine(textOrHtml, opts){
     // runner holds this flag while it works the items and drops it to speak the
     // summary, so speaking still lives inside the render and nowhere else.
     if(window._jvQuiet && !opts.force) return;
-    var t=_jvSpeakStrip(textOrHtml); if(!t) return;
-    // Cached clip: a replay of something already fetched costs nothing and is
-    // instant. A miss falls straight through to the fetch below.
-    if(_JV_CLIPS[t]){
-      try{
-        if(!_jvAudioEl) _jvAudioEl=new Audio();
-        _jvAudioEl.src=_JV_CLIPS[t];
-        var pc=_jvAudioEl.play();
-        if(pc && pc.catch) pc.catch(function(){ _jvSpeakFail('blocked by the browser'); });
-        return;
-      }catch(e){}
+    var full=_jvSpeakStrip(textOrHtml);
+    if(!full){
+      // A deliberate tap that produces no sound is a dead control, and a dead
+      // control is exactly what "auto-speak is broken" felt like from his side.
+      // An unprompted line with genuinely no words (an icon row, a bare card)
+      // stays quiet on purpose — that is not a failure, it is nothing to say.
+      if(opts.force) _jvSpeakFail('that line has no words to say');
+      return;
     }
-    var tok=null; try{ tok=_sessToken(); }catch(e){}
-    if(!tok){
-      // THE SUSPECT: a long-open session can let this lapse with nothing else
-      // to trigger renewal. Every other authenticated call in the app either
-      // rides the SB_URL wrapper's own retry-on-401 or, like trainerOp, forces
-      // one via sessOnDenied() before it gives up — this one just read a dead
-      // token and quit. Same recovery, here, before it counts as a failure.
-      try{ await sessOnDenied(); }catch(e){}
-      try{ tok=_sessToken(); }catch(e){}
+    var chunks=_jvSpeakChunks(full);
+    var gen=++window._jvSpeakGen;
+    for(var i=0;i<chunks.length;i++){
+      if(gen!==window._jvSpeakGen) return;      // a newer answer took over
+      if(!opts.force && !jvVoiceOn()) return;   // muted part-way through
+      var url=await _jvClipFor(chunks[i]);
+      if(gen!==window._jvSpeakGen) return;
+      if(!url) return;                          // _jvClipFor already said why
+      await _jvPlayUrl(url);
+      _jvSpeakFailNoted=false; // a piece actually played — a fresh failure earns its own toast
     }
-    if(!tok){ _jvSpeakFail('not signed in'); return; }
-    var res=await fetch('/.netlify/functions/jarvis-speak',{
-      method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},
-      body:JSON.stringify({text:t})});
-    if(res.status===401 || res.status===403){
-      var recovered=false; try{ recovered=await sessOnDenied(); }catch(e){}
-      if(recovered){
-        try{ tok=_sessToken(); }catch(e){}
-        if(tok) res=await fetch('/.netlify/functions/jarvis-speak',{
-          method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},
-          body:JSON.stringify({text:t})});
-      }
-    }
-    if(!res.ok){ _jvSpeakFail('server said '+res.status); return; }
-    var buf=await res.arrayBuffer();
-    if(!buf || !buf.byteLength){ _jvSpeakFail('came back empty'); return; }
-    var url=URL.createObjectURL(new Blob([buf],{type:'audio/mpeg'}));
-    // Held for replay. Capped, and the oldest url is revoked as it goes so a
-    // long session cannot leak blobs.
-    try{
-      _JV_CLIPS[t]=url;
-      var ks=Object.keys(_JV_CLIPS);
-      if(ks.length>_JV_CLIP_MAX){ var old0=ks[0]; try{ URL.revokeObjectURL(_JV_CLIPS[old0]); }catch(e){} delete _JV_CLIPS[old0]; }
-    }catch(e){}
-    if(!_jvAudioEl) _jvAudioEl=new Audio();
-    _jvAudioEl.src=url;
-    var pl=_jvAudioEl.play();
-    if(pl && pl.catch) pl.catch(function(err){ _jvSpeakFail('blocked by the browser'); });
-    // NOT revoked on end any more — the url is the cached clip now, and
-    // revoking it made the second play of the same line silent.
-    try{ _jvAudioEl.onended=null; }catch(e){}
-    _jvSpeakFailNoted=false; // a line actually played — a fresh failure earns its own toast
   }catch(e){ _jvSpeakFail('unexpected error'); }
 }
 var _JV_PENDING_MS=10*60*1000;      // a confirmation older than this is not a confirmation
@@ -26319,6 +26401,10 @@ function _jvPaneBarRender(){
   // could not see is a conversation that did not survive.
   // Here, because this is the moment #jvPaneOut exists.
   try{ _jtLoad(); jtRenderAll(); }catch(e){}
+  // AFTER the composer rebuild above, not before: jvPaneRender writes
+  // #jvPaneComposer's innerHTML from a string on every render, so anything
+  // restored earlier in this function would be thrown away by that write.
+  try{ _jtComposerDraftPaint(); }catch(e){}
   // The day, handed to him unasked, once. After the thread paints so it sits
   // above the river rather than fighting it for the top of the rail.
   try{ _jvMorningBrief(); }catch(e){}
@@ -26349,7 +26435,7 @@ function jvPaneMic(){
     // what he had said. Grown here, at the write, for every mic.
     if(inp){ inp.value=(base+int).trim(); try{ jtGrow(inp); }catch(e){} try{ _jtMarkDictated(inp); }catch(e){} }
   };
-  _jvPaneRec.onerror=off; _jvPaneRec.onend=off;
+  _jvPaneRec.onerror=function(ev){ _jtMicFail(ev, lbl, off); }; _jvPaneRec.onend=off;
   try{ _jvPaneRec.start(); }catch(e){ off(); }
 }
 // ONE CONVERSATION, TWO VIEWS. This used to run the layers itself and paint its
@@ -26433,7 +26519,7 @@ function admMicTap(){
     // what he had said. Grown here, at the write, for every mic.
     if(inp){ inp.value=(base+int).trim(); try{ jtGrow(inp); }catch(e){} try{ _jtMarkDictated(inp); }catch(e){} }
   };
-  _admRec.onerror=off; _admRec.onend=off;
+  _admRec.onerror=function(ev){ _jtMicFail(ev, lbl, off); }; _admRec.onend=off;
   try{ _admRec.start(); }catch(e){ off(); }
 }
 // The same thread again, from the Admin tab's bar. Same reasoning as the pane:
@@ -26712,6 +26798,7 @@ function _jtFitToHeader(){
 }
 function jtOpen(){
   try{ _jtFitToHeader(); _jtLoad(); jtRenderAll(); }catch(e){ console.error('jtOpen',e); }
+  try{ _jtComposerDraftPaint(); }catch(e){}
 }
 try{ window.addEventListener('resize', function(){ if(document.getElementById('tJarvis') && document.getElementById('tJarvis').classList.contains('active')) _jtFitToHeader(); }); }catch(e){}
 // ===== SPLITTING A MONOLOGUE INTO ITEMS ===================================
@@ -28017,6 +28104,7 @@ function _draftSettle(el){
   function grow(){
     try{
       if(el.id==='chatInput'){ if(typeof chatAutogrow==='function') chatAutogrow(el); }
+      else if(el.id && typeof _JT_COMPOSER_IDS!=='undefined' && _JT_COMPOSER_IDS[el.id]){ if(typeof jtGrow==='function') jtGrow(el); }
       else if(typeof jimGrow==='function') jimGrow(el);
     }catch(e){}
   }
@@ -28052,17 +28140,55 @@ function _composerMax(){
   try{ if(window.visualViewport && window.visualViewport.height) vh=window.visualViewport.height; }catch(e){}
   return Math.max(140, Math.round(vh*0.32));
 }
+// ===== THE COMPOSER IS A THIRD THING (road-mode sweep, 20 Aug) ============
+// The ruling above says window._jtDrafts must never be persisted, and it still
+// must not be — that store is the PER-BUBBLE draft, whose whole job is dying
+// with the session. The Jarvis COMPOSER is neither that store nor the client
+// composers' store: it had no persistence at all, and nobody had ruled on it.
+// Found on the road-mode sweep: dictate a long sentence into the Jarvis box on
+// a phone, let the screen lock before tapping send, and iOS discards the web
+// view on its own schedule. It comes back a cold boot with an empty box, no
+// error and no trace — a false success that looks like a fresh working app.
+// This uses DAY & JIM's existing seam (_draftKey / draftSave / draftGet) with a
+// new slot rather than building a second store beside it, which is exactly what
+// the 27972 ruling was written to prevent.
+// SCOPED BY ID, and that is load-bearing: jtGrow also runs on the per-bubble
+// draft textareas (their oninput calls _jtDraftSet then jtGrow). Saving here
+// unscoped would push a bubble draft into the composer slot and collide the two
+// stores the ruling separates. Only the four real composers are persisted.
+var _JT_COMPOSER_IDS={jtInputMob:1, jtInputDesk:1, jtInputOvl:1, jvPaneInput:1};
+function _jtComposerSave(el){
+  try{ if(el && el.id && _JT_COMPOSER_IDS[el.id]) draftSave('jarvis', el.value); }catch(e){}
+}
 function jtGrow(el){
   try{
     if(!el) return;
     // EMPTY GOES BACK TO NOTHING. Setting a height from an empty textarea's
     // scrollHeight leaves it taller than it started — the inline height has to
     // be removed, not recalculated, or the field creeps up after every send.
-    if(!String(el.value||'').length){ el.style.height=''; el.style.overflowY='hidden'; return; }
+    if(!String(el.value||'').length){ el.style.height=''; el.style.overflowY='hidden'; _jtComposerSave(el); return; }
     el.style.height='auto';
     var max=_composerMax(), sh=_composerFit(el);
     el.style.height=Math.min(sh, max)+'px';
     el.style.overflowY=(sh>max)?'auto':'hidden';
+    // Saved on every grow, which is the one place BOTH typing and dictation
+    // pass through: assigning .value from the mic raises no input event, so the
+    // mic handlers call jtGrow directly — the same reason the grow itself lives
+    // here. One seam, both ways in.
+    _jtComposerSave(el);
+  }catch(e){}
+}
+// Only ever fills an EMPTY box: typing over a restored draft and then clearing
+// it must stay cleared, not spring back on the next repaint. Same rule and same
+// shape as _chatDraftPaint above.
+function _jtComposerDraftPaint(){
+  try{
+    var v=draftGet('jarvis');
+    if(!v) return;
+    Object.keys(_JT_COMPOSER_IDS).forEach(function(id){
+      var c=document.getElementById(id);
+      if(c && !c.value){ c.value=v; _draftSettle(c); }
+    });
   }catch(e){}
 }
 // ENTER SENDS ON A REAL KEYBOARD, AND MAKES A NEWLINE ON A TOUCH ONE.
@@ -28668,6 +28794,7 @@ function jvOvlOpen(){
   if(window._jvShareMode) return;
   document.body.classList.add('jv-ovl-on');
   try{ _jtLoad(); jtRenderAll(); }catch(e){}
+  try{ _jtComposerDraftPaint(); }catch(e){}
   // Focus is a gift on a real keyboard and a popup on a touch one.
   try{
     if(!window.matchMedia('(pointer: coarse)').matches){
@@ -28761,6 +28888,40 @@ function _jtStopMic(){
 }
 // Voice is the way in here more than anywhere — this is the surface he opens
 // with a phone in his hand and a client in front of him.
+// ===== A MIC THAT DIES MUST SAY SO (road-mode sweep, 20 Aug) =============
+// onerror and onend were both wired straight to off(), which only drops a CSS
+// class and blanks the hint. So a dictation that failed — no signal, mic
+// permission lost, no speech heard — left the field empty, the icon dark, and
+// NOTHING said. He speaks a whole sentence at a phone on a motorway and gets
+// silence back, before the speak path is ever reached. That is dead air at the
+// very front of the loop, and on a 12-hour drive it reads as "the app is
+// ignoring me".
+// onend still goes to off(): a mic he stopped himself is not a failure and must
+// not announce. Only onerror speaks.
+// It is SAID as well as shown, because the hint label is on a screen he is not
+// looking at. Speaking is best-effort by nature — if the failure was the
+// connection then the clip will not fetch either — but it costs nothing to try
+// and it is the only channel he has while driving.
+// His words are never lost: off() does not clear the field, so anything already
+// dictated before the error stays exactly where it is.
+function _jtMicErrText(err){
+  var e=String(err||'');
+  if(e==='no-speech') return 'I did not hear anything — tap the mic and say it again.';
+  if(e==='not-allowed' || e==='service-not-allowed') return 'The mic is blocked — allow microphone access for this site.';
+  if(e==='network') return 'The mic needs a connection and there is not one right now.';
+  if(e==='audio-capture') return 'No microphone available.';
+  return 'The mic stopped — tap it and try again.';
+}
+function _jtMicFail(ev, lblId, offFn){
+  var err=(ev && ev.error) ? ev.error : '';
+  try{ if(typeof offFn==='function') offFn(); }catch(e){}
+  // "aborted" is what a normal stop raises on some engines — never announce it.
+  if(err==='aborted') return;
+  var msg=_jtMicErrText(err);
+  try{ var l=(typeof lblId==='string') ? document.getElementById(lblId) : lblId; if(l) l.textContent=msg; }catch(e){}
+  try{ if(typeof showToast==='function') showToast(msg); }catch(e){}
+  try{ _jvSpeakLine(msg); }catch(e){}
+}
 function jtMic(which){
   jvAudioUnlock();
   var ID=_jtIds(which);
@@ -28787,7 +28948,7 @@ function jtMic(which){
     // what he had said. Grown here, at the write, for every mic.
     if(inp){ inp.value=(base+int).trim(); try{ jtGrow(inp); }catch(e){} try{ _jtMarkDictated(inp); }catch(e){} }
   };
-  _jtRec.onerror=off; _jtRec.onend=off;
+  _jtRec.onerror=function(ev){ _jtMicFail(ev, lbl, off); }; _jtRec.onend=off;
   try{ _jtRec.start(); }catch(e){ off(); }
 }
 // ===== WHAT THE ADMIN TAB WAS CARRYING ====================================
