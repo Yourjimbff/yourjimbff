@@ -309,6 +309,10 @@ const WRITE_OPS = {
       calories: num(a.calories), protein: num(a.protein), carbs: num(a.carbs), fat: num(a.fat),
       rating: str(a.rating || 'unknown', 40),
       date_str: str(a.date_str, 40) || undefined,
+      // The door never took these, so every row it wrote had both columns null:
+      // the day view then fell back to logged_at and a stated time was invisible.
+      meal: a.meal != null ? str(a.meal, 40) : undefined,
+      eat_time: a.eat_time != null ? str(a.eat_time, 20) : undefined,
       logged_at: isoTs(a.logged_at || new Date().toISOString()) },
   }),
   // Steps are one row per client per day, so this is the only one that merges
