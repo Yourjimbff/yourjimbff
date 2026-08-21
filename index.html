@@ -8841,6 +8841,18 @@ function sqClearRejected(){ try{ localStorage.removeItem(_SQ_REJ_KEY); }catch(e)
 // server has told us it will never accept it.
 var _sqLastFlush=0;
 var SQ_MIN_GAP=30000;            // floor between automatic flushes
+// HIS WORDS ARE NEVER LOST — INCLUDING THE ONES THAT RAN OUT OF RETRIES.
+// A row that kept failing non-permanently was kept only while tries<40, and at
+// 40 it was simply not pushed back onto the queue: gone, with no shelf entry,
+// no count, and nothing said. A weigh-in or a workout stuck behind a session
+// that expired mid-drive would burn forty attempts across the retry interval
+// and then vanish, after he had been told "it will sync when it can".
+// Forty failures is a giving-up, not a refusal, so it goes to the same shelf a
+// server refusal goes to — out of the retry loop, still readable, still his.
+function _sqGaveUp(item, sofar){
+  try{ console.warn('sync queue: gave up after 40 tries', item && item.table); }catch(e){}
+  try{ _sqReject(item, 0, 'gave up after 40 attempts \u2014 never reached the server'); }catch(e){}
+}
 async function sqFlush(manual){
   var q=_sqAll(); if(!q.length){ if(manual) showToast('Nothing waiting'); return; }
   // Don't spend the queue's retry budget while the breaker is open. Every blocked
@@ -8876,10 +8888,10 @@ async function sqFlush(manual){
         dropped++; continue;
       }
       item.tries=(item.tries||0)+1;
-      if(item.tries<40) left.push(item);
+      if(item.tries<40) left.push(item); else { _sqGaveUp(item, dropped); dropped++; }
     }catch(e){
       item.tries=(item.tries||0)+1;
-      if(item.tries<40) left.push(item);
+      if(item.tries<40) left.push(item); else { _sqGaveUp(item, dropped); dropped++; }
     }
   }
   _sqWrite(left); sqBadge();
@@ -40489,6 +40501,7 @@ async function insertFoodLog(row, photo){
       try{ showToast('Saved — but the time needs a DB column'); }catch(e){}
     }
   }
+  var _posted = attempt.ok;   // did the POST itself land, before read-back can overwrite it
   try{ window.__foodInsertBusy=false; if(!attempt.ok){ window.__lastFoodSig=null; } }catch(e){}
   // VERIFY BY READING IT BACK — never by trusting the POST response alone (the
   // standing law, and the exact fix insertWorkoutLog already carries: a
@@ -40515,6 +40528,24 @@ async function insertFoodLog(row, photo){
       }
     }
   }
+  // THE ROW THAT WAS SIMPLY GONE (road-mode sweep, 20 Aug). This path writes
+  // with a raw fetch and never called _sbWriteFailed, so a chat-logged meal or
+  // workout that failed was not queued, did not reach the rejected shelf, and
+  // was lost outright — while the offline bar on screen was promising "saved on
+  // this device and will sync when it's back". Steps and weigh-ins queued; these
+  // two, the ones he actually dictates while driving, did not. Both tables were
+  // already in SB_QUEUE_TABLES; only the helper that queues was being bypassed.
+  // THE DISTINCTION IS LOAD-BEARING: only a write that NEVER LANDED may queue.
+  // If the POST succeeded and it was the READ-BACK that failed, the row is in
+  // the database — queueing that would post it a second time and put two of the
+  // same meal on his day. That case returns unconfirmed instead, which is a
+  // different sentence, not a quieter one.
+  if(!attempt.ok && !_posted){
+    try{ _sbWriteFailed('food_logs', 0, attempt.body||'', payload, 'POST'); }catch(e){}
+    try{ window.__sqQueuedThisTurn=true; }catch(e){}
+    return {ok:false, id:null, dropped:dropped, queued:true};
+  }
+  if(!attempt.ok && _posted) return {ok:false, id:(attempt.id!=null?attempt.id:null), dropped:dropped, unconfirmed:true};
   return {ok: attempt.ok, id: (attempt.id!=null?attempt.id:null), dropped: dropped};
 }
 
@@ -40567,6 +40598,7 @@ async function insertWorkoutLog(row){
     attempt = await tryInsert(payload);
     guard++;
   }
+  var _posted = attempt.ok;   // did the POST itself land, before read-back can overwrite it
   try{ window.__woInsertBusy=false; if(!attempt.ok){ window.__lastWoSig=null; } }catch(e){}
   // VERIFY BY READING IT BACK — never by trusting the POST response alone. A client
   // was told her walk was logged; it existed nowhere, not on her Day page, not
@@ -40592,6 +40624,24 @@ async function insertWorkoutLog(row){
       }
     }
   }
+  // THE ROW THAT WAS SIMPLY GONE (road-mode sweep, 20 Aug). This path writes
+  // with a raw fetch and never called _sbWriteFailed, so a chat-logged meal or
+  // workout that failed was not queued, did not reach the rejected shelf, and
+  // was lost outright — while the offline bar on screen was promising "saved on
+  // this device and will sync when it's back". Steps and weigh-ins queued; these
+  // two, the ones he actually dictates while driving, did not. Both tables were
+  // already in SB_QUEUE_TABLES; only the helper that queues was being bypassed.
+  // THE DISTINCTION IS LOAD-BEARING: only a write that NEVER LANDED may queue.
+  // If the POST succeeded and it was the READ-BACK that failed, the row is in
+  // the database — queueing that would post it a second time and put two of the
+  // same meal on his day. That case returns unconfirmed instead, which is a
+  // different sentence, not a quieter one.
+  if(!attempt.ok && !_posted){
+    try{ _sbWriteFailed('workout_logs', 0, attempt.body||'', payload, 'POST'); }catch(e){}
+    try{ window.__sqQueuedThisTurn=true; }catch(e){}
+    return {ok:false, id:null, dropped:dropped, queued:true};
+  }
+  if(!attempt.ok && _posted) return {ok:false, id:(attempt.id!=null?attempt.id:null), dropped:dropped, unconfirmed:true};
   return {ok: attempt.ok, id: (attempt.id!=null?attempt.id:null), dropped: dropped};
 }
 
@@ -56793,6 +56843,22 @@ async function logWeightFromChat(offer){
 // the last entry and re-adds it with any images attached.
 // opts.dateStr pins which day the writes land on, for the per-day bars.
 var _jimLastTurn = {wrote:0};
+// A QUEUED ROW IS NOT A LOST ROW, AND MUST NOT BE TOLD LIKE ONE (road-mode
+// sweep, 20 Aug). Now that chat-logged food and workouts queue on a genuine
+// non-landing failure, "that didn't actually save — can you tell me again?" is
+// two lies at once: it did save, here, and saying it again would post it twice
+// when the queue flushes. The queued sentence says where it is, that it will
+// go by itself, and explicitly not to repeat it.
+var _JIM_QUEUED_LINE = "I could not reach the server, so that is saved on this device and will sync by itself when the signal is back. Do not say it again \u2014 it would log twice.";
+function _jimSaveFailLine(fallback){
+  var q=false; try{ q=!!window.__sqQueuedThisTurn; }catch(e){}
+  return q ? _JIM_QUEUED_LINE : fallback;
+}
+function _jimAlreadySaidFail(reply){
+  return reply.indexOf("didn't actually save")>=0
+      || reply.indexOf("don't think that actually saved")>=0
+      || reply.indexOf("will sync by itself")>=0;
+}
 
 // Strip words that carry no food identity so two phrasings of the same meal
 // compare on what actually matters. "Grilled shrimp with brown rice and
@@ -57092,6 +57158,7 @@ async function jimTurn(text, photos, opts){
   // it and neither can drift from the other.
   try{ text=_jimNormalizeDictation(text); }catch(e){}
   _jimLastTurn = {wrote:0};
+  try{ window.__sqQueuedThisTurn=false; }catch(e){}
   // Reset per turn, so "wipe that" can only ever take back THIS turn's rows.
   try{ window._jimWrote=[]; }catch(e){}
   var hasPhoto = photos.length>0;
@@ -57537,8 +57604,8 @@ async function jimTurn(text, photos, opts){
     reply = "I don't think that actually saved — can you tell me your weight again?";
     _wtExpected = 1;
   }
-  if(_wtVerified < _wtExpected && reply.indexOf("didn't actually save")<0 && reply.indexOf("don't think that actually saved")<0){
-    reply += (reply?'\n\n':'') + "That didn't actually save — can you tell me your weight again?";
+  if(_wtVerified < _wtExpected && !_jimAlreadySaidFail(reply)){
+    reply += (reply?'\n\n':'') + _jimSaveFailLine("That didn't actually save — can you tell me your weight again?");
   }
 
   // A CLIENT ON A REST DAY SAID "add a 30 minute morning walk." Jim replied "Logged
@@ -57616,8 +57683,8 @@ async function jimTurn(text, photos, opts){
   // If a marker was present (or salvaged) and still came up short, the chat message
   // must say so plainly — never let Jim's own prose, which already assumed success,
   // reach the client uncorrected.
-  if(_woVerified < _woExpected && reply.indexOf("didn't actually save")<0 && reply.indexOf("don't think that actually saved")<0){
-    reply += (reply?'\n\n':'') + "That didn't actually save — can you tell me again?";
+  if(_woVerified < _woExpected && !_jimAlreadySaidFail(reply)){
+    reply += (reply?'\n\n':'') + _jimSaveFailLine("That didn't actually save — can you tell me again?");
   }
 
   // Handle WORKOUT_NOTE: append commentary to existing workout (no new log)
@@ -57738,8 +57805,8 @@ async function jimTurn(text, photos, opts){
   }
   // One check, after both the direct adds AND the salvage pass, so a food row that
   // only surfaced via salvage still gets the same honest correction on failure.
-  if(_foodVerified < _foodExpected && reply.indexOf("didn't actually save")<0 && reply.indexOf("don't think that actually saved")<0){
-    reply += (reply?'\n\n':'') + "One of those didn't actually save — can you tell me again?";
+  if(_foodVerified < _foodExpected && !_jimAlreadySaidFail(reply)){
+    reply += (reply?'\n\n':'') + _jimSaveFailLine("One of those didn't actually save — can you tell me again?");
   }
   // Scrub any leftover or partial marker text so raw JSON / tags never reach the screen.
   reply = reply
@@ -57790,8 +57857,14 @@ async function jimTurn(text, photos, opts){
   // carrying a weigh-in and a steps count under-reported itself and the confirm
   // named less than actually landed.
   var landed=[];
-  workoutLogs.items.forEach(function(w){ landed.push(String((w&&(w.title||w.name))||'that workout')); });
-  foodAdds.items.forEach(function(f){ landed.push(String((f&&f.name)||'that meal')); });
+  // NAMED ONLY UP TO WHAT THE DATABASE ACCEPTED (road-mode sweep, 20 Aug).
+  // Every other line below is already gated on a verified counter; these two
+  // walked the MODEL'S MARKERS instead, so a workout or a meal that failed to
+  // write was still named in the confirm he hears. "Logged Leg Day" over a row
+  // that does not exist is the exact false success law 3 forbids, and on the
+  // road it is the one he cannot catch by glancing at the screen.
+  workoutLogs.items.slice(0, Math.max(0,_woVerified)).forEach(function(w){ landed.push(String((w&&(w.title||w.name))||'that workout')); });
+  foodAdds.items.slice(0, Math.max(0,_foodVerified)).forEach(function(f){ landed.push(String((f&&f.name)||'that meal')); });
   if(_edVerified>0)  landed.push(_edVerified===1?'a meal corrected':(_edVerified+' meals corrected'));
   if(_delVerified>0) landed.push(_delVerified===1?'a meal removed':(_delVerified+' meals removed'));
   if(_stepsOk){
@@ -57805,13 +57878,21 @@ async function jimTurn(text, photos, opts){
   _jimLastTurn.landed=landed;
   _jimLastTurn.landedDay=todayDateStr;
   _jimLastTurn.at=Date.now();
-  // A REPLY IS NOT A WRITE, and neither is a MARKER. `wrote` and `landed` above
-  // both count what the model EMITTED, not what the database accepted — which is
-  // the right signal for "was this turn about logging at all" and the wrong one
-  // for "did it land". Callers that report an outcome need the second, so it is
-  // published here from the same verified counters this function already keeps.
-  // Without it the rail said "Logged — Protein Donut x2" over a refused write.
+  // A REPLY IS NOT A WRITE, and neither is a MARKER. `emitted` counts what the
+  // model EMITTED — the right signal for "was this turn about logging at all"
+  // and the wrong one for "did it land". `wrote` and `landed` above are built
+  // from the verified counters, so callers reporting an outcome read those.
+  // Without that the rail said "Logged — Protein Donut x2" over a refused write.
+  //
+  // THE WORKOUT TERM WAS MISSING HERE (road-mode sweep, 20 Aug). Food, weight
+  // and steps each had a term; workouts did not — even though _woVerified and
+  // _woExpected were both already computed a few lines up and already drive
+  // their own honest-correction line. So a workout that failed to write left
+  // shortfall false and .ok TRUE, and every caller gated on .ok — the rail's
+  // Logged line, wkPanelSave, _mwPanelSave — reported a session that was never
+  // written. One missing clause, and it is the log he dictates from the car.
   _jimLastTurn.shortfall = (_foodVerified < _foodExpected)
+    || (_woVerified < _woExpected)
     || (_wtVerified < _wtExpected)
     || !!_stepsFailed;
   _jimLastTurn.ok = !_jimLastTurn.shortfall;
