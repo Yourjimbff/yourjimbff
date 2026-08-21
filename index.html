@@ -1315,8 +1315,39 @@ body.jv-ovl-on #jvOvlWrap{display:flex;align-items:flex-end;justify-content:cent
 /* THE PHONE IS THE CALENDAR (Yusuf, ruling, 20 Aug). One bar of chrome
    instead of three stacked rows, and the sheet gives its width to the grid
    rather than to padding. See _mwRender/_mwFitBody. */
-.mwBar{display:flex;align-items:center;gap:7px;padding:0 0 9px;}
+.mwBar{display:flex;align-items:center;gap:7px;padding:0 0 9px;flex-wrap:wrap;}
 .mwBarSp{flex:1 1 auto;}
+/* THE "+" WAS NOT 90% OFF SCREEN, IT WAS ALL OF IT. Measured on the deployed
+   file at 375px: the row needs 397px and has 355, so zoom-in rendered at
+   x377-407 with the viewport ending at 375 — elementFromPoint at its centre
+   returned nothing at all, and .mwBar neither wraps nor scrolls, so there was
+   no gesture that could reach it. Zoom OUT sat at 342-372 and worked, which is
+   exactly why it read as "zoom out works".
+   Below the desktop threshold the row breaks in two — nav on the first line,
+   the view segment and the zoom on the second — and every control in it takes
+   the 44px finger minimum. One line could not hold all three groups at 44px:
+   nav+zoom alone is 259px of the 355 available, leaving 96px for a three-way
+   segment. The extra row is ~44px of chrome; a control nobody can press is
+   worth more than that. */
+/* THE SIZE IS NOT MEDIA-QUERIED — the 44px floor is a standing law with no
+   style exceptions, and a desktop with a touchscreen is still a finger. Only
+   the row BREAK is phone-scoped, because desktop has the width to hold one
+   line (768px used of 1440) and does not render the view segment at all. */
+.mwBar .schNav,
+.mwBar .schJumpB,
+.mwBar .mwSeg{min-height:44px;}
+.mwBar .schNav,
+.mwBar .schJumpB{display:inline-flex;align-items:center;justify-content:center;}
+/* 44 on BOTH axes. The week arrows were 44 tall and 25 wide, which is not a
+   44px target — it is a tall sliver, and the calendar blocks failed the same
+   way at 41px wide. */
+.mwBar .schNav{min-width:44px;padding-left:0;padding-right:0;}
+.mwBar .mwSegB{min-height:44px;padding:0 14px;}
+.mwBar .mwZoomB{width:44px;height:44px;border-radius:12px;font-size:17px;}
+@media (max-width:759px){
+  .mwBarSp{flex:1 0 100%;height:0;margin:0;}     /* forces the break, keeps row 1 left-aligned */
+  .mwBar{row-gap:8px;}
+}
 .mwSeg{display:flex;background:#141414;border:1px solid #272727;border-radius:10px;overflow:hidden;flex:0 0 auto;}
 .mwSegB{background:transparent;border:0;color:rgba(240,236,228,0.55);font-family:inherit;
   font-size:11.5px;font-weight:800;padding:7px 11px;cursor:pointer;}
@@ -27363,6 +27394,64 @@ async function _jtSingle(t){
 // a bordered field by exactly its border width. That was invisible while these
 // fields scrolled by default; with overflow hidden below the cap it starts eating
 // the bottom of the last line. .chat-ti has a 1.5px border and lost 3px to this.
+// ===== HIS WORDS ARE NEVER LOST, INCLUDING THE ONES STILL IN THE BOX =======
+// THE SEAM, stated plainly because there is a second draft store in this file
+// and they must not be confused:
+//   window._jtDrafts (see _jtDraftSet) is ADMIN's, in memory, deliberately NOT
+//   persisted. Its job is surviving jtRenderAll's constant innerHTML rebuilds
+//   WITHIN a session — a per-bubble edit that should die with the session.
+//   This one is the CLIENT composers' draft, and its job is the opposite:
+//   surviving a refresh. So it is localStorage keyed by client code, which is
+//   the pattern the client side already uses for its other drafts
+//   (_jDraftKey -> yjb_jdraft_<code>, _slogKey -> yjb_slogdraft_<code>).
+// They never touch each other: different storage, different lifetime, different
+// problem. Adding persistence to _jtDrafts would be the collision — don't.
+function _draftKey(slot){
+  var code=(typeof cl!=='undefined' && cl && cl.code) ? cl.code : 'x';
+  return 'yjb_draft_'+slot+'_'+code;
+}
+function draftSave(slot,v){
+  try{
+    v=String(v==null?'':v);
+    // An empty box is not a draft. Storing '' would resurrect nothing and keep
+    // a dead key per client forever; clearing is what makes send/clear stick.
+    if(v) localStorage.setItem(_draftKey(slot), v);
+    else localStorage.removeItem(_draftKey(slot));
+  }catch(e){}
+}
+function draftGet(slot){
+  try{ return localStorage.getItem(_draftKey(slot))||''; }catch(e){ return ''; }
+}
+// #chatInput is in static markup rather than rebuilt per render, so it is
+// refilled here rather than emitted with its value the way the day bar is.
+// Only ever fills an EMPTY box: typing over a restored draft and then clearing
+// it must stay cleared, not spring back on the next repaint.
+function _chatDraftPaint(){
+  try{
+    var c=document.getElementById('chatInput');
+    if(!c || c.value) return;
+    var v=draftGet('chat');
+    if(v){ c.value=v; _draftSettle(c); }
+  }catch(e){}
+}
+// A RESTORED FIELD MUST BE MEASURED TWICE. Growing a textarea the instant its
+// value is set measures it against whatever font is on screen at that moment,
+// and the webfont has not necessarily landed — the restored day bar came back
+// 125px when its own text needed 147px, clipping the last line he dictated.
+// Caught at 375px on a reload, not reasoned about. rAF is not used here: it
+// does not fire in a hidden document, which is exactly where this gets tested.
+function _draftSettle(el){
+  if(!el) return;
+  function grow(){
+    try{
+      if(el.id==='chatInput'){ if(typeof chatAutogrow==='function') chatAutogrow(el); }
+      else if(typeof jimGrow==='function') jimGrow(el);
+    }catch(e){}
+  }
+  grow();
+  setTimeout(grow, 250);
+  try{ if(document.fonts && document.fonts.ready && document.fonts.ready.then) document.fonts.ready.then(grow); }catch(e){}
+}
 function _composerFit(el){
   var extra=0;
   try{
@@ -54153,6 +54242,7 @@ async function loadChatHistory(){
   if(!cl)return;
   // Already loaded for this client? Just scroll and bail.
   if(chatLoadedFor===cl.code){
+    _chatDraftPaint();
     setTimeout(scrollChatToBottom, 50);
     return;
   }
@@ -54180,6 +54270,9 @@ async function loadChatHistory(){
   chatHistoryState = ok ? 'ok' : 'failed';
   if(ok) chatLoadedFor=cl.code;      // only a read that landed counts as loaded
   renderChatMessages();
+  // A read that FAILED must still give him his unsent words back — the draft
+  // has nothing to do with whether the server answered.
+  _chatDraftPaint();
   setTimeout(scrollChatToBottom, 50);
 }
 // The way back from a failed read. Clears the guard so the next call actually
@@ -54268,7 +54361,8 @@ function renderChatMessages(){
       +'Your conversation did not load. That is a read that failed, not an empty thread '
       +'\u2014 nothing you have said has gone anywhere.</div>'
       +'<div id="chatHistRetry" style="margin-top:16px;color:var(--gold);font-size:14px;font-weight:800;'
-      +'cursor:pointer;padding:11px 18px;border:1.5px solid rgba(245,197,24,0.42);border-radius:12px;">Try again</div>'
+      +'cursor:pointer;min-height:44px;padding:0 20px;border:1.5px solid rgba(245,197,24,0.42);border-radius:12px;'
+      +'display:flex;align-items:center;justify-content:center;">Try again</div>'
       +'</div></div>';
     try{ document.getElementById('chatHistRetry').onclick=function(){ chatRetryHistory(); }; }catch(e){}
     return;
@@ -54286,10 +54380,14 @@ function renderChatMessages(){
   // letting a stale window read as the whole conversation.
   if(chatHistoryState==='failed'){
     var warn=document.createElement('div');
-    warn.style.cssText='margin:8px auto 12px;max-width:88%;font-size:11.5px;line-height:1.5;color:var(--m2);text-align:center;';
-    warn.innerHTML='Some of this may be missing \u2014 the last read did not land. '
-      +'<span style="color:var(--gold);cursor:pointer;border-bottom:1px solid rgba(212,175,55,0.5);">Try again</span>';
-    try{ warn.querySelector('span').onclick=function(){ chatRetryHistory(); }; }catch(e){}
+    warn.style.cssText='margin:8px auto 12px;max-width:88%;font-size:11.5px;line-height:1.5;color:var(--m2);text-align:center;display:flex;flex-direction:column;align-items:center;gap:8px;';
+    // The retry is its own 44px control rather than an underlined word inside
+    // the sentence — same ruling, and a word set mid-line cannot be given a
+    // finger-sized box without wrecking the line it sits in.
+    warn.innerHTML='<div>Some of this may be missing \u2014 the last read did not land.</div>'
+      +'<div style="color:var(--gold);cursor:pointer;font-size:12.5px;font-weight:800;min-height:44px;padding:0 16px;'
+      +'border:1px solid rgba(245,197,24,0.42);border-radius:22px;display:flex;align-items:center;">Try again</div>';
+    try{ warn.querySelectorAll('div')[1].onclick=function(){ chatRetryHistory(); }; }catch(e){}
     box.appendChild(warn);
   }
 
@@ -54297,7 +54395,11 @@ function renderChatMessages(){
   // reveal what is cached, walk further back through the database, or say plainly
   // that this is the beginning. A control that cannot do anything is replaced by
   // a marker rather than left sitting there.
-  var _pillCss='background:transparent;border:1px solid var(--border);border-radius:20px;padding:7px 14px;font-size:11px;font-weight:600;color:var(--m2);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;letter-spacing:0.3px;margin:8px auto 4px;display:block;';
+  // 44px MINIMUM, no style exception (Yusuf, ruling — undersized taps are how
+  // the calendar broke). These were 30px tall: display:block plus vertical
+  // padding, which is a size you can only reach by not measuring it. flex
+  // centring rather than more padding, so the pill keeps its shape.
+  var _pillCss='background:transparent;border:1px solid var(--border);border-radius:22px;min-height:44px;padding:0 18px;font-size:11.5px;font-weight:600;color:var(--m2);cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;letter-spacing:0.3px;margin:8px auto 4px;display:flex;align-items:center;justify-content:center;';
   if(chatFullHistoryCache){
     var _hidden = chatFullHistoryCache.length - chatHistory.length;
     if(!chatShowingFullHistory && _hidden > 0){
@@ -54475,6 +54577,7 @@ function chatAutogrow(el){
   // viewport, not a hard 120px that put four dictated sentences out of sight.
   if(!String(el.value||'').length){
     el.style.height=''; el.style.overflowY='hidden';
+    try{ draftSave('chat',''); }catch(e){}      // cleared or sent: the draft goes too
     if(pinned){ try{ sc.scrollTop=sc.scrollHeight; }catch(e){} }
     return;
   }
@@ -54490,6 +54593,9 @@ function chatAutogrow(el){
   el.style.transition=prev;
   el.style.height=Math.min(sh, max)+'px';
   el.style.overflowY=(sh>max)?'auto':'hidden';
+  // Same single seam as jimGrow: chatRecognition.onresult calls this directly,
+  // so dictation is covered without a second save site.
+  try{ draftSave('chat', el.value); }catch(e){}
   if(pinned){ try{ sc.scrollTop=sc.scrollHeight; }catch(e){} }
 }
 
@@ -61724,12 +61830,30 @@ function jimBarHtml(ds) {
   }
   try{ if(typeof mlibLoad==='function') mlibLoad(); }catch(e){} // warm the library so match-on-send works from the first send
   var d = ds || '';
+  // THE DRAFT IS EMITTED WITH THE FIELD, not painted into it afterwards. This
+  // bar is rebuilt from a string on every timeline render, so anything that
+  // restores it in a later tick has a window where his words are visibly gone —
+  // and renderDayTimeline has an early-return path that a tail hook would miss
+  // entirely. Textarea content IS its value, so the words are there in the same
+  // frame the field is. The height still has to be caught up once the node
+  // exists, which is what the deferred jimGrow below does.
+  var _jimBarDraft = '';
+  try{ _jimBarDraft = draftGet('bar'); }catch(e){}
+  if(_jimBarDraft){
+    setTimeout(function(){
+      try{
+        var _el=document.getElementById('jimIn_'+d);
+        if(_el && _el.value){ _draftSettle(_el); jimReady(d); }
+      }catch(e){}
+    }, 0);
+  }
   return '<div class="jimBar" data-ds="' + d + '">'
     + '<div id="mlibChip_' + d + '" style="display:none;margin:0 0 6px;"></div>'
     + '<div class="jimRow">'
     +   '<textarea class="jimIn" id="jimIn_' + d + '" rows="1" autocomplete="off" placeholder="' + _jimAsk(d) + '" '
     +     'onclick="event.stopPropagation()" oninput="jimReady(\'' + d + '\');jimGrow(this)" '
-    +     'onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();jimSend(\'' + d + '\');}"></textarea>'
+    +     'onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();jimSend(\'' + d + '\');}">'
+    +     _escHtml(_jimBarDraft) + '</textarea>'
     +   '<button onclick="event.stopPropagation();jimSend(\'' + d + '\')" title="Log it" class="jimSend">\u2191</button>'
     +   '<button onclick="event.stopPropagation();jimPhoto(\'' + d + '\')" title="Photo" class="jimIcon"><svg class=\"camIco\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z\"/><circle cx=\"12\" cy=\"13\" r=\"4\"/></svg></button>'
     +   '<button onclick="event.stopPropagation();jimMic(\'' + d + '\')" title="Say it" class="jimIcon">' + _MICSVG.replace(/#f5c518/g,'#f0ece4').replace(/#4ea96f/g,'#f0ece4') + '</button>'
@@ -62403,6 +62527,7 @@ function jimGrow(el){
     // recalculated, or the bar creeps taller after every send.
     if(!String(el.value||'').length){
       el.style.height=''; el.style.overflowY='hidden';
+      try{ draftSave('bar',''); }catch(e){}     // cleared or sent: the draft goes too
       try{ _jimFabDodge(); }catch(e){}
       return;
     }
@@ -62421,6 +62546,11 @@ function jimGrow(el){
     el.style.transition=prev;
     el.style.height=Math.min(sh, max)+'px';
     el.style.overflowY=(sh>max)?'auto':'hidden';
+    // EVERY path that changes this field's value already comes through here —
+    // typing, the mic's 250ms watcher (the recogniser writes .value and fires
+    // no input event), and the clear on send. So this is the one place the
+    // draft has to be written, rather than three call sites that can drift.
+    try{ draftSave('bar', el.value); }catch(e){}
     // The bar just changed shape under two floating controls. _jimFabDodge is
     // driven by scroll and resize, and typing is neither — without this the fab
     // sits on the grown field for up to a second, which is the exact collision
