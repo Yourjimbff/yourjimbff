@@ -39,7 +39,7 @@ const OPS = {
   // instead so those columns can go dark to anon. limit matches what the anon
   // call used (2000), not the old banked 500 — nothing that used to fit should
   // now silently truncate.
-  roster: () => 'clients?select=code,name,initials,phone,email,active,coach_code,is_trainer,is_primary,hidden,tier,term_months,paid,started_at,term_ends,created_at,calls_enabled,call_credits,weekly_calls,weekly_call_spent_at&order=code.asc&limit=2000',
+  roster: () => 'clients?select=code,name,initials,phone,email,active,coach_code,is_trainer,is_primary,hidden,tier,term_months,paid,started_at,term_ends,created_at,calls_enabled,call_credits,weekly_calls,weekly_call_spent_at,review_date&order=code.asc&limit=2000',
 
   // One client, deeply. The only place `code` is interpolated, and it is encoded.
   // Not yet called from anywhere — banked, same as roster.
@@ -86,7 +86,7 @@ const OPS = {
   // jvSyncContacts() (line ~13840): coach_code=eq.<trainer> — with one coach in the
   // whole system that's every row, so this returns everyone and the caller keys its own
   // map off client_code exactly as before.
-  contacts: () => 'client_contacts?select=client_code,coach_code,kind,about,replied,contacted_at&order=contacted_at.desc&limit=2000',
+  contacts: () => 'client_contacts?select=client_code,coach_code,kind,about,replied,source,responded_at,contacted_at&order=contacted_at.desc&limit=2000',
 
   // Board state. Limits match the original call sites exactly so nothing that used to
   // fit now silently truncates.
@@ -366,13 +366,32 @@ const WRITE_OPS = {
   // ---- client_contacts --------------------------------------------------------
   contactInsert: (a, coach) => ({
     method: 'POST', path: 'client_contacts',
+    // source is the never-assert column: 'self' means HE marked it, the app did
+    // not witness it, and every surface that reports it must say so. Anything
+    // that is not literally 'self' is 'observed' — an unknown never becomes a
+    // claim that the app saw something happen.
     body: { coach_code: coach, client_code: enc_raw(a.client_code), kind: str(a.kind, 40),
-      about: str(a.about, 300), replied: !!a.replied, contacted_at: isoTs(a.contacted_at) },
+      about: str(a.about, 300), replied: !!a.replied, contacted_at: isoTs(a.contacted_at),
+      source: (a.source === 'self' ? 'self' : 'observed'),
+      responded_at: a.responded_at ? isoTs(a.responded_at) : undefined },
   }),
   contactUpdate: (a, coach) => ({
     method: 'PATCH',
     path: `client_contacts?coach_code=eq.${enc(coach)}&client_code=eq.${enc(a.client_code)}&contacted_at=eq.${encodeURIComponent(isoTs(a.contacted_at))}`,
     body: { about: str(a.about, 300) },
+  }),
+  // A RESPONSE CLEARS THE RESPONSE CLOCK. A reply, a log, or a call taken — any
+  // of the three. Stamps the most recent contact for that client; a read
+  // receipt is never a response and never reaches this.
+  contactRespond: (a, coach) => ({
+    method: 'PATCH',
+    path: `client_contacts?coach_code=eq.${enc(coach)}&client_code=eq.${enc(a.client_code)}&contacted_at=eq.${encodeURIComponent(isoTs(a.contacted_at))}`,
+    body: { replied: true, responded_at: isoTs(a.responded_at || new Date().toISOString()) },
+  }),
+  // The scheduled review, one value per client. Null clears it.
+  reviewDateSet: (a) => ({
+    method: 'PATCH', path: `clients?code=eq.${enc(a.client_code)}`,
+    body: { review_date: a.review_date ? isoDate(a.review_date) : null },
   }),
   contactDelete: (a, coach) => ({
     method: 'DELETE',

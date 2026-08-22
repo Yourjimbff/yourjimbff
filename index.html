@@ -25840,7 +25840,7 @@ function _ccUnanswered(code){
 // contacted_at, so engagement needed no new table and no new column, only new
 // kinds. Without them jvLogContact coerced anything unrecognised to 'text',
 // which would have logged every like as a text message.
-var _CC_KIND={text:'text', call:'call', talk:'talk', like:'like', comment:'comment', booking:'booking'};
+var _CC_KIND={text:'text', call:'call', talk:'talk', like:'like', comment:'comment', booking:'booking', cite:'cite', mark:'mark'};
 // Which kinds are you WAITING on a reply to. A like is engagement but it is not
 // a question, so it must not inflate "reached out three times, no reply" — that
 // number exists to tell him silence is not his failure, and padding it with
@@ -25992,11 +25992,19 @@ async function _ccHandleStatement(text){
 // contacted_at — this was the one hardcoded Date.now() standing between the app
 // and "texted Kelly on Tuesday". Absent, it is still now, so every existing
 // caller behaves exactly as it did.
-async function jvLogContact(code, kind, about, replied, whenTs){
+// `source` is the never-assert half of the contact record (attorney pass, 22
+// Aug). 'observed' means the app WITNESSED it — a message sent from here, a
+// cite, a booking. 'self' means HE marked it and the app saw nothing: a call
+// from his own phone, an Instagram reply, a conversation in the gym. Every
+// surface that reports a self-reported contact says so, because stating it
+// flatly would be the app claiming it saw something it did not.
+// DEFAULT IS 'observed' ONLY FOR CALLERS THAT REALLY DID THE THING IN-APP.
+async function jvLogContact(code, kind, about, replied, whenTs, source){
   if(!code) return null;
   kind=_CC_KIND[kind]?kind:'text';
   var _t=(whenTs!=null && !isNaN(+whenTs)) ? +whenTs : Date.now();
-  var row={t:_t, k:kind, a:String(about||'').trim().slice(0,300), r:(replied!==false)};
+  var _src=(source==='self')?'self':'observed';
+  var row={t:_t, k:kind, a:String(about||'').trim().slice(0,300), r:(replied!==false), sc:_src, rt:null};
   var m=jvContacts(); (m[code]=m[code]||[]).unshift(row); if(m[code].length>200) m[code].length=200;
   _ccSave(m);
   // Speaking to someone clears them off today's board too — one action, not two.
@@ -26008,7 +26016,7 @@ async function jvLogContact(code, kind, about, replied, whenTs){
   try{
     if(cl){
       var w=await trainerWrite('contactInsert', {client_code:code, kind:kind, about:row.a, replied:row.r,
-                             contacted_at:new Date(row.t).toISOString()});
+                             source:_src, contacted_at:new Date(row.t).toISOString()});
       if(w.ok){ window._ccSrv='ok'; row.s=true; }
     }
   }catch(e){}
@@ -26066,7 +26074,11 @@ async function jvUndoContact(code, t){
 // afterward, from the confirmation line itself, never required.
 async function jvQuickLogContact(code){
   if(!code) return;
-  var _r=await jvLogContact(code, 'talk', '', true);
+  // SELF-REPORTED BY DEFINITION. This button exists for a conversation that
+  // happened somewhere the app cannot see — his own phone, Instagram, the gym
+  // floor. Recording it as observed would have the app vouching for something
+  // it never witnessed, and the flag lines would then state it as fact.
+  var _r=await jvLogContact(code, 'talk', '', true, null, 'self');
   // A REPLY IS NOT A WRITE. jvLogContact returns the row and sets .s only when
   // the trainer door accepted it; this used to throw that away and say "Logged"
   // either way, so a refused write looked identical to a landed one.
@@ -26123,6 +26135,137 @@ function _mobCopyOutreach(code){
   try{ navigator.clipboard.writeText(ta.value); showToast('Copied'); }
   catch(e){ try{ showToast('Could not copy'); }catch(_){} }
 }
+// ===== THE ATTORNEY: TWO CLOCKS (Yusuf, ruling, 22 Aug) ===================
+// A client not logging is an open loop the trainer has not closed. So the thing
+// measured here is HIS DELIBERATE CONTACT, and it is measured SEPARATELY from
+// the client's activity. One clock cannot do both jobs: merging them is how
+// "she has gone quiet" turns into a judgement of her instead of a note about
+// what he has not done yet.
+//   CLOCK A (obligation) — days since HIS last deliberate contact. Drives the flag.
+//   CLOCK B (activity)   — days since the client logged. Drives priority, never blame.
+//
+// WHAT COUNTS AS CONTACT, exactly as ruled: a message HE sent, a cite, a call, a
+// note after a phone conversation. NOT the client logging, NOT anything
+// automated, NOT him reading a check-in. A LIKE IS NOT A CONTACT — it is
+// engagement, not a question, and counting it would let a tapped heart reset the
+// clock on someone he has not actually spoken to.
+var _CC_DELIBERATE={text:1, call:1, talk:1, comment:1, booking:1, cite:1, mark:1};
+function _ccIsDeliberate(row){ return !!(row && _CC_DELIBERATE[row.k||'text']); }
+// The record can be UNREAD. trainerOp returns [] on failure and never throws, so
+// "no contacts" and "the door refused" arrive identically; window._ccSrv is the
+// witness the sync already keeps. Everything below reports 'unknown' rather than
+// inventing a green light for a client whose history could not be read.
+function _ccKnown(){ try{ return window._ccSrv==='ok'; }catch(e){ return false; } }
+function _ccLastDeliberate(code){
+  var a=_ccFor(code);
+  for(var i=0;i<a.length;i++) if(_ccIsDeliberate(a[i])) return a[i];
+  return null;
+}
+function _ccDaysSince(ts){
+  if(ts==null) return null;
+  var a=new Date(ts); a.setHours(0,0,0,0);
+  var b=new Date(); b.setHours(0,0,0,0);
+  return Math.max(0, Math.round((b.getTime()-a.getTime())/86400000));
+}
+// CLOCK A. null means "never contacted, or not known" — the caller must tell
+// those apart with _ccKnown(), and both are reported as themselves.
+function _ccClockA(code){
+  var r=_ccLastDeliberate(code);
+  return r ? _ccDaysSince(r.t) : null;
+}
+// A RESPONSE IS A REPLY, A LOG, OR A CALL TAKEN — any one clears the response
+// clock. A read receipt is not a response and is never recorded as one.
+// The log half is derived, not stored: if the board says they logged since his
+// last contact, that IS a response and needs no extra write to prove it.
+function _ccRespondedSince(code, sinceTs){
+  if(sinceTs==null) return false;
+  var a=_ccFor(code);
+  for(var i=0;i<a.length;i++){
+    if(a[i].rt && a[i].rt>=sinceTs) return true;      // stamped reply or call taken
+  }
+  // NOTHING ELSE IN THIS TABLE IS A RESPONSE. An earlier version treated any
+  // non-deliberate row with replied=true as one, which let a LIKE HE TAPPED
+  // count as the client answering him — his own action clearing his own
+  // obligation. Caught in the corpus: a heart on Bo's log turned an
+  // eight-day silence from red into amber. Only an explicit responded_at
+  // stamp, or a log by the client, is a response.
+  try{
+    var per=(jvTriage&&jvTriage.per)||{}, p=per[code];
+    if(p && p.ever){
+      var q=_jvQuietDays(p, (jvTriage&&jvTriage.now)||Date.now());
+      if(q!=null){
+        var lastLog=new Date(); lastLog.setHours(0,0,0,0); lastLog.setDate(lastLog.getDate()-q);
+        if(lastLog.getTime()>=new Date(sinceTs).setHours(0,0,0,0)) return true;
+      }
+    }
+  }catch(e){}
+  return false;
+}
+// THE FLAG. green under 7 and shown nowhere. amber 7-10. red at 11+, OR at 7
+// with no response of any kind — silence after a week is the same open loop as
+// eleven days of not writing, and it is the one that earns a PHONE CALL.
+function _jvAttorneyFlag(code){
+  if(!_ccKnown()) return {level:'unknown', days:null, last:null, self:false, responded:null};
+  var r=_ccLastDeliberate(code);
+  if(!r) return {level:'red', days:null, last:null, self:false, responded:false, never:true};
+  var d=_ccDaysSince(r.t);
+  var responded=_ccRespondedSince(code, r.t);
+  var level='green';
+  if(d>=11) level='red';
+  else if(d>=7) level=responded?'amber':'red';
+  return {level:level, days:d, last:r, self:(r.sc==='self'), responded:responded};
+}
+// THE METRIC, driven to zero weekly: how many clients he has not contacted in
+// seven days or more. Never a number over an unread record — {n:null} says so.
+function _jvUncontactedCount(){
+  if(!_ccKnown()) return {n:null, state:'unread'};
+  var codes=[]; try{ codes=_jvRqRoster(); }catch(e){ codes=[]; }
+  var n=0;
+  codes.forEach(function(c){ var f=_jvAttorneyFlag(c); if(f.level==='amber'||f.level==='red') n++; });
+  return {n:n, state:'ok'};
+}
+// One line per client who is owed something, worst first. The names ARE the
+// count (law 5), so nothing here prints a number beside the list.
+function _jvAttorneyLines(limit){
+  if(!_ccKnown()) return [];
+  var codes=[]; try{ codes=_jvRqRoster(); }catch(e){ codes=[]; }
+  var rows=[];
+  codes.forEach(function(c){
+    var f=_jvAttorneyFlag(c);
+    if(f.level!=='amber' && f.level!=='red') return;
+    rows.push({code:c, f:f, sort:(f.days==null?9999:f.days)});
+  });
+  rows.sort(function(a,b){ return b.sort-a.sort; });
+  if(limit) rows=rows.slice(0, limit);
+  return rows.map(function(x){ return _jvAttorneyLine(x.code, x.f); });
+}
+// WHAT HE NEEDS TO ACT: the name, the days, WHEN and WHAT the last contact was,
+// what they have logged since, and — on red — that the next move is a call.
+function _jvAttorneyLine(code, f){
+  f=f||_jvAttorneyFlag(code);
+  var name=_jvRqName(code);
+  if(f.level==='unknown') return name+' — I could not read the contact record.';
+  if(f.never) return name+' — no contact on record at all. Worth a call.';
+  var bits=[name+' — '+(f.days===0?'contacted today':(f.days===1?'1 day since you reached out':f.days+' days since you reached out'))];
+  var when=''; try{ when=new Date(f.last.t).toLocaleDateString('en-US',{month:'short',day:'numeric'}); }catch(e){}
+  var what=String((f.last&&f.last.a)||'').trim();
+  var kind=String((f.last&&f.last.k)||'text');
+  // NEVER-ASSERT ON A SELF-REPORTED CONTACT. The app did not witness it, so it
+  // is always SAID as his own mark rather than stated as an observed fact.
+  bits.push('Last: '+kind+(when?(' on '+when):'')+(f.self?' (your own mark, not seen by the app)':'')+(what?(' — “'+what+'”'):''));
+  // CLOCK B, stated as a fact about activity and never as blame.
+  var q=null; try{ var p=((jvTriage&&jvTriage.per)||{})[code]; if(p) q=_jvQuietDays(p, (jvTriage&&jvTriage.now)||Date.now()); }catch(e){}
+  if(q==null) bits.push('Nothing logged on record');
+  else bits.push('Last logged '+(q===0?'today':(q===1?'yesterday':q+' days ago')));
+  // THE PRESCRIBED ACTION ON RED IS A PHONE CALL, NOT A TEXT — ruled, and said
+  // in those words so it cannot be read as a suggestion to send another message
+  // into the same silence.
+  if(f.level==='red') bits.push(f.responded?'Call them':'No response since — call them, do not text');
+  // Each clause is its own sentence. Joined with a space they ran together
+  // ("...reached out Last: text on Aug 14"), which is unreadable on screen and
+  // worse in the ear, since the brief is spoken.
+  return bits.map(function(x){ return String(x).replace(/[.\s]+$/,''); }).join('. ')+'.';
+}
 async function jvSyncContacts(){
   try{
     if(!cl) return;
@@ -26144,7 +26287,12 @@ async function jvSyncContacts(){
       if(!t||isNaN(t)) return;
       var a=(m[r.client_code]=m[r.client_code]||[]);
       for(var i=0;i<a.length;i++){ if(Math.abs((a[i].t||0)-t)<2000) return; }   // already have it
-      a.push({t:t, k:(r.kind||'text'), a:(r.about||''), r:(r.replied!==false)});
+      // sc/rt are the attorney pass's two columns: how the contact was known,
+      // and when the client responded. Absent on a pre-migration row, which is
+      // exactly 'observed' and 'no response recorded' — both honest defaults.
+      var _rt=0; try{ if(r.responded_at) _rt=new Date(r.responded_at).getTime()||0; }catch(e){}
+      a.push({t:t, k:(r.kind||'text'), a:(r.about||''), r:(r.replied!==false),
+              sc:(r.source==='self'?'self':'observed'), rt:(_rt||null)});
     });
     Object.keys(m).forEach(function(c){ m[c].sort(function(x,y){ return (y.t||0)-(x.t||0); }); if(m[c].length>200) m[c].length=200; });
     _ccSave(m);
@@ -36863,7 +37011,80 @@ function _jvBriefRows(){
       ? (quiet.length+' quiet three days or more: '+show.join(', '))
       : ('Quiet three days or more, longest first: '+show.join(', ')+' — and others below them'));
   } else rows.push('Nobody has gone quiet past three days.');
+  // ===== THE ATTORNEY, IN THE BRIEF (ruling, 22 Aug) =====================
+  // The metric he drives to zero weekly, on the surface he already reads —
+  // no new surface family. This is CLOCK A: what HE has not closed, which is
+  // a different question from the quiet list above (that is CLOCK B, the
+  // client's activity, and it is priority, never blame).
+  // NEVER A NUMBER OVER AN UNREAD RECORD: if the contact history did not
+  // load, this says so instead of reporting a comfortable zero.
+  try{
+    var _uc=_jvUncontactedCount();
+    if(_uc.state==='unread'){
+      rows.push('I could not read your contact record, so I cannot say who is owed a message.');
+    } else if(_uc.n===0){
+      rows.push('Everyone has heard from you inside seven days.');
+    } else {
+      // The names ARE the count past five, same law-5 shape as the quiet list.
+      var _al=_jvAttorneyLines(5);
+      rows.push(_uc.n<=5
+        ? (_uc.n+' waiting on you seven days or more:')
+        : ('Waiting on you seven days or more, longest first (and others below them):'));
+      _al.forEach(function(l){ rows.push(l); });
+    }
+  }catch(e){}
+  // THE REVIEW DATE — surfaced before it arrives, so the evidence can be
+  // prepared rather than assembled in the moment.
+  try{
+    var _rv=_jvReviewsDue(14);
+    if(_rv.state==='ok' && _rv.rows.length) _rv.rows.forEach(function(l){ rows.push(l); });
+  }catch(e){}
   return {ok:true, rows:rows};
+}
+// ===== THE REVIEW DATE (attorney pass, item 5) ===========================
+// One value per client, on the roster row. Surfaced ahead of time in the brief
+// and the who-needs-me list so the evidence is prepared BEFORE the conversation.
+// THREE STATES: an unread roster says so; a client with no review date set is
+// simply not due, which is a fact and not an omission.
+function _jvReviewsDue(withinDays){
+  var st=''; try{ st=(typeof _jvTriageState==='function')?_jvTriageState():''; }catch(e){}
+  if(st!=='ready') return {state:'unread', rows:[]};
+  var out=[], today=new Date(); today.setHours(0,0,0,0);
+  var codes=[]; try{ codes=_jvRqRoster(); }catch(e){ codes=[]; }
+  codes.forEach(function(c){
+    var rd=''; try{ rd=String(((CLIENTS||{})[c]||{}).review_date||'').slice(0,10); }catch(e){}
+    if(!rd) return;
+    var d=new Date(rd+'T00:00:00'); if(isNaN(d.getTime())) return;
+    var days=Math.round((d.getTime()-today.getTime())/86400000);
+    if(days<0 || days>(withinDays||14)) return;
+    out.push({c:c, days:days});
+  });
+  out.sort(function(a,b){ return a.days-b.days; });
+  return {state:'ok', rows:out.map(function(x){
+    return 'Review for '+_jvRqName(x.c)+' '+(x.days===0?'today':(x.days===1?'tomorrow':'in '+x.days+' days'))
+         + ' — '+_jvReviewPrep(x.c);
+  })};
+}
+// THE EVIDENCE, PREPARED. What the record actually holds about them going in:
+// how long they have been with him, what they have logged lately, and when he
+// last spoke to them. Nothing invented, nothing graded.
+function _jvReviewPrep(code){
+  var bits=[];
+  try{
+    var p=((jvTriage&&jvTriage.per)||{})[code];
+    if(p && p.cnt){
+      var n=0; for(var i=0;i<7;i++) if(p.cnt[i]>0) n++;
+      bits.push('logged '+n+' of the last 7 days');
+    }
+    if(p && p.lastWeight && p.lastWeight.val!=null) bits.push('last weigh-in '+p.lastWeight.val);
+  }catch(e){}
+  try{
+    var f=_jvAttorneyFlag(code);
+    if(f.level==='unknown') bits.push('contact record unread');
+    else if(f.days!=null) bits.push('last heard from you '+(f.days===0?'today':f.days+'d ago'));
+    else bits.push('no contact on record');
+  }catch(e){}
+  return bits.length?bits.join(', '):'nothing on record yet';
 }
 async function _jvBriefCallsRow(){
   try{
