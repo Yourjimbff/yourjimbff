@@ -51,6 +51,17 @@ const OPS = {
   // the service role, where reading it is the whole point.
   clientNotesAll: () => `client_notes?select=id,client_code,note,logged_at&order=logged_at.desc&limit=1500`,
   clientPlan:    (a) => `training_plans?client_code=eq.${enc(a.code)}&limit=1`,
+
+  // ---- calendar block display labels (1d/1e, 20 Aug) -------------------------
+  // block_display_names is DARK from birth: RLS on with no policies and all
+  // privileges revoked from anon and authenticated, so the page cannot read one
+  // row of it with the public key. That is the point — these are the trainer's
+  // private labels for his own week and no client surface has a path to them.
+  // Every read and write therefore comes through here, on the service role.
+  // Scoped to ONE owner. There is no all-owners variant and none should be
+  // added: a label is presentation, and nothing needs to see everyone's at once.
+  blockLabels: (a) => `block_display_names?owner_code=eq.${enc(a.owner_code)}`
+    + '&select=target_kind,target_key,display_name,fit_mode&limit=2000',
   // Kept distinct from `contacts` below: this is "one client's contact timeline",
   // reached from a client deep-dive. `contacts` is "sync the whole log", reached from
   // the triage board. Different UI, different caller, both real.
@@ -285,6 +296,34 @@ const WRITE_OPS = {
     },
   }),
   salesDelete: (a) => ({ method: 'DELETE', path: `sales?id=eq.${encId(a.id)}` }),
+
+  // ---- calendar block display labels ----------------------------------------
+  // UPSERT on (owner_code, target_key), which the migration backs with a real
+  // unique index — so a second rename of the same block OVERWRITES rather than
+  // accumulating a second row a read would then have to choose between.
+  // PRESENTATION ONLY, enforced here as well as in the table's own CHECKs: the
+  // only fields that can ever be written are the display name and the fit mode.
+  // Nothing about the underlying record can reach this table through this door.
+  // A null/empty display_name is a CLEARING, not a rename — it is passed
+  // through as null so the block falls back to its true name.
+  blockLabelSet: (a) => ({
+    method: 'POST', path: 'block_display_names?on_conflict=owner_code,target_key',
+    // upsert:true is the flag the dispatcher actually reads — it is what adds
+    // resolution=merge-duplicates to the Prefer header. A `prefer` field would
+    // be silently ignored here and the write would 409 against the unique
+    // index the migration created, which is exactly the shape of a bug that
+    // looks like "rename does not save" with nothing in the console.
+    upsert: true,
+    body: {
+      owner_code:   enc_raw(a.owner_code),
+      target_kind:  str(a.target_kind, 8),
+      target_key:   str(a.target_key, 200),
+      display_name: (a.display_name == null || String(a.display_name).trim() === '')
+                      ? null : str(a.display_name, 120),
+      fit_mode:     (a.fit_mode === 'fit' || a.fit_mode === 'time') ? a.fit_mode : null,
+      updated_at:   new Date().toISOString(),
+    },
+  }),
 
   // ---- a trainer logging ON BEHALF OF a client ---------------------------------
   // These three tables are not dark to the anon key and never will be: a client's

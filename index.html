@@ -19111,6 +19111,12 @@ function _wkFoodTs(r){
 // the week span instead of one day, and now filtered by subject.
 async function _wkLoad(weekStartTs, force, subject){
   subject = subject || 'me';
+  // His display labels for this owner, loaded alongside the week rather than
+  // per block. Awaited so the first paint already carries them — a rename that
+  // appears a moment after the grid does reads as the calendar changing its
+  // mind. Never throws; on a refused read _wkLabelState goes to 'failed' and
+  // every block simply shows its true name, which is the honest fallback.
+  try{ await _wkLoadLabels(force); }catch(e){}
   var days=[]; for(var i=0;i<7;i++) days.push(weekStartTs+i*86400000);
   var apptDays=await Promise.all(days.map(function(t){ return _schDay(t, force); }));
   // A NAMED CLIENT'S WEEK SHOWS THEIR OWN CALLS ONLY (Job 1, 19 Aug).
@@ -19473,7 +19479,14 @@ var WK_LOG_DEFAULT_MIN={wo:45, food:30};
 function _wkLoggedBlockHtml(e, dayStartMs){
   var mins=WK_LOG_DEFAULT_MIN[e.k]||30;
   var pos=_wkTopH(e.ts, e.ts+mins*60000, dayStartMs);
-  var lbl=_escHtml(_wkLoggedLabel(e));
+  // 1e — HIS LABEL IF HE SET ONE, the true name otherwise. The row itself is
+  // untouched: _wkLoggedLabel still reads e.d.name / e.d.title, and the day
+  // page, the food record and the thread all keep the real thing.
+  var _lk=(e.k==='food') ? _wkKeyFood(e.id) : _wkKeyWo(e.id);
+  var _true=_wkLoggedLabel(e);
+  var lbl=_escHtml(_wkDisplayTitle(_lk, _true));
+  // 1d — visual height only. pos.top is untouched, so nothing moves in time.
+  pos.h=_wkFitHeight(_lk, pos.h, _wkDisplayTitle(_lk, _true));
   var sub=(e.k==='wo') ? 'Completed' : (_wkFoodMacroLine(e.d)||_jvSpokenTime(new Date(e.ts)));
   // A COMPLETED SESSION MOVES TO WHEN IT ACTUALLY HAPPENED (Yusuf, ruling,
   // 20 Aug — his Leg Day sat on Thursday because that is when he dictated
@@ -19486,10 +19499,14 @@ function _wkLoggedBlockHtml(e, dayStartMs){
   // keeps its existing click-to-open behaviour rather than a drag that
   // would quietly write the wrong column.
   var drag=(e.k==='wo');
-  if(drag){ window._wkLogIndex[e.k+':'+e.id]=e; }
+  // Indexed for EVERY logged block now, not only the draggable ones: the block
+  // options panel looks the entry up here to re-open the day, which used to be
+  // what the tap itself did.
+  window._wkLogIndex[e.k+':'+e.id]=e;
   return '<div class="wkBlock wkBlockLog wkBlockLog-'+e.k+(drag?' wkBlockLogDrag':'')+_wkFitCls(pos.h)+'" style="top:'+pos.top.toFixed(1)+'px;height:'+pos.h.toFixed(1)+'px;'+_wkFitStyle(pos.h)+'"'
     + (drag ? (' onmousedown="_logDragStart(event,\''+e.k+':'+e.id+'\')" ontouchstart="_logDragStart(event,\''+e.k+':'+e.id+'\')"') : '')
-    + ' onclick="event.stopPropagation();'+(drag?'if(window._wkLogDragMoved)return;':'')+_wkLoggedClick(e)+'"'
+    + ' onclick="event.stopPropagation();'+(drag?'if(window._wkLogDragMoved)return;':'')
+       +'wkBlockOptions(event,\''+_escHtml(_lk)+'\',\''+e.k+'\')"'
     + ' title="'+lbl+(sub?(' — '+_escHtml(sub)):'')+'"><b>'+lbl+'</b><span>'+_escHtml(sub)+'</span></div>';
 }
 // ===== DRAGGING A COMPLETED SESSION TO WHEN IT HAPPENED =================
@@ -19790,6 +19807,203 @@ function wkMonthBack(){
   window._wkZoomDay=null;
   try{ schRefresh(); }catch(e){}
 }
+// ===== BLOCK DISPLAY LABELS (1d + 1e, ruling, 20 Aug) =====================
+// PRESENTATION ONLY. This layer can change what a block READS as and whether it
+// grows to fit that text. It can never change the record: the food row keeps
+// its real name and macros, the workout keeps its title, the thread keeps what
+// he actually said. A rename is a label on a window.
+// DARK BY DESIGN, so there is no anon path: block_display_names has RLS on with
+// no policies and every privilege revoked from anon and authenticated, and the
+// page holds only the public key. Both the read and the write go through the
+// trainer door on the service role. That is also the seam that keeps these
+// private — a client surface cannot reach this table at all, whatever it asks.
+// THREE STATES, because trainerOp returns [] on failure and never throws: a
+// failed load must not read as "he has never renamed anything" and quietly show
+// true names as though that were his choice. _wkLabelState carries which it is,
+// and the rename control refuses to open on 'failed' rather than saving into a
+// cache that is about to be overwritten.
+window._wkLabels = window._wkLabels || {};      // target_key -> {name, fit}
+window._wkLabelState = 'idle';                  // idle | loading | ready | failed
+window._wkLabelOwner = null;
+async function _wkLoadLabels(force){
+  // Same owner the calendar itself uses everywhere else — window._wkOwner is
+  // the owner picker's subject, falling back to the signed-in account.
+  var owner=''; try{ owner=window._wkOwner||((window.cl||{}).code||''); }catch(e){}
+  if(!owner) return;
+  if(!force && _wkLabelState==='ready' && _wkLabelOwner===owner) return;
+  _wkLabelState='loading';
+  var mark=0; try{ mark=_sbFailMark(); }catch(e){}
+  var rows=[];
+  try{ rows=await trainerOp('blockLabels', {owner_code:owner}) || []; }catch(e){ rows=[]; }
+  // [] is ambiguous — it is both "no labels yet" and "the door refused". The
+  // fail witness is what separates them, same pair the river and the feed use.
+  var failed=false; try{ failed = (!rows.length && _sbFailedSince(mark)); }catch(e){}
+  if(failed){ _wkLabelState='failed'; return; }
+  var map={};
+  rows.forEach(function(r){
+    if(!r || !r.target_key) return;
+    map[String(r.target_key)]={name:(r.display_name||null), fit:(r.fit_mode||null)};
+  });
+  window._wkLabels=map; _wkLabelOwner=owner; _wkLabelState='ready';
+}
+// The ONE key vocabulary, shared with the table and with the migration's own
+// comment. A second way of naming the same block is how two stores drift.
+function _wkKeyFood(id){ return 'food:'+String(id); }
+function _wkKeyWo(id){ return 'wo:'+String(id); }
+function _wkKeyCal(id, dateStr){ return 'cal:'+String(id)+'|'+String(dateStr); }
+function _wkKeyAppt(key){ return 'appt:'+String(key); }
+function _wkLabelFor(key){
+  try{ return (window._wkLabels||{})[String(key)] || null; }catch(e){ return null; }
+}
+// The display title: his label when he has set one, the true name otherwise.
+function _wkDisplayTitle(key, trueName){
+  var l=_wkLabelFor(key);
+  return (l && l.name) ? l.name : trueName;
+}
+// 1d — EXPANSION IS VISUAL ONLY. The stored time never moves: this changes the
+// rendered HEIGHT of a block and nothing else, so the grid's pixel->time
+// mapping is untouched (wkColClick still derives minutes from the column's own
+// geometry, and the hour lines do not move). The accepted cost, ruled: a block
+// grown past its duration covers more empty column, so it swallows empty-slot
+// taps underneath it. The tap that beats an empty slot is a real block.
+var WK_FIT_MAX=4;                                // never grow past four title lines
+function _wkFitHeight(key, h, title){
+  var l=_wkLabelFor(key);
+  if(!l || l.fit!=='fit') return h;
+  var t=String(title||'');
+  if(!t) return h;
+  // How tall would it have to be to show the whole title? Same three constants
+  // _wkFitLines measures with, run backwards.
+  var perLine=Math.max(1, Math.round(t.length / 22));   // ~22 chars per line at block width
+  var lines=Math.min(WK_FIT_MAX, Math.max(1, perLine));
+  var need=WK_PAD_Y + (lines*WK_TITLE_LH) + WK_SUB_LH;
+  return Math.max(h, Math.round(need));
+}
+// ===== A BLOCK'S OWN OPTIONS (1d + 1e) ===================================
+// Tap a logged block and this is what opens: the display title, the fit choice,
+// and the day it belongs to — which is where the tap used to go directly, so
+// nothing is taken away, it is one tap further in and named.
+// PRESENTATION ONLY, said on the panel itself so it can never be mistaken for
+// an edit of the record. The food row, its macros and the thread keep the real
+// name; this changes what the CALENDAR reads.
+// SENTENCES ARE NOT NAMES, enforced here rather than hoped for. A block label
+// is an identifier, not a note: no terminator-plus-more-text, nothing past 60
+// characters, and no first-person sentence. His words belong in the thread.
+var WK_LABEL_MAX=60;
+function _wkLabelReject(v){
+  var t=String(v||'').trim();
+  if(!t) return null;                                   // clearing is always allowed
+  if(t.length>WK_LABEL_MAX) return 'That is longer than a label — keep it under '+WK_LABEL_MAX+' characters.';
+  if(/[.?!]\s+\S/.test(t)) return 'That reads as a sentence. A label is a name.';
+  if(/\b(i|my|me)\b\s+\w+\s+\w+/i.test(t)) return 'That reads as something you said, not a name for it.';
+  return null;
+}
+function wkBlockOptions(ev, key, kind){
+  var p=document.getElementById('wkPanel'), s=document.getElementById('wkPanelScrim');
+  if(!p || !s) return;
+  var already=p.classList.contains('on');
+  try{ window._wkPanelOpenXY={x:ev.clientX, y:ev.clientY}; }catch(e){}
+  window._wkOptKey=key; window._wkOptKind=kind;
+  var lab=_wkLabelFor(key) || {};
+  var cur=(lab.name||'');
+  var fit=(lab.fit==='fit');
+  // THREE STATES on the label store. A failed read must not offer a rename
+  // control that would save into a cache about to be replaced, and must not
+  // imply "you have never renamed this" when the truth is "I could not look".
+  var unread=(_wkLabelState==='failed');
+  p.classList.add('wkPanelWide');
+  p.innerHTML='<button class="wkDetBack" onclick="wkPanelClose()">‹ Close</button>'
+    + '<h4>How this block reads</h4>'
+    + (unread
+        ? '<div class="wkPanelStatus err">Your labels for this week did not load, so I cannot show or change them right now. Nothing has been altered.</div>'
+        : ('<div class="wkDetSub" style="margin-bottom:10px;">The calendar only. The record keeps its real name.</div>'
+           + '<textarea id="wkOptName" rows="2" placeholder="Leave empty to use the real name" '
+           + 'style="width:100%;box-sizing:border-box;background:#191919;border:1px solid #333;border-radius:9px;'
+           + 'color:#f0ece4;font-size:13px;padding:9px 10px;font-family:inherit;resize:none;">'+_escHtml(cur)+'</textarea>'
+           + '<div id="wkOptErr" class="wkPanelStatus err" style="display:none;"></div>'
+           + '<div class="wkDetBtns">'
+           +   '<button class="wkDetBtn" onclick="wkOptSaveName()">Save the name</button>'
+           +   '<button class="wkDetBtn" id="wkOptFitB" onclick="wkOptToggleFit()">'
+           +     (fit?'Keep it time-true':'Grow it to fit')+'</button>'
+           + '</div>'
+           + '<div class="wkDetSub" style="margin-top:10px;">'
+           +   (fit ? 'Growing to fit. The stored time has not moved.' : 'Time-true: the block is as long as the session.')
+           + '</div>'))
+    + '<div class="wkDetBtns" style="margin-top:14px;">'
+    +   '<button class="wkDetBtn" onclick="wkOptOpenDay()">Open the day</button>'
+    + '</div>';
+  s.classList.add('on'); p.classList.add('on');
+  if(!already) _wkPanelPosition(ev.clientX, ev.clientY);
+}
+// The route the tap used to take, kept and named rather than removed. Reads the
+// real entry out of _wkLogIndex (every logged block is indexed now, not only the
+// draggable ones) so this calls the same door _wkLoggedClick builds.
+function wkOptOpenDay(){
+  var e=(window._wkLogIndex||{})[String(window._wkOptKey||'')];
+  wkPanelClose();
+  if(!e) return;
+  try{
+    if(e.k==='wt'){ if(typeof jvOpenWeightHistory==='function') jvOpenWeightHistory(e.code); return; }
+    var ds=(e.d && e.d.date_str) ? String(e.d.date_str) : '';
+    if(typeof openClientDay==='function'){
+      if(ds) openClientDay(e.code, e.ts||0, ds); else openClientDay(e.code, e.ts||0);
+    }
+  }catch(e2){}
+}
+// A WRITE, AND VERIFIED AS ONE. trainerWrite reports whether the door accepted
+// it; the row is then READ BACK before the cache is updated or anything on
+// screen changes, because a boolean says the request did not error, not that
+// the row landed with the values sent.
+async function _wkOptPersist(name, fit, statusEl){
+  var key=window._wkOptKey, kindRaw=String(key||'').split(':')[0];
+  var kind = kindRaw==='wo' ? 'wo' : kindRaw==='food' ? 'food' : kindRaw==='cal' ? 'cal' : 'appt';
+  var owner=''; try{ owner=window._wkOwner||((window.cl||{}).code||''); }catch(e){}
+  if(!owner || !key) return false;
+  var w=null;
+  try{ w=await trainerWrite('blockLabelSet', {owner_code:owner, target_kind:kind, target_key:key,
+        display_name:(name==null?null:name), fit_mode:(fit||null)}); }catch(e){ w=null; }
+  if(!w || !w.ok){
+    if(statusEl){ statusEl.style.display=''; statusEl.textContent='That did not save. Nothing on the calendar has changed.'; }
+    return false;
+  }
+  // READ IT BACK. Never the write's own word for it.
+  var ok=false;
+  try{
+    await _wkLoadLabels(true);
+    var l=_wkLabelFor(key)||{};
+    var wantName=(name==null||name==='')?null:name;
+    var gotName=(l.name||null);
+    var gotFit=(l.fit||null);
+    ok = (gotName===wantName) && (gotFit===(fit||null));
+  }catch(e){ ok=false; }
+  if(!ok && statusEl){
+    statusEl.style.display=''; statusEl.textContent='It saved but did not read back the same. Check it before trusting it.';
+  }
+  return ok;
+}
+async function wkOptSaveName(){
+  var ta=document.getElementById('wkOptName'), err=document.getElementById('wkOptErr');
+  if(!ta) return;
+  var v=String(ta.value||'').trim();
+  var bad=_wkLabelReject(v);
+  if(bad){ if(err){ err.style.display=''; err.textContent=bad; } return; }
+  if(err){ err.style.display='none'; err.textContent=''; }
+  var lab=_wkLabelFor(window._wkOptKey)||{};
+  var ok=await _wkOptPersist(v===''?null:v, lab.fit||null, err);
+  if(!ok) return;                                  // the failure line is already on screen, and his text is still in the box
+  window._wkPanelNeedsRefresh=true;
+  wkPanelClose();
+}
+async function wkOptToggleFit(){
+  var lab=_wkLabelFor(window._wkOptKey)||{};
+  var next=(lab.fit==='fit')?'time':'fit';
+  var err=document.getElementById('wkOptErr');
+  var ok=await _wkOptPersist((lab.name||null), next, err);
+  if(!ok) return;
+  window._wkPanelNeedsRefresh=true;
+  wkPanelClose();
+}
+
 // ===== THE OVERLAP: "+N MORE", NOT A SPLIT COLUMN (Yusuf, ruling, 20 Aug) =
 // The split-only pass condition was STRUCK as arithmetically impossible, and
 // these are the measurements it was struck on: the cockpit day column is
@@ -20216,13 +20430,18 @@ function _cbExpand(cb, ws){
 function _cbBlockHtml(occ){
   var b=occ.block, mins=_cbTimeToMinutes(occ.startLocal), top=_wkPxFromMins(mins);
   var h=Math.max(34, (b.duration_minutes||30)/60*WK_HOUR_PX);
+  // Same two rules as a logged block: his label if he set one, and a visual-only
+  // height when he chose fit. duration_minutes is never touched.
+  var _ck=_wkKeyCal(b.id, occ.dateStr);
+  var _ctitle=_wkDisplayTitle(_ck, b.title);
+  h=_wkFitHeight(_ck, h, _ctitle);
   var done=!!(occ.exception && occ.exception.done);
   var key=b.id+'|'+occ.dateStr;
   return '<div class="wkCal wkCal-'+_escHtml(b.kind||'block')+(done?' done':'')+_wkFitCls(h)+'" data-occ="'+_escHtml(key)+'"'
     + ' style="top:'+top.toFixed(1)+'px;height:'+h.toFixed(1)+'px;'+_wkFitStyle(h)+'"'
     + ' onmousedown="_cbDragStart(event,\''+_escHtml(key)+'\')" ontouchstart="_cbDragStart(event,\''+_escHtml(key)+'\')"'
-    + ' title="'+_escHtml(b.title)+' — '+_escHtml(_cbSpokenTime(occ.startLocal))+'">'
-    + '<b>'+_escHtml(b.title)+'</b><span>'+_escHtml(_cbSpokenTime(occ.startLocal))+'</span></div>';
+    + ' title="'+_escHtml(_ctitle)+' — '+_escHtml(_cbSpokenTime(occ.startLocal))+'">'
+    + '<b>'+_escHtml(_ctitle)+'</b><span>'+_escHtml(_cbSpokenTime(occ.startLocal))+'</span></div>';
 }
 // ===== CLICK A SLOT TO ADD, CLICK A BLOCK TO EDIT — INLINE, NEVER A MODAL =
 // Ruling: "no modals that lose the canvas." One floating panel, positioned
