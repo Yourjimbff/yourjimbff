@@ -18139,6 +18139,7 @@ function _jvPendingSummary(p){
   // parsed yet: the engine runs on yes, not before it.
   if(p.kind==='jimlog') return 'Logging that to '+p.name+': \u201c'+String(p.said||'').trim()+'\u201d. Right client?';
   if(p.kind==='workingon') return 'I am about to put this on '+p.name+' ('+p.code+') as what they are working on: \u201c'+p.text+'\u201d. Right client?';
+  if(p.kind==='removeclient') return 'I am about to remove '+p.name+' ('+p.code+') from the roster \u2014 they lose access and come off every screen. Right client?';
   // A consult held behind another confirmation must state ITSELF back, with the
   // kind said out loud \u2014 it is the one booking that costs nothing.
   if(p.kind==='consult'){
@@ -18534,6 +18535,24 @@ async function _jvCommitPending(p){
         ? ('Skipped '+p.name+'’s call '+_dp2)
         : (p.name+'’s call '+_dp2+' is now '+_jvSpokenHhmm(p.time)))
       +' — that day only, the series is unchanged.';
+  }
+  if(p.kind==='removeclient'){
+    var okRm=false;
+    try{ okRm=await _rsSetActive(p.code, false); }catch(e){}
+    window._jvPendingWrite=null;
+    // A REPLY IS NOT A WRITE. _rsSetActive returns true only after it has read
+    // the row back and seen active===false, so this reports the database and
+    // nothing else.
+    if(!okRm) return 'That did not go through. '+p.name+' is still on your roster \u2014 nothing changed.';
+    // The pronoun undo needs to know who "her" was. Kept beside the river entry
+    // rather than inside it, because "put her back" never names anyone.
+    try{ window._jvLastRemoved={code:p.code, name:p.name, at:Date.now()}; }catch(e){}
+    try{ jvActRecord('Removed '+p.name+' from the roster', {kind:'removeclient', code:p.code}); }catch(e){}
+    try{ if(typeof jvMode!=='undefined' && jvMode==='roster') jvLoadRoster(true); }catch(e){}
+    try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+    // Plain shape, not the butler: law 9's rotating delight is HIM-ONLY, and a
+    // named client's account changing hands is not a moment for it.
+    return '\u2713 '+p.name+' is off the roster \u2014 no access, off every screen and every count. Nothing of theirs is deleted. Say put them back and they return.';
   }
   if(p.kind==='workingon'){
     var saved=null;
@@ -28380,6 +28399,14 @@ async function _jtRunItem(t, capture, ctx){
     var _rd=await _jvDayReadout(t);
     if(_rd) return {status:'talk', line:_rd, html:true, src:t};
   }catch(e){ console.error('roster answer', e); }
+  // REMOVE A CLIENT BY VOICE (Yusuf, ruling, 22 Aug — "any button he would
+  // click, Jarvis can do for him"). Checked HERE, above reinstate and far above
+  // _JT_PROG_RE, which matches a bare "remove her ..." and would otherwise
+  // swallow this into the program editor.
+  try{
+    var _rc=_jtRemoveClientMatch(t);
+    if(_rc) return {status:(_rc.wait?'wait':(_rc.ok?'done':'lost')), line:_rc.line, html:true, src:t};
+  }catch(e){ console.error('jt remove client',e); }
   // REINSTATE A FORMER CLIENT — intent, not a keyword (Yusuf, ruling, 19 Aug).
   // Its own resolver, not _jtModel's roster context — _jvAssistantContext
   // deliberately filters OUT inactive/hidden clients, so the model never
@@ -28672,12 +28699,34 @@ var _JV_REINSTATE_RE=new RegExp(
   '\\b(?:put|bring)\\s+([a-z][a-z .\\u0027-]{1,40}?)\\s+back\\s*(?:on|in)?\\b'
   +'|\\b(?:reinstat(?:e|ing)|reactivat(?:e|ing))\\s+([a-z][a-z .\\u0027-]{1,40})'
   +'|\\b([a-z][a-z .\\u0027-]{1,40}?)\\s+is\\s+(?:coming back|back)\\b', 'i');
+// THE UNDO IS THE SAME ENGINE IN REVERSE (Yusuf, ruling, 22 Aug) — the Removed
+// shelf's own restore. Thirty minutes, because a pronoun is only unambiguous
+// while the removal is still the thing being talked about; after that he says a
+// name, or taps Undo on the river where the handle is exact.
+var _JV_LASTREMOVED_MS=30*60*1000;
+function _jvLastRemovedFresh(){
+  try{
+    var r=window._jvLastRemoved;
+    if(!r || !r.code) return null;
+    if((Date.now()-(r.at||0))>_JV_LASTREMOVED_MS) return null;
+    return ((CLIENTS[r.code]||{}).active===false) ? r : null;
+  }catch(e){ return null; }
+}
+var _JV_PRONOUN_RE=/^(?:her|him|them|they|that|it|the client|this one|that one)$/i;
 function _jvReinstateMatch(t){
   var m=_JV_REINSTATE_RE.exec(String(t||''));
   if(!m) return null;
   var name=(m[1]||m[2]||m[3]||'').trim();
   if(!name) return null;
   var hit=_jvResolveInactiveOne(name);
+  // "Put her back" names nobody, and the roster cannot resolve a pronoun. Who
+  // "her" is, is whoever was just removed — and only while that is still true:
+  // _jvLastRemovedFresh re-checks the row is actually inactive, so this can
+  // never claim to restore someone who is already on the board.
+  if(!hit && _JV_PRONOUN_RE.test(name)){
+    var lr=_jvLastRemovedFresh();
+    if(lr) return {code:lr.code, name:lr.name};
+  }
   if(!hit) return null;
   return {code:hit, name:name};
 }
@@ -28697,6 +28746,49 @@ function _jvResolveInactiveOne(name){
     if(full===q || first===q) hits.push(c);
   });
   return hits.length===1 ? hits[0] : null;
+}
+// ===== REMOVING A CLIENT, BY VOICE ========================================
+// The SAME engine the button calls (_rsSetActive through the trainer door,
+// which reads the row back before it reports) — never a parallel path. What is
+// different here is only the door he came in by.
+//
+// DELIBERATELY NARROW. _JT_PROG_RE already matches "remove her rest day", so an
+// anchor is required: off/from the ROSTER, the APP, the BOOKS — or the idiom
+// "take <name> off", which nothing else in this file claims. "Remove her
+// Tuesday" must keep going to the program editor, and does.
+var _JT_REMOVECLIENT_RE=new RegExp(
+  '\\b(?:remove|delete|drop|cancel)\\b[^.!?]{0,60}?\\b(?:from|off)\\s+(?:the\\s+|my\\s+)?(?:roster|app|books|list|programme?|system)\\b'
+  +'|\\btake\\b[^.!?]{0,60}?\\boff\\s+(?:the\\s+|my\\s+)?(?:roster|app|books|list)\\b'
+  +'|\\b(?:remove|delete|drop)\\s+(?:client|the\\s+client)\\b'
+  +'|\\bno\\s+longer\\s+(?:a\\s+)?client\\b'
+  +'|\\b(?:end|ended|finish|finished)\\s+(?:with\\s+)?[a-z]+\\s*(?:\\u2019s|\\u0027s)?\\s*(?:membership|coaching)\\b', 'i');
+function _jtRemoveClientMatch(t){
+  var txt=String(t||'');
+  if(!_JT_REMOVECLIENT_RE.test(txt)) return null;
+  // The roster matcher decides who, never the sentence and never a model. It
+  // already enforces the units-and-fragments law — a macro, a rep count or a
+  // bare fragment cannot become a person here.
+  var f=null; try{ f=_jvFindClientIn(txt); }catch(e){}
+  var hits=(f&&f.hits)||[];
+  if(!hits.length){
+    return {ok:false, line:'I could not match that to anyone on your roster, so nobody was removed. Say the name again as it appears on the board.'};
+  }
+  if(hits.length>1){
+    var names=hits.map(function(c){ return _escHtml(String((CLIENTS[c]||{}).name||c)); });
+    // AMBIGUOUS ALWAYS ASKS. Removing the wrong person takes away a real
+    // client's access, and there is no version of that worth guessing at.
+    return {wait:true, line:'Which one do you mean \u2014 '+names.slice(0,4).join(', ')+'? Nobody has been removed.'};
+  }
+  var code=hits[0], r=CLIENTS[code]||{};
+  var nm=String(r.name||code);
+  if(r.active===false){
+    return {ok:false, line:_escHtml(nm)+' is already off the roster \u2014 nothing changed. They are on the Removed shelf if you want them back.'};
+  }
+  // NAMED-CLIENT CONFIRM, ALWAYS, AND IT NEVER WEAKENS. The ask states the
+  // resolved client in FULL — a first name he half-heard is exactly how the
+  // wrong account would lose access.
+  var park=_jvPendSet({kind:'removeclient', code:code, name:nm, parts:[], payload:{}, at:Date.now()});
+  return {wait:true, line:'Removing <b>'+_escHtml(nm)+'</b> from the roster. They lose access and come off every screen and every count \u2014 nothing of theirs is deleted, and you can put them back. Say yes and I will do it.'+(park||'')};
 }
 async function _jvReinstateClient(code){
   var r=CLIENTS[code]||{};
@@ -28720,9 +28812,14 @@ var _JT_NEWCLIENT_RE=new RegExp(
   +'|\\bmake\\s+(?:me\\s+)?(?:a\\s+|another\\s+)?(?:new\\s+)?client\\b'
   +'|\\bclient\\s+code\\b'
   +'|\\bcode\\s+for\\s+(?:a\\s+|another\\s+)?(?:new\\s+)?client\\b'
-  +'|\\bsign(?:ed)?\\s+[a-z]+\\s+up\\b'
+  // A FULL NAME BROKE BOTH OF THESE (found on the scratch corpus, 22 Aug).
+  // "sign Testy up" matched and "sign Testy McScratch up" did not — one [a-z]+
+  // is one word, and a surname is the normal way he says it. Widened to one to
+  // three words, with a stoplist on the first so "set the meeting up" and
+  // "sign it up" cannot walk into the add-a-client door.
+  +'|\\bsign(?:ed)?\\s+(?!(?:up|the|a|an|it|them|him|her|that|this|one)\\b)(?:[a-z][a-z.\\u0027-]*\\s+){1,3}up\\b'
   +'|\\bonboard(?:ing)?\\s+(?:a\\s+|another\\s+)?(?:new\\s+)?client\\b'
-  +'|\\bset\\s+[a-z]+\\s+up\\b(?!\\s+(?:a|an|the)?\\s*(?:call|consult|consultation|appointment|session|meeting))'
+  +'|\\bset\\s+(?!(?:up|the|a|an|it|them|him|her|that|this|one)\\b)(?:[a-z][a-z.\\u0027-]*\\s+){1,3}up\\b(?!\\s+(?:a|an|the)?\\s*(?:call|consult|consultation|appointment|session|meeting))'
   +'|\\bgot a new client\\b', 'i');
 async function _jtNewClientExtract(t){
   var sys='Extract a new-client sign-up from this trainer’s sentence. Return ONLY JSON, no markdown: '
@@ -29466,6 +29563,25 @@ function _jtStopAll(){
 // his day. Returns what was removed, or '' when there was nothing to remove.
 var _JT_UNDO_WINDOW_MS=10*60*1000;
 async function _jtUndoLastWrite(){
+  // A REMOVAL IS A WRITE, and "wipe that" straight after one means take that
+  // back. Checked before the food rows because it is the more consequential
+  // thing to have just done and the more likely thing he means.
+  try{
+    var _lr=_jvLastRemovedFresh();
+    if(_lr && (Date.now()-(_lr.at||0))<=_JT_UNDO_WINDOW_MS){
+      var _back=false;
+      try{ _back=await _rsSetActive(_lr.code, true); }catch(e){}
+      if(_back){
+        try{ window._jvLastRemoved=null; }catch(e){}
+        try{ jvActRecord(_lr.name+' put back on the roster', null); }catch(e){}
+        try{ if(typeof jvMode!=='undefined' && jvMode==='roster') jvLoadRoster(true); }catch(e){}
+        try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
+        return _lr.name+'\u2019s removal';
+      }
+      // Never a false yes: the removal stands and is said to stand.
+      return '';
+    }
+  }catch(e){}
   var w=[]; try{ w=(window._jimWrote||[]).slice(); }catch(e){}
   if(!w.length) return '';
   var when=0; try{ when=(window._jimLastTurn&&window._jimLastTurn.at)||0; }catch(e){}
