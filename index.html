@@ -12066,7 +12066,18 @@ async function _loadTrainerFeedRun(targetId){
     var _wosP   = (lens==='kitchen') ? Promise.resolve([]) : sbSelect('workout_logs','select=id,client_code,title,intensity,description,exercises,notes,logged_at,date_str,photo,performed_at'+_sinceQ+'&order=logged_at.desc.nullslast&limit=300').catch(function(){return [];});
     var _weightsP = (lens==='all') ? sbSelect('weight_logs','order=id.desc&limit=150').catch(function(){return [];}) : Promise.resolve([]);
     var _photosP  = (lens==='all') ? sbSelect('progress_photos','order=id.desc&limit=90').catch(function(){return [];}) : Promise.resolve([]);
-    var _reviewsP = sbSelect('reviews','select=kind,ref_id,reaction,comment,created_at&order=id.asc&limit=3000').catch(function(){return [];});
+    // A FAILED LIKE READ IS NOT "NOTHING IS LIKED" (Yusuf, ruling, 20 Aug —
+    // three states on the like read). sbSelect returns [] on failure and never
+    // throws, so an empty array here is ambiguous: it means either a genuinely
+    // unreacted feed or a refusal, a timeout, or an open breaker. Rebuilding
+    // the map from [] in the second case silently unlikes every heart on the
+    // screen. The witness already exists — the same _sbFailMark/_sbFailedSince
+    // pair the river uses — so this marks before the read and reads the mark at
+    // the rebuild below. Ordered id.desc as well: newest first is the correct
+    // end of this table to keep if it ever does outgrow the window (it holds
+    // 551 rows today, well under, so this is future-proofing, not the bug).
+    var _rvwMark=_sbFailMark();
+    var _reviewsP = sbSelect('reviews','select=kind,ref_id,reaction,comment,created_at&order=id.desc&limit=3000').catch(function(){return [];});
     // Which food_ids has the trainer already reposted — so the feed can show "Reposted" instead of "Repost".
     var _repostedP = trainerOp('coachReposts',{}).catch(function(){return [];});
     var _momentsP = (lens==='all') ? Promise.resolve(_loadMoments()).catch(function(){return [];}) : Promise.resolve([]);
@@ -12092,7 +12103,20 @@ async function _loadTrainerFeedRun(targetId){
     try{ if(typeof FEED_HIDE!=='undefined'){ wos=wos.filter(function(w){ return !FEED_HIDE[w.client_code]; }); } }catch(e){}
     var weights=(_resAll[1]||[]).filter(function(w){return _feedTs(w)>=_feedCut;});
     var photos=(_resAll[2]||[]).filter(function(p){return _feedTs(p)>=_feedCut;});
-    try{ window._reviewedMap={}; var _rvw=_resAll[3]||[]; _rvw.forEach(function(r){ if(r.ref_id==null) return; var _k=(r.kind||'')+':'+r.ref_id; if(!window._reviewedMap[_k]) window._reviewedMap[_k]={}; var _rx=r.reaction||'seen'; if(_rx==='like'){ window._reviewedMap[_k].like=true; window._reviewedMap[_k].like_ts=r.created_at; } else if(_rx==='comment'){ window._reviewedMap[_k].comment=true; window._reviewedMap[_k].comment_ts=r.created_at; if(r.comment) window._reviewedMap[_k].comment_text=r.comment; } else window._reviewedMap[_k].seen=true; }); }catch(e){}
+    try{
+      var _rvw=_resAll[3]||[];
+      // THREE STATES. Rows back -> the server is the truth, replace. Empty AND
+      // a read failed somewhere in this load -> UNKNOWN, so keep what is
+      // already known rather than asserting nobody liked anything. Empty with
+      // no failure -> genuinely nothing reacted, and replacing with {} is right.
+      var _rvwUnknown = (!_rvw.length && _sbFailedSince(_rvwMark));
+      if(_rvwUnknown){
+        try{ console.warn('[feed] reviews read came back empty during a failed load — keeping the known like state rather than blanking every heart'); }catch(e){}
+      } else {
+        window._reviewedMap={};
+      }
+      if(!_rvwUnknown) _rvw.forEach(function(r){ if(r.ref_id==null) return; var _k=(r.kind||'')+':'+r.ref_id; if(!window._reviewedMap[_k]) window._reviewedMap[_k]={}; var _rx=r.reaction||'seen'; if(_rx==='like'){ window._reviewedMap[_k].like=true; window._reviewedMap[_k].like_ts=r.created_at; } else if(_rx==='comment'){ window._reviewedMap[_k].comment=true; window._reviewedMap[_k].comment_ts=r.created_at; if(r.comment) window._reviewedMap[_k].comment_text=r.comment; } else window._reviewedMap[_k].seen=true; });
+    }catch(e){}
     try{ window._repostedFoodIds={}; var _rpd=await _repostedP; (_rpd||[]).forEach(function(r){ if(r.food_id!=null) window._repostedFoodIds[String(r.food_id)]=true; }); }catch(e){}
     try{
       var _connRows=await _connP;
@@ -13239,19 +13263,49 @@ function _pfCard(b, hour, now, isToday, viewDayTs){
       +body+'</div>';
   }
   var newest=evs[evs.length-1];
-  // Like / comment still hang off the newest thing — one set per card, not per
-  // row — but nothing about the newest item is drawn any bigger for it.
-  var rk = newest.kind==='food' ? 'food' : (newest.kind==='wo' ? 'workout' : (newest.kind==='photo' ? 'photo' : null));
-  var rid = (newest.data && newest.data.id!=null) ? newest.data.id : '';
+  // ===== THE HEART ASKED ABOUT THE WRONG ROW (Yusuf, live, 20 Aug) =========
+  // Reported as "like a client's food, scroll away, come back, the like is
+  // gone." The like was never gone. The write lands and quickReact reads its
+  // own row back before it will paint Liked; the row is in `reviews` and in
+  // _reviewedMap. What moved was the QUESTION this card asks.
+  // Like/comment hang off ONE item per card, and that item was always
+  // evs[evs.length-1] — the newest thing the client logged. So: like the
+  // breakfast at 9am, client logs a workout at 6pm, and on the next render the
+  // card's heart is bound to workout:<newid>, which nobody has liked. Unliked.
+  // The liked meal survives only as the small inline heart on its own row.
+  // NOT the 3000-row truncation two sweeps blamed: `reviews` holds 551 rows
+  // live, so order=id.asc&limit=3000 returns every row including the newest.
+  // Verified against the live table before touching this.
+  // THE FIX: prefer the item that is ALREADY liked, scanning newest-first. The
+  // control then keeps pointing at the row it wrote, so the state is stable AND
+  // an unlike deletes that row rather than a different one. Only when nothing
+  // on the card is liked does it fall back to the newest, which is where a
+  // fresh like belongs. `newest` itself is untouched — Cite, the day-open and
+  // the time label all still key off the genuinely newest event.
+  function _pfLikeRef(ev){
+    var k = ev.kind==='food' ? 'food' : (ev.kind==='wo' ? 'workout' : (ev.kind==='photo' ? 'photo' : null));
+    if(!k) return null;
+    return {k:k, id:((ev.data && ev.data.id!=null) ? ev.data.id : '')};
+  }
+  var likeEv=newest;
+  try{
+    for(var _pi=evs.length-1; _pi>=0; _pi--){
+      var _pr=_pfLikeRef(evs[_pi]); if(!_pr) continue;
+      var _pm=window._reviewedMap ? window._reviewedMap[_pr.k+':'+_pr.id] : null;
+      if(_pm && _pm.like){ likeEv=evs[_pi]; break; }
+    }
+  }catch(e){}
+  var rk = likeEv.kind==='food' ? 'food' : (likeEv.kind==='wo' ? 'workout' : (likeEv.kind==='photo' ? 'photo' : null));
+  var rid = (likeEv.data && likeEv.data.id!=null) ? likeEv.data.id : '';
   var rmk = (rk && window._reviewedMap) ? window._reviewedMap[rk+':'+rid] : null;
   var liked = !!(rmk && rmk.like);
   var likeT = (rmk && rmk.like_ts) ? _revTimeStr(rmk.like_ts) : '';
   // RULING (Yusuf, live): the model this button actually runs is item-level —
   // it likes the newest thing on the card, not "the day" — so its own label
   // says which thing that is instead of leaving it to be inferred.
-  var likeTarget = newest.kind==='food' ? (newest.data&&newest.data.name||'that meal')
-    : newest.kind==='wo' ? (newest.data&&newest.data.title||'that workout')
-    : newest.kind==='photo' ? 'that photo' : '';
+  var likeTarget = likeEv.kind==='food' ? (likeEv.data&&likeEv.data.name||'that meal')
+    : likeEv.kind==='wo' ? (likeEv.data&&likeEv.data.title||'that workout')
+    : likeEv.kind==='photo' ? 'that photo' : '';
   // Light day: 1-2 things logged, still worth a nudge — the outreach box shows here
   // too, not only on a fully quiet card. A fully-logged client doesn't need it.
   // BUTTON DIET (Yusuf, live): Copy used to sit in its own flex:1 row under the
@@ -17537,7 +17591,29 @@ function jvAudioUnlock(){
 function _jvSpeakStrip(html){
   try{
     var d=document.createElement('div'); d.innerHTML=String(html||'');
-    return (d.textContent||'').replace(/\s+/g,' ').trim();
+    // A <br> CONTRIBUTES NO WHITESPACE TO textContent. Caught the moment the
+    // roster answers dropped their bullet glyph: rows that had been separated
+    // only by "<br>• " ran straight into each other and the ear got
+    // "steps inChris Reid". Turned into a real sentence break BEFORE the text
+    // is read, which also gives the chunker clean places to split, so each
+    // client is spoken as its own line rather than one long run-on.
+    try{
+      var brs=d.querySelectorAll('br');
+      for(var i=brs.length-1;i>=0;i--){
+        var n=brs[i];
+        if(n.parentNode) n.parentNode.replaceChild(document.createTextNode('. '), n);
+      }
+    }catch(e){}
+    var t=(d.textContent||'').replace(/\s+/g,' ').trim();
+    // A row separated by <br><br> yields two stops, and a row that already
+    // ended in a full stop yields three. Collapse any RUN of stops to one in a
+    // single pass — a per-pair replace leaves the third behind, which is how
+    // "3 logged today.. . Blake" survived the first attempt at this.
+    t=t.replace(/(?:\s*\.){2,}\s*/g,'. ')
+       .replace(/([?!;,:])\s*\.\s*/g,'$1 ')
+       .replace(/\s+([.?!,;:])/g,'$1')
+       .replace(/\s+/g,' ');
+    return t.replace(/^[.\s]+/,'').trim();
   }catch(e){ return ''; }
 }
 // ===== THE ANSWER THAT SOUNDED FINISHED (Yusuf, live, 20 Aug) =============
@@ -26995,11 +27071,72 @@ function _jvRqRoster(){
 function _jvRqName(c){ return String(((CLIENTS||{})[c]||{}).name||c); }
 // One list, said one way. The count is derived from the SAME array that is
 // printed, so law 5 cannot be broken here by construction.
+// ===== AN OFFER IS NOT AN ANSWER (Yusuf, ruling, 20 Aug) =================
+// The model was being TOLD to end every substantive answer with a door ("Want
+// me to go deeper on anyone's food?"). That instruction is withdrawn above, but
+// a prompt rule with nothing behind it is a preference, not a rule — the same
+// finding as the 87KB lesson. This cuts an offer-shaped CLOSING sentence off a
+// reply whatever the model decided.
+// TRAILING ONLY, and deliberately so: a genuine ask-back ("Which Chris did you
+// mean?") is one of the four allowed reasons and must survive. This matches the
+// offer vocabulary at the END of the text, never a question in the middle.
+// new RegExp with a STRING and doubled backslashes, matching the house pattern
+// at _JV_SELF_ASK_RE: a bare apostrophe inside a regex LITERAL blinds check.sh's
+// stripper. Audited after writing, per the halved-escape lesson (.190).
+var _JV_OFFER_RE=new RegExp(
+  '(?:^|[.?!;]|\\u2014|\\u2013|<br>|\\n)\\s*(?:so\\s+)?(?:want me to|do you want me to|would you like me to|'
+  +'shall i|should i|need me to|want that|do you want that|anything else|'
+  +'let me know if|say the word if|happy to)\\b[^.?!]*[.?!]*\\s*$','i');
+function _jvStripOffer(t){
+  var s2=String(t||'');
+  for(var i=0;i<3;i++){
+    var n=s2.replace(_JV_OFFER_RE, function(m){ return /^[.?!]/.test(m) ? m.charAt(0) : ''; }).trim();
+    if(n===s2) break;
+    s2=n;
+  }
+  return s2.replace(/(?:<br>\s*)+$/i,'').trim();
+}
 function _jvRqSay(head, names, emptyLine){
   if(!names.length) return _escHtml(emptyLine);
   var n=names.length;
+  // ONE CLIENT PER ROW, A BLANK LINE BETWEEN THEM (Yusuf, ruling, 20 Aug).
+  // A roster answer is a list of people, and a list of people run together as
+  // a paragraph cannot be scanned — which is the whole reason he asks for it.
+  // The bullet glyph goes with the change: once a blank line separates the
+  // entries the marker is noise, and charter law 7 bans bullet symbols anyway.
   return _escHtml(head.replace('{n}', n).replace('{people}', n===1?'person':'people'))
-       + '<br>' + names.map(function(x){ return '• '+_escHtml(x); }).join('<br>');
+       + '<br><br>' + names.map(function(x){ return _escHtml(x); }).join('<br><br>');
+}
+// NAME, WHAT, WHEN, THE NUMBERS — one row, from rows already in memory.
+// "Who logged today" answered with bare names, which is the headcount he
+// explicitly does not want; every fact below is already loaded by the board
+// (jvData.foodsByClient / woByClient / jvTriage.per) so this fires no query.
+// Facts only, per the law-5 rider: what was eaten, when it was trained, the
+// numbers. No read of the person behind them.
+function _jvRqTodayLine(code){
+  var name=_jvRqName(code);
+  var per=(jvTriage&&jvTriage.per)||{}, pp=per[code]||null;
+  var wos=[], foods=[];
+  try{ if(typeof jvData!=='undefined' && jvData && jvData.woByClient) wos=jvData.woByClient[code]||[]; }catch(e){}
+  try{ if(typeof jvData!=='undefined' && jvData && jvData.foodsByClient) foods=jvData.foodsByClient[code]||[]; }catch(e){}
+  var bits=[];
+  if(wos.length){
+    bits.push(wos.map(function(w){
+      var ttl=String(w.title||'session');
+      var when='';
+      try{ var d=new Date(w.logged_at); if(!isNaN(d.getTime())) when=d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}).toLowerCase().replace(' ',''); }catch(e){}
+      return ttl+(when?(' at '+when):'');
+    }).join(', '));
+  }
+  if(foods.length){
+    var nm=foods.map(function(f){ return String(f.name||'meal'); }).join(', ');
+    var cal=foods.reduce(function(a,f){ return a+(+f.calories||0); },0);
+    var pro=foods.reduce(function(a,f){ return a+(+f.protein||0); },0);
+    bits.push(nm+(cal>0?(', '+Math.round(cal)+' cal, '+Math.round(pro)+'g protein'):''));
+  }
+  if(pp && pp.weighed && pp.weighed[0] && pp.lastWeight) bits.push('weighed '+pp.lastWeight.val);
+  if(pp && pp.stepped && pp.stepped[0]) bits.push('steps in');
+  return name+(bits.length?(' \u2014 '+bits.join('; ')):'');
 }
 // Returns HTML, or null when this is not a roster question at all.
 // "What's my day?" is the same brief, asked for. One builder, so the spoken
@@ -27031,8 +27168,9 @@ function _jvRosterAnswer(t){
   var roster=_jvRqRoster();
   if(!roster.length) return _escHtml('There is nobody on the roster to look at.');
   if(wantToday){
-    var did=roster.filter(function(c){ var p=per[c]; return !!(p && p.cnt && p.cnt[0]>0); })
-                  .map(_jvRqName).sort();
+    var didCodes=roster.filter(function(c){ var p=per[c]; return !!(p && p.cnt && p.cnt[0]>0); })
+                       .sort(function(a,b){ return _jvRqName(a).localeCompare(_jvRqName(b)); });
+    var did=didCodes.map(_jvRqTodayLine);
     return _jvRqSay('{n} logged today.', did, 'Nobody has logged anything today yet.');
   }
   // QUIET. A stated window wins; otherwise three days, which is the board's own
@@ -27761,10 +27899,10 @@ async function _jtModel(t, ctx){
     +"Food the same way: who is eating well by what was logged, whose day looks off — one meal by evening, macros far short of a day's worth — and which entry you genuinely liked. "
     +"JUDGE ONLY FROM THE ROWS WRITTEN BELOW. If the detail block says a read failed, say that instead of judging. Anyone not listed simply has not logged — that is a fact you may state, never a criticism. "
     +"TONE: plain sentences, names, specifics. Times like 9am, never 09:00. No scores, no grades, no percentages, and no shame words about clients — 'thin detail' and 'one line' are facts; 'lazy' and 'sloppy' are banned. Two short paragraphs at most.\n"
-    +"END EVERY SUBSTANTIVE ANSWER WITH ONE DOOR — one concrete offer he can take with a yes, in the reply's last sentence. Examples: 'Want me to go deeper on anyone's food?', 'Andrea's entries are one-liners again — want me to draft her a text?'. Then PUT THE SAME OFFER IN offer: "
+    +"THE ANSWER ENDS WHEN THE FACTS END (Yusuf, ruling, 20 Aug). Never close with an offer or an elaboration question \u2014 no \"want me to go deeper\", no \"want that?\", no \"should I draft her a text?\", no \"let me know if\". He decides what to elaborate on and he will ask. State the facts and STOP on the last one. This replaces the earlier rule that required a closing door; that rule is withdrawn. offer stays NULL unless he has explicitly asked for a draft or a closer read in this very line. When he has, use offer: "
     +"{\"kind\":\"text\",\"client_code\":\"...\",\"body\":\"the exact message you propose, written in the YUSUF VOICE above \u2014 that voice is the rule, not a suggestion\"} to draft a text — nothing is sent until he approves; or "
     +"{\"kind\":\"deeper\",\"client_code\":\"...\",\"topic\":\"food\" or \"workouts\"} to offer a closer read of one client. "
-    +"One offer per answer. offer stays null on small talk, on recordings, and when the reply is not substantive. The door in the reply and the offer object must match — never ask a question the offer cannot deliver.\n\n"
+    +"One offer per answer, and only when he asked for it. offer stays null on small talk, on recordings, and whenever he did not ask \u2014 which is most of the time. Never write a question into the reply that exists only to introduce an offer.\n\n"
     +"NEVER CLAIM A SUCCESS THAT DID NOT HAPPEN. You (this reply) cannot cancel, book, move or write anything yourself — you can only fill note/log/working_on, which this app writes for you. If he asks you to DO something and none of those three fields captures it, never answer with 'Done', 'Cancelled', 'Booked', 'Sure', or any other word that claims the thing happened.\n\n"
     +"YOU ARE THE LAST STAGE, NOT THE ONLY ONE. Earlier stages you never see already handle booking, cancelling, moving, adding or reinstating a client, and calendar changes — reaching you means only that THIS SPECIFIC SENTENCE didn't parse cleanly there, never that the capability doesn't exist. Here is what is actually wired, so your sense of what you can do comes from this list, not a guess:\n"
     +JV_CAPABILITIES.map(function(c){ return '- '+c.v+' ('+c.d+')'; }).join('\n')+'\n'
@@ -27838,11 +27976,11 @@ async function _jtModel(t, ctx){
       return {reply: salvaged ? _jvNoFalseSuccess(salvaged+' … (still going — ask me to continue)', false) : 'Got cut off answering that — ask me again.',
               note:'', code:'', name:'', log:null, working_on:''};
     }
-    return clean ? {reply:_jvNoFalseSuccess(_jvStripMd(clean), false), note:'', code:'', name:'', log:null, working_on:''} : null;
+    return clean ? {reply:_jvStripOffer(_jvNoFalseSuccess(_jvStripMd(clean), false)), note:'', code:'', name:'', log:null, working_on:''} : null;
   }
   var code=String(obj.client_code||'').trim();
   var _hadWrite=!!(String(obj.note||'').trim() || obj.log || String(obj.working_on||'').trim());
-  return {reply:_jvNoFalseRefusal(_jvNoFalseSuccess(_jvStripMd(String(obj.reply||'').trim()), _hadWrite)), note:String(obj.note||'').trim(), code:code,
+  return {reply:_jvStripOffer(_jvNoFalseRefusal(_jvNoFalseSuccess(_jvStripMd(String(obj.reply||'').trim()), _hadWrite))), note:String(obj.note||'').trim(), code:code,
           name:String(obj.client_name||'').trim()||((CLIENTS[code]||{}).name||''),
           log:obj.log||null, working_on:String(obj.working_on||'').trim(),
           offer:(obj.offer&&typeof obj.offer==='object')?obj.offer:null};
@@ -35896,6 +36034,8 @@ async function jvChatSend(){
     txt = (_pr.clean && _pr.clean.trim()) ? _pr.clean : ((_pp.clean && _pp.clean.trim()) ? _pp.clean : ((_pe.clean && _pe.clean.trim()) ? _pe.clean : txt));
     var _hadMarker=/\[PROGRAM/i.test(txt);
     txt = txt.replace(/\[PROGRAM[\s\S]*$/i,'').trim();
+    // Same rule on the rail as on the tab: the answer ends when the facts end.
+    try{ txt=_jvStripOffer(txt); }catch(e){}
     if(!txt) txt='Working on it.';
     var _applied=(_pg.results&&_pg.results.length)||(_pe.results&&_pe.results.length)||(_pp.results&&_pp.results.length)||(_pr.results&&_pr.results.length);
     jvChatHistory.push({role:'assistant',content:txt});
