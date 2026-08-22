@@ -12564,6 +12564,13 @@ async function _loadTrainerFeedRun(targetId){
       });
     })();
     wos.forEach(function(w){ var c=w.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(w),kind:'wo',code:c,data:w}); });
+    // Kept per client, newest first, so a weigh-in row can say what changed
+    // since the one before it without a second read.
+    try{
+      window._pfWeightsByCode={};
+      (weights||[]).slice().sort(function(a,b){ return _feedTs(b)-_feedTs(a); })
+        .forEach(function(w){ var c=w.client_code; if(!c) return; (window._pfWeightsByCode[c]=window._pfWeightsByCode[c]||[]).push(w); });
+    }catch(e){}
     weights.forEach(function(w){ var c=w.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(w),kind:'weight',code:c,data:w}); });
     photos.forEach(function(ph){ var c=ph.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(ph),kind:'photo',code:c,data:ph}); });
     moments.forEach(function(m){ items.push({ts:m.ts,kind:'moment',data:m}); });
@@ -12793,8 +12800,32 @@ function _pfDayRow(it){
       rating=_tlRatingLine(d.intensity, _connTok);
     }catch(e){}
   } else if(it.kind==='weight'){
-    what='Weigh-in';
-    meta = (d.weight!=null&&d.weight!=='')?(wToDisp(d.weight)+' '+(wUnit()==='lbs'?'lb':'kg')):'';
+    // A WEIGH-IN IS A LOGGED ITEM LIKE ANY OTHER (Yusuf, ruling, 22 Aug) — its
+    // own row, in the day's order, on the same grid. The pipeline was never
+    // broken: Anthony's 12:27 weigh-in is in weight_logs (192.4) and the feed
+    // builder has always included kind:'weight'. This is the row's own reading.
+    what='Weighed in';
+    var _unit=(wUnit()==='lbs'?'lb':'kg');
+    meta = (d.weight!=null&&d.weight!=='')?(wToDisp(d.weight)+' '+_unit):'';
+    // THE TREND, STATED AS A FACT AND NEVER AS A VERDICT. What changed since the
+    // one before it, in his own units — no arrows, no colour, no judgement. The
+    // row's tap still opens the full history chart.
+    try{
+      var _hist=((window._pfWeightsByCode||{})[it.code])||[];
+      var _prev=null;
+      for(var _wi=0;_wi<_hist.length;_wi++){
+        var _h=_hist[_wi];
+        if(_feedTs(_h)<it.ts && _h.weight!=null && _h.weight!==''){ _prev=_h; break; }
+      }
+      if(_prev && d.weight!=null && d.weight!==''){
+        var _dl=(+wToDisp(d.weight))-(+wToDisp(_prev.weight));
+        var _mag=Math.abs(Math.round(_dl*10)/10);
+        var _when=''; try{ _when=_pfWhenPhrase(_feedTs(_prev)); }catch(e){}
+        rating = (_mag<0.05)
+          ? ('No change since '+(_when||'the last one'))
+          : ((_dl>0?'Up ':'Down ')+_mag+' '+_unit+' since '+(_when||'the last one'));
+      }
+    }catch(e){}
   } else if(it.kind==='photo'){
     what='Progress photo';
     meta = d.angle?_pfEsc(d.angle):'';
@@ -16169,20 +16200,17 @@ function renderTrainingList(){
           var ex = typeof w.exercises === 'string' ? JSON.parse(w.exercises) : w.exercises;
           if(Array.isArray(ex)){
             exForAttr = JSON.stringify(ex);
-            if(ex.length > 0){
-              exHtml = '<div style="margin-top:11px;font-size:13px;color:var(--m2);line-height:1.75;">';
-              ex.forEach(function(e){
-                var line = '• ' + (e.name || e.exercise || 'Exercise');
-                if(e.sets && e.reps) line += ' — ' + e.sets + '×' + e.reps;
-                else if(e.sets) line += ' — ' + e.sets + ' sets';
-                if(e.weight) line += ' @ ' + e.weight;
-                exHtml += '<div>'+line+'</div>';
-              });
-              exHtml += '</div>';
-            }
+
           }
         }catch(e){}
       }
+      // ONE WORKOUT CARD HERE TOO (Yusuf, ruling, 22 Aug). This was the archaic
+      // skin — "• Name — 3×10 @ 145" — and it only rendered at all when the
+      // exercises column was populated, so a chat-logged session (which stores
+      // the record in description and leaves exercises NULL, as Chris's and
+      // Devon's both do) showed NOTHING here. The card reads description as a
+      // fallback, so those sessions appear for the first time.
+      try{ exHtml=_woCard(w, {expanded:true, code:((window.cl||{}).code||''), noTitle:true}); }catch(e){}
       var intColor = 'var(--muted)';
       if(w.intensity >= 8) intColor = 'var(--gold)';
       else if(w.intensity >= 5) intColor = 'var(--m2)';
@@ -32668,7 +32696,16 @@ function jvOpenDeep(code, callTarget){
   // Fired alongside the rest, not awaited — the card opens instantly and the
   // thread fills in, same as Progress and the day list above it.
   try{ cnoOpen('cnoRail_'+code, code, !!callTarget, callTarget||null); }catch(e){ console.error('call notes rail',e); }
-  _jvLoadSplitFlag(code);
+  // THE SPLIT-MISMATCH BANNER IS GONE (Yusuf, ruling, 22 Aug — it scolded him
+  // about a gender he had already set). Two things were wrong and only one was
+  // fixable: it read profiles ordered by id desc, so a client with more than one
+  // profile row could be judged against the wrong one — and its copy talked
+  // builder at him on a client's card ("they stay on this programme until the
+  // week is rebuilt"). A card about a person is not the place to explain rebuild
+  // mechanics, and a warning that can be wrong about a fact he just entered is
+  // worse than no warning. If the mismatch needs saying, it belongs in the
+  // program builder where the rebuild actually happens. _jvLoadSplitFlag is left
+  // in place, now unreferenced, for the dead-code sweep.
   // Re-read on open so a note added on the phone shows up here, then repaint in place.
   try{ cnLoadCoaching(code).then(function(){ cnAddCancel(code); }); }catch(e){}
   if(open){
@@ -34399,7 +34436,12 @@ function _woCard(wo, opts){
   var full=!!opts.expanded;
   var code=String(opts.code||''), dateStr=String((wo&&wo.date_str)||'');
   var parsed={items:[], note:''};
-  try{ parsed=_bfItemsFor(wo)||parsed; }catch(e){}
+  // opts.items lets a caller that genuinely has richer rows — the day view has
+  // real per-set records off the server — supply them while the CARD still owns
+  // the format. That is what keeps one layout without flattening data the other
+  // surface actually has.
+  if(opts.items && opts.items.length){ parsed={items:opts.items, note:(opts.note||'')}; }
+  else { try{ parsed=_bfItemsFor(wo)||parsed; }catch(e){} }
   var title=String((wo&&wo.title)||'Workout').trim()||'Workout';
   var rows=(parsed.items||[]).map(function(it){
     if(!it||!it.name) return '';
@@ -34412,7 +34454,14 @@ function _woCard(wo, opts){
       // the same restating the expanded food detail was just cured of.
       if(String(muscle).trim().toLowerCase()===String(it.name).trim().toLowerCase()) muscle='';
     }
-    var conn=full ? _woConnFor(code, dateStr, it.name) : '';
+    // opts.conn: a caller that already holds the day's rating map (the day view
+    // reads it off the session record) hands it straight over rather than making
+    // the card go looking in the feed's cache, which it would not find.
+    var conn='';
+    if(full){
+      if(opts.conn) conn=opts.conn[it.name]||opts.conn[String(it.name).trim()]||'';
+      if(!conn) conn=_woConnFor(code, dateStr, it.name);
+    }
     var connWord=conn?(_WO_CONN_WORD[conn]||''):'';
     return '<div class="woRow">'
       +'<div class="woRowText">'
@@ -34767,35 +34816,35 @@ function _tlDoneHero(ds, wo, plan, code){
       var R=(rec&&rec.conn)||{};
       Object.keys(R).forEach(function(g){ var by=(R[g]||{}).by||{}; Object.keys(by).forEach(function(n){ connBy[n]=by[n]; }); });
     }catch(e){}
-    body+='<div style="margin-top:15px;">';
-    parsed.items.forEach(function(it){
-      // Real per-set rows when the server has them for this date; otherwise the
-      // line as it was frozen at Complete.
+    // ONE WORKOUT CARD ON THIS SURFACE TOO (Yusuf, ruling, 22 Aug). What stood
+    // here was a second implementation of the very same layout — name, rating at
+    // the right, muscle line, numbers — kept in step with the card's by hand.
+    // The card owns the format now; this keeps the two things it genuinely has
+    // that the feed does not, and hands them over: the real per-set rows off the
+    // server, and this day's own rating map.
+    var _items=parsed.items.map(function(it){
       var sets=(rec&&rec.sets&&rec.sets[_exCanonical(it.name)])||null;
       var detail=it.detail;
       if(sets && sets.length){
-        detail=sets.filter(function(s){ return s.w||s.r; })
-                   .map(function(s){ return s.w?(s.w+' lb × '+(s.r||'')):(s.r+' reps'); }).join(', ');
+        // NEVER A DANGLING OPERATOR here either: an empty rep count used to
+        // print "145 lb × " with nothing after it, the same shape his feed was
+        // just cured of.
+        detail=sets.filter(function(s2){ return s2.w||s2.r; })
+                   .map(function(s2){
+                      var r2=String(s2.r||'').trim();
+                      if(s2.w) return r2 ? (s2.w+' lb × '+r2) : (s2.w+' lb');
+                      return r2 ? (r2+' reps') : '';
+                   }).filter(Boolean).join(', ');
       }
-      var st=connBy[_exCanonical(it.name)]||'';
-      var word=_BF_AUDIT[st]||'';
-      var tone=(st==='felt')?'var(--gold)':(st==='partial'?'var(--text)':'var(--m2)');
-      body+='<div style="padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.07);">'
-        +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;">'
-          +'<div style="font-size:15px;font-weight:800;color:var(--text);min-width:0;">'+_escHtml(it.name)
-            +(it.equip?('<span style="font-size:11px;font-weight:700;color:var(--m2);"> · '+_escHtml(it.equip)+'</span>'):'')+'</div>'
-          +(word?('<div style="flex-shrink:0;font-size:12px;font-weight:800;color:'+tone+';">'+_escHtml(word)+'</div>'):'')
-        +'</div>'
-        // _bfMuscleOf answers with the name itself when it knows nothing better —
-        // right for "never blank", wrong here, where it would print the line twice.
-        +(function(){ var mm=_bfMuscleOf(it.name);
-            return (mm && mm.toLowerCase()!==String(it.name).toLowerCase())
-              ? '<div style="font-size:11.5px;color:var(--m2);margin-top:2px;">'+_escHtml(mm)+'</div>' : ''; })()
-        +(detail?('<div style="font-size:13px;color:var(--text);margin-top:5px;letter-spacing:0.1px;">'+_escHtml(detail)
-            +(!it.logged?' <span style="color:var(--m2);font-size:11.5px;">(as prescribed)</span>':'')+'</div>'):'')
-      +'</div>';
+      if(!it.logged && detail) detail=detail+' (as prescribed)';
+      return {name:it.name, equip:it.equip, detail:detail, logged:it.logged};
     });
-    body+='</div>';
+    var _connMap={};
+    try{ Object.keys(connBy).forEach(function(k){ _connMap[k]=connBy[k]; }); }catch(e){}
+    // connBy is keyed canonically; the card asks by the name it renders.
+    var _byName={};
+    try{ _items.forEach(function(it){ var c=connBy[_exCanonical(it.name)]; if(c) _byName[it.name]=c; }); }catch(e){}
+    body+=_woCard(wo, {expanded:true, code:code, items:_items, conn:_byName, noTitle:true});
     // What they photographed, read back on the day. The hero never drew these,
     // so a session photo went to the server and was never seen again.
     try{ if(wo && wo.photo) body+=_woPhotosHtml(wo.photo, {margin:'14px 0 0'}); }catch(e){}
