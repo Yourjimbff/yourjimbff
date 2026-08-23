@@ -21932,7 +21932,18 @@ function _wkLoggedLabel(e){
   // redundant, not informative.
   if(e.k==='food') return String(e.d.name||'meal');
   if(e.k==='wo') return String(e.d.title||'workout');
-  if(e.k==='wt') return 'weigh-in';
+  // WHAT HE WEIGHED, NOT THE WORD "weigh-in" (Yusuf, ruling, 23 Aug — "I
+  // weighed in at one sixty eight, and it says weigh in and all lowercase").
+  // Every other block on this grid carries its real title; this one carried a
+  // hardcoded lowercase noun. The right rendering already existed on the day
+  // summary — the number and the unit, with "weigh-in" demoted to a sub-line —
+  // so this consumes that shape rather than inventing a third.
+  if(e.k==='wt'){
+    var _w=(e.d||{}).weight;
+    if(_w==null) return 'Weigh-in';
+    try{ _w=(typeof wToDisp==='function') ? wToDisp(_w) : _w; }catch(err){}
+    return (Math.round(_w*10)/10)+' '+((typeof wUnit==='function')?wUnit():'lbs');
+  }
   return 'photo';
 }
 // Same routing law as the river/day-peek/feed-card: a weigh-in opens the
@@ -21981,7 +21992,9 @@ function _wkDailyCellHtml(dayStart, entries){
 function _wkDailyEntriesFor(dayStart, daily, logged){
   var entries=((daily||{})[_wkDayStr(dayStart)]||[]).slice();
   (logged||[]).forEach(function(e){
-    if(e.k==='wt' && e.ts>=dayStart && e.ts<dayStart+86400000) entries.push(e);
+    // Only the ones the grid cannot place. Steps have no clock and belong
+    // here; a weigh-in with a real time does not.
+    if(e.k==='wt' && e.ts>=dayStart && e.ts<dayStart+86400000 && !_wkWtOnGrid(e, dayStart)) entries.push(e);
   });
   return entries;
 }
@@ -22018,7 +22031,20 @@ function _wkFoodMacroLine(r){
 // STATED-DEFAULT convention as _wkApptDuration above — this sizes the
 // block off a named default rather than a measured one; nothing here
 // prints that number as text, so there is no reading of it as measured.
-var WK_LOG_DEFAULT_MIN={wo:45, food:30};
+var WK_LOG_DEFAULT_MIN={wo:45, food:30, wt:30};
+// A WEIGH-IN HAS A CLOCK, SO IT BELONGS ON THE GRID AT THAT CLOCK (Yusuf,
+// ruling, 23 Aug — "I pasted a weigh-in at a time, at the time, and that's
+// where it should be"). It was being drawn by the all-day band renderer
+// instead, up in the strip with the split names — which is also where the
+// lowercase and the "weird font" he named came from: the band has its own,
+// smaller face. Drawn by the block renderer it is the same face, case and
+// font as Silver Diner and Sunlight & Grass beside it.
+// A row with no real time of day is a different thing and stays in the band —
+// a date-only weigh-in is not a 12:00am one, and drawing it at midnight would
+// be inventing a clock he never gave.
+function _wkWtOnGrid(e, dayStartMs){
+  return !!(e && e.k==='wt' && e.ts && e.ts>dayStartMs && e.ts<dayStartMs+86400000);
+}
 function _wkLoggedBlockHtml(e, dayStartMs){
   // ITS OWN LENGTH WHEN THE ROW KNOWS ONE. The named default is the fallback
   // for a row that genuinely carries no duration, not a substitute for reading
@@ -22036,15 +22062,24 @@ function _wkLoggedBlockHtml(e, dayStartMs){
   // 1e — HIS LABEL IF HE SET ONE, the true name otherwise. The row itself is
   // untouched: _wkLoggedLabel still reads e.d.name / e.d.title, and the day
   // page, the food record and the thread all keep the real thing.
-  var _lk=(e.k==='food') ? _wkKeyFood(e.id) : _wkKeyWo(e.id);
+  // A WEIGH-IN TAKES NO CUSTOM LABEL. The rename map is keyed by kind+id, and
+  // a weigh-in id run through the workout key would collide with a workout's
+  // — one renamed session and someone's weight reads as "Leg Day". The number
+  // is the label and there is nothing to rename.
+  var _isWt=(e.k==='wt');
+  var _lk=_isWt ? null : ((e.k==='food') ? _wkKeyFood(e.id) : _wkKeyWo(e.id));
   var _true=_wkLoggedLabel(e);
-  var lbl=_escHtml(_wkDisplayTitle(_lk, _true));
+  var lbl=_escHtml(_isWt ? _true : _wkDisplayTitle(_lk, _true));
   // 1d — visual height only. pos.top is untouched, so nothing moves in time.
-  pos.h=_wkFitHeight(_lk, pos.h, _wkDisplayTitle(_lk, _true));
+  if(!_isWt) pos.h=_wkFitHeight(_lk, pos.h, _wkDisplayTitle(_lk, _true));
   // "Completed" said what the gold edge and the block's own existence already
   // said, and cost the one thing missing: WHEN (Yusuf, live, 22 Aug). At 76px
   // of column there is room for one of the two, so it is the clock.
-  var sub=(e.k==='wo') ? _jvSpokenTime(new Date(e.ts)) : (_wkFoodMacroLine(e.d)||_jvSpokenTime(new Date(e.ts)));
+  // "weigh-in" is the quiet sub-line, exactly as the day summary has it — the
+  // word survives, it just stops being the whole block.
+  var sub=(e.k==='wt') ? ('weigh-in \u00b7 '+_jvSpokenTime(new Date(e.ts)))
+    : (e.k==='wo') ? _jvSpokenTime(new Date(e.ts))
+    : (_wkFoodMacroLine(e.d)||_jvSpokenTime(new Date(e.ts)));
   // A COMPLETED SESSION MOVES TO WHEN IT ACTUALLY HAPPENED (Yusuf, ruling,
   // 20 Aug — his Leg Day sat on Thursday because that is when he dictated
   // it; he trained Wednesday). Workouts only for now: a meal's grid
@@ -23063,7 +23098,7 @@ function _wkGridHtml(wk){
     // BLOCK IS THE PLAN (Yusuf, ruling, 20 Aug) — both render, on purpose;
     // a thin 17px .wkMark read as "nothing happened." Weigh-ins/photos are
     // single-instant facts, not sessions, so they keep the quiet mark.
-    var logBlocks=dayLogged.filter(function(e){ return e.k==='wo'||e.k==='food'; })
+    var logBlocks=dayLogged.filter(function(e){ return e.k==='wo'||e.k==='food'||_wkWtOnGrid(e, dayStart); })
       .map(function(e){ return _wkLoggedBlockHtml(e, dayStart); }).join('');
     // Weigh-ins moved up to the daily strip (_wkDailyRow) — .wkMark is now
     // photos only, the one logged fact here that is genuinely a moment.
@@ -23193,7 +23228,7 @@ function _wkDayZoomHtml(wk, dayStart){
   var dayData=(wk.days||[])[dayIdx]||{rows:[]};
   var blocks=(dayData.rows||[]).map(function(r){ return _wkApptBlockHtml(r, dayStart); }).join('');
   var dayLogged=(wk.logged||[]).filter(function(e){ return e.ts>=dayStart && e.ts<dayStart+86400000; });
-  var logBlocks=dayLogged.filter(function(e){ return e.k==='wo'||e.k==='food'; }).map(function(e){ return _wkLoggedBlockHtml(e, dayStart); }).join('');
+  var logBlocks=dayLogged.filter(function(e){ return e.k==='wo'||e.k==='food'||_wkWtOnGrid(e, dayStart); }).map(function(e){ return _wkLoggedBlockHtml(e, dayStart); }).join('');
   var marks=dayLogged.filter(function(e){ return e.k==='ph'; }).map(function(e){ return _wkMarkHtml(e, dayStart); }).join('');
   var calBlocks=occs.filter(function(o){ return o.dayStart===dayStart; }).map(_cbBlockHtml).join('');
   var nowMs=Date.now();
@@ -24430,15 +24465,25 @@ async function cevSave(){
     _cevStatus('That did not save — nothing was lost, try again.','err');
   }
 }
+// ONE PRESS (Yusuf, ruling, 23 Aug — third time he has said it today: the
+// create sheet, the event edit card, and now the weigh-in. "I hit complete and
+// done, and then it allegedly adds it to the screen, which it doesn't. And
+// then I hit done again, and then it does").
+//
+// The saved card used to turn its own Save button into a dead "Done" that only
+// closed the sheet — so every successful write cost two presses, and the thing
+// he had just made was hidden behind the receipt telling him he had made it.
+// It writes, it closes, and the block on the grid is the confirmation.
+//
+// THE ONE EXCEPTION IS A REAL ONE. When there is something to UNDO, the sheet
+// has to stay up to offer it — closing would take the only route to taking it
+// back with it. That is a capability, not a receipt.
 function _cevDone(btn, msg, undo){
   window._cevNeedsRefresh=true;
   var st=window._cevState; if(st) st.saved=true;
+  if(!undo){ cevClose(); return; }
   _cevStatus(msg,'ok');
-  if(btn){
-    btn.disabled=false;
-    if(undo){ btn.textContent='Undo'; btn.setAttribute('onclick','cevUndo()'); }
-    else { btn.textContent='Done'; btn.setAttribute('onclick','cevClose()'); }
-  }
+  if(btn){ btn.disabled=false; btn.textContent='Undo'; btn.setAttribute('onclick','cevUndo()'); }
   try{ showToast(msg.split('—')[0].trim().slice(0,90)); }catch(e){}
 }
 function _cevFail(btn, msg){
@@ -24467,6 +24512,23 @@ async function _cevSaveNew(st, btn, title, body){
     var ok=false;
     try{ ok=await logWeightFromChat({weight:w, dateStr:st.dateStr, notes:body||null}); }catch(e){ ok=false; }
     if(!ok){ _cevFail(btn,'The weigh-in did not save — nothing was lost, try again.'); return; }
+    // READ IT BACK BEFORE CLOSING. The sheet closes on success now, and it
+    // takes his words with it, so a boolean is not enough to go on. Three
+    // states kept apart: it landed, it landed as a different number, or it
+    // could not be confirmed — and only the first one closes.
+    var _wcode=(window.cl||{}).code||'';
+    var _wback=await sbSelect('weight_logs','select=id,weight&client_code=eq.'+encodeURIComponent(_wcode)+'&order=id.desc&limit=1');
+    var _wrow=(_wback&&_wback[0])||null;
+    if(!_wrow){
+      window._cevNeedsRefresh=true;
+      _cevFail(btn,'It went through, but I could not read it back to check. Look at your weight before trusting it.');
+      return;
+    }
+    if(Math.abs((+_wrow.weight||0)-w)>0.05){
+      window._cevNeedsRefresh=true;
+      _cevFail(btn,'It saved as '+_wrow.weight+', not '+w+'. Check it before you close this.');
+      return;
+    }
     _cevDone(btn,'Weighed in at '+w+' — '+_cevDayLabel(st)+'.', false);
     return;
   }
@@ -24649,7 +24711,10 @@ function _cbMaybeOpen(occKey, x, y){
   // real row, so a keystroke in its name must never re-infer them out from
   // under him. Only a brand-new slot has nothing to protect.
   window._wkPanelState={mode:'edit', manualOverride:true, id:b.id, dateStr:occ.dateStr, occKey:occKey,
-    kind:b.kind, manualOverride:true, adjustOpen:true, title:b.title, cleanTitle:b.title, notes:b.notes||'',
+    // OPENS AS A CARD, NOT AS AN OPEN FORM (Yusuf, ruling, 23 Aug). It opened
+    // with the drawer already expanded, which is the whole form on the face
+    // again by another route — the strip is pointless if it arrives open.
+    kind:b.kind, manualOverride:true, adjustOpen:false, title:b.title, cleanTitle:b.title, notes:b.notes||'',
     startLocal:occ.startLocal, durationMinutes:b.duration_minutes||60,
     days:(b.days||[]).slice(), recurring:!!b.recurring, done:!!(occ.exception&&occ.exception.done)};
   var p0=document.getElementById('wkPanel');
@@ -26593,7 +26658,7 @@ function _mwGridHtml(wk){
     var apptRows=wk.appts.filter(function(a){ return a.at>=dayStart && a.at<dayStart+86400000; });
     var blocks=apptRows.map(function(r){ return _mwApptBlockHtml(r, dayStart); }).join('');
     var dayLogged=wk.logged.filter(function(e){ return e.ts>=dayStart && e.ts<dayStart+86400000; });
-    var logBlocks=dayLogged.filter(function(e){ return e.k==='wo'||e.k==='food'; }).map(function(e){ return _wkLoggedBlockHtml(e, dayStart); }).join('');
+    var logBlocks=dayLogged.filter(function(e){ return e.k==='wo'||e.k==='food'||_wkWtOnGrid(e, dayStart); }).map(function(e){ return _wkLoggedBlockHtml(e, dayStart); }).join('');
     var marks=dayLogged.filter(function(e){ return e.k==='ph'; }).map(function(e){ return _wkMarkHtml(e, dayStart); }).join('');
     var calBlocks=occs.filter(function(o){ return o.dayStart===dayStart; }).map(_cbBlockHtml).join('');
     var isToday=(dayStart===todayKey);
