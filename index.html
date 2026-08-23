@@ -63356,8 +63356,16 @@ async function logWorkoutFromOffer(offer, forCode){
 // things it must actually log rather than just acknowledge. Mirrors
 // logWorkoutFromOffer's date handling; insertWeightLog carries its own
 // verified read-back.
-async function logWeightFromChat(offer){
+// forCode: the same completion as logWorkoutFromOffer got. jimTurn honoured
+// opts.forCode for food and, since that fix, for workouts — but a WEIGH-IN
+// still went to cl.code. _jtNamedFoodish excludes a bare weigh-in from the
+// named-client path, so this needs a MIXED sentence to reach ("Kelly had lunch
+// and weighed 140"), which is exactly the shape this engine exists for: her
+// meal to her, her weight to him. Found while making the write test safe,
+// because a scratch weigh-in would have landed on his own row.
+async function logWeightFromChat(offer, forCode){
   if(!offer || !cl || offer.weight==null) return false;
+  var _wtTarget = String(forCode||'').trim().toLowerCase() || cl.code;
   var wt = Math.round((+offer.weight||0)*10)/10;
   if(!wt || wt<=0) return false;
   var _wtDaysAgo = Math.max(0, Math.min(60, parseInt(offer.daysAgo||offer.days_ago||0,10)||0));
@@ -63366,7 +63374,7 @@ async function logWeightFromChat(offer){
   // that table has no date_str column; the day it lands on comes purely from
   // logged_at, anchored to the right date below.
   var row = {
-    client_code: cl.code,
+    client_code: _wtTarget,
     weight: wt,
     // HIS WORDS IF HE WROTE ANY. It was hard-coded empty, so a weigh-in typed
     // with a sentence beside it silently dropped the sentence.
@@ -64131,7 +64139,9 @@ async function jimTurn(text, photos, opts){
       // landmine), so the boolean is the whole verdict and it is taken alone.
       var sOk=false;
       try{
-        sOk = await sbUpsert('step_logs', {client_code:cl.code, steps:stepVal, date_str:todayDateStr, updated_at:new Date().toISOString()}, 'client_code,date_str');
+        // Last of the four. Food, workouts and weight all follow opts.forCode;
+        // steps was the one still writing to whoever is signed in.
+        sOk = await sbUpsert('step_logs', {client_code:(_forCode||cl.code), steps:stepVal, date_str:todayDateStr, updated_at:new Date().toISOString()}, 'client_code,date_str');
       }catch(e){ console.error('steps log from chat failed', e); sOk=false; }
       if(!sOk) _stepsFailed=true;
       // Everything below is presentation. It cannot change what the write said,
@@ -64159,7 +64169,7 @@ async function jimTurn(text, photos, opts){
   var _wtExpected = weightLogs.items.length;
   var _wtVerified = 0;
   for(var _wgi=0; _wgi<weightLogs.items.length; _wgi++){
-    var _wgOk = await logWeightFromChat(_pinDay(weightLogs.items[_wgi]));
+    var _wgOk = await logWeightFromChat(_pinDay(weightLogs.items[_wgi]), _forCode);
     if(_wgOk){ _wtVerified++; showToast('⚖️ Weight logged'); }
     else console.error('weight save failed for offer', weightLogs.items[_wgi]);
   }
@@ -64170,7 +64180,7 @@ async function jimTurn(text, photos, opts){
       try{
         var _wtSObj = JSON.parse(_wtSalvage[1].trim());
         if(_wtSObj){
-          var _wtSOk = await logWeightFromChat(_pinDay(_wtSObj));
+          var _wtSOk = await logWeightFromChat(_pinDay(_wtSObj), _forCode);
           if(_wtSOk){ _wtVerified++; showToast('⚖️ Weight logged'); }
         }
       }catch(e){ console.error('WEIGHT_LOG salvage parse failed', e, _wtSalvage[1]); }
