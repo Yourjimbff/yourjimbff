@@ -63749,7 +63749,7 @@ async function jimTurn(text, photos, opts){
   // Applied at the ENGINE, not at one door, so the Day bar and the rail both get
   // it and neither can drift from the other.
   try{ text=_jimNormalizeDictation(text); }catch(e){}
-  _jimLastTurn = {wrote:0};
+  _jimLastTurn = {wrote:0};   // repainted/landed/ok all reset with it
   try{ window.__sqQueuedThisTurn=false; }catch(e){}
   // Reset per turn, so "wipe that" can only ever take back THIS turn's rows.
   try{ window._jimWrote=[]; }catch(e){}
@@ -64544,6 +64544,33 @@ async function jimTurn(text, photos, opts){
     || (_wtVerified < _wtExpected)
     || !!_stepsFailed;
   _jimLastTurn.ok = !_jimLastTurn.shortfall;
+  // ===== EVERY DOOR THAT WRITES REPAINTS =================================
+  // "My log should pop up instantaneously upon me confirming the log ... I'm
+  // looking at eleven thirty slot today. It's not there." (Yusuf, live, 23 Aug.)
+  //
+  // ELEVEN call sites reach jimTurn and exactly ONE of them — jimSend — ever
+  // repainted the day afterwards. The Jarvis rail's three (_jtRunItem and
+  // _jtTurn's two) wrote the row and touched nothing on screen, so his log was
+  // genuinely saved and genuinely invisible until a refresh. That is the whole
+  // of "why is Jarvis worse than Jim": the rail shares this ENGINE and inherited
+  // none of the machinery built around Jim's door.
+  //
+  // The repaint belongs HERE, in the one place all eleven already funnel
+  // through, not bolted onto each of them — eleven copies of "log what he said"
+  // is the disease, and a twelfth patch would be more of it. Doors differ in
+  // where they SIT; what they DO is this function.
+  //
+  // Gated on a VERIFIED write, never on having sent one: _tlPatchDay is
+  // deliberately read-back, so repainting a write that did not land would show
+  // him a row the server does not have. And skipped when writing for ANOTHER
+  // client — those rows are not on his day and repainting his would be noise.
+  try{
+    if(_jimLastTurn.wrote>0 && _jimLastTurn.ok!==false && !_forCode
+       && typeof _tlRefreshDay==='function'){
+      _jimLastTurn.repainted=true;
+      await _tlRefreshDay(_jimLastTurn.landedDay||todayDateStr);
+    }
+  }catch(e){ console.error('post-write repaint', e); }
   return reply;
 }
 
@@ -70290,7 +70317,10 @@ async function jimSend(ds) {
   // In place, not a rebuild. Wiping the cache and redrawing the fortnight is what
   // made the page lurch after a send — the day it landed on refreshes, nothing
   // else moves, and the row that appears is the server's own read-back.
-  try{ await _tlRefreshDay(writeDs); }catch(e){ try{ window._tlCache=null; renderDayTimeline(true); }catch(_){} }
+  // jimTurn now repaints for every door. Only fall back here if it did not.
+  if(!(window._jimLastTurn && _jimLastTurn.repainted)){
+    try{ await _tlRefreshDay(writeDs); }catch(e){ try{ window._tlCache=null; renderDayTimeline(true); }catch(_){} }
+  }
   window._jimPhoto = null;
   _jimPaintPhoto(ds);
 }
