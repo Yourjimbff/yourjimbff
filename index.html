@@ -47016,10 +47016,7 @@ async function insertFoodLog(row, photo){
       attempt = {ok:false, body:'insert reported success but returned no id'};
     } else {
       try{
-        var _frb = await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(attempt.id)+'&select=id',
-          {headers: sbHeaders()});
-        var _frbRows = _frb.ok ? await _frb.json() : [];
-        if(!_frbRows || !_frbRows.length){
+        if(!(await _sbRowLanded('food_logs', attempt.id))){
           console.error('food insert read-back came up empty for id', attempt.id);
           attempt = {ok:false, body:'read-back found no row'};
         }
@@ -47055,6 +47052,35 @@ async function insertFoodLog(row, photo){
 // stamp logged_at from a minute-precision clock string, so three taps on a slow save
 // landed three rows with a byte-identical timestamp. Every client-side workout write
 // goes through here now, so the guard can't be forgotten at a new call site.
+// ===== A FRESH ROW IS NOT ALWAYS READABLE ON THE VERY NEXT BREATH =========
+// The read-back law is right and stays: never believe a POST, read the row.
+// But it was ONE read fired immediately, and a row that has just landed is not
+// reliably visible on the next request — PostgREST answers from a pool and a
+// just-committed row can miss the read behind it by a few tens of milliseconds.
+// A miss was then reported to him as a failed save.
+//
+// Measured live, 23 Aug, on his own account: "log for me a protein bar for a
+// snack" WROTE THE ROW — id 9d513bd0 was in food_logs — while the turn reported
+// wrote:0 / ok:false and told him "one of those didn't actually save". That is
+// the whole of "it's logged allegedly": the app disbelieving its own successful
+// write. It is also why his day showed nothing, because the repaint is gated on
+// a verified write, correctly.
+//
+// So: the same read, up to three times, ~180ms apart. Still returns false if the
+// row genuinely is not there, so a real failure is still caught and still said
+// out loud — this only stops a fast read being mistaken for a lost row.
+async function _sbRowLanded(table, id){
+  for(var i=0;i<3;i++){
+    if(i) await new Promise(function(r){ setTimeout(r,180); });
+    try{
+      var res=await fetch(SB_URL+'/rest/v1/'+table+'?id=eq.'+encodeURIComponent(id)+'&select=id',{headers:sbHeaders()});
+      if(!res.ok) continue;                       // a refused read is unknown, not absent
+      var rows=await res.json();
+      if(rows && rows.length) return true;
+    }catch(e){}
+  }
+  return false;
+}
 async function insertWorkoutLog(row){
   if(!(await _confirmLogTarget())) return {ok:false, cancelled:true};
   try{ if(row && !row.logged_at) row.logged_at = new Date().toISOString(); }catch(e){}
@@ -47112,10 +47138,7 @@ async function insertWorkoutLog(row){
       attempt = {ok:false, body:'insert reported success but returned no id'};
     } else {
       try{
-        var _rb = await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+encodeURIComponent(attempt.id)+'&select=id',
-          {headers: sbHeaders()});
-        var _rbRows = _rb.ok ? await _rb.json() : [];
-        if(!_rbRows || !_rbRows.length){
+        if(!(await _sbRowLanded('workout_logs', attempt.id))){
           console.error('workout insert read-back came up empty for id', attempt.id);
           attempt = {ok:false, body:'read-back found no row'};
         }
@@ -47194,10 +47217,7 @@ async function insertWeightLog(row){
       attempt = {ok:false, body:'insert reported success but returned no id'};
     } else {
       try{
-        var _wrb = await fetch(SB_URL+'/rest/v1/weight_logs?id=eq.'+encodeURIComponent(attempt.id)+'&select=id',
-          {headers: sbHeaders()});
-        var _wrbRows = _wrb.ok ? await _wrb.json() : [];
-        if(!_wrbRows || !_wrbRows.length){
+        if(!(await _sbRowLanded('weight_logs', attempt.id))){
           console.error('weight insert read-back came up empty for id', attempt.id);
           attempt = {ok:false, body:'read-back found no row'};
         }
