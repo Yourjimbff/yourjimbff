@@ -250,6 +250,34 @@ body.hasnav{padding-bottom:86px;}
 }
 .bnav.trainer-mode{grid-template-columns:repeat(5,1fr);}
 .bnav.trainer-mode .bni-lb{font-size:8px;letter-spacing:0.1px;}
+/* ===== .trainer-only IS A GATE NOW, NOT DECORATION ========================
+   It was acted on by exactly two rules — the one below and its reveal at
+   .bnav.trainer-mode — and BOTH were scoped to .bni. Eight elements wear the
+   class; only two are nav buttons. On the other six it styled nothing at all,
+   and two of those six were live on a client's screen: #acctBackOfficeRow
+   ("Back office") and #acctMineRow ("My progress"), sitting in #mAccount — the
+   sheet every client opens by tapping their own name. Measured on the deployed
+   file at 375px as a non-trainer: both 335x55 and visible. The remaining four
+   were saved by inline display:none or by living inside #tClients, which no
+   client can navigate to — #admActivity computes to display:block and is
+   hidden ONLY by its unreachable ancestor. That is not a gate, it is a loaded
+   trap waiting for someone to make that tab reachable.
+
+   ONE RULE, and it only ever HIDES. It never tries to reveal, which is what
+   made the .bni pair impossible to generalise: every element has a different
+   natural display, and a blanket reveal would have to guess flex vs block and
+   would fight the inline styles and JS that already manage these surfaces. For
+   a trainer this rule simply does not match, so every element keeps exactly
+   the display it has today and nothing needs restoring.
+
+   IT FAILS CLOSED. If body.is-trainer is never set — a JS error before line
+   ~10343, a surface built early — a TRAINER loses a panel, which is visible
+   and recoverable. A client never gains one. That is the only acceptable
+   direction for a privacy gate to fail in.
+
+   !important because this is a gate: an inline style or a stray JS
+   style.display must not be able to open it. */
+body:not(.is-trainer) .trainer-only{display:none !important;}
 .bni.trainer-only{display:none;}
 /* JIM IS DEAD WEIGHT ON HIS OWN ACCOUNT (Yusuf, ruling). His Day composer
    already runs the Jarvis pipeline and he has a Jarvis tab of his own — a
@@ -10340,7 +10368,11 @@ async function _launchAppInner(){ try{ setTimeout(sqInit,600); }catch(e){}
   document.getElementById('bnav').style.display='flex';
   document.body.classList.add('hasnav');
   var bnavEl = document.getElementById('bnav');
-  if(isTrainer(cl.code)){ bnavEl.classList.add('trainer-mode'); document.body.classList.remove('cl-desk'); } else { bnavEl.classList.remove('trainer-mode'); }
+  // body.is-trainer is what makes .trainer-only a real gate for everything that
+  // is not a nav button (see the rule beside .bni.trainer-only). Set from the
+  // same isTrainer(cl.code) call that drives the nav, in the same breath, so
+  // the two can never disagree about who is looking.
+  if(isTrainer(cl.code)){ bnavEl.classList.add('trainer-mode'); document.body.classList.add('is-trainer'); document.body.classList.remove('cl-desk'); } else { bnavEl.classList.remove('trainer-mode'); document.body.classList.remove('is-trainer'); }
   try{ _labelAskTab(); }catch(e){}
   try{
     var _bnt=document.querySelector('#bnTraining .bni-lb'); var _bni=document.querySelector('#bnTraining .bni-ic');
@@ -28948,6 +28980,11 @@ function doLogout(){
   // The session names a person, so it leaves with them. A session left behind is one
   // the next person on this device would send as their own.
   try{ _sessClear(); }catch(e){}
+  // The trainer gate leaves with them too, for the same reason the session does.
+  // There is no page reload here, so a flag left on <body> would still be there
+  // when the next person signs in on this device — and .trainer-only is only a
+  // gate for as long as this class is honest about who is looking.
+  try{ document.body.classList.remove('is-trainer'); }catch(e){}
   cl=null;profile=null;allFood=[];todayFood=[];todayWo=[];
   tots={cal:0,protein:0,carbs:0,fat:0};scores={food:0,workout:0,steps:0,sleep:0,weight:0,energy:0};
   photoData=null;curResult=null;wVal=null;badCt=0;lastWeight=null;
@@ -69306,6 +69343,27 @@ async function _jimJarvisTry(t){
   try{ var bk=await _jvBookCommand(t); if(bk) return bk; }catch(e){}
   try{ var cc=await _ccHandleStatement(t); if(cc) return cc; }catch(e){}
   try{ var cn=await _jvCallNoteCommand(t); if(cn) return cn; }catch(e){}
+  // THE CALENDAR DOOR WAS MISSING FROM THIS BAR. Every other Jarvis route is
+  // tried here, so "morning walk every day at 8am" typed into his Day composer
+  // fell straight through to jimTurn and was logged as a walk he had already
+  // taken, instead of scheduled. Recurring creation itself already works and is
+  // untouched — _jtCalendarTurn is the same function the Jarvis rail calls at
+  // its own turn handler; this is the routing line, not a second implementation.
+  //
+  // GATED AND ORDERED THE SAME WAY THE RAIL DOES IT, and for the reason written
+  // there: _jtCalendarClaims first, so an ordinary sentence still reaches
+  // jimTurn untouched, and BEFORE the program branch, because "workout" alone
+  // matches _JT_PROG_RE and would hand a personal-calendar sentence to the
+  // program builder — the wrong system entirely.
+  //
+  // Returns ca.line, not ca: this function's contract is a STRING (jimSend
+  // strips it through a detached element and pushes it as a chat bubble),
+  // while _jtCalendarTurn answers the rail with {ok, line}.
+  if(typeof _jtCalendarClaims==='function' && _jtCalendarClaims(t)){
+    try{ var ca=await _jtCalendarTurn(t); if(ca && ca.line) return ca.line; }catch(e){ console.error('jim calendar', e); }
+  }
+  // The marker brain takes a program sentence OR a client-edit one — one gate,
+  // read by every router, so the three can never drift apart again.
   if(typeof _jtWantsMarker==='function' && _jtWantsMarker(t)){
     try{ var pg=await _jtProgram(t); if(pg) return pg; }catch(e){}
   }
@@ -69829,7 +69887,11 @@ async function jimReadShot(dataUrl, ds) {
     var ran = await _jimRun(plan, ds);
     var did = ran.did || [], failed = ran.failed || [], queued = ran.queued || [];
     if(queued.length) did = did.concat(queued.map(function(q){ return q + ' (will sync)'; }));
-    try { window._tlCache = null; await renderDayTimeline(true); } catch (e) {}
+    // _tlRefreshDay, not the cache nuke. Clearing _tlCache and re-rendering the
+    // whole timeline throws the scroller away and repaints every day grey while
+    // it re-reads — for a photo that wrote to ONE day. This is the same line
+    // jimSend and the capture sheet already use, fallback included.
+    try { await _tlRefreshDay(ds); } catch (e) { try { window._tlCache = null; await renderDayTimeline(true); } catch (_) {} }
     // What landed and what didn't, said separately. Anything that failed is
     // named, so they know exactly what to tell me again \u2014 and a run where
     // nothing landed never reads as a success.
