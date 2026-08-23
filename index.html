@@ -4853,6 +4853,34 @@ body.hasnav #tlTodayBtn{bottom:calc(112px + env(safe-area-inset-bottom,0px));}
 .jvProfLine{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 14px;
   font-size:17px;font-weight:700;letter-spacing:-0.2px;color:#f0ece4;}
 .jvProfNone{font-size:14px;font-weight:400;color:rgba(240,236,228,0.38);}
+/* THE IDENTITY STRIP. Four facts that are always on the card whether or not
+   anybody has filled them in — a missing age is a thing to go and get, and it
+   cannot be that if the card silently omits it. No media query: auto-fit does
+   the responsive work off the drawer's own width, so the strip is three across
+   on a phone and four across on the desktop panel without either width being a
+   scaled copy of the other. */
+.jvProfGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));
+  gap:14px 12px;margin:6px 0 16px;align-items:start;}
+.jvProfCell{display:flex;flex-direction:column;gap:5px;min-width:0;}
+/* The two sex chips need a whole row of their own on a phone, or they squeeze
+   into a column built for "5'10"" and wrap one word per line. */
+.jvProfCell.jvProfWide{grid-column:1 / -1;}
+.jvProfK{font-size:10px;font-weight:800;letter-spacing:1.1px;text-transform:uppercase;
+  color:rgba(240,236,228,0.45);}
+.jvProfSlot{display:flex;align-items:center;gap:7px;flex-wrap:wrap;min-height:32px;}
+.jvProfV{font-size:17px;font-weight:700;letter-spacing:-0.2px;color:#f0ece4;line-height:1.15;}
+/* Editable facts read as facts; the tap target is the whole value, not an icon
+   beside it, and it is 44px tall on the surface that needs it to be. */
+.jvProfV.jvProfTap{cursor:pointer;border-bottom:1px dashed rgba(240,236,228,0.22);padding-bottom:2px;}
+.jvProfV.jvProfTap:hover{border-bottom-color:rgba(245,197,24,0.6);}
+.jvProfIn{width:100%;box-sizing:border-box;background:#1b1b1b;border:1px solid #2d2d2d;
+  border-radius:9px;padding:8px 10px;font-size:15px;font-weight:700;color:#f0ece4;
+  font-family:'Plus Jakarta Sans',sans-serif;outline:none;}
+.jvProfIn:focus{border-color:rgba(245,197,24,0.55);}
+@media (max-width:1023px){
+  .jvProfSlot{min-height:44px;}
+  .jvProfGrid .jvSexBtn{padding:11px 16px;}
+}
 body.jv-deep-open .jvBlockLabel{margin-bottom:5px;}
 body.jv-deep-open .jvBlock{margin-bottom:14px;}
 .ovTrack{position:relative;height:7px;border-radius:99px;background:#2b2b2b;overflow:visible;}
@@ -12263,23 +12291,13 @@ async function jvSetGender(code, val){
   if(!code || (val!=='male' && val!=='female')) return;
   var cur=(window._jvGenderMap||{})[code]||null;
   var next=(cur===val) ? null : val;          // tapping the set one clears it back to unset
-  var ok=false, landed=null;
-  try{
-    var q='client_code=eq.'+encodeURIComponent(code);
-    var existing=await sbSelect('profiles','select=client_code&'+q+'&limit=1');
-    if(existing && existing.length){
-      var r=await fetch(SB_URL+'/rest/v1/profiles?'+q, {method:'PATCH',
-        headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=representation'}),
-        body:JSON.stringify({gender:next})});
-      if(r.ok){ var rows=await r.json(); if(rows && rows.length){ landed=rows[0].gender||null; ok=true; } }
-    } else {
-      var nm=(CLIENTS[code]&&CLIENTS[code].name)||code;
-      var r2=await fetch(SB_URL+'/rest/v1/profiles', {method:'POST',
-        headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=representation'}),
-        body:JSON.stringify({client_code:code, name:nm, gender:next})});
-      if(r2.ok){ var rows2=await r2.json(); if(rows2 && rows2.length){ landed=rows2[0].gender||null; ok=true; } }
-    }
-  }catch(e){ console.error('jvSetGender',e); }
+  // ONE WRITER FOR THIS TABLE (23 Aug). The select-then-patch-or-insert dance
+  // that used to live inline here is _jvProfilePut now, shared with the age and
+  // height fields on the same strip. It was copied rather than shared the moment
+  // a second field needed it, and a copy is how one of them quietly stops
+  // creating the row for the 18 clients who have no profiles row at all.
+  var row=await _jvProfilePut(code, {gender:next});
+  var ok=!!row, landed=row?(row.gender||null):null;
   // Read it back off the row rather than trusting the request. If it did not land,
   // say so and change nothing on screen — a toggle that flips on a failed write is a lie.
   if(!ok || (landed||null)!==(next||null)){
@@ -12291,6 +12309,11 @@ async function jvSetGender(code, val){
   window._jvGenderMap=window._jvGenderMap||{};
   if(next) window._jvGenderMap[code]=next; else delete window._jvGenderMap[code];
   _jvGenderRepaint(code);
+  // The identity strip is the other surface this fact appears on, and it reads
+  // out of a different cache. Repainting one and not the other is how a saved
+  // value looks unsaved on the card it was set from.
+  try{ _jvProfPatchLocal(code, {gender:next||''}); }catch(e){}
+  try{ _jvProfileRepaint(code); }catch(e){}
   try{ _jvRenderFilters(); }catch(e){}
   try{ showToast(next ? ((CLIENTS[code]&&CLIENTS[code].name?String(CLIENTS[code].name).split(' ')[0]:'Set')+' · '+next) : 'Cleared'); }catch(e){}
 }
@@ -12721,6 +12744,13 @@ async function _loadTrainerFeedRun(targetId){
       });
     })();
     wos.forEach(function(w){ var c=w.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(w),kind:'wo',code:c,data:w}); });
+    // Kept per client, newest first, so a weigh-in row can say what changed
+    // since the one before it without a second read.
+    try{
+      window._pfWeightsByCode={};
+      (weights||[]).slice().sort(function(a,b){ return _feedTs(b)-_feedTs(a); })
+        .forEach(function(w){ var c=w.client_code; if(!c) return; (window._pfWeightsByCode[c]=window._pfWeightsByCode[c]||[]).push(w); });
+    }catch(e){}
     weights.forEach(function(w){ var c=w.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(w),kind:'weight',code:c,data:w}); });
     photos.forEach(function(ph){ var c=ph.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(ph),kind:'photo',code:c,data:ph}); });
     moments.forEach(function(m){ items.push({ts:m.ts,kind:'moment',data:m}); });
@@ -12950,8 +12980,32 @@ function _pfDayRow(it){
       rating=_tlRatingLine(d.intensity, _connTok);
     }catch(e){}
   } else if(it.kind==='weight'){
-    what='Weigh-in';
-    meta = (d.weight!=null&&d.weight!=='')?(wToDisp(d.weight)+' '+(wUnit()==='lbs'?'lb':'kg')):'';
+    // A WEIGH-IN IS A LOGGED ITEM LIKE ANY OTHER (Yusuf, ruling, 22 Aug) — its
+    // own row, in the day's order, on the same grid. The pipeline was never
+    // broken: Anthony's 12:27 weigh-in is in weight_logs (192.4) and the feed
+    // builder has always included kind:'weight'. This is the row's own reading.
+    what='Weighed in';
+    var _unit=(wUnit()==='lbs'?'lb':'kg');
+    meta = (d.weight!=null&&d.weight!=='')?(wToDisp(d.weight)+' '+_unit):'';
+    // THE TREND, STATED AS A FACT AND NEVER AS A VERDICT. What changed since the
+    // one before it, in his own units — no arrows, no colour, no judgement. The
+    // row's tap still opens the full history chart.
+    try{
+      var _hist=((window._pfWeightsByCode||{})[it.code])||[];
+      var _prev=null;
+      for(var _wi=0;_wi<_hist.length;_wi++){
+        var _h=_hist[_wi];
+        if(_feedTs(_h)<it.ts && _h.weight!=null && _h.weight!==''){ _prev=_h; break; }
+      }
+      if(_prev && d.weight!=null && d.weight!==''){
+        var _dl=(+wToDisp(d.weight))-(+wToDisp(_prev.weight));
+        var _mag=Math.abs(Math.round(_dl*10)/10);
+        var _when=''; try{ _when=_pfWhenPhrase(_feedTs(_prev)); }catch(e){}
+        rating = (_mag<0.05)
+          ? ('No change since '+(_when||'the last one'))
+          : ((_dl>0?'Up ':'Down ')+_mag+' '+_unit+' since '+(_when||'the last one'));
+      }
+    }catch(e){}
   } else if(it.kind==='photo'){
     what='Progress photo';
     meta = d.angle?_pfEsc(d.angle):'';
@@ -16326,20 +16380,17 @@ function renderTrainingList(){
           var ex = typeof w.exercises === 'string' ? JSON.parse(w.exercises) : w.exercises;
           if(Array.isArray(ex)){
             exForAttr = JSON.stringify(ex);
-            if(ex.length > 0){
-              exHtml = '<div style="margin-top:11px;font-size:13px;color:var(--m2);line-height:1.75;">';
-              ex.forEach(function(e){
-                var line = '• ' + (e.name || e.exercise || 'Exercise');
-                if(e.sets && e.reps) line += ' — ' + e.sets + '×' + e.reps;
-                else if(e.sets) line += ' — ' + e.sets + ' sets';
-                if(e.weight) line += ' @ ' + e.weight;
-                exHtml += '<div>'+line+'</div>';
-              });
-              exHtml += '</div>';
-            }
+
           }
         }catch(e){}
       }
+      // ONE WORKOUT CARD HERE TOO (Yusuf, ruling, 22 Aug). This was the archaic
+      // skin — "• Name — 3×10 @ 145" — and it only rendered at all when the
+      // exercises column was populated, so a chat-logged session (which stores
+      // the record in description and leaves exercises NULL, as Chris's and
+      // Devon's both do) showed NOTHING here. The card reads description as a
+      // fallback, so those sessions appear for the first time.
+      try{ exHtml=_woCard(w, {expanded:true, code:((window.cl||{}).code||''), noTitle:true}); }catch(e){}
       var intColor = 'var(--muted)';
       if(w.intensity >= 8) intColor = 'var(--gold)';
       else if(w.intensity >= 5) intColor = 'var(--m2)';
@@ -28027,11 +28078,21 @@ function _ccDaysSince(code){
 }
 // How many times in a row you've reached out since they last came back to you.
 // This is the number that stops silence reading as your failure.
+//
+// NO REPLY IS HIS MARK, NEVER AN INFERENCE (Yusuf, ruling, 23 Aug). This counted
+// any row whose `replied` was false, and tapping Text auto-logs a row the instant
+// the messaging app opens — with no way on earth to know whether they answered.
+// So a client he texted an hour ago read "Reached out today, no reply yet", and a
+// run of them read "Reached out 3 times, no reply". The app never saw a silence;
+// it saw him open Messages. Only a row he MARKED counts now: he tapped "They
+// didn't reply" and said so himself. Everything else says nothing about the
+// reply, which is the truth, and reads as nothing at all.
+function _ccMarkedNoReply(row){ return !!(row && row.nr); }
 function _ccUnanswered(code){
   var a=_ccFor(code), n=0;
   for(var i=0;i<a.length;i++){
     if(!_CC_OUTREACH[a[i].k]) continue;           // a like is engagement, not a question
-    if(a[i].r) break;
+    if(!_ccMarkedNoReply(a[i])) break;
     n++;
   }
   return n;
@@ -28059,7 +28120,9 @@ function jvLogEngagement(code, kind, about){
   try{
     if(!code || !_CC_KIND[kind]) return;
     if(cl && code===cl.code) return;              // his own account is not engagement
-    jvLogContact(code, kind, about||'', false);
+    // TRUE for the same reason as the Text auto-log: a heart says nothing about
+    // whether they replied, and false is now reserved for his explicit mark.
+    jvLogContact(code, kind, about||'', true);
     try{ if(typeof jvPaneRender==='function') jvPaneRender(); }catch(e){}
   }catch(e){}
 }
@@ -28209,7 +28272,14 @@ async function jvLogContact(code, kind, about, replied, whenTs, source){
   kind=_CC_KIND[kind]?kind:'text';
   var _t=(whenTs!=null && !isNaN(+whenTs)) ? +whenTs : Date.now();
   var _src=(source==='self')?'self':'observed';
-  var row={t:_t, k:kind, a:String(about||'').trim().slice(0,300), r:(replied!==false), sc:_src, rt:null};
+  // `nr` IS THE MARK — see _ccUnanswered. replied===false reaches here from
+  // exactly ONE caller, jvNoReply, which is him tapping "They didn't reply".
+  // Nothing else may pass false. On the wire it rides as replied:false alongside
+  // source:'self', and that PAIR is what the sync reads back as a mark: the app
+  // did not witness a silence, he asserted one — which is what 'self' means on
+  // this table already, so it needed no new column and no migration.
+  var _nr=(replied===false);
+  var row={t:_t, k:kind, a:String(about||'').trim().slice(0,300), r:!_nr, nr:_nr, sc:(_nr?'self':_src), rt:null};
   var m=jvContacts(); (m[code]=m[code]||[]).unshift(row); if(m[code].length>200) m[code].length=200;
   _ccSave(m);
   // Speaking to someone clears them off today's board too — one action, not two.
@@ -28506,7 +28576,13 @@ async function jvSyncContacts(){
       // and when the client responded. Absent on a pre-migration row, which is
       // exactly 'observed' and 'no response recorded' — both honest defaults.
       var _rt=0; try{ if(r.responded_at) _rt=new Date(r.responded_at).getTime()||0; }catch(e){}
-      a.push({t:t, k:(r.kind||'text'), a:(r.about||''), r:(r.replied!==false),
+      // THE MARK, READ BACK. `replied:false` on its own is not it — every
+      // auto-logged text written before 23 Aug carries that, and not one of them
+      // meant he had been ignored. The PAIR is the mark: he said so ('self') and
+      // said they did not reply. Older rows carry no mark and so make no claim,
+      // which is the honest reading of a record that cannot tell the two apart.
+      var _nr=(r.replied===false && r.source==='self');
+      a.push({t:t, k:(r.kind||'text'), a:(r.about||''), r:!_nr, nr:_nr,
               sc:(r.source==='self'?'self':'observed'), rt:(_rt||null)});
     });
     Object.keys(m).forEach(function(c){ m[c].sort(function(x,y){ return (y.t||0)-(x.t||0); }); if(m[c].length>200) m[c].length=200; });
@@ -33154,7 +33230,7 @@ function _jvExportOne(code, D){
   else {
     var un=0; try{ un=_ccUnanswered(code); }catch(e){}
     cc.slice(0,6).forEach(function(x){
-      L.push(_xDate(x.t)+'  '+(x.k==='call'?'call':'text')+(x.r?'':' (no reply)')+(x.a?('  - '+_xClean(x.a)):''));
+      L.push(_xDate(x.t)+'  '+(x.k==='call'?'call':'text')+(x.nr?' (no reply)':'')+(x.a?('  - '+_xClean(x.a)):''));
     });
     if(un>=1) L.push('Reached out '+(un===1?'once':(un===2?'twice':un+' times'))+' since they last came back.');
   }
@@ -33431,48 +33507,215 @@ async function jvSaveContract(){
   try{ if(typeof jvRenderTriage==='function' && jvTriage) jvRenderTriage(); }catch(e){}
   try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
 }
-// Who they are, big enough to read at a glance. Term and tier get their own line at
-// full strength — this is the context most needed and it used to be the smallest thing
-// on the card, crammed in beside the fee and the phone number.
-// Three facts, one line: sex, age, height, and their current weight. The
-// term, the tier and the price are deliberately not here — see jvOpenDeep.
+// ===== THE IDENTITY STRIP ==================================================
+// FOUR FACTS, ALWAYS ON THE CARD (Yusuf, ruling, 23 Aug). This used to join
+// whatever happened to be on file into one line and print "Nothing on file yet"
+// when nothing was — so a client with no age looked identical to a client whose
+// age simply had not been drawn, and there was no way to put one in from here
+// at all. Twenty-five of the roster have no age and twenty-three no height; a
+// card that hides that is a card that guarantees it stays that way. Every field
+// is drawn whether or not it is filled, and an empty one carries its own way to
+// fill it — the same pattern the sex buttons have always used, extended to the
+// other three rather than restated beside them.
 //
-// The sex buttons stay inside this line rather than as their own row, and that
-// is not decoration: jvSetGender has exactly ONE call site in this file, so a
-// row deleted for tidiness would take the only way to set sex with it, and the
-// saved training week is built from sex. Once it is set it reads as a fact like
-// the others; only an unset one shows the two buttons.
-function _jvProfileLine(code){
-  var d=(window._jvShareDemo && window._jvShareDemo[code]) || null;
-  if(!window._jvShareDemo){ try{ _jvShareLoadDemo().then(function(){ _jvProfileRepaint(code); }); }catch(e){} }
+// The sex buttons stay INSIDE this strip rather than becoming their own row, and
+// that is not decoration: jvSetGender has exactly ONE call site in this file, so
+// a row deleted for tidiness would take the only way to set sex with it, and the
+// saved training week is built from sex.
+//
+// Term, tier and price are deliberately not here — see jvOpenDeep.
+function _jvProfSex(code){
   var gm=window._jvGenderMap;
   if(!gm){ try{ _jvLoadGender().then(function(){ _jvProfileRepaint(code); }); }catch(e){} }
+  var d=(window._jvShareDemo && window._jvShareDemo[code]) || null;
   var sex=(gm&&gm[code])||((d&&d.gender)?String(d.gender).toLowerCase():'');
-  var bits=[];
-  if(sex==='male'||sex==='female') bits.push(sex.charAt(0).toUpperCase()+sex.slice(1));
-  var age=null;
-  try{ age=_ageFromBday(d&&d.birthday) || ((d&&d.age!=null&&d.age!=='')?+d.age:null); }catch(e){}
-  if(age) bits.push(age);
-  if(d&&d.height) bits.push(String(d.height));
-  // Weight comes out of the board's store, so it obeys the same rule as
-  // everything else: it appears when there is a real read behind it, and is
-  // simply absent otherwise. Never a blank standing in for a number.
+  return (sex==='male'||sex==='female') ? sex : '';
+}
+// Age off the birthday where there is one, because a stored age goes stale the
+// moment a birthday passes and the birthday never does. NOTE, and it is a real
+// limitation rather than a bug in this function: the public key has `birthday`
+// revoked on profiles, so the roster-wide read that feeds this strip never
+// returns the column and this falls through to the stored age for everyone. The
+// authoritative row is reachable one client at a time through the trainer door;
+// wiring that up belongs with the profile rebuild, not with a display fix.
+function _jvProfAge(code){
+  var d=(window._jvShareDemo && window._jvShareDemo[code]) || null;
+  try{ return _ageFromBday(d&&d.birthday) || ((d&&d.age!=null&&d.age!=='')?+d.age:null); }catch(e){ return null; }
+}
+function _jvProfHeight(code){
+  var d=(window._jvShareDemo && window._jvShareDemo[code]) || null;
+  var h=(d&&d.height!=null)?String(d.height).trim():'';
+  return h || null;
+}
+// One cell. `slot` is whatever goes under the label — a fact, a way to add one,
+// or an honest line about a read that has not landed.
+function _jvProfCell(code, key, lbl, slot, wide){
+  return '<div class="jvProfCell'+(wide?' jvProfWide':'')+'" id="jvProfCell_'+key+'_'+code+'">'
+    + '<div class="jvProfK">'+lbl+'</div>'
+    + '<div class="jvProfSlot">'+slot+'</div>'
+  + '</div>';
+}
+function _jvProfAddBtn(code, key, label){
+  return '<span class="jvSexBtn" onclick="event.stopPropagation();_jvProfEdit(\''+code+'\',\''+key+'\')">'+label+'</span>';
+}
+function _jvProfValue(code, key, text){
+  return '<span class="jvProfV jvProfTap" onclick="event.stopPropagation();_jvProfEdit(\''+code+'\',\''+key+'\')">'+_escHtml(String(text))+'</span>';
+}
+function _jvProfileLine(code){
+  if(!window._jvShareDemo){ try{ _jvShareLoadDemo().then(function(){ _jvProfileRepaint(code); }); }catch(e){} }
+  var sex=_jvProfSex(code);
+  var sexSlot = sex
+    ? '<span class="jvProfV">'+sex.charAt(0).toUpperCase()+sex.slice(1)+'</span>'
+    : ('<span class="jvSexBtn" onclick="event.stopPropagation();jvSetGender(\''+code+'\',\'male\')">Male</span>'
+      +'<span class="jvSexBtn" onclick="event.stopPropagation();jvSetGender(\''+code+'\',\'female\')">Female</span>');
+  var age=_jvProfAge(code);
+  var ageSlot = age ? _jvProfValue(code,'age',age) : _jvProfAddBtn(code,'age','Add');
+  var ht=_jvProfHeight(code);
+  var htSlot = ht ? _jvProfValue(code,'height',ht) : _jvProfAddBtn(code,'height','Add');
+  // THREE STATES, NOT TWO. Weight comes out of the board's store, and the store
+  // can be unread as well as empty. "We have not read it" and "she has never
+  // weighed in" are different sentences and the strip says whichever is true —
+  // offering to log one against a read that failed would invite him to type over
+  // a number that already exists.
+  var wtSlot;
+  if(!_jvTriageReady()){
+    wtSlot='<span class="jvProfNone">'+_escHtml(_jvNoStore('their weigh-ins'))+'</span>';
+  } else {
+    var w=null;
+    try{ var pp=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null; w=pp&&pp.lastWeight&&pp.lastWeight.val; }catch(e){}
+    // A LOGGED WEIGH-IN IS NOT AN EDITABLE FIELD. Age and height are facts about
+    // a person and stay correctable; a weight is a thing that happened on a day,
+    // so once there is one this states it and stops. The empty case offers to log
+    // one and says that is what it is doing.
+    wtSlot = (w!=null && !isNaN(+w))
+      ? '<span class="jvProfV">'+_escHtml(wToDisp(+w)+' '+wUnit())+'</span>'
+      : _jvProfAddBtn(code,'weight','Log one');
+  }
+  return '<div class="jvProfGrid" id="jvProfLine_'+code+'">'
+    + _jvProfCell(code,'sex','Sex',sexSlot,!sex)
+    + _jvProfCell(code,'age','Age',ageSlot)
+    + _jvProfCell(code,'height','Height',htSlot)
+    + _jvProfCell(code,'weight','Weight',wtSlot)
+  +'</div>';
+}
+// Tap-to-fill: the cell's value becomes a box in place, Enter saves, Escape puts
+// the strip back exactly as it was. Nothing else on the card moves.
+var _JV_PROF_PLACEHOLDER={age:'years', height:'5\'10" or 178cm', weight:'lb'};
+function _jvProfCurrentText(code, key){
+  if(key==='age'){ var a=_jvProfAge(code); return a?String(a):''; }
+  if(key==='height'){ return _jvProfHeight(code)||''; }
+  return '';
+}
+function _jvProfEdit(code, key){
+  var host=document.getElementById('jvProfCell_'+key+'_'+code); if(!host) return;
+  var slot=host.querySelector('.jvProfSlot'); if(!slot) return;
+  if(slot.getAttribute('data-editing')==='1') return;
+  slot.setAttribute('data-editing','1');
+  var cur=_jvProfCurrentText(code, key);
+  var ph=_JV_PROF_PLACEHOLDER[key]||'';
+  slot.innerHTML='<input class="jvProfIn" type="text" id="jvProfIn_'+key+'_'+code+'"'
+    + (key==='height' ? '' : ' inputmode="decimal"')
+    + ' value="'+_escHtml(cur)+'" placeholder="'+_escHtml(ph)+'" autocomplete="off"'
+    + ' onclick="event.stopPropagation();"'
+    + ' onkeydown="event.stopPropagation();if(event.key===\'Enter\'){event.preventDefault();_jvProfSave(\''+code+'\',\''+key+'\',this.value);}'
+    +                'if(event.key===\'Escape\'){_jvProfileRepaint(\''+code+'\');}">';
+  try{ var i=slot.querySelector('input'); if(i){ i.focus(); i.select(); } }catch(e){}
+}
+// HIS WORDS ARE NEVER LOST: every failure path below leaves the box on screen
+// with what he typed still in it, and says what went wrong. Nothing on this
+// strip changes until the value has been read back off the row that holds it.
+async function _jvProfSave(code, key, raw){
+  var v=String(raw==null?'':raw).trim();
+  if(key==='age'){
+    var n=parseInt(v,10);
+    if(!v || isNaN(n) || n<10 || n>110){ try{ showToast('That does not read as an age — it is still in the box'); }catch(e){} return; }
+    var landed=await _jvProfilePut(code, {age:n});
+    if(!landed || String(landed.age)!==String(n)){ try{ showToast('Could not save that — it is still in the box'); }catch(e){} return; }
+    _jvProfPatchLocal(code, {age:n});
+    try{ showToast('Age saved'); }catch(e){}
+    _jvProfileRepaint(code);
+    return;
+  }
+  if(key==='height'){
+    // Free text on purpose. The column already holds "5'7\"", "170" and "180cm"
+    // side by side, written by the clients themselves; coercing what he types
+    // into one of those shapes would rewrite his answer to match a format the
+    // data has never had.
+    if(!v){ try{ showToast('Nothing typed — it is still in the box'); }catch(e){} return; }
+    v=v.slice(0,24);
+    var landedH=await _jvProfilePut(code, {height:v});
+    if(!landedH || String(landedH.height||'')!==v){ try{ showToast('Could not save that — it is still in the box'); }catch(e){} return; }
+    _jvProfPatchLocal(code, {height:v});
+    try{ showToast('Height saved'); }catch(e){}
+    _jvProfileRepaint(code);
+    return;
+  }
+  if(key==='weight'){ return _jvProfLogWeight(code, v); }
+}
+// The profiles row, created when there isn't one — 18 of the roster have no row
+// at all, so a PATCH alone would write to thin air and report success. Read back
+// off the representation in both directions, because a PATCH that matched
+// nothing returns 200 with an empty body and looks exactly like a save.
+// ONE writer for this table: jvSetGender used to carry its own copy of this and
+// two implementations of one idea is how a save quietly stops landing on one of
+// the fields.
+async function _jvProfilePut(code, patch){
   try{
-    if(_jvTriageReady()){
-      var pp=(jvTriage&&jvTriage.per)?jvTriage.per[code]:null;
-      var w=pp&&pp.lastWeight&&pp.lastWeight.val;
-      if(w!=null && !isNaN(+w)) bits.push(wToDisp(+w)+' '+wUnit());
+    var q='client_code=eq.'+encodeURIComponent(code);
+    var existing=await sbSelect('profiles','select=client_code&'+q+'&limit=1');
+    if(existing && existing.length){
+      var r=await fetch(SB_URL+'/rest/v1/profiles?'+q, {method:'PATCH',
+        headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=representation'}),
+        body:JSON.stringify(patch)});
+      if(!r.ok) return null;
+      var rows=await r.json();
+      return (rows && rows.length) ? rows[0] : null;
+    }
+    var nm=(CLIENTS[code]&&CLIENTS[code].name)||code;
+    var body=Object.assign({client_code:code, name:nm}, patch);
+    var r2=await fetch(SB_URL+'/rest/v1/profiles', {method:'POST',
+      headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=representation'}),
+      body:JSON.stringify(body)});
+    if(!r2.ok) return null;
+    var rows2=await r2.json();
+    return (rows2 && rows2.length) ? rows2[0] : null;
+  }catch(e){ console.error('_jvProfilePut',e); return null; }
+}
+// The strip reads out of the roster-wide profiles cache, so a landed write has
+// to reach that cache or the value vanishes on the next repaint.
+function _jvProfPatchLocal(code, patch){
+  try{
+    window._jvShareDemo=window._jvShareDemo||{};
+    var d=window._jvShareDemo[code]||{client_code:code};
+    for(var k in patch) d[k]=patch[k];
+    window._jvShareDemo[code]=d;
+  }catch(e){}
+}
+// A WEIGH-IN IS A LOGGED ITEM, so this logs one rather than setting a field —
+// through the trainer door, which is the only path allowed to write a row onto
+// somebody else's history, and read straight back off weight_logs before the
+// strip is allowed to claim anything.
+async function _jvProfLogWeight(code, raw){
+  var n=parseFloat(String(raw||'').replace(/[^0-9.]/g,''));
+  if(!raw || isNaN(n) || n<=0 || n>1200){ try{ showToast('That does not read as a weight — it is still in the box'); }catch(e){} return; }
+  var w=null; try{ w=await trainerWrite('logWeight',{client_code:code, weight:n, notes:''}); }catch(e){}
+  if(!w || !w.ok){ try{ showToast('Could not log that — it is still in the box'); }catch(e){} return; }
+  // READ IT BACK. trainerWrite reports that the request did not error; it does
+  // not report that the row landed carrying the number that was sent.
+  var back=null;
+  try{
+    var rows=await sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=1');
+    if(rows && rows.length && rows[0].weight!=null) back=parseFloat(rows[0].weight);
+  }catch(e){}
+  if(back==null || Math.abs(back-n)>0.05){ try{ showToast('Logged, but it did not read back — check before trusting it'); }catch(e){} return; }
+  try{
+    if(_jvTriageReady() && jvTriage.per){
+      var pp=jvTriage.per[code]||(jvTriage.per[code]={});
+      pp.lastWeight={val:back, ts:Date.now()};
     }
   }catch(e){}
-  var setter='';
-  if(sex!=='male' && sex!=='female'){
-    setter='<span class="jvSexBtn" onclick="event.stopPropagation();jvSetGender(\''+code+'\',\'male\')">Male</span>'
-          +'<span class="jvSexBtn" onclick="event.stopPropagation();jvSetGender(\''+code+'\',\'female\')">Female</span>';
-  }
-  return '<div class="jvProfLine" id="jvProfLine_'+code+'">'
-    + (bits.length ? '<span>'+_escHtml(bits.join(' \u00b7 '))+'</span>' : '<span class="jvProfNone">Nothing on file yet</span>')
-    + setter
-  +'</div>';
+  try{ showToast('Weigh-in logged — '+wToDisp(back)+' '+wUnit()); }catch(e){}
+  _jvProfileRepaint(code);
 }
 function _jvProfileRepaint(code){
   try{
@@ -33723,7 +33966,16 @@ function jvOpenDeep(code, callTarget){
   // Fired alongside the rest, not awaited — the card opens instantly and the
   // thread fills in, same as Progress and the day list above it.
   try{ cnoOpen('cnoRail_'+code, code, !!callTarget, callTarget||null); }catch(e){ console.error('call notes rail',e); }
-  _jvLoadSplitFlag(code);
+  // THE SPLIT-MISMATCH BANNER IS GONE (Yusuf, ruling, 22 Aug — it scolded him
+  // about a gender he had already set). Two things were wrong and only one was
+  // fixable: it read profiles ordered by id desc, so a client with more than one
+  // profile row could be judged against the wrong one — and its copy talked
+  // builder at him on a client's card ("they stay on this programme until the
+  // week is rebuilt"). A card about a person is not the place to explain rebuild
+  // mechanics, and a warning that can be wrong about a fact he just entered is
+  // worse than no warning. If the mismatch needs saying, it belongs in the
+  // program builder where the rebuild actually happens. _jvLoadSplitFlag is left
+  // in place, now unreferenced, for the dead-code sweep.
   // Re-read on open so a note added on the phone shows up here, then repaint in place.
   try{ cnLoadCoaching(code).then(function(){ cnAddCancel(code); }); }catch(e){}
   if(open){
@@ -35454,7 +35706,12 @@ function _woCard(wo, opts){
   var full=!!opts.expanded;
   var code=String(opts.code||''), dateStr=String((wo&&wo.date_str)||'');
   var parsed={items:[], note:''};
-  try{ parsed=_bfItemsFor(wo)||parsed; }catch(e){}
+  // opts.items lets a caller that genuinely has richer rows — the day view has
+  // real per-set records off the server — supply them while the CARD still owns
+  // the format. That is what keeps one layout without flattening data the other
+  // surface actually has.
+  if(opts.items && opts.items.length){ parsed={items:opts.items, note:(opts.note||'')}; }
+  else { try{ parsed=_bfItemsFor(wo)||parsed; }catch(e){} }
   var title=String((wo&&wo.title)||'Workout').trim()||'Workout';
   var rows=(parsed.items||[]).map(function(it){
     if(!it||!it.name) return '';
@@ -35467,7 +35724,14 @@ function _woCard(wo, opts){
       // the same restating the expanded food detail was just cured of.
       if(String(muscle).trim().toLowerCase()===String(it.name).trim().toLowerCase()) muscle='';
     }
-    var conn=full ? _woConnFor(code, dateStr, it.name) : '';
+    // opts.conn: a caller that already holds the day's rating map (the day view
+    // reads it off the session record) hands it straight over rather than making
+    // the card go looking in the feed's cache, which it would not find.
+    var conn='';
+    if(full){
+      if(opts.conn) conn=opts.conn[it.name]||opts.conn[String(it.name).trim()]||'';
+      if(!conn) conn=_woConnFor(code, dateStr, it.name);
+    }
     var connWord=conn?(_WO_CONN_WORD[conn]||''):'';
     return '<div class="woRow">'
       +'<div class="woRowText">'
@@ -35822,35 +36086,35 @@ function _tlDoneHero(ds, wo, plan, code){
       var R=(rec&&rec.conn)||{};
       Object.keys(R).forEach(function(g){ var by=(R[g]||{}).by||{}; Object.keys(by).forEach(function(n){ connBy[n]=by[n]; }); });
     }catch(e){}
-    body+='<div style="margin-top:15px;">';
-    parsed.items.forEach(function(it){
-      // Real per-set rows when the server has them for this date; otherwise the
-      // line as it was frozen at Complete.
+    // ONE WORKOUT CARD ON THIS SURFACE TOO (Yusuf, ruling, 22 Aug). What stood
+    // here was a second implementation of the very same layout — name, rating at
+    // the right, muscle line, numbers — kept in step with the card's by hand.
+    // The card owns the format now; this keeps the two things it genuinely has
+    // that the feed does not, and hands them over: the real per-set rows off the
+    // server, and this day's own rating map.
+    var _items=parsed.items.map(function(it){
       var sets=(rec&&rec.sets&&rec.sets[_exCanonical(it.name)])||null;
       var detail=it.detail;
       if(sets && sets.length){
-        detail=sets.filter(function(s){ return s.w||s.r; })
-                   .map(function(s){ return s.w?(s.w+' lb × '+(s.r||'')):(s.r+' reps'); }).join(', ');
+        // NEVER A DANGLING OPERATOR here either: an empty rep count used to
+        // print "145 lb × " with nothing after it, the same shape his feed was
+        // just cured of.
+        detail=sets.filter(function(s2){ return s2.w||s2.r; })
+                   .map(function(s2){
+                      var r2=String(s2.r||'').trim();
+                      if(s2.w) return r2 ? (s2.w+' lb × '+r2) : (s2.w+' lb');
+                      return r2 ? (r2+' reps') : '';
+                   }).filter(Boolean).join(', ');
       }
-      var st=connBy[_exCanonical(it.name)]||'';
-      var word=_BF_AUDIT[st]||'';
-      var tone=(st==='felt')?'var(--gold)':(st==='partial'?'var(--text)':'var(--m2)');
-      body+='<div style="padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.07);">'
-        +'<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;">'
-          +'<div style="font-size:15px;font-weight:800;color:var(--text);min-width:0;">'+_escHtml(it.name)
-            +(it.equip?('<span style="font-size:11px;font-weight:700;color:var(--m2);"> · '+_escHtml(it.equip)+'</span>'):'')+'</div>'
-          +(word?('<div style="flex-shrink:0;font-size:12px;font-weight:800;color:'+tone+';">'+_escHtml(word)+'</div>'):'')
-        +'</div>'
-        // _bfMuscleOf answers with the name itself when it knows nothing better —
-        // right for "never blank", wrong here, where it would print the line twice.
-        +(function(){ var mm=_bfMuscleOf(it.name);
-            return (mm && mm.toLowerCase()!==String(it.name).toLowerCase())
-              ? '<div style="font-size:11.5px;color:var(--m2);margin-top:2px;">'+_escHtml(mm)+'</div>' : ''; })()
-        +(detail?('<div style="font-size:13px;color:var(--text);margin-top:5px;letter-spacing:0.1px;">'+_escHtml(detail)
-            +(!it.logged?' <span style="color:var(--m2);font-size:11.5px;">(as prescribed)</span>':'')+'</div>'):'')
-      +'</div>';
+      if(!it.logged && detail) detail=detail+' (as prescribed)';
+      return {name:it.name, equip:it.equip, detail:detail, logged:it.logged};
     });
-    body+='</div>';
+    var _connMap={};
+    try{ Object.keys(connBy).forEach(function(k){ _connMap[k]=connBy[k]; }); }catch(e){}
+    // connBy is keyed canonically; the card asks by the name it renders.
+    var _byName={};
+    try{ _items.forEach(function(it){ var c=connBy[_exCanonical(it.name)]; if(c) _byName[it.name]=c; }); }catch(e){}
+    body+=_woCard(wo, {expanded:true, code:code, items:_items, conn:_byName, noTitle:true});
     // What they photographed, read back on the day. The hero never drew these,
     // so a session photo went to the server and was never seen again.
     try{ if(wo && wo.photo) body+=_woPhotosHtml(wo.photo, {margin:'14px 0 0'}); }catch(e){}
@@ -41154,7 +41418,12 @@ function textClient(code, body){
     var last=_ccLast(code);
     var fresh=(last && last.k==='text' && (Date.now()-last.t) < 120000);
     if(!fresh){
-      jvLogContact(code, 'text', '', false);
+      // TRUE, not false — and the argument is about the REPLY, not the send.
+      // Passing false here is what made every tap on Text claim "no reply yet"
+      // about someone who may well have answered within the minute. This records
+      // the outreach and says nothing at all about what came back, because
+      // nothing here can know. Only his own mark says that (see _ccUnanswered).
+      jvLogContact(code, 'text', '', true);
       try{ jvActRecord('Texted '+((info.name||code))+', logged automatically',
                        {kind:'contact', code:code, t:(_ccLast(code)||{}).t}); }catch(e){}
       try{ if(typeof jvPaneRender==='function') jvPaneRender(); }catch(e){}
