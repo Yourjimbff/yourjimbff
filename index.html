@@ -63901,7 +63901,24 @@ async function jimTurn(text, photos, opts){
     }
   }catch(e){ console.error('workout fallback', e); }
   // Typing on Tuesday's row means Tuesday, whatever the model guessed.
-  function _pinDay(o){ if(o && opts.dateStr) o.dateStr=opts.dateStr; return o; }
+  // A BACKWARDS DAY IN HIS OWN WORDS OUTRANKS THE CALLER'S DEFAULT DAY.
+  // This used to stamp opts.dateStr over everything, and jimSend always passes
+  // today — so a model that correctly read "yesterday before bed" and emitted
+  // daysAgo:1 had it silently overwritten, and the meal landed on today. In a
+  // mixed-day dump ("yesterday before bed I ate X, this morning I had Y") that
+  // drags a past record onto the wrong day, which is worse than not reading it
+  // at all: the day's record then shows something that did not happen on it.
+  // The earlier note here — "a per-day bar states its day outright, that beats
+  // an inferred daysAgo" — still holds for the FORWARD case and for callers
+  // like the week panel that genuinely know the slot's date; those never carry
+  // daysAgo, so this guard is silent for them. Same shape as the time law:
+  // what he actually said wins over the surface's default.
+  function _pinDay(o){
+    if(!o || !opts.dateStr) return o;
+    var _back=Math.max(0, Math.min(60, parseInt(o.daysAgo||o.days_ago||0,10)||0));
+    if(_back>0) return o;                 // leave daysAgo to resolve the date
+    o.dateStr=opts.dateStr; return o;
+  }
   // HIS STATED TIME IS THE TIME (Yusuf, live, 22 Aug — "morning walk at 8am,
   // thirty minutes" landed at 6:52pm, the moment he happened to be speaking).
   // A caller that already KNOWS the clock — a calendar slot, whose own status
@@ -64312,8 +64329,18 @@ async function jimTurn(text, photos, opts){
         if(window.__chatFoodSig[_sig] && (_nowFa-window.__chatFoodSig[_sig])<600000){ continue; } // identical meal within 10 min -> skip duplicate insert, not a failure
         _foodExpected++;
         // One entry in this turn means the one time he stated belongs to it.
+        // ANCHORS RESOLVE PER RECORD (Yusuf, rider, 23 Aug). One entry means the
+        // whole sentence is its clause. For a DUMP, each marker may carry its
+        // own "words" — the verbatim slice of what he said that produced THAT
+        // entry — and anchoring on that clause is what lets "yesterday before
+        // bed I ate X, this morning I had Y" put each meal in its own slot
+        // without either one dragging the other. Falls back to no anchor when a
+        // marker has no words of its own, which is the honest answer: better an
+        // unanchored slot than one borrowed from a neighbouring record.
         var _one=(foodAdds.items.length===1);
-        var aOk = await logFoodFromChat(_pinVoice(_pinClock(_pinDay(_one?_pinStatedTime(addOffer, text):addOffer)), 'meal_text'), addPhoto, _forCode);
+        var _clause=_one ? text : String(addOffer.words||'').trim();
+        var _anchored=_clause ? _pinStatedTime(addOffer, _clause) : addOffer;
+        var aOk = await logFoodFromChat(_pinVoice(_pinClock(_pinDay(_anchored)), 'meal_text'), addPhoto, _forCode);
         if(aOk){ _foodToasts++; _foodVerified++; window.__chatFoodSig[_sig]=_nowFa; }
         else console.error('food save failed for offer', addOffer);
       }
