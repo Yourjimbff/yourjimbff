@@ -493,6 +493,19 @@ const WRITE_OPS = {
   // this is that helper's new floor.
   clientPatch: (a) => {
     const body = {};
+    // THE DISPLAY NAME. Added 23 Aug: the assistant had no hand to rename a
+    // client with, so it refused and sent him to a screen that does not exist.
+    // Trimmed and capped like every other string here; an empty one is refused
+    // outright rather than written, because a client with no name is worse than
+    // a client with the wrong one.
+    if (a.name !== undefined) {
+      const nm = str(a.name, 80);
+      if (!nm) throw new Error('bad_arg');
+      body.name = nm;
+    }
+    // The avatar letters are derived from the name and stored beside it. Left
+    // behind on a rename, the dot keeps spelling the old one.
+    if (a.initials !== undefined) body.initials = str(a.initials, 4);
     if (a.paid !== undefined) body.paid = nullableNum(a.paid);
     if (a.active !== undefined) body.active = !!a.active;
     if (a.phone !== undefined) body.phone = nullableStr(a.phone, 40);
