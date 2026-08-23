@@ -6032,6 +6032,28 @@ body.hasnav #tToday{padding-bottom:96px;}
 
 /* Jim: one line at the top of each day, in the flow. */
 .jimBar{margin:0 0 10px;}
+/* THE STATED TIME, UNDER THE BAR. Small and correctable, never a form asked up
+   front — the week panel's inferred row, on the capture surface. Hidden
+   entirely when nothing was said, so a message with no time in it leaves the
+   fast lane exactly as it was. 44px both directions on everything tappable. */
+.jimWhenHost:empty{display:none;}
+.jimWhenLine{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  width:100%;min-height:44px;margin:6px 0 0;padding:0 13px;
+  background:transparent;border:1px solid rgba(245,197,24,0.20);border-radius:12px;
+  font-family:'Plus Jakarta Sans',sans-serif;text-align:left;cursor:pointer;
+  transition:border-color .18s;}
+.jimWhenLine:hover,.jimWhenLine:focus-visible{border-color:rgba(245,197,24,0.42);outline:none;}
+.jimWhenTxt{font-size:13px;color:var(--muted);}
+/* Gold is the action, never the statement of fact beside it. */
+.jimWhenAct{font-size:13px;font-weight:700;color:var(--gold);background:transparent;
+  border:none;padding:0;min-height:44px;display:inline-flex;align-items:center;
+  font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;}
+.jimWhenEdit{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  min-height:44px;margin:6px 0 0;padding:0 13px;
+  border:1px solid rgba(245,197,24,0.42);border-radius:12px;}
+.jimWhenEdit input[type=time]{min-height:44px;background:transparent;border:none;outline:none;
+  color:var(--text);font-family:'Plus Jakarta Sans',sans-serif;font-size:15px;}
+
 .jimRow{display:flex;align-items:center;gap:7px;border-radius:14px;padding:6px 7px 6px 13px;
   background:linear-gradient(180deg,#1d1c17 0%,#161616 100%);
   border:1px solid rgba(245,197,24,0.34);
@@ -69659,16 +69681,102 @@ function _jimNoteIsModelProse(note){
   if(new RegExp("(did i get that right|want me to change anything|how long were you out|how did it feel|how.d it feel|can you tell me again|or how.d it hit you)","i").test(t)) return true;
   return false;
 }
+// ===== THE TIME HE SAID, ON SCREEN AND CORRECTABLE ======================
+// The bar has always READ a stated time — _pinStatedTime below has lifted one
+// out of the sentence for a single meal since it was written, and jimSend uses
+// the same read to prefill the meal sheet's clock. What it never did was SHOW
+// it. He would say "morning walk at 8am", watch a card appear, and have no way
+// to know which minute it landed on or to fix it without opening the entry.
+// The week panel solved this months ago: it states what it inferred in one
+// small line and puts the correction underneath it (_wkInferFromSentence, the
+// inferred row, manualOverride). This is that pattern on the capture bar.
+//
+// ONE READER, NOT TWO. The line must show the minute that will actually be
+// written, so it reads the time the SAME way the write does rather than
+// importing the week panel's own inference — two readers on one surface is how
+// a line promises 8:00 and a row lands at 6:52. _pinStatedTime now calls this
+// too, so there is exactly one answer to "what time did he say".
+function _jimStatedMins(raw){
+  var mins=null;
+  try{ var pp=_jimParse(String(raw||'')); if(pp && pp.mins!=null) mins=pp.mins; }catch(e){}
+  if(mins==null){ try{ mins=_jimSpokenClock(raw); }catch(e){} }
+  return (mins==null||isNaN(mins)) ? null : mins;
+}
 function _pinStatedTime(o, raw){
   try{
     if(!o) return o;
-    var mins=null;
-    try{ var pp=_jimParse(String(raw||'')); if(pp && pp.mins!=null) mins=pp.mins; }catch(e){}
-    if(mins==null) mins=_jimSpokenClock(raw);
+    var mins=_jimStatedMins(raw);
     if(mins!=null) o.eat_time=_jimClock(mins);
   }catch(e){}
   return o;
 }
+// Per-day, because the bar is per-day and two days' bars can both hold a draft.
+// {mins, manual} — manual is HIS correction, and it is the one thing a further
+// keystroke may not overwrite. Same rule as the week panel's manualOverride.
+var _jimWhen={};
+function _jimWhenState(ds){ if(!_jimWhen[ds]) _jimWhen[ds]={mins:null, manual:false}; return _jimWhen[ds]; }
+function _jimWhenClearState(ds){ try{ delete _jimWhen[ds]; }catch(e){} }
+// NOTHING IS INVENTED. The line exists only when a time was actually stated or
+// actually corrected — never an hour guessed from an empty sentence, which is
+// the standing rule on this app's clock. A message with no time in it leaves
+// the bar exactly as it has always been: no extra control, no clutter, fast lane
+// untouched.
+function _jimWhenHtml(ds){
+  var st=_jimWhen[ds]; if(!st || st.mins==null) return '';
+  return '<button type="button" class="jimWhenLine" onclick="jimWhenEdit(\''+ds+'\')">'
+    +   '<span class="jimWhenTxt">Logging at '+_escHtml(_jimClock(st.mins))+'</span>'
+    +   '<span class="jimWhenAct">Change</span>'
+    + '</button>';
+}
+function _jimWhenPaint(ds){
+  try{
+    var host=document.getElementById('jimWhen_'+ds); if(!host) return;
+    host.innerHTML=_jimWhenHtml(ds);
+  }catch(e){}
+}
+// Runs on every keystroke and on every dictation tick, through jimReady — the
+// one hook both paths already share. His correction survives it.
+function _jimWhenSync(ds){
+  try{
+    var el=document.getElementById('jimIn_'+ds);
+    var raw=el ? String(el.value||'') : '';
+    var st=_jimWhenState(ds);
+    if(!raw.trim() && !st.manual){ _jimWhenClearState(ds); _jimWhenPaint(ds); return; }
+    if(!st.manual) st.mins=_jimStatedMins(raw);
+    _jimWhenPaint(ds);
+  }catch(e){}
+}
+function jimWhenEdit(ds){
+  try{
+    var host=document.getElementById('jimWhen_'+ds); if(!host) return;
+    var st=_jimWhenState(ds);
+    var hh=Math.floor((st.mins||0)/60), mi=(st.mins||0)%60;
+    var val=String(hh).padStart(2,'0')+':'+String(mi).padStart(2,'0');
+    // The value is echoed in ear format beside the field: <input type="time">
+    // renders in the OS region setting and a 24-hour phone shows 20:00 where
+    // this app says 8:00 PM everywhere else. House rule, same as the date
+    // inputs — state it in our own words underneath rather than trust the box.
+    host.innerHTML='<div class="jimWhenEdit">'
+      + '<input type="time" id="jimWhenIn_'+ds+'" value="'+val+'" '
+      +   'onchange="jimWhenSet(\''+ds+'\',this.value)" onclick="event.stopPropagation()">'
+      + '<span class="jimWhenTxt" id="jimWhenEcho_'+ds+'">'+_escHtml(_jimClock(st.mins||0))+'</span>'
+      + '<button type="button" class="jimWhenAct" onclick="jimWhenBack(\''+ds+'\')">Done</button>'
+      + '</div>';
+    try{ document.getElementById('jimWhenIn_'+ds).focus(); }catch(e){}
+  }catch(e){}
+}
+function jimWhenSet(ds, val){
+  try{
+    var m=/^(\d{1,2}):(\d{2})$/.exec(String(val||'')); if(!m) return;
+    var mins=parseInt(m[1],10)*60+parseInt(m[2],10);
+    if(isNaN(mins)) return;
+    var st=_jimWhenState(ds);
+    st.mins=mins; st.manual=true;                 // his hand beats the sentence from here
+    var echo=document.getElementById('jimWhenEcho_'+ds);
+    if(echo) echo.textContent=_jimClock(mins);
+  }catch(e){}
+}
+function jimWhenBack(ds){ _jimWhenPaint(ds); }
 function _jimClock(mins) {
   var hh = Math.floor(mins / 60), mi = mins % 60;
   var h12 = hh % 12; if (h12 === 0) h12 = 12;
@@ -69704,6 +69812,10 @@ function jimBarHtml(ds) {
       }catch(e){}
     }, 0);
   }
+  // A correction he already made must survive the repaint, and so must a time
+  // still sitting in a restored draft. Deferred for the same reason the draft
+  // settle is: the node does not exist until this string is in the document.
+  try{ if(_jimWhen[d]) setTimeout(function(){ _jimWhenPaint(d); }, 0); }catch(e){}
   return '<div class="jimBar" data-ds="' + d + '">'
     + '<div id="mlibChip_' + d + '" style="display:none;margin:0 0 6px;"></div>'
     + '<div class="jimRow">'
@@ -69715,6 +69827,7 @@ function jimBarHtml(ds) {
     +   '<button onclick="event.stopPropagation();jimPhoto(\'' + d + '\')" title="Photo" class="jimIcon"><svg class=\"camIco\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z\"/><circle cx=\"12\" cy=\"13\" r=\"4\"/></svg></button>'
     +   '<button onclick="event.stopPropagation();jimMic(\'' + d + '\')" title="Say it" class="jimIcon">' + _MICSVG.replace(/#f5c518/g,'#f0ece4').replace(/#4ea96f/g,'#f0ece4') + '</button>'
     + '</div>'
+    + '<div class="jimWhenHost" id="jimWhen_' + d + '"></div>'
     + '<input type="file" id="jimFile_' + d + '" accept="image/*" style="display:none;" onchange="jimPhotoPicked(this,\'' + d + '\')">'
     + '</div>';
 }
@@ -69960,15 +70073,28 @@ async function jimSend(ds) {
   _chatSave({client_code:cl.code, role:'user', content: raw || '(sent a photo)', has_image: photos.length>0});
   showToast('Reading that\u2026');
 
+  // HIS CORRECTION IS THE TIME. _pinClock inside jimTurn has always stamped
+  // opts.timeLocal over whatever the model read; the week panel sets it from
+  // the slot he tapped, and this bar never set it at all. It is sent ONLY for a
+  // hand correction — a time merely stated in the sentence is already handled
+  // per-entry by _pinStatedTime and the model, and stamping one clock across a
+  // message that logged breakfast AND lunch would put both at the same minute.
+  // A hand correction is unambiguous about which minute he means, so it wins.
+  var _whenSt = _jimWhen[ds] || _jimWhen[writeDs] || null;
+  var _turnOpts = {dateStr: writeDs};
+  if (_whenSt && _whenSt.manual && _whenSt.mins != null) _turnOpts.timeLocal = _jimClock(_whenSt.mins);
+
   var reply = '';
   try {
-    reply = await jimTurn(raw, photos, {dateStr: writeDs});
+    reply = await jimTurn(raw, photos, _turnOpts);
   } catch (e) {
     console.error('jimSend', e);
     showToast("Couldn't log that \u2014 try again");
     window._jimPhoto = null; _jimPaintPhoto(ds);
     return;
   }
+  // Sent. The next message states its own time or states none.
+  try{ _jimWhenClearState(ds); _jimWhenClearState(writeDs); _jimWhenPaint(ds); }catch(e){}
 
   var aMsg = {role:'assistant', content:reply, logged_at:new Date().toISOString()};
   try{ chatHistory.push(aMsg); if(chatFullHistoryCache) chatFullHistoryCache.push(aMsg); }catch(e){}
@@ -70277,6 +70403,7 @@ function jimReady(ds){
     var el=document.getElementById('jimIn_'+d);
     var bar=document.querySelector('.jimBar[data-ds="'+d+'"]');
     if(bar) bar.classList.toggle('ready', !!(el && String(el.value||'').trim()));
+    try{ _jimWhenSync(d); }catch(e){}
     try{ if(typeof _mlibJimSuggest==='function') _mlibJimSuggest(d); }catch(e){}
   }catch(e){}
 }
