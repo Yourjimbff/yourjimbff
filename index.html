@@ -66095,7 +66095,21 @@ async function jimTurn(text, photos, opts){
   // Handle STEPS_LOG: client told Jim their step total — save it (upsert per day, same as the tile).
   var _stepsFailed=false;
   if(stepsLogs.items.length){
-    var stepVal = parseInt(stepsLogs.items[stepsLogs.items.length-1].steps, 10);
+    // ===== STEPS TAKE A NAMED DAY (the strip, ship 2 of six) ===============
+    // (Yusuf, ruling, 24 Aug.) Food, workouts and weigh-ins have all followed
+    // the day HE SAID for a long time. Steps never did: they went to whatever
+    // day the app happened to be showing, so "eight thousand steps yesterday"
+    // landed on today and quietly overwrote today's count. It was the only one
+    // of the four still doing it, and it is the reason a day can disagree with
+    // itself -- the meal on the right day, the steps on the wrong one.
+    // THE SAME CHAIN, NOT A SECOND ONE: _pinDay is the function the other three
+    // already run through, and _dateStrDaysAgo is the resolver they already
+    // use. Nothing here interprets his sentence; it consumes the answer the
+    // engine already reached.
+    var _stepItem = _pinDay(stepsLogs.items[stepsLogs.items.length-1] || {});
+    var stepVal = parseInt(_stepItem.steps, 10);
+    var _stepBack = Math.max(0, Math.min(_JIM_DAY_MAX, parseInt(_stepItem.daysAgo||_stepItem.days_ago||0,10)||0));
+    var _stepDate = _stepItem.dateStr || (_stepBack>0 ? _dateStrDaysAgo(_stepBack) : todayDateStr);
     if(!isNaN(stepVal) && stepVal>=0){
       // THE WRITE DECIDES THE VERDICT; THE REPAINT NEVER DOES (20 Aug). The
       // repaint used to sit INSIDE this try, after the write — so when updSteps
@@ -66109,7 +66123,7 @@ async function jimTurn(text, photos, opts){
       try{
         // Last of the four. Food, workouts and weight all follow opts.forCode;
         // steps was the one still writing to whoever is signed in.
-        sOk = await sbUpsert('step_logs', {client_code:(_forCode||cl.code), steps:stepVal, date_str:todayDateStr, updated_at:new Date().toISOString()}, 'client_code,date_str');
+        sOk = await sbUpsert('step_logs', {client_code:(_forCode||cl.code), steps:stepVal, date_str:_stepDate, updated_at:new Date().toISOString()}, 'client_code,date_str');
         // AND THE ONE VERIFIER WITH NO READ-BACK AT ALL. The other three insert
         // and then read the row; this one trusted sbUpsert's boolean, which says
         // only that the request did not error. An upsert carries no id to read
@@ -66124,7 +66138,7 @@ async function jimTurn(text, photos, opts){
             if(_si) await new Promise(function(r){ setTimeout(r,180); });
             try{
               var _sres=await fetch(SB_URL+'/rest/v1/step_logs?client_code=eq.'+encodeURIComponent(_stepCode)
-                +'&date_str=eq.'+encodeURIComponent(todayDateStr)+'&select=steps',{headers:sbHeaders()});
+                +'&date_str=eq.'+encodeURIComponent(_stepDate)+'&select=steps',{headers:sbHeaders()});
               if(!_sres.ok) continue;
               var _srows=await _sres.json();
               if(_srows && _srows.length && Number(_srows[0].steps)===Number(stepVal)) _stepLanded=true;
@@ -66138,10 +66152,29 @@ async function jimTurn(text, photos, opts){
       // and a throw in any of it cannot reach the verdict above or stop the rest
       // of this turn — which is what killed the later items of a dictation.
       if(sOk){
-        try{ if(typeof updSteps==='function') updSteps(stepVal); }catch(e){ console.error('steps repaint', e); }
-        try{ var _se=document.getElementById('stepsExact'); if(_se) _se.value=stepVal; }catch(e){}
-        try{ if(typeof markTileDone==='function') markTileDone('Steps'); }catch(e){}
-        try{ showToast(stepVal.toLocaleString()+' steps logged'); }catch(e){}
+        // THE TILE ON SCREEN IS TODAY'S TILE. Now that a step count can land on
+        // another day, repainting it with a number that belongs to that other
+        // day would put yesterday's steps on today's face -- the row right and
+        // the screen wrong, which is the same disagreement this ship exists to
+        // end. So the repaint happens only when the row landed on the day he is
+        // actually looking at.
+        var _stepOnScreen = (_stepDate===todayDateStr);
+        if(_stepOnScreen){
+          try{ if(typeof updSteps==='function') updSteps(stepVal); }catch(e){ console.error('steps repaint', e); }
+          try{ var _se=document.getElementById('stepsExact'); if(_se) _se.value=stepVal; }catch(e){}
+          try{ if(typeof markTileDone==='function') markTileDone('Steps'); }catch(e){}
+        }
+        // AND IT SAYS WHICH DAY IT WENT ON. A silent "8,000 steps logged" after
+        // he said "yesterday" is exactly the shape that hid this bug for so
+        // long. The day is named in the same words the preview under the bar
+        // already shows him, so the two cannot read differently.
+        try{
+          var _stepWhen='';
+          if(!_stepOnScreen){
+            try{ _stepWhen=(_stepBack>0) ? _jimEchoDate(_stepBack) : String(_stepDate); }catch(e){ _stepWhen=String(_stepDate); }
+          }
+          showToast(stepVal.toLocaleString()+' steps logged'+(_stepWhen?(' — '+_stepWhen):''));
+        }catch(e){}
       }
     }
   }
@@ -72134,7 +72167,15 @@ function _jimHarvestWeight(raw){
 function _jimHarvestSteps(raw){
   var t=String(raw||'');
   var m=t.match(/\b(\d{1,3}(?:,\d{3})+|\d{3,6})\s*(?:steps|step)\b/i)
-     || t.match(/\bsteps?\b(?:\s+(?:for|to|at|of|on|today|is|was|were|are|it|my|the|this|a|about|around|roughly)\b|\s|,|:|\u2014|-)*?(\d{1,3}(?:,\d{3})+|\d{3,6})\b/i);
+     // AND THE NUMBER CAN SIT FURTHER AWAY THAN ONE WORD (24 Aug, found while
+     // auditing the router). "my steps every day this week were 9,000" read as
+     // no step count at all, because the filler list had no room for a stretch
+     // of time words between the word and the figure.
+     // THE LIST IS STILL A WHITELIST, and that is what keeps the guard below
+     // intact: anything that is not one of these words cannot be crossed, so
+     // "steps were fine, I ate 300 calories" still reads as no step count \u2014
+     // "fine" is not on the list and stops the match dead.
+     || t.match(/\bsteps?\b(?:\s+(?:for|to|at|of|on|today|is|was|were|are|it|my|the|this|a|about|around|roughly|every|day|days|week|weeks|so|far|been|have|has|average|averaged)\b|\s|,|:|\u2014|-)*?(\d{1,3}(?:,\d{3})+|\d{3,6})\b/i);
   if(!m) return null;
   var v=parseInt(String(m[1]).replace(/,/g,''),10);
   return (!isNaN(v) && v>0 && v<=200000) ? v : null;
