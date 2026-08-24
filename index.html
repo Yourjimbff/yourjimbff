@@ -64105,6 +64105,55 @@ function _jimPastDaysAgo(text){
   var now=new Date().getDay();
   return (now-want+7)%7;
 }
+// ===== CARDIO COMES OUT OF THE LIFT, IN CODE =============================
+// "30 minutes on the stairmaster ... is logged under leg day at the very end as
+// '1 set'. that is clearly cardio." (Yusuf, live, 23 Aug.)
+//
+// The prompt has carried a cardio-is-its-own-entry rule since v7.980.326 and it
+// was certified passing at .328. His finger disproved it — the model still
+// files the machine as an EXERCISE inside the lift, and once it is in that
+// array the renderer does the only honest thing it can with sets:1 and prints
+// "1 set", which is a set count nobody asked for and breaks the numbers law on
+// top of the filing being wrong.
+//
+// Two failures on a prompt rule is enough. This is the same call as the time
+// and the day: where the fact is decidable from the data, decide it in code.
+// A cardio machine with a DURATION and no load and no reps is not an exercise
+// in a strength session — it is a session of its own. Lifted out, given the
+// duration it came with, and the lift keeps everything else.
+//
+// Deliberately narrow: it needs the machine name AND a duration AND no weight
+// AND no reps. "Treadmill 3 sets x 60s sprints" keeps its reps and stays put,
+// because that genuinely is interval work inside the session.
+var _JIM_CARDIO_RE=new RegExp('\\b(?:stair\\s?master|stairmaster|stair\\s?climber|treadmill|elliptical|bike|cycling|spin|rower|rowing|erg|jog|jogging|run|running|walk|walking|incline\\s?walk|zone\\s?two|cardio|sled\\s?push|assault\\s?bike|versaclimber)\\b','i');
+function _jimSplitCardio(log){
+  try{
+    if(!log || !Array.isArray(log.exercises) || log.exercises.length<2) return [log];
+    var keep=[], out=[];
+    log.exercises.forEach(function(e){
+      var nm=String((e&&e.name)||'');
+      var det=String((e&&e.detail)||'');
+      var hasDur=/\b\d+\s*(?:min|mins|minute|minutes|hr|hour|hours|m)\b/i.test(det) || /\b\d+\s*(?:min|mins|minute|minutes)\b/i.test(nm);
+      var loaded=(e && (e.weight!=null || e.reps!=null));
+      if(nm && _JIM_CARDIO_RE.test(nm) && hasDur && !loaded){ out.push({name:nm.trim(), detail:det.trim()}); }
+      else keep.push(e);
+    });
+    if(!out.length || !keep.length) return [log];   // all-cardio or none: leave it alone
+    var lift=Object.assign({}, log, {exercises:keep});
+    // The lift must not keep a duration that belonged to the cardio.
+    out.forEach(function(c){ if(lift.duration && c.detail && String(lift.duration).trim()===c.detail.trim()) delete lift.duration; });
+    var extras=out.map(function(c){
+      var dm=/\b(\d+)\s*(?:min|mins|minute|minutes)\b/i.exec(c.detail)||/\b(\d+)\s*(?:min|mins|minute|minutes)\b/i.exec(c.name);
+      return Object.assign({}, log, {
+        title:c.name.replace(/\s*[-\u2014,]?\s*\b\d+\s*(?:min|mins|minute|minutes)\b.*$/i,'').trim() || c.name.trim(),
+        description:(c.name+(c.detail?(' \u2014 '+c.detail):'')).trim(),
+        duration:(dm?dm[1]+' min':(c.detail||null)),
+        exercises:[]              // a machine session has no exercise list, and no "1 set"
+      });
+    });
+    return [lift].concat(extras);
+  }catch(e){ return [log]; }
+}
 async function jimTurn(text, photos, opts){
   opts = opts || {};
   // WHOSE RECORD THIS TURN WRITES TO. Empty means the signed-in account, which
@@ -64645,6 +64694,14 @@ async function jimTurn(text, photos, opts){
   // the model genuinely extracted as a note (extractedLog.log.notes, which the
   // marker itself carried) is untouched, and _jimNoteIsModelProse guards even
   // that against a marker that just echoed the reply back.
+  // Cardio filed inside a lift is lifted out BEFORE anything counts or writes,
+  // so _woExpected sees the real number of sessions and the shortfall check
+  // stays honest.
+  try{
+    var _woSplit=[];
+    workoutLogs.items.forEach(function(_it){ _woSplit=_woSplit.concat(_jimSplitCardio(_it)); });
+    workoutLogs.items=_woSplit;
+  }catch(e){}
   var _woExpected = workoutLogs.items.length;
   var _woVerified = 0;
   for(var _wi=0;_wi<workoutLogs.items.length;_wi++){
