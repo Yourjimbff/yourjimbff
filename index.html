@@ -23846,7 +23846,19 @@ function cevClose(){
   if(sh){ sh.classList.remove('on'); sh.classList.remove('cevSheetRec'); sh.innerHTML=''; }
   // Same deferred redraw the old panel used: rebuilding the grid while the
   // sheet is still up would delete the sentence telling him where it went.
-  if(window._cevNeedsRefresh){ window._cevNeedsRefresh=false; try{ schRefresh(); }catch(e){} }
+  if(window._cevNeedsRefresh){
+    window._cevNeedsRefresh=false;
+    var seeded=!!window._cevSeeded; window._cevSeeded=false;
+    // Painted from memory when the row is already in it — 15ms against the
+    // 1.5s the forced read costs — with the read still going out behind to
+    // reconcile. Otherwise the read is the only thing that can show it.
+    if(seeded){
+      try{ _wkRepaint(); }catch(e){}
+      try{ _wkSoftRefresh(); }catch(e){}
+    } else {
+      try{ schRefresh(); }catch(e){}
+    }
+  }
 }
 // A NEW EVENT ON A TAPPED SLOT.
 function cevOpenAdd(dayStart, mins){
@@ -24581,13 +24593,48 @@ async function cevSave(){
 // THE ONE EXCEPTION IS A REAL ONE. When there is something to UNDO, the sheet
 // has to stay up to offer it — closing would take the only route to taking it
 // back with it. That is a capability, not a receipt.
-function _cevDone(btn, msg, undo){
+// COMPLETE CLOSES. EVERY CARD. NO EXCEPTIONS (Yusuf, ruling, 24 Aug, and he
+// had to say it in capitals: "Once I hit complete, THE EVENT STAYS OPEN. THAT
+// SHOULD NOT HAPPEN... I WILL NEVER WANT TO SELECT UNDO ON A LOG I LITERALLY
+// JUST HANDWROTE").
+//
+// I held two cards open on purpose — the journal and the direct walk log —
+// because both could offer Undo and closing takes the only way back with it.
+// That reasoning was wrong at the premise: he does not want to undo a thing
+// he just wrote by hand, so the affordance was never worth the card staying
+// up. His eye is the authority; the carve-out is gone.
+//
+// The message argument survives only because the save paths still compose one
+// and a failure still needs it. On success nothing is shown: no status line,
+// no toast, and above all no button changing its identity under his finger
+// from Complete to Undo. The block landing on the grid is the confirmation.
+// If undo ever comes back it is a quiet door on the record afterwards, never
+// the primary button wearing a second meaning.
+// IMMEDIATE (Yusuf, ruling, 24 Aug: "CLOSE & EVENT SHOULD APPEAR AT THE TIME
+// I SELECTED IT - IMMEDIATE"). Measured on the deployed .378: the forced
+// re-read that closing kicks off takes 1291-1704ms before the block shows.
+// Painting the same grid out of memory takes 15ms. So the row it just wrote
+// goes into memory first and the grid paints from there; the read still runs
+// behind it and reconciles, it just is not what he is waiting on.
+// Only for rows we actually hold. A path that cannot describe what it wrote
+// keeps the old forced read rather than painting a grid that is missing the
+// very thing he just made.
+function _cevSeedLogged(entry){
+  try{
+    var wk=window._wkLastWk;
+    if(!wk || !wk.logged || !entry || entry.ts==null) return false;
+    for(var i=0;i<wk.logged.length;i++){
+      if(wk.logged[i].k===entry.k && String(wk.logged[i].id)===String(entry.id)) return true;
+    }
+    wk.logged.push(entry);
+    window._cevSeeded=true;
+    return true;
+  }catch(e){ return false; }
+}
+function _cevDone(btn, msg){
   window._cevNeedsRefresh=true;
   var st=window._cevState; if(st) st.saved=true;
-  if(!undo){ cevClose(); return; }
-  _cevStatus(msg,'ok');
-  if(btn){ btn.disabled=false; btn.textContent='Undo'; btn.setAttribute('onclick','cevUndo()'); }
-  try{ showToast(msg.split('—')[0].trim().slice(0,90)); }catch(e){}
+  cevClose();
 }
 function _cevFail(btn, msg){
   if(btn){ btn.disabled=false; btn.textContent='Save'; }
@@ -24638,7 +24685,12 @@ async function _cevSaveNew(st, btn, title, body){
         : 'It went through, but I could not read it back to check. Look at your weight before trusting it.');
       return;
     }
-    _cevDone(btn,'Weighed in at '+w+' — '+_cevDayLabel(st)+'.', false);
+    try{
+      var _wts2=new Date(st.dateStr+' '+st.startLocal);
+      if(!isNaN(_wts2.getTime())) _cevSeedLogged({k:'wt', id:_wrow.id, code:_wcode,
+        ts:_wts2.getTime(), d:{id:_wrow.id, weight:_wrow.weight, logged_at:_wts2.toISOString()}});
+    }catch(e){}
+    _cevDone(btn,'Weighed in at '+w+' — '+_cevDayLabel(st)+'.');
     return;
   }
   // A MEAL uses the capture sheet he already knows, not a second flow.
@@ -24666,7 +24718,8 @@ async function _cevSaveNew(st, btn, title, body){
     try{ saved=await sbInsertReturning('client_notes', row, 'id'); }catch(e){ saved=null; }
     if(!saved || saved.id==null){ _cevFail(btn,'That note did not save — your words are still here, try again.'); return; }
     st.undoId=saved.id; st.undoTable='client_notes';
-    _cevDone(btn,'Kept against '+_cevDayLabel(st)+'.', true);
+    // WAS true — the journal carve-out. Overruled 24 Aug.
+    _cevDone(btn,'Kept against '+_cevDayLabel(st)+'.');
     return;
   }
   // A WALK IS NOT WORTH A MODEL CALL. Name, clock, length — all three already
@@ -24678,7 +24731,17 @@ async function _cevSaveNew(st, btn, title, body){
                                 durationMinutes:st.durationMinutes, notes:null});
     if(!res.ok){ _cevFail(btn,res.msg); return; }
     st.undoId=res.id||null; st.undoTable='workout_logs';
-    _cevDone(btn,'Logged '+name+(st.durationMinutes?(' · '+st.durationMinutes+' min'):'')+' — '+_cevDayLabel(st)+' '+_cbSpokenTime(st.startLocal)+'.', !!res.id);
+    try{
+      var _wts=new Date(st.dateStr+' '+st.startLocal);
+      if(!isNaN(_wts.getTime())) _cevSeedLogged({k:'wo', id:res.id, code:(window.cl||{}).code||'',
+        ts:_wts.getTime(), d:{id:res.id, title:name, description:name,
+        duration:(st.durationMinutes?String(st.durationMinutes):null),
+        logged_at:_wts.toISOString(), date_str:st.dateStr}});
+    }catch(e){}
+    // WAS !!res.id — the walk carve-out, and the exact card he was looking at
+    // when he ruled: "Logged Morning Walk · 30 min — Today 5:45am. i dont need
+    // that. I need it to close."
+    _cevDone(btn,'Logged '+name+(st.durationMinutes?(' · '+st.durationMinutes+' min'):'')+' — '+_cevDayLabel(st)+' '+_cbSpokenTime(st.startLocal)+'.');
     return;
   }
   // EVERYTHING ELSE GOES THROUGH THE ONE ENGINE, with the day and the clock
@@ -24695,7 +24758,7 @@ async function _cevSaveNew(st, btn, title, body){
   if(reply==null || wroteNothing){ _cevFail(btn, reply!=null ? _wkPlainText(reply) : null); return; }
   var lt=window._jimLastTurn||{};
   var what=(lt.landed||[]).filter(Boolean).slice(0,3).join(', ')||name;
-  _cevDone(btn,'Logged '+what+' — '+_cevDayLabel(st)+' '+_cbSpokenTime(st.startLocal)+'.', false);
+  _cevDone(btn,'Logged '+what+' — '+_cevDayLabel(st)+' '+_cbSpokenTime(st.startLocal)+'.');
 }
 // A PLAN, NOT A RECORD.
 async function _cevSchedule(st, btn, title, body){
@@ -24785,7 +24848,7 @@ async function _cevSaveEdit(st, btn, title, body){
     if(isFood){ st.row.name=title; st.row.eat_time=_jimClock(mins); st.row.note=body||null; }
     else { st.row.title=title; st.row.notes=body||null; st.row.duration=patch.duration; }
   }catch(e){}
-  _cevDone(btn,'Saved — '+_cevDayLabel(st)+' '+_cbSpokenTime(st.startLocal)+'.', false);
+  _cevDone(btn,'Saved — '+_cevDayLabel(st)+' '+_cbSpokenTime(st.startLocal)+'.');
 }
 function wkPanelOpenAdd(dayStart, mins, x, y){
   // manualOverride:false — nothing typed yet, so the sentence is free to
