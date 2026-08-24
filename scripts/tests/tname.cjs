@@ -34,6 +34,7 @@ eval([
   grab(l=>l.startsWith('function _jvSpokenHhmm(')),
   grab(l=>l.startsWith('function _schDateStr(')),
 ].join('\n'));
+require('./_guard.cjs')(['_jvPendWho','_jvPendWhoCode','_jvPendingSummary','_jvSafeName','_jvShareCode','_jvShareName','_jvSpokenDateStr','_jvSpokenHhmm','_schDateStr'], function(n){ return eval(n); });
 
 // One of each confirmation this builder can produce, all about the same person.
 const WHO={code:'sarahj1', name:'Sarah Johnson'};

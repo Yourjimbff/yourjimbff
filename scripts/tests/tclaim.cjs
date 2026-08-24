@@ -24,6 +24,7 @@ eval([
   multi('var _JIM_CLAIM_FOOD_RE=new RegExp('), multi('var _JIM_CLAIM_FOOD2_RE=new RegExp('),
   grab(l=>l.startsWith('function _jimLooksLikeWorkout(')),
 ].join('\n'));
+require('./_guard.cjs')(['_JIM_CARDIO_RE','_JIM_CLAIM_EXISTS_RE','_JIM_CLAIM_FOOD2_RE','_JIM_CLAIM_FOOD_RE','_JIM_CLAIM_VERB','_JIM_CLAIM_WO_RE','_JIM_CLAIM_WT_RE','_JIM_SESSION_DAY','_JIM_WO_RE','_jimLooksLikeWorkout'], function(n){ return eval(n); });
 
 // The net as it stood before the widening — kept here as the BASELINE so the
 // gain is measured rather than asserted.

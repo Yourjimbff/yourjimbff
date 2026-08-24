@@ -14,6 +14,7 @@ eval([grab(l=>l.startsWith('function _exCanonical(')), grab(l=>l.startsWith('fun
  grab(l=>l.startsWith('function _titleCap(')), grab(l=>l.startsWith('function _jimWorkoutTitleFor(')), grab(l=>l.startsWith('function _jimSplitFromExercises(')),
  multi('var _JIM_CONN_RE=new RegExp('), grab(l=>l.startsWith('function _jimConnLevel(')),
  grab(l=>l.startsWith('function _jimConnByExercise('))].join('\n'));
+require('./_guard.cjs')(['_JIM_CONN_RE','_JIM_NAMED_DAY_RE','_JIM_SPLIT_OF','_JIM_SPLIT_RE','_bfGroupOf','_exCanonical','_jimConnByExercise','_jimConnLevel','_jimSplitFromExercises','_jimTitleFromWords','_jimWorkoutTitleFor','_titleCap'], function(n){ return eval(n); });
 let bad=0; const t=(l,g,w)=>{const ok=JSON.stringify(g)===JSON.stringify(w); if(!ok)bad++; console.log((ok?'  ok    ':'  FAIL  ')+l+'  -> '+JSON.stringify(g)+(ok?'':'   (wanted '+JSON.stringify(w)+')'));};
 
 // HIS PUSH DAY, the real one off his programme

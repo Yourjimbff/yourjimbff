@@ -66801,6 +66801,40 @@ async function jimTurn(text, photos, opts){
   if(_stepsFailed){
     reply += (reply?'\n\n':'') + "That didn't actually save — can you tell me again?";
   }
+  // ===== THE REPLY MAY NOT CLAIM MORE DAYS THAN LANDED ====================
+  // (Yusuf, live, 24 Aug — found by CLIENT with the row read back.) "my steps
+  // every day this week were 9,000" came back saying it had logged nine
+  // thousand for Monday, Tuesday, Wednesday and today. ONE row landed: today.
+  // That is the cardinal lie again — the sentence claims more than the table
+  // holds — and it is exactly what the floor rule exists to stop: either it
+  // logs what it says, or it says what it logged.
+  //
+  // IT SAYS WHAT IT LOGGED. Expanding one number into a week of rows would
+  // invent six days of data he never gave, and would overwrite real counts
+  // already stored on those days. A silent over-write is a worse harm than an
+  // honest under-claim, so the claim is corrected, never the table.
+  //
+  // The floor here is ONE, and the code knows it exactly: one value harvested,
+  // one row upserted, one read-back. So the check is simply whether the words
+  // promise more days than the one that landed.
+  try{
+    if(!_stepsFailed && stepsLogs.items.length && /\bsteps?\b/i.test(reply)){
+      var _stepDays=0;
+      try{
+        if(/\b(?:every|each)\s+day\b|\ball\s+week\b|\bthis\s+week\b/i.test(reply)) _stepDays=7;
+        var _dnm=String(reply).match(new RegExp('\\b(?:'+_JIM_DOW.join('|')+')\\b','ig'));
+        if(_dnm && _dnm.length>1) _stepDays=Math.max(_stepDays,_dnm.length);
+      }catch(e){}
+      if(_stepDays>1){
+        try{ console.warn('steps reply claimed '+_stepDays+' days; one row landed', reply); }catch(e){}
+        var _stepOne='';
+        try{ _stepOne=(_stepBack>0)?_jimEchoDate(_stepBack):'today'; }catch(e){ _stepOne='today'; }
+        reply += (reply?'\n\n':'')
+          + 'To be straight with you — I only saved ' + Number(stepVal).toLocaleString()
+          + ' steps for ' + _stepOne + '. Tell me the other days and I will put those in too.';
+      }
+    }
+  }catch(e){ console.error('steps day claim', e); }
 
   // Handle WEIGHT_LOG (new, 10 Aug smart-bar redesign): the bar's promise is
   // total — a stated weight has to actually land in weight_logs, verified,
@@ -67464,6 +67498,16 @@ async function _jvJarvisCalendarActClient(parsed){
   }
   return null;
 }
+// WAS THIS A TIMEOUT, OR A REFUSAL? (24 Aug.) Called by jimChoose since the day
+// that handler was written, and never once defined -- so the handler threw
+// instead of speaking. Defined here, next to the door it serves, and reading
+// the same vocabulary jimSend's own failure line already reads, so the two
+// cannot disagree about what a dropped connection looks like.
+function _jimIsTimeout(e){
+  var m='';
+  try{ m=String((e && (e.message || e.name)) || e || ''); }catch(_e){}
+  return /abort|timed? ?out|timeout|deadline|took too long/i.test(m);
+}
 async function jimChoose(what){
   var job=_jimAwaiting; if(!job) return;
   _jimAwaiting=null;
@@ -67477,8 +67521,33 @@ async function jimChoose(what){
   var reply='';
   try{ reply=await jimDoor(job.text, job.photos); }
   catch(e){
+    console.error('jimChoose', e);
     var t=document.getElementById('chatTypingRow'); if(t&&t.parentNode) t.parentNode.removeChild(t);
-    showToast(_jimIsTimeout(e)?'That took too long \u2014 try again':'Connection error \u2014 try again');
+    // A FAILED TURN MUST STILL SAY SOMETHING (Yusuf, live, 24 Aug \u2014 CLIENT hit
+    // this twice on the deployed page). This handler called _jimIsTimeout, and
+    // that function had NEVER EXISTED anywhere in this file. So the line meant
+    // to say "that took too long, try again" threw a ReferenceError of its own
+    // \u2014 after the typing dots had already been removed. Nothing replaced them:
+    // no reply, no error, no sign anything had failed. A client was left
+    // looking at their own message with silence underneath it, which is the one
+    // shape this app refuses.
+    // THE LINE STAYS IN THE THREAD, not in a toast. A toast fades, and on a
+    // slow connection they have long since looked away by the time it comes.
+    // It is drawn, NEVER saved \u2014 an error persisted as something Jim said comes
+    // back as memory on the next turn, which slogSend already learned.
+    var _line=_jimIsTimeout(e)
+      ? 'That took too long \u2014 your message is still here, send it again.'
+      : 'That didn\u2019t go through \u2014 your message is still here, send it again.';
+    try{
+      var _b=document.getElementById('chatScroll');
+      if(_b){
+        var _r=document.createElement('div');
+        _r.className='chat-row assistant'; _r.id='chatFailRow';
+        _r.textContent=_line;
+        _b.appendChild(_r); setTimeout(scrollChatToBottom,30);
+      }
+    }catch(_e){}
+    try{ showToast(_line); }catch(_e){}
     return;
   }
   var t2=document.getElementById('chatTypingRow'); if(t2&&t2.parentNode) t2.parentNode.removeChild(t2);
@@ -72663,7 +72732,31 @@ function _jimParse(raw) {
     var ap = (tm[3] || '').toLowerCase();
     if (ap === 'pm' && hh < 12) hh += 12;
     if (ap === 'am' && hh === 12) hh = 0;
-    if (!ap && hh <= 7) hh += 12;              // "at 6" in a food log means the evening
+    // ===== HIS OWN WORDS DECIDE AM OR PM (Yusuf, live, 24 Aug) =============
+    // "did my workout at 6 this morning" SAVED AT 6:00 PM, and the reply on
+    // screen said 6 AM. This line used to read `if (!ap && hh <= 7) hh += 12`
+    // -- a bare hour of 7 or less was simply declared the evening -- and the
+    // word "morning", sitting right there in the same sentence, was never
+    // consulted at all. Nor was afternoon, evening, tonight or at night.
+    //
+    // The other clock reader in this file has always read those words. So the
+    // two disagreed, which is the same drifted-pair disease as the three
+    // session-word lists: one reader knowing something its twin does not.
+    //
+    // HIS WORDS FIRST, THE DEFAULT ONLY WHEN HE SAID NOTHING. The evening
+    // default stays for a bare "at 6" with no part of the day named, because
+    // that is genuinely what a bare hour means in a food log -- but it may
+    // never again overrule a morning he actually said.
+    if (!ap) {
+      var _said = String(raw || '');
+      if (/\b(?:this\s+|the\s+|in\s+the\s+)?morning\b|\bam\b|\bsunrise\b|\bfirst thing\b/i.test(_said)) {
+        if (hh === 12) hh = 0;                 // "12 this morning" is midnight
+      } else if (/\b(?:afternoon|evening|tonight|at night|after work|before bed)\b/i.test(_said)) {
+        if (hh < 12) hh += 12;
+      } else if (hh <= 7) {
+        hh += 12;                              // "at 6" with no part of day named is the evening
+      }
+    }
     if (hh < 24 && mi < 60) { mins = hh * 60 + mi; s = s.replace(tm[0], ' '); }
   }
 

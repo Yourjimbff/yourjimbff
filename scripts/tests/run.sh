@@ -28,6 +28,8 @@ printf '  %-18s %s\n' "check.sh" "$(bash scripts/check.sh 2>&1 | tail -1)"
 bash scripts/check.sh >/dev/null 2>&1 || fail=1
 for f in "$ROOT"/scripts/tests/*.cjs; do
   name="$(basename "$f")"
+  # Files starting with _ are shared helpers required BY the suites, not suites.
+  case "$name" in _*) continue;; esac
   raw="$("$NODE" "$f" 2>&1)"; rc=$?
   out="$(printf '%s' "$raw" | tail -1)"
   printf '  %-18s %s\n' "$name" "$out"

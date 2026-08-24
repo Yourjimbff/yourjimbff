@@ -20,6 +20,7 @@ eval([
   grab(l=>l.startsWith('function _jimHarvestWeight(')),
   grab(l=>l.startsWith('function _jimCalendarAsked(')),
 ].join('\n'));
+require('./_guard.cjs')(['_JIM_CAL_PUT_RE','_JT_PAST_MEAL_RE','_JT_SCHED_INTENT_RE','_jimCalendarAsked','_jimHarvestSteps','_jimHarvestWeight'], function(n){ return eval(n); });
 
 // Twenty ordinary log sentences. Every one of these must reach the engine.
 const LOGS=[

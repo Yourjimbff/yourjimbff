@@ -6,6 +6,7 @@ const REAL=Date;
 class FD extends REAL{ constructor(...a){ if(!a.length) super(2026,7,24,9,0,0); else super(...a);} static now(){return new REAL(2026,7,24,9,0,0).getTime();} }
 global.Date=FD;
 eval([grab(l=>l.startsWith('function _jvSpokenDay(')), grab(l=>l.startsWith('function _jvSpokenDateStr(')), grab(l=>l.startsWith('function _jvSpokenOn('))].join('\n'));
+require('./_guard.cjs')(['_jvSpokenDateStr','_jvSpokenDay','_jvSpokenOn'], function(n){ return eval(n); });
 const ds=(y,m,d)=>new REAL(y,m,d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
 const C=[
   [ds(2026,7,24),'today'],
