@@ -10223,7 +10223,9 @@ async function slogSend(){
   _chatSave({client_code:cl.code, role:'user', content:text, has_image:false});
   var reply='';
   try{
-    reply=await jimTurn(text, []);
+    // THE ONE DOOR (ship 4). This used to reach the engine on its own, with no
+    // day at all — which meant the stale viewed day, not today.
+    reply=await jimDoor(text, []);
   }catch(e){
     console.error('slogSend', e);
     _slogPending=false; renderSlogBody();
@@ -66770,15 +66772,46 @@ function _jimCalendarAsked(t){
 // client. A sentence that plainly asks for something to be scheduled is
 // answered here; EVERYTHING ELSE reaches the engine untouched, which is the
 // whole point of this ship.
-async function _jimTurnClientAware(text, photos){
+// ===== ONE DOOR (the strip, ship 4 of six) ================================
+// (Yusuf, ruling, 24 Aug.) Three client screens reached the engine three
+// different ways. The Day bar handed over the day it writes to and any clock he
+// had corrected by hand; the Jim tab and the log sheet handed over NOTHING. And
+// only the Jim tab was ever asked whether the sentence was a scheduling
+// request, so the same words behaved differently depending on which screen he
+// happened to be looking at. That is the disease this whole strip is about.
+//
+// THE DAY IS NEVER LEFT TO A GLOBAL, and that is the bug hiding in "nothing".
+// A caller that passes no day falls through to todayDateStr, which is not today
+// — it is whatever day the Day page was last LOOKING at, and it stays pointed
+// there. So browsing back to Friday and then logging a meal from the Jim tab or
+// the log sheet quietly wrote it onto Friday, days later, with nothing on
+// screen saying so. The day is decided HERE now, once, for every screen.
+//
+// A DAY HE SAID STILL WINS. Filling this in cannot override "yesterday I had
+// X": the engine pins a stated day before it looks at the caller's day, and a
+// back-dated entry from the model still resolves on its own. This only ever
+// replaces the stale global for an entry that carries no day at all.
+async function jimDoor(text, photos, opts){
+  opts = opts || {};
+  if(!opts.dateStr) opts.dateStr = _tlDateStr(new Date());
   var _calOk=false;
   try{ _calOk=_jimCalendarAsked(text); }catch(e){ _calOk=false; }
   if(_calOk && text && (!photos || !photos.length) && cl && typeof isTrainer==='function' && !isTrainer(cl.code)){
     var r=null;
     try{ r=await _jtCalendarTurnClient(text); }catch(e){}
-    if(r && r.line!=null) return r.line;
+    if(r && r.line!=null){
+      // A SCHEDULING ANSWER IS NOT A LOG, AND THE BAR HAS TO KNOW THAT.
+      // jimSend reads _jimLastTurn after every send to decide what to do next,
+      // and it would otherwise be reading the PREVIOUS turn's result — so a
+      // sentence that went to the calendar would be judged as "nothing
+      // loggable" and he would be offered a journal note for it. Stated
+      // plainly rather than faked: nothing was written, the turn is fine, and
+      // it went to the calendar.
+      try{ window._jimLastTurn={wrote:0, emitted:0, landed:[], ok:true, calendar:true}; }catch(e){}
+      return r.line;
+    }
   }
-  return await jimTurn(text, photos);
+  return await jimTurn(text, photos, opts);
 }
 async function _jtCalendarTurnClient(t){
   var parsed=null;
@@ -66879,7 +66912,7 @@ async function jimChoose(what){
   typing.innerHTML='<div class="chat-typing"><span></span><span></span><span></span></div>';
   if(box){ box.appendChild(typing); setTimeout(scrollChatToBottom,30); }
   var reply='';
-  try{ reply=await _jimTurnClientAware(job.text, job.photos); }
+  try{ reply=await jimDoor(job.text, job.photos); }
   catch(e){
     var t=document.getElementById('chatTypingRow'); if(t&&t.parentNode) t.parentNode.removeChild(t);
     showToast(_jimIsTimeout(e)?'That took too long \u2014 try again':'Connection error \u2014 try again');
@@ -73270,7 +73303,10 @@ async function jimSend(ds) {
   }catch(e){}
   var reply = '';
   try {
-    reply = await jimTurn(raw, photos, _turnOpts);
+    // THE ONE DOOR (ship 4). Same entry the Jim tab and the log sheet use, so a
+    // scheduling sentence is answered the same way from every screen instead of
+    // only from the one that happened to have the check on it.
+    reply = await jimDoor(raw, photos, _turnOpts);
   } catch (e) {
     console.error('jimSend', e);
     try{ clearTimeout(_sendWait); }catch(_e){}
@@ -73337,8 +73373,11 @@ async function jimSend(ds) {
   if (_jimWantsReply(reply)) {
     try{ jimOvlOpen(); }
     catch(e){ showToast(String(reply).split('\n')[0].slice(0,90)); }
-  } else if (!_jimLastTurn.wrote) {
+  } else if (!_jimLastTurn.wrote && !_jimLastTurn.calendar) {
     // Nothing loggable in it — they were reflecting, not logging. Offer to keep it.
+    // NOT when it went to the calendar: scheduling something is not reflecting,
+    // and offering to save "put Pilates at 6am on Tuesdays" as a journal note is
+    // the app failing to understand what it just did.
     try{ _jimJournalAsk(raw, ds); }catch(e){ showToast(String(reply).split('\n')[0].slice(0,90)); }
   } else {
     showToast(String(reply).split('\n')[0].slice(0,90));
