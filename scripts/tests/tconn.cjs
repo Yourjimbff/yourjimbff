@@ -18,6 +18,7 @@ eval([
   grab(l=>l.startsWith('function _jimConnLevel(')),
   grab(l=>l.startsWith('function _jimConnByExercise(')),
 ].join('\n'));
+require('./_guard.cjs')(['_JIM_CONN_RE','_jimConnByExercise','_jimConnLevel'], function(n){ return eval(n); });
 let bad=0;
 const t=(got,want,label)=>{ const ok=JSON.stringify(got)===JSON.stringify(want); if(!ok) bad++;
   console.log((ok?'  ok    ':'  FAIL  ')+label+'  -> '+JSON.stringify(got)+(ok?'':'   (wanted '+JSON.stringify(want)+')')); };

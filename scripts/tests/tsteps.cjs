@@ -9,6 +9,7 @@ eval([multi('var _JT_CAL_RE=new RegExp('), multi('var _JT_PAST_MEAL_RE=new RegEx
  grab(l=>l.startsWith('function _titleCap(')), grab(l=>l.startsWith('function _jtCalendarClaims(')),
  grab(l=>l.startsWith('function _jimHarvestSteps(')), grab(l=>l.startsWith('function _jimLooksLikeWorkout(')),
  grab(l=>l.startsWith('function _jimMealRelTitle('))].join('\n'));
+require('./_guard.cjs')(['_JIM_CARDIO_RE','_JIM_MEALREL2_RE','_JIM_MEALREL_RE','_JIM_SESSION_DAY','_JIM_WO_RE','_JT_CAL_RE','_JT_PAST_MEAL_RE','_JT_SCHED_INTENT_RE','_jimHarvestSteps','_jimLooksLikeWorkout','_jimMealRelTitle','_jtCalendarClaims','_titleCap'], function(n){ return eval(n); });
 let bad=0; const t=(l,g,w)=>{const ok=JSON.stringify(g)===JSON.stringify(w); if(!ok)bad++; console.log((ok?'  ok    ':'  FAIL  ')+l+'  -> '+JSON.stringify(g)+(ok?'':'   (wanted '+JSON.stringify(w)+')'));};
 
 console.log('  the real client\'s two sentences must NOT go to the calendar:');
@@ -41,6 +42,7 @@ t('not a meal-relative', _jimMealRelTitle('I walked the dog'), '');
 // functions the write runs through, in the same order.
 eval([grab(l=>l.startsWith('function _dateStrDaysAgo(')),
       L[L.findIndex(l=>l.startsWith('var _JIM_DAY_MAX='))]].join('\n'));
+require('./_guard.cjs')(['_dateStrDaysAgo'], function(n){ return eval(n); });
 const dsBack=(n)=>_dateStrDaysAgo(n);
 console.log('\n  the day he named becomes a real date:');
 t('yesterday differs from today', dsBack(1)!==dsBack(0), true);

@@ -7,6 +7,7 @@ eval([blk('var EX_MUSCLE'), blk('var EX_ALIAS'), one('var _EX_KNOWN_CACHE=null;'
   grab(l=>l.startsWith('function _exKnownNames(')), grab(l=>l.startsWith('function _exFlat(')),
   grab(l=>l.startsWith('function _exLev(')), one('var _EX_NEAR_MIN='),
   grab(l=>l.startsWith('function _exCanonical(')), grab(l=>l.startsWith('function _exNearest('))].join('\n'));
+require('./_guard.cjs')(['_EX_KNOWN_CACHE','_EX_NEAR_MIN','_exCanonical','_exFlat','_exKnownNames','_exLev','_exNearest'], function(n){ return eval(n); });
 const C=[
  // SNAPS - the class distance can actually settle
  ['dumbell row','Dumbbell Row'],

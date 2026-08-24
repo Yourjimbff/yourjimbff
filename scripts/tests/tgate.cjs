@@ -14,6 +14,7 @@ eval([
   grab(l=>l.startsWith('function _jimDateSaid(')),
   grab(l=>l.startsWith('function _jimAnchorDay(')),
 ].join('\n'));
+require('./_guard.cjs')(['_JT_PAST_MEAL_RE','_jimAnchorDay','_jimDateSaid'], function(n){ return eval(n); });
 // The gate, exactly as jimTurn applies it: he reported eating AND named a past day.
 const fires=(t)=>{ const d=_jimAnchorDay(t); return (d!=null && d>0 && _JT_PAST_MEAL_RE.test(t)); };
 const C=[

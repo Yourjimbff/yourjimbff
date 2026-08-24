@@ -31,6 +31,7 @@ eval([
   grab(l=>l.startsWith('function _tlDateStr(')),
   grab(l=>l.startsWith('async function jimDoor(')),
 ].join('\n'));
+require('./_guard.cjs')(['_JIM_CAL_PUT_RE','_JT_PAST_MEAL_RE','_JT_SCHED_INTENT_RE','_jimCalendarAsked','_jimHarvestSteps','_jimHarvestWeight','_tlDateStr','jimDoor'], function(n){ return eval(n); });
 
 // Stubs standing in for the engine and the calendar, recording what they got.
 let seen=null, calendarRan=0;

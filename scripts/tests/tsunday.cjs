@@ -16,6 +16,7 @@ const src=fs.readFileSync('index.html','utf8');
 const L=src.split('\n');
 function grab(p){ const a=L.findIndex(p); let b=a; while(L[b]!=='}') b++; return L.slice(a,b+1).join('\n'); }
 eval([grab(l=>l.startsWith('function _pwDow(')), grab(l=>l.startsWith('function _pwDowOf('))].join('\n'));
+require('./_guard.cjs')(['_pwDow','_pwDowOf'], function(n){ return eval(n); });
 let bad=0;
 const t=(got,want,label)=>{ const ok=JSON.stringify(got)===JSON.stringify(want); if(!ok) bad++;
   console.log((ok?'  ok    ':'  FAIL  ')+label+'  -> '+JSON.stringify(got)+(ok?'':'   (wanted '+JSON.stringify(want)+')')); };

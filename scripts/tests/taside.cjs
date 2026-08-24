@@ -9,6 +9,7 @@ eval([one('var _JIM_DOW='), one('var _JIM_MONTHS='),
  grab(l=>l.startsWith('function _titleCap(')),
  grab(l=>l.startsWith('function _jimDropAsides(')), grab(l=>l.startsWith('function _jimMealRelTitle(')),
  grab(l=>l.startsWith('function _jimEchoWords('))].join('\n'));
+require('./_guard.cjs')(['_JIM_DOW','_JIM_FOODNOTE_RE','_JIM_FOODREMARK_RE','_JIM_MEALREL_RE','_JIM_MONTHS','_JIM_SELFTALK_RE','_jimDropAsides','_jimEchoWords','_jimMealRelTitle','_titleCap'], function(n){ return eval(n); });
 let bad=0; const t=(lbl,got,want)=>{ const ok=got===want; if(!ok)bad++; console.log((ok?'  ok    ':'  FAIL  ')+lbl); if(!ok){console.log('          got:  '+JSON.stringify(got));console.log('          want: '+JSON.stringify(want));} };
 
 // HIS BREAKFAST, with the aside he actually said
