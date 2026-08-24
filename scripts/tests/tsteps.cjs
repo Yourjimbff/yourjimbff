@@ -65,5 +65,24 @@ t('write never uses todayDateStr',  /todayDateStr/.test(upsert), false);
 t('read-back on the same day',      /encodeURIComponent\(_stepDate\)/.test(readback), true);
 t('read-back never todayDateStr',   /todayDateStr/.test(readback), false);
 
+// ===== THE REPLY MAY NOT CLAIM MORE DAYS THAN LANDED (24 Aug) ============
+// "my steps every day this week were 9,000" replied that it had logged nine
+// thousand for Monday through today. ONE row landed. The floor here is one —
+// one value harvested, one row upserted, one read-back — so a reply promising
+// more days must admit what it actually saved.
+const claim=src.match(/if\(!_stepsFailed && stepsLogs\.items\.length[\s\S]{0,1400}?steps day claim/);
+console.log('\n  a reply promising more days than landed is corrected:');
+t('the check exists at all', !!claim, true);
+const CL=claim?claim[0]:'';
+t('it only runs when a row landed',   /!_stepsFailed && stepsLogs\.items\.length/.test(CL), true);
+t('it counts "every day"',            CL.indexOf('(?:every|each)')>=0, true);
+t('it counts two weekday names',      /_dnm && _dnm\.length>1/.test(CL), true);
+t('it appends the truth, never edits the table',
+  /reply \+=/.test(CL) && !/sbUpsert|sbInsert|fetch\(/.test(CL), true);
+t('it names the one day that landed', /_stepOne/.test(CL), true);
+// The table is never expanded to match the words: inventing six days would
+// overwrite real counts already stored on them.
+t('no second write is added',         /_stepDays>1[\s\S]{0,600}sbUpsert/.test(CL), false);
+
 console.log(bad? '\n'+bad+' FAILED' : '\nall pass');
 process.exit(bad?1:0);
