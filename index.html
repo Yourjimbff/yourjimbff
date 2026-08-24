@@ -22646,20 +22646,47 @@ function _wkLoggedClick(e){
 // photos stay on the timed .wkMark, since a photo is a moment and not a
 // total. Renders nothing at all when the week has no daily facts — an empty
 // strip on every week would just be permanent furniture.
+// MY OWN READING OPENS THE THING THAT EDITS IT (Yusuf, ruling, 24 Aug — hit by a
+// real client). Every cell here routed to openClientDay, which is the TRAINER's
+// "show me this person's day". On her own week that is a dead end: she taps her
+// step count and lands on a day overview with no way to log a step. The Day page
+// has had the right destination all along — openSteps(ds), a number field and
+// Save — so this consumes it rather than growing a second one.
+//
+// SCOPED BY WHOSE ROW IT IS, not by which surface is drawing it, which is what
+// keeps this out of CALENDAR's way: _wkDailyCellHtml is shared with the trainer's
+// week row and day zoom, and a trainer looking at a CLIENT's week still gets
+// openClientDay because the codes differ. The only behaviour that changes is a
+// row belonging to whoever is signed in — and a trainer tapping his OWN steps
+// wanting the steps sheet is the same want, so that is right too.
 function _wkDailyCellHtml(dayStart, entries){
   if(!entries.length) return '<div class="wkDailyCell"></div>';
+  var _mine=function(c){ try{ return !!(window.cl && cl.code && String(c||'')===String(cl.code)); }catch(_){ return false; } };
+  var _q=function(v){ return String(v==null?'':v).replace(new RegExp("'","g"),"\\'"); };
   return '<div class="wkDailyCell">'+entries.map(function(e){
     if(e.k==='steps'){
-      var ds=String(e.date_str||'').replace(new RegExp("'","g"),"\\'");
-      var code=String(e.code||'').replace(new RegExp("'","g"),"\\'");
+      var ds=_q(e.date_str), code=_q(e.code);
       var lbl=Number(e.steps).toLocaleString()+' steps';
+      var click = _mine(e.code)
+        ? ("openSteps('"+ds+"')")
+        : ("openClientDay('"+code+"',"+dayStart+",'"+ds+"')");
       return '<div class="wkDaily wkDaily-steps" title="'+_escHtml(lbl)+'"'
-        +' onclick="event.stopPropagation();openClientDay(\''+code+'\','+dayStart+',\''+ds+'\')">'
+        +' onclick="event.stopPropagation();'+click+'">'
         +_escHtml(lbl)+'</div>';
     }
     var wlbl=_wkLoggedLabel(e);
+    // SAME CLASS, SAME FIX — a weigh-in on her own week went to the same dead end.
+    // tlWeighIn is the sheet the Day page's own weigh-in row opens. date_str first
+    // because it is the day the row belongs to; the timestamp is only the fallback
+    // for a row that never carried one.
+    var wclick=_wkLoggedClick(e);
+    if(e.k==='wt' && _mine(e.code)){
+      var wds='';
+      try{ wds=(e.d && e.d.date_str) ? String(e.d.date_str) : (e.ts?_tlDateStr(new Date(e.ts)):''); }catch(_){ wds=''; }
+      if(wds) wclick="tlWeighIn('"+_q(wds)+"')";
+    }
     return '<div class="wkDaily wkDaily-wt" title="'+_escHtml(wlbl)+'"'
-      +' onclick="event.stopPropagation();'+_wkLoggedClick(e)+'">'+_escHtml(wlbl)+'</div>';
+      +' onclick="event.stopPropagation();'+wclick+'">'+_escHtml(wlbl)+'</div>';
   }).join('')+'</div>';
 }
 function _wkDailyEntriesFor(dayStart, daily, logged){
@@ -70013,7 +70040,16 @@ async function loadSteps(force){
       'client_code=eq.'+encodeURIComponent(cl.code)+'&select=steps,date_str&order=date_str.desc&limit=120') || [];
     var m={};
     rows.forEach(function(r){
-      var d=String(r.date_str||'').slice(0,10);
+      // THE WHOLE DATE, NOT THE FIRST TEN CHARACTERS (Yusuf, ruling, 24 Aug —
+      // found testing the week's steps tap). slice(0,10) is an ISO-date habit and
+      // these are not ISO: "Aug 24, 2026" is twelve characters, so this stored
+      // "Aug 7, 202" — a key with the year cut in half, which cannot tell 2026 from
+      // 2027. Worse, saveSteps below writes the FULL date_str, so the loader and
+      // the saver used two different key shapes for the same day and _stepsFor
+      // read the loader's. The effect: a step count you had just saved was
+      // immediately unfindable, so the sheet reopened empty and any reading built
+      // on _stepsFor went blank until the next full load.
+      var d=String(r.date_str||'');
       var v=Number(r.steps)||0;
       if(d && v>0) m[d]=v;
     });
@@ -70022,7 +70058,15 @@ async function loadSteps(force){
   }catch(e){ window._stepsLoaded=true; }
 }
 function _stepsFor(ds){
-  try{ var v=window._stepMap[String(ds).slice(0,10)]; return v>0?v:null; }catch(e){ return null; }
+  try{
+    var k=String(ds==null?'':ds);
+    var m=window._stepMap||{};
+    var v=m[k];
+    // The truncated form is still accepted on the way IN, so a map built by an
+    // older tab that is still open keeps answering rather than going silent.
+    if(!(v>0)) v=m[k.slice(0,10)];
+    return v>0?v:null;
+  }catch(e){ return null; }
 }
 
 function openSteps(ds){
@@ -70066,6 +70110,23 @@ async function saveSteps(ds, clear){
   closeSteps();
   if(v>0) window._stepMap[ds]=v; else delete window._stepMap[ds];
   try{ window._tlCache=null; renderDayTimeline(true); }catch(e){}
+  // MY WEEK IS A CALLER NOW, so it has to be repainted like the day is. Its steps
+  // cell is what opened this sheet; leaving it reading the old number makes the
+  // save look like it did not take.
+  try{
+    var _mw=document.getElementById('mwOverlay');
+    if(_mw && _mw.classList.contains('on')){
+      var _d=window._mwData;
+      if(_d && _d.daily){
+        var _slot=_d.daily[ds]; 
+        if(Array.isArray(_slot)){
+          for(var _i=_slot.length-1;_i>=0;_i--){ if(_slot[_i] && _slot[_i].k==='steps') _slot.splice(_i,1); }
+          if(v>0) _slot.push({k:'steps', code:cl.code, steps:v, date_str:ds});
+        }
+      }
+      if(typeof _mwRender==='function') _mwRender();
+    }
+  }catch(e){}
   if(ok) showToast(v>0 ? (v.toLocaleString()+' steps') : 'Cleared');
   else _sbQueuedToast();
 }
