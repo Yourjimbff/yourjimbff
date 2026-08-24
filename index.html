@@ -30745,9 +30745,34 @@ function _progWeekIndex(program, when){
   if(diff<0) return 1;                      // before it starts she is on week one
   return Math.floor(diff/7)+1;
 }
+// A PROGRAMME ROW'S REAL WEEKDAY, OR NULL FOR "NO SPECIFIC DAY".
+// Sunday is 0 here — the same as Date.getDay(), the same as every dayShort map
+// in this file, and the same as the editor's own displayOrder [1,2,3,4,5,6,0].
+//
+// SEVEN IS NOT SUNDAY. It is the NOT NULL fallback this file writes when a row
+// has no day at all, and the readers that matter already map it back to null.
+// Three surfaces did not: they folded both null and 7 into a bucket labelled
+// SUN and printed a day the row had never been given, while a genuine Sunday
+// row — sitting at 0 — fell outside their 1..7 loop and was dropped without a
+// word. One of those surfaces is read aloud. A missing day must read as
+// missing, never as a day.
+function _pwDow(w){
+  if(!w) return null;
+  var d=w.day_of_week;
+  if(d==null) return null;
+  d=Number(d);
+  if(!isFinite(d)) return null;
+  return (d>=0 && d<=6) ? d : null;   // 7, or anything else, means "no day"
+}
 // THE ONE PLACE THAT DECIDES WHICH WORKOUT A DAY GETS. Four separate lookups
 // used to do this by hand, and a week-aware programme with four of them would
 // have let her VIEW one week and LOG another from the same screen.
+//
+// NOT QUITE THE ONLY PLACE, AND THE COMMENT USED TO OVERSTATE IT: the client
+// overview card resolves a week inline, because it needs all seven days of a
+// freshly fetched programme rather than one dow off the clientAssignedProgram
+// global. It consumes _progWeekIndex, so the hard part is still shared and
+// there is no second copy of the week maths — but "one place" was too strong.
 function _progDayFor(dow, when){
   if(!clientAssignedProgram || !clientAssignedProgram.workouts) return null;
   var rows=clientAssignedProgram.workouts.filter(function(w){
@@ -38727,22 +38752,28 @@ async function _jvLoadDeepProgram(code){
       if(_hit.length) _wos=_hit;
       else _wos=wos.filter(function(w){ return w.week_index==null; });
     }
-    var byDay={}; _wos.forEach(function(w){ var d=(w.day_of_week==null)?7:Number(w.day_of_week); byDay[d]=w; });
-    var dayNames={1:'MON',2:'TUE',3:'WED',4:'THU',5:'FRI',6:'SAT',7:'SUN'};
+    var byDay={}, _noDay=[];
+    _wos.forEach(function(w){ var d=_pwDow(w); if(d==null) _noDay.push(w); else byDay[d]=w; });
+    var dayNames={1:'MON',2:'TUE',3:'WED',4:'THU',5:'FRI',6:'SAT',0:'SUN'};
+    // Mon..Sun in this file's own display order, then any row that has no fixed
+    // day, said as ANY rather than drawn onto a weekday it was never given.
+    var _slots=[1,2,3,4,5,6,0].map(function(d){ return {label:dayNames[d], w:byDay[d]}; });
+    _noDay.forEach(function(w){ _slots.push({label:'ANY', w:w}); });
     var rowsHtml='';
-    [1,2,3,4,5,6,7].forEach(function(d){
-      var w=byDay[d];
+    _slots.forEach(function(slot){
+      var w=slot.w, lbl=slot.label;
       if(w){
         var exs=(w.exercises&&w.exercises.length)?w.exercises.map(function(ex){return (ex.name||'')+(ex.sets?(' \u00b7 '+ex.sets+(ex.detail?(' \u00d7 '+ex.detail):'\u00d7')):'');}).join('<br>'):((w.description||'').replace(/\n/g,'<br>'));
         rowsHtml+='<div style="display:flex;gap:12px;padding:10px 0;border-bottom:1px solid #1d1d1d;">'
-          +'<div style="width:34px;flex-shrink:0;font-size:10.5px;font-weight:800;color:var(--gold);letter-spacing:0.5px;padding-top:2px;">'+dayNames[d]+'</div>'
+          +'<div style="width:34px;flex-shrink:0;font-size:10.5px;font-weight:800;color:var(--gold);letter-spacing:0.5px;padding-top:2px;">'+lbl+'</div>'
           +'<div style="flex:1;min-width:0;"><div style="font-size:13.5px;font-weight:800;color:#f0ece4;">'+(w.title||'Workout').replace(/</g,'&lt;')+'</div>'
           +(exs?'<div style="font-size:11.5px;color:rgba(240,236,228,0.78);line-height:1.55;margin-top:3px;">'+exs.replace(/</g,'&lt;')+'</div>':'')
           +(w.notes?'<div style="font-size:11px;color:rgba(240,236,228,0.78);margin-top:3px;font-style:italic;">'+(w.notes||'').replace(/</g,'&lt;')+'</div>':'')
+          +(lbl==='ANY'?'<div style="font-size:10.5px;color:rgba(240,236,228,0.6);margin-top:3px;">No fixed day set</div>':'')
           +'</div></div>';
       } else {
         rowsHtml+='<div style="display:flex;gap:12px;padding:9px 0;border-bottom:1px solid #1d1d1d;">'
-          +'<div style="width:34px;flex-shrink:0;font-size:10.5px;font-weight:800;color:rgba(240,236,228,0.78);letter-spacing:0.5px;padding-top:1px;">'+dayNames[d]+'</div>'
+          +'<div style="width:34px;flex-shrink:0;font-size:10.5px;font-weight:800;color:rgba(240,236,228,0.78);letter-spacing:0.5px;padding-top:1px;">'+lbl+'</div>'
           +'<div style="flex:1;font-size:12.5px;color:rgba(240,236,228,0.78);">Rest</div></div>';
       }
     });
@@ -43872,16 +43903,24 @@ async function _jvClientScheduleBlock(msg){
     var prog=rows[0];
     var wr=await fetch(SB_URL+'/rest/v1/program_workouts?program_id=eq.'+prog.id+'&order=day_of_week.asc',{headers:sbHeaders()});
     var wos=wr.ok?await wr.json():[];
-    var dn={1:'Monday',2:'Tuesday',3:'Wednesday',4:'Thursday',5:'Friday',6:'Saturday',7:'Sunday'};
-    var byDay={}; wos.forEach(function(w){ var d=(w.day_of_week==null)?7:Number(w.day_of_week); byDay[d]=w; });
+    var dn={1:'Monday',2:'Tuesday',3:'Wednesday',4:'Thursday',5:'Friday',6:'Saturday',0:'Sunday'};
+    // SEVEN IS NOT SUNDAY — see _pwDow. This string is read aloud, so a row with
+    // no day must be described as having none, not spoken as a Sunday session.
+    var byDay={}, _noDay=[];
+    wos.forEach(function(w){ var d=_pwDow(w); if(d==null) _noDay.push(w); else byDay[d]=w; });
     var lines=[]; var trainingDays=[];
-    [1,2,3,4,5,6,7].forEach(function(d){
+    [1,2,3,4,5,6,0].forEach(function(d){
       var w=byDay[d];
       if(!w){ lines.push(dn[d]+': Rest'); return; }
       trainingDays.push(dn[d]);
       var exArr=[]; try{ var pe=typeof w.exercises==='string'?JSON.parse(w.exercises):w.exercises; if(Array.isArray(pe)) exArr=pe; }catch(e){}
       var exTxt=exArr.map(function(e){ if(!e||!e.name) return ''; var dd=[]; if(e.sets!=null) dd.push(String(e.sets)+(e.reps!=null?(' x '+e.reps):'')); if(e.detail && e.reps==null) dd.push(e.detail); return '    - '+e.name+(dd.length?(' ('+dd.join(', ')+')'):''); }).filter(Boolean).join('\n');
       lines.push(dn[d]+' \u2014 '+(w.title||'Workout')+(exTxt?(':\n'+exTxt):'')+(w.notes?('\n    coach note: '+w.notes):''));
+    });
+    _noDay.forEach(function(w){
+      var exArr=[]; try{ var pe=typeof w.exercises==='string'?JSON.parse(w.exercises):w.exercises; if(Array.isArray(pe)) exArr=pe; }catch(e){}
+      var exTxt=exArr.map(function(e){ if(!e||!e.name) return ''; var dd=[]; if(e.sets!=null) dd.push(String(e.sets)+(e.reps!=null?(' x '+e.reps):'')); if(e.detail && e.reps==null) dd.push(e.detail); return '    - '+e.name+(dd.length?(' ('+dd.join(', ')+')'):''); }).filter(Boolean).join('\n');
+      lines.push('No fixed day \u2014 '+(w.title||'Workout')+' (this one has no weekday set on it)'+(exTxt?(':\n'+exTxt):'')+(w.notes?('\n    coach note: '+w.notes):''));
     });
     return '\n\n=== '+best.name+'\u2019S FULL CURRENT PROGRAM (program: '+(prog.name||'Program')+') ===\nThis is exactly what '+best.name+' has now \u2014 every training day and the exact exercises in each. Workout days: '+(trainingDays.join(', ')||'none scheduled')+'.\n'+lines.join('\n')+'\nUse THIS to answer schedule questions precisely. When Yusuf asks to edit the program, edit straight from these exact days and exercises \u2014 do NOT ask him to tell you the current program, you already have it right here. Swap, add, or remove the specific exercises he names and keep everything else intact.';
   }catch(e){ return ''; }
@@ -44089,7 +44128,11 @@ async function _jvApplyProgramPatch(txt){
       if(!prog||!prog.id){ results.push({code:code, ok:false}); continue; }
       var wr=await fetch(SB_URL+'/rest/v1/program_workouts?program_id=eq.'+encodeURIComponent(prog.id)+'&order=day_of_week.asc',{headers:sbHeaders()});
       var wos=wr.ok?await wr.json():[];
-      var byDay={}; wos.forEach(function(w){ var d=(w.day_of_week==null)?7:Number(w.day_of_week); byDay[d]=w; });
+      // Keyed on the row's REAL day, so a patch aimed at a weekday can no longer
+      // land on a row that has no day at all. It used to: both null and the 7
+      // sentinel sat in bucket 7, and a marker day of 7 would edit — or delete —
+      // whichever undated row happened to be there.
+      var byDay={}; wos.forEach(function(w){ var d=_pwDow(w); if(d!=null) byDay[d]=w; });
       var dayPatches=(spec.days||spec.changes||[]).filter(Boolean);
       var touched=[];
       function parseEx(w){ try{ var pe=typeof w.exercises==='string'?JSON.parse(w.exercises):w.exercises; return Array.isArray(pe)?pe:[]; }catch(e){ return []; } }
