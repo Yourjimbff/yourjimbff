@@ -70040,7 +70040,16 @@ async function loadSteps(force){
       'client_code=eq.'+encodeURIComponent(cl.code)+'&select=steps,date_str&order=date_str.desc&limit=120') || [];
     var m={};
     rows.forEach(function(r){
-      var d=String(r.date_str||'').slice(0,10);
+      // THE WHOLE DATE, NOT THE FIRST TEN CHARACTERS (Yusuf, ruling, 24 Aug —
+      // found testing the week's steps tap). slice(0,10) is an ISO-date habit and
+      // these are not ISO: "Aug 24, 2026" is twelve characters, so this stored
+      // "Aug 7, 202" — a key with the year cut in half, which cannot tell 2026 from
+      // 2027. Worse, saveSteps below writes the FULL date_str, so the loader and
+      // the saver used two different key shapes for the same day and _stepsFor
+      // read the loader's. The effect: a step count you had just saved was
+      // immediately unfindable, so the sheet reopened empty and any reading built
+      // on _stepsFor went blank until the next full load.
+      var d=String(r.date_str||'');
       var v=Number(r.steps)||0;
       if(d && v>0) m[d]=v;
     });
@@ -70049,7 +70058,15 @@ async function loadSteps(force){
   }catch(e){ window._stepsLoaded=true; }
 }
 function _stepsFor(ds){
-  try{ var v=window._stepMap[String(ds).slice(0,10)]; return v>0?v:null; }catch(e){ return null; }
+  try{
+    var k=String(ds==null?'':ds);
+    var m=window._stepMap||{};
+    var v=m[k];
+    // The truncated form is still accepted on the way IN, so a map built by an
+    // older tab that is still open keeps answering rather than going silent.
+    if(!(v>0)) v=m[k.slice(0,10)];
+    return v>0?v:null;
+  }catch(e){ return null; }
 }
 
 function openSteps(ds){
@@ -70093,6 +70110,23 @@ async function saveSteps(ds, clear){
   closeSteps();
   if(v>0) window._stepMap[ds]=v; else delete window._stepMap[ds];
   try{ window._tlCache=null; renderDayTimeline(true); }catch(e){}
+  // MY WEEK IS A CALLER NOW, so it has to be repainted like the day is. Its steps
+  // cell is what opened this sheet; leaving it reading the old number makes the
+  // save look like it did not take.
+  try{
+    var _mw=document.getElementById('mwOverlay');
+    if(_mw && _mw.classList.contains('on')){
+      var _d=window._mwData;
+      if(_d && _d.daily){
+        var _slot=_d.daily[ds]; 
+        if(Array.isArray(_slot)){
+          for(var _i=_slot.length-1;_i>=0;_i--){ if(_slot[_i] && _slot[_i].k==='steps') _slot.splice(_i,1); }
+          if(v>0) _slot.push({k:'steps', code:cl.code, steps:v, date_str:ds});
+        }
+      }
+      if(typeof _mwRender==='function') _mwRender();
+    }
+  }catch(e){}
   if(ok) showToast(v>0 ? (v.toLocaleString()+' steps') : 'Cleared');
   else _sbQueuedToast();
 }
