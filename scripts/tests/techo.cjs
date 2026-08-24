@@ -22,13 +22,15 @@ eval([ one('var _JIM_DAY_BACK_RE='), one('var _JIM_DAY_NAGO_RE='), one('var _JIM
   multi('var _JIM_FOODREMARK_RE=new RegExp('), multi('var _JIM_MEALREL_RE=new RegExp('),
   grab(l=>l.startsWith('function _titleCap(')), grab(l=>l.startsWith('function _jimDropAsides(')),
   grab(l=>l.startsWith('function _jimMealRelTitle(')),
+  multi('var _JIM_SLOT_WORDS_RE=new RegExp('), multi('var _JIM_NUM_CLAUSES='),
+  grab(l=>l.startsWith('function _jimWithoutNumbers(')),
   grab(l=>l.startsWith('function _jimLooksLikeMeal(')),
   grab(l=>l.startsWith('function _jimFoodParts(')), grab(l=>l.startsWith('function _jimEchoRead(')),
   'function _jimLooksLikeWorkout(t){ return _JIM_WO_RE.test(String(t||"")); }',
   'function _jimStatedMins(){ return null; }',
   'function _jimClock(m){ var h=Math.floor(m/60),x=m%60,ap=h<12?"AM":"PM",d=h%12||12; return d+":"+String(x).padStart(2,"0")+" "+ap; }'
 ].join('\n'));
-require('./_guard.cjs')(['_JIM_ANCHOR_SLOTS','_JIM_CARDIO_RE','_JIM_DAY_BACK_RE','_JIM_DAY_MAX','_JIM_DAY_NAGO_RE','_JIM_DOW','_JIM_ECHO_ACTIVITY_RE','_JIM_FOODNOTE_RE','_JIM_FOODREMARK_RE','_JIM_MEALREL_RE','_JIM_MERIDIEM_RE','_JIM_MONTHS','_JIM_SELFTALK_RE','_JIM_BODY_PART','_JIM_SESSION_DAY','_JIM_WEEKS_AGO_RE','_JIM_WORDNUM','_JIM_WO_RE','_JT_PAST_MEAL_RE','_JV_SOLO_EVENT_RE','_apCap','_jimAnchorDay','_jimAnchorSlot','_jimDateSaid','_jimDropAsides','_jimEchoDate','_jimEchoRead','_jimEchoWords','_jimFoodParts','_jimHarvestSteps','_jimHarvestWeight','_jimLooksLikeMeal','_jimMealRelTitle','_titleCap'], function(n){ return eval(n); });
+require('./_guard.cjs')(['_JIM_ANCHOR_SLOTS','_JIM_CARDIO_RE','_JIM_DAY_BACK_RE','_JIM_DAY_MAX','_JIM_DAY_NAGO_RE','_JIM_DOW','_JIM_ECHO_ACTIVITY_RE','_JIM_FOODNOTE_RE','_JIM_FOODREMARK_RE','_JIM_MEALREL_RE','_JIM_MERIDIEM_RE','_JIM_MONTHS','_JIM_SELFTALK_RE','_JIM_BODY_PART','_JIM_SESSION_DAY','_JIM_WEEKS_AGO_RE','_JIM_WORDNUM','_JIM_WO_RE','_JT_PAST_MEAL_RE','_JV_SOLO_EVENT_RE','_apCap','_jimAnchorDay','_jimAnchorSlot','_jimDateSaid','_jimDropAsides','_jimEchoDate','_jimEchoRead','_jimEchoWords','_jimFoodParts','_jimWithoutNumbers','_JIM_SLOT_WORDS_RE','_JIM_NUM_CLAUSES','_jimHarvestSteps','_jimHarvestWeight','_jimLooksLikeMeal','_jimMealRelTitle','_titleCap'], function(n){ return eval(n); });
 const show=(t)=>_jimEchoRead(t).map(l=>l.line);
 const C=[
   // ---- HIS FINGER, 24 Aug: typed into the Day field, plain, no verb ----
@@ -89,8 +91,22 @@ const C=[
   ['yesterday I had oats, this morning I had eggs',
                                               ['Logging: Sun, Aug 23 \u2014 oats',
                                                'Logging: breakfast \u2014 eggs']],
+  // UPDATED OPENLY, 24 Aug: the meal used to VANISH here. A weigh-in or a step
+  // count anywhere in the sentence vetoed the food outright, so a whole day
+  // dictated in one breath previewed only its numbers. The numbers are
+  // subtracted now and the food is judged on what is left.
+  //   was ['Logging weight: 195', 'Logging steps: 8,000'] — no lunch at all
   ['chicken and rice for lunch, 8000 steps, weighed 195',
-                                              ['Logging weight: 195', 'Logging steps: 8,000']],
+                                              ['Logging: lunch \u2014 chicken and rice',
+                                               'Logging weight: 195', 'Logging steps: 8,000']],
+  // AND THE PROTECTION THE OLD VETO GAVE, kept and pinned. A number must never
+  // become a meal — not even when a slot word sits beside it.
+  ['weighed 185',                             ['Logging weight: 185']],
+  ['scale said 197 this morning',             ['Logging weight: 197']],
+  ['9000 steps',                              ['Logging steps: 9,000']],
+  ['I walked 9,000 steps',                    ['Logging steps: 9,000']],
+  ['9000 steps, weighed 185',                 ['Logging weight: 185','Logging steps: 9,000']],
+  ['I had eggs and weighed 185',              ['Logging: eggs','Logging weight: 185']],
   ['js',                                      []],
   // KNOWN AND NAMED: word-shaped gibberish echoes. Telling it from a
   // first-time food name needs a food dictionary this app does not have
