@@ -19932,6 +19932,15 @@ async function loadClientAssignedProgram(){
     renderTodayWorkoutCard();
     renderClientAssignedProgramSection();
     refreshProgramToggleUI();
+    // THE RACE, CLOSED. The Program tab decides whether to draw the starter week
+    // by asking whether clientAssignedProgram exists. If she opens that tab
+    // before this read lands, the answer is "no programme" and she is shown a
+    // starter that is not hers — briefly, which is worse than never, because it
+    // is the state nobody tests. Repaint it once the real answer is in.
+    try{
+      var _pgTab=document.getElementById('tProgram');
+      if(_pgTab && _pgTab.classList.contains('active') && typeof renderProgramTab==='function') renderProgramTab();
+    }catch(e){}
   }catch(e){
     console.error('loadClientAssignedProgram', e);
   }
@@ -41115,6 +41124,28 @@ function _tpWeekKeyFor(d){
 // find and rewire each call site individually.
 function _tlPlanForDate(d){
   try{
+    // ONE PROGRAMME, HERS, ON EVERY SCREEN (Yusuf, ruling). A client on a real
+    // assigned programme must not also be shown the training_plans week. That
+    // week is a STARTER composed from her sex and a day count, and on the Day
+    // feed it titled each of her days with a session she was never given —
+    // "Lower · Push · Pull" running down the page while her actual session sat
+    // in the card above it. Her programme answers for her days now; the starter
+    // is still what a client with no programme gets, untouched.
+    var _real = (typeof clientAssignedProgram!=='undefined' && clientAssignedProgram
+                 && clientAssignedProgram.workouts && clientAssignedProgram.workouts.length)
+                ? clientAssignedProgram : null;
+    if(_real && typeof _progDayFor==='function' && d && typeof d.getDay==='function'){
+      var _w=_progDayFor(d.getDay(), d);
+      // A day her programme does not cover is a rest day, not a fabricated one.
+      if(!_w) return {type:'Rest', ex:[], rest:true};
+      var _pe=[]; try{ var _raw=(typeof _w.exercises==='string')?JSON.parse(_w.exercises):_w.exercises; if(Array.isArray(_raw)) _pe=_raw; }catch(e){}
+      // The day feed reads {n,s,r}; a programme row carries {name,sets,reps}.
+      // Adapted here rather than teaching the renderer a second shape.
+      var _ex=_pe.map(function(e){
+        return { n:(e&&e.name)||'', s:(e&&e.sets!=null)?e.sets:'', r:(e&&e.reps!=null)?e.reps:((e&&e.detail)||''), rpe:(e&&e.rpe) };
+      }).filter(function(e){ return !!e.n; });
+      return {type:(_w.title||'Workout'), ex:_ex, rest:false};
+    }
     if(!_tpPlan) return null;
     var key=_tlPlanKeyFor(d);
     var wk=_tpWeekKeyFor(d);
@@ -55801,8 +55832,21 @@ function _gpDaysInner(){
   // program. Until the read settles we show nothing rather than a week that isn't
   // theirs — and the train_days_manual gate stays off that path, since that gate is
   // what blanked the tab for 63 people in the first place.
-  var _pw=_saved ? _pgWeekFromPlan(_saved)
-                 : (_pgPlanKnown() ? _clientWeek() : null);
+  // ONE PROGRAMME, HERS. A client on a real assigned programme already has a
+  // week and it is the board drawn above this. What follows is a STARTER
+  // composed from her sex and a day count — nobody's actual training. Drawn
+  // underneath her real programme it read as a SECOND week she had been given,
+  // tappable, with "Swaps you make here become your program" written under it,
+  // so she could have edited training she was never prescribed into being her
+  // programme. This code already meant to exclude her — the chips below carry
+  // the comment "only ... when we KNOW the client has no program" — but that
+  // test only ever asked whether a training_plans row existed and never asked
+  // about the programme she is actually on.
+  var _hasReal = !!(typeof clientAssignedProgram!=='undefined' && clientAssignedProgram
+                    && clientAssignedProgram.workouts && clientAssignedProgram.workouts.length);
+  var _pw=_hasReal ? null
+                   : (_saved ? _pgWeekFromPlan(_saved)
+                             : (_pgPlanKnown() ? _clientWeek() : null));
   var _plate='';
   if(_pw){
     var _trn=_pw.filter(function(t){ return t!=='Rest'; });
@@ -55826,7 +55870,7 @@ function _gpDaysInner(){
   // they are absent entirely — a live control that rewrites a program cannot sit
   // above a card apologising that the program could not be loaded.
   // With a program, how many days you train is what Yusuf built, not a setting.
-  var _showChips = _pgPlanKnown() && !_saved;
+  var _showChips = _pgPlanKnown() && !_saved && !_hasReal;
   var inner=_plate
     + (_showChips ? ('<div class="pgLbl">Days a week</div><div class="gpChips">'+chips+'</div>') : '');
 
@@ -55841,7 +55885,9 @@ function _gpDaysInner(){
   try{
     _pgPlan = _saved ? _saved : _tpPlanForClient();
   }catch(e){ _pgPlan=null; }
-  if(!week && window._tpLoadFailed===true){
+  // Not for a client whose real programme is on screen above: her programme
+  // loaded fine, and "couldn't load your program" under it would be false.
+  if(!week && !_hasReal && window._tpLoadFailed===true){
     // The read didn't complete. That is not "no program" and must never look like it.
     inner+='<div class="pgLoadErr">'
       +'<div class="pgLoadErrT">Couldn\u2019t load your program</div>'
