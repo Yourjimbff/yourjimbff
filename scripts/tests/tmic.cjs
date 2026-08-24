@@ -40,9 +40,12 @@ built.forEach(v=>{
   // A fixed window, not a brace match: several of these stops are one-liners,
   // and the shortest brace match stops inside their own `if(){}` — which is the
   // over-delete landmine this repo already knows about, wearing a test's face.
+  // Owned when that stop function actually handles this recogniser. Asking for
+  // `v=null` was too specific — the chat mic is built once and reused, so its
+  // stop never nulls it, and a correct stop was read as no stop at all.
   const ownedBy=owners.filter(fn=>{
     const at=src.search(new RegExp('function '+fn+'\\('));
-    return at>=0 && src.slice(at, at+700).includes(v+'=null');
+    return at>=0 && src.slice(at, at+700).includes(v);
   });
   t(aborted||ownedBy.length>0, (aborted?'aborted   ':'own stop  ')+v, ownedBy[0]||'');
 });
@@ -50,13 +53,38 @@ built.forEach(v=>{
 // ---- a self-restarting mic may NEVER be merely aborted -------------------
 // `onend` calling start() again is what makes abort() a lie. Any recogniser
 // written that way has to be stopped by its owner, never by the abort sweep.
+// A mic whose own end handler starts it again cannot be stopped by aborting it:
+// the abort fires that very handler and it comes straight back, looking fixed.
+// THE FIRST VERSION OF THIS CHECK MISSED THE CHAT MIC and it shipped broken —
+// the pattern it matched assumed one flag, no comments and no line breaks, and
+// the chat handler had all three. So the handler is now read as a WINDOW of
+// text and simply asked whether it starts its own recogniser. Nothing about its
+// shape is assumed, because assuming its shape is what failed.
 console.log('\n  a mic that restarts itself is never merely aborted:');
+// The handler body is walked brace by brace, NOT taken as a fixed window. A
+// window overruns the end of the handler and catches the initial .start() that
+// follows it, which reported two mics as self-restarting when neither is — the
+// same over-reach this repo already knows about from deleting a one-liner by
+// searching for the next closing brace.
+function handlerBody(v){
+  const at=src.search(new RegExp(v.replace(/[$]/g,'\\$')+'\\s*\\.\\s*onend\\s*='));
+  if(at<0) return '';
+  const open=src.indexOf('{', src.indexOf('function', at));
+  if(open<0) return '';
+  let depth=0;
+  for(let i=open;i<src.length;i++){
+    if(src[i]==='{') depth++;
+    else if(src[i]==='}'){ depth--; if(depth===0) return src.slice(open, i+1); }
+  }
+  return '';
+}
+let restarters=0;
 built.forEach(v=>{
-  const restarts=new RegExp('if\\('+'[_A-Za-z0-9]*'+'\\)\\{\\s*try\\{\\s*'+v+'\\.start\\(\\)').test(src)
-    || new RegExp(v+'\\.onend=function\\(\\)\\{\\s*if\\([_A-Za-z0-9]+\\)\\{\\s*try\\{\\s*'+v+'\\.start').test(src);
-  if(!restarts) return;
+  if(!handlerBody(v).includes(v+'.start(')) return;
+  restarters++;
   t(!aborts.includes(v), 'restarts itself, so owner-stopped: '+v);
 });
+t(restarters>=6, 'every self-restarting mic is found', restarters+' of them');
 
 // ---- every action that tells the app to act ends listening ---------------
 // Submit, save, Organize, and the one funnel every sheet dismissal goes through.
