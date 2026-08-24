@@ -65946,8 +65946,16 @@ function _jimIsAdminOnly(t){
 // ONE FRAGMENT, consumed by the three regexes below it, so they cannot drift
 // apart again. A plain string rather than a RegExp because it is embedded in
 // three different patterns, each with its own surrounding rules.
-var _JIM_SESSION_DAY = "(?:(?:leg|legs|push|pull|chest|back|arm|arms|shoulder|shoulders"
-  + "|core|abs?|glutes?|upper|lower|full)\\s+(?:body\\s+)?day"
+// THE PARTS HE TRAINS, WRITTEN DOWN ONCE. This is the FOURTH list of session
+// words found in this file today, and the one that names a session's title had
+// its own private copy — which is why "glute day" and "tricep day" came back
+// titled "Workout" while "chest day" came back "Chest Day". Same disease, third
+// sighting: two places answering one question, drifting until the wrong one is
+// the one a client touches.
+var _JIM_BODY_PART = "(?:push|pull|legs?|arms?|back|chest|shoulders?|core|abs|glutes?"
+  + "|traps?|triceps?|tris|biceps?|bis|hamstrings?|hams|quads?|calves|cardio|conditioning)";
+var _JIM_SESSION_DAY = "(?:(?:" + _JIM_BODY_PART + "|leg|arm|shoulder|glute|upper|lower|full)"
+  + "\\s+(?:body\\s+)?day"
   + "|upper\\s+body|lower\\s+body|full\\s+body)";
 // Does this sentence describe a training session? Deliberately broad — it only
 // decides whether to ASK the dedicated extractor, which answers with an empty
@@ -66052,8 +66060,27 @@ var _JIM_CLAIM_FOOD2_RE=new RegExp("\\b"+_JIM_CLAIM_VERB
   + "\\b[^.!\\n]{0,60}?\\b\\d+\\s*(?:cal\\b|calories\\b|g\\s*(?:of\\s*)?(?:protein|carbs|carbohydrates|fat)\\b)", "i");
 // HIS SPLIT NAME IS THE TITLE (Yusuf, R2). "push and pull" is a Push Pull, not a
 // "Workout" — the generic default is the app forgetting what he called it.
-var _JIM_SPLIT_RE=new RegExp('\\b((?:push|pull|(?:upper|lower|full)(?:\\s*body)?|legs?|arms?|back|chest|shoulders?|core|abs|cardio|conditioning)'
-  +'(?:\\s*(?:and|&|\\/|\\+)\\s*(?:push|pull|legs?|arms?|core|abs))?(?:\\s+day)?)\\b','i');
+// CONSUMES THE ONE LIST, so a part added for the session readers is a part this
+// can title from. It keeps its own SHAPE — the day word is optional here, since
+// "push and pull" is a title even without it — but not its own vocabulary.
+var _JIM_SPLIT_RE=new RegExp('\\b((?:' + _JIM_BODY_PART + '|(?:upper|lower|full)(?:\\s*body)?)'
+  +'(?:\\s*(?:and|&|\\/|\\+)\\s*' + _JIM_BODY_PART + ')?(?:\\s+day)?)\\b','i');
+// IS THIS SENTENCE ONLY THE NAME OF A SPLIT? Used to decide whether an answer
+// to "which workout was it" should reach the row he just logged. It has to be
+// ONLY that: "today's Push" yes, "push day, bench 185 for 8" no — the second is
+// a log in its own right and must go to the engine, not to a rename.
+function _jimOnlyNamesSplit(t){
+  var s=String(t||'').trim(); if(!s) return '';
+  var title=''; try{ title=_jimTitleFromWords(s); }catch(e){}
+  if(!title) return '';
+  var rest='';
+  try{
+    rest=s.replace(_JIM_SPLIT_RE,' ')
+      .replace(/\b(?:it|that|was|is|were|today|todays|this|the|a|an|my|mine|one|yes|yeah|yep|ok|okay|i|did|do|done|just|of|for|s)\b/ig,' ')
+      .replace(/[^A-Za-z]+/g,' ').trim();
+  }catch(e){ return ''; }
+  return rest ? '' : title;
+}
 function _jimTitleFromWords(text){
   var m=_JIM_SPLIT_RE.exec(String(text||''));
   if(!m) return '';
@@ -66943,7 +66970,17 @@ async function jimTurn(text, photos, opts){
       try{ console.warn('jimTurn: refusing a model-shaped note —', String(extractedLog.log.notes).slice(0,90)); }catch(e){}
       extractedLog.log.notes = null;
     }
-    var newId = await logWorkoutFromOffer(_pinTitle(_pinVoice(_pinClock(_pinDay(extractedLog.log)), 'client_text')), _forCode);
+    var _woOffer = _pinTitle(_pinVoice(_pinClock(_pinDay(extractedLog.log)), 'client_text'));
+    var newId = await logWorkoutFromOffer(_woOffer, _forCode);
+    // REMEMBERED SO HIS NEXT SENTENCE CAN FINISH NAMING IT. A session he
+    // reports without naming lands as "Workout"; when he then answers which one
+    // it was, that answer has to reach the row rather than evaporate.
+    try{
+      if(newId && newId!=='dup'){
+        window._jimLastWo={id:newId, title:String(_woOffer.title||'Workout'),
+                           code:(_forCode||(window.cl&&cl.code)||''), at:Date.now()};
+      }
+    }catch(e){}
     if(newId==='dup'){
       // the same workout landed moments ago — stay quiet rather than log it twice,
       // and count it as verified: the earlier attempt already wrote the row.
@@ -67011,9 +67048,83 @@ async function jimTurn(text, photos, opts){
   // If a marker was present (or salvaged) and still came up short, the chat message
   // must say so plainly — never let Jim's own prose, which already assumed success,
   // reach the client uncorrected.
+  // ===== HIS ANSWER COMPLETES THE RECORD (Yusuf, ruling, upheld 24 Aug) =====
+  // "did my workout at 6 this morning" logs immediately and lands as "Workout",
+  // because he named no split and nothing here invents one. The model then asks
+  // WHICH workout, he answers "today's Push" — and that answer used to reach
+  // nothing at all. The row kept the generic name while he had just said the
+  // real one out loud, and on camera that reads as the app not listening.
+  //
+  // HIS RULING ALREADY COVERS THIS: if a clarifying question is genuinely
+  // needed, the ANSWER must complete the write. So it does.
+  //
+  // NARROW ON PURPOSE, because this edits a row that already exists. It fires
+  // only when this turn wrote nothing, the sentence is ONLY a split name and
+  // nothing else, the remembered row is minutes old, and its title is still the
+  // generic one. Any of those missing and it does nothing.
+  try{
+    if(!_woExpected && !_foodExpected){
+      var _lw=null; try{ _lw=window._jimLastWo||null; }catch(e){}
+      var _fresh=!!(_lw && _lw.id && (Date.now()-(_lw.at||0)) < 15*60*1000);
+      var _generic=!!(_lw && /^(?:workout|training|session|exercise)$/i.test(String(_lw.title||'')));
+      var _sameWho=!!(_lw && String(_lw.code||'')===String(_forCode||(window.cl&&cl.code)||''));
+      var _named=''; try{ _named=_jimOnlyNamesSplit(text); }catch(e){}
+      if(_fresh && _generic && _sameWho && _named && _named.toLowerCase()!==String(_lw.title||'').toLowerCase()){
+        var _ret=false;
+        try{ _ret=await applyWorkoutEdit({id:_lw.id, title:_named}); }catch(e){ _ret=false; }
+        // A RENAME CLAIMED IS A RENAME READ BACK, like every other write here.
+        if(_ret){
+          var _back=false;
+          try{
+            var _rr=await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+encodeURIComponent(_lw.id)+'&select=title',{headers:sbHeaders()});
+            if(_rr.ok){ var _rj=await _rr.json(); _back=!!(_rj && _rj.length && String(_rj[0].title||'')===_named); }
+          }catch(e){}
+          if(_back){
+            try{ window._jimLastWo.title=_named; }catch(e){}
+            try{ if(typeof rendTodayWo==='function') rendTodayWo(); }catch(e){}
+            reply = 'Renamed it ' + _named + '.' + (reply ? ('\n\n'+reply) : '');
+          }else{
+            reply += (reply?'\n\n':'') + 'I could not rename it — tell me again and I will fix it.';
+          }
+        }
+      }
+    }
+  }catch(e){ console.error('follow-up rename', e); }
   if(_woVerified < _woExpected && !_jimAlreadySaidFail(reply)){
     reply += (reply?'\n\n':'') + _jimSaveFailLine("That didn't actually save — can you tell me again?");
   }
+  // ===== AND THE MIRROR: A ROW THAT LANDED MUST BE SAID ===================
+  // (Yusuf, live, 24 Aug — CLIENT: "the reply read as if nothing new was logged
+  // while a row was created".) Every net in this engine points one way — it
+  // catches a reply CLAIMING more than the table holds. This is the other
+  // direction, and it is the shape a described session produces: the row lands
+  // from the extractor, the model meanwhile asks which workout it was, and
+  // nothing in the words tells him a record now exists. He is left assuming it
+  // failed and logging it a second time, which is how a day ends up doubled.
+  //
+  // It states the fact and nothing more — what landed, by name. It never
+  // reports a row that did not verify, because _woVerified is the read-back
+  // count, not the parse count.
+  try{
+    if(_woVerified > 0){
+      var _saidIt=false;
+      try{
+        _saidIt = _JIM_CLAIM_WO_RE.test(reply) || _JIM_CLAIM_EXISTS_RE.test(reply)
+               || /\b(?:logged|saved|added|recorded|down)\b/i.test(reply);
+      }catch(e){ _saidIt=true; }
+      if(!_saidIt && !_jimAlreadySaidFail(reply)){
+        var _woNames=[];
+        try{
+          (workoutLogs.items||[]).forEach(function(it){ var n=String((it&&it.title)||'').trim(); if(n) _woNames.push(n); });
+        }catch(e){}
+        var _woSaid = _woNames.length
+          ? ('Logged \u2014 ' + _woNames.slice(0,3).join(', ') + '.')
+          : ('Logged your session.');
+        reply = _woSaid + (reply ? ('\n\n'+reply) : '');
+        try{ console.info('jimTurn: a row landed and the reply had not said so'); }catch(e){}
+      }
+    }
+  }catch(e){ console.error('landed but unsaid', e); }
 
   // Handle WORKOUT_NOTE: append commentary to existing workout (no new log)
   if(extractedNote.note && extractedNote.note.id){

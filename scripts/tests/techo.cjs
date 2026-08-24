@@ -11,7 +11,7 @@ global._jimQuickFoodMatch=function(){ return null; };
 global._jimIsAdminOnly=function(t){ var w=String(t||'').toLowerCase().split(/[^a-z]+/).filter(Boolean); if(!w.length) return false; return w.every(function(x){ return /^(yes|ok|okay|sure|log|logged|it|that|please|thanks|do|make|set|change|the|a|an|my|me|i)$/.test(x); }); };          // no saved foods: no numbers
 eval([ one('var _JIM_DAY_BACK_RE='), one('var _JIM_DAY_NAGO_RE='), one('var _JIM_DOW='),
   one('var _JIM_WORDNUM='), one('var _JIM_DAY_MAX='), one('var _JIM_WEEKS_AGO_RE='),
-  one('var _JIM_MONTHS='), multi('var _JIM_SESSION_DAY ='), multi('var _JIM_WO_RE=new RegExp('), multi('var _JIM_CARDIO_RE=new RegExp('), multi('var _JIM_ECHO_ACTIVITY_RE=new RegExp('), one('var _JIM_MERIDIEM_RE='),
+  one('var _JIM_MONTHS='), multi('var _JIM_BODY_PART ='), multi('var _JIM_SESSION_DAY ='), multi('var _JIM_WO_RE=new RegExp('), multi('var _JIM_CARDIO_RE=new RegExp('), multi('var _JIM_ECHO_ACTIVITY_RE=new RegExp('), one('var _JIM_MERIDIEM_RE='),
   multi('var _JIM_ANCHOR_SLOTS='), multi('var _JT_PAST_MEAL_RE=new RegExp('),
   multi('var _JV_SOLO_EVENT_RE=new RegExp('),
   grab(l=>l.startsWith('function _jimDateSaid(')), grab(l=>l.startsWith('function _jimAnchorDay(')),
@@ -28,7 +28,7 @@ eval([ one('var _JIM_DAY_BACK_RE='), one('var _JIM_DAY_NAGO_RE='), one('var _JIM
   'function _jimStatedMins(){ return null; }',
   'function _jimClock(m){ var h=Math.floor(m/60),x=m%60,ap=h<12?"AM":"PM",d=h%12||12; return d+":"+String(x).padStart(2,"0")+" "+ap; }'
 ].join('\n'));
-require('./_guard.cjs')(['_JIM_ANCHOR_SLOTS','_JIM_CARDIO_RE','_JIM_DAY_BACK_RE','_JIM_DAY_MAX','_JIM_DAY_NAGO_RE','_JIM_DOW','_JIM_ECHO_ACTIVITY_RE','_JIM_FOODNOTE_RE','_JIM_FOODREMARK_RE','_JIM_MEALREL_RE','_JIM_MERIDIEM_RE','_JIM_MONTHS','_JIM_SELFTALK_RE','_JIM_SESSION_DAY','_JIM_WEEKS_AGO_RE','_JIM_WORDNUM','_JIM_WO_RE','_JT_PAST_MEAL_RE','_JV_SOLO_EVENT_RE','_apCap','_jimAnchorDay','_jimAnchorSlot','_jimDateSaid','_jimDropAsides','_jimEchoDate','_jimEchoRead','_jimEchoWords','_jimFoodParts','_jimHarvestSteps','_jimHarvestWeight','_jimLooksLikeMeal','_jimMealRelTitle','_titleCap'], function(n){ return eval(n); });
+require('./_guard.cjs')(['_JIM_ANCHOR_SLOTS','_JIM_CARDIO_RE','_JIM_DAY_BACK_RE','_JIM_DAY_MAX','_JIM_DAY_NAGO_RE','_JIM_DOW','_JIM_ECHO_ACTIVITY_RE','_JIM_FOODNOTE_RE','_JIM_FOODREMARK_RE','_JIM_MEALREL_RE','_JIM_MERIDIEM_RE','_JIM_MONTHS','_JIM_SELFTALK_RE','_JIM_BODY_PART','_JIM_SESSION_DAY','_JIM_WEEKS_AGO_RE','_JIM_WORDNUM','_JIM_WO_RE','_JT_PAST_MEAL_RE','_JV_SOLO_EVENT_RE','_apCap','_jimAnchorDay','_jimAnchorSlot','_jimDateSaid','_jimDropAsides','_jimEchoDate','_jimEchoRead','_jimEchoWords','_jimFoodParts','_jimHarvestSteps','_jimHarvestWeight','_jimLooksLikeMeal','_jimMealRelTitle','_titleCap'], function(n){ return eval(n); });
 const show=(t)=>_jimEchoRead(t).map(l=>l.line);
 const C=[
   // ---- HIS FINGER, 24 Aug: typed into the Day field, plain, no verb ----
