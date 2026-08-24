@@ -47803,7 +47803,7 @@ function _micStopAll(flush){
   // drops the handler, resets the button -- so those are called rather than
   // restated here. Consuming them is also what puts the button on screen back
   // to not-listening for free, which a bare abort would never have done.
-  ['slogStopVoice','jConvoStopVoice','jStopVoice','cevStopMic','wkPanelStopVoice'].forEach(function(fn){
+  ['slogStopVoice','jConvoStopVoice','jStopVoice','cevStopMic','wkPanelStopVoice','chatStopMic'].forEach(function(fn){
     try{ if(typeof window[fn]==='function') window[fn](); }catch(e){}
   });
   // EVERY MIC IN THE FILE (Yusuf, ruling, 24 Aug: the rule is app-wide, not
@@ -47813,7 +47813,9 @@ function _micStopAll(flush){
   // the file is represented here -- either by its variable below, or by its
   // own stop above for the five that restart themselves; if a new mic is
   // added, it belongs in one of those two lists and nowhere else.
-  ['woRecognition','foodRecognition','energyRecognition','entryRecognition','chatRecognition',
+  // chatRecognition is NOT here any more: it restarts itself, so aborting it
+  // started it back up. It is stopped by chatStopMic above, with the rest.
+  ['woRecognition','foodRecognition','energyRecognition','entryRecognition',
    'jarvisRec','_jvBarRec','_jvPaneRec','_admRec','_jtRec','_tpSessRec'].forEach(function(k){
     try{
       var r=window[k];
@@ -65514,6 +65516,52 @@ function _jimLooksLikeWorkout(t){
   if(_JIM_WO_RE.test(s)) return true;
   try{ return _JIM_CARDIO_RE.test(s); }catch(e){ return false; }
 }
+// ===== A SESSION HE REPORTS WITH NO EXERCISES IS STILL A SESSION =========
+// (Yusuf, live, 24 Aug -- THE CARDINAL ONE, caught on the deployed page by a
+// read-back.) "did my workout at 6 this morning" wrote NOTHING. The extractor
+// that exists precisely for a described session answers with an empty list when
+// the sentence names no movements, and the write was gated on that list being
+// non-empty -- so the plainest possible report of a session had no path to a
+// row at all. He was then asked WHICH workout, answered "today's Push", and
+// told "Push at 6 AM -- it is on your day" over an empty day. A success reply
+// on top of a write that never happened, reachable from a client's simplest
+// sentence.
+//
+// A REPORT OF A COMPLETED SESSION IS A LOG, exercises or not. What lands is
+// exactly what he said: a session, at the time he gave, on the day he gave.
+// NOTHING IS INVENTED -- no exercises, no sets, no duration, no intensity.
+//
+// NARROW ON PURPOSE, because a phantom session is a real record on a real day.
+// It needs a COMPLETION verb sitting with a session word, and it stands down
+// for a question or a stated intention. "had" is deliberately NOT a completion
+// verb here: "I had lunch after the gym" is a meal, and it would have fired.
+// Built with new RegExp and double quotes, house rule.
+var _JIM_DID_SESSION_RE=new RegExp(
+    "\\b(?:did|done|finished|completed|smashed|crushed|knocked\\s+out|got\\s+through|hit)\\b"
+  + "[\\s\\S]{0,24}?"
+  + "\\b(?:workout|work\\s?out|training|session|gym|leg\\s+day|push\\s+day|pull\\s+day|"
+  + "upper\\s+body|lower\\s+body|full\\s+body|cardio|lift|run|walk|ride|swim)\\b"
+  + "|\\b(?:worked\\s+out|trained|lifted)\\b", "i");
+var _JIM_INTENDS_RE=new RegExp(
+    "\\b(?:will|gonna|going\\s+to|about\\s+to|plan\\s+to|planning|need\\s+to|"
+  + "want\\s+to|have\\s+to|should\\s+i|shall\\s+i|thinking\\s+of)\\b", "i");
+function _jimSaysDidSession(t){
+  var s=String(t||''); if(!s.trim()) return false;
+  if(/\?/.test(s)) return false;
+  if(/^\s*(?:what|why|when|where|who|how|should|can|could|do|does|is|are|was|were|will|would|any)\b/i.test(s.trim())) return false;
+  try{ if(_JIM_INTENDS_RE.test(s)) return false; }catch(e){}
+  try{ return _JIM_DID_SESSION_RE.test(s); }catch(e){ return false; }
+}
+// A CLAIM DOES NOT NEED THE WORD "LOGGED". The reply that slipped through was
+// "Push at 6 AM -- it is on your day": no logged, no added, no saved, and it
+// asserts a record exists just as strongly as any of them. Only ever consulted
+// when his sentence was about a session in the first place, so a food turn that
+// says "that is in your log" can never be corrected by the WORKOUT net.
+// new RegExp and double quotes deliberately: a lone apostrophe inside a regex
+// LITERAL is a standing landmine in this file for check.sh's string stripper.
+var _JIM_WO_ONDAY_RE=new RegExp(
+  "\\b(?:it|that|they)(?:\\u2019s|\\u2019re|'s|'re|\\s+is|\\s+are)?\\s+(?:all\\s+)?"
+  + "(?:on|in)\\s+(?:your|the)\\s+(?:day|week|log|logs|record|history)\\b", "i");
 // HIS SPLIT NAME IS THE TITLE (Yusuf, R2). "push and pull" is a Push Pull, not a
 // "Workout" — the generic default is the app forgetting what he called it.
 var _JIM_SPLIT_RE=new RegExp('\\b((?:push|pull|(?:upper|lower|full)(?:\\s*body)?|legs?|arms?|back|chest|shoulders?|core|abs|cardio|conditioning)'
@@ -65841,9 +65889,18 @@ async function jimTurn(text, photos, opts){
         if(ms) o.sets=parseInt(ms[1],10);
         return o;
       }).filter(function(o){ return o.name; }) : [];
-      if(_swEx.length){
-        var _swOffer={title:(String((_sw&&_sw.title)||'').trim()||_jimTitleFromWords(text)||'Workout'), exercises:_swEx,
-          description:_swEx.map(function(o){ return o.name+(o.detail?(' '+o.detail):''); }).join(', '),
+      // EXERCISES, OR A PLAINLY REPORTED SESSION. The second half is the fix for
+      // the cardinal failure: a sentence that reports a completed session but
+      // names no movements used to fall straight through this gate and write
+      // nothing at all. It now lands as what it is -- a session, with his time
+      // and his day on it and no invented content.
+      var _swBare=(!_swEx.length && _jimSaysDidSession(text));
+      var _swTitle=(String((_sw&&_sw.title)||'').trim()||_jimTitleFromWords(text)||'Workout');
+      if(_swEx.length || _swBare){
+        var _swOffer={title:_swTitle, exercises:_swEx,
+          description:(_swEx.length
+            ? _swEx.map(function(o){ return o.name+(o.detail?(' '+o.detail):''); }).join(', ')
+            : _swTitle),
           daysAgo:_jimPastDaysAgo(text)};
         if(_sw && _sw.notes) _swOffer.notes=String(_sw.notes);
         try{ var _swP=_jimParse(String(text||'')); if(_swP && _swP.mins!=null) _swOffer.time=_jimClock(_swP.mins); }catch(e){}
@@ -66411,6 +66468,13 @@ async function jimTurn(text, photos, opts){
   // Steps get their own marker and their own confirmation path — a sentence like
   // "logged your 8,000 steps" must not trip the WORKOUT safety net.
   var _woConfirmMatch = /\b(logged|added|saved)\b[^.!\n]{0,50}\b(walk|workout|session|run|lift|training|cardio)\b/i.exec(reply);
+  // AND THE CLAIM THAT NAMES NO VERB. "Push at 6 AM — it is on your day" asserts
+  // a record exists without ever saying logged, added or saved, and it went out
+  // over an empty day. Only asked when his sentence was about a session, so a
+  // food turn can never be corrected by the WORKOUT net.
+  if(!_woConfirmMatch){
+    try{ if(_jimLooksLikeWorkout(text)) _woConfirmMatch=_JIM_WO_ONDAY_RE.exec(reply); }catch(e){}
+  }
   if(!_woExpected && !_rawReplyHadWorkoutTag && _woConfirmMatch
      && !/\bsteps?\b/i.test(_woConfirmMatch[0])){
     console.error('WORKOUT confirmation with no marker at all — refusing to let it stand', reply);
@@ -67279,17 +67343,28 @@ function initChatMic(){
   };
 }
 
+// THE STOP, ON ITS OWN (Yusuf, live, 24 Aug -- caught on the deployed page).
+// This lived inline inside toggleChatMic, so the one thing that kills every mic
+// in the app had no way to ask THIS one to stop properly. All it could do was
+// abort the recogniser -- and this recogniser RESTARTS ITSELF on end, so the
+// abort fired its own end handler, saw the listening flag still up and the
+// stop-requested flag still down, and started it straight back. The mic stayed
+// live through send and the button never left its listening state, with nothing
+// on screen saying so. Exactly the class the comment inside _micStopAll warns
+// about, on the one mic that was not covered by it.
+// Same shape as every other surface's stop, so _micStopAll consumes this rather
+// than reaching in -- which is also what puts the button back for free.
+function chatStopMic(){
+  chatMicStopRequested = true;   // user-initiated stop — don't auto-restart
+  try{ if(chatRecognition) chatRecognition.stop(); }catch(e){}
+  chatListening = false;
+  var b = document.getElementById('chatMicBtn');
+  if(b){ b.classList.remove('listening'); b.innerHTML=_MICSVG; }
+}
 function toggleChatMic(){
   initChatMic();
   if(!chatRecognition){ showToast('Voice not supported on this browser'); return; }
-  if(chatListening){
-    chatMicStopRequested = true;   // user-initiated stop — don't auto-restart
-    try{ chatRecognition.stop(); }catch(e){}
-    chatListening = false;
-    var b = document.getElementById('chatMicBtn');
-    if(b){ b.classList.remove('listening'); b.innerHTML=_MICSVG; }
-    return;
-  }
+  if(chatListening){ chatStopMic(); return; }
   chatMicStopRequested = false;
   try{
     chatRecognition.start();
