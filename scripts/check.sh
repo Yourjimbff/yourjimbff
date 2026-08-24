@@ -152,5 +152,73 @@ if (used.size) {
   process.exit(1);
 }
 
+// ===== A PROMPT LINE THAT NEVER ARRIVES (23 Aug -> 24 Aug, v7.980.324) ======
+// The single most expensive bug this file has had, and node --check cannot see
+// it. One line inside buildCoachVoice's giant return was written ending in a
+// quote instead of a quote-plus:
+//
+//     'CARDIO BESIDE A LIFT IS ITS OWN ENTRY ... meal slots.\n\n'      <- no +
+//     'If the user describes a deliberate walk ...\n'+
+//
+// That ENDS the return statement. Everything below it is still perfectly valid
+// JavaScript — a bare string-concatenation expression statement — so the syntax
+// gate passes, nothing throws, and the app runs. It just silently stops being
+// part of the prompt. Three lines had done it, and between them they amputated
+// 55,000 characters: the entire food logging rule set, the [FOOD_LOG] worked
+// example, the marker-is-required law, the back-dating rule, the photo rules
+// and the boundaries block. The model was never taught the food marker at all.
+//
+// That is what "the prompt rule did not take" had been for a day. Three rules
+// were written, shipped, certified against a corpus, reported as not holding,
+// and rewritten — and none of them was ever sent to the model.
+//
+// THE RULE: inside a run of consecutive string-literal lines, every line has to
+// be joined to the next one — either it ends with + or the next one starts with
+// one. A run of three or more is a prompt block, never an array element list.
+const RUN_MIN = 3;
+// A COMMA ENDING IS AN ELEMENT, NOT A PROMPT LINE. Arrays of strings and
+// object literals ('pull-up':'doing pull-ups',) are the shape this would
+// otherwise fire on all day; they end in a comma and a prompt line never does.
+const strLine = (s) => {
+  const t = s.trim();
+  if (!t.startsWith("'") && !t.startsWith("+'")) return false;
+  if (t.endsWith(',')) return false;
+  return /'\s*[+;]?$/.test(t);
+};
+const breaks = [];
+{
+  const lines = html.split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    if (!strLine(lines[i])) { i++; continue; }
+    let j = i;
+    while (j + 1 < lines.length && (strLine(lines[j + 1]) || lines[j + 1].trim() === '')) {
+      // a blank line inside a run is fine, but it must not end the run on its own
+      let k = j + 1;
+      while (k < lines.length && lines[k].trim() === '') k++;
+      if (k >= lines.length || !strLine(lines[k])) break;
+      j = k;
+    }
+    if (j - i + 1 >= RUN_MIN) {
+      for (let a = i; a < j; a++) {
+        if (!strLine(lines[a])) continue;
+        let b = a + 1;
+        while (b <= j && lines[b].trim() === '') b++;
+        if (b > j) break;
+        const endsJoined = /\+$/.test(lines[a].trim());
+        const nextJoins = lines[b].trim().startsWith('+');
+        if (!endsJoined && !nextJoins) breaks.push({ line: a + 1, text: lines[a].trim().slice(0, 70) });
+      }
+    }
+    i = j + 1;
+  }
+}
+if (breaks.length) {
+  console.error('\n✗ check.sh: a string block stops concatenating mid-way — this passes node --check and silently drops every line below it:');
+  for (const b of breaks) console.error(`    ${file}:${b.line}  ${b.text}…`);
+  console.error('\nEnd the line with a + (or start the next one with one). If the break is deliberate, the two halves belong in separate variables.');
+  process.exit(1);
+}
+
 console.log(`check.sh: ok — ${blocks.length} inline JS block(s) passed, ${skipped} skipped, no orphaned constants.`);
 NODE
