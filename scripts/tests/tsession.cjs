@@ -18,12 +18,13 @@ let bad=0;
 const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  FAIL  ')+label+(extra?('  '+extra):'')); };
 
 eval([
-  multi('var _JIM_SESSION_DAY ='), multi('var _JIM_WO_RE=new RegExp('), multi('var _JIM_CARDIO_RE=new RegExp('),
+  multi('var _JIM_BODY_PART ='), multi('var _JIM_SESSION_DAY ='), multi('var _JIM_WO_RE=new RegExp('), multi('var _JIM_CARDIO_RE=new RegExp('),
   multi('var _JIM_DID_SESSION_RE=new RegExp('), multi('var _JIM_INTENDS_RE=new RegExp('),
   multi('var _JIM_CLAIM_EXISTS_RE=new RegExp('),
   grab(l=>l.startsWith('function _jimLooksLikeWorkout(')),
   grab(l=>l.startsWith('function _jimSaysDidSession(')),
 ].join('\n'));
+require('./_guard.cjs')(['_JIM_CARDIO_RE','_JIM_CLAIM_EXISTS_RE','_JIM_DID_SESSION_RE','_JIM_INTENDS_RE','_JIM_BODY_PART','_JIM_SESSION_DAY','_JIM_WO_RE','_jimLooksLikeWorkout','_jimSaysDidSession'], function(n){ return eval(n); });
 
 console.log('  a session he reports WRITES, even with no exercises named:');
 [ 'did my workout at 6 this morning',        // HIS CARDINAL SENTENCE
@@ -70,6 +71,7 @@ t(/if\(_jimLooksLikeWorkout\(text\)\) _woConfirmMatch=_JIM_CLAIM_EXISTS_RE\.exec
 // Three lists had drifted; all three knew leg/push/pull day and none knew
 // chest, back, arms or shoulders. They share one fragment now.
 eval([multi('var _JIM_CLAIM_VERB ='), multi('var _JIM_CLAIM_WO_RE=new RegExp(')].join('\n'));
+require('./_guard.cjs')(['_JIM_CLAIM_VERB','_JIM_CLAIM_WO_RE'], function(n){ return eval(n); });
 console.log('\n  every split he trains is a session, in all three readers:');
 ['chest day','back day','arm day','arms day','shoulder day','shoulders day',
  'leg day','push day','pull day','core day','abs day','glutes day',

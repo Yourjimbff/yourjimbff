@@ -5,6 +5,7 @@ function multi(sw){ const a=L.findIndex(l=>l.trim().startsWith(sw)); let b=a; wh
 eval([ multi('var _JV_SAID_PERSON_RE=new RegExp('),
        multi('var _JV_INVENTED_PERSON_RE=new RegExp('),
        grab(l=>l.startsWith('function _jimStripInventedPerson(')) ].join('\n'));
+require('./_guard.cjs')(['_JV_INVENTED_PERSON_RE','_JV_SAID_PERSON_RE','_jimStripInventedPerson'], function(n){ return eval(n); });
 
 // HIS SENTENCE, verbatim, typo intact -- and the reply he actually got.
 const HIS = "for dinner at six o'clock I had Silver Diner, Philly cheesesteak omelette with two pancakes";

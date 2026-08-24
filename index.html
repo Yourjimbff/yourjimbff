@@ -31859,6 +31859,25 @@ async function _jvShareLoadDemo(){
 // NEVER FALL BACK TO THE CODE. Real codes are name-derived ("chrism1"), so a
 // missing name must go through _jvShareCode, not through the raw code — the
 // same reason that helper exists at all.
+// THE INITIALS RULE ON ITS OWN — no flag, no lookup, just the shape.
+// Split out because jvSetShareMode has to redact the roster BEFORE it arms
+// window._jvShareMode: it is still rewriting names at that point. _jvShareName
+// deliberately short-circuits to the live name whenever the flag is off, so
+// asking IT to redact from inside that loop handed back the REAL NAME and the
+// rewrite silently did nothing at all — the field that is supposed to be the
+// safety net under sharing kept every client's full name instead. Measured
+// through the app's own switch, not reasoned about.
+// Empty in, empty out: a caller with no name to redact must decide for itself
+// what to show, because the raw code is name-derived and is never it.
+// One formatting rule, two ways in — this one when the caller already holds the
+// real name, _jvShareName when it has to go and find it.
+function _jvShareInitials(realName){
+  var raw=String(realName==null?'':realName).trim();
+  if(!raw) return '';
+  var parts=raw.split(/\s+/).filter(Boolean);
+  if(parts.length===1) return parts[0];
+  return parts[0]+' '+parts[parts.length-1].charAt(0).toUpperCase()+'.';
+}
 function _jvShareName(code, fallback){
   var live=String((typeof CLIENTS!=='undefined' && CLIENTS[code] && CLIENTS[code].name) || '').trim();
   if(!window._jvShareMode) return live || String(fallback||'').trim() || String(code||'');
@@ -31879,10 +31898,7 @@ function _jvShareName(code, fallback){
   // and falling back to it is the whole bug.
   var raw=kept || String(fallback||'').trim();
   if(!raw) return _jvShareCode(code);
-  var parts=raw.split(/\s+/).filter(Boolean);
-  if(parts.length===1) return parts[0];
-  var lastInitial=parts[parts.length-1].charAt(0).toUpperCase();
-  return parts[0]+' '+lastInitial+'.';
+  return _jvShareInitials(raw);
 }
 // THE ROSTER REDACTS TO INITIALS TOO (Yusuf, ruling, 25 Aug — recording mode:
 // "initials in every row"). It used to hand back _jvShareDemoLine, and on the
@@ -31964,7 +31980,13 @@ async function jvSetShareMode(on){
       // "Female L." for everyone. Initials are written here instead, computed
       // from the real name while it is still standing. The helper is idempotent
       // on its own output, so anything that redacts again downstream is stable.
-      info.name=_jvShareName(code, info.name);
+      // _jvShareInitials, NOT _jvShareName: the flag is armed further down, and
+      // _jvShareName returns the live name while it is off — so this line was
+      // inert and the roster kept every real name through the whole recording.
+      // Left alone when there is nothing to redact: the raw code is name-derived
+      // and writing it into the name field would leak the same identity again.
+      var _red=_jvShareInitials(info.name);
+      if(_red) info.name=_red;
       info.phone=null;                      // hidden, not faked — nothing to mistake for real
     });
     window._jvShareBackup=backup;
@@ -65952,8 +65974,16 @@ function _jimIsAdminOnly(t){
 // ONE FRAGMENT, consumed by the three regexes below it, so they cannot drift
 // apart again. A plain string rather than a RegExp because it is embedded in
 // three different patterns, each with its own surrounding rules.
-var _JIM_SESSION_DAY = "(?:(?:leg|legs|push|pull|chest|back|arm|arms|shoulder|shoulders"
-  + "|core|abs?|glutes?|upper|lower|full)\\s+(?:body\\s+)?day"
+// THE PARTS HE TRAINS, WRITTEN DOWN ONCE. This is the FOURTH list of session
+// words found in this file today, and the one that names a session's title had
+// its own private copy — which is why "glute day" and "tricep day" came back
+// titled "Workout" while "chest day" came back "Chest Day". Same disease, third
+// sighting: two places answering one question, drifting until the wrong one is
+// the one a client touches.
+var _JIM_BODY_PART = "(?:push|pull|legs?|arms?|back|chest|shoulders?|core|abs|glutes?"
+  + "|traps?|triceps?|tris|biceps?|bis|hamstrings?|hams|quads?|calves|cardio|conditioning)";
+var _JIM_SESSION_DAY = "(?:(?:" + _JIM_BODY_PART + "|leg|arm|shoulder|glute|upper|lower|full)"
+  + "\\s+(?:body\\s+)?day"
   + "|upper\\s+body|lower\\s+body|full\\s+body)";
 // Does this sentence describe a training session? Deliberately broad — it only
 // decides whether to ASK the dedicated extractor, which answers with an empty
@@ -66058,8 +66088,27 @@ var _JIM_CLAIM_FOOD2_RE=new RegExp("\\b"+_JIM_CLAIM_VERB
   + "\\b[^.!\\n]{0,60}?\\b\\d+\\s*(?:cal\\b|calories\\b|g\\s*(?:of\\s*)?(?:protein|carbs|carbohydrates|fat)\\b)", "i");
 // HIS SPLIT NAME IS THE TITLE (Yusuf, R2). "push and pull" is a Push Pull, not a
 // "Workout" — the generic default is the app forgetting what he called it.
-var _JIM_SPLIT_RE=new RegExp('\\b((?:push|pull|(?:upper|lower|full)(?:\\s*body)?|legs?|arms?|back|chest|shoulders?|core|abs|cardio|conditioning)'
-  +'(?:\\s*(?:and|&|\\/|\\+)\\s*(?:push|pull|legs?|arms?|core|abs))?(?:\\s+day)?)\\b','i');
+// CONSUMES THE ONE LIST, so a part added for the session readers is a part this
+// can title from. It keeps its own SHAPE — the day word is optional here, since
+// "push and pull" is a title even without it — but not its own vocabulary.
+var _JIM_SPLIT_RE=new RegExp('\\b((?:' + _JIM_BODY_PART + '|(?:upper|lower|full)(?:\\s*body)?)'
+  +'(?:\\s*(?:and|&|\\/|\\+)\\s*' + _JIM_BODY_PART + ')?(?:\\s+day)?)\\b','i');
+// IS THIS SENTENCE ONLY THE NAME OF A SPLIT? Used to decide whether an answer
+// to "which workout was it" should reach the row he just logged. It has to be
+// ONLY that: "today's Push" yes, "push day, bench 185 for 8" no — the second is
+// a log in its own right and must go to the engine, not to a rename.
+function _jimOnlyNamesSplit(t){
+  var s=String(t||'').trim(); if(!s) return '';
+  var title=''; try{ title=_jimTitleFromWords(s); }catch(e){}
+  if(!title) return '';
+  var rest='';
+  try{
+    rest=s.replace(_JIM_SPLIT_RE,' ')
+      .replace(/\b(?:it|that|was|is|were|today|todays|this|the|a|an|my|mine|one|yes|yeah|yep|ok|okay|i|did|do|done|just|of|for|s)\b/ig,' ')
+      .replace(/[^A-Za-z]+/g,' ').trim();
+  }catch(e){ return ''; }
+  return rest ? '' : title;
+}
 function _jimTitleFromWords(text){
   var m=_JIM_SPLIT_RE.exec(String(text||''));
   if(!m) return '';
@@ -66807,6 +66856,40 @@ async function jimTurn(text, photos, opts){
   if(_stepsFailed){
     reply += (reply?'\n\n':'') + "That didn't actually save — can you tell me again?";
   }
+  // ===== THE REPLY MAY NOT CLAIM MORE DAYS THAN LANDED ====================
+  // (Yusuf, live, 24 Aug — found by CLIENT with the row read back.) "my steps
+  // every day this week were 9,000" came back saying it had logged nine
+  // thousand for Monday, Tuesday, Wednesday and today. ONE row landed: today.
+  // That is the cardinal lie again — the sentence claims more than the table
+  // holds — and it is exactly what the floor rule exists to stop: either it
+  // logs what it says, or it says what it logged.
+  //
+  // IT SAYS WHAT IT LOGGED. Expanding one number into a week of rows would
+  // invent six days of data he never gave, and would overwrite real counts
+  // already stored on those days. A silent over-write is a worse harm than an
+  // honest under-claim, so the claim is corrected, never the table.
+  //
+  // The floor here is ONE, and the code knows it exactly: one value harvested,
+  // one row upserted, one read-back. So the check is simply whether the words
+  // promise more days than the one that landed.
+  try{
+    if(!_stepsFailed && stepsLogs.items.length && /\bsteps?\b/i.test(reply)){
+      var _stepDays=0;
+      try{
+        if(/\b(?:every|each)\s+day\b|\ball\s+week\b|\bthis\s+week\b/i.test(reply)) _stepDays=7;
+        var _dnm=String(reply).match(new RegExp('\\b(?:'+_JIM_DOW.join('|')+')\\b','ig'));
+        if(_dnm && _dnm.length>1) _stepDays=Math.max(_stepDays,_dnm.length);
+      }catch(e){}
+      if(_stepDays>1){
+        try{ console.warn('steps reply claimed '+_stepDays+' days; one row landed', reply); }catch(e){}
+        var _stepOne='';
+        try{ _stepOne=(_stepBack>0)?_jimEchoDate(_stepBack):'today'; }catch(e){ _stepOne='today'; }
+        reply += (reply?'\n\n':'')
+          + 'To be straight with you — I only saved ' + Number(stepVal).toLocaleString()
+          + ' steps for ' + _stepOne + '. Tell me the other days and I will put those in too.';
+      }
+    }
+  }catch(e){ console.error('steps day claim', e); }
 
   // Handle WEIGHT_LOG (new, 10 Aug smart-bar redesign): the bar's promise is
   // total — a stated weight has to actually land in weight_logs, verified,
@@ -66915,7 +66998,17 @@ async function jimTurn(text, photos, opts){
       try{ console.warn('jimTurn: refusing a model-shaped note —', String(extractedLog.log.notes).slice(0,90)); }catch(e){}
       extractedLog.log.notes = null;
     }
-    var newId = await logWorkoutFromOffer(_pinTitle(_pinVoice(_pinClock(_pinDay(extractedLog.log)), 'client_text')), _forCode);
+    var _woOffer = _pinTitle(_pinVoice(_pinClock(_pinDay(extractedLog.log)), 'client_text'));
+    var newId = await logWorkoutFromOffer(_woOffer, _forCode);
+    // REMEMBERED SO HIS NEXT SENTENCE CAN FINISH NAMING IT. A session he
+    // reports without naming lands as "Workout"; when he then answers which one
+    // it was, that answer has to reach the row rather than evaporate.
+    try{
+      if(newId && newId!=='dup'){
+        window._jimLastWo={id:newId, title:String(_woOffer.title||'Workout'),
+                           code:(_forCode||(window.cl&&cl.code)||''), at:Date.now()};
+      }
+    }catch(e){}
     if(newId==='dup'){
       // the same workout landed moments ago — stay quiet rather than log it twice,
       // and count it as verified: the earlier attempt already wrote the row.
@@ -66983,9 +67076,83 @@ async function jimTurn(text, photos, opts){
   // If a marker was present (or salvaged) and still came up short, the chat message
   // must say so plainly — never let Jim's own prose, which already assumed success,
   // reach the client uncorrected.
+  // ===== HIS ANSWER COMPLETES THE RECORD (Yusuf, ruling, upheld 24 Aug) =====
+  // "did my workout at 6 this morning" logs immediately and lands as "Workout",
+  // because he named no split and nothing here invents one. The model then asks
+  // WHICH workout, he answers "today's Push" — and that answer used to reach
+  // nothing at all. The row kept the generic name while he had just said the
+  // real one out loud, and on camera that reads as the app not listening.
+  //
+  // HIS RULING ALREADY COVERS THIS: if a clarifying question is genuinely
+  // needed, the ANSWER must complete the write. So it does.
+  //
+  // NARROW ON PURPOSE, because this edits a row that already exists. It fires
+  // only when this turn wrote nothing, the sentence is ONLY a split name and
+  // nothing else, the remembered row is minutes old, and its title is still the
+  // generic one. Any of those missing and it does nothing.
+  try{
+    if(!_woExpected && !_foodExpected){
+      var _lw=null; try{ _lw=window._jimLastWo||null; }catch(e){}
+      var _fresh=!!(_lw && _lw.id && (Date.now()-(_lw.at||0)) < 15*60*1000);
+      var _generic=!!(_lw && /^(?:workout|training|session|exercise)$/i.test(String(_lw.title||'')));
+      var _sameWho=!!(_lw && String(_lw.code||'')===String(_forCode||(window.cl&&cl.code)||''));
+      var _named=''; try{ _named=_jimOnlyNamesSplit(text); }catch(e){}
+      if(_fresh && _generic && _sameWho && _named && _named.toLowerCase()!==String(_lw.title||'').toLowerCase()){
+        var _ret=false;
+        try{ _ret=await applyWorkoutEdit({id:_lw.id, title:_named}); }catch(e){ _ret=false; }
+        // A RENAME CLAIMED IS A RENAME READ BACK, like every other write here.
+        if(_ret){
+          var _back=false;
+          try{
+            var _rr=await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+encodeURIComponent(_lw.id)+'&select=title',{headers:sbHeaders()});
+            if(_rr.ok){ var _rj=await _rr.json(); _back=!!(_rj && _rj.length && String(_rj[0].title||'')===_named); }
+          }catch(e){}
+          if(_back){
+            try{ window._jimLastWo.title=_named; }catch(e){}
+            try{ if(typeof rendTodayWo==='function') rendTodayWo(); }catch(e){}
+            reply = 'Renamed it ' + _named + '.' + (reply ? ('\n\n'+reply) : '');
+          }else{
+            reply += (reply?'\n\n':'') + 'I could not rename it — tell me again and I will fix it.';
+          }
+        }
+      }
+    }
+  }catch(e){ console.error('follow-up rename', e); }
   if(_woVerified < _woExpected && !_jimAlreadySaidFail(reply)){
     reply += (reply?'\n\n':'') + _jimSaveFailLine("That didn't actually save — can you tell me again?");
   }
+  // ===== AND THE MIRROR: A ROW THAT LANDED MUST BE SAID ===================
+  // (Yusuf, live, 24 Aug — CLIENT: "the reply read as if nothing new was logged
+  // while a row was created".) Every net in this engine points one way — it
+  // catches a reply CLAIMING more than the table holds. This is the other
+  // direction, and it is the shape a described session produces: the row lands
+  // from the extractor, the model meanwhile asks which workout it was, and
+  // nothing in the words tells him a record now exists. He is left assuming it
+  // failed and logging it a second time, which is how a day ends up doubled.
+  //
+  // It states the fact and nothing more — what landed, by name. It never
+  // reports a row that did not verify, because _woVerified is the read-back
+  // count, not the parse count.
+  try{
+    if(_woVerified > 0){
+      var _saidIt=false;
+      try{
+        _saidIt = _JIM_CLAIM_WO_RE.test(reply) || _JIM_CLAIM_EXISTS_RE.test(reply)
+               || /\b(?:logged|saved|added|recorded|down)\b/i.test(reply);
+      }catch(e){ _saidIt=true; }
+      if(!_saidIt && !_jimAlreadySaidFail(reply)){
+        var _woNames=[];
+        try{
+          (workoutLogs.items||[]).forEach(function(it){ var n=String((it&&it.title)||'').trim(); if(n) _woNames.push(n); });
+        }catch(e){}
+        var _woSaid = _woNames.length
+          ? ('Logged \u2014 ' + _woNames.slice(0,3).join(', ') + '.')
+          : ('Logged your session.');
+        reply = _woSaid + (reply ? ('\n\n'+reply) : '');
+        try{ console.info('jimTurn: a row landed and the reply had not said so'); }catch(e){}
+      }
+    }
+  }catch(e){ console.error('landed but unsaid', e); }
 
   // Handle WORKOUT_NOTE: append commentary to existing workout (no new log)
   if(extractedNote.note && extractedNote.note.id){
@@ -67470,6 +67637,16 @@ async function _jvJarvisCalendarActClient(parsed){
   }
   return null;
 }
+// WAS THIS A TIMEOUT, OR A REFUSAL? (24 Aug.) Called by jimChoose since the day
+// that handler was written, and never once defined -- so the handler threw
+// instead of speaking. Defined here, next to the door it serves, and reading
+// the same vocabulary jimSend's own failure line already reads, so the two
+// cannot disagree about what a dropped connection looks like.
+function _jimIsTimeout(e){
+  var m='';
+  try{ m=String((e && (e.message || e.name)) || e || ''); }catch(_e){}
+  return /abort|timed? ?out|timeout|deadline|took too long/i.test(m);
+}
 async function jimChoose(what){
   var job=_jimAwaiting; if(!job) return;
   _jimAwaiting=null;
@@ -67483,8 +67660,33 @@ async function jimChoose(what){
   var reply='';
   try{ reply=await jimDoor(job.text, job.photos); }
   catch(e){
+    console.error('jimChoose', e);
     var t=document.getElementById('chatTypingRow'); if(t&&t.parentNode) t.parentNode.removeChild(t);
-    showToast(_jimIsTimeout(e)?'That took too long \u2014 try again':'Connection error \u2014 try again');
+    // A FAILED TURN MUST STILL SAY SOMETHING (Yusuf, live, 24 Aug \u2014 CLIENT hit
+    // this twice on the deployed page). This handler called _jimIsTimeout, and
+    // that function had NEVER EXISTED anywhere in this file. So the line meant
+    // to say "that took too long, try again" threw a ReferenceError of its own
+    // \u2014 after the typing dots had already been removed. Nothing replaced them:
+    // no reply, no error, no sign anything had failed. A client was left
+    // looking at their own message with silence underneath it, which is the one
+    // shape this app refuses.
+    // THE LINE STAYS IN THE THREAD, not in a toast. A toast fades, and on a
+    // slow connection they have long since looked away by the time it comes.
+    // It is drawn, NEVER saved \u2014 an error persisted as something Jim said comes
+    // back as memory on the next turn, which slogSend already learned.
+    var _line=_jimIsTimeout(e)
+      ? 'That took too long \u2014 your message is still here, send it again.'
+      : 'That didn\u2019t go through \u2014 your message is still here, send it again.';
+    try{
+      var _b=document.getElementById('chatScroll');
+      if(_b){
+        var _r=document.createElement('div');
+        _r.className='chat-row assistant'; _r.id='chatFailRow';
+        _r.textContent=_line;
+        _b.appendChild(_r); setTimeout(scrollChatToBottom,30);
+      }
+    }catch(_e){}
+    try{ showToast(_line); }catch(_e){}
     return;
   }
   var t2=document.getElementById('chatTypingRow'); if(t2&&t2.parentNode) t2.parentNode.removeChild(t2);
@@ -72669,7 +72871,31 @@ function _jimParse(raw) {
     var ap = (tm[3] || '').toLowerCase();
     if (ap === 'pm' && hh < 12) hh += 12;
     if (ap === 'am' && hh === 12) hh = 0;
-    if (!ap && hh <= 7) hh += 12;              // "at 6" in a food log means the evening
+    // ===== HIS OWN WORDS DECIDE AM OR PM (Yusuf, live, 24 Aug) =============
+    // "did my workout at 6 this morning" SAVED AT 6:00 PM, and the reply on
+    // screen said 6 AM. This line used to read `if (!ap && hh <= 7) hh += 12`
+    // -- a bare hour of 7 or less was simply declared the evening -- and the
+    // word "morning", sitting right there in the same sentence, was never
+    // consulted at all. Nor was afternoon, evening, tonight or at night.
+    //
+    // The other clock reader in this file has always read those words. So the
+    // two disagreed, which is the same drifted-pair disease as the three
+    // session-word lists: one reader knowing something its twin does not.
+    //
+    // HIS WORDS FIRST, THE DEFAULT ONLY WHEN HE SAID NOTHING. The evening
+    // default stays for a bare "at 6" with no part of the day named, because
+    // that is genuinely what a bare hour means in a food log -- but it may
+    // never again overrule a morning he actually said.
+    if (!ap) {
+      var _said = String(raw || '');
+      if (/\b(?:this\s+|the\s+|in\s+the\s+)?morning\b|\bam\b|\bsunrise\b|\bfirst thing\b/i.test(_said)) {
+        if (hh === 12) hh = 0;                 // "12 this morning" is midnight
+      } else if (/\b(?:afternoon|evening|tonight|at night|after work|before bed)\b/i.test(_said)) {
+        if (hh < 12) hh += 12;
+      } else if (hh <= 7) {
+        hh += 12;                              // "at 6" with no part of day named is the evening
+      }
+    }
     if (hh < 24 && mi < 60) { mins = hh * 60 + mi; s = s.replace(tm[0], ' '); }
   }
 

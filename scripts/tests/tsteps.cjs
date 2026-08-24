@@ -4,11 +4,12 @@ function grab(p){ const a=L.findIndex(p); let b=a; while(L[b]!=='}') b++; return
 function multi(sw){ const a=L.findIndex(l=>l.trim().startsWith(sw)); let b=a; while(!/;\s*$/.test(L[b])) b++; return L.slice(a,b+1).join('\n'); }
 eval([multi('var _JT_CAL_RE=new RegExp('), multi('var _JT_PAST_MEAL_RE=new RegExp('),
  multi('var _JT_SCHED_INTENT_RE=new RegExp('), multi('var _JIM_CARDIO_RE=new RegExp('),
- multi('var _JIM_SESSION_DAY ='), multi('var _JIM_WO_RE=new RegExp('), multi('var _JIM_MEALREL_RE=new RegExp('),
+ multi('var _JIM_BODY_PART ='), multi('var _JIM_SESSION_DAY ='), multi('var _JIM_WO_RE=new RegExp('), multi('var _JIM_MEALREL_RE=new RegExp('),
  multi('var _JIM_MEALREL2_RE=new RegExp('),
  grab(l=>l.startsWith('function _titleCap(')), grab(l=>l.startsWith('function _jtCalendarClaims(')),
  grab(l=>l.startsWith('function _jimHarvestSteps(')), grab(l=>l.startsWith('function _jimLooksLikeWorkout(')),
  grab(l=>l.startsWith('function _jimMealRelTitle('))].join('\n'));
+require('./_guard.cjs')(['_JIM_CARDIO_RE','_JIM_MEALREL2_RE','_JIM_MEALREL_RE','_JIM_BODY_PART','_JIM_SESSION_DAY','_JIM_WO_RE','_JT_CAL_RE','_JT_PAST_MEAL_RE','_JT_SCHED_INTENT_RE','_jimHarvestSteps','_jimLooksLikeWorkout','_jimMealRelTitle','_jtCalendarClaims','_titleCap'], function(n){ return eval(n); });
 let bad=0; const t=(l,g,w)=>{const ok=JSON.stringify(g)===JSON.stringify(w); if(!ok)bad++; console.log((ok?'  ok    ':'  FAIL  ')+l+'  -> '+JSON.stringify(g)+(ok?'':'   (wanted '+JSON.stringify(w)+')'));};
 
 console.log('  the real client\'s two sentences must NOT go to the calendar:');
@@ -41,6 +42,7 @@ t('not a meal-relative', _jimMealRelTitle('I walked the dog'), '');
 // functions the write runs through, in the same order.
 eval([grab(l=>l.startsWith('function _dateStrDaysAgo(')),
       L[L.findIndex(l=>l.startsWith('var _JIM_DAY_MAX='))]].join('\n'));
+require('./_guard.cjs')(['_dateStrDaysAgo'], function(n){ return eval(n); });
 const dsBack=(n)=>_dateStrDaysAgo(n);
 console.log('\n  the day he named becomes a real date:');
 t('yesterday differs from today', dsBack(1)!==dsBack(0), true);
@@ -62,6 +64,25 @@ t('write not on the screen day',    /date_str:_stepDate/.test(upsert), true);
 t('write never uses todayDateStr',  /todayDateStr/.test(upsert), false);
 t('read-back on the same day',      /encodeURIComponent\(_stepDate\)/.test(readback), true);
 t('read-back never todayDateStr',   /todayDateStr/.test(readback), false);
+
+// ===== THE REPLY MAY NOT CLAIM MORE DAYS THAN LANDED (24 Aug) ============
+// "my steps every day this week were 9,000" replied that it had logged nine
+// thousand for Monday through today. ONE row landed. The floor here is one —
+// one value harvested, one row upserted, one read-back — so a reply promising
+// more days must admit what it actually saved.
+const claim=src.match(/if\(!_stepsFailed && stepsLogs\.items\.length[\s\S]{0,1400}?steps day claim/);
+console.log('\n  a reply promising more days than landed is corrected:');
+t('the check exists at all', !!claim, true);
+const CL=claim?claim[0]:'';
+t('it only runs when a row landed',   /!_stepsFailed && stepsLogs\.items\.length/.test(CL), true);
+t('it counts "every day"',            CL.indexOf('(?:every|each)')>=0, true);
+t('it counts two weekday names',      /_dnm && _dnm\.length>1/.test(CL), true);
+t('it appends the truth, never edits the table',
+  /reply \+=/.test(CL) && !/sbUpsert|sbInsert|fetch\(/.test(CL), true);
+t('it names the one day that landed', /_stepOne/.test(CL), true);
+// The table is never expanded to match the words: inventing six days would
+// overwrite real counts already stored on them.
+t('no second write is added',         /_stepDays>1[\s\S]{0,600}sbUpsert/.test(CL), false);
 
 console.log(bad? '\n'+bad+' FAILED' : '\nall pass');
 process.exit(bad?1:0);
