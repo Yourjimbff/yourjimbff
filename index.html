@@ -65300,7 +65300,19 @@ var _JIM_WO_RE=new RegExp('\\b(?:\\d+|one|two|three|four|five|six|seven|eight|ni
   +'|\\b(?:reps?|superset|amrap|push-?ups?|pull-?ups?|squats?|deadlifts?|bench|curls?|rows?|press|raises?'
   +'|pulldowns?|plank|lunges?|crunches?|sit-?ups?|dips?|flys?|extensions?|treadmill|elliptical|cardio'
   +'|workout|worked out|trained|training|leg day|push day|pull day|session)\\b','i');
-function _jimLooksLikeWorkout(t){ return _JIM_WO_RE.test(String(t||'')); }
+// A WALK IS A SESSION (Yusuf, live, 24 Aug: "I did a 30 minute walk After
+// eating dinner" was answered "I don't think that actually saved"). _JIM_WO_RE
+// knows treadmill and cardio but never knew a bare walk or run, so the
+// extractor that exists precisely for a described session never ran for one.
+// _JIM_CARDIO_RE already carries that vocabulary and is the same constant the
+// echo consults, so the two agree by construction rather than by luck.
+// This only decides whether to ASK the extractor, which answers with an empty
+// list when there is no session in the text.
+function _jimLooksLikeWorkout(t){
+  var s=String(t||'');
+  if(_JIM_WO_RE.test(s)) return true;
+  try{ return _JIM_CARDIO_RE.test(s); }catch(e){ return false; }
+}
 // HIS SPLIT NAME IS THE TITLE (Yusuf, R2). "push and pull" is a Push Pull, not a
 // "Workout" — the generic default is the app forgetting what he called it.
 var _JIM_SPLIT_RE=new RegExp('\\b((?:push|pull|(?:upper|lower|full)(?:\\s*body)?|legs?|arms?|back|chest|shoulders?|core|abs|cardio|conditioning)'
@@ -66487,7 +66499,19 @@ function jimAskWhat(text, photos){
 // jimTurn's food/workout parser at all; anything else (the ordinary case)
 // gets a null action and falls straight through unchanged.
 async function _jimTurnClientAware(text, photos){
-  if(text && (!photos || !photos.length) && cl && typeof isTrainer==='function' && !isTrainer(cl.code)){
+  // GATED THE WAY THE TRAINER'S IS (Yusuf, live, 24 Aug -- a real client).
+  // This sent EVERY client sentence to the calendar extractor first, with no
+  // keyword test at all, while the trainer's identical route has always been
+  // behind _jtCalendarClaims. So "Log my steps for today at 7,250" was read as
+  // a calendar action, found no block, and answered "I don't see anything on
+  // your week matching that" -- a workout-matching reply to a steps request,
+  // and the sentence never reached the logger at all.
+  // _jtCalendarClaims carries the keyword test AND the past-meal veto, judged
+  // on the whole message. A steps or weigh-in sentence names no event and
+  // falls straight through to where it belongs.
+  var _calOk=false;
+  try{ _calOk=(typeof _jtCalendarClaims==='function') ? _jtCalendarClaims(text) : true; }catch(e){ _calOk=false; }
+  if(_calOk && text && (!photos || !photos.length) && cl && typeof isTrainer==='function' && !isTrainer(cl.code)){
     var r=null;
     try{ r=await _jtCalendarTurnClient(text); }catch(e){}
     if(r && r.line!=null) return r.line;
@@ -71908,8 +71932,16 @@ function _jimHarvestWeight(raw){
   var v=parseFloat(m[1]);
   return (!isNaN(v) && v>=50 && v<=700) ? v : null;
 }
+// BOTH WAYS ROUND. This only ever read "7,250 steps" -- the number first --
+// and a real client wrote "Log my steps for today at 7,250", where the word
+// comes first and the figure follows. Same reading, said the other way.
+// The second pattern needs the word `steps` and then a number with nothing but
+// filler between them, so "steps were fine, I ate 300 calories" cannot be read
+// as a step count.
 function _jimHarvestSteps(raw){
-  var m=String(raw||'').match(/\b(\d{1,3}(?:,\d{3})+|\d{3,6})\s*(?:steps|step)\b/i);
+  var t=String(raw||'');
+  var m=t.match(/\b(\d{1,3}(?:,\d{3})+|\d{3,6})\s*(?:steps|step)\b/i)
+     || t.match(/\bsteps?\b(?:\s+(?:for|to|at|of|on|today|is|was|were|are|it|my|the|this|a|about|around|roughly)\b|\s|,|:|\u2014|-)*?(\d{1,3}(?:,\d{3})+|\d{3,6})\b/i);
   if(!m) return null;
   var v=parseInt(String(m[1]).replace(/,/g,''),10);
   return (!isNaN(v) && v>0 && v<=200000) ? v : null;
@@ -72223,6 +72255,12 @@ function _jimLooksLikeMeal(raw){
 var _JIM_MEALREL_RE=new RegExp(
   "\\b((?:post|pre|after|before)[-\\s]?(?:meal|breakfast|lunch|dinner|supper)\\s+"
   + "(?:walk|walks|run|jog|stroll|ride|cardio|stretch|session))\\b", "i");
+// AND THE OTHER WORD ORDER, which is how he actually said it: "a 30 minute
+// walk After eating dinner". The movement first, the meal after it.
+var _JIM_MEALREL2_RE=new RegExp(
+  "\\b(walk|walks|run|jog|stroll|ride|cardio|stretch|session)\\b"
+  + "[\\s\\S]{0,20}?\\b(?:after|post|before|pre)\\b\\s*(?:eating\\s+|having\\s+|my\\s+)?"
+  + "(meal|breakfast|lunch|dinner|supper)\\b", "i");
 // ===== A DICTATED WORKOUT GETS A REAL NAME ===============================
 // (Yusuf, ruling, 24 Aug.) His chest presses, lateral raises and push-ups came
 // back titled "Workout". His words win when he named the day; when he did not,
@@ -72370,9 +72408,13 @@ function _jimWorkoutTitleFor(raw, names){
 }
 function _jimMealRelTitle(raw){
   try{
-    var m=_JIM_MEALREL_RE.exec(String(raw||''));
-    if(!m) return '';
-    return _titleCap(String(m[1]).replace(/[-\s]+/g,' ').trim());
+    var t=String(raw||'');
+    var m=_JIM_MEALREL_RE.exec(t);
+    if(m) return _titleCap(String(m[1]).replace(/[-\s]+/g,' ').trim());
+    // Said the other way round: name it the way he would write it down.
+    var m2=_JIM_MEALREL2_RE.exec(t);
+    if(m2) return _titleCap('post '+String(m2[2]).toLowerCase()+' '+String(m2[1]).toLowerCase());
+    return '';
   }catch(e){ return ''; }
 }
 function _jimEchoRead(raw){
