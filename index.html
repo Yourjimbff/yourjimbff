@@ -65698,8 +65698,15 @@ async function jimTurn(text, photos, opts){
       // flattened into a category. When his sentence built a name, that is the
       // title. Only ever replaces a title the model chose, never one he typed.
       if(o.title){
+        var _generic=/^(walk|walks|run|jog|cardio|stroll|stretch|session|workout|training)$/i.test(String(o.title).trim());
         var _mr=''; try{ _mr=_jimMealRelTitle(text); }catch(e){}
-        if(_mr && /^(walk|walks|run|jog|cardio|stroll|stretch|session|workout)$/i.test(String(o.title).trim())) o.title=_mr;
+        if(_mr && _generic) o.title=_mr;
+        else if(_generic){
+          // The movements name the session when he did not.
+          var _nm=[]; try{ _nm=(o.exercises||[]).map(function(e){ return e&&e.name; }).filter(Boolean); }catch(e){}
+          var _sp=''; try{ _sp=_jimWorkoutTitleFor(text, _nm); }catch(e){}
+          if(_sp) o.title=_sp;
+        }
       }
       if(o.title) o.title=_titleCap(String(o.title));
       if(o.name) o.name=_titleCap(String(o.name));
@@ -66089,6 +66096,15 @@ async function jimTurn(text, photos, opts){
       _woVerified++;
     } else if(newId){
       _woVerified++;
+      // CONNECTION HE SPOKE, SAVED WHERE THE PILLS SAVE IT. Only after the
+      // workout row actually landed, and only for the exercises he said
+      // something about. Its own try so a refused checkin can never turn a
+      // logged workout into a failure.
+      try{
+        var _cnNames=(extractedLog.log.exercises||[]).map(function(e){ return e&&e.name; }).filter(Boolean);
+        var _cnDs=(_jimLastTurn&&_jimLastTurn.landedDay) || extractedLog.log.dateStr || todayDateStr;
+        await _jimSaveSpokenConn(text, _cnNames, _cnDs, (_forCode || (cl&&cl.code)));
+      }catch(e){ console.error('spoken conn wire', e); }
       showToast('✓ Workout logged');
     } else {
       console.error('workout save failed for offer', extractedLog.log);
@@ -72183,6 +72199,124 @@ function _jimLooksLikeMeal(raw){
 var _JIM_MEALREL_RE=new RegExp(
   "\\b((?:post|pre|after|before)[-\\s]?(?:meal|breakfast|lunch|dinner|supper)\\s+"
   + "(?:walk|walks|run|jog|stroll|ride|cardio|stretch|session))\\b", "i");
+// ===== A DICTATED WORKOUT GETS A REAL NAME ===============================
+// (Yusuf, ruling, 24 Aug.) His chest presses, lateral raises and push-ups came
+// back titled "Workout". His words win when he named the day; when he did not,
+// the exercises themselves say what the session was.
+//
+// TITLING FROM WHAT HE SAID, NOT INVENTING CONTENT. Nothing here adds an
+// exercise, a set or a number -- it reads the movements already in the offer
+// and names the shape they make. Two groups are named as the mix ("Push &
+// Pull"). Three or more is not a split anyone would call by one name, so it
+// stays "Workout" -- when in doubt, plain Workout, which is his own rule.
+// Core and Neck never decide a split on their own: abs at the end of a push
+// day do not make it a core day.
+var _JIM_SPLIT_OF={Chest:'Push', Shoulders:'Push', Triceps:'Push', Back:'Pull', Biceps:'Pull', Legs:'Legs'};
+// ===== CONNECTION HE SPOKE IS CONNECTION DATA ============================
+// (Yusuf, ruling, 24 Aug.) He dictated "extremely heavy, great connection" on
+// specific exercises and it survived only as words in the transcript. Spoken
+// connection is the same data a client makes by tapping the pills, and it is
+// stored the same way: one mi_checkins kind=connection row, ratings keyed by
+// _bfGroupOf with the per-exercise answer under `by`. NOT A SECOND SYSTEM --
+// this is the exact shape _tlRatingSet already writes, so every surface that
+// reads connection today reads this without knowing where it came from.
+//
+// HIS WORDS MAP ONTO THE SCALE THAT EXISTS. _TL_CONN_PHRASE already words the
+// three levels as "quiet / decent / great connection", so "great connection"
+// IS felt -- his phrase and the app''s phrase are already the same sentence.
+//
+// ONLY WHAT HE SAID. A phrase is attached to the exercise it follows, and an
+// exercise he said nothing about gets nothing. No filling in the rest -- a
+// connection nobody stated is not data, and a full card built from one remark
+// would be the invention this file refuses everywhere else.
+// INTENSITY IS NOT CONNECTION: "extremely heavy" says how hard it was, not
+// what he felt working, and it is deliberately not matched here.
+var _JIM_CONN_RE=new RegExp(
+    "(great|strong|amazing|incredible|really good|excellent|perfect)\\s+(?:mind[- ]?muscle\\s+)?connection"
+  + "|(decent|okay|ok|alright|some|a bit of|moderate|fair)\\s+(?:mind[- ]?muscle\\s+)?connection"
+  + "|(no|zero|not much|poor|bad|quiet|little)\\s+(?:mind[- ]?muscle\\s+)?connection"
+  + "|(really felt it|felt it great|felt that one|great pump|felt every rep)"
+  + "|(felt it a bit|felt it a little|kind of felt it|sort of felt it)"
+  + "|(did ?n.t feel it|no feel|couldn.t feel it|felt nothing)",
+  "i");
+function _jimConnLevel(chunk){
+  try{
+    var m=_JIM_CONN_RE.exec(String(chunk||''));
+    if(!m) return '';
+    if(m[1]||m[4]) return 'felt';
+    if(m[2]||m[5]) return 'partial';
+    if(m[3]||m[6]) return 'nothing';
+  }catch(e){}
+  return '';
+}
+// Each exercise owns the words between its own name and the next one -- which
+// is where a spoken remark about it actually sits.
+function _jimConnByExercise(raw, names){
+  var out={};
+  try{
+    var t=String(raw||''); if(!t || !names || !names.length) return out;
+    var lc=t.toLowerCase();
+    var marks=[];
+    names.forEach(function(n){
+      var k=String(n||'').toLowerCase().trim(); if(!k) return;
+      var at=lc.indexOf(k);
+      if(at<0){                                   // try the last word of the name
+        var w=k.split(/\s+/).pop();
+        if(w && w.length>3) at=lc.indexOf(w);
+      }
+      if(at>=0) marks.push({name:n, at:at});
+    });
+    marks.sort(function(a,b){ return a.at-b.at; });
+    marks.forEach(function(m,i){
+      var end=(i+1<marks.length)?marks[i+1].at:t.length;
+      var lvl=_jimConnLevel(t.slice(m.at, end));
+      if(lvl) out[m.name]=lvl;
+    });
+  }catch(e){}
+  return out;
+}
+// Built in the shape the pills already write, then handed to sbInsert exactly
+// as they hand it. Returns false when he said nothing about anything.
+async function _jimSaveSpokenConn(raw, names, ds, code){
+  try{
+    var byEx=_jimConnByExercise(raw, names);
+    var keys=Object.keys(byEx);
+    if(!keys.length) return false;
+    var ratings={};
+    keys.forEach(function(n){
+      var g=null; try{ g=_bfGroupOf(n); }catch(e){}
+      g=g||('ex:'+n);
+      if(!ratings[g]) ratings[g]={r:byEx[n], by:{}};
+      ratings[g].by[n]=byEx[n];
+      ratings[g].r=byEx[n];
+    });
+    var row={client_code:code, kind:'connection', ratings:ratings, date_str:ds, checked_at:new Date().toISOString()};
+    var ok=await sbInsert('mi_checkins', row);
+    try{ console.info('jimTurn: connection he spoke, saved for '+keys.length+' exercise(s)', byEx); }catch(e){}
+    return !!ok;
+  }catch(e){ console.error('spoken connection', e); return false; }
+}
+function _jimSplitFromExercises(names){
+  try{
+    var seen={}, order=[];
+    (names||[]).forEach(function(n){
+      var g=null; try{ g=_bfGroupOf(n); }catch(e){}
+      var sp=g?_JIM_SPLIT_OF[g]:null;
+      if(!sp) return;                       // Core, Neck and anything unknown abstain
+      if(!seen[sp]){ seen[sp]=1; order.push(sp); }
+    });
+    if(!order.length) return '';
+    if(order.length===1) return order[0]==='Legs' ? 'Leg Day' : (order[0]+' Day');
+    if(order.length===2) return order[0]+' & '+order[1];
+    return '';                              // no single honest name for it
+  }catch(e){ return ''; }
+}
+// His words first, the movements second, and nothing third.
+function _jimWorkoutTitleFor(raw, names){
+  var own=''; try{ own=_jimTitleFromWords(raw); }catch(e){}
+  if(own) return own;
+  return _jimSplitFromExercises(names);
+}
 function _jimMealRelTitle(raw){
   try{
     var m=_JIM_MEALREL_RE.exec(String(raw||''));
