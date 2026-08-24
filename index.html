@@ -65191,7 +65191,15 @@ async function jimTurn(text, photos, opts){
   // — a small single-purpose prompt that cannot get lost — parses it and the row
   // is built from that. HIS SEQUENCE is preserved; nothing here reorders.
   try{
-    var _selfWo=(!_forCode && window.cl && typeof isTrainer==='function' && isTrainer(cl.code));
+    // WAS TRAINER ONLY, AND THAT IS WHY A CLIENT'S DICTATED SESSION VANISHED.
+    // Live at v7.980.474 on a client account: "push day, bench press 185 for
+    // 8 8 6, incline dumbbell press 60s for 10, cable flys 3 sets of 12" came
+    // back "Logged your Push Day:" with the whole list itemised, and wrote
+    // NOTHING. The extractor that exists precisely for this had an isTrainer()
+    // gate on it, so it had never once run for a client.
+    // The gate that matters is _forCode -- this reads the signed-in account's
+    // own sentence -- and that stays.
+    var _selfWo=(!_forCode && !!window.cl);
     if(_selfWo && !hasPhoto && !workoutLogs.items.length && !_jimIsAdminOnly(text)
        && _jimLooksLikeWorkout(text) && typeof _jimExtractWorkout==='function'){
       var _sw=null;
@@ -65354,13 +65362,13 @@ async function jimTurn(text, photos, opts){
     var _fbDay=(typeof _jimAnchorDay==='function') ? _jimAnchorDay(text) : null;
     var _fbAte=(typeof _JT_PAST_MEAL_RE!=='undefined') && _JT_PAST_MEAL_RE.test(String(text||''));
     if(!foodAdds.items.length && !_rawReplyHadFoodTag && !hasPhoto
-       && _fbDay!=null && _fbDay>0 && _fbAte && !_jimIsAdminOnly(text)){
+       && (_fbAte || _jimLooksLikeMeal(text)) && !_jimIsAdminOnly(text)){
       var _fbMeal=null;
       try{ _fbMeal=await _jimExtractMeal(String(text||'')); }catch(e){ _fbMeal=null; }
       if(_fbMeal && _fbMeal.name){
-        _fbMeal.daysAgo=_fbDay;
+        if(_fbDay!=null && _fbDay>0) _fbMeal.daysAgo=_fbDay;
         foodAdds.items.push(_fbMeal);
-        _fbFired=true; _fbName=_fbMeal.name; _fbDayN=_fbDay;
+        _fbFired=true; _fbName=_fbMeal.name; _fbDayN=(_fbDay>0?_fbDay:0);
         try{ console.info('jimTurn: no FOOD_LOG came back for a meal he reported on a named day — extractor used instead'); }catch(e){}
       }
     }
@@ -65772,8 +65780,9 @@ async function jimTurn(text, photos, opts){
   // was — a question his sentence already answered, next to a row that now
   // exists. Replaced with what landed, and only ever on a VERIFIED write.
   if(_fbFired && _foodVerified>0){
-    var _fbWhen=(_fbDayN===1) ? 'yesterday' : String(_dateStrDaysAgo(_fbDayN)||'').replace(/,\s*\d{4}$/,'');
-    reply='Logged \u2014 '+_fbName+', '+_fbWhen+'.';
+    var _fbWhen=(_fbDayN===1) ? 'yesterday'
+      : (_fbDayN>1 ? String(_dateStrDaysAgo(_fbDayN)||'').replace(/,\s*\d{4}$/,'') : '');
+    reply='Logged \u2014 '+_fbName+(_fbWhen?(', '+_fbWhen):'')+'.';
   }
 
   // Attach a gym/workout photo to the referenced workout (id from RECENT WORKOUTS).
@@ -71570,6 +71579,24 @@ var _JIM_ECHO_ACTIVITY_RE=new RegExp(
   + "|workout|worked\\s+out|stretch|stretched|yoga|pilates|sauna|steps?|cardio"
   + "|legs?|arms?|chest|shoulders?|abs|core|glutes|squats?|deadlifts?|bench|curls?|press|rows)\\b",
   "i");
+// DOES THIS SENTENCE ASK FOR A MEAL TO BE LOGGED? The echo and the write must
+// answer this identically or the preview is a promise that breaks, so both call
+// this one function. Everything inside it is delegated to the readers already
+// shared with jimTurn.
+function _jimLooksLikeMeal(raw){
+  var t=String(raw||''); if(!t.trim()) return false;
+  try{ if(_jimLooksLikeWorkout(t)||_JIM_CARDIO_RE.test(t)||_JIM_ECHO_ACTIVITY_RE.test(t)) return false; }catch(e){}
+  var ate=false; try{ ate=_JT_PAST_MEAL_RE.test(t); }catch(e){}
+  var wt=null, st=null; try{ wt=_jimHarvestWeight(t); st=_jimHarvestSteps(t); }catch(e){}
+  if((wt!=null || st!=null) && !ate) return false;      // a weigh-in is not a meal
+  if(ate) return true;
+  try{ if(_jimAnchorSlot(t)) return true; }catch(e){}
+  var admin=false; try{ admin=_jimIsAdminOnly(t); }catch(e){}
+  var asks=/\?/.test(t)
+    || /^\s*(?:what|why|when|where|who|how|should|shouldn|can|could|do|does|did|is|are|was|were|will|would|any)\b/i.test(t.trim());
+  var words=''; try{ words=_jimEchoWords(t); }catch(e){}
+  return !!(!admin && !asks && /[A-Za-z]{3,}/.test(words));
+}
 function _jimEchoRead(raw){
   var out=[];
   try{
@@ -71618,6 +71645,8 @@ function _jimEchoRead(raw){
     var wordy=/[A-Za-z]{3,}/.test(words);
     var moved=false; try{ moved=_JIM_ECHO_ACTIVITY_RE.test(t); }catch(e){}
     var plainFood=(wordy && !admin && !asks && !moved);
+    void plainFood;                       // kept for readability; the answer is below
+    plainFood=_jimLooksLikeMeal(t);
     // A WEIGH-IN IS NOT A MEAL, AND NEITHER IS A STEP COUNT -- the same rule
     // _jtNamedFoodish already applies for the same reason. "scale said 197 this
     // morning" carries a breakfast anchor in the words "this morning", and
