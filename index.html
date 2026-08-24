@@ -26327,7 +26327,8 @@ async function _jvJarvisCalendarAct(parsed){
     if(hits.length!==1) return {ok:false, line:'I’m not sure which client you mean by “'+_escHtml(parsed.owner_name)+'” — say the exact name or code.'};
     owner=hits[0]; ownerName=(CLIENTS[owner]||{}).name||owner;
   }
-  var title=String(parsed.title||'').trim() || (_CB_KINDS.filter(function(k){return k.k===parsed.kind;})[0]||{}).label || 'Block';
+  // The model built this out of his sentence, so it is ours to case.
+  var title=_titleCap(String(parsed.title||'').trim()) || (_CB_KINDS.filter(function(k){return k.k===parsed.kind;})[0]||{}).label || 'Block';
 
   if(parsed.action==='create'){
     if(!parsed.time) return {ok:false, line:'I didn’t catch a time — say it again with when.'};
@@ -28826,7 +28827,9 @@ function _apTitleFrom(s){
     .replace(/\b\d{1,2}(:\d{2})?\s*(am|pm)\b/ig,' ')
     .replace(/\b(a|an|the|my|me|i|with|please|can|could|you|have|got|need|put|down|in|on|at)\b/ig,' ')
     .replace(/[.,;!?\-–—]+/g,' ').replace(/\s+/g,' ').trim();
-  return x||null;
+  // Carved out of his sentence by this function, so it is a title we
+  // built and it gets cased like one.
+  return x ? _titleCap(x) : null;
 }
 // ===== BLOCKING TIME OFF BY VOICE (Yusuf, ruling, 23 Aug) =================
 // "Block time off" is deleted from the menu, and the ruling is explicit that it
@@ -28912,6 +28915,43 @@ async function _apBlockCommand(t){
 }
 // "tomorrow" is a sentence opener here, not a mid-sentence word.
 function _apCap(x){ x=String(x||''); return x.charAt(0).toUpperCase()+x.slice(1); }
+// ===== A TITLE YOU MADE AND A TITLE HE MADE LOOK THE SAME ================
+// (Yusuf, live, 24 Aug.) On his grid the Monday walk he typed himself reads
+// "Morning Walk". The Tuesday walk Jarvis built out of "schedule a morning
+// walk for me tomorrow at 6:00am" read "Morning walk". Same thing, same grid,
+// two cases, and the wrong one was ours.
+//
+// ONLY EVER ON A TITLE THE ASSISTANT CONSTRUCTED OUT OF A SENTENCE. A title he
+// typed is his words and is never touched. That is exactly why this is called
+// where a title is BUILT and never at the render: a renderer cannot tell his
+// title from ours, so capitalising there would rewrite his own typing while
+// quoting the law that forbids it.
+//
+// EXISTING CAPITALS INSIDE A WORD SURVIVE. "StairMaster" and "MyFitnessPal"
+// are how those are written; lowercasing first and re-capitalising loses them,
+// so only the leading letter is ever touched.
+//
+// The small joining words stay down after the first word, which is what the
+// share card already does and what title case means everywhere else here:
+// "Silver Diner Dinner", "Philly Cheesesteak Omelet with Pancakes".
+//
+// THE ONLY WORD-BY-WORD CAPITALISER THE ASSISTANT USES. The file also carries
+// _titleCaseShare (the share card) and a _titleCase nested inside
+// rendTodayFood, both identical to this and both owned elsewhere. Do not add a
+// fourth; call this one.
+function _titleCap(s){
+  var t=String(s==null?'':s);
+  if(!t) return t;
+  var small={and:1,or:1,of:1,with:1,the:1,a:1,an:1,in:1,to:1,on:1};
+  return t.split(' ').map(function(w,i){
+    if(!w) return w;
+    var lead=w.match(/^[^A-Za-z0-9]*/)[0], core=w.slice(lead.length);
+    if(!core) return w;
+    var lc=core.toLowerCase();
+    if(i>0 && small[lc]===1) return lead+lc;
+    return lead+core.charAt(0).toUpperCase()+core.slice(1);
+  }).join(' ');
+}
 function _apClock(h){
   var hh=Math.floor(h), mm=Math.round((h-hh)*60);
   var ap=hh<12?'am':'pm'; var d=hh%12; if(d===0) d=12;
@@ -59783,7 +59823,7 @@ async function looseFormatWorkout(text){
     var parsed=JSON.parse(raw);
     if(parsed&&Array.isArray(parsed.exercises)&&parsed.exercises.length){
       var lines=parsed.exercises.map(function(ex){ var n=(ex&&ex.name||'').trim(); var d=(ex&&ex.did||'').trim(); return n ? (d? (n+' — '+d):n) : ''; }).filter(Boolean);
-      if(lines.length) return {title:(parsed.title||'').trim(), desc:lines.join('\n')};
+      if(lines.length) return {title:_titleCap(String(parsed.title||'').trim()), desc:lines.join('\n')};
     }
   }catch(e){ console.error('looseFormatWorkout', e); }
   return null;
@@ -64376,8 +64416,7 @@ var _JIM_SPLIT_RE=new RegExp('\\b((?:push|pull|(?:upper|lower|full)(?:\\s*body)?
 function _jimTitleFromWords(text){
   var m=_JIM_SPLIT_RE.exec(String(text||''));
   if(!m) return '';
-  return String(m[1]).replace(/\s*(?:and|&|\/|\+)\s*/gi,' ').replace(/\s+/g,' ').trim()
-    .replace(/\b[a-z]/g, function(c){ return c.toUpperCase(); });
+  return _titleCap(String(m[1]).replace(/\s*(?:and|&|\/|\+)\s*/gi,' ').replace(/\s+/g,' ').trim());
 }
 // A PURE EXTRACTOR, because the existing one is not one. parseSpokenWorkout
 // looks like the right tool and is not: it is the manual workout SHEET's filler
@@ -64703,6 +64742,23 @@ async function jimTurn(text, photos, opts){
     if(!o) return o;
     if(opts.timeLocal){ o.time=opts.timeLocal; o.eat_time=opts.timeLocal; }
     if(opts.durationMinutes && !o.duration) o.duration=String(opts.durationMinutes);
+    return o;
+  }
+  // TITLE CASE ON WHAT THE ASSISTANT NAMED (Yusuf, live, 24 Aug). A workout
+  // title and a meal name that this engine constructed out of a sentence are
+  // ours, so they get cased the way he cases his own: "Morning Walk", not
+  // "Morning walk".
+  // DELIBERATELY NOT IN logWorkoutFromOffer OR logFoodFromChat, which look like
+  // the tidier single seam and are the wrong one — the calendar logs a block
+  // through logWorkoutFromOffer carrying a title HE TYPED, and casing it there
+  // would rewrite his own words. This sits on the engine's own pin chain
+  // instead, which only ever carries offers the engine authored.
+  function _pinTitle(o){
+    if(!o) return o;
+    try{
+      if(o.title) o.title=_titleCap(String(o.title));
+      if(o.name) o.name=_titleCap(String(o.name));
+    }catch(e){}
     return o;
   }
   // THEIR WORDS ARE THE ENTRY (ruled 10 Aug): the display line is the raw
@@ -65042,7 +65098,7 @@ async function jimTurn(text, photos, opts){
       try{ console.warn('jimTurn: refusing a model-shaped note —', String(extractedLog.log.notes).slice(0,90)); }catch(e){}
       extractedLog.log.notes = null;
     }
-    var newId = await logWorkoutFromOffer(_pinVoice(_pinClock(_pinDay(extractedLog.log)), 'client_text'), _forCode);
+    var newId = await logWorkoutFromOffer(_pinTitle(_pinVoice(_pinClock(_pinDay(extractedLog.log)), 'client_text')), _forCode);
     if(newId==='dup'){
       // the same workout landed moments ago — stay quiet rather than log it twice,
       // and count it as verified: the earlier attempt already wrote the row.
@@ -65070,7 +65126,7 @@ async function jimTurn(text, photos, opts){
       try{
         var _woSObj = JSON.parse(_woSalvage[1].trim());
         if(_woSObj){
-          var _woSId = await logWorkoutFromOffer(_pinVoice(_pinClock(_pinDay(_woSObj)), 'client_text'), _forCode);
+          var _woSId = await logWorkoutFromOffer(_pinTitle(_pinVoice(_pinClock(_pinDay(_woSObj)), 'client_text')), _forCode);
           if(_woSId){ _woVerified++; showToast('✓ Workout logged'); }
         }
       }catch(e){ console.error('WORKOUT_LOG salvage parse failed', e, _woSalvage[1]); }
@@ -65156,7 +65212,7 @@ async function jimTurn(text, photos, opts){
         var _one=(foodAdds.items.length===1);
         var _clause=_one ? text : String(addOffer.words||'').trim();
         var _anchored=_clause ? _pinStatedTime(addOffer, _clause) : addOffer;
-        var aOk = await logFoodFromChat(_pinVoice(_pinClock(_pinDay(_anchored)), 'meal_text'), addPhoto, _forCode);
+        var aOk = await logFoodFromChat(_pinTitle(_pinVoice(_pinClock(_pinDay(_anchored)), 'meal_text')), addPhoto, _forCode);
         if(aOk){ _foodToasts++; _foodVerified++; window.__chatFoodSig[_sig]=_nowFa; }
         else console.error('food save failed for offer', addOffer);
       }
@@ -65185,7 +65241,7 @@ async function jimTurn(text, photos, opts){
       try{
         var _sObj = JSON.parse(_salvage[1].trim());
         if(_sObj && _sObj.name){
-          var _sOk = await logFoodFromChat(_pinVoice(_pinClock(_pinDay(_sObj)), 'meal_text'), photoSnapshot, _forCode);
+          var _sOk = await logFoodFromChat(_pinTitle(_pinVoice(_pinClock(_pinDay(_sObj)), 'meal_text')), photoSnapshot, _forCode);
           if(_sOk){ _foodVerified++; showToast('✓ '+(_sObj.name||'Meal')+' logged'); }
         }
       }catch(e){ console.error('food salvage parse failed', e); }
@@ -65426,7 +65482,8 @@ async function _jtCalendarExtractClient(t){
 async function _jvJarvisCalendarActClient(parsed){
   if(!parsed || !parsed.action || parsed.action==='none') return null;
   var owner=(window.cl||{}).code||'', coach=(window.cl||{}).coach_code||'';
-  var title=String(parsed.title||'').trim() || (_CB_KINDS.filter(function(k){return k.k===parsed.kind;})[0]||{}).label || 'Block';
+  // The model built this out of his sentence, so it is ours to case.
+  var title=_titleCap(String(parsed.title||'').trim()) || (_CB_KINDS.filter(function(k){return k.k===parsed.kind;})[0]||{}).label || 'Block';
 
   if(parsed.action==='create'){
     if(!parsed.time) return {ok:false, line:'I didn’t catch a time — say it again with when.'};
@@ -71372,7 +71429,7 @@ async function _jimRun(plan, ds) {
         var iso = _timeToISO(String(a.time || '').trim(), ds || todayDateStr);
         // Was a bare fetch whose result was thrown away. A 4xx resolves, so the
         // title went onto the "Logged" list either way.
-        var _wr = await sbWrite('POST', 'workout_logs', {client_code: cl.code, title: String(a.title),
+        var _wr = await sbWrite('POST', 'workout_logs', {client_code: cl.code, title: _titleCap(String(a.title)),
                                 description: String(a.detail || ''), duration: null,
                                 date_str: ds || todayDateStr, logged_at: iso});
         (_wr.ok ? did : failed).push(String(a.title));
