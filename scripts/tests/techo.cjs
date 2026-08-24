@@ -11,7 +11,7 @@ global._jimQuickFoodMatch=function(){ return null; };
 global._jimIsAdminOnly=function(t){ var w=String(t||'').toLowerCase().split(/[^a-z]+/).filter(Boolean); if(!w.length) return false; return w.every(function(x){ return /^(yes|ok|okay|sure|log|logged|it|that|please|thanks|do|make|set|change|the|a|an|my|me|i)$/.test(x); }); };          // no saved foods: no numbers
 eval([ one('var _JIM_DAY_BACK_RE='), one('var _JIM_DAY_NAGO_RE='), one('var _JIM_DOW='),
   one('var _JIM_WORDNUM='), one('var _JIM_DAY_MAX='), one('var _JIM_WEEKS_AGO_RE='),
-  one('var _JIM_MONTHS='), multi('var _JIM_WO_RE=new RegExp('), multi('var _JIM_CARDIO_RE=new RegExp('), multi('var _JIM_ECHO_ACTIVITY_RE=new RegExp('), one('var _JIM_MERIDIEM_RE='),
+  one('var _JIM_MONTHS='), multi('var _JIM_SESSION_DAY ='), multi('var _JIM_WO_RE=new RegExp('), multi('var _JIM_CARDIO_RE=new RegExp('), multi('var _JIM_ECHO_ACTIVITY_RE=new RegExp('), one('var _JIM_MERIDIEM_RE='),
   multi('var _JIM_ANCHOR_SLOTS='), multi('var _JT_PAST_MEAL_RE=new RegExp('),
   multi('var _JV_SOLO_EVENT_RE=new RegExp('),
   grab(l=>l.startsWith('function _jimDateSaid(')), grab(l=>l.startsWith('function _jimAnchorDay(')),

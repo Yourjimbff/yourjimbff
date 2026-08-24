@@ -17,7 +17,7 @@ let bad=0;
 const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  FAIL  ')+label+(extra?('  '+extra):'')); };
 
 eval([
-  multi('var _JIM_WO_RE=new RegExp('), multi('var _JIM_CARDIO_RE=new RegExp('),
+  multi('var _JIM_SESSION_DAY ='), multi('var _JIM_WO_RE=new RegExp('), multi('var _JIM_CARDIO_RE=new RegExp('),
   multi('var _JIM_CLAIM_VERB ='),
   multi('var _JIM_CLAIM_EXISTS_RE=new RegExp('),
   multi('var _JIM_CLAIM_WO_RE=new RegExp('), multi('var _JIM_CLAIM_WT_RE=new RegExp('),

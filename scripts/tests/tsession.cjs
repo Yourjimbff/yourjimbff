@@ -18,7 +18,7 @@ let bad=0;
 const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  FAIL  ')+label+(extra?('  '+extra):'')); };
 
 eval([
-  multi('var _JIM_WO_RE=new RegExp('), multi('var _JIM_CARDIO_RE=new RegExp('),
+  multi('var _JIM_SESSION_DAY ='), multi('var _JIM_WO_RE=new RegExp('), multi('var _JIM_CARDIO_RE=new RegExp('),
   multi('var _JIM_DID_SESSION_RE=new RegExp('), multi('var _JIM_INTENDS_RE=new RegExp('),
   multi('var _JIM_CLAIM_EXISTS_RE=new RegExp('),
   grab(l=>l.startsWith('function _jimLooksLikeWorkout(')),
@@ -65,6 +65,19 @@ t(/_swBare=\(!_swEx\.length && _jimSaysDidSession\(text\)\)/.test(src), 'the fal
 t(/if\(_swEx\.length \|\| _swBare\)\{/.test(src), 'and writes on exercises OR a bare session');
 t(/if\(_jimLooksLikeWorkout\(text\)\) _woConfirmMatch=_JIM_CLAIM_EXISTS_RE\.exec\(reply\)/.test(src),
   'the claim net consults the new pattern, session sentences only');
+
+// ===== ONE LIST OF SESSION WORDS, NOT THREE (24 Aug) ====================
+// Three lists had drifted; all three knew leg/push/pull day and none knew
+// chest, back, arms or shoulders. They share one fragment now.
+eval([multi('var _JIM_CLAIM_VERB ='), multi('var _JIM_CLAIM_WO_RE=new RegExp(')].join('\n'));
+console.log('\n  every split he trains is a session, in all three readers:');
+['chest day','back day','arm day','arms day','shoulder day','shoulders day',
+ 'leg day','push day','pull day','core day','abs day','glutes day',
+ 'upper body','lower body','full body'].forEach(function(d){
+  t(_jimLooksLikeWorkout('did my '+d+' at 6')===true, 'is a session   ', d);
+  t(_jimSaysDidSession('did my '+d+' at 6')===true,   'logs a session ', d);
+  t(_JIM_CLAIM_WO_RE.test('Put that down for you — '+d+', 6 AM')===true, 'a claim about it', d);
+});
 
 console.log(bad? '\n'+bad+' FAILED' : '\nall pass');
 process.exit(bad?1:0);

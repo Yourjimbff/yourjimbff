@@ -4,7 +4,7 @@ function grab(p){ const a=L.findIndex(p); let b=a; while(L[b]!=='}') b++; return
 function multi(sw){ const a=L.findIndex(l=>l.trim().startsWith(sw)); let b=a; while(!/;\s*$/.test(L[b])) b++; return L.slice(a,b+1).join('\n'); }
 eval([multi('var _JT_CAL_RE=new RegExp('), multi('var _JT_PAST_MEAL_RE=new RegExp('),
  multi('var _JT_SCHED_INTENT_RE=new RegExp('), multi('var _JIM_CARDIO_RE=new RegExp('),
- multi('var _JIM_WO_RE=new RegExp('), multi('var _JIM_MEALREL_RE=new RegExp('),
+ multi('var _JIM_SESSION_DAY ='), multi('var _JIM_WO_RE=new RegExp('), multi('var _JIM_MEALREL_RE=new RegExp('),
  multi('var _JIM_MEALREL2_RE=new RegExp('),
  grab(l=>l.startsWith('function _titleCap(')), grab(l=>l.startsWith('function _jtCalendarClaims(')),
  grab(l=>l.startsWith('function _jimHarvestSteps(')), grab(l=>l.startsWith('function _jimLooksLikeWorkout(')),
