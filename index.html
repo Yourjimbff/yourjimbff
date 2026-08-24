@@ -9641,7 +9641,18 @@ async function checkForUpdate(){
     // or be prevented by, a question about what version it is.
     if(!live || live===APP_VERSION) return;
     if(typeof _hasActiveWoDraft==='function' && _hasActiveWoDraft()){ return; } // don't yank the page out from under a workout in progress
+    // AND NOT THROUGH A SIGN-IN EITHER (Yusuf, ruling, 24 Aug — the wrong-person
+    // boot). Same reasoning as the draft guard directly above, and the same shape.
+    // This is fired and forgotten on load while a 200ms timer starts auto-login, so
+    // on a cold load RIGHT AFTER A DEPLOY — the only condition this was ever seen in
+    // — it could navigate away with a sign-in half-run, after doLogin had already
+    // written yjb_logged_in and yjb_self_client but before the app finished coming
+    // up on them. The update is not lost: it is simply taken on the next launch,
+    // which is exactly what the draft guard already does.
+    if(window._authBusy){ window._updateDeferred = true; return; }
     sessionStorage.setItem('yjb_just_updated','1');
+    // Anything still deciding whether to start work needs to know the page is going.
+    window._navigatingAway = true;
     // reload(true) is ignored by modern browsers (serves cache). Navigate with a cache-bust
     // query param to GUARANTEE the fresh deploy is fetched from the network.
     window.location.replace(window.location.pathname + '?v=' + Date.now());
@@ -9651,8 +9662,17 @@ window.addEventListener('load', function(){
   // tidy the cache-bust param left by an auto-update or manual refresh
   if(location.search.indexOf('v=')>-1){ try{ history.replaceState(null,'',location.pathname); }catch(e){} }
   try{ if(location.search.indexOf('debug=1')>-1){ window._followDebug=true; } }catch(e){}
-  checkForUpdate(); // fire-and-forget; reloads only if a newer version is live
+  // THE TWO MUST NOT OVERLAP. This used to be fire-and-forget beside a 200ms timer
+  // that started signing someone in. Bounded, because _liveVersion allows itself six
+  // seconds and nobody should wait that long to open the app: if the version question
+  // has not answered in 1.5s we stop waiting and sign in, and the guard inside
+  // checkForUpdate then refuses to navigate through it.
   setTimeout(async function(){
+    try{
+      await Promise.race([ checkForUpdate(),
+                           new Promise(function(r){ setTimeout(r, 1500); }) ]);
+    }catch(e){}
+    if(window._navigatingAway) return;   // a reload is already in flight; start nothing
     var savedCode = localStorage.getItem('yjb_logged_in');
     // No roster ships in this file any more, so a returning device seeds its OWN
     // record from the copy saved at last sign-in — auto-login stays instant and
@@ -9666,8 +9686,12 @@ window.addEventListener('load', function(){
     }
     if(savedCode && !CLIENTS[savedCode]) await loadRosterOrCarryOn();
     if(savedCode && CLIENTS[savedCode]){
-      document.getElementById('lcode').value = savedCode;
-      await doLogin();
+      // The field is still filled, because someone whose sign-in fails should see the
+      // code that was tried. It is no longer what decides — the code is passed.
+      try{ var _f=document.getElementById('lcode'); if(_f) _f.value = savedCode; }catch(e){}
+      window._authBusy = true;
+      try{ await doLogin(savedCode); }
+      finally{ window._authBusy = false; }
     }
   }, 200);
 });
@@ -10463,16 +10487,29 @@ function showLoading(show){
 }
 
 // ===== LOGIN =====
-async function doLogin(){
-  try{ return await _doLoginInner(); }
+// IDENTITY IS AN ARGUMENT, NOT A TEXT BOX (Yusuf, ruling, 24 Aug — the
+// wrong-person boot). Auto-login used to write the saved code INTO #lcode and
+// then call doLogin(), which read it straight back out of the DOM. So the app's
+// answer to "who is signed in" was whatever was in a visible input at the moment
+// it looked — and browser autofill, a value left over from a previous session, or
+// a reload landing mid-flight can all change that between the write and the read.
+// That is how stored state could say one account and the app boot as another.
+// The typed path is untouched: called with no argument, it reads the box exactly
+// as it always has, which is right — for a human typing, the box IS the answer.
+async function doLogin(code){
+  try{ return await _doLoginInner(code); }
   catch(e){
     try{ window.__err && window.__err('LOGIN FAILED: '+(e&&e.message||e), (e&&e.stack)?String(e.stack).split('\n')[1]:''); }catch(_){}
     try{ showLoading(false); }catch(_){}
     throw e;
   }
 }
-async function _doLoginInner(){
-  var entered = document.getElementById('lcode').value.trim().toLowerCase();
+async function _doLoginInner(code){
+  // An explicit code always wins. Only fall back to the field when nobody passed
+  // one, which is the human-typing path and the only case where the box is truth.
+  var entered = (code != null && String(code).trim())
+    ? String(code).trim().toLowerCase()
+    : String(((document.getElementById('lcode')||{}).value)||'').trim().toLowerCase();
   // If this file already knows the code, sign in now and let the roster land behind
   // us — waiting on the network to confirm something we already know is why a slow
   // server felt like a broken app. Only an unknown code actually needs the lookup.
