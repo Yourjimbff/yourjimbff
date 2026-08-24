@@ -25885,8 +25885,28 @@ var _JT_SCHED_INTENT_RE=new RegExp(
   '\\b(every|schedule|scheduling|book|booking|move|moving|remind|reminder|set\\s*up|cancel|reschedule|from now on|going forward)\\b'
   +'|\\bput\\s+[a-z]+.?s?\\s+[a-z]+\\s+at\\b', 'i');
 // True when the calendar may keep this sentence.
+// THE VETO IS JUDGED ON THE WHOLE MESSAGE, NOT THE FRAGMENT.
+// "for dinner at six o'clock. I had silver diner, Philly cheesesteak omelet
+// with two pancakes" — dictated, so the recogniser put a period after the time.
+// _jtSplit cuts on periods, which left TWO items: "for dinner at six o'clock"
+// and "I had silver diner...". The past-meal veto lives on the words "I had",
+// and those went into the OTHER half — so the orphaned time phrase looked like
+// a bare schedule, the calendar claimed it, and he got an event titled with two
+// words lifted out of the middle of his own sentence while the meal he actually
+// reported was never logged as one. (Live, 23 Aug, the gym gold bar.)
+//
+// A fragment cannot be judged on its own: the evidence that this is a REPORT
+// and not a REQUEST is somewhere in the sentence he spoke, not necessarily in
+// the piece the splitter happened to hand over. So the whole message gets the
+// veto, and every fragment of it inherits the answer.
+//
+// AND WHEN IT IS UNSURE, IT LOGS. A log is correctable by one more sentence; a
+// wrong calendar event is clutter he has to go and find.
 function _jtCalendarClaims(t){
   if(!_JT_CAL_RE.test(t)) return false;
+  var whole=t;
+  try{ if(window._jtWholeMsg && String(window._jtWholeMsg).indexOf(String(t))>=0) whole=String(window._jtWholeMsg); }catch(e){}
+  if(_JT_PAST_MEAL_RE.test(whole) && !_JT_SCHED_INTENT_RE.test(whole)) return false;
   if(_JT_PAST_MEAL_RE.test(t) && !_JT_SCHED_INTENT_RE.test(t)) return false;
   return true;
 }
@@ -35142,7 +35162,13 @@ async function _jtTurn(t, opts){
   if(_jtIsQuestion(t)) out=await _jtSingle(t);
   else {
     var items=_jtSplit(t);
-    out=(items.length<=1) ? await _jtSingle(items[0]||t) : await _jtBatch(items);
+    // Every fragment below is judged against the sentence it came out of — see
+    // _jtCalendarClaims. Cleared in the finally so a later turn can never be
+    // judged against an older message.
+    try{ window._jtWholeMsg=String(t||''); }catch(e){}
+    try{
+      out=(items.length<=1) ? await _jtSingle(items[0]||t) : await _jtBatch(items);
+    } finally { try{ window._jtWholeMsg=null; }catch(e){} }
   }
   if(ab && out) return {html:_escHtml(ab)+'<br><br>'+(out.html||''), speak:(ab+' '+(out.speak||''))};
   if(ab && !out) return {html:_escHtml(ab), speak:ab};
@@ -71074,6 +71100,43 @@ async function jimReadShot(dataUrl, ds) {
 // one out of sight, into a field with no reason to be that small. Same contract
 // as jtGrow now — one ceiling (_composerMax), empty goes back to nothing, and
 // the field only scrolls inside itself once it has genuinely run out of room.
+// ===== THE VIEW FOLLOWS THE FIELD =========================================
+// "as I typed and expanded, it went off the screen as opposed to having the
+// screen move down with it, which I believe it should." (Yusuf, live, 23 Aug.)
+//
+// jimGrow sets a new height and stops there. Nothing re-measures where the bar
+// now ENDS, so past a few lines the field — and the send button beside it —
+// grow down past the bottom of the window and he is typing somewhere he cannot
+// see. Same class the call card hit: content changes size after placement and
+// nothing looks again.
+//
+// visualViewport, not innerHeight, because the keyboard is up while he types
+// and innerHeight does not know about it — measuring against the wrong bottom
+// would "fix" it into the space the keyboard is already covering.
+//
+// It scrolls the ROW, not the textarea: the field's siblings are the send,
+// camera and mic buttons, and a fix that keeps the text visible while leaving
+// the button he is reaching for underneath the fold has not fixed anything.
+function _jimFollowGrowth(el){
+  try{
+    if(!el) return;
+    var row=(el.closest && (el.closest('.jimRow')||el.closest('.jimBar'))) || el;
+    var r=row.getBoundingClientRect();
+    var vh=0;
+    try{ vh=(window.visualViewport && window.visualViewport.height) || window.innerHeight || 0; }catch(e){ vh=window.innerHeight||0; }
+    if(!vh) return;
+    var over=r.bottom-(vh-10);          // 10px so it never sits flush on the edge
+    if(over<=0.5) return;
+    var sc=row.parentElement;
+    while(sc && sc!==document.body){
+      var oy=''; try{ oy=getComputedStyle(sc).overflowY; }catch(e){}
+      if(sc.scrollHeight>sc.clientHeight+2 && /auto|scroll/.test(oy)) break;
+      sc=sc.parentElement;
+    }
+    if(sc && sc!==document.body && sc.scrollHeight>sc.clientHeight+2) sc.scrollTop+=over;
+    else if(window.scrollBy) window.scrollBy(0, over);
+  }catch(e){}
+}
 function jimGrow(el){
   try{
     if(!el) return;
@@ -71105,6 +71168,9 @@ function jimGrow(el){
     // no input event), and the clear on send. So this is the one place the
     // draft has to be written, rather than three call sites that can drift.
     try{ draftSave('bar', el.value); }catch(e){}
+    // It just got taller. Keep its bottom edge, and the send button on it, on
+    // screen — see _jimFollowGrowth.
+    try{ _jimFollowGrowth(el); }catch(e){}
     // The bar just changed shape under two floating controls. _jimFabDodge is
     // driven by scroll and resize, and typing is neither — without this the fab
     // sits on the grown field for up to a second, which is the exact collision
