@@ -2198,6 +2198,21 @@ body.cov-open #covOv{display:flex;}
    not an exception granted to this surface.
    A store that has not been read gets NO flag at all. A colour sitting on
    a read that never landed is a claim about a person we cannot make. */
+/* THIS CALL. Drawn only when the overview was opened from an appointment, and
+   first in the column because it is what he tapped. Cancel is the quiet
+   destructive tone the rest of the app uses, never a gold button. */
+.covCall .covCallWhen{font-size:17px;font-weight:800;color:#f0ece4;line-height:1.25;
+  display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;}
+.covCallKind{font-size:9.5px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;
+  color:rgba(240,236,228,0.55);border:1px solid rgba(240,236,228,0.16);border-radius:6px;padding:2px 6px;}
+.covCallX{color:#ff8a5c;border-color:rgba(255,107,107,0.32);}
+.covCallX:hover{color:#ff6b6b;border-color:#ff6b6b;}
+.covCallDone{margin-top:10px;font-size:13.5px;font-weight:700;color:var(--m2);line-height:1.5;}
+.covMove{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center;}
+.covMoveT{flex:0 0 auto;min-height:44px;background:#151515;border:1px solid #2b2b2b;
+  border-radius:11px;color:#f0ece4;font-size:15px;font-weight:800;padding:0 11px;
+  font-family:'Plus Jakarta Sans',sans-serif;font-variant-numeric:tabular-nums;}
+.covMove .covAct{min-width:104px;}
 .covClocks{display:grid;grid-template-columns:1fr 1fr;gap:9px;}
 .covClock{background:rgba(0,0,0,0.28);border:1px solid rgba(240,236,228,0.08);
   border-radius:13px;padding:11px 12px 12px;min-width:0;}
@@ -16650,8 +16665,97 @@ function covToggleMore(code){
   }catch(e){}
   if(open) _covLoadMore(code);
 }
+// THIS CALL — only ever drawn when the overview was opened from an appointment,
+// so a client card opened any other way is exactly as it was.
+// It consumes the calendar's own two operations rather than repeating them:
+// wkApptCancel and wkApptMoveSubmit already confirm, write through the trainer
+// door, toast their own outcome and refresh the week. A second implementation
+// of "cancel this call" is how two surfaces start disagreeing about whether a
+// call happened.
+function _covCallHtml(code){
+  var key=window._covApptKey; if(!key) return '';
+  var r=null; try{ r=(window._wkApptIndex||{})[key]; }catch(e){}
+  // The calendar rebuilds that index on every load. If the row has gone, draw
+  // NOTHING — a Cancel button that resolves to no row is the dead control this
+  // whole block exists to avoid.
+  if(!r) return '';
+  var when=''; try{ when=_jvSpokenTime(new Date(r.at)); }catch(e){}
+  var chip=''; try{ chip=_schKindChip(r); }catch(e){}
+  var body;
+  if(window._covApptDone){
+    body='<div class="covCallDone">'+_escHtml(window._covApptDone)+'</div>';
+  } else {
+    var btns='<button class="covAct covCallX" onclick="covCancelCall()">'
+      + (r.kind==='vip' ? 'Cancel just today' : 'Cancel this call') + '</button>';
+    // RESCHEDULE EXISTS ONLY FOR A STANDING CALL, and that is not this block
+    // being lazy — it is the truth about the door underneath. trainer.js's move
+    // handler queries vip_calls and nothing else, so a one-off booking has no
+    // safe move operation at all. The calendar's own card states that gap
+    // rather than shipping a button that cannot work; so does this.
+    if(r.kind==='vip') btns+='<button class="covAct" onclick="covReschedule()">Reschedule</button>';
+    body='<div class="covActs">'+btns+'</div><div id="covCallMove"></div>';
+  }
+  return '<div class="covCard covCall" id="covCallBlock">'
+    + '<div class="covEy">This call</div>'
+    + '<div class="covCallWhen">'+_escHtml(when||'Time not recorded')
+      + (chip?'<span class="covCallKind">'+_escHtml(chip)+'</span>':'')+'</div>'
+    + body
+  +'</div>';
+}
+function _covRepaintCall(){
+  try{
+    var host=document.getElementById('covCallBlock');
+    if(!host || !host.parentNode) return;
+    var tmp=document.createElement('div');
+    tmp.innerHTML=_covCallHtml(window._jvDeepCode);
+    if(tmp.firstChild) host.parentNode.replaceChild(tmp.firstChild, host);
+    else host.parentNode.removeChild(host);
+  }catch(e){}
+}
+async function covCancelCall(){
+  var key=window._covApptKey; if(!key) return;
+  var line=null;
+  try{ line=await wkApptCancel(key); }catch(e){}
+  // undefined is "he backed out of the confirm", or the row had already gone.
+  // Nothing happened, so nothing on screen may change — least of all into a
+  // state that reads as cancelled.
+  if(line==null) return;
+  window._covApptDone=_wkPlainText(line);
+  _covRepaintCall();
+}
+function covReschedule(){
+  var key=window._covApptKey; if(!key) return;
+  var r=null; try{ r=(window._wkApptIndex||{})[key]; }catch(e){}
+  if(!r) return;
+  var host=document.getElementById('covCallMove'); if(!host) return;
+  var cur=''; try{ cur=_wkHHMMFromDate(new Date(r.at)); }catch(e){}
+  // ITS OWN ELEMENT ID, never the calendar panel's #wkApptMoveTime. Both
+  // surfaces can be in the DOM at once and getElementById returns whichever
+  // came first, which is exactly how a time gets read out of the wrong box.
+  host.innerHTML='<div class="covMove">'
+    +'<input class="covMoveT" id="covMoveTime" type="time" value="'+_escHtml(cur)+'">'
+    +'<button class="covAct covActGo" onclick="covRescheduleSubmit()">Move it</button>'
+    +'<button class="covAct" onclick="covRescheduleCancel()">Keep it</button>'
+  +'</div>';
+  try{ var i=document.getElementById('covMoveTime'); if(i) i.focus(); }catch(e){}
+}
+function covRescheduleCancel(){
+  var h=document.getElementById('covCallMove'); if(h) h.innerHTML='';
+}
+async function covRescheduleSubmit(){
+  var key=window._covApptKey; if(!key) return;
+  var t=document.getElementById('covMoveTime');
+  var val=t&&t.value;
+  if(!val){ try{ showToast('Pick a time first'); }catch(e){} return; }
+  var ok=false;
+  try{ ok=await wkApptMoveSubmit(key, val); }catch(e){}
+  covRescheduleCancel();
+  // Only a write the door confirmed is allowed to change what this says. A
+  // refusal has already toasted for itself and the row stays as it was.
+  if(ok===true){ window._covApptDone='Moved. The calendar has it.'; _covRepaintCall(); }
+}
 function _covPersonHtml(code, open){
-  return ''
+  return _covCallHtml(code)
     // WHO THEY ARE. Sex, age, height, weight, each drawn whether or not it is
     // filled and each carrying its own way to fill it. Already live, shipped
     // as it stands.
@@ -16696,6 +16800,9 @@ function covClose(){
   document.body.classList.remove('jv-deep-open');
   var ov=document.getElementById('covOv'); if(ov) ov.innerHTML='';
   window._jvDeepCode=null;
+  // The call block belongs to the appointment it was opened from. Left set, the
+  // next plain open of any client would draw a Cancel for somebody else's call.
+  window._covApptKey=null; window._covApptDone=null;
   _cdState.code=null; _cdState.date=null;
 }
 // THE ONE OPENER. opts: {ts, dateStr, callTarget}. dateStr wins outright over
@@ -16703,11 +16810,24 @@ function covClose(){
 // local day at log time, with no zone maths for this browser to get wrong.
 async function covOpen(code, opts){
   opts=opts||{};
-  var info=CLIENTS[code]; if(!info) return;
-  // Belt and braces, same as the feed: every list that could lead here already
-  // excludes a hidden client, but the route itself refuses rather than trusting
-  // that nothing upstream ever hands it a hidden code directly.
-  try{ if(typeof getHiddenClientSet==='function' && getHiddenClientSet()[code]) return; }catch(e){}
+  // A SILENT REFUSAL IS HOW A DEAD TAP IS BORN. This surface refuses in two
+  // cases and both are deliberate — but a caller that cannot tell "refused"
+  // from "opened" will happily wire a control that does nothing and never find
+  // out. It answers true when it opened and false when it did not, and names
+  // the reason in the console. The calendar found this the honest way: a
+  // consult is a LEAD with no client row, so every consult would have been a
+  // tap that did nothing at all.
+  var info=CLIENTS[code];
+  if(!info){
+    try{ console.warn('covOpen: no client record for "'+code+'" — nothing opened. A lead or consult has no client row; that caller needs its own surface.'); }catch(e){}
+    return false;
+  }
+  try{
+    if(typeof getHiddenClientSet==='function' && getHiddenClientSet()[code]){
+      try{ console.warn('covOpen: "'+code+'" is hidden — nothing opened, deliberately.'); }catch(e){}
+      return false;
+    }
+  }catch(e){}
   try{ _jvHydratePhones(); }catch(e){}
   // A REPAINT IS NOT A NAVIGATION. Seven places in this file reopen a client
   // card as their way of redrawing it — a saved contract, a logged sale, the
@@ -16726,7 +16846,16 @@ async function covOpen(code, opts){
   // A call target has to land on the call rail, and the rail lives behind the
   // door. Opening the door is the only way that route still arrives somewhere
   // rather than at a closed button with the thing it wanted inside it.
-  if(opts.callTarget){ window._jvDeepExpanded=true; window._covCallTarget=opts.callTarget; }
+  // THE CALL HE TAPPED IS THE REASON HE IS HERE, so when the overview is opened
+  // from an appointment it carries that call's own controls at the top, above
+  // everything else. apptKey rides on callTarget rather than as a fourth
+  // argument because it belongs to the same thing — cnoOpen reads only source,
+  // booking_id, vip_call_id and occurrence_date off that object and ignores it.
+  window._covApptKey=null; window._covApptDone=null;
+  if(opts.callTarget){
+    window._jvDeepExpanded=true; window._covCallTarget=opts.callTarget;
+    window._covApptKey=opts.callTarget.apptKey||null;
+  }
   var ov=document.getElementById('covOv');
   if(!ov){
     ov=document.createElement('div'); ov.id='covOv';
@@ -16747,6 +16876,7 @@ async function covOpen(code, opts){
   try{ cnLoadCoaching(code).then(function(){ cnAddCancel(code); }); }catch(e){}
   if(window._jvDeepExpanded) _covLoadMore(code);
   _covPaintDay();
+  return true;
 }
 function feedOpenDetail(idx){
   var it=(window._feedItems||[])[idx]; if(!it || it.kind==='moment') return;
@@ -21953,6 +22083,12 @@ async function wkApptCancel(key){
   try{ showToast(_wkPlainText(line)); }catch(e){}
   try{ schRefresh(); }catch(e){}
   wkPanelClose();
+  // ADDITIVE SEAM for the client overview, which offers this same cancel from
+  // its own surface and has to say what happened without re-deriving it. The
+  // outcome line was already built here and thrown away. Returning it changes
+  // nothing for the panel's own button, which ignores the return as before.
+  // undefined still means "no such row, or he backed out of the confirm".
+  return line;
 }
 function wkApptMovePrompt(key){
   var r=(window._wkApptIndex||{})[key]; if(!r) return;
@@ -21964,17 +22100,23 @@ function wkApptMovePrompt(key){
     +'<div class="wkDetBtns"><button class="wkDetBtn" onclick="wkApptClick(event,\''+key+'\')">Cancel</button>'
     +'<button class="wkDetBtn wkDetBtnGold" onclick="wkApptMoveSubmit(\''+key+'\')">Reschedule</button></div>';
 }
-async function wkApptMoveSubmit(key){
+// ADDITIVE SEAM, same reason as wkApptCancel above: `val` lets another surface
+// pass the time from ITS OWN input instead of this panel's. Omit it and this
+// reads #wkApptMoveTime exactly as it always has, so the panel's own button is
+// untouched. Two boxes sharing one element id is how getElementById quietly
+// reads the wrong one, and both surfaces can be in the DOM at once.
+async function wkApptMoveSubmit(key, val){
   var r=(window._wkApptIndex||{})[key]; if(!r) return;
-  var t=document.getElementById('wkApptMoveTime'); var val=t&&t.value;
-  if(!val){ try{ showToast('Pick a time first'); }catch(e){} return; }
+  if(val==null){ var t=document.getElementById('wkApptMoveTime'); val=t&&t.value; }
+  if(!val){ try{ showToast('Pick a time first'); }catch(e){} return false; }
   var w=null;
   try{ w=await trainerWrite('moveVipOccurrence',{client_code:r.code, vip_call_id:r.vip_call_id, date:r.occurrence_date, action:'move', new_time:val}); }catch(e){}
-  if(!w || !w.ok || !w.rows || !w.rows[0]){ try{ showToast('Could not move that — nothing changed'); }catch(e){} return; }
+  if(!w || !w.ok || !w.rows || !w.rows[0]){ try{ showToast('Could not move that — nothing changed'); }catch(e){} return false; }
   try{ showToast('✓ Moved to '+_cbSpokenTime(val+':00')); }catch(e){}
   try{ jvActRecord('Moved '+((CLIENTS[r.code]||{}).name||r.code)+'’s call to '+_cbSpokenTime(val+':00'), {kind:'vipmove', code:r.code, date:r.occurrence_date}); }catch(e){}
   try{ schRefresh(); }catch(e){}
   wkPanelClose();
+  return true;
 }
 function _wkLoggedLabel(e){
   // NO NAME PREFIX (Yusuf, ruling, 20 Aug) — the owner picker already says
