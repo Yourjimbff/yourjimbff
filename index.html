@@ -6359,8 +6359,11 @@ body.hasnav #tToday{padding-bottom:96px;}
 /* THE LIVE ECHO - quiet text under the field, no chrome, no box. It is a
    preview of what will be logged, so it must never look like a control. */
 .jimEchoHost:empty{display:none;}
-.jimEcho{margin:0 2px 6px;display:flex;flex-direction:column;gap:2px;}
+.jimEcho{margin:6px 2px 0;display:flex;flex-direction:column;gap:2px;}
 .jimEchoL{font-size:12.5px;line-height:1.35;color:var(--muted);opacity:0.92;}
+/* A failure is the one thing here that is not quiet. Red, per the palette. */
+.jimEchoL.jimEchoFail{color:#e0614f;opacity:1;font-weight:600;}
+.jimEchoL.jimEchoWait{opacity:0.7;}
 .jimEchoL:first-child{margin-top:0;}
 .jimWhenLine{display:flex;align-items:center;justify-content:space-between;gap:10px;
   width:100%;min-height:44px;margin:6px 0 0;padding:0 13px;
@@ -55419,23 +55422,26 @@ function gpSetCardioDays(n){ profile.cardio_days=Math.max(1,Math.min(7,parseInt(
 // Written here, read by the Day page to decide which slots to render. Stored as JSON
 // text in profiles.movement_prefs, the same pattern split_week already uses.
 //
-// THE MISSING-ROW LAW (agreed, both sessions): null, missing or unreadable means
-// walks none, CARDIO ON, recovery ON at 10 minutes. Cardio and recovery are both on
-// for everyone by default INCLUDING people who never open this screen — those people
-// have nothing stored at all, so the default lives here in code and never in the row.
-// The Day side carries the identical default; a side reading a missing value as "off"
-// would silently take the slot away from every client who hasn't touched Profile.
+// THE MISSING-ROW LAW, REVERSED (Yusuf, ruling, 24 Aug). It used to read: null,
+// missing or unreadable means CARDIO ON, recovery ON at 10 minutes, for everyone
+// including people who never opened this screen. It now means OFF.
+// His reason, and it retires the old law rather than bending it: a client's day
+// shows only what is actually PROGRAMMED for them. A standing card nobody
+// scheduled is furniture, and every client was carrying two.
+// Cardio and recovery switch on per client, when he programs them.
+// Absence is therefore OFF on both sides now, and the Day side carries the
+// identical default — the two must never disagree, whichever way the law runs.
 //
-// CARDIO IS NOT A NUMBER (Yusuf, ruling). cardio.days_per_week is dead: there is no
-// goal, no days-a-week and no count anywhere a client can see. Cardio is simply
-// present on the day, every day, for everyone — waiting to be tapped done or ignored,
-// never expiring and never counted — unless the client explicitly turns it off here,
-// which is a real answer and the only thing this card stores about it.
+// CARDIO IS NOT A NUMBER (Yusuf, ruling, still standing). cardio.days_per_week is
+// dead: there is no goal, no days-a-week and no count anywhere a client can see.
+// What changed on 24 Aug is only whether it is there at all by default — it is
+// not. When it IS on it behaves exactly as before: present on the day, waiting to
+// be tapped done or ignored, never expiring and never counted.
 // Nothing needed migrating: every one of the 73 profile rows held NULL for this column
 // when the shape changed, so no client had a days_per_week to lose. A legacy object is
 // still handled — days_per_week is ignored entirely and absence reads as ON, so an old
 // row can only ever resolve to the default, never to a silent "off".
-function _mvpDefaults(){ return {v:1, walks:[], cardio:{on:true}, recovery:{on:true, minutes:10}}; }
+function _mvpDefaults(){ return {v:1, walks:[], cardio:{on:false}, recovery:{on:false, minutes:10}}; }
 function _mvpClamp(v,lo,hi,fb){ v=parseInt(v,10); return isNaN(v)?fb:Math.max(lo,Math.min(hi,v)); }
 // Never trust a partial object: every gap is filled with the law's defaults, and every
 // value is clamped, so what render and save see is always the full agreed shape.
@@ -55461,9 +55467,9 @@ function _mvpPrefs(){
   // Exactly the recovery rule, for exactly the same reason: only an explicit false is
   // off. A legacy {days_per_week:N} object has no `on` at all and therefore reads ON,
   // which is the ruling's default — days_per_week is never consulted again.
-  if(p.cardio&&typeof p.cardio==='object') out.cardio.on=(p.cardio.on!==false);
+  if(p.cardio&&typeof p.cardio==='object') out.cardio.on=(p.cardio.on===true);
   if(p.recovery&&typeof p.recovery==='object'){
-    out.recovery.on=(p.recovery.on!==false);          // absent means ON — the law
+    out.recovery.on=(p.recovery.on===true);           // absent means OFF — the 24 Aug reversal
     out.recovery.minutes=_mvpClamp(p.recovery.minutes,5,60,10);
   }
   return out;
@@ -65123,7 +65129,12 @@ async function jimTurn(text, photos, opts){
   msgs.unshift({role:'user',content:systemBlock+'\n\nAcknowledge with "Got it." Then I\'ll start asking.'});
   msgs.splice(1,0,{role:'assistant',content:'Got it.'});
 
-  var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:msgs})});
+  // A CEILING ON THE WAIT. This call had no timeout at all, so a connection
+  // that never answers held the turn open with the field already emptied and
+  // nothing on screen. The function caps well under this, so its own error
+  // still arrives first in practice - this only bounds the case where even
+  // that hangs, and an abort surfaces as a connection failure, which it is.
+  var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:msgs}),signal:_sbTimeout(45000)});
   var data=await res.json();
   if(data && data.content){
     data.content.forEach(function(b){ if(b.type==='text' && b.text) reply+=b.text; });
@@ -71477,6 +71488,14 @@ function _jimWhenClearState(ds){ try{ delete _jimWhen[ds]; }catch(e){} }
 // THE DAY IS SHOWN AS A REAL DATE, at any distance back. "last week’s leg
 // day" reads "Mon, Aug 17" -- not the phrase echoed back at him -- so a wrong
 // day is caught here, before it is sent, rather than found later on the record.
+// WHAT HAPPENED TO HIS WORDS, SAID WHERE HE IS LOOKING. Held per day rather
+// than toasted, because a toast fades and on slow data he has already looked
+// away by the time the answer comes. It stays until he sends again.
+var _jimSendFail={};
+function _jimSendFailHtml(ds){
+  var f=_jimSendFail[ds]; if(!f) return '';
+  return '<div class="jimEcho"><div class="jimEchoL jimEchoFail">'+_escHtml(f)+'</div></div>';
+}
 function _jimEchoDate(back){
   try{
     var d=new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()-back);
@@ -71631,6 +71650,12 @@ function _jimEchoHtml(ds){
 }
 function _jimWhenHtml(ds){
   var st=_jimWhen[ds];
+  var fail=_jimSendFailHtml(ds);
+  if(!st || st.mins==null) return fail;
+  return fail+'' + _jimWhenChipHtml(ds);
+}
+function _jimWhenChipHtml(ds){
+  var st=_jimWhen[ds];
   if(!st || st.mins==null) return '';
   return '<button type="button" class="jimWhenLine" onclick="jimWhenEdit(\''+ds+'\')">'
     +   '<span class="jimWhenTxt">Logging at '+_escHtml(_jimClock(st.mins))+'</span>'
@@ -71748,7 +71773,6 @@ function jimBarHtml(ds) {
   return '<div class="jimBar' + (_notToday ? ' backday' : '') + '" data-ds="' + d + '">'
     + _dayLine
     + '<div id="mlibChip_' + d + '" style="display:none;margin:0 0 6px;"></div>'
-    + '<div class="jimEchoHost" id="jimEcho_' + d + '"></div>'
     + '<div class="jimRow">'
     +   '<textarea class="jimIn" id="jimIn_' + d + '" rows="1" autocomplete="off" placeholder="' + _jimAsk(d) + '" '
     +     'onclick="event.stopPropagation()" oninput="jimReady(\'' + d + '\');jimGrow(this)" '
@@ -71758,6 +71782,7 @@ function jimBarHtml(ds) {
     +   '<button onclick="event.stopPropagation();jimPhoto(\'' + d + '\')" title="Photo" class="jimIcon"><svg class=\"camIco\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z\"/><circle cx=\"12\" cy=\"13\" r=\"4\"/></svg></button>'
     +   '<button onclick="event.stopPropagation();jimMic(\'' + d + '\')" title="Say it" class="jimIcon">' + _MICSVG.replace(/#f5c518/g,'#f0ece4').replace(/#4ea96f/g,'#f0ece4') + '</button>'
     + '</div>'
+    + '<div class="jimEchoHost" id="jimEcho_' + d + '"></div>'
     + '<div class="jimWhenHost" id="jimWhen_' + d + '"></div>'
     + '<input type="file" id="jimFile_' + d + '" accept="image/*" style="display:none;" onchange="jimPhotoPicked(this,\'' + d + '\')">'
     + '</div>';
@@ -72031,15 +72056,63 @@ async function jimSend(ds) {
   var _turnOpts = {dateStr: writeDs};
   if (_whenSt && _whenSt.manual && _whenSt.mins != null) _turnOpts.timeLocal = _jimClock(_whenSt.mins);
 
+  // NO SILENT WAITING (Yusuf, live, 24 Aug). He sent two foods on slow data and
+  // got ten to fifteen seconds of nothing, then "could not log". The only thing
+  // this path said in the meantime was a toast, and a toast fades — on a phone
+  // he had long since looked away. This sits in the bar, under the field, and
+  // stays up until the turn answers one way or the other.
+  var _sendWait=null;
+  try{
+    _jimSendFail[ds]=null; _jimSendFail[writeDs]=null;
+    _sendWait=setTimeout(function(){
+      try{
+        var h=document.getElementById('jimEcho_'+ds);
+        if(h) h.innerHTML='<div class="jimEcho"><div class="jimEchoL jimEchoWait">Logging\u2026</div></div>';
+      }catch(e){}
+    }, 1500);
+  }catch(e){}
   var reply = '';
   try {
     reply = await jimTurn(raw, photos, _turnOpts);
   } catch (e) {
     console.error('jimSend', e);
-    showToast("Couldn't log that \u2014 try again");
+    try{ clearTimeout(_sendWait); }catch(_e){}
+    // HIS WORDS ARE NEVER LOST — charter rule 4, and this path broke it. The
+    // field is emptied the instant he presses send, so by the time a slow
+    // connection gives up, ten or fifteen seconds have passed and everything he
+    // typed is gone. It used to return right here with nothing but a faded
+    // toast behind it. His text goes back in the box, exactly as he wrote it,
+    // ready to send again with one tap.
+    try{
+      if(el && !String(el.value||'').trim() && raw){
+        el.value=raw; try{ jimGrow(el); }catch(_e){}
+        try{ el.focus(); }catch(_e){}
+        try{ jimReady(ds); }catch(_e){}
+      }
+      // AND THE DRAFT, OR THE NEXT REPAINT TAKES IT STRAIGHT BACK OUT. Caught
+      // on the deployed page: the text really was restored, and a bar rebuild a
+      // moment later refilled the textarea from draftGet('bar') -- which send
+      // had already emptied -- so the field went blank again while the failure
+      // line sat underneath it saying his words were still there. Setting only
+      // el.value restores what is on screen; this restores what the bar rebuilds
+      // itself from. Both, always.
+      try{ if(raw) draftSave('bar', raw); }catch(_e){}
+    }catch(_e){}
+    // SAY WHICH FAILURE IT WAS. A dropped connection and a refusal are not the
+    // same thing and he can act on the difference: one is worth tapping again
+    // straight away, the other is not.
+    var _off=false; try{ _off=!!(window.navigator && navigator.onLine===false); }catch(_e){}
+    var _msg=String((e&&e.message)||'');
+    var _net=_off || /failed to fetch|networkerror|network error|load failed|abort|timed? ?out/i.test(_msg);
+    var _line=_net
+      ? 'Poor connection \u2014 couldn\u2019t log. Your words are still here, tap send to try again.'
+      : 'That didn\u2019t log. Your words are still here, tap send to try again.';
+    try{ _jimSendFail[ds]=_line; _jimWhenPaint(ds); }catch(_e){}
+    try{ showToast(_net ? 'Poor connection \u2014 couldn\u2019t log' : 'Couldn\u2019t log that'); }catch(_e){}
     window._jimPhoto = null; _jimPaintPhoto(ds);
     return;
   }
+  try{ clearTimeout(_sendWait); }catch(_e){}
   // Sent. The next message states its own time or states none.
   try{ _jimWhenClearState(ds); _jimWhenClearState(writeDs); _jimWhenPaint(ds); }catch(e){}
 
