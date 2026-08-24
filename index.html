@@ -13993,12 +13993,23 @@ function _fbRank(code){
 // he looks at a live feed. Yesterday and older keep the clock, because distance
 // stops meaning anything past a day and the clock is what a record needs.
 // Recomputed on every render, so it is right whenever the feed repaints.
-function _feedRelStr(ms){
+// ONE RELATIVE-TIME ENGINE (Yusuf, ruling, 24 Aug — there were two, computing
+// the same "m ago / h ago" ladder a hundred lines apart).
+// They were NOT interchangeable, which is why this takes an argument rather
+// than one simply replacing the other: the feed's item clock returns '' past a
+// day so the caller can fall back to a real clock ("distance stops meaning
+// anything past a day, and the clock is what a record needs"), while the touch
+// line carries on into "yesterday" and "N d ago". capHours is that difference,
+// stated once instead of duplicated.
+function _feedAgoStr(ms, capHours){
   var s=Math.floor((Date.now()-ms)/1000);
   if(s<0) return '';                                   // a future stamp is not a distance
   if(s<90) return 'just now';
   var m=Math.floor(s/60); if(m<60) return m+'m ago';
   var h=Math.floor(m/60); if(h<24) return h+'h ago';
+  if(capHours && h>=capHours) return '';               // the caller wants a clock past here
+  var dy=Math.floor(h/24); if(dy===1) return 'yesterday';
+  if(dy<30) return dy+'d ago';
   return '';
 }
 // The instant an item's own displayed time refers to. Food shows when it was
@@ -14022,7 +14033,7 @@ function _feedWhenStr(it, isToday){
   var today=false;
   try{ today=(_feedDayStart(it.ts).getTime()===_feedDayStart(Date.now()).getTime()); }catch(e){}
   if(!today) return clock;
-  var rel=_feedRelStr(_feedItemMs(it));
+  var rel=_feedAgoStr(_feedItemMs(it), 24);
   // A clock that could not be turned into a distance keeps the clock. Nothing on
   // this feed is ever left without a time because a conversion failed.
   return rel || clock;
@@ -15074,16 +15085,8 @@ function _pfSuggestLine(code){
 //     client_contacts row, read through _ccLast.
 // Derived at read time from rows already in memory. No new column, no new table,
 // nothing written.
-function _pfTouchWhen(ms){
-  var d=Math.floor((Date.now()-ms)/1000);
-  if(d<0) return '';
-  if(d<90) return 'just now';
-  var m=Math.floor(d/60); if(m<60) return m+'m ago';
-  var h=Math.floor(m/60); if(h<24) return h+'h ago';
-  var dy=Math.floor(h/24); if(dy===1) return 'yesterday';
-  if(dy<30) return dy+'d ago';
-  return '';
-}
+// _pfTouchWhen is gone — it WAS the second copy. Its callers read the shared
+// engine with no cap, which is the full ladder it used to compute itself.
 // skipKey ("workout:9001") is the item whose OWN like control is already on this
 // card. The phone's card is a single event with a Liked pill at its foot, so a
 // trailing "You: liked their Arms" underneath it said the same thing twice, six
@@ -15110,15 +15113,30 @@ function _pfTouchLine(code, evs, skipKey){
       if(!best || ms>best.ms) best={ms:ms, text:txt};
     });
     // The contact log — only if it is more recent than the like.
+    // A LIKE IS NEVER READ FROM HERE (Yusuf, ruling, 24 Aug). The contact log
+    // keeps its own copy of every like as a `like` row, and reading it back
+    // produced the two faults he photographed:
+    //   · Hayden — the heart on the card said "liked" AND this line said
+    //     "you: liked what they logged · yesterday". One fact, twice, on one
+    //     card, from two different stores.
+    //   · Victoria — an outline heart (nothing on THIS card is liked) sitting
+    //     above a line claiming he liked something 2d ago. The heart and the
+    //     footer flatly contradicting each other, which is the thing that must
+    //     never happen.
+    // The heart is the like's one rendering. This line reports a like only from
+    // the scan above, where it can NAME the item and is reading the same store
+    // the heart reads — so the two cannot disagree. `comment` goes for the same
+    // reason: the comment renders itself on the card.
+    // Everything else stays: a call, a text, a booking and his own check have no
+    // control on the card, so they can never contradict one.
     var l=null; try{ l=_ccLast(code); }catch(e){}
     if(l && l.t && (!best || l.t>best.ms)){
       var verb={text:'texted', cite:'texted', call:'called', talk:'spoke to them',
-                booking:'booked a call', comment:'commented', like:'liked what they logged',
-                mark:'checked on them'}[l.k];
+                booking:'booked a call', mark:'checked on them'}[l.k];
       if(verb) best={ms:l.t, text:verb};
     }
     if(!best) return '';
-    var when=_pfTouchWhen(best.ms); if(!when) return '';
+    var when=_feedAgoStr(best.ms); if(!when) return '';
     return '<div class="pfTouch">You: '+_pfEsc(best.text)+' \u00b7 '+_pfEsc(when)+'</div>';
   }catch(e){ return ''; }
 }
@@ -15174,17 +15192,11 @@ function _pfCard(b, hour, now, isToday, viewDayTs){
       if(_pm && _pm.like){ likeEv=evs[_pi]; break; }
     }
   }catch(e){}
+  // Only the KIND survives here. rid/rmk/liked/likeT/likeTarget were computed
+  // for a card-level like button that was removed on 22 Aug when liking moved
+  // onto the row it acts on; nothing has read them since, and likeT was one of
+  // the last callers of the clock formatter this ruling retires.
   var rk = likeEv.kind==='food' ? 'food' : (likeEv.kind==='wo' ? 'workout' : (likeEv.kind==='photo' ? 'photo' : null));
-  var rid = (likeEv.data && likeEv.data.id!=null) ? likeEv.data.id : '';
-  var rmk = (rk && window._reviewedMap) ? window._reviewedMap[rk+':'+rid] : null;
-  var liked = !!(rmk && rmk.like);
-  var likeT = (rmk && rmk.like_ts) ? _revTimeStr(rmk.like_ts) : '';
-  // RULING (Yusuf, live): the model this button actually runs is item-level —
-  // it likes the newest thing on the card, not "the day" — so its own label
-  // says which thing that is instead of leaving it to be inferred.
-  var likeTarget = likeEv.kind==='food' ? (likeEv.data&&likeEv.data.name||'that meal')
-    : likeEv.kind==='wo' ? (likeEv.data&&likeEv.data.title||'that workout')
-    : likeEv.kind==='photo' ? 'that photo' : '';
   // Light day: 1-2 things logged, still worth a nudge — the outreach box shows here
   // too, not only on a fully quiet card. A fully-logged client doesn't need it.
   // BUTTON DIET (Yusuf, live): Copy used to sit in its own flex:1 row under the
@@ -17104,16 +17116,30 @@ function _feedActIcon(it){
 // One definition of what a like looks like, used by the first render AND by the
 // optimistic update. They were bound to drift if written twice, and a like that
 // looks different before and after the write is exactly the bug being fixed.
-var JV_LIKE_ON_STYLE='color:#ff3b30;border-color:#404040;';
+// GOLD, NOT RED (Yusuf, ruling, 24 Aug). The palette is grey, gold and red, and
+// red is reserved for DESTRUCTIVE — Cancel, Delete. A like is neither, and he
+// was getting a red heart in one session and a gold one in the next for the
+// same fact. One colour, and it is the one the palette already gives an action.
+var JV_LIKE_ON_STYLE='color:var(--gold);border-color:rgba(245,197,24,0.42);';
 var _JV_HEART_OUTLINE='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" style="vertical-align:-2px;"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
 var _JV_HEART_FILLED='<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-2px;"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>';
-// The red heart is the single styled exception to gold-for-action-only, kept because
-// Yusuf ruled the heart stays. The time rides inside the button at a smaller, muted
-// size so the pill still reads as one control rather than two pieces of text.
+// THE HEART IS THE CONTROL, AND IT IS THE WHOLE STATEMENT (Yusuf, ruling,
+// 24 Aug). This used to print a filled heart, the word "Liked", AND a clock —
+// "♥ Liked · Aug 23, 4:34 AM". Three problems in one button:
+//   · "Liked" beside a filled heart is a redundant label. One or the other.
+//   · the clock is against his standing law (relative time on feed items) and
+//     against what he said plainly: "Don't ask me what time I liked it or show
+//     me what time I liked it. Show me how long ago I liked it."
+//   · with the footer line ALSO reporting the like, one card said the same fact
+//     twice, six millimetres apart.
+// Liked is now the filled gold heart and nothing else. Unliked keeps its word,
+// because an outline heart alone does not tell him what the button will do —
+// that is an affordance, not a redundant restatement of a state.
+// timeStr is still ACCEPTED and ignored rather than removed from the signature,
+// so the four callers that pass one do not break.
 function _jvLikePillInner(liked, timeStr){
   if(!liked) return _JV_HEART_OUTLINE+' Like';
-  return _JV_HEART_FILLED+' Liked'
-    + (timeStr ? '<span class="jvLikeWhen" style="color:rgba(240,236,228,0.55);font-weight:600;font-size:10px;"> · '+timeStr+'</span>' : '');
+  return _JV_HEART_FILLED;
 }
 // Repaint one like button in place. Returns nothing; it is a pure DOM update so it
 // can run before the network call and be undone if the write does not land.
@@ -17124,6 +17150,11 @@ function _jvPaintLikePill(pill, liked, timeStr){
   pill.setAttribute('style', base + (liked?JV_LIKE_ON_STYLE:''));
   pill.innerHTML=_jvLikePillInner(liked, timeStr);
   pill.title = liked ? 'Tap to unlike' : 'Like';
+  // The liked state is icon-only now, so the accessible name has to be repainted
+  // with it — a title alone is not reliably announced, and this control's whole
+  // meaning is its fill.
+  try{ pill.setAttribute('aria-pressed', liked?'true':'false');
+       pill.setAttribute('aria-label', liked?'Liked. Tap to unlike':'Like'); }catch(e){}
   var k=pill.getAttribute('data-kind'), r=pill.getAttribute('data-ref'), c=pill.getAttribute('data-code');
   pill.onclick = function(e){
     if(e && e.stopPropagation) e.stopPropagation();
@@ -17148,7 +17179,8 @@ function _jvClearLikeErr(pill){
   try{ var card=pill; while(card && !card.classList.contains('feedCard')) card=card.parentNode;
     var e=card?card.querySelector('.jvLikeErr'):null; if(e) e.parentNode.removeChild(e); }catch(_){}
 }
-function _revTimeStr(v){ if(!v) return ''; try{ var d=new Date(/[Z+]/.test(v)?v:v+'Z'); if(isNaN(d.getTime())) return ''; var now=new Date(); var sd=d.toDateString()===now.toDateString(); return (sd?'':d.toLocaleDateString('en-US',{month:'short',day:'numeric'})+', ')+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }catch(e){ return ''; } }
+// _revTimeStr is deleted with the last thing that printed a clock on a feed
+// card. Every time on this surface is a distance now (_feedAgoStr).
 function _feedItemHtml(it){
   if(it.kind==='moment'){
     var delRef = (it.data.src==='db') ? "'db',"+it.data.id : "'local',"+it.ts;
@@ -17249,7 +17281,7 @@ function _feedItemHtml(it){
   var textBtn = '';
   var _rk = it.kind==='food' ? 'food' : (it.kind==='wo' ? 'workout' : (it.kind==='photo' ? 'photo' : null));
   var _rid = (it.data.id!=null?it.data.id:'');
-  var _pill = 'flex:1;display:inline-flex;align-items:center;justify-content:center;gap:5px;font-size:11px;font-weight:600;padding:8px 4px;border:1px solid var(--border);border-radius:9px;cursor:pointer;color:rgba(240,236,228,0.78);background:transparent;white-space:nowrap;box-sizing:border-box;font-family:\'Plus Jakarta Sans\',sans-serif;';
+  var _pill = 'flex:1;display:inline-flex;align-items:center;justify-content:center;gap:5px;font-size:11px;font-weight:600;padding:8px 4px;min-height:44px;border:1px solid var(--border);border-radius:9px;cursor:pointer;color:rgba(240,236,228,0.78);background:transparent;white-space:nowrap;box-sizing:border-box;font-family:\'Plus Jakarta Sans\',sans-serif;';
   var revBtn='';
   var _dchk='<svg width="13" height="11" viewBox="0 0 14 11" fill="none" style="vertical-align:-1px;margin-right:2px;"><path d="M1.5 6 L5 9.5 L12.5 1.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   var _icH='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" style="vertical-align:-2px;"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
@@ -17273,7 +17305,8 @@ function _feedItemHtml(it){
   var _seenD=!!(_rmk&&(_rmk.seen||_rmk.comment)); var _likeD=!!(_rmk&&_rmk.like);
   // The like time is read here, not down by the old floating label, because the
   // liked state now lives inside the button and nowhere else.
-  var _likeT=(_rmk&&_rmk.like_ts)?_revTimeStr(_rmk.like_ts):'';
+  // The pill no longer prints a time (24 Aug), so nothing is formatted for it.
+  var _likeT='';
   var _vSt=_pill+(_seenD?'color:#f5c518;border-color:#f5c518;':''); var _lSt=_pill+(_likeD?JV_LIKE_ON_STYLE:'');
   var _canRepost = (it.kind==='food' && it.data && it.data.photo && it.data.id!=null);
   if(_canRepost){ try{ window._jvRepostCache=window._jvRepostCache||{}; window._jvRepostCache[it.data.id]=it.data; }catch(e){} }
@@ -17297,7 +17330,7 @@ function _feedItemHtml(it){
     +'<span class="jvLikePill" data-kind="'+_rk+'" data-ref="'+_rid+'" data-code="'+code+'"'
       +' onclick="event.stopPropagation();'+(_likeD
         ? ('jvUnlike(\''+_rk+'\',\''+_rid+'\',\''+code+'\',this)')
-        : ('quickReact(\''+_rk+'\',\''+_rid+'\',\''+code+'\',\'like\',this)'))+'" title="'+(_likeD?'Tap to unlike':'Like')+'" style="'+_lSt+'">'+_jvLikePillInner(_likeD,_likeT)+'</span>'
+        : ('quickReact(\''+_rk+'\',\''+_rid+'\',\''+code+'\',\'like\',this)'))+'" title="'+(_likeD?'Tap to unlike':'Like')+'" role="button" aria-pressed="'+(_likeD?'true':'false')+'" aria-label="'+(_likeD?'Liked. Tap to unlike':'Like')+'" style="'+_lSt+'">'+_jvLikePillInner(_likeD,_likeT)+'</span>'
     // CITE, NOT COMMENT (Yusuf, ruling, 20 Aug). This opened a sheet that wrote
     // coach_comment into the app, where they mostly never see it and can never
     // answer. It opens a text with this card's item quoted into it now, and the
@@ -17336,7 +17369,7 @@ function _feedItemHtml(it){
   // thing you DID, so it belongs in the control you did it with \u2014 not as a floating
   // row above the badges that only appeared after a refresh. Removing it also gives
   // the fixed 34px extras zone back to the comment, which was competing with it.
-  var _myCmt = (_rmk && _rmk.comment_text) ? '<div style="margin-top:10px;display:flex;gap:8px;align-items:flex-start;"><div style="width:23px;height:23px;border-radius:50%;background:var(--gold);color:#000;font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;">Y</div><div style="min-width:0;"><div style="font-weight:800;color:#f0ece4;font-size:12.5px;">Yusuf'+((_rmk&&_rmk.comment_ts&&_revTimeStr(_rmk.comment_ts))?'<span style="color:var(--muted);font-weight:600;font-size:11px;"> \u00b7 '+_revTimeStr(_rmk.comment_ts)+'</span>':'')+'</div><div style="font-size:12.5px;line-height:1.45;color:#f0ece4;margin-top:1px;">'+String(_rmk.comment_text).replace(/</g,'&lt;')+'</div></div></div>' : '';
+  var _myCmt = (_rmk && _rmk.comment_text) ? '<div style="margin-top:10px;display:flex;gap:8px;align-items:flex-start;"><div style="width:23px;height:23px;border-radius:50%;background:var(--gold);color:#000;font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;">Y</div><div style="min-width:0;"><div style="font-weight:800;color:#f0ece4;font-size:12.5px;">Yusuf'+((_rmk&&_rmk.comment_ts&&_feedAgoStr(new Date(_rmk.comment_ts).getTime()))?'<span style="color:var(--muted);font-weight:600;font-size:11px;"> \u00b7 '+_feedAgoStr(new Date(_rmk.comment_ts).getTime())+'</span>':'')+'</div><div style="font-size:12.5px;line-height:1.45;color:#f0ece4;margin-top:1px;">'+String(_rmk.comment_text).replace(/</g,'&lt;')+'</div></div></div>' : '';
   // THE PHOTO VIEWER SHOULD SHOW THE WHOLE ENTRY (Yusuf, live, 19 Aug) \u2014 the
   // client's own words and the macros, in the app's glass rendering, not a
   // bare picture. Reusing THIS card's own already-built `line` (the exact
@@ -43338,7 +43371,7 @@ async function jvUnlike(kind, refId, code, el){
   if(el){ _jvClearLikeErr(el); _jvPaintLikePill(el, false, ''); }
   function _revert(msg){
     try{ if(prev) window._reviewedMap[k]=prev; }catch(e){}
-    if(el){ _jvPaintLikePill(el, !!(prev&&prev.like), (prev&&prev.like_ts)?_revTimeStr(prev.like_ts):''); _jvLikeFailed(el, msg); el._busy=false; }
+    if(el){ _jvPaintLikePill(el, !!(prev&&prev.like), ''); _jvLikeFailed(el, msg); el._busy=false; }
     try{ showToast('Could not unlike that'); }catch(e){}
   }
   var q='client_code=eq.'+encodeURIComponent(code)
@@ -43401,7 +43434,7 @@ async function quickReact(kind, refId, code, reaction, el){
     }catch(e){}
     if(el){
       _jvClearLikeErr(el);
-      _jvPaintLikePill(el, true, _revTimeStr(nowIso));
+      _jvPaintLikePill(el, true, '');
       painted=true;
       try{ var _hsvg=el.querySelector&&el.querySelector('svg');
         if(_hsvg){ _hsvg.style.animation='none'; void _hsvg.offsetWidth; _hsvg.style.animation='yjbHeartPop 0.45s cubic-bezier(0.2,0.9,0.3,1.4)'; } }catch(e){}
@@ -43413,7 +43446,7 @@ async function quickReact(kind, refId, code, reaction, el){
     try{
       if(isLike){
         if(prevMap) window._reviewedMap[key]=prevMap; else { try{ delete window._reviewedMap[key]; }catch(_){} }
-        if(painted && el) _jvPaintLikePill(el, !!(prevMap&&prevMap.like), (prevMap&&prevMap.like_ts)?_revTimeStr(prevMap.like_ts):'');
+        if(painted && el) _jvPaintLikePill(el, !!(prevMap&&prevMap.like), '');
         if(el) _jvLikeFailed(el, msg);
       }
     }catch(e){}
@@ -43492,7 +43525,10 @@ function _myReviewLine(kind,id){
         if(likers.length){
           var uniq=likers.filter(function(v,i){return likers.indexOf(v)===i;});
           var names = uniq.length===1 ? uniq[0] : (uniq.length===2 ? uniq[0]+' + '+uniq[1] : uniq[0]+' + '+(uniq.length-1)+' more');
-          out+='<div style="font-size:11.5px;color:#ff7a92;margin-top:6px;font-weight:700;">\\u2665 '+names.replace(/</g,'&lt;')+' liked this</div>';
+          // Not the trainer's like — this is which CLIENTS liked it, a different
+          // fact on a client surface. The colour is still the point: #ff7a92 is
+          // in no palette, and the palette reserves red for destructive.
+          out+='<div style="font-size:11.5px;color:var(--gold);margin-top:6px;font-weight:700;">\\u2665 '+names.replace(/</g,'&lt;')+' liked this</div>';
         }
         cmts.forEach(function(c){
           out+='<div style="margin-top:6px;padding:8px 10px;background:rgba(240,236,228,0.04);border-left:2px solid #444;border-radius:6px;font-size:12.5px;color:#f0ece4;line-height:1.5;"><span style="font-weight:800;color:#f5c518;">'+String(c.name).replace(/</g,'&lt;')+'</span> '+String(c.comment).trim().replace(/</g,'&lt;')+'</div>';
@@ -43507,7 +43543,13 @@ function _myReviewLine(kind,id){
       return '<div style="margin-top:7px;padding:9px 11px;background:rgba(224,196,152,0.08);border-left:2px solid var(--gold);border-radius:7px;font-size:12.5px;color:var(--text);line-height:1.55;"><span style="color:var(--gold);font-weight:800;">Yusuf</span> <span style="font-style:italic;">'+_note+'</span></div>';
     }
     if(r.reaction==='comment') return '';
-    if(r.reaction==='like'){ var _lt=_revTimeStr(r.ts); return '<div style="font-size:11px;color:#ff7a92;margin-top:6px;font-weight:600;">\u2665 Yusuf liked this'+(_lt?'<span style="color:var(--muted);font-weight:500;"> \u00b7 '+_lt+'</span>':'')+'</div>'; }
+    // THE SAME LIKE, ON THE CLIENT'S OWN LOG — the fourth rendering of one fact,
+    // found while fixing the other three (Yusuf, ruling, 24 Aug). It was pink
+    // (#ff7a92, in no palette) and printed a clock. Same law, same cure: gold,
+    // and how long ago rather than at what time. The wording stays as it is —
+    // this is the client being told their coach saw them, which is a different
+    // sentence from his own feed's record of it.
+    if(r.reaction==='like'){ var _lt=_feedAgoStr(new Date(r.ts).getTime()); return '<div style="font-size:11px;color:var(--gold);margin-top:6px;font-weight:600;">\u2665 Yusuf liked this'+(_lt?'<span style="color:var(--muted);font-weight:500;"> \u00b7 '+_lt+'</span>':'')+'</div>'; }
     var t=''; try{ t=new Date(r.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }catch(e){}
     return '<div style="font-size:11px;color:var(--muted);margin-top:6px;">\u2713 Yusuf viewed this'+(t?' \u00b7 '+t:'')+'</div>';
   }catch(e){ return ''; }
@@ -47792,9 +47834,13 @@ async function renderClientHistory(code,name){
           var _jk='journal:'+jid;
           var _jrm=(window._reviewedMap&&window._reviewedMap[_jk])||null;
           var _jliked=!!(_jrm&&_jrm.like); var _jct=(_jrm&&_jrm.comment_text)?String(_jrm.comment_text):'';
+          // ONE LIKE FORMAT (Yusuf, ruling, 24 Aug). This carried its own copy of
+          // the old red-and-worded pill, hardcoded rather than sharing the
+          // constant — so a liked journal entry looked different from a liked
+          // meal on the same screen. Same style, same renderer, same heart.
           var likePill=_jliked
-            ? '<span style="'+_jpill+'color:#ff3b30;border-color:#404040;">\u2665 Liked</span>'
-            : '<span onclick="event.stopPropagation();quickReact(\'journal\',\''+jid+'\',\''+code+'\',\'like\',this)" style="'+_jpill+'">\u2665 Like</span>';
+            ? '<span title="Liked" aria-label="Liked" style="'+_jpill+JV_LIKE_ON_STYLE+'">'+_jvLikePillInner(true)+'</span>'
+            : '<span onclick="event.stopPropagation();quickReact(\'journal\',\''+jid+'\',\''+code+'\',\'like\',this)" style="'+_jpill+'">'+_jvLikePillInner(false)+'</span>';
           var textPill=_jphone?('<span onclick="event.stopPropagation();textClient(\''+code+'\')" style="'+_jpill+'">\ud83d\udcac Text</span>'):'';
           var priorComment=_jct?('<div style="margin-top:8px;background:rgba(224,196,152,0.10);border-left:2px solid var(--gold);border-radius:6px;padding:7px 9px;font-size:12px;color:#f0ece4;line-height:1.5;"><span style="color:var(--gold);font-weight:800;">You wrote: </span>'+_jct.replace(/</g,'&lt;')+'</div>'):'';
           body+='<div style="padding:4px 16px 12px;">'
