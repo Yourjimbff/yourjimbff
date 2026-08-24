@@ -10419,6 +10419,17 @@ function noteBodyTalk(text){
 // underneath keep going and paint when they land; this only stops the waiting.
 var LOAD_WATCHDOG_MS = 8000;   // same "waited long enough" threshold as the roster
 var _loadWatchdog = null;
+// ONE REVEAL, TWO CALLERS: the foot of the role gate, and a 2500ms valve armed
+// before it. Idempotent, so whichever gets there first wins and the other is a
+// no-op — and it clears the valve so a late fire cannot re-show a bar that some
+// other surface has deliberately hidden since (the meal-capture screen hides it).
+function _navReveal(){
+  try{
+    clearTimeout(window._navValve); window._navValve=null;
+    var n=document.getElementById('bnav');
+    if(n && n.style.display!=='flex') n.style.display='flex';
+  }catch(e){}
+}
 function showLoading(show){
   var el=document.getElementById('loadingOverlay');
   if(el) el.className = 'loading-overlay'+(show?' show':'');
@@ -10748,8 +10759,18 @@ async function _launchAppInner(){ try{ setTimeout(sqInit,600); }catch(e){}
   }catch(e){}
   // Build the app shell while still under the loading screen
   document.getElementById('sApp').style.display='flex';
-  document.getElementById('bnav').style.display='flex';
+  // THE BAR IS NOT SHOWN UNTIL IT IS THE RIGHT BAR (Yusuf, ruling, 24 Aug).
+  // This line used to reveal it here, with all seven buttons in it, and the role
+  // gate forty lines below then cut it to three or four. Measured on the deployed
+  // app: a 262ms window showing a trainer's tabs to a client. It was invisible
+  // while sign-in took eight seconds — nobody reached the app until long after
+  // the gate had run — and making sign-in fast is what exposed it.
+  // _navReveal() is called at the foot of the gate instead. It is also armed on a
+  // timer right here, so if anything between now and there throws, the bar still
+  // appears: a brief flash of the wrong tabs is bad, no navigation at all is worse.
   document.body.classList.add('hasnav');
+  try{ clearTimeout(window._navValve); }catch(e){}
+  window._navValve = setTimeout(function(){ try{ _navReveal(); }catch(e){} }, 2500);
   var bnavEl = document.getElementById('bnav');
   // body.is-trainer is what makes .trainer-only a real gate for everything that
   // is not a nav button (see the rule beside .bni.trainer-only). Set from the
@@ -10812,6 +10833,10 @@ async function _launchAppInner(){ try{ setTimeout(sqInit,600); }catch(e){}
       document.body.classList.add('cl-desk');
     }
   }catch(e){}
+  // GATED — now it can be seen. Inside no try/catch of its own on purpose: if the
+  // gate above threw, this line is skipped and the valve set before it is what
+  // brings the bar back.
+  _navReveal();
   var _tps = document.getElementById('trainerProgramsSection');
   if(_tps) _tps.style.display = 'none';
   var _mcb = document.getElementById('manageClientsBox');
@@ -64641,6 +64666,32 @@ async function _jimExtractWorkout(text){
     return (parsed && Array.isArray(parsed.exercises)) ? parsed : null;
   }catch(e){ console.error('_jimExtractWorkout', e); return null; }
 }
+// A PURE MEAL EXTRACTOR, for the turns where the model will not propose one.
+// Same shape and the same reason as _jimExtractWorkout: one small
+// single-purpose prompt that cannot get lost inside 71,000 characters of rules.
+// CONSUMES _nlEstimate for the round trip rather than adding a fourth copy of
+// fetch-analyze-strip-the-fences-JSON.parse. Only the prompt here is new.
+// It is never told the day. The day is already decided in code, from his own
+// words, and is not the model's to reopen -- that is the entire bug this
+// exists for.
+async function _jimExtractMeal(text){
+  var sys='You convert one sentence about food a person ALREADY ATE into structured JSON. '
+    +'Return ONLY valid JSON, no prose, no markdown. Shape: '
+    +'{"name":"short name of the meal","calories":0,"protein":0,"carbs":0,"fat":0,"meal":"Breakfast or Lunch or Dinner or Snack"}. '
+    +'NAME IT WITH THE FOOD, NEVER THE PLACE: "Philly Cheesesteak Omelet", not "Silver Diner". '
+    +'ONE SITTING IS ONE ENTRY. Everything eaten at the same time is a single object with the macros summed, never one object per item. '
+    +'ESTIMATE THE MACROS from your own knowledge of the food and the amount stated. A named food with an amount can always be estimated, so do it. '
+    +'Say NOTHING about which day or which date. The day is already known and is not yours to decide. '
+    +'Pick the meal slot from the words if they name one, otherwise from the food itself. '
+    +'If the sentence contains no food at all, return {"name":""}.';
+  try{
+    var out=await _nlEstimate(sys+String.fromCharCode(10)+String.fromCharCode(10)+'SENTENCE:'+String.fromCharCode(10)+String(text||'')+String.fromCharCode(10)+String.fromCharCode(10)+'Return the JSON now.');
+    if(!out || !out.name || !String(out.name).trim()) return null;
+    return {name:String(out.name).trim(), calories:+out.calories||0,
+            protein:+out.protein||0, carbs:+out.carbs||0, fat:+out.fat||0,
+            meal:(out.meal||null), rating:'unknown', insight:''};
+  }catch(e){ console.error('_jimExtractMeal', e); return null; }
+}
 // The day he named, counted BACKWARDS. The calendar helper elsewhere resolves a
 // weekday to its NEXT occurrence, which is right for booking and exactly wrong
 // for "on Tuesday I did" — that would file a past session in the future.
@@ -65011,6 +65062,47 @@ async function jimTurn(text, photos, opts){
       foodAdds.items=[];
     }
   }catch(e){}
+  // ===== A MEAL HE REPORTED ON A DAY HE NAMED MUST ACTUALLY LOG ==========
+  // (Yusuf, his named must-be-100%.) "I had two buffet muffins yesterday" is
+  // answered "Which day was yesterday for you — Sunday the 23rd?" and writes
+  // nothing at all. Measured again on deployed at v7.980.416.
+  //
+  // THIS IS THE FOURTH ATTEMPT AT IT AND THE FIRST ONE IN CODE. Three prompt
+  // rules have been written for this. The first two never reached the model at
+  // all — buildCoachVoice stopped one line into the food rules from v7.980.324
+  // and everything below it was dead — so their "failure" was never evidence
+  // about anything. The third is NEVER ASK WHICH DAY, and it is genuinely
+  // delivered now and genuinely still gets asked. A rule the model can see and
+  // does not follow is not a mechanism, and a fourth wording would not be one
+  // either.
+  //
+  // _jimAnchorDay already resolves the day out of his own words, and _pinDay
+  // already pins it ahead of whatever the model decided. NEITHER CAN FIRE
+  // HERE, because there is nothing to pin: no record was ever proposed. So
+  // this proposes one, and the day machinery that already exists does the rest.
+  //
+  // DELIBERATELY NARROW. It needs all four: he REPORTED eating (the router's
+  // own past-meal veto, judged on the whole message exactly as _jtCalendarClaims
+  // judges it), he NAMED a day that is behind us, there is no photo, and NO
+  // FOOD_LOG of any kind came back — so it can never double-log a meal the
+  // model did file. A today-meal is untouched: those log correctly and are not
+  // this bug.
+  var _fbFired=false, _fbName='', _fbDayN=0;
+  try{
+    var _fbDay=(typeof _jimAnchorDay==='function') ? _jimAnchorDay(text) : null;
+    var _fbAte=(typeof _JT_PAST_MEAL_RE!=='undefined') && _JT_PAST_MEAL_RE.test(String(text||''));
+    if(!foodAdds.items.length && !_rawReplyHadFoodTag && !hasPhoto
+       && _fbDay!=null && _fbDay>0 && _fbAte && !_jimIsAdminOnly(text)){
+      var _fbMeal=null;
+      try{ _fbMeal=await _jimExtractMeal(String(text||'')); }catch(e){ _fbMeal=null; }
+      if(_fbMeal && _fbMeal.name){
+        _fbMeal.daysAgo=_fbDay;
+        foodAdds.items.push(_fbMeal);
+        _fbFired=true; _fbName=_fbMeal.name; _fbDayN=_fbDay;
+        try{ console.info('jimTurn: no FOOD_LOG came back for a meal he reported on a named day — extractor used instead'); }catch(e){}
+      }
+    }
+  }catch(e){ console.error('food day fallback', e); }
   // ONE SITTING = ONE MEAL, ENFORCED (fixed 13 Aug — George's Aug 4 breakfast):
   // the system prompt already tells the model to combine everything eaten at one
   // sitting into a single [FOOD_LOG] entry — but that's a prompt instruction with
@@ -65419,6 +65511,14 @@ async function jimTurn(text, photos, opts){
     }
   }
   if(_foodToasts>0) showToast('✓ Food log updated');
+  // THE QUESTION MUST NOT SURVIVE THE ANSWER. When the fallback wrote the meal,
+  // the reply still sitting there is the model asking him which day yesterday
+  // was — a question his sentence already answered, next to a row that now
+  // exists. Replaced with what landed, and only ever on a VERIFIED write.
+  if(_fbFired && _foodVerified>0){
+    var _fbWhen=(_fbDayN===1) ? 'yesterday' : String(_dateStrDaysAgo(_fbDayN)||'').replace(/,\s*\d{4}$/,'');
+    reply='Logged \u2014 '+_fbName+', '+_fbWhen+'.';
+  }
 
   // Attach a gym/workout photo to the referenced workout (id from RECENT WORKOUTS).
   if(workoutPhotos.items.length && photoSnapshot){
