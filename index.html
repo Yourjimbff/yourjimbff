@@ -18336,7 +18336,10 @@ function renderTrainingCalendar(){
   // Planned workouts by day-of-week (from the assigned program, if any)
   var byDow = {};
   if(clientAssignedProgram && clientAssignedProgram.workouts){
-    clientAssignedProgram.workouts.forEach(function(w){ if(w.day_of_week != null) byDow[Number(w.day_of_week)] = w; });
+    // Through the one resolver, so a numbered programme shows THIS week here
+    // and everywhere else. 0-7 covers both conventions in the file: the client
+    // reads getDay() (0=Sun) and the trainer writes 1-7 (7=Sun).
+    [0,1,2,3,4,5,6,7].forEach(function(d){ var w=_progDayFor(d); if(w) byDow[d]=w; });
   }
   var _restStepGoal = 0;
   try{ var _rsm=((clientAssignedProgram&&clientAssignedProgram.program&&clientAssignedProgram.program.description)||'').match(/\[restSteps:(\d+)\]/i); if(_rsm) _restStepGoal=parseInt(_rsm[1])||0; }catch(e){}
@@ -18461,7 +18464,10 @@ function renderTrainingList(){
   if(trainingSelectedDay && clientAssignedProgram && clientAssignedProgram.workouts){
     var _sel = new Date(trainingSelectedDay+'T12:00:00');
     var _selDow = isNaN(_sel.getTime()) ? null : _sel.getDay();
-    var _plan = (_selDow!=null) ? clientAssignedProgram.workouts.find(function(w){ return Number(w.day_of_week)===_selDow; }) : null;
+    // The selected day resolves against the week THAT DAY falls in, not the
+    // week today falls in — looking at next Tuesday has to show next Tuesday's
+    // prescription, which in an eight-week block is a different one.
+    var _plan = (_selDow!=null) ? _progDayFor(_selDow, _sel) : null;
     if(_plan){
       var _dayShort = {0:'Sun',1:'Mon',2:'Tue',3:'Wed',4:'Thu',5:'Fri',6:'Sat'};
       var _exLines = '';
@@ -18469,9 +18475,12 @@ function renderTrainingList(){
         var _pex = typeof _plan.exercises==='string' ? JSON.parse(_plan.exercises) : _plan.exercises;
         if(Array.isArray(_pex)){
           _pex.slice(0,6).forEach(function(e){
+            // ONE FORMATTER. This had its own copy that knew nothing about RPE,
+            // so a programme written in RPE read as a bare "4×5" here and
+            // "4 × 5 · RPE 7" one tap deeper — the same set, two prescriptions.
             var ln = '• '+(e.name||'Exercise');
-            if(e.sets && e.reps) ln += ' — '+e.sets+'×'+e.reps;
-            else if(e.sets) ln += ' — '+e.sets+' sets';
+            var _d = formatExerciseDetail(e);
+            if(_d) ln += ' — '+_d;
             _exLines += '<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+ln.replace(/</g,'&lt;')+'</div>';
           });
           if(_pex.length>6) _exLines += '<div style="color:var(--muted);">+ '+(_pex.length-6)+' more</div>';
@@ -19725,7 +19734,7 @@ function toggleProgramDisplay(){
   if(clientAssignedProgram && clientAssignedProgram.workouts){
     if(!now){ // turning ON
       var todayDow = new Date().getDay();
-      todayProgramWorkout = clientAssignedProgram.workouts.find(function(w){ return Number(w.day_of_week) === todayDow; }) || null;
+      todayProgramWorkout = _progDayFor(todayDow) || null;
     } else { // turning OFF
       todayProgramWorkout = null;
     }
@@ -19781,7 +19790,7 @@ async function loadClientAssignedProgram(){
     // Respect the per-person "show program on Today" preference. When off, the program still
     // exists (for Training-tab reference) but does not drive the Today card — pure freestyle home.
     if(programDisplayEnabled()){
-      todayProgramWorkout = workouts.find(function(w){ return Number(w.day_of_week) === todayDow; }) || null;
+      todayProgramWorkout = _progDayFor(todayDow) || null;
     } else {
       todayProgramWorkout = null;
     }
@@ -19976,6 +19985,13 @@ function openTodayProgramWorkout(explicitWorkout, viewOnly){
 }
 
 // Compact one-line detail: "2×6-8 · 90s rest · @ 50lb"
+// RPE IS A PRESCRIPTION, NOT A RATING, and the difference matters enough to say
+// here: e.rpe is the effort she was TOLD to aim for on that set. The per-exercise
+// connection rating she gives afterwards is what she FELT, lives on her own log,
+// and the two must never be shown in each other's place or stored in each
+// other's field. A programme written in RPE has no prescribed weight at all —
+// she picks the load that hits the target — so this reads "4 × 5 · RPE 7" and
+// there is nothing missing from it.
 function formatExerciseDetail(e){
   if(!e) return '';
   var parts = [];
@@ -19983,6 +19999,7 @@ function formatExerciseDetail(e){
   if(e.sets != null && rep != null) parts.push(e.sets+' × '+rep);
   else if(e.sets != null) parts.push(e.sets+' sets');
   else if(rep != null) parts.push(rep);
+  if(e.rpe != null && String(e.rpe).trim()!=='') parts.push('RPE '+String(e.rpe).trim());
   if(e.weight) parts.push('@ '+e.weight);
   return parts.join(' · ');
 }
@@ -30654,9 +30671,69 @@ function toggleClientProgram(){
   if(t) t.textContent=open?'Open \u25be':'Close \u25b4';
 }
 
+// ===== A PROGRAM CAN HAVE NUMBERED WEEKS ==================================
+// (Yusuf, ruling, 25 Aug.) The model was one repeating week: seven days, one
+// prescription each, the same forever. A real purchased block is eight distinct
+// weeks — same movements, different set counts and rep schemes — so a row now
+// carries an optional week_index.
+//
+// NULL MEANS EVERY WEEK, which is what every program written before today is,
+// so none of them change and none of them need editing.
+//
+// WEEK ONE IS ANCHORED TO A DATE, NOT TO A GENERIC MONDAY (his words: she
+// begins on week one, starting today). The anchor is stored as [wk1:YYYY-MM-DD]
+// inside programs.description — the same shape [restSteps:N] already uses, so a
+// multi-week program needs ONE new column and no second one for the start date.
+var _PROG_WK1_RE=new RegExp("\\[wk1:(\\d{4}-\\d{2}-\\d{2})\\]","i");
+function _progWeek1Start(program){
+  try{
+    var m=String((program&&program.description)||'').match(_PROG_WK1_RE);
+    if(!m) return null;
+    // Noon, not midnight: a date-only string parsed as UTC lands on the
+    // previous evening in a western zone and shifts her whole programme by a
+    // day. Every other date in this file is anchored the same way.
+    var d=new Date(m[1]+'T12:00:00');
+    if(isNaN(d.getTime())) return null;
+    d.setHours(0,0,0,0);
+    return d;
+  }catch(e){ return null; }
+}
+// Which week of the programme a given day falls in. 1-based. null when the
+// programme has no anchor, which means it is an ordinary repeating week.
+function _progWeekIndex(program, when){
+  var s=_progWeek1Start(program); if(!s) return null;
+  var d=when?new Date(when):new Date();
+  if(isNaN(d.getTime())) return null;
+  d.setHours(0,0,0,0);
+  var diff=Math.floor((d.getTime()-s.getTime())/86400000);
+  if(diff<0) return 1;                      // before it starts she is on week one
+  return Math.floor(diff/7)+1;
+}
+// THE ONE PLACE THAT DECIDES WHICH WORKOUT A DAY GETS. Four separate lookups
+// used to do this by hand, and a week-aware programme with four of them would
+// have let her VIEW one week and LOG another from the same screen.
+function _progDayFor(dow, when){
+  if(!clientAssignedProgram || !clientAssignedProgram.workouts) return null;
+  var rows=clientAssignedProgram.workouts.filter(function(w){
+    return w.day_of_week!=null && Number(w.day_of_week)===Number(dow);
+  });
+  if(!rows.length) return null;
+  var wk=_progWeekIndex(clientAssignedProgram.program, when);
+  if(wk!=null){
+    for(var i=0;i<rows.length;i++){
+      if(rows[i].week_index!=null && Number(rows[i].week_index)===wk) return rows[i];
+    }
+    // A NUMBERED PROGRAMME THAT HAS RUN OUT IS OVER, not back at week one.
+    // Falling through to a weekless row is right (that row means every week);
+    // inventing week one again would quietly restart an eight-week block on
+    // week nine and she would never be told.
+  }
+  for(var j=0;j<rows.length;j++){ if(rows[j].week_index==null) return rows[j]; }
+  return null;
+}
 function viewClientProgramDay(dow){
   if(!clientAssignedProgram) return;
-  var w = clientAssignedProgram.workouts.find(function(x){ return Number(x.day_of_week) === dow; });
+  var w = _progDayFor(dow);
   if(!w){ showToast('Rest day'); return; }
   // Open the viewer for THIS day without overwriting today's workout (Jim relies on it). View-only — logging lives in Today.
   openTodayProgramWorkout(w, true);
@@ -30665,7 +30742,10 @@ function viewClientProgramDay(dow){
 // 1-tap "I did this" — log a planned workout as completed for a given date (today OR a past day)
 async function logPlannedWorkout(dateStr, dow){
   if(!cl || !clientAssignedProgram){ showToast('No program loaded'); return; }
-  var plan = clientAssignedProgram.workouts.find(function(x){ return Number(x.day_of_week) === Number(dow); });
+  // Anchored to the DATE being logged, not to today: logging Monday's session
+  // on Wednesday must write Monday's week, and across a week boundary those are
+  // two different prescriptions.
+  var plan = _progDayFor(dow, new Date(dateStr+'T12:00:00'));
   if(!plan){ showToast('No planned workout that day'); return; }
 
   // Idempotent: don't double-log the same plan on the same date
@@ -38417,7 +38497,17 @@ async function _jvLoadDeepProgram(code){
     var prog=rows[0];
     var wr=await fetch(SB_URL+'/rest/v1/program_workouts?program_id=eq.'+prog.id+'&order=day_of_week.asc',{headers:sbHeaders()});
     var wos=wr.ok?await wr.json():[];
-    var byDay={}; wos.forEach(function(w){ var d=(w.day_of_week==null)?7:Number(w.day_of_week); byDay[d]=w; });
+    // WEEK-AWARE, because this card is on the client overview and an eight-week
+    // programme rendered by day alone would show one arbitrary week's numbers
+    // with nothing saying which. Rows with no week are every week, as always.
+    var _wk=_progWeekIndex(prog);
+    var _wos=wos;
+    if(_wk!=null){
+      var _hit=wos.filter(function(w){ return w.week_index!=null && Number(w.week_index)===_wk; });
+      if(_hit.length) _wos=_hit;
+      else _wos=wos.filter(function(w){ return w.week_index==null; });
+    }
+    var byDay={}; _wos.forEach(function(w){ var d=(w.day_of_week==null)?7:Number(w.day_of_week); byDay[d]=w; });
     var dayNames={1:'MON',2:'TUE',3:'WED',4:'THU',5:'FRI',6:'SAT',7:'SUN'};
     var rowsHtml='';
     [1,2,3,4,5,6,7].forEach(function(d){
