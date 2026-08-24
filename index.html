@@ -10415,11 +10415,21 @@ async function _doLoginInner(){
   // If this file already knows the code, sign in now and let the roster land behind
   // us — waiting on the network to confirm something we already know is why a slow
   // server felt like a broken app. Only an unknown code actually needs the lookup.
-  if(CLIENTS[entered]) { loadRosterOrCarryOn(); }
-  else { await loadRosterOrCarryOn(); }
-  // First check the CLIENTS map (now includes anyone from the DB)
+  // ONE ROW, NOT TWO THOUSAND (Yusuf, ruling, 24 Aug — the sign-in fix).
+  // MEASURED, not guessed: three cold loads on the deployed app, one press each,
+  // signed in at 8062ms, 8064ms and 8095ms. Every one of them was the full
+  // ROSTER_WAIT_MS timeout, with nothing on screen to say the press had landed —
+  // loadRosterFromDB had still not resolved 15s in. Nobody waits eight silent
+  // seconds; they press again, which is what makes this look like a rejection.
+  // The roster is 2,000 rows this person does not need. Their own row is one
+  // indexed lookup that came back in about a tenth of a second, six times out of
+  // six, WHILE the roster was still in flight. So the identity read goes first
+  // and the roster is no longer allowed to hold the door: it is kicked off
+  // un-awaited and lands behind us, exactly as it does for a known code.
+  loadRosterOrCarryOn();
+  // First the map — a returning device already knows itself and owes nobody a trip.
   var c = CLIENTS[entered];
-  // Then check custom trainer access codes (set via changeAccessCode)
+  // Then custom trainer access codes (set via changeAccessCode)
   if(!c){
     var customMap = {};
     try{ customMap = JSON.parse(localStorage.getItem('yjb_custom_trainer_codes')||'{}'); }catch(e){}
@@ -10427,35 +10437,42 @@ async function _doLoginInner(){
       c = customMap[entered];
     }
   }
-  // Direct DB fallback: if the roster load missed this code for any reason (RLS timing,
-  // coach_code quirks, a client added on another device), look the exact code up in Supabase
-  // before rejecting. This guarantees anyone who exists in the clients table can sign in.
-  // Skip the lookup when the roster call we just made didn't come back — a second
-  // query to the same table will time out the same way, and stacking the two waits
-  // is how an unknown code took half a minute to be told anything.
-  if(!c && !_rosterOffline){
+  // THE IDENTITY READ. Raw fetch with its own status check, deliberately NOT
+  // sbSelect: sbSelect returns [] on failure and never throws, so a refused or
+  // timed-out read is indistinguishable from "no such code" — and telling someone
+  // with a correct code that it is wrong is the one outcome this path must never
+  // produce. `looked` records whether we actually got an answer.
+  var _looked = false;
+  if(!c){
     try{
       // Public-safe columns only — phone/calls_enabled/call_credits went dark to
       // the anon key with the rest of the clients lock. calls_enabled/call_credits
       // arrive a moment later instead, once sessEnsure() below mints this person's
       // session and applies the values session.js looked up with the service key.
       var _cols='code,name,initials,coach_code,is_trainer,active';
-      var _rows = await sbSelect('clients','code=eq.'+encodeURIComponent(entered)+'&select='+_cols+'&order=code.asc&limit=1');
-      if(_rows && _rows.length){
-        var r=_rows[0];
-        c = {name:(r.name||r.code), initials:r.initials||undefined, coach_code:r.coach_code||undefined, active:(r.active!==false)};
-        if(r.is_trainer) c.isTrainer=true;
-        CLIENTS[entered]=c;  // cache so the rest of the app sees them
+      var _rq = await fetch(SB_URL+'/rest/v1/clients?code=eq.'+encodeURIComponent(entered)
+                            +'&select='+_cols+'&limit=1', {headers:sbHeaders()});
+      if(_rq.ok){
+        _looked = true;                       // the server answered; whatever it said is true
+        var _rows = await _rq.json();
+        if(Array.isArray(_rows) && _rows.length){
+          var r=_rows[0];
+          c = {name:(r.name||r.code), initials:r.initials||undefined, coach_code:r.coach_code||undefined, active:(r.active!==false)};
+          if(r.is_trainer) c.isTrainer=true;
+          CLIENTS[entered]=c;  // cache so the rest of the app sees them
+        }
       }
     }catch(e){}
   }
   if(!c){
-    // "Wrong code" is a lie when the server never answered. Their code may be fine.
+    // A CORRECT CODE IS NEVER TOLD IT IS WRONG. "Wrong code" is only sayable when
+    // the server actually answered and said there is no such row. If the read did
+    // not land we say so — that message already existed and is the honest one.
     var _le=document.getElementById('lerr');
     if(_le){
-      _le.textContent = _rosterOffline
-        ? 'Can’t reach the server right now — your code may be fine. Try again in a few minutes.'
-        : 'Wrong code. Check with Yusuf.';
+      _le.textContent = _looked
+        ? 'Wrong code. Check with Yusuf.'
+        : 'Can’t reach the server right now — your code may be fine. Try again in a few minutes.';
       _le.classList.add('show');
     }
     try{ showLoading(false); }catch(e){}
@@ -10465,12 +10482,24 @@ async function _doLoginInner(){
   if(!c.isTrainer){
     var hiddenSet = {};
     try{ var arr = JSON.parse(localStorage.getItem('yjb_hidden_clients')||'[]'); arr.forEach(function(x){hiddenSet[x]=true;}); }catch(e){}
-    if(hiddenSet[entered]){ document.getElementById('lerr').classList.add('show'); return; }
+    // SAY THE TRUE THING. This used to add .show and nothing else, so it inherited
+    // #lerr's markup text — "Wrong code. Check with Yusuf." — and told someone whose
+    // code is perfectly correct that it is not. Same for active===false below.
+    if(hiddenSet[entered]){
+      var _lh=document.getElementById('lerr');
+      if(_lh){ _lh.textContent='This code isn’t active on this device. Check with Yusuf.'; _lh.classList.add('show'); }
+      try{ showLoading(false); }catch(e){}
+      return;
+    }
     // The list above is localStorage, so it only ever refuses on the device that set
     // it — it cannot turn anyone away on their own phone. active=false lives on the
     // client row, so it holds everywhere. Without this line "removed" is a promise the
     // app does not keep.
-    if(c.active===false){ document.getElementById('lerr').classList.add('show'); try{ showLoading(false); }catch(e){} return; }
+    if(c.active===false){
+      var _la=document.getElementById('lerr');
+      if(_la){ _la.textContent='This code is no longer active. Check with Yusuf.'; _la.classList.add('show'); }
+      try{ showLoading(false); }catch(e){} return;
+    }
   }
   var code = entered;
   cl=Object.assign({},c,{code:code});
