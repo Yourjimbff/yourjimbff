@@ -63423,6 +63423,42 @@ function _macrosReconcileWithCalories(cal, pro, carb, fat){
 // tracker, his tiles — belongs to the SIGNED-IN account. Running any of it for
 // somebody else's meal would put a client's dinner into Yusuf's day and their
 // foods into his library, which is a far worse bug than the one this fixes.
+// ===== THE FOOD IS THE RECORD, THE PLACE IS A FIELD ON IT ================
+// "Philly cheesesteak omelette is the actual food item, Silver Diner is the
+// location." (Yusuf, ruling, 23 Aug.) The prompt rule at v7.980.362 got the
+// SPOKEN line right and the marker kept coming back "Silver Diner Dinner —
+// Philly Cheesesteak Omelet with Pancakes". Half a fix is not one, and the name
+// is what he reads on the day card.
+//
+// So it is corrected in code on the way to the row. Two shapes cover what the
+// model actually produces:
+//   "Silver Diner Dinner — Philly Cheesesteak Omelet"  -> the dash form
+//   "Silver Diner Breakfast"                            -> place + meal word,
+//     with the real food only in the description
+// A name that already leads with food is left completely alone.
+var _JIM_PLACE_TAIL_RE=new RegExp('\\s*(?:\\u2014|\\u2013|-|:|\\u00b7)\\s*','');
+var _JIM_MEALWORD_RE=new RegExp('\\b(?:breakfast|lunch|dinner|supper|snack|meal)\\b\\s*$','i');
+function _jimFoodLed(name, description){
+  var n=String(name||'').trim();
+  if(!n) return n;
+  // "Place Meal — Real Food" : everything after the first dash IS the food.
+  var parts=n.split(_JIM_PLACE_TAIL_RE);
+  if(parts.length>1){
+    var head=parts[0].trim(), tail=parts.slice(1).join(' - ').trim();
+    // Only flip when the HEAD looks like a place-and-meal label and the tail
+    // looks like food. "Chicken - rice - broccoli" must not be reordered.
+    if(tail && _JIM_MEALWORD_RE.test(head)) return tail+' \u00b7 '+head.replace(_JIM_MEALWORD_RE,'').trim();
+  }
+  // "Place Meal" with the food only in the description.
+  if(_JIM_MEALWORD_RE.test(n)){
+    var d=String(description||'').trim();
+    if(d && d.toLowerCase()!==n.toLowerCase()){
+      var place=n.replace(_JIM_MEALWORD_RE,'').trim();
+      return place ? (d+' \u00b7 '+place) : d;
+    }
+  }
+  return n;
+}
 async function logFoodFromChat(offer, photo, targetCode){
   var _tc=String(targetCode||'').trim().toLowerCase();
   var _code=_tc || ((cl&&cl.code)||'');
@@ -63470,7 +63506,7 @@ async function logFoodFromChat(offer, photo, targetCode){
   // This line used to be tiers 1 and 3 with nothing between them, which is how
   // "went to the diner this morning", said at 11:45, landed as an 11:45 lunch.
   var eatTime = offer.eat_time ? String(offer.eat_time)
-              : (meal ? _defaultMealTime(meal, offer.dateStr || null)
+              : (meal ? _defaultMealTime(meal, _targetDate)
                       : new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}));
   var r = {
     name: offer.name,
@@ -63490,6 +63526,9 @@ async function logFoodFromChat(offer, photo, targetCode){
   }
   // meal_text: the sentence the client actually said. The meal card headlines it
   // and the trainer side reads it; dropping it here erased the flow's one line.
+  // The food leads. Done here rather than trusted to the prompt, which got the
+  // spoken line right and the stored name wrong.
+  try{ r.name=_jimFoodLed(r.name, offer.description||offer.meal_text||''); }catch(e){}
   var foodRow = {client_code:_code, name:r.name, emoji:r.emoji, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, sugar:r.sugar, rating:r.rating, insight:r.insight, meal:meal, eat_time:eatTime, graced:false, date_str:_targetDate, meal_text:(offer.meal_text||null)};
   if(_daysAgo>0) foodRow.logged_at = _isoForDateStr(_targetDate, eatTime);
   var _ins = await insertFoodLog(foodRow, savedPhoto);
@@ -64385,8 +64424,18 @@ async function jimTurn(text, photos, opts){
   // like the week panel that genuinely know the slot's date; those never carry
   // daysAgo, so this guard is silent for them. Same shape as the time law:
   // what he actually said wins over the surface's default.
+  // HIS STATED DAY IS THE DAY, and it is decided HERE — off his own sentence,
+  // before the model has any say and regardless of what it returns. Two prompt
+  // rules have now failed to hold this (v7.980.366 and the earlier anchors),
+  // and the second failure was worse than the first: it stopped silently
+  // logging to today and started ASKING him which day yesterday was, breaking
+  // the never-interrogate law on the one sentence he named must-be-100%.
+  var _dayPin=null; try{ _dayPin=_jimAnchorDay(text); }catch(e){}
   function _pinDay(o){
-    if(!o || !opts.dateStr) return o;
+    if(!o) return o;
+    // Pinned wins outright: not the model's daysAgo, not the bar's own day.
+    if(_dayPin!=null && _dayPin>0){ o.daysAgo=_dayPin; delete o.dateStr; return o; }
+    if(!opts.dateStr) return o;
     var _back=Math.max(0, Math.min(60, parseInt(o.daysAgo||o.days_ago||0,10)||0));
     if(_back>0) return o;                 // leave daysAgo to resolve the date
     o.dateStr=opts.dateStr; return o;
@@ -70353,8 +70402,43 @@ var _JIM_ANCHOR_SLOTS=[
 // deliberately absent — that needs to know which Tuesday, and guessing a week
 // back is a bigger error than leaving it on today for him to correct.
 var _JIM_DAY_BACK_RE=new RegExp('\\byesterday\\b|\\blast night\\b','i');
+var _JIM_DAY_NAGO_RE=new RegExp('\\b(\\d{1,2}|one|two|three|four|five|six|seven)\\s+days?\\s+ago\\b','i');
+var _JIM_DOW=['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+var _JIM_WORDNUM={one:1,two:2,three:3,four:4,five:5,six:6,seven:7};
+// HOW MANY DAYS BACK HE SAID, or null when he said nothing about the day.
+// Resolved from HIS WORDS and from the real clock — never asked, never left to
+// the model, which was answering "which day was yesterday for you?" and logging
+// nothing at all.
+// Weekday names resolve BACKWARDS, to the most recent one that has happened,
+// because a log is a report of something he did. "on Friday" said on a Sunday
+// is two days ago; said ON a Friday it is today.
 function _jimAnchorDay(raw){
-  return _JIM_DAY_BACK_RE.test(String(raw||'')) ? 1 : null;
+  var t=String(raw||'');
+  if(!t) return null;
+  // ORDER MATTERS: "day before yesterday" CONTAINS "yesterday", so the longer
+  // phrase has to be asked first or it resolves to 1 and quietly loses a day.
+  if(/\bday before yesterday\b/i.test(t)) return 2;
+  if(_JIM_DAY_BACK_RE.test(t)) return 1;
+  var m=_JIM_DAY_NAGO_RE.exec(t);
+  if(m){
+    var n=parseInt(m[1],10);
+    if(isNaN(n)) n=_JIM_WORDNUM[String(m[1]).toLowerCase()]||0;
+    if(n>0 && n<=60) return n;
+  }
+  // A weekday only counts when he is pointing at it — "on Friday", "last
+  // Friday", "Friday I had". A bare "Friday" inside other words is left alone.
+  var dm=new RegExp('\\b(?:on|last)\\s+('+_JIM_DOW.join('|')+')\\b|\\b('+_JIM_DOW.join('|')+')\\s+(?:i|we)\\b','i').exec(t);
+  if(dm){
+    var name=String(dm[1]||dm[2]||'').toLowerCase();
+    var want=_JIM_DOW.indexOf(name);
+    if(want>=0){
+      var today=new Date().getDay();
+      var back=(today-want+7)%7;          // 0 when he means today
+      if(/\blast\b/i.test(dm[0]) && back===0) back=7;
+      return back;
+    }
+  }
+  return null;
 }
 function _jimAnchorSlot(raw){
   var t=String(raw||'');
