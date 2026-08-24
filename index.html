@@ -21700,9 +21700,47 @@ function _schKindChip(r){
   return 'check-in call';
 }
 function _schWho(r){
+  // SHARING IS CHECKED FIRST, and that ordering is the whole fix. The consult
+  // branch used to return the lead's REAL NAME above the sharing check, so a
+  // booked consultation put a stranger's name on camera with sharing on — the
+  // one row type that is not even a client yet.
+  //
+  // "Client call", not a profile line. This used to hand back
+  // "Female · 23 · 5'2 · 115.8 lbs" — which is not a name, but on a calendar
+  // block it is a stranger's body read out on camera, and it is not what a
+  // calendar block is for. He asked for the time kept and the name gone.
+  if(window._jvShareMode) return 'Client call';
   if(r.kind==='consult') return String(r.who||'Consult');
-  if(window._jvShareMode) return _jvShareDemoLine(r.code);
   return String((CLIENTS[r.code]||{}).name||r.code);
+}
+// A NAME CAN BE INSIDE THE TITLE ITSELF. calendar_blocks has no attendee
+// column, so scheduling something "with" a client writes their full name into
+// the title — "Session — Carly Long" is one string in the table, and no name
+// reader is ever consulted to draw it. Under sharing every roster name is
+// scrubbed out of a title before it reaches the screen. Longest names first so
+// "Carly Long" cannot be half-matched by "Carly".
+function _wkShareTitle(t){
+  var s=String(t||'');
+  if(!window._jvShareMode || !s) return s;
+  try{
+    var names=[];
+    Object.keys(window.CLIENTS||{}).forEach(function(c){
+      var n=String((CLIENTS[c]||{}).name||'').trim();
+      if(n.length>2) names.push(n);
+      // A first name on its own is still an identity on camera.
+      var first=n.split(/\s+/)[0];
+      if(first && first.length>2 && names.indexOf(first)<0) names.push(first);
+    });
+    names.sort(function(a,b){ return b.length-a.length; });
+    for(var i=0;i<names.length;i++){
+      if(!names[i]) continue;
+      var rx=new RegExp('\\b'+names[i].replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b','gi');
+      s=s.replace(rx,'Client');
+    }
+    // "Session — Client" reads better than "Session —  Client" after a scrub.
+    s=s.replace(/\s{2,}/g,' ').trim();
+  }catch(e){}
+  return s;
 }
 // The strip is Monday to Sunday of whichever week the chosen day sits in, and
 // it does NOT go back past the week we are in — the standing-call door has no
@@ -21729,10 +21767,12 @@ async function schLoad(dayTs, host, force){
   if(!el) return;
   window._schDayTs=_schDayKey(dayTs);
   window._schHostId=el.id||null;
-  if(window._jvShareMode){
-    el.innerHTML='<div class="schEmpty">Hidden while sharing mode is on.</div>';
-    return;
-  }
+  // THE CALENDAR IS REDACTED, NOT BLANKED (Yusuf, ruling, 24 Aug — he records
+  // on this build). Hiding the whole surface leaked nothing and showed nothing:
+  // the one screen he most needs on camera was a sentence on an empty panel.
+  // Every name on it goes through _schWho or _wkShareTitle now, so the week
+  // renders in full — his real shape, his real hours, his real load — with the
+  // people on it unidentifiable. Time kept, name gone.
   // THE WEEK GRID IS THE ONLY VIEW NOW. schGo/schRefresh both still funnel
   // through here, so every existing nav call site (This week, prev/next,
   // the mobile front-desk tile) keeps working unchanged and always lands
@@ -22354,12 +22394,12 @@ async function wkApptCancel(key){
   var line='';
   try{
     if(r.kind==='booking'){
-      line=await _jvCancelBooking(r.code, ((CLIENTS[r.code]||{}).name||r.code), r.booking_id);
+      line=await _jvCancelBooking(r.code, (window._jvShareMode?'the client':((CLIENTS[r.code]||{}).name||r.code)), r.booking_id);
     } else if(r.kind==='consult'){
       line=await _jvCancelConsult(r.who, r.consult_id);
     } else if(r.kind==='vip'){
       var w=await trainerWrite('moveVipOccurrence',{client_code:r.code, vip_call_id:r.vip_call_id, date:r.occurrence_date, action:'skip'});
-      line=(w.ok && w.rows && w.rows[0]) ? ('✓ Skipped '+((CLIENTS[r.code]||{}).name||r.code)+'’s call that day.') : 'That did not change — nothing moved.';
+      line=(w.ok && w.rows && w.rows[0]) ? ('✓ Skipped '+(window._jvShareMode?'the client':((CLIENTS[r.code]||{}).name||r.code))+'’s call that day.') : 'That did not change — nothing moved.';
     }
   }catch(e){ line='That did not work — nothing changed.'; }
   try{ showToast(_wkPlainText(line)); }catch(e){}
@@ -22395,7 +22435,7 @@ async function wkApptMoveSubmit(key, val){
   try{ w=await trainerWrite('moveVipOccurrence',{client_code:r.code, vip_call_id:r.vip_call_id, date:r.occurrence_date, action:'move', new_time:val}); }catch(e){}
   if(!w || !w.ok || !w.rows || !w.rows[0]){ try{ showToast('Could not move that — nothing changed'); }catch(e){} return false; }
   try{ showToast('✓ Moved to '+_cbSpokenTime(val+':00')); }catch(e){}
-  try{ jvActRecord('Moved '+((CLIENTS[r.code]||{}).name||r.code)+'’s call to '+_cbSpokenTime(val+':00'), {kind:'vipmove', code:r.code, date:r.occurrence_date}); }catch(e){}
+  try{ jvActRecord('Moved '+(window._jvShareMode?'the client':((CLIENTS[r.code]||{}).name||r.code))+'’s call to '+_cbSpokenTime(val+':00'), {kind:'vipmove', code:r.code, date:r.occurrence_date}); }catch(e){}
   try{ schRefresh(); }catch(e){}
   wkPanelClose();
   return true;
@@ -22543,7 +22583,7 @@ function _wkLoggedBlockHtml(e, dayStartMs){
   var _isWt=(e.k==='wt');
   var _lk=_isWt ? null : ((e.k==='food') ? _wkKeyFood(e.id) : _wkKeyWo(e.id));
   var _true=_wkLoggedLabel(e);
-  var lbl=_escHtml(_isWt ? _true : _wkDisplayTitle(_lk, _true));
+  var lbl=_escHtml(_wkShareTitle(_isWt ? _true : _wkDisplayTitle(_lk, _true)));
   // 1d — visual height only. pos.top is untouched, so nothing moves in time.
   if(!_isWt) pos.h=_wkFitHeight(_lk, pos.h, _wkDisplayTitle(_lk, _true));
   // "Completed" said what the gold edge and the block's own existence already
@@ -23885,7 +23925,7 @@ function _cbBlockHtml(occ){
   // Same two rules as a logged block: his label if he set one, and a visual-only
   // height when he chose fit. duration_minutes is never touched.
   var _ck=_wkKeyCal(b.id, occ.dateStr);
-  var _ctitle=_wkDisplayTitle(_ck, b.title);
+  var _ctitle=_wkShareTitle(_wkDisplayTitle(_ck, b.title));
   h=_wkFitHeight(_ck, h, _ctitle);
   var done=!!(occ.exception && occ.exception.done);
   var key=b.id+'|'+occ.dateStr;
@@ -24663,7 +24703,7 @@ function _cevWithHtml(st){
   }
   return '<div class="cevWith">'
     + (st.withCode
-        ? ('<div class="cevWithOn"><span>With '+_escHtml(st.withName)+'</span>'
+        ? ('<div class="cevWithOn"><span>With '+_escHtml(window._jvShareMode?'a client':st.withName)+'</span>'
            + '<button type="button" class="cevWithX" onclick="cevWithClear()" aria-label="Remove">✕</button></div>')
         : ('<input type="text" class="cevWithIn" id="cevWithIn" placeholder="With who? (optional)"'
            + ' value="'+_escHtml(st.withQuery||'')+'" oninput="cevWithType()">'
@@ -26134,7 +26174,7 @@ async function wkPanelSave(){
       var _oc=window._wkOwner||'';
       var _me=(window.cl||{}).code||'';
       if(_oc && _oc!==_me && _oc!=='me' && _oc!=='all'){
-        _who=String((CLIENTS[_oc]&&CLIENTS[_oc].name)||_oc)+"'s";
+        _who=(window._jvShareMode?'the client':String((CLIENTS[_oc]&&CLIENTS[_oc].name)||_oc))+"'s";
       }
     }catch(e){}
     _wkPanelLogLanded(btn0, st, _who);
@@ -26424,7 +26464,7 @@ async function _apptDragEnd(ev){
     try{ schRefresh(); }catch(e){}
   } else {
     try{ showToast('✓ Moved to '+_cbSpokenTime(newLocal+':00')); }catch(e){}
-    try{ jvActRecord('Moved '+((CLIENTS[r.code]||{}).name||r.code)+'’s call to '+_cbSpokenTime(newLocal+':00'), {kind:'vipmove', code:r.code, date:r.occurrence_date}); }catch(e){}
+    try{ jvActRecord('Moved '+(window._jvShareMode?'the client':((CLIENTS[r.code]||{}).name||r.code))+'’s call to '+_cbSpokenTime(newLocal+':00'), {kind:'vipmove', code:r.code, date:r.occurrence_date}); }catch(e){}
     try{ schRefresh(); }catch(e){}
   }
   setTimeout(function(){ window._apptDragMoved=false; }, 250);
@@ -26434,7 +26474,7 @@ function _wkOwnerLabel(){
   var owner=window._wkOwner||'';
   var myCode=(window.cl||{}).code||'';
   if(!owner || owner===myCode) return 'Me';
-  return (CLIENTS[owner]||{}).name || owner;
+  return (typeof _jvSafeName==='function') ? _jvSafeName(owner) : ((CLIENTS[owner]||{}).name || owner);
 }
 function wkOwnerOpen(){
   var m=document.getElementById('wkOwnerMenu'); if(!m) return;
@@ -26457,10 +26497,14 @@ function _wkRenderOwnerMenu(q){
     return String(r.name||c).toLowerCase().indexOf(q)!==-1;
   }).sort(function(a,b){ return String((CLIENTS[a]||{}).name||a).localeCompare(String((CLIENTS[b]||{}).name||b)); }).slice(0,40);
   var owner=window._wkOwner||myCode;
-  var html='<input id="wkOwnerSearch" type="text" placeholder="Search clients" value="'+_escHtml(q)+'" oninput="wkOwnerFilter(this.value)">'
+  var html='<input id="wkOwnerSearch" type="text" placeholder="' + (window._jvShareMode ? 'Search' : 'Search clients') + '" value="'+_escHtml(q)+'" oninput="wkOwnerFilter(this.value)">'
     + '<div class="wkOwnerRow'+(owner===myCode?' on':'')+'" onclick="wkOwnerPick(\''+myCode+'\')">Me</div>'
     + rows.map(function(c){
-        return '<div class="wkOwnerRow'+(owner===c?' on':'')+'" onclick="wkOwnerPick(\''+_escHtml(c)+'\')">'+_escHtml((CLIENTS[c]||{}).name||c)+'</div>';
+        // THE WORST ONE ON THIS SURFACE. Tapping the owner control during a
+        // recording drops a list of forty real clients down the middle of the
+        // calendar. Under sharing every row goes through the one safe name.
+        var _rn=(typeof _jvSafeName==='function') ? _jvSafeName(c) : ((CLIENTS[c]||{}).name||c);
+        return '<div class="wkOwnerRow'+(owner===c?' on':'')+'" onclick="wkOwnerPick(\''+_escHtml(c)+'\')">'+_escHtml(_rn)+'</div>';
       }).join('');
   m.innerHTML=html;
 }
@@ -26611,7 +26655,7 @@ async function _jvJarvisCalendarAct(parsed){
   if(parsed.owner_name){
     var hits=_jvResolveClient(parsed.owner_name);
     if(hits.length!==1) return {ok:false, line:'I’m not sure which client you mean by “'+_escHtml(parsed.owner_name)+'” — say the exact name or code.'};
-    owner=hits[0]; ownerName=(CLIENTS[owner]||{}).name||owner;
+    owner=hits[0]; ownerName=window._jvShareMode ? 'the client' : ((CLIENTS[owner]||{}).name||owner);   // spoken confirmations land on screen too
   }
   // The model built this out of his sentence, so it is ours to case.
   var title=_titleCap(String(parsed.title||'').trim()) || (_CB_KINDS.filter(function(k){return k.k===parsed.kind;})[0]||{}).label || 'Block';
@@ -27678,7 +27722,12 @@ function _plColumnHtml(wk){
     // thing to show there rather than an editor pointed at nobody.
     return _wkTodayAgendaHtml(wk);
   }
-  var nm=String((CLIENTS[code]&&CLIENTS[code].name)||code);
+  // WHOSE WEEK THIS IS, is a client's name in the biggest text on the panel.
+  // _jvSafeName is the one function anything that can appear on camera asks
+  // for a name, so this asks it rather than reading CLIENTS directly — the
+  // exact "a surface with its own read misses the switch" fault that left
+  // sixty-nine names under a redacted money line.
+  var nm=(typeof _jvSafeName==='function') ? _jvSafeName(code) : String((CLIENTS[code]&&CLIENTS[code].name)||code);
   return '<div class="plHead"><div><div class="plEy">The split</div><div class="plWho">'+_escHtml(nm)+'</div></div>'
     + '<button class="plBtn" id="plSave" onclick="_plSave()" disabled>Save the week</button></div>'
     + '<div class="plErr" id="plErr" style="display:none;"></div>'
@@ -27714,7 +27763,7 @@ function _wkTodayAgendaHtml(wk){
     var b=o.block, lbl=(_CB_KINDS.filter(function(k){ return k.k===b.kind; })[0]||{}).label||'';
     var occKey=b.id+'|'+o.dateStr;
     items.push({t:_cbTimeToMinutes(o.startLocal), html:'<div class="wkDetDayRow" onclick="_cbMaybeOpen(\''+_escHtml(occKey)+'\',event.clientX,event.clientY)"><div class="wkDetDayName">'
-      +_escHtml(_cbSpokenTime(o.startLocal))+'</div><b>'+_escHtml(b.title||lbl)+'</b><span>'+_escHtml(lbl)+'</span></div>'});
+      +_escHtml(_cbSpokenTime(o.startLocal))+'</div><b>'+_escHtml(_wkShareTitle(b.title||lbl))+'</b><span>'+_escHtml(lbl)+'</span></div>'});
   });
   items.sort(function(a,b){ return (a.t||0)-(b.t||0); });
   // THREE DAYS AHEAD, DATED, IN ORDER (Yusuf, ruling, 22 Aug). Today alone
