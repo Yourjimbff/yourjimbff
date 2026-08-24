@@ -48029,6 +48029,23 @@ async function insertFoodLog(row, photo){
 // So: the same read, up to three times, ~180ms apart. Still returns false if the
 // row genuinely is not there, so a real failure is still caught and still said
 // out loud — this only stops a fast read being mistaken for a lost row.
+// The duplicate path has no id to check — the insert never happened — so the
+// question is whether the row it was a duplicate OF is really there. Same
+// three-try shape as _sbRowLanded: a refused read is unknown, not absent.
+async function _wtRowExists(code, wt){
+  if(!code || !(wt>0)) return false;
+  for(var i=0;i<3;i++){
+    if(i) await new Promise(function(r){ setTimeout(r,180); });
+    try{
+      var res=await fetch(SB_URL+'/rest/v1/weight_logs?client_code=eq.'+encodeURIComponent(code)
+        +'&weight=eq.'+encodeURIComponent(wt)+'&select=id&limit=1',{headers:sbHeaders()});
+      if(!res.ok) continue;
+      var rows=await res.json();
+      if(rows && rows.length) return true;
+    }catch(e){}
+  }
+  return false;
+}
 async function _sbRowLanded(table, id){
   for(var i=0;i<3;i++){
     if(i) await new Promise(function(r){ setTimeout(r,180); });
@@ -64087,8 +64104,39 @@ function _jimFoodLed(name, description){
   }
   return n;
 }
+// ===== A CODE IS A KEY, NOT A WORD ======================================
+// Carried open since the founding brief and it is the quietest fault in the
+// file. Every write-for-a-named-client lowercased the target, so a client whose
+// stored code carries a capital was written to a code that does not exist --
+// and the write REPORTED SUCCESS, because a POST naming an unknown client_code
+// is a perfectly valid insert. Nothing 4xxs. Nothing throws. The row is simply
+// filed under nobody, forever, and the tally says one.
+// Real codes are lowercase today, which is the only reason this has not bitten
+// a client yet. That is luck, not a design.
+//
+// Resolve against the roster AS LOADED, case-insensitively, and hand back the
+// code exactly as the table stores it. Empty means no such client, and the
+// caller must REFUSE and say so -- never silently lowercase and write anyway.
+//
+// Falls back to the old behaviour when the roster has not loaded at all, which
+// is every client account: this can only ever be stricter where there is
+// something to be strict against, never a new way to fail.
+function _codeAsStored(code){
+  var c=String(code||'').trim();
+  if(!c) return '';
+  var keys=[]; try{ keys=Object.keys(CLIENTS||{}); }catch(e){}
+  if(!keys.length) return c.toLowerCase();          // no roster to check against
+  if(CLIENTS[c]) return c;                          // exact hit, already as stored
+  var lc=c.toLowerCase();
+  for(var i=0;i<keys.length;i++){
+    if(String(keys[i]).toLowerCase()===lc) return keys[i];
+  }
+  return '';                                        // no such client
+}
 async function logFoodFromChat(offer, photo, targetCode){
-  var _tc=String(targetCode||'').trim().toLowerCase();
+  var _tc=_codeAsStored(targetCode);
+  // Named somebody the roster does not have: write nothing rather than file it under nobody.
+  if(targetCode && !_tc) return false;
   var _code=_tc || ((cl&&cl.code)||'');
   var _forOther=!!(_tc && (!cl || _tc!==String(cl.code||'').toLowerCase()));
   if(!offer || !offer.name || !_code) return false;
@@ -64372,7 +64420,8 @@ async function appendWorkoutNote(workoutId, addText){
 // them was filed under the wrong person.
 async function logWorkoutFromOffer(offer, forCode){
   if(!offer || !cl) return null;
-  var _target=String(forCode||'').trim().toLowerCase() || cl.code;
+  var _target=_codeAsStored(forCode) || (forCode ? '' : cl.code);
+  if(!_target) return null;
   var _woDaysAgo = Math.max(0, Math.min(60, parseInt(offer.daysAgo||offer.days_ago||0,10)||0));
   var _woDate = offer.dateStr || (_woDaysAgo>0 ? _dateStrDaysAgo(_woDaysAgo) : todayDateStr);
   _woDaysAgo = (_woDate===todayDateStr) ? 0 : (_woDaysAgo||1);
@@ -64455,7 +64504,8 @@ async function logWorkoutFromOffer(offer, forCode){
 // because a scratch weigh-in would have landed on his own row.
 async function logWeightFromChat(offer, forCode){
   if(!offer || !cl || offer.weight==null) return false;
-  var _wtTarget = String(forCode||'').trim().toLowerCase() || cl.code;
+  var _wtTarget = _codeAsStored(forCode) || (forCode ? '' : cl.code);
+  if(!_wtTarget) return false;
   var wt = Math.round((+offer.weight||0)*10)/10;
   if(!wt || wt<=0) return false;
   var _wtDaysAgo = Math.max(0, Math.min(60, parseInt(offer.daysAgo||offer.days_ago||0,10)||0));
@@ -64473,7 +64523,13 @@ async function logWeightFromChat(offer, forCode){
       ? _isoForDateStr(_wtDate, '') : new Date().toISOString()
   };
   var attempt = await insertWeightLog(row);
-  if(attempt.duplicate) return true;   // already on its way in — not a failure to report
+  // A WEIGH-IN CLAIMED IS A WEIGH-IN READ BACK (ruling, 24 Aug). The insert
+  // guard answers {duplicate:true} for a second identical submit, and this used
+  // to return TRUE for it — counting a row nobody has ever seen as a verified
+  // write. That is right ONLY when the first attempt really did land. When it
+  // did not, it is exactly the success-without-a-row this file exists to refuse,
+  // and it is invisible: the tally says one, the table says none.
+  if(attempt.duplicate) return await _wtRowExists(_wtTarget, wt);
   if(!attempt.ok) return false;
   try{ _tlCacheAdd('weights', row); renderDayTimeline(true); }catch(e){}
   return true;
@@ -64878,7 +64934,13 @@ async function jimTurn(text, photos, opts){
   opts = opts || {};
   // WHOSE RECORD THIS TURN WRITES TO. Empty means the signed-in account, which
   // is every existing caller and every client-side door.
-  var _forCode=String(opts.forCode||'').trim().toLowerCase();
+  // AN UNMATCHED CODE IS A REFUSAL, AND IT SAYS SO. Silently lowercasing it
+  // wrote the row under a client who does not exist and answered ok.
+  var _forCode=_codeAsStored(opts.forCode);
+  if(opts.forCode && !_forCode){
+    _jimLastTurn={wrote:0, emitted:0, landed:[], ok:false};
+    return 'I do not have a client with the code \u201c'+String(opts.forCode).trim()+'\u201d. Give me their name, or the code the way it is on the roster, and I will log it.';
+  }
   photos = (photos||[]).filter(Boolean);
   // Applied at the ENGINE, not at one door, so the Day bar and the rail both get
   // it and neither can drift from the other.
@@ -65457,7 +65519,24 @@ async function jimTurn(text, photos, opts){
   // A word-boundary exclusion tested against the matched span doesn't work
   // here (the span already ends AT "weight", before "training" even starts,
   // so it never sees it) — the lookahead has to sit right after the word.
+  // THE BARE NUMBER IS THE TELL, and the word-based net above could not see it.
+  // Jim does not say "weight" when he confirms a weigh-in — his house line is
+  // "Logged — 195 this morning." Measured against the replies he actually
+  // writes, the word net caught two of seven and missed every real one,
+  // which is how "scale said 195" claimed success with nothing in the table.
+  // Exactly the fault the FOOD net already had and already fixed: a guard
+  // written against a sentence shape Jim does not use is not a guard.
+  // A unit after the number rules it out — 620 cal, 9,000 steps, 20 min and
+  // 48g protein are not weigh-ins — and the figure has to be a plausible body
+  // weight, checked in code because a regex cannot range-check.
   var _wtConfirmMatch = /\b(logged|added|saved)\b[^.!\n]{0,50}\b(?:weight(?!\s*(?:training|session|lifting|room|class|workout))|weigh-?in|weighed)\b/i.exec(reply);
+  if(!_wtConfirmMatch){
+    var _wtBare=/\b(?:logged|saved|added|recorded|got it)\b[^.!\n]{0,24}?\b(\d{2,3}(?:\.\d)?)\b(?!\s*(?:cal|calories|kcal|g\b|grams?|steps?|min|minutes?|reps?|sets?|%|oz|ml))/i.exec(reply);
+    if(_wtBare){
+      var _wtBareV=parseFloat(_wtBare[1]);
+      if(!isNaN(_wtBareV) && _wtBareV>=50 && _wtBareV<=700) _wtConfirmMatch=_wtBare;
+    }
+  }
   if(!_wtExpected && !_rawReplyHadWeightTag && _wtConfirmMatch){
     console.error('WEIGHT confirmation with no marker at all — refusing to let it stand', reply);
     reply = "I don't think that actually saved — can you tell me your weight again?";
