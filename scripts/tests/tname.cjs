@@ -21,6 +21,10 @@ global.window={};
 global.CLIENTS={ sarahj1:{name:'Sarah Johnson'} };
 eval([
   grab(l=>l.startsWith('function _jvShareCode(')),
+  // _jvShareName delegates the initials rule here now, so it has to come with it
+  // (feed lane, same day — the switch had to redact before the flag was armed,
+  // and the flag-gated helper returned the live name from inside that loop).
+  grab(l=>l.startsWith('function _jvShareInitials(')),
   grab(l=>l.startsWith('function _jvShareName(')),
   grab(l=>l.startsWith('function _jvSafeName(')),
   grab(l=>l.startsWith('function _jvPendWho(')),
@@ -79,8 +83,17 @@ t(!/_jvPendingSummary[\s\S]{0,2600}?\+p\.code\+/.test(src), 'no confirmation pri
 // then took as the person's NAME, so the initials helper reduced it to a first
 // word and a last initial and produced "Female L." for everyone. Initials are
 // written instead, computed while the real name is still standing.
+//
+// AND THE RULE APPLIED THERE MUST NOT CONSULT THE FLAG (feed lane, same day).
+// This first read `info.name=_jvShareName(code, info.name)`, and that line was
+// INERT: window._jvShareMode is armed further down, and _jvShareName returns the
+// live name whenever the flag is off — so the rewrite wrote the real name back
+// over itself and the roster kept every full name for the whole recording.
+// Asserted by shape rather than by the exact call, so the flag-gated helper
+// cannot creep back in here and pass.
 console.log('\n  sharing mode writes initials into the roster, not a body:');
-t(/info\.name=_jvShareName\(code, info\.name\)/.test(src), 'the switch writes initials');
+t(/_jvShareInitials\(info\.name\)/.test(src) && !/info\.name\s*=\s*_jvShareName\(/.test(src),
+  'the switch writes initials, with the flag-free rule');
 t(!/info\.name=_jvShareDemoLine\(/.test(src), 'and never the demographic line');
 window._jvShareMode=true;   // the helper only redacts on camera; ask it there
 t(_jvShareName('sarahj1','Sarah Johnson')==='Sarah J.', 'the helper gives initials');
