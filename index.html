@@ -7751,7 +7751,7 @@ body.hasnav #tToday{padding-bottom:96px;}
         <button onclick="navTrainingWeek(1)" aria-label="Next week" style="background:transparent;border:none;font-size:18px;color:var(--m2);cursor:pointer;padding:4px 10px;line-height:1;">›</button>
       </div>
       <div id="trainingWeekGrid" style="display:flex;flex-direction:column;gap:6px;"></div>
-      <div style="text-align:center;font-size:10px;color:var(--muted);margin-top:10px;letter-spacing:0.5px;">Tap a day to see the plan + what you logged</div>
+      <div id="trainingBoardHint" style="text-align:center;font-size:10px;color:var(--muted);margin-top:10px;letter-spacing:0.5px;">Tap a day to see the plan + what you logged</div>
     </div>
 
     <div id="trainingHistory"></div>
@@ -11711,15 +11711,21 @@ function navTrainingWeek(direction){
   d.setDate(d.getDate() + (direction * 7));
   trainingViewWeekStart = d;
   trainingSelectedDay = null;
+  // On the check-in tab renderTrainingView also calls renderTrainingList, which
+  // writes into #trainingHistory — her check-in journal. Calendar only here.
+  if(_ciWeekBoardMode){ try{ renderTrainingCalendar(); }catch(e){} return; }
   renderTrainingView();
 }
 
 function closeTrainingDayDetail(){
   trainingSelectedDay = null;
+  if(_ciWeekBoardMode){ try{ renderTrainingCalendar(); }catch(e){} return; }
   renderTrainingView();
 }
 
 function selectTrainingDay(dateStr){
+  // Same holder problem: on the check-in tab this would repaint her journal.
+  if(_ciWeekBoardMode){ return _ciOpenDay(dateStr); }
   if(trainingSelectedDay === dateStr) trainingSelectedDay = null;
   else trainingSelectedDay = dateStr;
   renderTrainingView();
@@ -12753,6 +12759,61 @@ function _ciSetSub(t){
 function ciShowEarlier(){
   window._ciEarlierOpen=true;
   try{ loadJournal({earlier:true}); }catch(e){}
+}
+// ===== HER WEEK, ON A TAB SHE ACTUALLY OPENS ==============================
+// The board was built into this tab's markup and then hidden, and the only
+// thing that ever switched it back on sat in a function nothing calls any
+// more. Rendering it proved the code and proved nothing about the app: a
+// client tapping Check-in lands in loadJournal, which put the board away and
+// never rendered it. This is the route she actually takes.
+var _ciWeekBoardMode = false;   // the board is up on the check-in tab
+var _ciLogsKnown = false;       // did the logged-workout read actually answer
+async function _ciShowWeekBoard(){
+  var board=document.getElementById('trainingWeekCal'); if(!board) return;
+  var has=!!(clientAssignedProgram && clientAssignedProgram.workouts && clientAssignedProgram.workouts.length);
+  _ciWeekBoardMode = has;
+  if(!has){ board.style.display='none'; return; }
+  // THE TAB SHE ACTUALLY HAS. A client's bar is Day, Jim, Program, Progress —
+  // Check-in is hidden for clients, which is why wiring this to the check-in
+  // page still left it unreachable. Program IS the week tab in this app's own
+  // words ("Day · Week(Program for now) · Progress · Jim") and the slot it
+  // renders into is literally called programWeekHost. The node is MOVED there,
+  // not rebuilt, so there is only ever one board.
+  // A SIBLING ABOVE THE HOST, NEVER A CHILD OF IT. renderProgramTab rebuilds
+  // programWeekHost with innerHTML on every render, so a board parked inside it
+  // survives the first paint and is destroyed by the second — after which
+  // getElementById finds nothing and the week silently stops appearing. Caught
+  // by tapping through twice; one render looked perfect.
+  var _host=document.getElementById('programWeekHost');
+  if(_host && _host.parentNode && board.parentNode!==_host.parentNode){
+    _host.parentNode.insertBefore(board, _host);
+  }
+  board.style.display='block';
+  var hint=document.getElementById('trainingBoardHint');
+  // The old hint promised the logged list too, which is not what a tap does
+  // here — it opens the session. Say what the tap actually does.
+  if(hint) hint.textContent = 'Tap a day to see the session';
+  if(!trainingViewWeekStart) trainingViewWeekStart=getMonday(new Date());
+  // DONE, NOT DONE AND NOT READ ARE THREE THINGS. sbSelect answers [] on a
+  // failed read exactly as it does on an empty one, so this asks directly and
+  // only draws a tick or an empty circle when the answer actually arrived.
+  try{
+    var r=await fetch(SB_URL+'/rest/v1/workout_logs?select=id,title,logged_at,date_str&client_code=eq.'+encodeURIComponent(cl.code)+'&order=logged_at.desc&limit=120',{headers:sbHeaders()});
+    if(r.ok){ trainingAllRows = await r.json(); _ciLogsKnown = true; }
+    else { _ciLogsKnown = false; }
+  }catch(e){ _ciLogsKnown = false; }
+  try{ renderTrainingCalendar(); }catch(e){}
+}
+// Tapping a day opens the session sheet — a modal on <body>. It must NOT go
+// through selectTrainingDay: that repaints #trainingHistory, which on this tab
+// is her check-in journal, so a tap would wipe her check-ins to draw a list.
+function _ciOpenDay(ds){
+  try{
+    var d=new Date(ds+'T12:00:00'); if(isNaN(d.getTime())) return;
+    var w=_progDayFor(d.getDay(), d);
+    if(!w){ if(typeof showToast==='function') showToast('Rest day'); return; }
+    openTodayProgramWorkout(w, true);
+  }catch(e){}
 }
 async function loadJournal(_opt){
   _jHost={comp:'jPageComposer', ent:'jPageEntries'};
@@ -18487,7 +18548,9 @@ function renderTrainingCalendar(){
       }
     } else if(logged){
       statusHtml = '<div style="width:26px;height:26px;border-radius:50%;background:#f5c518;display:flex;align-items:center;justify-content:center;color:#f0ece4;font-size:14px;font-weight:700;flex-shrink:0;">✓</div>';
-    } else if(plan && !isFuture){
+    } else if(plan && !isFuture && (!_ciWeekBoardMode || _ciLogsKnown)){
+      // An empty circle says she did not do it. Only say that when the read
+      // answered; otherwise say nothing at all about that day.
       statusHtml = '<div style="width:24px;height:24px;border-radius:50%;border:1.5px solid var(--border);flex-shrink:0;"></div>';
     } else {
       statusHtml = '<div style="width:24px;flex-shrink:0;"></div>';
@@ -18498,9 +18561,9 @@ function renderTrainingCalendar(){
     var todayTag = isToday ? '<span style="font-size:8.5px;color:var(--gold);background:rgba(224,196,152,0.15);padding:1px 5px;border-radius:4px;letter-spacing:0.5px;font-weight:700;margin-left:6px;vertical-align:middle;">TODAY</span>' : '';
     var border = isSelected ? '2px solid var(--gold)' : (isToday ? '1.5px dashed rgba(224,196,152,0.6)' : '1px solid var(--border)');
     var bg = isSelected ? 'rgba(224,196,152,0.10)' : (logged ? 'var(--s2)' : 'transparent');
-    var opacity = (isPast && !logged) ? '0.5' : '1';
+    var opacity = (isPast && !logged && (!_ciWeekBoardMode || _ciLogsKnown)) ? '0.5' : '1';
 
-    html += '<div onclick="selectTrainingDay(\''+ds+'\')" style="border:'+border+';background:'+bg+';border-radius:11px;padding:10px 12px;display:flex;align-items:center;gap:12px;cursor:pointer;opacity:'+opacity+';">'+
+    html += '<div onclick="'+(_ciWeekBoardMode?('_ciOpenDay(\''+ds+'\')'):('selectTrainingDay(\''+ds+'\')'))+'" style="border:'+border+';background:'+bg+';border-radius:11px;padding:10px 12px;display:flex;align-items:center;gap:12px;cursor:pointer;opacity:'+opacity+';">'+
       '<div style="flex-shrink:0;width:34px;text-align:center;">'+
         '<div style="font-size:9px;letter-spacing:0.5px;font-weight:700;color:'+chipLabelColor+';">'+dayShort[dow].toUpperCase()+'</div>'+
         '<div style="font-size:17px;font-weight:800;line-height:1.15;color:'+chipNumColor+';">'+d.getDate()+'</div>'+
@@ -56277,6 +56340,10 @@ function renderProgramTab(){
       + '<div class="pgLibCardS">Look up any movement \u2014 what it is and what it works.</div></div>'
       + '<span class="gpChev" aria-hidden="true" style="transform:rotate(-45deg);margin-top:2px;"></span>'
     + '</div>';
+  // Her week goes in above all of this, and only after the host has been
+  // rebuilt — the line above replaces every child, so placing it earlier would
+  // simply delete it again.
+  try{ _ciShowWeekBoard(); }catch(e){}
     // The "Coaching notes — coming soon" block used to sit here. Notes from Yusuf are
     // a real card on Profile now, which is where they belong: Program is what someone
     // paid for, Profile is the record of their coaching.
