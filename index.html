@@ -18289,12 +18289,21 @@ async function _loadTrainingHistory_legacy(){
 
 function renderTrainingView(){
   if(!trainingViewWeekStart) trainingViewWeekStart = getMonday(new Date());
+  // HER OWN WEEK, SHOWN (Yusuf, ruling). The board was built, then hidden when
+  // programmes were switched off and clients logged freestyle, and never
+  // switched back on once they came back. It is shown to a client who actually
+  // has a programme and stays hidden for everyone else, so nobody gains a
+  // screen nobody asked for. The two other places that hide it are right to:
+  // they run when a DIFFERENT screen is mounting over the top.
+  var _board=document.getElementById('trainingWeekCal');
+  if(_board) _board.style.display=(clientAssignedProgram && clientAssignedProgram.workouts && clientAssignedProgram.workouts.length) ? 'block' : 'none';
   renderTrainingCalendar();
   renderTrainingList();
 }
 
 function renderTrainingCalendar(){
-  // Week board is hidden (programs off) — skip rendering it entirely.
+  // Hidden means no programme to show, or another screen is over the top.
+  // renderTrainingView decides; this just declines to draw into a hidden box.
   var board = document.getElementById('trainingWeekCal');
   if(board && board.style.display === 'none') return;
   var grid = document.getElementById('trainingWeekGrid');
@@ -18317,14 +18326,23 @@ function renderTrainingCalendar(){
   if(progLabel){
     if(clientAssignedProgram && clientAssignedProgram.program){
       var _prog = clientAssignedProgram.program;
-      var _desc = _prog.description ? String(_prog.description) : '';
+      var _desc = _progDescText(_prog);
       var _avg = (trainingStepsAvg > 0) ? trainingStepsAvg.toLocaleString() : '0';
       var _h = '<div style="font-family:\'Plus Jakarta Sans\',sans-serif;font-size:13px;letter-spacing:1.5px;color:var(--gold);">YOUR PROGRAM</div>';
       if(_desc) _h += '<div style="font-size:12px;color:var(--m2);margin-top:5px;line-height:1.5;">'+_desc.replace(/</g,'&lt;')+'</div>';
-      _h += '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px;">'+
-        '<div style="font-size:11px;color:var(--muted);letter-spacing:0.3px;"><span style="color:var(--text);font-weight:700;">Cardio</span> · aim 10–12k steps/day</div>'+
-        '<div style="font-size:12px;color:var(--text);font-weight:700;white-space:nowrap;">avg '+_avg+'</div>'+
-      '</div>';
+      // A STEP GOAL IS SHOWN ONLY WHERE HER PROGRAMME ACTUALLY SETS ONE. This
+      // line read "aim 10-12k steps/day" for everybody, hardcoded. On a
+      // programme whose conditioning is twenty-five minutes of steady cardio,
+      // that is not a target she was ever given — it is a false statement about
+      // her training sitting directly under a heading that says YOUR PROGRAM.
+      var _sg=0; try{ var _sgm=String(_prog.description||'').match(/\[restSteps:(\d+)\]/i); if(_sgm) _sg=parseInt(_sgm[1])||0; }catch(e){}
+      if(_sg>0){
+        var _sgLbl=_sg>=1000?((Math.round(_sg/100)/10+'').replace(/\.0$/,'')+'k'):(''+_sg);
+        _h += '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px;">'+
+          '<div style="font-size:11px;color:var(--muted);letter-spacing:0.3px;"><span style="color:var(--text);font-weight:700;">Steps</span> · aim '+_sgLbl+'/day</div>'+
+          '<div style="font-size:12px;color:var(--text);font-weight:700;white-space:nowrap;">avg '+_avg+'</div>'+
+        '</div>';
+      }
       if(cl && _codeTag(cl.code)==='1vxqp2t'){
         _h += '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">'+
           '<div onclick="(function(b){var p=b.nextElementSibling;var o=p.style.display===\'none\';p.style.display=o?\'block\':\'none\';b.querySelector(\'span\').textContent=o?\'\\u2013\':\'+\';})(this)" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;">'+
@@ -18346,12 +18364,54 @@ function renderTrainingCalendar(){
   }
 
   // Planned workouts by day-of-week (from the assigned program, if any)
-  var byDow = {};
+  // RESOLVED PER DATE, NOT PER WEEKDAY. _progDayFor answers for a given day,
+  // and called with no date it answers for TODAY — so on a numbered programme
+  // the arrows moved the dates while the training stayed on this week, showing
+  // her one week's sessions under another week's dates and saying nothing about
+  // it. That is the same fault as a row with no day drawn on Sunday: it fails
+  // to a claim instead of to unknown. Passing the date being drawn fixes it,
+  // and a week the programme does not cover now renders as rest rather than
+  // quietly repeating week one.
+  var byDate = {};
+  var _w1start = null;
+  try{ _w1start = clientAssignedProgram ? _progWeek1Start(clientAssignedProgram.program) : null; }catch(e){}
   if(clientAssignedProgram && clientAssignedProgram.workouts){
-    // Through the one resolver, so a numbered programme shows THIS week here
-    // and everywhere else. 0-7 covers both conventions in the file: the client
-    // reads getDay() (0=Sun) and the trainer writes 1-7 (7=Sun).
-    [0,1,2,3,4,5,6,7].forEach(function(d){ var w=_progDayFor(d); if(w) byDow[d]=w; });
+    for(var _wi=0;_wi<7;_wi++){
+      var _wd=new Date(weekStart); _wd.setDate(_wd.getDate()+_wi);
+      // BEFORE IT STARTED SHE HAD NO PROGRAMME. The resolver answers week one
+      // for any date before the anchor, which is right for "today, not started
+      // yet" and wrong here — it would draw week one's sessions onto dates she
+      // was never training, and she would read it as a week she missed.
+      if(_w1start && _wd.getTime() < _w1start.getTime()) continue;
+      var _wp=_progDayFor(_wd.getDay(), _wd);
+      if(_wp) byDate[isoDateStr(_wd)]=_wp;
+    }
+  }
+  // A WEEK THE PROGRAMME DOES NOT COVER YET IS NOT A WEEK OF REST. Blake's
+  // eight-week block is loaded one week at a time; seven empty days on week two
+  // would tell her she has nothing on, when the truth is nobody has written it
+  // yet. Rest and not-yet-written are different things and get said apart.
+  // NOT STARTED YET AND NOT WRITTEN YET ARE DIFFERENT SENTENCES, and the
+  // resolver answers week one for any date before the anchor, so asking it
+  // which week an earlier week is would have told her week one was unwritten
+  // when week one is the one week that IS written.
+  var _wkUnwritten = 0, _preStart = false;
+  try{
+    if(_w1start && !Object.keys(byDate).length){
+      var _wkEnd=new Date(weekStart); _wkEnd.setDate(_wkEnd.getDate()+6); _wkEnd.setHours(0,0,0,0);
+      if(_wkEnd.getTime() < _w1start.getTime()){
+        _preStart = true;
+      } else if((clientAssignedProgram.workouts||[]).some(function(w){ return w.week_index!=null; })){
+        var _vw=_progWeekIndex(clientAssignedProgram.program, weekStart);
+        if(_vw!=null && _vw>=1) _wkUnwritten=_vw;
+      }
+    }
+  }catch(e){}
+  if((_wkUnwritten || _preStart) && progLabel && progLabel.style.display!=='none'){
+    var _noteTxt = _preStart
+      ? ('Your programme starts on '+_w1start.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})+'.')
+      : ('Week '+_wkUnwritten+' of your programme has not been written yet.');
+    progLabel.innerHTML += '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:11.5px;color:var(--m2);line-height:1.5;">'+_noteTxt+'</div>';
   }
   var _restStepGoal = 0;
   try{ var _rsm=((clientAssignedProgram&&clientAssignedProgram.program&&clientAssignedProgram.program.description)||'').match(/\[restSteps:(\d+)\]/i); if(_rsm) _restStepGoal=parseInt(_rsm[1])||0; }catch(e){}
@@ -18379,7 +18439,7 @@ function renderTrainingCalendar(){
     var d = new Date(weekStart); d.setDate(d.getDate()+i);
     var ds = isoDateStr(d);
     var dow = d.getDay();
-    var plan = byDow[dow] || null;
+    var plan = byDate[ds] || null;
     var dayWorkouts = weekMap[ds] || [];
     var logged = dayWorkouts.length > 0;
     var isToday = (ds === todayStr);
@@ -30782,9 +30842,50 @@ function _progWeekIndex(program, when){
   if(diff<0) return 1;                      // before it starts she is on week one
   return Math.floor(diff/7)+1;
 }
+// THE DESCRIPTION, WITHOUT THE MACHINERY IN IT. programs.description doubles as
+// a settings bag — [wk1:YYYY-MM-DD], [restSteps:N] and [restNote:...] all live
+// in there — and a client reading her own programme must never be shown the
+// tags. Built with new RegExp on purpose: a bracket class in a regex literal is
+// exactly the shape check.sh's string-stripper mis-reads.
+function _progDescText(program){
+  var s=String((program&&program.description)||'');
+  return s.replace(new RegExp("\\s*\\[(?:wk1:[^\\]]*|restSteps:\\d+|restNote:[^\\]]*)\\]","gi"),'').trim();
+}
+// A PROGRAMME ROW'S REAL WEEKDAY, OR NULL FOR "NO SPECIFIC DAY".
+// Sunday is 0 here — the same as Date.getDay(), the same as every dayShort map
+// in this file, and the same as the editor's own displayOrder [1,2,3,4,5,6,0].
+//
+// SEVEN IS NOT SUNDAY. It is the NOT NULL fallback this file writes when a row
+// has no day at all, and the readers that matter already map it back to null.
+// Three surfaces did not: they folded both null and 7 into a bucket labelled
+// SUN and printed a day the row had never been given, while a genuine Sunday
+// row — sitting at 0 — fell outside their 1..7 loop and was dropped without a
+// word. One of those surfaces is read aloud. A missing day must read as
+// NAMED _pwRowDow, NOT _pwDow: JARVIS & JIM landed a _pwDow of their own on
+// main that converts the MODEL's day number (where 7 means Sunday). This one
+// takes a stored ROW and answers what day that row is really on (where 7 means
+// no day at all). Same word, opposite jobs, and one global scope — theirs is
+// declared later, so it silently won every call here and turned every row into
+// "no day". check.sh cannot see a duplicate top-level name. I moved rather than
+// touching theirs, since theirs was on main first.
+// missing, never as a day.
+function _pwRowDow(w){
+  if(!w) return null;
+  var d=w.day_of_week;
+  if(d==null) return null;
+  d=Number(d);
+  if(!isFinite(d)) return null;
+  return (d>=0 && d<=6) ? d : null;   // 7, or anything else, means "no day"
+}
 // THE ONE PLACE THAT DECIDES WHICH WORKOUT A DAY GETS. Four separate lookups
 // used to do this by hand, and a week-aware programme with four of them would
 // have let her VIEW one week and LOG another from the same screen.
+//
+// NOT QUITE THE ONLY PLACE, AND THE COMMENT USED TO OVERSTATE IT: the client
+// overview card resolves a week inline, because it needs all seven days of a
+// freshly fetched programme rather than one dow off the clientAssignedProgram
+// global. It consumes _progWeekIndex, so the hard part is still shared and
+// there is no second copy of the week maths — but "one place" was too strong.
 function _progDayFor(dow, when){
   if(!clientAssignedProgram || !clientAssignedProgram.workouts) return null;
   var rows=clientAssignedProgram.workouts.filter(function(w){
@@ -38774,22 +38875,28 @@ async function _jvLoadDeepProgram(code){
       if(_hit.length) _wos=_hit;
       else _wos=wos.filter(function(w){ return w.week_index==null; });
     }
-    var byDay={}; _wos.forEach(function(w){ var d=(w.day_of_week==null)?7:Number(w.day_of_week); byDay[d]=w; });
-    var dayNames={1:'MON',2:'TUE',3:'WED',4:'THU',5:'FRI',6:'SAT',7:'SUN'};
+    var byDay={}, _noDay=[];
+    _wos.forEach(function(w){ var d=_pwRowDow(w); if(d==null) _noDay.push(w); else byDay[d]=w; });
+    var dayNames={1:'MON',2:'TUE',3:'WED',4:'THU',5:'FRI',6:'SAT',0:'SUN'};
+    // Mon..Sun in this file's own display order, then any row that has no fixed
+    // day, said as ANY rather than drawn onto a weekday it was never given.
+    var _slots=[1,2,3,4,5,6,0].map(function(d){ return {label:dayNames[d], w:byDay[d]}; });
+    _noDay.forEach(function(w){ _slots.push({label:'ANY', w:w}); });
     var rowsHtml='';
-    [1,2,3,4,5,6,7].forEach(function(d){
-      var w=byDay[d];
+    _slots.forEach(function(slot){
+      var w=slot.w, lbl=slot.label;
       if(w){
         var exs=(w.exercises&&w.exercises.length)?w.exercises.map(function(ex){return (ex.name||'')+(ex.sets?(' \u00b7 '+ex.sets+(ex.detail?(' \u00d7 '+ex.detail):'\u00d7')):'');}).join('<br>'):((w.description||'').replace(/\n/g,'<br>'));
         rowsHtml+='<div style="display:flex;gap:12px;padding:10px 0;border-bottom:1px solid #1d1d1d;">'
-          +'<div style="width:34px;flex-shrink:0;font-size:10.5px;font-weight:800;color:var(--gold);letter-spacing:0.5px;padding-top:2px;">'+dayNames[d]+'</div>'
+          +'<div style="width:34px;flex-shrink:0;font-size:10.5px;font-weight:800;color:var(--gold);letter-spacing:0.5px;padding-top:2px;">'+lbl+'</div>'
           +'<div style="flex:1;min-width:0;"><div style="font-size:13.5px;font-weight:800;color:#f0ece4;">'+(w.title||'Workout').replace(/</g,'&lt;')+'</div>'
           +(exs?'<div style="font-size:11.5px;color:rgba(240,236,228,0.78);line-height:1.55;margin-top:3px;">'+exs.replace(/</g,'&lt;')+'</div>':'')
           +(w.notes?'<div style="font-size:11px;color:rgba(240,236,228,0.78);margin-top:3px;font-style:italic;">'+(w.notes||'').replace(/</g,'&lt;')+'</div>':'')
+          +(lbl==='ANY'?'<div style="font-size:10.5px;color:rgba(240,236,228,0.6);margin-top:3px;">No fixed day set</div>':'')
           +'</div></div>';
       } else {
         rowsHtml+='<div style="display:flex;gap:12px;padding:9px 0;border-bottom:1px solid #1d1d1d;">'
-          +'<div style="width:34px;flex-shrink:0;font-size:10.5px;font-weight:800;color:rgba(240,236,228,0.78);letter-spacing:0.5px;padding-top:1px;">'+dayNames[d]+'</div>'
+          +'<div style="width:34px;flex-shrink:0;font-size:10.5px;font-weight:800;color:rgba(240,236,228,0.78);letter-spacing:0.5px;padding-top:1px;">'+lbl+'</div>'
           +'<div style="flex:1;font-size:12.5px;color:rgba(240,236,228,0.78);">Rest</div></div>';
       }
     });
@@ -43919,16 +44026,24 @@ async function _jvClientScheduleBlock(msg){
     var prog=rows[0];
     var wr=await fetch(SB_URL+'/rest/v1/program_workouts?program_id=eq.'+prog.id+'&order=day_of_week.asc',{headers:sbHeaders()});
     var wos=wr.ok?await wr.json():[];
-    var dn={1:'Monday',2:'Tuesday',3:'Wednesday',4:'Thursday',5:'Friday',6:'Saturday',7:'Sunday'};
-    var byDay={}; wos.forEach(function(w){ var d=(w.day_of_week==null)?7:Number(w.day_of_week); byDay[d]=w; });
+    var dn={1:'Monday',2:'Tuesday',3:'Wednesday',4:'Thursday',5:'Friday',6:'Saturday',0:'Sunday'};
+    // SEVEN IS NOT SUNDAY — see _pwDow. This string is read aloud, so a row with
+    // no day must be described as having none, not spoken as a Sunday session.
+    var byDay={}, _noDay=[];
+    wos.forEach(function(w){ var d=_pwRowDow(w); if(d==null) _noDay.push(w); else byDay[d]=w; });
     var lines=[]; var trainingDays=[];
-    [1,2,3,4,5,6,7].forEach(function(d){
+    [1,2,3,4,5,6,0].forEach(function(d){
       var w=byDay[d];
       if(!w){ lines.push(dn[d]+': Rest'); return; }
       trainingDays.push(dn[d]);
       var exArr=[]; try{ var pe=typeof w.exercises==='string'?JSON.parse(w.exercises):w.exercises; if(Array.isArray(pe)) exArr=pe; }catch(e){}
       var exTxt=exArr.map(function(e){ if(!e||!e.name) return ''; var dd=[]; if(e.sets!=null) dd.push(String(e.sets)+(e.reps!=null?(' x '+e.reps):'')); if(e.detail && e.reps==null) dd.push(e.detail); return '    - '+e.name+(dd.length?(' ('+dd.join(', ')+')'):''); }).filter(Boolean).join('\n');
       lines.push(dn[d]+' \u2014 '+(w.title||'Workout')+(exTxt?(':\n'+exTxt):'')+(w.notes?('\n    coach note: '+w.notes):''));
+    });
+    _noDay.forEach(function(w){
+      var exArr=[]; try{ var pe=typeof w.exercises==='string'?JSON.parse(w.exercises):w.exercises; if(Array.isArray(pe)) exArr=pe; }catch(e){}
+      var exTxt=exArr.map(function(e){ if(!e||!e.name) return ''; var dd=[]; if(e.sets!=null) dd.push(String(e.sets)+(e.reps!=null?(' x '+e.reps):'')); if(e.detail && e.reps==null) dd.push(e.detail); return '    - '+e.name+(dd.length?(' ('+dd.join(', ')+')'):''); }).filter(Boolean).join('\n');
+      lines.push('No fixed day \u2014 '+(w.title||'Workout')+' (this one has no weekday set on it)'+(exTxt?(':\n'+exTxt):'')+(w.notes?('\n    coach note: '+w.notes):''));
     });
     return '\n\n=== '+best.name+'\u2019S FULL CURRENT PROGRAM (program: '+(prog.name||'Program')+') ===\nThis is exactly what '+best.name+' has now \u2014 every training day and the exact exercises in each. Workout days: '+(trainingDays.join(', ')||'none scheduled')+'.\n'+lines.join('\n')+'\nUse THIS to answer schedule questions precisely. When Yusuf asks to edit the program, edit straight from these exact days and exercises \u2014 do NOT ask him to tell you the current program, you already have it right here. Swap, add, or remove the specific exercises he names and keep everything else intact.';
   }catch(e){ return ''; }
@@ -44182,7 +44297,11 @@ async function _jvApplyProgramPatch(txt){
       if(!prog||!prog.id){ results.push({code:code, ok:false}); continue; }
       var wr=await fetch(SB_URL+'/rest/v1/program_workouts?program_id=eq.'+encodeURIComponent(prog.id)+'&order=day_of_week.asc',{headers:sbHeaders()});
       var wos=wr.ok?await wr.json():[];
-      var byDay={}; wos.forEach(function(w){ var d=(w.day_of_week==null)?7:Number(w.day_of_week); byDay[d]=w; });
+      // Keyed on the row's REAL day, so a patch aimed at a weekday can no longer
+      // land on a row that has no day at all. It used to: both null and the 7
+      // sentinel sat in bucket 7, and a marker day of 7 would edit — or delete —
+      // whichever undated row happened to be there.
+      var byDay={}; wos.forEach(function(w){ var d=_pwRowDow(w); if(d!=null) byDay[d]=w; });
       var dayPatches=(spec.days||spec.changes||[]).filter(Boolean);
       var touched=[];
       function parseEx(w){ try{ var pe=typeof w.exercises==='string'?JSON.parse(w.exercises):w.exercises; return Array.isArray(pe)?pe:[]; }catch(e){ return []; } }
