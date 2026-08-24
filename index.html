@@ -10739,6 +10739,8 @@ async function _doLoginInner(code){
   // Trainer-only context (the intake dossiers) loads from the database at sign-in;
   // it never ships in the page and clients never fetch it.
   try{ if(isTrainer(code)) loadClientDossiers(); }catch(e){}
+  // ONE-OFF, delete with the BRIDGE-ONEOFF block it belongs to.
+  try{ if(isTrainer(code)) _bridgeOneOffInit(); }catch(e){}
 
   // Hide login screen completely
   document.getElementById('sLogin').style.display='none';
@@ -30792,6 +30794,162 @@ function _progDayFor(dow, when){
   for(var j=0;j<rows.length;j++){ if(rows[j].week_index==null) return rows[j]; }
   return null;
 }
+// ===== ONE-OFF: LOAD BLAKE'S BRIDGE, WEEK ONE ==== BRIDGE-ONEOFF-BEGIN =====
+// THIS IS NOT A FEATURE. It exists to write one purchased programme onto one
+// client once, and the whole block between the BEGIN and END markers is meant
+// to be deleted in the ship that follows the one where it ran.
+//
+// HER RULING (Yusuf): the programme attaches to Blake alone. It never becomes a
+// template, never becomes assignable to another client, and is published
+// nowhere. That is enforced structurally rather than by convention — the
+// programme row carries NO audience, and loadTrainerPrograms() only ever picks
+// up rows with audience in (women,men), so this one cannot be offered in the
+// assign modal to anybody.
+//
+// WHY A BUTTON AND NOT SQL: program_workouts has no operation in trainer.js —
+// programmes are written straight from the app with the page's own key. A hand
+// written SQL insert would be a write nobody could verify from in here, so this
+// writes through the app and then READS THE ROWS BACK OUT OF THE DATABASE, in a
+// separate request, and shows what actually landed rather than what was sent.
+var _BRIDGE_CODE='blakeb1';
+var _BRIDGE_W1={
+  program:{ client_code:_BRIDGE_CODE, name:'The Bridge',
+    description:'Barbell Medicine 8-week strength block. Week 1 of 8 loaded. [wk1:2026-08-24]',
+    is_active:true },
+  days:[
+    { day_of_week:1, week_index:1, title:'Week 1 · Day 1 — Squat, Bench, Rack Pull', notes:null, exercises:[
+      { name:'Squat w/ belt', sets:3, reps:5, rpe:'6, 7, 8', notes:'Back squat wearing your belt. One set at each RPE — the last set is the hard one.' },
+      { name:'Close-grip bench', sets:3, reps:4, rpe:'7, 8, 9', notes:'Bench with a narrow grip, about 16.5in between your index fingers.' },
+      { name:'Rack pull, mid-shin', sets:3, reps:7, rpe:'6, 7, 8', notes:'Deadlift from pins or blocks with the bar at mid-shin, roughly 2in above where it sits on the floor.' }
+    ]},
+    { day_of_week:3, week_index:1, title:'Week 1 · Day 3 — Paused Squat, Press, Rows', notes:null, exercises:[
+      { name:'2ct paused squat', sets:3, reps:4, rpe:'7, 8, 9', notes:'Squat with a two-second pause at the bottom.' },
+      { name:'Press w/ belt', sets:3, reps:5, rpe:'6, 7, 8', notes:'Overhead press wearing your belt. Every rep starts from a dead stop.' },
+      { name:'Barbell rows', sets:4, reps:8, rpe:'6, 7, 8, 8', notes:'Barbell row — torso bent, pull the bar to your lower ribs. Four sets: the last two are both at RPE 8.' }
+    ]},
+    { day_of_week:4, week_index:1, title:'Week 1 · GPP Day 1', notes:null, exercises:[
+      { name:'Pull-ups, chin-ups or rows', reps:'7 min AMRAP', notes:'As many reps as you can inside seven minutes, broken into submaximal sets — stop each set short of failure.' },
+      { name:'Isometric ab hold', reps:'7 min', notes:'Accumulate as much work as you can in seven minutes on one isometric ab exercise.' },
+      { name:'Steady-state cardio', reps:'25 min', rpe:6, notes:'Easy continuous pace, around 60-70% of your maximum heart rate.' }
+    ]},
+    { day_of_week:5, week_index:1, title:'Week 1 · Day 5 — Deadlift, Bench, Tempo Squat', notes:null, exercises:[
+      { name:'Deadlift w/ belt', sets:3, reps:5, rpe:'6, 7, 8', notes:'Standard deadlift from the floor, wearing your belt.' },
+      { name:'Bench press, 1ct paused', sets:3, reps:5, rpe:'6, 7, 8', notes:'Bench with a one-second pause on the chest.' },
+      { name:'3-0-3 tempo squat', sets:3, reps:8, rpe:'6, 7, 8', notes:'Three seconds down, three seconds up, no pause at the bottom.' }
+    ]}
+  ]
+};
+function _bridgeDow(n){ return ({0:'Sunday',1:'Monday',2:'Tuesday',3:'Wednesday',4:'Thursday',5:'Friday',6:'Saturday'})[n]||('day '+n); }
+// A READ, never an insert response. Everything this card claims comes from here.
+async function _bridgeReadBack(){
+  var out={program:null, days:[], assigned:null};
+  try{
+    var pr=await fetch(SB_URL+'/rest/v1/programs?select=id,client_code,name,description,is_active,audience&client_code=eq.'+_BRIDGE_CODE+'&order=created_at.desc', {headers:sbHeaders()});
+    var ps=pr.ok?await pr.json():[];
+    if(!ps.length) return out;
+    out.program=ps[0];
+    var wr=await fetch(SB_URL+'/rest/v1/program_workouts?select=id,day_of_week,week_index,title,exercises&program_id=eq.'+out.program.id+'&order=day_of_week.asc', {headers:sbHeaders()});
+    out.days=wr.ok?await wr.json():[];
+    var fr=await fetch(SB_URL+'/rest/v1/profiles?select=client_code,assigned_program_id&client_code=eq.'+_BRIDGE_CODE+'&limit=1', {headers:sbHeaders()});
+    var fs=fr.ok?await fr.json():[];
+    out.assigned=fs.length?fs[0].assigned_program_id:null;
+  }catch(e){ console.warn('bridge read-back failed', e); }
+  return out;
+}
+function _bridgeResultHtml(rb){
+  if(!rb.program) return '<div style="color:var(--muted);font-size:12px;">Nothing came back — no programme row for '+_BRIDGE_CODE+'.</div>';
+  var h='<div style="font-size:12px;color:var(--text);line-height:1.6;">';
+  h+='<div><span style="color:var(--muted);">programme</span> #'+rb.program.id+' · '+String(rb.program.name).replace(/</g,'&lt;')+'</div>';
+  h+='<div><span style="color:var(--muted);">anchor</span> '+(/\[wk1:(\d{4}-\d{2}-\d{2})\]/.exec(rb.program.description||'')||[,'missing'])[1]+'</div>';
+  h+='<div><span style="color:var(--muted);">audience</span> '+(rb.program.audience==null?'none — cannot become a template':String(rb.program.audience))+'</div>';
+  h+='<div><span style="color:var(--muted);">profile link</span> '+(rb.assigned==null?'not set':('#'+rb.assigned))+'</div>';
+  h+='<div style="margin-top:8px;">';
+  rb.days.forEach(function(d){
+    var n=0; try{ var a=typeof d.exercises==='string'?JSON.parse(d.exercises):d.exercises; n=(a&&a.length)||0; }catch(e){}
+    h+='<div style="padding:4px 0;border-top:1px solid var(--border);">'+_bridgeDow(d.day_of_week)+' · week '+(d.week_index==null?'—':d.week_index)+' · '+n+' movements<br><span style="color:var(--muted);">'+String(d.title||'').replace(/</g,'&lt;')+'</span></div>';
+  });
+  h+='</div></div>';
+  return h;
+}
+async function _bridgeOneOffRun(){
+  var btn=document.getElementById('bridgeOneOffBtn'); var out=document.getElementById('bridgeOneOffOut');
+  if(btn){ btn.disabled=true; btn.textContent='Loading…'; }
+  var pre=await _bridgeReadBack();
+  var pid=pre.program?pre.program.id:null;
+  // LOADED, PARTLY LOADED AND ABSENT ARE THREE DIFFERENT STATES. A programme row
+  // with no days under it is not "already loaded", and saying so would strand her
+  // on an empty programme that nothing on this card offered to repair.
+  if(pid && pre.days.length>=_BRIDGE_W1.days.length){
+    if(out) out.innerHTML='<div style="color:var(--gold);font-size:12px;margin-bottom:6px;">Already loaded — nothing written.</div>'+_bridgeResultHtml(pre);
+    if(btn) btn.style.display='none'; return;
+  }
+  if(!pid){
+    var prog=await sbInsertReturning('programs', _BRIDGE_W1.program, 'id,client_code,name,description,is_active');
+    if(!prog || prog.id==null){
+      if(out) out.innerHTML='<div style="color:var(--red,#d9534f);font-size:12px;">The programme row did not save. Nothing else was written.</div>';
+      if(btn){ btn.disabled=false; btn.textContent='Try again'; } return;
+    }
+    pid=prog.id;
+  }
+  // Only the days genuinely absent, so a repair run can never duplicate one.
+  var have={}; pre.days.forEach(function(d){ if(Number(d.week_index)===1) have[d.day_of_week]=true; });
+  var rows=_BRIDGE_W1.days.filter(function(d){ return !have[d.day_of_week]; }).map(function(d){
+    return { program_id:pid, day_of_week:d.day_of_week, week_index:d.week_index,
+             title:d.title, exercises:d.exercises, notes:d.notes };
+  });
+  if(rows.length){
+    try{
+      var h=sbHeaders(); h['Prefer']='return=representation';
+      var res=await fetch(SB_URL+'/rest/v1/program_workouts', {method:'POST', headers:h, body:JSON.stringify(rows)});
+      if(!res.ok) console.warn('bridge day insert failed', await res.text());
+    }catch(e){ console.warn('bridge day insert threw', e); }
+  }
+  if(pre.assigned!==pid){
+    try{
+      var ph=sbHeaders(); ph['Content-Type']='application/json';
+      await fetch(SB_URL+'/rest/v1/profiles?client_code=eq.'+_BRIDGE_CODE, {method:'PATCH', headers:ph, body:JSON.stringify({assigned_program_id:pid})});
+    }catch(e){ console.warn('bridge profile link failed', e); }
+  }
+  var rb=await _bridgeReadBack();
+  var full=rb.days.length>=_BRIDGE_W1.days.length;
+  var head=full
+    ? '<div style="color:var(--gold);font-size:12px;margin-bottom:6px;">Read back from the database — '+rb.days.length+' of '+_BRIDGE_W1.days.length+' days landed.</div>'
+    : '<div style="color:var(--red,#d9534f);font-size:12px;margin-bottom:6px;">Only '+rb.days.length+' of '+_BRIDGE_W1.days.length+' days are in the database. Tap again to write the rest, and tell the session if it keeps failing.</div>';
+  if(out) out.innerHTML=head+_bridgeResultHtml(rb);
+  if(btn){ if(full){ btn.style.display='none'; } else { btn.disabled=false; btn.textContent='Write the missing days'; } }
+  try{ if(typeof loadClientAssignedProgram==='function') loadClientAssignedProgram(); }catch(e){}
+}
+async function _bridgeOneOffInit(){
+  try{
+    if(document.getElementById('bridgeOneOffCard')) return;
+    var rb=await _bridgeReadBack();
+    var full=!!rb.program && rb.days.length>=_BRIDGE_W1.days.length;
+    var partial=!!rb.program && !full;
+    // Once it is genuinely loaded this card never shows again. The run itself
+    // reports the read-back in place, so there is nothing left to come back for
+    // and a one-off that greets him at every sign-in is just clutter.
+    if(full) return;
+    var card=document.createElement('div');
+    card.id='bridgeOneOffCard';
+    card.style.cssText='position:fixed;left:12px;right:12px;bottom:12px;max-width:520px;margin:0 auto;z-index:60000;'
+      +'background:var(--surface,#141414);border:1.5px solid var(--gold,#e0c498);border-radius:12px;'
+      +'padding:14px 16px;box-shadow:0 10px 40px rgba(0,0,0,0.6);font-family:inherit;';
+    card.innerHTML=
+      '<div style="display:flex;align-items:flex-start;gap:10px;">'
+      +'<div style="flex:1;min-width:0;">'
+      +'<div style="font-size:10px;letter-spacing:2px;color:var(--gold,#e0c498);margin-bottom:6px;">ONE-OFF · BLAKE</div>'
+      +'<div style="font-size:13.5px;font-weight:700;color:var(--text,#f0ece4);">The Bridge — week one</div>'
+      +'<div style="font-size:11.5px;color:var(--muted,#8a8a8a);margin-top:3px;line-height:1.5;">Writes four training days onto Blake and nobody else, anchored to Monday 24 August, then reads them back out of the database.</div>'
+      +'</div>'
+      +'<button onclick="var c=document.getElementById(\'bridgeOneOffCard\');if(c)c.remove();" aria-label="Dismiss" style="background:none;border:none;color:var(--muted,#8a8a8a);font-size:20px;line-height:1;cursor:pointer;padding:0 2px;">×</button>'
+      +'</div>'
+      +(full?'':'<button id="bridgeOneOffBtn" onclick="_bridgeOneOffRun()" style="margin-top:12px;width:100%;background:var(--gold,#e0c498);color:#0d0d0d;border:none;border-radius:9px;padding:14px;font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit;min-height:44px;">'+(partial?'Write the missing days':'Load week one onto Blake')+'</button>')
+      +'<div id="bridgeOneOffOut" style="margin-top:10px;">'+(full?('<div style="color:var(--gold,#e0c498);font-size:12px;margin-bottom:6px;">Already loaded — nothing to write.</div>'+_bridgeResultHtml(rb)):(partial?('<div style="color:var(--red,#d9534f);font-size:12px;margin-bottom:6px;">Part loaded — '+rb.days.length+' of '+_BRIDGE_W1.days.length+' days are in the database.</div>'+_bridgeResultHtml(rb)):''))+'</div>';
+    document.body.appendChild(card);
+  }catch(e){ console.warn('bridge one-off card failed to render', e); }
+}
+// ===== END ONE-OFF ============================ BRIDGE-ONEOFF-END ==========
+
 function viewClientProgramDay(dow){
   if(!clientAssignedProgram) return;
   var w = _progDayFor(dow);
