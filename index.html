@@ -44121,6 +44121,52 @@ async function _jvResolveOwnedProgram(code){
 
 // Surgical exercise-level patch. Changes only what's named; preserves all other
 // exercises, sets/reps, day titles and coaching notes. Small payload => never truncates.
+// ===== SUNDAY (handover from ADMIN, verified; his ruling, 24 Aug) =========
+// The prompt and the table disagree about what number Sunday is, and nothing
+// converted between them.
+//
+// The marker rules tell the model 1=Mon through 7=Sun, and it says exactly
+// that. program_workouts stores 0=Sun through 6=Sat, like every other day map
+// in this file and like the programme editor's own display order. Monday
+// through Saturday happen to line up under both readings, which is why this
+// went unnoticed for so long.
+//
+// SUNDAY DOES NOT LINE UP, AND 7 IS ALREADY TAKEN. On that column 7 is the
+// sentinel for "no day at all" -- what the editor writes for an unassigned row
+// -- and the readers fold 7 straight back to undated. So asking for a Sunday
+// session wrote 7, and the session silently became a row with no day. Nothing
+// errored, and the spoken confirmation still said "Sun", because it reads the
+// marker object and never the stored row. The cardinal lie in another hat.
+//
+// CONVERTED IN CODE, NOT IN THE PROMPT (his ruling, upheld): the model keeps
+// saying 7 and this stores 0. Moving the convention into the prompt is the
+// change that fails silently -- a prompt rule is a request, not a mechanism,
+// which is the lesson this engine has already paid for twice.
+//
+// AND 0 IS A REAL DAY. The patch loop treated it as absent, so a genuine Sunday
+// row could never be targeted by a follow-up instruction at all. The two faults
+// hid each other: the convention made Sunday unwritable, the guard made it
+// unpatchable.
+//
+// STORED ROWS ARE NOT REWRITTEN (ADMIN's caution). Converting on write separates
+// the two meanings from here on; rows already sitting at 7 stay ambiguous and
+// cannot be sorted out by code, so they are left exactly as they are.
+function _pwDow(v){
+  if(v==null || v==='') return null;
+  var d=Number(v);
+  if(!isFinite(d)) return null;
+  d=Math.round(d);
+  if(d===7) return 0;                      // the model's Sunday is the table's Sunday
+  return (d>=0 && d<=6) ? d : null;        // anything else is not a weekday
+}
+// The model may name the day either way round; neither is trusted as a number
+// until it has been through the converter above.
+function _pwDowOf(o){
+  if(!o) return null;
+  var raw=(o.day!=null && o.day!=='') ? o.day
+        : ((o.day_of_week!=null && o.day_of_week!=='') ? o.day_of_week : null);
+  return _pwDow(raw);
+}
 async function _jvApplyProgramPatch(txt){
   var re=/\[PROGRAM_PATCH\s+client=([^\]\s]+)\]\s*([\s\S]*?)\[\/PROGRAM_PATCH\]/gi;
   var jobs=[], m; while((m=re.exec(txt))){ jobs.push({code:m[1], json:m[2]}); }
@@ -44141,7 +44187,9 @@ async function _jvApplyProgramPatch(txt){
       var touched=[];
       function parseEx(w){ try{ var pe=typeof w.exercises==='string'?JSON.parse(w.exercises):w.exercises; return Array.isArray(pe)?pe:[]; }catch(e){ return []; } }
       for(var j=0;j<dayPatches.length;j++){
-        var dp=dayPatches[j]; var d=Number(dp.day||dp.day_of_week||0); if(!d) continue;
+        // 0 IS SUNDAY, NOT ABSENT. `if(!d)` skipped it, so a real Sunday row
+        // could never be targeted by a follow-up instruction at all.
+        var dp=dayPatches[j]; var d=_pwDowOf(dp); if(d==null) continue;
         var w=byDay[d];
         if(!w){
           if(dp.remove===true) continue;
@@ -44287,7 +44335,10 @@ async function _jvApplyPrograms(txt){
       if(!pid){ results.push({code:code, ok:false, count:0}); continue; }
       try{ await fetch(SB_URL+'/rest/v1/profiles?client_code=eq.'+encodeURIComponent(code),{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal','Content-Type':'application/json'}),body:JSON.stringify({assigned_program_id:pid})}); }catch(e){}
       var wos=(spec.workouts||[]).filter(Boolean).map(function(w){
-        return {program_id:pid, day_of_week:Number(w.day||w.day_of_week||1), title:(w.title||'Workout'), exercises:(w.exercises||[]), notes:(w.notes||'')};
+        // Converted, never taken raw. A day the model omitted stays what it
+        // always was here -- Monday -- rather than becoming a new behaviour.
+        var _d=_pwDowOf(w); if(_d==null) _d=1;
+        return {program_id:pid, day_of_week:_d, title:(w.title||'Workout'), exercises:(w.exercises||[]), notes:(w.notes||'')};
       });
       var ok=true;
       if(wos.length){ ok=await sbInsert('program_workouts', wos); }
@@ -44317,7 +44368,10 @@ async function _jvApplyProgramEdits(txt){
       var nAdd=0, nDel=0;
       for(var j=0;j<changes.length;j++){
         var ch=changes[j];
-        var day=Number(ch.day||ch.day_of_week||1);
+        // A change with no usable day is SKIPPED, not aimed at Monday. The
+        // line below DELETES whatever sits on the day it is given, and
+        // deleting Monday because the model omitted a number is a real loss.
+        var day=_pwDowOf(ch); if(day==null) continue;
         // clear whatever was on that day first (so we replace, not duplicate)
         try{ await fetch(SB_URL+'/rest/v1/program_workouts?program_id=eq.'+pid+'&day_of_week=eq.'+day,{method:'DELETE',headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'})}); }catch(e){}
         if(ch.remove===true){ nDel++; continue; }
