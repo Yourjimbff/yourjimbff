@@ -47539,6 +47539,47 @@ var energyRecognition=null;
 var energyListening=false;
 
 // ===== SPEAK YOUR WORKOUT — voice → structured rows =====
+// ===== NOTHING IS LISTENING AFTER HE HAS TOLD THE APP TO ACT ==============
+// (Yusuf, live, 24 Aug.) He dictated a workout, tapped Organize, and the mic
+// kept transcribing while he read the result -- so "stop reading me... it is
+// still recording" went into the box as though it were part of the workout.
+//
+// FIXED AS A CLASS, not as a tap. Every recogniser in the file is stopped from
+// one place, and that place is called by Organize AND by closeM, which every
+// sheet dismissal funnels through -- backdrop tap, nav away, a completed log.
+// There is no route left that leaves a mic live behind a closed sheet.
+//
+// FLUSH, THEN ABORT, and the order is the whole thing. abort() is used rather
+// than stop() because stop() still delivers what it has, and that delivery
+// lands AFTER Organize has rewritten the box -- his aside would arrive on top
+// of the organised list. So whatever was already transcribed is written into
+// the box first, because he did say it, and only then is the recogniser cut
+// dead. Nothing said before the tap is lost; nothing said after it arrives.
+var _micSuppress=false;
+function _micStopAll(flush){
+  try{
+    if(flush && woListening){
+      var said=String(woTranscript||'').trim();
+      if(said.length>1){
+        var dEl=document.getElementById('woDesc');
+        if(dEl){ dEl.value=(dEl.value? dEl.value.trim()+' ' : '')+said; }
+      }
+    }
+  }catch(e){}
+  _micSuppress=true;
+  try{ woTranscript=''; }catch(e){}
+  ['woRecognition','foodRecognition','energyRecognition','entryRecognition','chatRecognition'].forEach(function(k){
+    try{
+      var r=window[k];
+      if(r && typeof r.abort==='function') r.abort();
+      else if(r && typeof r.stop==='function') r.stop();
+    }catch(e){}
+  });
+  try{ woListening=false; }catch(e){}
+  // Released on the next turn of the loop, so the onend this abort triggers is
+  // the one it silences and the next real recording is unaffected.
+  setTimeout(function(){ _micSuppress=false; }, 0);
+}
 var woRecognition=null, woListening=false, woTranscript='';
 function toggleWorkoutVoice(){
   var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -47579,7 +47620,7 @@ function toggleWorkoutVoice(){
       woListening=false;
       btn.innerHTML=_CHAT_MIC_SVG;
       btn.style.background='#1e1e1e'; btn.style.color='var(--gold)'; btn.style.borderColor='rgba(224,196,152,0.4)';
-      var said=woTranscript.trim();
+      var said=_micSuppress ? '' : woTranscript.trim();
       if(said.length>1){
         var dEl=document.getElementById('woDesc');
         if(dEl){ dEl.value = (dEl.value ? dEl.value.trim()+' ' : '') + said; }
@@ -60515,6 +60556,8 @@ function updateWoIntensity(val){
 // Organize the free-text/dictated workout into a clean list, in-place, before logging.
 var _woOrganized=false;
 async function organizeWorkout(){
+  // First thing, before anything reads the box: he has told the app to act.
+  try{ _micStopAll(true); }catch(e){}
   var el=document.getElementById('woDesc'); if(!el) return;
   var txt=String(el.value||'').trim(); if(!txt){ return; }
   var btn=document.getElementById('woOrganizeBtn');
@@ -60526,7 +60569,11 @@ async function organizeWorkout(){
     if(parsed.title) window._woLoggedTitle=parsed.title;
     parsed.exercises.forEach(function(ex){
       if(!ex || !ex.name) return;
-      lines.push('\u2022 '+ex.name+(ex.did?' \u2014 '+ex.did:''));
+      // The safe class, settled in code: spacing, plurals, case, a typo inside
+      // an otherwise-matching phrase. Anything it cannot settle comes back
+      // exactly as it went in.
+      var _nm=ex.name; try{ _nm=_exNearest(ex.name); }catch(e){}
+      lines.push('\u2022 '+_nm+(ex.did?' \u2014 '+ex.did:''));
     });
     el.value=(parsed.title?parsed.title+'\n':'')+lines.join('\n');
     _woOrganized=true;
@@ -60548,6 +60595,24 @@ function _woOnInput(){
 async function looseFormatWorkout(text){
   try{
     var sys='You convert a workout someone describes (typed or spoken) into a loose, clean structured log. Return ONLY valid JSON, no prose, no markdown. Shape: {"title":"short workout name like Push Day, Leg Day, Run, Basketball, or empty string","exercises":[{"name":"Exercise or activity","did":"what they did IF they said it, e.g. 3x8 @155lb or 3 miles — else empty string"}]}. Capture the 80% that matters. Do NOT invent sets, reps, weights, or distances they did not say. Keep names clean and capitalized. Cardio or a sport can be a single entry (e.g. {"name":"Run","did":"3 miles"}). If you truly cannot parse it, return {"title":"","exercises":[]}.';
+    // THE NAMES WE ALREADY KNOW, PUT IN FRONT OF IT (Yusuf, live, 24 Aug: he
+    // said "dumbbell chest press" and got a card reading "Dumbbell Trespass").
+    // Dictation mangles a name across a word boundary, and no string-distance
+    // rule can undo that safely -- measured: "trespass" scores 0.50 against
+    // "chestpress", the same as "sissysquat" against "squat", which is a
+    // DIFFERENT exercise. So the acoustics are settled here, where the sentence
+    // and the list can be read together, and _exNearest below handles only what
+    // distance can settle on its own.
+    // His programmed movements lead the list, because those are the names he
+    // actually says.
+    try{
+      var _known=_exKnownNames();
+      if(_known && _known.length){
+        sys+=' EXERCISES THIS APP ALREADY KNOWS, his own programme first: '+_known.slice(0,70).join(', ')+'.'
+          +' If a name in the text is plainly a mis-hearing of one of these -- dictation runs words together and drops sounds, so "dumbbell trespass" is "Dumbbell Chest Press" and "lat pull down" is a pulldown -- use the known name.'
+          +' OTHERWISE KEEP HIS WORDS EXACTLY AS THEY ARE. Never swap in a different exercise because it is similar: an unusual movement he really did is his, and a name you do not recognise is far better left alone than replaced with the wrong lift.';
+      }
+    }catch(e){}
     // This runs with the save button disabled, and it's tidying that's already
     // optional — the caller falls back to the raw text. On gym wifi an
     // unbounded fetch left someone staring at "Sorting it out…" forever with
@@ -63009,6 +63074,9 @@ function openM(id){
   window._modalOpenedAt = Date.now();
 }
 function closeM(id){
+  // A sheet that is going away takes any live mic with it. Backdrop tap, nav
+  // away, a completed log -- they all land here, which is why it is here.
+  try{ _micStopAll(false); }catch(e){}
   document.getElementById(id).classList.remove('open');_mUnlock();
   // Dismissing the food sheet any way — backdrop tap, nav away, a completed log —
   // is a dismissal of whatever was pending in it too. Nothing waits around to fire
@@ -68826,6 +68894,86 @@ var EX_ALIAS={
   'leg curl':'Hamstring Curl','lying leg curl':'Hamstring Curl','seated leg curl':'Hamstring Curl',
   'quad extension':'Leg Extension'
 };
+// ===== A DICTATED EXERCISE NAME IS CHECKED AGAINST WHAT WE KNOW ==========
+// (Yusuf, live, 24 Aug.) He said "dumbbell chest press"; the transcript kept
+// "Dumbbell Trespass" and it became an exercise card.
+//
+// TWO HALVES, AND THE SPLIT IS DELIBERATE.
+//
+// THIS half is the deterministic one and it is NARROW ON PURPOSE. It fixes the
+// class that string distance can actually settle: spacing, hyphens, plurals,
+// case, and a genuine typo inside an otherwise-matching phrase. "dumbell row",
+// "romanian deadlifts", "lat pull-down" all land on the real movement.
+//
+// IT WILL NOT REACH "TRESPASS", AND THAT IS THE HONEST LIMIT, measured rather
+// than assumed: "trespass" against "chestpress" scores 0.50 -- the SAME as
+// "sissysquat" against "squat", and lower than "reversehyper" against
+// "reverselunges" at 0.615. Both of those are different exercises. Any
+// threshold loose enough to catch his case silently invents those two, which
+// is the exact thing his ruling forbids. So the bar stays high here and the
+// acoustic near-miss is handled where it belongs -- in the Organize prompt,
+// which is given this same vocabulary and can tell that a gym sentence saying
+// "trespass" after "dumbbell" means the chest press.
+//
+// WHAT IT NEVER DOES: return a name he did not say when nothing clears the
+// bar. Unknown movements survive exactly as spoken, and the read-back card is
+// where he catches whatever neither half could.
+var _EX_KNOWN_CACHE=null;
+function _exKnownNames(){
+  if(_EX_KNOWN_CACHE) return _EX_KNOWN_CACHE;
+  var out=[];
+  try{ Object.keys(EX_MUSCLE||{}).forEach(function(k){ out.push(k); }); }catch(e){}
+  try{ Object.keys(EX_ALIAS||{}).forEach(function(k){ out.push(EX_ALIAS[k]); }); }catch(e){}
+  // HIS OWN PROGRAMMED MOVEMENTS FIRST -- they are the names he actually says.
+  try{
+    var wd=new Date();
+    var pl=(typeof _tlPlanForDate==='function') ? _tlPlanForDate(wd) : null;
+    ((pl&&pl.ex)||[]).forEach(function(e){ if(e&&e.n) out.unshift(String(e.n)); });
+  }catch(e){}
+  var seen={}, uniq=[];
+  out.forEach(function(n){ var k=String(n||'').trim(); if(!k) return; var lc=k.toLowerCase(); if(seen[lc]) return; seen[lc]=1; uniq.push(k); });
+  _EX_KNOWN_CACHE=uniq;
+  return uniq;
+}
+function _exFlat(s){ return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,''); }
+function _exLev(a,b){
+  var m=a.length, n=b.length;
+  if(!m) return n; if(!n) return m;
+  var prev=[], cur=[], i, j;
+  for(j=0;j<=n;j++) prev[j]=j;
+  for(i=1;i<=m;i++){
+    cur[0]=i;
+    for(j=1;j<=n;j++){
+      cur[j]=Math.min(prev[j]+1, cur[j-1]+1, prev[j-1]+(a.charAt(i-1)===b.charAt(j-1)?0:1));
+    }
+    for(j=0;j<=n;j++) prev[j]=cur[j];
+  }
+  return prev[n];
+}
+// 0.86 is not a taste call. At 0.80 "sissy squat" starts landing on "Squat";
+// at 0.86 every wrong match measured against this vocabulary is refused and
+// every spacing/plural/typo case still lands.
+var _EX_NEAR_MIN=0.86;
+function _exNearest(said){
+  var raw=String(said||'').trim();
+  if(!raw) return raw;
+  try{
+    var exact=_exCanonical(raw);
+    if(exact && exact!==raw) return exact;           // a known alias, already certain
+    var S=_exFlat(raw);
+    if(S.length<4) return raw;                        // too short to judge safely
+    var names=_exKnownNames(), bestN=null, bestS=0;
+    for(var i=0;i<names.length;i++){
+      var K=_exFlat(names[i]);
+      if(!K) continue;
+      if(K===S) return names[i];                      // same words, different spacing or case
+      var L=Math.max(S.length, K.length);
+      var sc=1-(_exLev(S,K)/L);
+      if(sc>bestS){ bestS=sc; bestN=names[i]; }
+    }
+    return (bestN && bestS>=_EX_NEAR_MIN) ? bestN : raw;
+  }catch(e){ return raw; }
+}
 function _exCanonical(name){
   var n=String(name||'').trim();
   if(!n) return n;
