@@ -43554,6 +43554,7 @@ function _jvProgramBullets(days){
   }).join('\n\n');
 }
 async function jvChatSend(){
+  try{ _micStopAll(true); }catch(e){}
   var inp=document.getElementById('jvChatInput'); if(!inp) return;
   var msg=inp.value.trim(); if(!msg) return;
   inp.value=''; inp.style.height='auto';
@@ -47605,7 +47606,14 @@ function _micStopAll(flush){
   }catch(e){}
   _micSuppress=true;
   try{ woTranscript=''; }catch(e){}
-  ['woRecognition','foodRecognition','energyRecognition','entryRecognition','chatRecognition'].forEach(function(k){
+  // EVERY MIC IN THE FILE (Yusuf, ruling, 24 Aug: the rule is app-wide, not
+  // sheet-wide). The first version of this knew five and missed five -- among
+  // them jarvisRec, which is the one the GOLD BAR uses, so his breakfast
+  // dictation kept listening straight through submit. Every .start() site in
+  // the file is represented here; if a new mic is added, its variable belongs
+  // in this list and nowhere else.
+  ['woRecognition','foodRecognition','energyRecognition','entryRecognition','chatRecognition',
+   'jarvisRec','_jvBarRec','_jvPaneRec','_admRec','_jtRec','_tpSessRec'].forEach(function(k){
     try{
       var r=window[k];
       if(r && typeof r.abort==='function') r.abort();
@@ -47613,6 +47621,7 @@ function _micStopAll(flush){
     }catch(e){}
   });
   try{ woListening=false; }catch(e){}
+  try{ jarvisListening=false; }catch(e){}
   // Released on the next turn of the loop, so the onend this abort triggers is
   // the one it silences and the next real recording is unaffected.
   setTimeout(function(){ _micSuppress=false; }, 0);
@@ -65684,6 +65693,14 @@ async function jimTurn(text, photos, opts){
   function _pinTitle(o){
     if(!o) return o;
     try{
+      // HIS NAME FOR IT BEATS THE GENERIC ONE (Yusuf, ruling, 24 Aug). He said
+      // "post meal walk", and the model files that as "Walk" -- his own phrase
+      // flattened into a category. When his sentence built a name, that is the
+      // title. Only ever replaces a title the model chose, never one he typed.
+      if(o.title){
+        var _mr=''; try{ _mr=_jimMealRelTitle(text); }catch(e){}
+        if(_mr && /^(walk|walks|run|jog|cardio|stroll|stretch|session|workout)$/i.test(String(o.title).trim())) o.title=_mr;
+      }
       if(o.title) o.title=_titleCap(String(o.title));
       if(o.name) o.name=_titleCap(String(o.name));
     }catch(e){}
@@ -65720,9 +65737,13 @@ async function jimTurn(text, photos, opts){
   }
   function _pinVoice(o, field){
     if(!o || o[field]) return o;
+    // HIS WORDS, MINUS THE ONES HE WAS NOT SAYING TO THE APP. The log keeps
+    // what he ate, when, where and how much, and a genuine remark about the
+    // food. Self-talk from an open mic is not part of the meal.
+    function _kw(v){ try{ return _jimDropAsides(v); }catch(e){ return v; } }
     var slice = _verbatimSlice(o.words, _clientWords);
-    if(slice){ o[field]=slice; return o; }
-    if(_totalVoicedEntries<=1 && _clientWords){ o[field]=_clientWords; return o; }
+    if(slice){ o[field]=_kw(slice); return o; }
+    if(_totalVoicedEntries<=1 && _clientWords){ o[field]=_kw(_clientWords); return o; }
     var fallback = String(o.name||o.title||'').trim();
     if(fallback) o[field]=fallback;
     return o;
@@ -72014,6 +72035,62 @@ function _jimSendFailHtml(ds){
   var f=_jimSendFail[ds]; if(!f) return '';
   return '<div class="jimEcho"><div class="jimEchoL jimEchoFail">'+_escHtml(f)+'</div></div>';
 }
+// ===== A LOG KEEPS WHAT BELONGS IN A LOG =================================
+// (Yusuf, live, 24 Aug.) He dictated his breakfast and it parsed perfectly --
+// meal, place, time, calories, protein. And riding along inside the stored
+// text was "whoa now I am doing something that should be doing", which is him
+// talking to himself while the mic was open.
+//
+// THE RULE: what he ate, when, where, how much. A genuine remark about the
+// FOOD is his and stays. Self-talk, asides and mumbles are dropped.
+//
+// SUPPRESS, NEVER INVENT -- so this only ever REMOVES a clause, and it removes
+// one only when it is positively identified as self-talk AND carries nothing
+// food-noteworthy. When it cannot tell, his words stay. That asymmetry is
+// deliberate: an aside that survives is untidy, a real detail that is deleted
+// is gone.
+var _JIM_SELFTALK_RE=new RegExp(
+    "^(?:whoa|woah|wait|hold on|hang on|um+|uh+|erm|hmm+|oh|okay|ok|so|well|actually|sorry|"
+  + "never ?mind|scratch that|forget it|let me|what|why|huh|hello|testing)\\b"
+  + "|\\b(?:recording|record(?:ing)? me|reading me|listening to me|this thing|the app|microphone|the mic)\\b"
+  + "|\\bi(?:\\u2019m| am|m)\\s+(?:doing|saying|trying|talking|testing)\\b"
+  + "|\\bshould be doing\\b"
+  // Bare trailing fragments he called asides outright. Whole clause only.
+  + "|^(?:not much|that(?:\\u2019|\\')?s it|thats it|yeah|yep|anyway|and stuff|or whatever)\\s*$",
+  "i");
+// A clause with any of these is about the FOOD and is never dropped, whatever
+// else it looks like. Numbers, units, meal words, times and places all count.
+var _JIM_FOODNOTE_RE=new RegExp(
+    "\\d"
+  + "|\\b(?:oz|ounce|ounces|g|gram|grams|lb|lbs|cup|cups|tbsp|tsp|slice|slices|piece|pieces|"
+  + "palm|palms|handful|handfuls|serving|servings|plate|bowl|scoop|scoops|half|quarter)\\b"
+  + "|\\b(?:breakfast|lunch|dinner|supper|snack|meal|ate|eat|eating|had|drank|ordered|cooked|made|grabbed)\\b"
+  + "|\\b(?:at|from|in)\\s+[A-Z]"
+  + "|\\b(?:am|pm|morning|afternoon|evening|tonight|noon)\\b",
+  "i");
+// Kept because it is about the food, not about him: taste, fullness, how it sat.
+var _JIM_FOODREMARK_RE=new RegExp(
+  "\\b(?:tasted|taste|delicious|filling|full|hungry|good after|felt|feel|sat well|too much|"
+  + "too salty|too sweet|bloated|energy|satisfying|heavy|light)\\b", "i");
+function _jimDropAsides(raw){
+  var t=String(raw||'').trim();
+  if(!t) return t;
+  try{
+    // Split on sentence ends and on the discourse comma that starts an aside.
+    var parts=t.split(new RegExp("(?<=[.!?])\\s+|\\s*\\u2014\\s*","g"));
+    if(parts.length<2) parts=[t];
+    var kept=parts.filter(function(c){
+      var x=String(c||'').trim();
+      if(!x) return false;
+      if(_JIM_FOODNOTE_RE.test(x)) return true;      // food-noteworthy: always
+      if(_JIM_FOODREMARK_RE.test(x)) return true;    // a remark about the food: his
+      return !_JIM_SELFTALK_RE.test(x);              // only self-talk is dropped
+    });
+    if(!kept.length) return t;                        // never return nothing
+    var out=kept.join(' ').replace(/\s{2,}/g,' ').trim();
+    return out || t;
+  }catch(e){ return t; }
+}
 function _jimEchoDate(back){
   try{
     var d=new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()-back);
@@ -72024,7 +72101,10 @@ function _jimEchoDate(back){
 // clean-up of what he typed, never an interpretation of it -- which is why it
 // cannot disagree with the write about anything that matters.
 function _jimEchoWords(raw){
-  var t=' '+String(raw||'').replace(/\s+/g,' ').trim()+' ';
+  // The echo shows what will be stored, so it drops the same asides the stored
+  // text does -- one function, so the preview and the record cannot disagree.
+  var _src=String(raw||''); try{ _src=_jimDropAsides(_src); }catch(e){}
+  var t=' '+_src.replace(/\s+/g,' ').trim()+' ';
   t=t.replace(/^\s*(?:please\s+)?(?:log|logging|log that|record|put down|add)\s+/i,' ');
   t=t.replace(/\b(?:i|we)\s*(?:\u2019ve|ve)?\s*(?:just\s+|already\s+)?(?:had|ate|eaten|grabbed|made|cooked|finished|drank|did|trained|trained on|trained with)\b/ig,' ');
   t=t.replace(/\bfor\s+(?:breakfast|lunch|dinner|a\s+snack|snack)\b/ig,' ');
@@ -72032,8 +72112,12 @@ function _jimEchoWords(raw){
   // one or two digits, which ate the "for 5" out of "squats 315 for 5 5 3" and
   // handed back a mangled version of his own sentence. Reps are not a time, so
   // a meridiem or a colon is now required before anything is removed.
-  t=t.replace(/\b(?:at|for|around|by)\s+\d{1,2}:\d{2}\s*(?:am|pm)?\b/ig,' ');
-  t=t.replace(/\b(?:at|for|around|by)\s+\d{1,2}\s*(?:am|pm)\b/ig,' ');
+  // A DOTTED MERIDIEM IS PART OF THE TIME. His "at 10:45 a.m." lost the 10:45
+  // and left a bare "a.m." standing in the middle of the echo line.
+  t=t.replace(/\b(?:at|for|around|by)\s+\d{1,2}:\d{2}\s*(?:a\.?\s?m\.?|p\.?\s?m\.?)?/ig,' ');
+  t=t.replace(/\b(?:at|for|around|by)\s+\d{1,2}\s*(?:a\.?\s?m\.?|p\.?\s?m\.?)/ig,' ');
+  t=t.replace(/\b\d{1,2}:\d{2}\s*(?:a\.?\s?m\.?|p\.?\s?m\.?)?/ig,' ');
+  t=t.replace(/(?:^|\s)(?:a\.\s?m\.?|p\.\s?m\.?)(?=\s|$)/ig,' ');
   t=t.replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/ig,' ');
   t=t.replace(/\b(?:at\s+)?(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*o\s*clock\b/ig,' ');
   t=t.replace(/\b(?:yesterday|last night|this morning|this afternoon|this evening|tonight|today)\b/ig,' ');
@@ -72090,6 +72174,21 @@ function _jimLooksLikeMeal(raw){
     || /^\s*(?:what|why|when|where|who|how|should|shouldn|can|could|do|does|did|is|are|was|were|will|would|any)\b/i.test(t.trim());
   var words=''; try{ words=_jimEchoWords(t); }catch(e){}
   return !!(!admin && !asks && /[A-Za-z]{3,}/.test(words));
+}
+// HIS NAME FOR THE MOVEMENT (Yusuf, ruling, 24 Aug: "he said post meal walk,
+// so the entry is titled Post Meal Walk"). A phrase he built himself is the
+// title; the generic word the model reaches for is not. Narrow on purpose --
+// it only fires on a movement described relative to a meal, which is the one
+// shape that was being flattened.
+var _JIM_MEALREL_RE=new RegExp(
+  "\\b((?:post|pre|after|before)[-\\s]?(?:meal|breakfast|lunch|dinner|supper)\\s+"
+  + "(?:walk|walks|run|jog|stroll|ride|cardio|stretch|session))\\b", "i");
+function _jimMealRelTitle(raw){
+  try{
+    var m=_JIM_MEALREL_RE.exec(String(raw||''));
+    if(!m) return '';
+    return _titleCap(String(m[1]).replace(/[-\s]+/g,' ').trim());
+  }catch(e){ return ''; }
 }
 function _jimEchoRead(raw){
   var out=[];
@@ -72169,7 +72268,18 @@ function _jimEchoRead(raw){
       }
       out.push({k:'food', line:'Logging: '+(pre.length?(pre.join(' \u00b7 ')+' \u2014 '):'')+body+nums});
     } else if(wo && words){
-      out.push({k:'workout', line:'Logging: '+_apCap(words)+(when?(' \u2014 '+when):'')});
+      // HIS NAME FIRST, then the day, then the clock he actually stated. The
+      // time came from _jimStatedMins -- the same reader the write uses -- so
+      // what he reads here is the minute the row will carry.
+      // Guarded like every other call in here: one missing helper must never
+      // take the whole preview down with it -- a silent echo is the failure
+      // this feature exists to prevent.
+      var _wt=''; try{ _wt=_jimMealRelTitle(t); }catch(e){}
+      var _mins=null; try{ _mins=_jimStatedMins(t); }catch(e){}
+      var _bits=[];
+      if(when) _bits.push(when);
+      if(_mins!=null){ try{ _bits.push(_jimClock(_mins)); }catch(e){} }
+      out.push({k:'workout', line:'Logging: '+(_wt||_apCap(words))+(_bits.length?(' \u2014 '+_bits.join(' \u00b7 ')):'')});
     }
     if(wt!=null) out.push({k:'weight', line:'Logging weight: '+wt+(when?(' \u2014 '+when):'')});
     if(st!=null) out.push({k:'steps', line:'Logging steps: '+st.toLocaleString()+(when?(' \u2014 '+when):'')});
@@ -72459,6 +72569,12 @@ async function _jimJarvisTry(t){
   return null;
 }
 async function jimSend(ds) {
+  // SUBMIT IS AN ACT, so listening ends here, before anything reads the box.
+  // jarvisRec writes into the field live as he speaks, so what he has said is
+  // already in there -- the job is only to make sure nothing MORE arrives. It
+  // is aborted rather than stopped for that reason: stop() still delivers a
+  // last result, and that result lands after the message has gone.
+  try{ _micStopAll(true); }catch(e){}
   var el = document.getElementById('jimIn_' + (ds || ''));
   var raw = el ? String(el.value || '').trim() : '';
   if (!raw && !window._jimPhoto) { if (el) el.focus(); return; }
