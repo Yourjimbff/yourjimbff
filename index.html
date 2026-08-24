@@ -33062,6 +33062,16 @@ function _jvPaneApply(){
     var on=jvPaneOn() && document.body.classList.contains('jv-on');
     document.body.classList.toggle('jv-split', on);
     document.body.classList.toggle('jv-paneOff', !on && document.body.classList.contains('jv-on'));
+    // A PUBLISHED SIGNAL, NOT AN INTERNAL ONE. Two lanes were about to key their
+    // layouts off jv-split, which describes MY arrangement (the body splits in
+    // two) and is mine to rename. jv-needsRoom describes the CONTRACT — the
+    // panel is open and wants horizontal space — and will not move under them.
+    // Same value today; the point is that it is promised.
+    // NOTE for consumers: below 1300px the panel is a FIXED OVERLAY by design
+    // (see the media query on #jvOrbCol — both columns are too squeezed to share
+    // there), so it takes no flow space and nothing should narrow for it. Scope
+    // your rule to @media (min-width:1301px).
+    document.body.classList.toggle('jv-needsRoom', on);
   }catch(e){}
 }
 function jvTogglePane(){
@@ -33442,14 +33452,49 @@ async function admMicSend(){
 // long thread never costs a slow render.
 var JT_THREAD_MAX=400;
 var JT_THREAD_WINDOW=30;
-window._jtShown=window._jtShown||JT_THREAD_WINDOW;
+// null means "no expansion asked for" — the default is THIS SITTING, not a
+// count. It used to default to 30, which is why a fresh open showed half an
+// hour of yesterday.
+window._jtShown=(window._jtShown!=null)?window._jtShown:null;
+// A SITTING ENDS WHEN HE STOPS TALKING (Yusuf, ruling, 25 Aug — "by default the
+// thread shows only the CURRENT SITTING's messages"). A sitting is the run of
+// turns with no gap longer than this in it, and it only counts as current if
+// the newest turn is itself inside that gap. So: opened fresh after lunch, the
+// window is EMPTY and he gets the button and nothing else; said something two
+// minutes ago, he sees that exchange; kept talking, everything stays.
+var JT_SITTING_GAP=15*60*1000;
+function _jtSittingFrom(th){
+  var n=th.length; if(!n) return 0;
+  var last=th[n-1], now=Date.now();
+  // No timestamp at all is old history from before turns were stamped — it can
+  // never be part of the current sitting, and guessing that it is would put the
+  // whole archive back on his screen.
+  if(!last.t || (now-last.t)>JT_SITTING_GAP) return n;      // from===n → empty
+  var i=n-1;
+  while(i>0){
+    var a=th[i-1], b=th[i];
+    if(!a.t || !b.t) break;
+    if((b.t-a.t)>JT_SITTING_GAP) break;
+    i--;
+  }
+  return i;
+}
 // THREE STATES ON A HISTORY READ. It used to have one: every failure — quota,
 // a corrupt character, a browser refusing storage — came back as [] and read
 // exactly like a first conversation.
 window._jtLoadState=window._jtLoadState||'';
 function _jtWindow(th){
-  var n=th.length, show=Math.min(n, window._jtShown||JT_THREAD_WINDOW);
-  return {from:Math.max(0,n-show), rows:th.slice(Math.max(0,n-show))};
+  var n=th.length;
+  var from=_jtSittingFrom(th);
+  // AN EXPANSION BELONGS TO ONE SITTING. "See earlier" is something he did while
+  // reading; carrying it into the next sitting is how the panel ends up opening
+  // on three hours of history again, which is the thing being fixed.
+  if(from>=n && window._jtShown!=null) window._jtShown=null;
+  if(window._jtShown!=null){
+    var show=Math.min(n, window._jtShown);
+    return {from:Math.max(0,n-show), rows:th.slice(Math.max(0,n-show))};
+  }
+  return {from:from, rows:th.slice(from)};
 }
 function _jtEarlierHtml(hidden){
   if(hidden<=0) return '';
@@ -33482,7 +33527,11 @@ function _jtScrollKeep(fn){
 }
 function jtShowEarlier(){
   _jtScrollKeep(function(){
-    window._jtShown=(window._jtShown||JT_THREAD_WINDOW)+JT_THREAD_WINDOW;
+    // Grow from what is on screen NOW, not from a fixed 30 — the sitting may be
+    // two turns or twenty, and either way the next tap should add a windowful
+    // rather than jump to some unrelated number.
+    var _shown=(window._jtShown!=null)?window._jtShown:(_jtLoad().length-_jtSittingFrom(_jtLoad()));
+    window._jtShown=_shown+JT_THREAD_WINDOW;
     try{ jtRenderAll(); }catch(e){}
   });
 }
@@ -33730,15 +33779,28 @@ function jtRenderAll(thinking){
     // finished: it keeps its slot in the queue until it has a height.
     // Still only ever pins a host sitting at zero, so it can never yank him
     // away from history he scrolled back to read.
+    // WHY THE PREVIOUS FIX STILL LEFT HIM AT THE TOP. Its retry only pinned a
+    // host whose scrollTop was exactly 0. But the FIRST pin runs against a
+    // half-laid-out thread: scrollHeight is briefly small, so scrollTop lands on
+    // something like 200 — not zero — and then every retry read "he has scrolled,
+    // leave him alone" and bailed. The content then grew to thousands of pixels
+    // underneath him and 200 IS the top. That is exactly what he is seeing.
+    // STILL GROWING MEANS STILL OPENING. Pin while the height is changing and
+    // stop the moment it settles, so a deliberate scroll is never fought — it can
+    // only ever happen after the thread has finished laying out.
     (function(){
-      var tries=0;
+      var tries=0, lastH={};
       var again=function(){
         var waiting=false;
         JT_HOSTS.scroll.forEach(function(id){
           var e=document.getElementById(id); if(!e) return;
           if(e.clientHeight===0){ waiting=true; return; }      // not laid out yet
           if(e.scrollHeight<=e.clientHeight) return;           // genuinely fits
-          if(e.scrollTop===0) e.scrollTop=e.scrollHeight;
+          if(lastH[id]!==e.scrollHeight){
+            lastH[id]=e.scrollHeight;
+            e.scrollTop=e.scrollHeight;
+            waiting=true;                                      // settle, then stop
+          }
         });
         if(waiting && ++tries<25) { try{ setTimeout(again,80); }catch(e){} }
       };
