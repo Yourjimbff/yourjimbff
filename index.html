@@ -73235,6 +73235,71 @@ function _jimMealRelTitle(raw){
     return '';
   }catch(e){ return ''; }
 }
+// ===== HOW MANY MEALS HE NAMED, COUNTED BY ANCHOR ========================
+// (His ruling, 24 Aug: count the anchors, not the punctuation.)
+//
+// "eggs, oats and toast for breakfast" is ONE meal with commas in it.
+// "eggs for breakfast, chicken for lunch" is TWO meals. The comma is identical
+// in both; what differs is how many times he NAMED a meal. So the anchors
+// decide how many records there are, and punctuation is consulted only to find
+// the seam once the anchors have already said there is one. A splitter that cut
+// on commas would turn one breakfast into three, which is the same lie pointed
+// the other way -- measured and rejected before this was written.
+//
+// A DAY IS AN ANCHOR TOO: "yesterday I had oats, this morning I had eggs" names
+// two days and two meals in one breath.
+//
+// IT WORKS BOTH WAYS ROUND. The seam is looked for BETWEEN two anchors, so it
+// does not matter whether he says "eggs for breakfast" or "for breakfast, eggs".
+//
+// AND WHEN THERE IS NO SEAM TO CUT ON, IT DOES NOT CUT. Two anchors running
+// together with nothing between them stay one record: silence over invention,
+// as everywhere else in this engine.
+function _jimFoodParts(raw){
+  var t=String(raw||'');
+  var whole=[t];
+  try{
+    var hits=[];
+    _JIM_ANCHOR_SLOTS.forEach(function(a){
+      var re=new RegExp(a.re.source,'gi'), m;
+      while((m=re.exec(t))!==null){
+        hits.push({at:m.index, end:m.index+m[0].length});
+        if(m.index===re.lastIndex) re.lastIndex++;
+      }
+    });
+    var dre=new RegExp(_JIM_DAY_BACK_RE.source,'gi'), dm;
+    while((dm=dre.exec(t))!==null){
+      hits.push({at:dm.index, end:dm.index+dm[0].length});
+      if(dm.index===dre.lastIndex) dre.lastIndex++;
+    }
+    if(hits.length<2) return whole;
+    hits.sort(function(a,b){ return a.at-b.at; });
+    // Overlapping anchors are ONE anchor -- "last night" is both a day and a
+    // dinner slot, and counting it twice would invent a meal.
+    var an=[];
+    hits.forEach(function(h){
+      var p=an[an.length-1];
+      if(p && h.at<p.end){ p.end=Math.max(p.end,h.end); return; }
+      an.push({at:h.at, end:h.end});
+    });
+    if(an.length<2) return whole;
+    var cuts=[], sep=/[,;]|\s+(?:and\s+then|then|also|plus)\s+/gi;
+    for(var i=0;i+1<an.length;i++){
+      sep.lastIndex=an[i].end;
+      var sm=sep.exec(t);
+      if(sm && sm.index<an[i+1].at){
+        var c=sm.index+sm[0].length;
+        if(!cuts.length || c>cuts[cuts.length-1]) cuts.push(c);
+      }
+    }
+    if(!cuts.length) return whole;
+    var parts=[], last=0;
+    cuts.forEach(function(c){ var piece=t.slice(last,c).trim(); if(piece) parts.push(piece); last=c; });
+    var tail=t.slice(last).trim(); if(tail) parts.push(tail);
+    return parts.length>1 ? parts : whole;
+  }catch(e){}
+  return whole;
+}
 function _jimEchoRead(raw){
   var out=[];
   try{
@@ -73294,24 +73359,42 @@ function _jimEchoRead(raw){
     // alone is not enough: he has to have actually said he ate.
     if((wt!=null || st!=null) && !ateIt) slot=null;
     if((ateIt || slot || plainFood) && words && !wo){
-      var pre=[]; if(when) pre.push(when); if(slot) pre.push(slot.toLowerCase());
-      // NUMBERS ONLY WHEN THE ENGINE ACTUALLY KNOWS THEM (ruling, 24 Aug).
-      // _jimQuickFoodMatch is the SAME synchronous matcher the write consults
-      // before it ever reaches the model, against food this client has saved
-      // before — so when it hits, the macros shown here are the macros that
-      // land, exactly. When it misses, the model will be estimating and the
-      // echo says the food and NO numbers: an estimate dressed as a fact is
-      // the one thing this line may never be.
-      var qm=null; try{ qm=_jimQuickFoodMatch(t); }catch(e){ qm=null; }
-      var body=words, nums='';
-      if(qm && qm.name){
-        body=String(qm.name);
-        var np=[];
-        if(+qm.calories>0) np.push(Math.round(+qm.calories)+' cal');
-        if(+qm.protein>0)  np.push(Math.round(+qm.protein)+'P');
-        if(np.length) nums=' \u2014 '+np.join(' \u00b7 ');
-      }
-      out.push({k:'food', line:'Logging: '+(pre.length?(pre.join(' \u00b7 ')+' \u2014 '):'')+body+nums});
+      // ONE LINE PER MEAL HE NAMED. Two meals in one breath drew ONE line while
+      // two rows landed, which is an echo under-promising what the record will
+      // say -- the same disagreement as over-promising, and just as silent.
+      // _jimFoodParts counts by anchor; with one meal it hands back the whole
+      // message and every line below is exactly what it always was.
+      var _fp=[t]; try{ _fp=_jimFoodParts(t); }catch(e){ _fp=[t]; }
+      if(!_fp.length) _fp=[t];
+      var _solo=(_fp.length===1);
+      _fp.forEach(function(pt){
+        var pWords=_solo?words:''; 
+        if(!_solo){ try{ pWords=_jimEchoWords(pt); }catch(e){ pWords=''; } }
+        if(!pWords) return;
+        var pBack=null; try{ pBack=_jimAnchorDay(pt); }catch(e){}
+        if(pBack==null && _solo) pBack=back;
+        var pWhen=(pBack!=null && pBack>0) ? _jimEchoDate(pBack) : '';
+        var pSlot=null; try{ pSlot=_jimAnchorSlot(pt); }catch(e){}
+        if(!pSlot && _solo) pSlot=slot;
+        var pre=[]; if(pWhen) pre.push(pWhen); if(pSlot) pre.push(String(pSlot).toLowerCase());
+        // NUMBERS ONLY WHEN THE ENGINE ACTUALLY KNOWS THEM (ruling, 24 Aug).
+        // _jimQuickFoodMatch is the SAME synchronous matcher the write consults
+        // before it ever reaches the model, against food this client has saved
+        // before — so when it hits, the macros shown here are the macros that
+        // land, exactly. When it misses, the model will be estimating and the
+        // echo says the food and NO numbers: an estimate dressed as a fact is
+        // the one thing this line may never be.
+        var qm=null; try{ qm=_jimQuickFoodMatch(pt); }catch(e){ qm=null; }
+        var body=pWords, nums='';
+        if(qm && qm.name){
+          body=String(qm.name);
+          var np=[];
+          if(+qm.calories>0) np.push(Math.round(+qm.calories)+' cal');
+          if(+qm.protein>0)  np.push(Math.round(+qm.protein)+'P');
+          if(np.length) nums=' \u2014 '+np.join(' \u00b7 ');
+        }
+        out.push({k:'food', line:'Logging: '+(pre.length?(pre.join(' \u00b7 ')+' \u2014 '):'')+body+nums});
+      });
     } else if(wo && words){
       // HIS NAME FIRST, then the day, then the clock he actually stated. The
       // time came from _jimStatedMins -- the same reader the write uses -- so

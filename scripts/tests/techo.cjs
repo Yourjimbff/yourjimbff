@@ -23,7 +23,7 @@ eval([ one('var _JIM_DAY_BACK_RE='), one('var _JIM_DAY_NAGO_RE='), one('var _JIM
   grab(l=>l.startsWith('function _titleCap(')), grab(l=>l.startsWith('function _jimDropAsides(')),
   grab(l=>l.startsWith('function _jimMealRelTitle(')),
   grab(l=>l.startsWith('function _jimLooksLikeMeal(')),
-  grab(l=>l.startsWith('function _jimEchoRead(')),
+  grab(l=>l.startsWith('function _jimFoodParts(')), grab(l=>l.startsWith('function _jimEchoRead(')),
   'function _jimLooksLikeWorkout(t){ return _JIM_WO_RE.test(String(t||"")); }',
   'function _jimStatedMins(){ return null; }',
   'function _jimClock(m){ var h=Math.floor(m/60),x=m%60,ap=h<12?"AM":"PM",d=h%12||12; return d+":"+String(x).padStart(2,"0")+" "+ap; }'
@@ -60,6 +60,36 @@ const C=[
   ['I weighed 195',                           ['Logging weight: 195']],
   ['scale said 197 this morning',             ['Logging weight: 197']],
   ['I walked 9,000 steps',                    ['Logging steps: 9,000']],
+  // ===== THE BLIND SPOT THIS SUITE HAD (24 Aug) ==========================
+  // A rewrite regressed a mixed meal-and-session message from one line to
+  // NOTHING, and this list passed the whole way through, because not one case
+  // carried both a meal and a session. A green list that cannot see the
+  // failure is the same disease as a confident reply over an empty row.
+  // These assert the invariant that was actually violated: a message plainly
+  // carrying both must NEVER go silent. They are deliberately written against
+  // the line the app draws today, so a future change that improves the count
+  // updates them openly rather than passing over them.
+  ['I had eggs for breakfast and did legs for an hour',
+                                              ['Logging: breakfast \u2014 eggs and did legs for an hour']],
+  // UPDATED OPENLY, 24 Aug: this drew ONE line for TWO meals until the anchor
+  // count landed. Two meals named, two lines, each with its own slot. The old
+  // value is left in the comment so the change is legible rather than silent:
+  //   was ['Logging: eggs and oats , chicken and rice']
+  ['I had eggs and oats for breakfast, chicken and rice for lunch',
+                                              ['Logging: breakfast \u2014 eggs and oats',
+                                               'Logging: lunch \u2014 chicken and rice']],
+  // Both orders, because the seam is looked for BETWEEN the two anchors.
+  ['for breakfast I had eggs, for lunch I had chicken',
+                                              ['Logging: breakfast \u2014 eggs',
+                                               'Logging: lunch \u2014 chicken']],
+  // AND THE OVER-COUNT MUST NEVER HAPPEN: one meal with commas in it is ONE.
+  ['eggs, oats and toast for breakfast',      ['Logging: breakfast \u2014 eggs, oats and toast']],
+  // Two days in one breath is two records.
+  ['yesterday I had oats, this morning I had eggs',
+                                              ['Logging: Sun, Aug 23 \u2014 oats',
+                                               'Logging: breakfast \u2014 eggs']],
+  ['chicken and rice for lunch, 8000 steps, weighed 195',
+                                              ['Logging weight: 195', 'Logging steps: 8,000']],
   ['js',                                      []],
   // KNOWN AND NAMED: word-shaped gibberish echoes. Telling it from a
   // first-time food name needs a food dictionary this app does not have
@@ -68,6 +98,22 @@ const C=[
   ['',                                        []],
   ['what should I eat tomorrow',              []]
 ];
+
+// ===== A MISSING DEPENDENCY MUST FAIL LOUDLY (24 Aug) ====================
+// This suite lifts functions out of index.html by name. When the code grows a
+// new helper and this list is not told about it, every guarded call site falls
+// back and the suite measures a path that DOES NOT SHIP -- passing green while
+// the real behaviour changed underneath it. That happened twice in one day.
+// The helpers the preview genuinely depends on are asserted present first, so
+// the next time it happens the list goes red instead of lying.
+['_jimEchoRead','_jimEchoWords','_jimFoodParts','_jimAnchorDay','_jimAnchorSlot',
+ '_jimHarvestWeight','_jimHarvestSteps','_jimLooksLikeMeal','_jimLooksLikeWorkout'
+].forEach(function(n){
+  if(typeof global[n]!=='function' && typeof eval(n)!=='function'){
+    console.log('  FAIL  the suite is missing '+n+' — it would measure a fallback, not the shipped path');
+    process.exit(1);
+  }
+});
 let bad=0;
 C.forEach(function(c){
   const g=show(c[0]); const ok=JSON.stringify(g)===JSON.stringify(c[1]); if(!ok) bad++;
