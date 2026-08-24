@@ -20087,8 +20087,12 @@ function _jvSpokenDay(d){
     if(diff>=7 && diff<14) return 'next '+a.toLocaleDateString('en-US',{weekday:'long'});
     if(diff<-1 && diff>-7) return 'last '+a.toLocaleDateString('en-US',{weekday:'long'});
     // Far enough out to need the month: said the way it is spoken, not typed.
+    // THE DAY NAME COMES WITH IT (Yusuf, ruling, 24 Aug). A date far enough out
+    // to need the month is still said the way a person says it, and a person
+    // says the weekday: "Tuesday, August twenty-fifth", never "Aug 25, 2026".
     var day=a.getDate(), ord=(day%10===1&&day!==11)?'st':(day%10===2&&day!==12)?'nd':(day%10===3&&day!==13)?'rd':'th';
-    return a.toLocaleDateString('en-US',{month:'long'})+' '+day+ord;
+    return a.toLocaleDateString('en-US',{weekday:'long'})+', '
+         + a.toLocaleDateString('en-US',{month:'long'})+' '+day+ord;
   }catch(e){ return ''; }
 }
 function _jvSpokenTime(d){
@@ -20112,9 +20116,18 @@ function _jvWhenLabel(d){
 // change how they are SAID.
 function _jvSpokenDateStr(ds){
   try{
-    var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ds||''));
-    if(!m) return String(ds||'');
-    return _jvSpokenDay(new Date(+m[1], +m[2]-1, +m[3], 12, 0, 0)) || String(ds);
+    var t=String(ds||''); if(!t) return '';
+    var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(t);
+    if(m) return _jvSpokenDay(new Date(+m[1], +m[2]-1, +m[3], 12, 0, 0)) || t;
+    // AND THE APP'S OWN FORMAT. Every date_str in this file reads "Aug 25,
+    // 2026", and this only ever knew ISO -- so it handed the raw string back
+    // untouched and the voice read it out as typed. That is the fault he
+    // reported: it should have simply said "tomorrow".
+    var d=null;
+    try{ if(typeof _parseDs==='function') d=_parseDs(t); }catch(e){}
+    if(!d){ var g=new Date(t); if(!isNaN(g.getTime())) d=g; }
+    if(!d) return t;
+    return _jvSpokenDay(d) || t;
   }catch(e){ return String(ds||''); }
 }
 function _jvSpokenHhmm(hhmm){
@@ -26728,11 +26741,16 @@ async function _jvJarvisCalendarAct(parsed){
     var ok=await sbInsert('calendar_blocks', row);
     if(!ok) return {ok:false, line:'That didn’t save — nothing was written. Try again.'};
     try{ schRefresh(); }catch(e){}
-    var dayNames={1:'Mon',2:'Tue',3:'Wed',4:'Thu',5:'Fri',6:'Sat',7:'Sun'};
+    // SAID, NOT TYPED. "Mon/Wed/Fri" and "Aug 25, 2026" are both things a voice
+    // mangles; one is read as a slash, the other as an abbreviation and a year
+    // nobody asked for. Today, tomorrow and yesterday say their own word.
+    var dayNames={1:'Monday',2:'Tuesday',3:'Wednesday',4:'Thursday',5:'Friday',6:'Saturday',7:'Sunday'};
+    var _dn=days.map(function(n){ return dayNames[n]; });
     var whenPhrase=recurring
-      ? ('every '+(days.length===7?'day':days.map(function(n){return dayNames[n];}).join('/')))
-      : ('on '+_escHtml(dateStr));
-    return {ok:true, line:'✓ '+_escHtml(title)+(ownerName?(' for '+_escHtml(ownerName)):'')
+      ? ('every '+(days.length===7?'day':(_dn.length>1?(_dn.slice(0,-1).join(', ')+' and '+_dn[_dn.length-1]):_dn[0])))
+      : (function(){ var w=_jvSpokenDateStr(dateStr);
+          return /^(today|tomorrow|yesterday)$/.test(w) ? w : ('on '+w); })();
+    return {ok:true, line:_escHtml(title)+(ownerName?(' for '+_escHtml(ownerName)):'')
       +' set for '+_escHtml(_cbSpokenTime(parsed.time+':00'))+' '+whenPhrase+'.'};
   }
 
@@ -26750,19 +26768,19 @@ async function _jvJarvisCalendarAct(parsed){
         var ods=_tlDateStr(_cbResolveDatePhrase(parsed.occurrence_date||'today'));
         await _cbSaveException(b.id, ods, {start_local:parsed.time+':00'});
         try{ schRefresh(); }catch(e){}
-        return {ok:true, line:'✓ Moved '+_escHtml(b.title)+' on '+_escHtml(ods)+' to '+_escHtml(_cbSpokenTime(parsed.time+':00'))+' — the rest of the series stays as it is.'};
+        return {ok:true, line:'Moved '+_escHtml(b.title)+' on '+_escHtml(_jvSpokenDateStr(ods))+' to '+_escHtml(_cbSpokenTime(parsed.time+':00'))+' — the rest of the series stays as it is.'};
       }
       try{
         await fetch(SB_URL+'/rest/v1/calendar_blocks?id=eq.'+b.id,
           {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal','Content-Type':'application/json'}), body:JSON.stringify({start_local:parsed.time+':00', updated_at:new Date().toISOString()})});
       }catch(e){}
       try{ schRefresh(); }catch(e){}
-      return {ok:true, line:'✓ Moved '+_escHtml(b.title)+' to '+_escHtml(_cbSpokenTime(parsed.time+':00'))+', every time it repeats.'};
+      return {ok:true, line:'Moved '+_escHtml(b.title)+' to '+_escHtml(_cbSpokenTime(parsed.time+':00'))+', every time it repeats.'};
     }
     var dds=_tlDateStr(_cbResolveDatePhrase(parsed.occurrence_date||'today'));
     await _cbSaveException(b.id, dds, {done:true, note:(parsed.note||null)});
     try{ schRefresh(); }catch(e){}
-    return {ok:true, line:'✓ Marked '+_escHtml(b.title)+' done for '+_escHtml(dds)+(parsed.note?' — noted.':'.')};
+    return {ok:true, line:'Marked '+_escHtml(b.title)+' done for '+_escHtml(_jvSpokenDateStr(dds))+(parsed.note?' — noted.':'.')};
   }
   return null;
 }
@@ -29366,7 +29384,7 @@ async function _apBlockAct(day, rng, said){
     try{ if(window._schDayTs!=null && typeof schRefresh==='function') schRefresh(); }catch(e){}
     var gs=new Date(got.starts_at||st), ge=new Date(got.ends_at||en);
     var gh=gs.getHours()+gs.getMinutes()/60, gt=ge.getHours()+ge.getMinutes()/60;
-    return '\u2713 Blocked. '+_apCap(_jvSpokenDay(gs))+', '+_apClock(gh)+' to '+_apClock(gt)
+    return 'Blocked. '+_apCap(_jvSpokenDay(gs))+', '+_apClock(gh)+' to '+_apClock(gt)
       + (said?(' \u2014 that is what I take '+said+' to mean; say the hours if you want them different.'):'.')
       + ' Nobody can book that.';
   }
@@ -65859,8 +65877,11 @@ async function jimTurn(text, photos, opts){
   // was — a question his sentence already answered, next to a row that now
   // exists. Replaced with what landed, and only ever on a VERIFIED write.
   if(_fbFired && _foodVerified>0){
-    var _fbWhen=(_fbDayN===1) ? 'yesterday'
-      : (_fbDayN>1 ? String(_dateStrDaysAgo(_fbDayN)||'').replace(/,\s*\d{4}$/,'') : '');
+    // SAID, NOT TYPED. This was handing the voice "Aug 23" off a date string.
+    // _jvSpokenDateStr is the one place that decides how a stored date sounds,
+    // and it already answers "yesterday" for yesterday.
+    var _fbWhen='';
+    try{ if(_fbDayN>0) _fbWhen=_jvSpokenDateStr(_dateStrDaysAgo(_fbDayN)); }catch(e){}
     reply='Logged \u2014 '+_fbName+(_fbWhen?(', '+_fbWhen):'')+'.';
   }
 
@@ -66152,11 +66173,16 @@ async function _jvJarvisCalendarActClient(parsed){
       start_local:parsed.time+':00', duration_minutes:60, days:days, date_str:dateStr, recurring:recurring, active:true};
     var ok=await sbInsert('calendar_blocks', row);
     if(!ok) return {ok:false, line:'That didn’t save — nothing was written. Try again.'};
-    var dayNames={1:'Mon',2:'Tue',3:'Wed',4:'Thu',5:'Fri',6:'Sat',7:'Sun'};
+    // SAID, NOT TYPED. "Mon/Wed/Fri" and "Aug 25, 2026" are both things a voice
+    // mangles; one is read as a slash, the other as an abbreviation and a year
+    // nobody asked for. Today, tomorrow and yesterday say their own word.
+    var dayNames={1:'Monday',2:'Tuesday',3:'Wednesday',4:'Thursday',5:'Friday',6:'Saturday',7:'Sunday'};
+    var _dn=days.map(function(n){ return dayNames[n]; });
     var whenPhrase=recurring
-      ? ('every '+(days.length===7?'day':days.map(function(n){return dayNames[n];}).join('/')))
-      : ('on '+_escHtml(dateStr));
-    return {ok:true, line:'✓ '+_escHtml(title)+' set for '+_escHtml(_cbSpokenTime(parsed.time+':00'))+' '+whenPhrase+'.'};
+      ? ('every '+(days.length===7?'day':(_dn.length>1?(_dn.slice(0,-1).join(', ')+' and '+_dn[_dn.length-1]):_dn[0])))
+      : (function(){ var w=_jvSpokenDateStr(dateStr);
+          return /^(today|tomorrow|yesterday)$/.test(w) ? w : ('on '+w); })();
+    return {ok:true, line:_escHtml(title)+' set for '+_escHtml(_cbSpokenTime(parsed.time+':00'))+' '+whenPhrase+'.'};
   }
 
   if(parsed.action==='move' || parsed.action==='done'){
@@ -66172,17 +66198,17 @@ async function _jvJarvisCalendarActClient(parsed){
       if(parsed.scope==='one' || !b.recurring){
         var ods=_tlDateStr(_cbResolveDatePhrase(parsed.occurrence_date||'today'));
         await _cbSaveException(b.id, ods, {start_local:parsed.time+':00'});
-        return {ok:true, line:'✓ Moved '+_escHtml(b.title)+' on '+_escHtml(ods)+' to '+_escHtml(_cbSpokenTime(parsed.time+':00'))+' — the rest of the series stays as it is.'};
+        return {ok:true, line:'Moved '+_escHtml(b.title)+' on '+_escHtml(_jvSpokenDateStr(ods))+' to '+_escHtml(_cbSpokenTime(parsed.time+':00'))+' — the rest of the series stays as it is.'};
       }
       try{
         await fetch(SB_URL+'/rest/v1/calendar_blocks?id=eq.'+b.id,
           {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal','Content-Type':'application/json'}), body:JSON.stringify({start_local:parsed.time+':00', updated_at:new Date().toISOString()})});
       }catch(e){}
-      return {ok:true, line:'✓ Moved '+_escHtml(b.title)+' to '+_escHtml(_cbSpokenTime(parsed.time+':00'))+', every time it repeats.'};
+      return {ok:true, line:'Moved '+_escHtml(b.title)+' to '+_escHtml(_cbSpokenTime(parsed.time+':00'))+', every time it repeats.'};
     }
     var dds=_tlDateStr(_cbResolveDatePhrase(parsed.occurrence_date||'today'));
     await _cbSaveException(b.id, dds, {done:true, note:(parsed.note||null)});
-    return {ok:true, line:'✓ Marked '+_escHtml(b.title)+' done for '+_escHtml(dds)+(parsed.note?' — noted.':'.')};
+    return {ok:true, line:'Marked '+_escHtml(b.title)+' done for '+_escHtml(_jvSpokenDateStr(dds))+(parsed.note?' — noted.':'.')};
   }
   return null;
 }
