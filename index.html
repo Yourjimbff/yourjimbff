@@ -21868,8 +21868,58 @@ function _wkDetailApptHtml(r, key){
   var notesHost=(r.code && (r.kind==='booking'||r.kind==='vip')) ? '<div id="wkApptNotesHost" class="wkDetSub">Loading notes…</div>' : '';
   return back+'<h3>'+who+'</h3><div class="wkDetSub">'+chip+' — '+when+'</div>'+contactBtns+actionBtns+notesHost;
 }
+// ONE SURFACE PER PERSON (Yusuf, ruling, 23 Aug — he pasted the thin card and
+// said "not that", and that the client overview is what opening a call should
+// show). REPLACE, NOT EMBED: this card closes and the overview opens in its
+// place. Embedding it would have put a second Text and Call on a card that has
+// them, a Remove-client button on an appointment popup, and six duplicate
+// element ids against the overview's own — which in this file means the wrong
+// element silently gets repainted.
+//
+// NOT EVERY APPOINTMENT HAS A PERSON BEHIND IT, and that is the whole reason
+// this is a branch and not a redirect. A consult is a LEAD with no client row;
+// Admin View ruled in writing that covOpen stays client-only, because opening
+// it for a lead draws a surface of empty states and dead controls. A block with
+// nobody attached is the same. Those keep this card, which is the only place
+// they were ever fully served.
+//
+// The eligibility is checked BEFORE the card closes, so a lead never sees a
+// card vanish and come back. covOpen's own true/false is still honoured after
+// that as belt and braces — it refuses on exactly no-client-record and hidden
+// client, and branching on silence instead is the dead tap this was nearly
+// shipped as.
+async function _wkApptToOverview(r, key){
+  try{
+    if(!r || !r.code) return false;                          // a lead, not a client
+    if(r.kind!=='booking' && r.kind!=='vip') return false;    // blocks keep this card
+    if(typeof covOpen!=='function') return false;
+    if(!(window.CLIENTS||{})[r.code]) return false;           // covOpen would refuse
+    try{ if(typeof getHiddenClientSet==='function' && getHiddenClientSet()[r.code]) return false; }catch(e){}
+    // apptKey is what draws the "This call" card with Cancel and Reschedule on
+    // it, and those call THIS lane's wkApptCancel/wkApptMoveSubmit rather than
+    // copies of them. cnoOpen reads only source/booking_id/vip_call_id/
+    // occurrence_date off this object and ignores the rest.
+    var target = (r.kind==='booking')
+      ? {source:'booking', booking_id:r.booking_id, apptKey:key}
+      : {source:'vip', vip_call_id:r.vip_call_id, occurrence_date:r.occurrence_date, apptKey:key};
+    // ts, not dateStr: r.at is always present and is the same value this card
+    // renders its own time from, so the two surfaces cannot disagree about
+    // which day the call is on. A date STRING would have to match a format.
+    var opts={callTarget:target};
+    if(r.at) opts.ts=r.at;
+    // CLOSE FIRST, THEN CALL. He asked for the overview INSTEAD of this card,
+    // not stacked over it, and this card sits at 50005 against the overview's
+    // 7002 — raising their layer to win that fight was ruled against and I
+    // agree with the ruling.
+    try{ wkPanelClose(); }catch(e){}
+    var opened=false;
+    try{ opened=await covOpen(r.code, opts); }catch(e){ opened=false; }
+    return !!opened;
+  }catch(e){ return false; }
+}
 async function wkApptClick(ev, key){
   var r=(window._wkApptIndex||{})[key]; if(!r) return;
+  if(await _wkApptToOverview(r, key)) return;
   var p=document.getElementById('wkPanel'), s=document.getElementById('wkPanelScrim');
   if(!p||!s) return;
   // Same fresh-open-only positioning as wkOpenSplitPanel/wkDetailShowDay —
