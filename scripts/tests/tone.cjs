@@ -197,6 +197,13 @@ t(/async function buildDayContext\(askText\)/.test(src), 'the read path finally 
 t(/await buildChatContext\(\(window\.cl && typeof isTrainer==='function' && isTrainer\(cl\.code\)\) \? text : null\)/.test(src),
   'and the chat rail hands it over, trainer-gated');
 
+console.log('\n  the one door carries its own account lock:');
+// Every caller is a trainer surface and checks first. The lock is here anyway,
+// because the next surface to call this would inherit a hole nobody sees.
+const OD=(src.match(/async function _jvOnePerson\(askText\)\{[\s\S]{0,900}?var who;/)||[''])[0];
+t(/isTrainer\(cl\.code\)/.test(OD) && /return \{kind:'none'\}/.test(OD),
+  'a non-trainer account gets nobody’s record, whoever calls it');
+
 console.log('\n  every trainer surface consults the one door:');
 t(/_jvAssistantContext\(\{ask:msg\}\)/.test(src), 'the cockpit passes the question');
 t(/_jvAssistantContext\(\{ask:t\}\)/.test(src), 'the front desk single line passes it too');
