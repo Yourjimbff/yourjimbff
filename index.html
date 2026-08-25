@@ -10816,8 +10816,6 @@ async function _doLoginInner(code){
   // Trainer-only context (the intake dossiers) loads from the database at sign-in;
   // it never ships in the page and clients never fetch it.
   try{ if(isTrainer(code)) loadClientDossiers(); }catch(e){}
-  // ONE-OFF, delete with the BRIDGE-ONEOFF block it belongs to.
-  try{ if(isTrainer(code)) _bridgeOneOffInit(); }catch(e){}
 
   // Hide login screen completely
   document.getElementById('sLogin').style.display='none';
@@ -16942,6 +16940,51 @@ function _covClockHtml(label, o, warnAt, overAt, neverWord){
     + val
   + '</div>';
 }
+// HOW OFTEN THEY ACTUALLY TRAIN (Yusuf, ruling, 25 Aug). This card used to
+// carry two clocks and a third button — "they logged yesterday", "you reached
+// out 5 days ago", "Talked to". All of it is gone and this is the one number
+// that replaces it: sessions per week, averaged over the last fourteen days.
+//
+// DISTINCT DAYS, NOT ROWS. Two workouts logged on one day is one training day,
+// and counting rows would have flattered every client who logs a lift and a
+// walk separately.
+//
+// THREE STATES. A read that did not answer is not "they trained nothing" —
+// sbSelect returns [] for both, so this asks directly and reads res.ok, and
+// says which of the three it is.
+function _covTrainAvgHtml(code){
+  return '<div class="covLoad">Reading their sessions\u2026</div>';
+}
+function _covTrainAvgLine(big, sub){
+  return '<div class="covTrainAvg">'
+    + '<div class="covTrainBig">'+big+'</div>'
+    + '<div class="covTrainSub">'+sub+'</div>'
+  +'</div>';
+}
+async function _covLoadTrainAvg(code){
+  var host=document.getElementById('covTrainAvg_'+code); if(!host) return;
+  try{
+    var since=new Date(Date.now()-14*86400000).toISOString();
+    var r=await fetch(SB_URL+'/rest/v1/workout_logs?select=logged_at&client_code=eq.'
+      +encodeURIComponent(code)+'&logged_at=gte.'+encodeURIComponent(since)
+      +'&order=logged_at.desc&limit=300',{headers:sbHeaders()});
+    if(!r.ok){ host.innerHTML=_covTrainAvgLine('\u2014','Could not read their sessions just now'); return; }
+    var rows=await r.json();
+    var days={};
+    (rows||[]).forEach(function(w){
+      try{ if(w && w.logged_at) days[isoDateStr(new Date(w.logged_at))]=1; }catch(e){}
+    });
+    var n=0; for(var k in days){ if(Object.prototype.hasOwnProperty.call(days,k)) n++; }
+    if(!n){ host.innerHTML=_covTrainAvgLine('0','No sessions logged in the last two weeks'); return; }
+    // One decimal, and the trailing .0 stays off a whole number.
+    var avg=Math.round((n/2)*10)/10;
+    var big=(String(avg).replace(/\.0$/,''));
+    host.innerHTML=_covTrainAvgLine(big+' <span class="covTrainUnit">days a week</span>',
+      n+' session day'+(n===1?'':'s')+' in the last two weeks');
+  }catch(e){
+    host.innerHTML=_covTrainAvgLine('\u2014','Could not read their sessions just now');
+  }
+}
 function _covClocksHtml(code){
   var l=null, c=null;
   try{ l=_covLastLogged(code); }catch(e){ l={state:'unread'}; }
@@ -17230,32 +17273,50 @@ async function covRescheduleSubmit(){
 // call means the call is the thing he came for. Opened any other way there is no
 // call block at all and the identity strip IS the top.
 function _covPersonHtml(code, open){
+  // THE SHEET, STRIPPED TO WHAT HE ASKED FOR (Yusuf, ruling, 25 Aug), in his
+  // order and with nothing else on it: height and weight, how to reach them,
+  // how often they train, the chart, the programme, the sale, then the two
+  // quiet controls at the bottom.
+  //
+  // WHAT CAME OFF, AND WHERE IT STILL LIVES — nothing below was deleted, only
+  // taken off this surface: the agenda and private notes (_covNotesHtml), the
+  // "Working on" line (_cnCoachHtml), the call-notes rail (cnoRail), the
+  // strength check (jvDeepWeak), the foods block, the programme photos and
+  // paperwork (jvDeepPhotos), the coach-style card (_jvCoachStyle) and the
+  // whole "everything else" drawer (_covMoreHtml / covToggleMore). Their data,
+  // their loaders and every other surface that uses them are untouched.
+  var info=CLIENTS[code]||{};
+  var safeName=String(_jvSafeName(code)||'').replace(/'/g,"\\'");
+  var first=_escHtml(String(_jvSafeName(code)).split(' ')[0]);
   return _covCallHtml(code)
-    // WHO THEY ARE. Age, height, weight, sex — each drawn whether or not it is
-    // filled and each carrying its own way to fill it.
     + '<div class="covCard">'+_jvProfileLine(code)+'</div>'
-    // THEN HOW TO REACH THEM. The two clocks and the way to act on them in one
-    // card, because reading how long it has been and doing something about it is
-    // one thought, not two. Lifetime paid has LEFT this card — it was being
-    // stated twice on one screen and he only ever wanted it once; it now sits
-    // beside the name, which is where he said he would accept it.
     + '<div class="covCard">'
-      + '<div class="covEy">Where you stand</div>'
-      + '<div id="covClocks_'+code+'">'+_covClocksHtml(code)+'</div>'
+      + '<div class="covEy">Training</div>'
+      + '<div id="covTrainAvg_'+code+'">'+_covTrainAvgHtml(code)+'</div>'
       + _jvContactHead(code)
     + '</div>'
-    + '<div class="covCard" id="cnHostC_'+code+'">'+_cnCoachHtml(code)+'</div>'
     + _covChartHtml(code)
     + '<div class="covCard covProgCard" id="covProgCard_'+code+'">'
       + '<div class="covEy">Program</div>'
-      + '<div id="jvDeepProgram"><div class="covLoad">Reading their program…</div></div>'
+      + '<div id="jvDeepProgram"><div class="covLoad">Reading their program\u2026</div></div>'
     + '</div>'
-    + '<div class="covCard" id="covNotesCard_'+code+'">'+_covNotesHtml(code)+'</div>'
-    + '<button class="covMore" onclick="covToggleMore(\''+code+'\')">'
-      + '<span>'+_escHtml(_COV_MORE_LABEL)+'</span>'
-      + '<span class="covMoreA" id="covMoreA_'+code+'">'+(open?'⌃':'›')+'</span>'
-    + '</button>'
-    + '<div class="covMoreBody" id="covMoreBody_'+code+'">'+(open?_covMoreHtml(code):'')+'</div>';
+    + _jvSalesBlock(code)
+    // JARVIS STAYS. His reason for taking the notes off this sheet was that
+    // Jarvis is where he talks about a client — removing the door to it in the
+    // same pass would have taken the replacement away with the thing replaced.
+    // COPY FOR CHAT KEPT ITS JOB AND LOST ITS RIDDLE: he said the button was
+    // useful and that the label told him nothing. It produces a full written
+    // summary of the client, so the label now says that.
+    + '<div class="covActs">'
+      + '<button class="covAct" onclick="jvToggleDeepJarvis(\''+code+'\',\''+safeName+'\')">Talk to Jarvis about '+first+'</button>'
+      + '<button class="covAct" onclick="jvCopyClient(\''+code+'\',this)">Copy their full summary</button>'
+    + '</div>'
+    + '<div id="jvDeepNotes" style="display:none;margin-top:14px;"></div>'
+    + '<div class="covActs" style="margin-top:16px;">'
+      + '<button class="covAct" onclick="jvSetActive(\''+code+'\','+(info.active===false?'true':'false')+')">'
+      + (info.active===false ? 'Put back on the roster' : 'Move to inactive \u2014 keeps everything')
+      + '</button>'
+    + '</div>';
 }
 // TWO CHARTS WERE SHOWING AT ONCE (Yusuf, ruling, 24 Aug — "Only make one of
 // them available. In this case, I say, oh, make it a toggle. Either one. Like,
@@ -17468,16 +17529,18 @@ async function covOpen(code, opts){
   // never have been opened — from the Feed tab, where the app lands, it never
   // has. Fetch once, shared with whatever else already asked, then fill the
   // clocks and the chart in place when it arrives.
+  // The board carries the weigh-in this sheet reports and may never have been
+  // opened. Fetch once, then repaint the height/weight line when it lands.
   try{ _jvEnsureTriage(code); }catch(e){}
   try{
-    if(window._jvTriagePending) window._jvTriagePending.then(function(){ _covRepaintClocks(code); });
+    if(window._jvTriagePending) window._jvTriagePending.then(function(){ _jvProfileRepaint(code); });
   }catch(e){}
-  // Re-read on open so a note added on the phone shows up here.
-  try{ cnLoadCoaching(code).then(function(){ cnAddCancel(code); }); }catch(e){}
-  _covLoadNotes(code);
+  // The loaders for the notes, the coaching line and the drawer are gone with
+  // the sections they filled — leaving them would be ~5 reads per open feeding
+  // containers that no longer exist.
+  _covLoadTrainAvg(code);
   try{ _jvLoadDeepProgram(code); }catch(e){}
   if(window._covChartView==='trend'){ try{ _jvLoadDeepWeight(code); }catch(e){} }
-  if(window._jvDeepExpanded) _covLoadMore(code);
   _covPaintDay();
   return true;
 }
@@ -31376,161 +31439,6 @@ function _progDayFor(dow, when){
   for(var j=0;j<rows.length;j++){ if(rows[j].week_index==null) return rows[j]; }
   return null;
 }
-// ===== ONE-OFF: LOAD BLAKE'S BRIDGE, WEEK ONE ==== BRIDGE-ONEOFF-BEGIN =====
-// THIS IS NOT A FEATURE. It exists to write one purchased programme onto one
-// client once, and the whole block between the BEGIN and END markers is meant
-// to be deleted in the ship that follows the one where it ran.
-//
-// HER RULING (Yusuf): the programme attaches to Blake alone. It never becomes a
-// template, never becomes assignable to another client, and is published
-// nowhere. That is enforced structurally rather than by convention — the
-// programme row carries NO audience, and loadTrainerPrograms() only ever picks
-// up rows with audience in (women,men), so this one cannot be offered in the
-// assign modal to anybody.
-//
-// WHY A BUTTON AND NOT SQL: program_workouts has no operation in trainer.js —
-// programmes are written straight from the app with the page's own key. A hand
-// written SQL insert would be a write nobody could verify from in here, so this
-// writes through the app and then READS THE ROWS BACK OUT OF THE DATABASE, in a
-// separate request, and shows what actually landed rather than what was sent.
-var _BRIDGE_CODE='blakeb1';
-var _BRIDGE_W1={
-  program:{ client_code:_BRIDGE_CODE, name:'The Bridge',
-    description:'Barbell Medicine 8-week strength block. Week 1 of 8 loaded. [wk1:2026-08-24]',
-    is_active:true },
-  days:[
-    { day_of_week:1, week_index:1, title:'Week 1 · Day 1 — Squat, Bench, Rack Pull', notes:null, exercises:[
-      { name:'Squat w/ belt', sets:3, reps:5, rpe:'6, 7, 8', notes:'Back squat wearing your belt. One set at each RPE — the last set is the hard one.' },
-      { name:'Close-grip bench', sets:3, reps:4, rpe:'7, 8, 9', notes:'Bench with a narrow grip, about 16.5in between your index fingers.' },
-      { name:'Rack pull, mid-shin', sets:3, reps:7, rpe:'6, 7, 8', notes:'Deadlift from pins or blocks with the bar at mid-shin, roughly 2in above where it sits on the floor.' }
-    ]},
-    { day_of_week:3, week_index:1, title:'Week 1 · Day 3 — Paused Squat, Press, Rows', notes:null, exercises:[
-      { name:'2ct paused squat', sets:3, reps:4, rpe:'7, 8, 9', notes:'Squat with a two-second pause at the bottom.' },
-      { name:'Press w/ belt', sets:3, reps:5, rpe:'6, 7, 8', notes:'Overhead press wearing your belt. Every rep starts from a dead stop.' },
-      { name:'Barbell rows', sets:4, reps:8, rpe:'6, 7, 8, 8', notes:'Barbell row — torso bent, pull the bar to your lower ribs. Four sets: the last two are both at RPE 8.' }
-    ]},
-    { day_of_week:4, week_index:1, title:'Week 1 · GPP Day 1', notes:null, exercises:[
-      { name:'Pull-ups, chin-ups or rows', reps:'7 min AMRAP', notes:'As many reps as you can inside seven minutes, broken into submaximal sets — stop each set short of failure.' },
-      { name:'Isometric ab hold', reps:'7 min', notes:'Accumulate as much work as you can in seven minutes on one isometric ab exercise.' },
-      { name:'Steady-state cardio', reps:'25 min', rpe:6, notes:'Easy continuous pace, around 60-70% of your maximum heart rate.' }
-    ]},
-    { day_of_week:5, week_index:1, title:'Week 1 · Day 5 — Deadlift, Bench, Tempo Squat', notes:null, exercises:[
-      { name:'Deadlift w/ belt', sets:3, reps:5, rpe:'6, 7, 8', notes:'Standard deadlift from the floor, wearing your belt.' },
-      { name:'Bench press, 1ct paused', sets:3, reps:5, rpe:'6, 7, 8', notes:'Bench with a one-second pause on the chest.' },
-      { name:'3-0-3 tempo squat', sets:3, reps:8, rpe:'6, 7, 8', notes:'Three seconds down, three seconds up, no pause at the bottom.' }
-    ]}
-  ]
-};
-function _bridgeDow(n){ return ({0:'Sunday',1:'Monday',2:'Tuesday',3:'Wednesday',4:'Thursday',5:'Friday',6:'Saturday'})[n]||('day '+n); }
-// A READ, never an insert response. Everything this card claims comes from here.
-async function _bridgeReadBack(){
-  var out={program:null, days:[], assigned:null};
-  try{
-    var pr=await fetch(SB_URL+'/rest/v1/programs?select=id,client_code,name,description,is_active,audience&client_code=eq.'+_BRIDGE_CODE+'&order=created_at.desc', {headers:sbHeaders()});
-    var ps=pr.ok?await pr.json():[];
-    if(!ps.length) return out;
-    out.program=ps[0];
-    var wr=await fetch(SB_URL+'/rest/v1/program_workouts?select=id,day_of_week,week_index,title,exercises&program_id=eq.'+out.program.id+'&order=day_of_week.asc', {headers:sbHeaders()});
-    out.days=wr.ok?await wr.json():[];
-    var fr=await fetch(SB_URL+'/rest/v1/profiles?select=client_code,assigned_program_id&client_code=eq.'+_BRIDGE_CODE+'&limit=1', {headers:sbHeaders()});
-    var fs=fr.ok?await fr.json():[];
-    out.assigned=fs.length?fs[0].assigned_program_id:null;
-  }catch(e){ console.warn('bridge read-back failed', e); }
-  return out;
-}
-function _bridgeResultHtml(rb){
-  if(!rb.program) return '<div style="color:var(--muted);font-size:12px;">Nothing came back — no programme row for '+_BRIDGE_CODE+'.</div>';
-  var h='<div style="font-size:12px;color:var(--text);line-height:1.6;">';
-  h+='<div><span style="color:var(--muted);">programme</span> #'+rb.program.id+' · '+String(rb.program.name).replace(/</g,'&lt;')+'</div>';
-  h+='<div><span style="color:var(--muted);">anchor</span> '+(/\[wk1:(\d{4}-\d{2}-\d{2})\]/.exec(rb.program.description||'')||[,'missing'])[1]+'</div>';
-  h+='<div><span style="color:var(--muted);">audience</span> '+(rb.program.audience==null?'none — cannot become a template':String(rb.program.audience))+'</div>';
-  h+='<div><span style="color:var(--muted);">profile link</span> '+(rb.assigned==null?'not set':('#'+rb.assigned))+'</div>';
-  h+='<div style="margin-top:8px;">';
-  rb.days.forEach(function(d){
-    var n=0; try{ var a=typeof d.exercises==='string'?JSON.parse(d.exercises):d.exercises; n=(a&&a.length)||0; }catch(e){}
-    h+='<div style="padding:4px 0;border-top:1px solid var(--border);">'+_bridgeDow(d.day_of_week)+' · week '+(d.week_index==null?'—':d.week_index)+' · '+n+' movements<br><span style="color:var(--muted);">'+String(d.title||'').replace(/</g,'&lt;')+'</span></div>';
-  });
-  h+='</div></div>';
-  return h;
-}
-async function _bridgeOneOffRun(){
-  var btn=document.getElementById('bridgeOneOffBtn'); var out=document.getElementById('bridgeOneOffOut');
-  if(btn){ btn.disabled=true; btn.textContent='Loading…'; }
-  var pre=await _bridgeReadBack();
-  var pid=pre.program?pre.program.id:null;
-  // LOADED, PARTLY LOADED AND ABSENT ARE THREE DIFFERENT STATES. A programme row
-  // with no days under it is not "already loaded", and saying so would strand her
-  // on an empty programme that nothing on this card offered to repair.
-  if(pid && pre.days.length>=_BRIDGE_W1.days.length){
-    if(out) out.innerHTML='<div style="color:var(--gold);font-size:12px;margin-bottom:6px;">Already loaded — nothing written.</div>'+_bridgeResultHtml(pre);
-    if(btn) btn.style.display='none'; return;
-  }
-  if(!pid){
-    var prog=await sbInsertReturning('programs', _BRIDGE_W1.program, 'id,client_code,name,description,is_active');
-    if(!prog || prog.id==null){
-      if(out) out.innerHTML='<div style="color:var(--red,#d9534f);font-size:12px;">The programme row did not save. Nothing else was written.</div>';
-      if(btn){ btn.disabled=false; btn.textContent='Try again'; } return;
-    }
-    pid=prog.id;
-  }
-  // Only the days genuinely absent, so a repair run can never duplicate one.
-  var have={}; pre.days.forEach(function(d){ if(Number(d.week_index)===1) have[d.day_of_week]=true; });
-  var rows=_BRIDGE_W1.days.filter(function(d){ return !have[d.day_of_week]; }).map(function(d){
-    return { program_id:pid, day_of_week:d.day_of_week, week_index:d.week_index,
-             title:d.title, exercises:d.exercises, notes:d.notes };
-  });
-  if(rows.length){
-    try{
-      var h=sbHeaders(); h['Prefer']='return=representation';
-      var res=await fetch(SB_URL+'/rest/v1/program_workouts', {method:'POST', headers:h, body:JSON.stringify(rows)});
-      if(!res.ok) console.warn('bridge day insert failed', await res.text());
-    }catch(e){ console.warn('bridge day insert threw', e); }
-  }
-  if(pre.assigned!==pid){
-    try{
-      var ph=sbHeaders(); ph['Content-Type']='application/json';
-      await fetch(SB_URL+'/rest/v1/profiles?client_code=eq.'+_BRIDGE_CODE, {method:'PATCH', headers:ph, body:JSON.stringify({assigned_program_id:pid})});
-    }catch(e){ console.warn('bridge profile link failed', e); }
-  }
-  var rb=await _bridgeReadBack();
-  var full=rb.days.length>=_BRIDGE_W1.days.length;
-  var head=full
-    ? '<div style="color:var(--gold);font-size:12px;margin-bottom:6px;">Read back from the database — '+rb.days.length+' of '+_BRIDGE_W1.days.length+' days landed.</div>'
-    : '<div style="color:var(--red,#d9534f);font-size:12px;margin-bottom:6px;">Only '+rb.days.length+' of '+_BRIDGE_W1.days.length+' days are in the database. Tap again to write the rest, and tell the session if it keeps failing.</div>';
-  if(out) out.innerHTML=head+_bridgeResultHtml(rb);
-  if(btn){ if(full){ btn.style.display='none'; } else { btn.disabled=false; btn.textContent='Write the missing days'; } }
-  try{ if(typeof loadClientAssignedProgram==='function') loadClientAssignedProgram(); }catch(e){}
-}
-async function _bridgeOneOffInit(){
-  try{
-    if(document.getElementById('bridgeOneOffCard')) return;
-    var rb=await _bridgeReadBack();
-    var full=!!rb.program && rb.days.length>=_BRIDGE_W1.days.length;
-    var partial=!!rb.program && !full;
-    // Once it is genuinely loaded this card never shows again. The run itself
-    // reports the read-back in place, so there is nothing left to come back for
-    // and a one-off that greets him at every sign-in is just clutter.
-    if(full) return;
-    var card=document.createElement('div');
-    card.id='bridgeOneOffCard';
-    card.style.cssText='position:fixed;left:12px;right:12px;bottom:12px;max-width:520px;margin:0 auto;z-index:60000;'
-      +'background:var(--surface,#141414);border:1.5px solid var(--gold,#e0c498);border-radius:12px;'
-      +'padding:14px 16px;box-shadow:0 10px 40px rgba(0,0,0,0.6);font-family:inherit;';
-    card.innerHTML=
-      '<div style="display:flex;align-items:flex-start;gap:10px;">'
-      +'<div style="flex:1;min-width:0;">'
-      +'<div style="font-size:10px;letter-spacing:2px;color:var(--gold,#e0c498);margin-bottom:6px;">ONE-OFF · BLAKE</div>'
-      +'<div style="font-size:13.5px;font-weight:700;color:var(--text,#f0ece4);">The Bridge — week one</div>'
-      +'<div style="font-size:11.5px;color:var(--muted,#8a8a8a);margin-top:3px;line-height:1.5;">Writes four training days onto Blake and nobody else, anchored to Monday 24 August, then reads them back out of the database.</div>'
-      +'</div>'
-      +'<button onclick="var c=document.getElementById(\'bridgeOneOffCard\');if(c)c.remove();" aria-label="Dismiss" style="background:none;border:none;color:var(--muted,#8a8a8a);font-size:20px;line-height:1;cursor:pointer;padding:0 2px;">×</button>'
-      +'</div>'
-      +(full?'':'<button id="bridgeOneOffBtn" onclick="_bridgeOneOffRun()" style="margin-top:12px;width:100%;background:var(--gold,#e0c498);color:#0d0d0d;border:none;border-radius:9px;padding:14px;font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit;min-height:44px;">'+(partial?'Write the missing days':'Load week one onto Blake')+'</button>')
-      +'<div id="bridgeOneOffOut" style="margin-top:10px;">'+(full?('<div style="color:var(--gold,#e0c498);font-size:12px;margin-bottom:6px;">Already loaded — nothing to write.</div>'+_bridgeResultHtml(rb)):(partial?('<div style="color:var(--red,#d9534f);font-size:12px;margin-bottom:6px;">Part loaded — '+rb.days.length+' of '+_BRIDGE_W1.days.length+' days are in the database.</div>'+_bridgeResultHtml(rb)):''))+'</div>';
-    document.body.appendChild(card);
-  }catch(e){ console.warn('bridge one-off card failed to render', e); }
-}
-// ===== END ONE-OFF ============================ BRIDGE-ONEOFF-END ==========
 
 function viewClientProgramDay(dow){
   if(!clientAssignedProgram) return;
@@ -31586,35 +31494,151 @@ async function logPlannedWorkout(dateStr, dow){
 }
 
 // ---- Trainer-side: assign program to client ----
-function openAssignProgramModal(clientCode, clientName, currentAssignedProgramId){
-  var sub = document.getElementById('apSub');
-  var body = document.getElementById('apBody');
-  if(sub) sub.textContent = 'For '+(clientName || clientCode);
-  if(!body) return;
-  // Build option list
-  var options = [
-    {id: null, label: '— Not assigned', sub: 'No program', audience: null},
-    {id: templatePrograms.women ? templatePrograms.women.id : null, label: "Women's Program", sub: templatePrograms.women ? 'Active' : 'Not created yet', audience: 'women', disabled: !templatePrograms.women},
-    {id: templatePrograms.men ? templatePrograms.men.id : null, label: "Men's Program", sub: templatePrograms.men ? 'Active' : 'Not created yet', audience: 'men', disabled: !templatePrograms.men}
-  ];
-  var html = '';
-  options.forEach(function(opt){
-    var isCurrent = (opt.id === currentAssignedProgramId) || (opt.id == null && currentAssignedProgramId == null);
-    var border = isCurrent ? '2px solid var(--gold)' : '1px solid var(--border)';
-    var bg = isCurrent ? 'rgba(224,196,152,0.08)' : 'var(--surface)';
-    var op = opt.disabled ? '0.4' : '1';
-    var click = opt.disabled ? '' : 'onclick="assignProgramToClient(\''+clientCode+'\','+(opt.id == null ? 'null' : opt.id)+')"';
-    var currentTag = isCurrent ? '<div style="font-size:9px;color:var(--gold);letter-spacing:0.5px;font-weight:700;margin-top:2px;">CURRENT</div>' : '';
-    html += '<div '+click+' style="background:'+bg+';border:'+border+';border-radius:10px;padding:14px;margin-bottom:8px;cursor:'+(opt.disabled?'default':'pointer')+';opacity:'+op+';">'+
-      '<div style="font-weight:700;font-size:14px;color:var(--text);">'+opt.label+'</div>'+
-      '<div style="font-size:11px;color:var(--muted);margin-top:3px;">'+opt.sub+'</div>'+
-      currentTag+
-    '</div>';
-  });
-  body.innerHTML = html;
-  openM('mAssignProgram');
+// ASSIGNING A PROGRAMME, REBUILT (Yusuf, 25 Aug — his screen showed "Not
+// assigned / No program / CURRENT" and then "Women's Program / Not created yet /
+// CURRENT" and "Men's Program / Not created yet / CURRENT". Three options, all
+// three tagged CURRENT, two of them not existing, and the sheet saying he had no
+// programme for a client who is on a six-day split.)
+//
+// WHY ALL THREE SAID CURRENT: the old test was
+//   isCurrent = (opt.id === currentAssignedProgramId) || (opt.id == null && currentAssignedProgramId == null)
+// and a template that does not exist contributes id null. With no templates
+// written, all three ids were null, the client's assigned id was null, and every
+// row matched. A missing thing and an unset thing were the same value.
+//
+// WHY THE SHEET COULD NOT SEE HIS PROGRAMME: THERE ARE TWO PROGRAMME SYSTEMS.
+// programs + program_workouts holds an assigned programme; training_plans holds
+// the weekly split. This modal only ever read the first. Chris McCarthy has no
+// programs row at all — his six-day split is a training_plans row — so the only
+// question it knew how to ask returned nothing and it reported that as "no
+// programme". It now reads both and says which one they are actually on.
+function _apOptHtml(o){
+  var border=o.current ? '2px solid var(--gold)' : '1px solid var(--border)';
+  var bg=o.current ? 'rgba(224,196,152,0.08)' : 'var(--surface)';
+  return '<div '+(o.click||'')+' style="background:'+bg+';border:'+border+';border-radius:10px;padding:14px;margin-bottom:8px;cursor:'+(o.click?'pointer':'default')+';">'
+    + '<div style="font-weight:700;font-size:14px;color:var(--text);">'+_escHtml(o.label)+'</div>'
+    + (o.sub?'<div style="font-size:11px;color:var(--muted);margin-top:3px;">'+_escHtml(o.sub)+'</div>':'')
+    + (o.current?'<div style="font-size:9px;color:var(--gold);letter-spacing:0.5px;font-weight:700;margin-top:2px;">CURRENT</div>':'')
+  + '</div>';
 }
+async function openAssignProgramModal(clientCode, clientName, currentAssignedProgramId){
+  var sub=document.getElementById('apSub');
+  var body=document.getElementById('apBody');
+  if(sub) sub.textContent='For '+(clientName||clientCode);
+  if(!body) return;
+  body.innerHTML='<div class="covLoad">Reading what they are on…</div>';
+  openM('mAssignProgram');
 
+  // EVERY READ CHECKED. A failed read must not come out as "no programme" —
+  // that is the sentence that started this.
+  var ok=true, assignedId=currentAssignedProgramId, days=null, gender=null, progs=[], plan=null;
+  try{
+    var pr=await fetch(SB_URL+'/rest/v1/profiles?select=assigned_program_id,train_days,gender&client_code=eq.'+encodeURIComponent(clientCode)+'&limit=1',{headers:sbHeaders()});
+    if(pr.ok){ var pj=await pr.json(); if(pj&&pj[0]){ assignedId=pj[0].assigned_program_id; days=pj[0].train_days; gender=pj[0].gender; } }
+    else ok=false;
+  }catch(e){ ok=false; }
+  try{
+    var gr=await fetch(SB_URL+'/rest/v1/programs?select=id,name,is_active&client_code=eq.'+encodeURIComponent(clientCode)+'&order=created_at.desc',{headers:sbHeaders()});
+    if(gr.ok) progs=(await gr.json())||[]; else ok=false;
+  }catch(e){ ok=false; }
+  try{
+    var tr=await fetch(SB_URL+'/rest/v1/training_plans?select=id,updated_at&client_code=eq.'+encodeURIComponent(clientCode)+'&limit=1',{headers:sbHeaders()});
+    if(tr.ok){ var tj=await tr.json(); plan=(tj&&tj[0])||null; } else ok=false;
+  }catch(e){ ok=false; }
+
+  if(!ok){
+    body.innerHTML='<div style="font-size:13px;color:var(--text);line-height:1.6;">Could not read what they are on just now. That is the connection, not an empty programme — nothing has been changed.</div>';
+    return;
+  }
+
+  var assigned=null;
+  progs.forEach(function(p){ if(assignedId!=null && p.id===assignedId) assigned=p; });
+
+  // ON NOW. One sentence, and it is the truth from whichever system holds it.
+  var onNow = assigned ? ('On '+(assigned.name||'a programme'))
+            : (plan ? ('On a weekly split'+(days>0?(' — '+days+' days a week'):''))
+                    : 'No programme set');
+  var html='<div style="font-size:12px;color:var(--m2);line-height:1.5;margin-bottom:12px;">'+_escHtml(onNow)+'</div>';
+
+  // OPTIONS. Only things that exist. A programme nobody has written is not an
+  // option, so it is not drawn as one — it used to be listed, greyed, and
+  // tagged CURRENT at the same time.
+  html += _apOptHtml({label:'— Not assigned', sub:'No assigned programme',
+    current:(assignedId==null && !plan),
+    click:(assignedId==null)?'':'onclick="assignProgramToClient(\''+clientCode+'\',null)"'});
+  progs.forEach(function(p){
+    html += _apOptHtml({label:(p.name||('Programme #'+p.id)),
+      sub:(p.is_active?'Active':'Inactive'),
+      current:(assignedId!=null && p.id===assignedId),
+      click:(assignedId!=null && p.id===assignedId)?'':'onclick="assignProgramToClient(\''+clientCode+'\','+p.id+')"'});
+  });
+  ['women','men'].forEach(function(a){
+    var t=(typeof templatePrograms!=='undefined' && templatePrograms) ? templatePrograms[a] : null;
+    if(!t || t.id==null) return;                 // does not exist -> not offered at all
+    html += _apOptHtml({label:(a==='women'?"Women's Program":"Men's Program"), sub:'Shared template',
+      current:(assignedId!=null && t.id===assignedId),
+      click:(assignedId!=null && t.id===assignedId)?'':'onclick="assignProgramToClient(\''+clientCode+'\','+t.id+')"'});
+  });
+
+  // THEIR SPLIT, CHANGEABLE FROM HERE (his words: Chris is on six days because
+  // of a questionnaire that no longer exists, and there is no way to move him to
+  // seven). This writes the client's own training_plans row, which is what their
+  // app actually reads, so it changes what they see rather than only what this
+  // screen says.
+  var sexKnown=!!String(gender||'').trim();
+  html += '<div style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px;">'
+    + '<div style="font-weight:700;font-size:14px;color:var(--text);">Days a week</div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-top:3px;line-height:1.5;">'
+      + (sexKnown ? 'Rebuilds their weekly split. Changing the number makes a different week, so anything swapped by hand on the old one does not carry over.'
+                  : 'Their sex is not set, and the split is built from it. Set it on their card first — this will not guess.')
+    + '</div>';
+  if(sexKnown){
+    html += '<div class="gpChips" style="margin-top:10px;">';
+    [3,4,5,6,7].forEach(function(n){
+      var on=(parseInt(days,10)===n);
+      html += '<div class="pgChip'+(on?' on':'')+'" onclick="covSetSplit(\''+clientCode+'\','+n+')">'+n+'</div>';
+    });
+    html += '</div>';
+    if(plan && days>0) html += '<div style="font-size:9px;color:var(--gold);letter-spacing:0.5px;font-weight:700;margin-top:8px;">CURRENT · '+days+' DAYS</div>';
+  }
+  html += '</div>';
+  body.innerHTML=html;
+}
+// WRITES THE CLIENT'S OWN SPLIT, then reads it back. Same composer the client's
+// own app uses (_splitWeek -> _splitFromWeek), so what he sets here is exactly
+// what they open.
+async function covSetSplit(clientCode, days){
+  var body=document.getElementById('apBody');
+  try{
+    var pr=await fetch(SB_URL+'/rest/v1/profiles?select=gender&client_code=eq.'+encodeURIComponent(clientCode)+'&limit=1',{headers:sbHeaders()});
+    if(!pr.ok){ showToast('Could not read their profile — nothing changed'); return; }
+    var pj=await pr.json(); var gender=(pj&&pj[0])?pj[0].gender:null;
+    if(!String(gender||'').trim()){ showToast('Set their sex first — the split is built from it'); return; }
+    var week=_splitWeek(days, gender);
+    var plan=week?_splitFromWeek(week):null;
+    if(!plan){ showToast('No split for '+days+' days — nothing changed'); return; }
+    var pa=await fetch(SB_URL+'/rest/v1/profiles?client_code=eq.'+encodeURIComponent(clientCode),{method:'PATCH',
+      headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
+      body:JSON.stringify({train_days:days, train_days_manual:1, split_week:null})});
+    if(!pa.ok){ showToast('Could not save the day count — nothing changed'); return; }
+    var tw=await fetch(SB_URL+'/rest/v1/training_plans?on_conflict=client_code',{method:'POST',
+      headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'}),
+      body:JSON.stringify({client_code:clientCode, name:'', weeks:4, plan:plan, updated_at:new Date().toISOString()})});
+    if(!tw.ok){ showToast('Day count saved but the split did not — tell the session'); return; }
+    // READ IT BACK. A 2xx says the request did not error, not that the row holds
+    // what was sent.
+    var rb=await fetch(SB_URL+'/rest/v1/training_plans?select=plan&client_code=eq.'+encodeURIComponent(clientCode)+'&limit=1',{headers:sbHeaders()});
+    var okBack=false;
+    if(rb.ok){ var rj=await rb.json(); var got=(rj&&rj[0])?rj[0].plan:null;
+      if(typeof got==='string'){ try{ got=JSON.parse(got); }catch(e){} }
+      var n=0; try{ WEEKDAYS.forEach(function(d){ if(got&&got[d]&&got[d].type&&got[d].type!=='Rest') n++; }); }catch(e){}
+      okBack=(n===days);
+    }
+    showToast(okBack ? ('✓ Now '+days+' days a week') : 'Saved, but it did not read back as '+days+' days');
+    if(body) openAssignProgramModal(clientCode,(CLIENTS[clientCode]&&CLIENTS[clientCode].name)||clientCode,null);
+    try{ _jvLoadDeepProgram(clientCode); }catch(e){}
+  }catch(e){ console.error('covSetSplit', e); showToast('Could not change their split'); }
+}
 async function assignProgramToClient(clientCode, programId){
   try{
     // PATCH the profile row
@@ -38804,7 +38828,7 @@ function _jvProfValue(code, key, text){
 }
 function _jvProfileLine(code){
   if(!window._jvShareDemo){ try{ _jvShareLoadDemo().then(function(){ _jvProfileRepaint(code); }); }catch(e){} }
-  var sex=_jvProfSex(code);
+  var sex=_jvProfSex(code);          // still read: _jvProfCell keys off it elsewhere
   var sexSlot = sex
     ? '<span class="jvProfV">'+sex.charAt(0).toUpperCase()+sex.slice(1)+'</span>'
     : ('<span class="jvSexBtn" onclick="event.stopPropagation();jvSetGender(\''+code+'\',\'male\')">Male</span>'
@@ -38832,9 +38856,12 @@ function _jvProfileLine(code){
       ? '<span class="jvProfV">'+_escHtml(wToDisp(+w)+' '+wUnit())+'</span>'
       : _jvProfAddBtn(code,'weight','Log one');
   }
+  // HEIGHT AND WEIGHT (Yusuf, ruling, 25 Aug — the sheet carries name, height,
+  // weight and nothing else up here). The name is already the heading of this
+  // sheet, so it is not restated. Sex and Age came off this line with that
+  // ruling; both are still settable elsewhere — jvSetGender has another caller
+  // and neither field was deleted — so nothing lost its only route.
   return '<div class="jvProfGrid" id="jvProfLine_'+code+'">'
-    + _jvProfCell(code,'sex','Sex',sexSlot,!sex)
-    + _jvProfCell(code,'age','Age',ageSlot)
     + _jvProfCell(code,'height','Height',htSlot)
     + _jvProfCell(code,'weight','Weight',wtSlot)
   +'</div>';
@@ -39033,9 +39060,11 @@ function _jvContactInner(code, about){
   // matched on the .jvActs markup, assumed the enclosing function from what the
   // markup looked like, and never opened a drawer to look.
   var info=CLIENTS[code]||{};
-  return '<div class="jvBlockLabel">Talked to</div>'
-    + '<div class="jvContactLine">'+_ccLine(code)+'</div>'
-    + (about ? '<div class="jvContactAbout">Last time: “'+String(about).replace(/</g,'&lt;')+'”</div>' : '')
+  // TEXT AND CALL. THAT IS THE CONTACT ROW (Yusuf, ruling, 25 Aug). The "Talked
+  // to" label, the contact line and the "last time" quote went with the clocks
+  // they belonged to; jvTalkedTo and _ccLine keep their definitions and lose
+  // this caller, named in the report rather than swept.
+  return ''
     // One tap to a box, type what you talked about, enter. No kind picker, no reply
     // toggle, no save button — those were four decisions to record one conversation.
     + '<div class="jvActs">'
@@ -39044,7 +39073,6 @@ function _jvContactInner(code, about){
       // only reaches for after the fact — wore the gold. The others stay; they
       // stop competing.
       + '<button class="jvAct jvActPrimary" onclick="textClient(\''+code+'\')">Text</button>'
-      + '<button class="jvAct jvActSecondary" onclick="jvTalkedTo(\''+code+'\')">Talked to</button>'
       + '<button class="jvAct jvActSecondary" onclick="callClient(\''+code+'\')">Call</button>'
     + '</div>'
     // THE PAPERWORK FOOTER. Lifetime paid used to be editable in exactly one
@@ -39058,12 +39086,12 @@ function _jvContactInner(code, about){
     // restated here — it was being said twice on one screen. The row stays,
     // because Remove lives in it and Remove is the quietest control on the
     // surface on purpose.
-    + '<div class="jvPaper">'
-      // The quietest control on the card, deliberately — the off-board row
-      // learned this the hard way: a full-width red button beside a friendly
-      // one is how a destructive act gets tapped by accident.
-      + '<span class="jvRemoveLink" onclick="_jvDrawerRemove(\''+code+'\')">Remove from the app</span>'
-    + '</div>';
+    ;
+  // REMOVE IS IN ONE PLACE NOW, AND IT IS THE BOTTOM (Yusuf, executive decision,
+  // 25 Aug). It stood here as well, inside the contact card a few inches under
+  // the client's name — which is exactly where it is worst, because that is what
+  // sits beside a real person's name while he is recording. _jvDrawerRemove keeps
+  // its definition and its other callers; only this one goes.
 }
 // How this client asked to be coached. Saves inert on their side for this ship —
 // this is the whole reason Turbo Roast went out as a placeholder, so it has to be
@@ -39360,9 +39388,47 @@ async function _jvLoadDeepProgram(code){
     // exact thing banned in every prompt in this file. It states the fact and
     // carries the door itself now.
     if(!rows||!rows.length){
+      // TWO PROGRAMME SYSTEMS, AND THIS CARD ONLY EVER ASKED ONE (Yusuf, 25 Aug —
+      // his screen said Chris McCarthy had no programme while Chris was on a
+      // six-day split). programs holds an assigned programme; training_plans
+      // holds the weekly split, and a client can be on either. No programs row
+      // is not the same fact as no programme, so this asks the other table
+      // before it says anything about the person.
+      var _tp=null, _tpOk=true;
+      try{
+        var tr=await fetch(SB_URL+'/rest/v1/training_plans?select=plan,updated_at&client_code='
+          +'eq.'+encodeURIComponent(code)+'&limit=1',{headers:sbHeaders()});
+        if(tr.ok){ var tj=await tr.json(); _tp=(tj&&tj[0])||null; } else _tpOk=false;
+      }catch(e){ _tpOk=false; }
+      var _assign='<div class="covActs"><button class="covAct covActGo" onclick="jvAssignProgram(\''+code+'\')">Assign a program</button></div>';
+      if(!_tpOk){
+        // A read that did not answer is not an empty programme.
+        el.innerHTML='<div class="covProgNone">Could not read their program just now — that is the connection, not an empty week.</div>'+_assign;
+        return;
+      }
+      if(_tp){
+        var _plan=_tp.plan;
+        if(typeof _plan==='string'){ try{ _plan=JSON.parse(_plan); }catch(e){ _plan=null; } }
+        var _rowsHtml='', _n=0;
+        try{
+          WEEKDAYS.forEach(function(d){
+            var day=(_plan&&_plan[d])||null;
+            var t=(day&&day.type)||'Rest';
+            var ex=(day&&day.ex&&day.ex.length)||0;
+            if(t!=='Rest') _n++;
+            _rowsHtml+='<div style="display:flex;gap:12px;padding:8px 0;border-top:1px solid var(--border);">'
+              +'<div style="width:34px;flex-shrink:0;font-size:10px;font-weight:800;letter-spacing:0.5px;color:'+(t==='Rest'?'rgba(240,236,228,0.55)':'var(--gold)')+';padding-top:2px;">'+d.toUpperCase()+'</div>'
+              +'<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:700;color:'+(t==='Rest'?'rgba(240,236,228,0.55)':'var(--text)')+';">'+_escHtml(t)+'</div>'
+              +(ex?('<div style="font-size:10.5px;color:var(--m2);margin-top:1px;">'+ex+' exercise'+(ex===1?'':'s')+'</div>'):'')
+              +'</div></div>';
+          });
+        }catch(e){}
+        el.innerHTML='<div class="covProgNone">On a weekly split — '+_n+' day'+(_n===1?'':'s')+' a week.</div>'
+          +'<div style="margin-top:8px;">'+_rowsHtml+'</div>'+_assign;
+        return;
+      }
       el.innerHTML='<div class="covProgNone">No program yet for '
-        +_escHtml((CLIENTS[code]&&CLIENTS[code].name||'them').split(' ')[0])+'.</div>'
-        +'<div class="covActs"><button class="covAct covActGo" onclick="jvAssignProgram(\''+code+'\')">Assign a program</button></div>';
+        +_escHtml((CLIENTS[code]&&CLIENTS[code].name||'them').split(' ')[0])+'.</div>'+_assign;
       return;
     }
     var prog=rows[0];
