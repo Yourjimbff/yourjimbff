@@ -35,6 +35,22 @@ console.log('\n  the labels themselves are not emitted anywhere:');
  ["'Done', done", /'Done'\s*,\s*done/]
 ].forEach(function(c){ t(!c[1].test(js), 'never emitted: '+c[0]); });
 
+// ===== THE LAST TWO (Yusuf, ruling, 25 Aug) =============================
+// Named after the first sweep and taken out the same way. Neither was inside a
+// reply — one was a subtitle in a header slot, one a heading above the quiet
+// list — but both were the same thing: a stamped category doing the work a
+// sentence should do. Held here rather than in a new suite because it is the
+// same rule, and a rule split across two files drifts.
+console.log('\n  the last two labels, in the chrome:');
+t(!/'Waiting on your yes'/.test(js), 'the panel subtitle is not a status stamp');
+t(!/Waiting on you seven days or more/.test(js), 'nor is the quiet-list heading');
+t(/One thing needs your yes/.test(js), 'the subtitle says it as a sentence');
+t(/have not heard from you in seven days or more/.test(js), 'and so does the list');
+// The count and the ordering are the two facts the rows below do not carry, so
+// losing them would be a real loss rather than a tidier screen.
+t(/The longest waits first/.test(js), 'the ordering is still said');
+t(/_uc\.n\+\(_uc\.n===1\?' person has':' people have'\)/.test(js), 'and the count, with its grammar');
+
 console.log('\n  and the voice does not read a ledger out loud:');
 t(!/\+' waiting on you'/.test(js), 'no spoken "N waiting on you"');
 t(!/\+' I could not place'/.test(js), 'no spoken "N I could not place"');

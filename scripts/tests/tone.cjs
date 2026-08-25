@@ -57,7 +57,7 @@ eval([
   grab(l=>l.startsWith('function _jvDayOf(')),
   grab(l=>l.startsWith('function _jvShiftDays(')),
   line('var _JV_MONTHS='),
-  line('var _JV_ORD='),
+  multi('var _JV_ORD='),
   grab(l=>l.startsWith('function _jvAskedRange(')),
   grab(l=>l.startsWith('function _jvRowDay(')),
   grab(l=>l.startsWith('function _jvRound(')),
@@ -125,6 +125,63 @@ const R=q=>{ const r=_jvAskedRange(q,NOW); return r?(r.from+'..'+r.to):'none'; }
  ['one day',                    'what did she eat yesterday',               '2026-08-24..2026-08-24']
 ].forEach(([label,q,want])=>t(R(q)===want, label.padEnd(28), '-> '+R(q)+(R(q)===want?'':'   (wanted '+want+')')));
 t(_jvAskedRange('how is she doing',NOW)===null, 'no window named reads as none — the caller picks the floor');
+
+// ===== NO CEILING (Yusuf, ruling, 25 Aug) ================================
+// "A week, a month, six months, or someone's whole history." Every cap that
+// used to live in the parser was a 48-hour window wearing a bigger number: it
+// works until the day he asks for something older, and then it breaks again.
+console.log('\n  and it reaches as far back as he asks — no ceiling anywhere:');
+[['six months',        'how has she done over the last six months',  '2026-02-26..2026-08-25'],
+ ['twelve months',     'her last 12 months',                          '2025-08-26..2026-08-25'],
+ ['two years',         'the last 2 years',                            '2024-08-26..2026-08-25'],
+ ['nine months back',  'what about nine months ago',                  '2025-11-01..2025-11-30'],
+ ['a year by name',    'how was last year',                           '2025-01-01..2025-12-31'],
+ ['this year',         'her totals this year',                        '2026-01-01..2026-08-25'],
+ ['a 200-day average', 'her 200 day average',                         '2026-02-07..2026-08-25'],
+ ['20 weeks ago',      'what happened 20 weeks ago',                  '2026-04-06..2026-04-12']
+].forEach(([label,q,want])=>t(R(q)===want, label.padEnd(28), '-> '+R(q)+(R(q)===want?'':'   (wanted '+want+')')));
+// Months and years step the CALENDAR. Six months back from 25 Aug is 26 Feb,
+// not "today minus 180", which drifts by up to three days across a year.
+t(R('over the last six months')==='2026-02-26..2026-08-25', 'six months steps the calendar, not 30-day blocks');
+
+console.log('\n  a whole history names no start date of its own:');
+['her whole history','everything she has','since she started','all time','as far back as it goes',
+ 'give me his full history'].forEach(function(q){
+  const r=_jvAskedRange(q,NOW);
+  t(!!r && r.open===true && !r.from, 'open-ended: '+JSON.stringify(q),
+    r?('open='+r.open+' from='+String(r.from)):'null');
+});
+// The start is read off the person's own earliest row, so it is HERS.
+const OPEN=_jvBuildRecord({code:'chrism1',name:'Chris McCarthy'},
+  {open:true, to:'2026-08-25', label:'their whole history', days:null},
+  {foods:[{name:'Eggs',calories:400,protein:30,date_str:'Aug 24, 2026',logged_at:'2026-08-25T02:00:00Z'},
+          {name:'Oats',calories:300,protein:20,date_str:'Jun 02, 2026',logged_at:'2026-06-02T12:00:00Z'}],
+   workouts:[],steps:[],weights:[],broke:false});
+t(/2026-06-02 to 2026-08-25/.test(OPEN), 'the range starts at the earliest real row, not at a number picked in code',
+  (OPEN.match(/\(20[^)]*\)/)||[''])[0]);
+t(/RANGE TOTAL: 700 cal/.test(OPEN), 'and everything in it is counted');
+
+// ===== A LONG RANGE SHORTENS ITS PRINTING, NEVER ITS ARITHMETIC =========
+// Printing the first N days of two years and stopping is a silent truncation,
+// which is the fault this file keeps being bitten by. So: recent days in full,
+// older ones rolled up by month, and every total computed from every row.
+console.log('\n  a long range rolls up rather than truncating:');
+const MANY={foods:[],workouts:[],steps:[],weights:[],broke:false};
+for(let d=0; d<120; d++){
+  const dt=new Date(2026,7,25); dt.setDate(dt.getDate()-d);
+  const iso=dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+  MANY.foods.push({name:'Meal', calories:100, protein:10, date_str:iso, logged_at:iso+'T12:00:00Z'});
+}
+const LR=_jvBuildRecord({code:'x1',name:'Long Range'}, {from:'2026-04-28', to:'2026-08-25', label:'the last 120 days', days:120}, MANY);
+t(/RANGE TOTAL: 12000 cal/.test(LR), 'all 120 days are in the total, printed or not');
+t(/Days with food logged: 120 of 120/.test(LR), 'and all 120 are counted as logged');
+t(/older logged days are not printed one by one/.test(LR), 'the shortening is stated out loud, never silent');
+t(/BY MONTH/.test(LR), 'the older days come back as month rollups');
+t(LR.split('\n').length < 90, 'and the block stays readable', LR.split('\n').length+' lines');
+// The short case is untouched: a week still prints every day with its meals.
+const SR=_jvBuildRecord({code:'x1',name:'Short Range'}, {from:'2026-08-19', to:'2026-08-25', label:'the last 7 days', days:7},
+  {foods:MANY.foods.slice(0,7),workouts:[],steps:[],weights:[],broke:false});
+t(!/not printed one by one/.test(SR), 'a short range prints every day, as it always did');
 
 // ===== THE ARITHMETIC IS DONE IN CODE ===================================
 // The failure this guards is a model summing rows and saying a wrong number out
