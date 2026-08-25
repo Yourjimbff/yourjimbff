@@ -60,6 +60,7 @@ eval([
   multi('var _JV_ORD='),
   grab(l=>l.startsWith('function _jvAskedRange(')),
   grab(l=>l.startsWith('function _jvRowDay(')),
+  grab(l=>l.startsWith('function _jvNum(')),
   grab(l=>l.startsWith('function _jvRound(')),
   grab(l=>l.startsWith('function _jvOneLine(')),
   grab(l=>l.startsWith('function _jvDowShort(')),
@@ -67,7 +68,7 @@ eval([
   grab(l=>l.startsWith('function _jvBuildRecord(')),
 ].join('\n'));
 require('./_guard.cjs')(['_JV_NAME_STOP','_JV_NAME_FRAME','_jvWhoAsked','_jvUnknownName','_jvAskWhich',
-  '_jvAskedRange','_jvBuildRecord','_jvDaysBetween','_jvDowShort','_jvRowDay','_jvOneLine'],
+  '_jvAskedRange','_jvBuildRecord','_jvDaysBetween','_jvDowShort','_jvRowDay','_jvOneLine','_jvNum'],
   function(n){ return eval(n); });
 
 // ===== 3. AN AMBIGUOUS NAME ASKS ========================================
@@ -190,7 +191,7 @@ for(let d=0; d<120; d++){
   MANY.foods.push({name:'Meal', calories:100, protein:10, date_str:iso, logged_at:iso+'T12:00:00Z'});
 }
 const LR=_jvBuildRecord({code:'x1',name:'Long Range'}, {from:'2026-04-28', to:'2026-08-25', label:'the last 120 days', days:120}, MANY);
-t(/RANGE TOTAL: 12000 cal/.test(LR), 'all 120 days are in the total, printed or not');
+t(/RANGE TOTAL: 12,000 cal/.test(LR), 'all 120 days are in the total, printed or not');
 t(/Days with food logged: 120 of 120/.test(LR), 'and all 120 are counted as logged');
 t(/older logged days are not printed one by one/.test(LR), 'the shortening is stated out loud, never silent');
 t(/BY MONTH/.test(LR), 'the older days come back as month rollups');
@@ -224,15 +225,15 @@ const DATA={
   broke:false
 };
 const B=_jvBuildRecord(WHO, RANGE, DATA);
-t(/RANGE TOTAL: 2000 cal, 170g protein/.test(B), 'the range total is summed here, not by the model');
+t(/RANGE TOTAL: 2,000 cal, 170g protein/.test(B), 'the range total is summed here, not by the model');
 t(!/9999/.test(B), 'a row outside the range reaches no total and no line');
-t(/AVERAGE PER LOGGED DAY: 1000 cal/.test(B), 'the per-logged-day average');
+t(/AVERAGE PER LOGGED DAY: 1,000 cal/.test(B), 'the per-logged-day average');
 t(/AVERAGE PER CALENDAR DAY: 286 cal/.test(B), 'and the per-calendar-day one, which is a different question');
 t(/Days with food logged: 2 of 7/.test(B), 'the days that carry food are counted');
 t(/Nothing logged on: 2026-08-19, 2026-08-20, 2026-08-21, 2026-08-23, 2026-08-25/.test(B), 'and the empty ones are named');
 // date_str is the LOCAL day; logged_at is UTC and drifts a day on an evening
 // meal. Bucketing on logged_at put nearly one real row in five on the wrong day.
-t(/2026-08-24 \(Mon\)  2 meals  1000 cal/.test(B), 'an evening meal lands on the day he ate it, not the UTC one');
+t(/2026-08-24 \(Mon\)  2 meals  1,000 cal/.test(B), 'an evening meal lands on the day he ate it, not the UTC one');
 t(/9,000 steps/.test(B), 'steps are read and totalled');
 t(/157\.6 lbs/.test(B) && /156\.4 lbs/.test(B), 'the weigh-in history is handed over whole');
 t(/1 exact duplicate row/.test(B), 'the same reading stored twice is one reading, and the collapse is stated');
