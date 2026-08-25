@@ -151,6 +151,23 @@ console.log('\n  a whole history names no start date of its own:');
   t(!!r && r.open===true && !r.from, 'open-ended: '+JSON.stringify(q),
     r?('open='+r.open+' from='+String(r.from)):'null');
 });
+// A QUESTION ABOUT A RECORD IS A QUESTION ABOUT ALL OF IT. It names no window,
+// so it would fall to the caller's default month and answer "no" about a day
+// sitting in the table — a capability refusal wearing a plain answer.
+console.log('\n  a question only the whole record can answer reaches the whole record:');
+['has she ever hit 10000 steps','what is her best week','her highest weigh-in',
+ 'what is the most she has ever logged','when did he start','has she never missed a week',
+ 'her all-time best','what was her lowest weight'].forEach(function(q){
+  const r=_jvAskedRange(q,NOW);
+  t(!!r && r.open===true, 'open: '+JSON.stringify(q), r?('open='+r.open):'null — would fall to the default month');
+});
+// And an ordinary question is NOT dragged open by a word that merely appears.
+['how is she doing','what did she eat yesterday','her seven day average',
+ 'did she train this week'].forEach(function(q){
+  const r=_jvAskedRange(q,NOW);
+  t(!r || !r.open, 'not dragged open: '+JSON.stringify(q));
+});
+
 // The start is read off the person's own earliest row, so it is HERS.
 const OPEN=_jvBuildRecord({code:'chrism1',name:'Chris McCarthy'},
   {open:true, to:'2026-08-25', label:'their whole history', days:null},
