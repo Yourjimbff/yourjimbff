@@ -20600,6 +20600,12 @@ async function _jvCoachDigest(){
 }
 async function _jvAssistantContext(opts){
   opts=opts||{};
+  // WHAT HE ASKED, HANDED IN. Every trainer surface passes opts.ask now, so the
+  // one-person record reaches the cockpit and the front desk on the same terms
+  // as the chat rail — the alternative is the same answer built in three places,
+  // which is the disease this file keeps re-catching.
+  var _onePerson=null;
+  try{ if(opts.ask) _onePerson=await _jvOnePerson(opts.ask); }catch(e){ _onePerson=null; }
   try{ if(!_jvTriageReady() && typeof _jvEnsureTriage==='function'){ if(!window._jvTriagePending && typeof jvLoadTriage==='function'){ window._jvTriagePending=Promise.resolve(jvLoadTriage(true)).catch(function(){}); } if(window._jvTriagePending){ await window._jvTriagePending; window._jvTriagePending=null; } } }catch(e){}
   var today=new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
   var out='Today is '+today+'.';
@@ -20633,13 +20639,32 @@ async function _jvAssistantContext(opts){
   if(st==='ready'){
     var snap=''; try{ snap=_jvBuildContext(); }catch(e){}
     if(snap) out+='\n\nTHE BOARD RIGHT NOW (you can see this — never ask him for it):\n'+snap
-      +'\n(This is TODAY only. A client not listed here may still have real history before today — their absence from this snapshot is never grounds to say they have no weigh-in, no history, or nothing on record. If a history question needs more than this snapshot and no dedicated block below answers it, say plainly you only have today in front of you.)';
+      +'\n(This is TODAY only, and it is a summary, not the limit of what you can see. A client not listed here may still have real history before today — '
+      +'their absence from this snapshot is never grounds to say they have no weigh-in, no history, or nothing on record.'
+      // NO CAPABILITY REFUSAL (Yusuf, ruling, 25 Aug). This used to end by telling
+      // it to say it "only has today in front of you" — which was true of the
+      // snapshot and false of the app, and it said it about weigh-ins sitting in
+      // the table. The reach is real now: name a client and their whole record
+      // comes back, any range, as far back as it goes. So the instruction that
+      // taught the refusal is gone. Scanning the app is the function; saying it
+      // cannot is not a limitation, it is the thing failing at what it is for.
+      +' NEVER tell him you cannot see something that exists in this app. If a question needs more than this snapshot, the record for the person he names is fetched and handed to you '
+      +'— when a block for that person is below, answer from it. If he names a client and no block came, say the read did not come back and offer to try again; do not call it a limit of what you can see.)';
   } else {
     out+='\n\nTHE BOARD: could not be read just now'+(st==='failed'?' (the read failed)':'')
       +'. Say so plainly if he asks something that needs it. Do NOT ask him to paste a snapshot.';
   }
   if(opts.code && CLIENTS[opts.code]){
     out+='\n\nHE IS LOOKING AT: '+((CLIENTS[opts.code]||{}).name||opts.code)+' ['+opts.code+'].';
+  }
+  // THE ONE PERSON HE NAMED, WITH THEIR REAL ROWS ALREADY ADDED UP. Last, so it
+  // is the nearest thing to the question when the model reads down the prompt.
+  if(_onePerson && _onePerson.kind==='one' && _onePerson.block){
+    out+='\n\n'+_onePerson.block
+      +'\n\n=== WHOSE DATA THIS IS ===\nHe asked about '+_onePerson.name+'. Answer from the block directly above and from nothing else. '
+      +'Every number in it belongs to '+_onePerson.name+' — not to another client on the board, and not to Yusuf. '
+      +'The board snapshot higher up is TODAY across everyone and is not a source for a question about one person over a range. '
+      +'If a figure he wants is not in that block, say which one is missing rather than reaching for a number that is.';
   }
   return out;
 }
@@ -35306,6 +35331,19 @@ async function _jtRunItem(t, capture, ctx){
   // can you do" can never fall through to a hand-written prompt paragraph
   // that oversells or a truncatable model call at all.
   if(_JV_HELP_RE.test(t)) return {status:'talk', line:_jvCapabilitySummary(), html:true, src:t};
+  // AMBIGUOUS NAMES ASK, THEY DO NOT GUESS (Yusuf, ruling, 25 Aug). Same gate
+  // the cockpit runs, at the same depth: after the local command layers, before
+  // anything answers. "Chris" is two people on this roster and "Anthony" is
+  // three; the per-block finders this replaces each picked the longest match
+  // and said nothing about the others.
+  try{
+    var _wa=_jvWhoAsked(t);
+    if(_wa.kind==='ambiguous') return {status:'talk', line:_escHtml(_jvAskWhich(_wa.hits)), html:true, src:t};
+    if(_wa.kind!=='one'){
+      var _uk=_jvUnknownName(t);
+      if(_uk) return {status:'talk', line:_escHtml('I don’t have anyone called '+_uk+'. Who do you mean?'), html:true, src:t};
+    }
+  }catch(e){ console.error('jt who asked',e); }
   // ROSTER QUESTIONS ARE ANSWERED FROM THE BOARD, NOT BY A MODEL. Deterministic,
   // so the count and the list are the same array and cannot contradict each
   // other — which is the invented-count bug at its source.
@@ -35483,7 +35521,21 @@ async function _jtRunItem(t, capture, ctx){
   // while a number waits, because a wrong weight sits in a real history looking
   // like data for weeks.
   var mo=null;
-  try{ mo=await _jtModel(t, ctx); }catch(e){ console.error('jt model',e); }
+  // THE NAMED PERSON'S RECORD RIDES THIS ITEM'S CONTEXT, NOT THE BATCH'S.
+  // ctx here is shared by every item in the batch, so the one-person block is
+  // appended to a COPY — otherwise item one's client is still in the prompt
+  // when item two asks about somebody else, which is the wrong-person bug in
+  // miniature.
+  var _itemCtx=ctx;
+  try{
+    var _op=await _jvOnePerson(t);
+    if(_op && _op.kind==='one' && _op.block){
+      _itemCtx=String(ctx||'')+'\n\n'+_op.block
+        +'\n\n=== WHOSE DATA THIS IS ===\nThis item asks about '+_op.name
+        +'. Answer it from the block directly above and from nothing else — not from the board snapshot, not from another client, not from Yusuf’s own numbers.';
+    }
+  }catch(e){ console.error('jt one person',e); }
+  try{ mo=await _jtModel(t, _itemCtx); }catch(e){ console.error('jt model',e); }
   // From here on this item has spent a model turn, whatever it came back with —
   // the cap counts round trips, so a failed one counts too.
   if(!mo) return {status:'lost', modelled:true, line:'“'+_escHtml(t)+'” — I couldn’t reach Jarvis for that one, so nothing was done with it.', html:true, src:t};
@@ -36252,6 +36304,9 @@ function _jvBuildPendingOffer(off){
 var JT_MODEL_CAP=5;      // model turns per batch; the rest are NAMED, not dropped
 function _jtGroup(res, status){ return res.filter(function(x){ return x.status===status; }); }
 async function _jtBatch(items){
+  // No ask here on purpose: this context is shared by every item in the batch,
+  // and a record fetched for item one is the wrong person for item two. The
+  // per-item record is fetched inside _jtRunItem, where the question is.
   var ctx=''; try{ ctx=await _jvAssistantContext({}); }catch(e){}
   try{ ctx+=_jtRecentThreadText(6); }catch(e){}
   // ONE VOICE PER TURN. Five items would otherwise be five overlapping clips
@@ -36339,7 +36394,7 @@ function _jtRecentThreadText(n){
 // is one thing, and wrapping "texted Kelly yesterday" in three section headers
 // would be paperwork. Same layers, same order, just answered plainly.
 async function _jtSingle(t){
-  var ctx=''; try{ ctx=await _jvAssistantContext({}); }catch(e){}
+  var ctx=''; try{ ctx=await _jvAssistantContext({ask:t}); }catch(e){}
   try{ ctx+=_jtRecentThreadText(6); }catch(e){}
   var r=await _jtRunItem(t, false, ctx);
   return {html:r.line, speak:null};
@@ -44260,19 +44315,460 @@ function _jvBuildContext(){
 // landed, it landed and there is nothing, or it landed and there is a real
 // number. A lifetime delta is computed ONLY when both ends of the read are
 // present (firstWeight and lastWeight, n>1) \u2014 never off a partial read.
+// ===== ONE PERSON, ASKED FOR BY NAME (Yusuf, ruling, 25 Aug) =============
+// The read path handed the model EIGHTY-TWO clients flattened to two days, and
+// appended Yusuf's own food and training to the same prompt. Three failures came
+// out of that one shape: it read another client's numbers back as the named
+// one's, it answered a question about a client with Yusuf's own data, and it
+// said it could not see a fortnight ago when the row was sitting in the table.
+//
+// The rule now: a question naming a person is answered from THAT person's real
+// rows, or from nothing. Never anyone else's, never his. If the name does not
+// resolve, it says so and asks. If it is ambiguous, it asks WHICH — it never
+// picks. And no capability refusal: if it is in the app, it is reachable.
+//
+// The arithmetic is done HERE, in code, and handed over already computed. A
+// model summing thirty rows is where a wrong number comes from.
+
+// Ordinary English that happens to be somebody's name. Without this a sentence
+// like "will she log today" resolves "will" to a client and withholds his own
+// data from a question that was never about a client at all.
+var _JV_NAME_STOP=(function(){
+  var o={}; ('a an and are as at be been but by can did do does for from get go got had has have he her here him his how i if in is it its just let me my no not now of on one or our out she so that the their them then there these they this to too us was we were what when where which who why will with you your'
+    +' add all any back best better big call check client clients coach could day days did done down eat end even every fact feel first food from full give good great gym had half hard help hold home hour hours keep kind last late left less like live log logged long look lot low made make man many meal meals mind miss more most move much must name need never new next night nothing off often old only open other over own part past place plan post pull push put read real rest right room run said same say see seem send set shall short show side since sleep small some soon start stay step steps still stop such sure take talk team tell than thing think time today told took top train trained training try turn two under until up use used very walk want watch water way week weeks well went what while whole will work workout would year years yes yet'
+    // Collective words sit in exactly the same sentence frames a name does —
+    // "how is everyone doing" reads identically to "how is Roberto doing".
+    + ' everyone everybody anyone anybody someone somebody nobody none people person folks everything anything something things stuff roster board group class squad business tomorrow tonight morning afternoon evening weekend month months average avg total totals numbers macros protein calories carbs fats weigh weighin weighins history record records data progress update updates report summary check checkin checkins'
+  ).split(/\s+/).forEach(function(w){ if(w) o[w]=1; });
+  return o;
+})();
+
+// WHO HE IS ASKING ABOUT. One answer, from the one resolver — never a fourth
+// hand-rolled scan of CLIENTS. Bigrams before unigrams so "Chris McCarthy"
+// settles before a bare "Chris" has to ask.
+function _jvWhoAsked(msg){
+  var raw=String(msg||'');
+  if(!raw.trim()) return {kind:'none'};
+  // A NAMED CLIENT BEATS A PRONOUN. This read the first person FIRST and
+  // returned immediately, so "give me Christian A's totals" was a question
+  // about HIM — the "me" is the indirect object, not the subject, and the
+  // sentence is plainly about Christian. That is the leak his ruling names:
+  // a question that names a client must never be answered with his own data.
+  // So names are resolved first and only a sentence naming nobody falls to self.
+  var words=raw.toLowerCase().replace(/[^a-z0-9’' ]+/g,' ').split(/\s+/).filter(Boolean);
+  var seen={}, order=[];
+  var take=function(phrase){
+    var p=String(phrase||'').trim(); if(!p) return;
+    var bare=p.replace(/[^a-z0-9 ]/g,'');
+    if(!bare || bare.length<3) return;
+    if(_JV_NAME_STOP[bare]) return;
+    try{ if(_jvNamesSelf(bare)) return; }catch(e){}
+    var hits=[]; try{ hits=_jvResolveClient(p)||[]; }catch(e){ hits=[]; }
+    hits.forEach(function(c){ if(!seen[c]){ seen[c]=1; order.push(c); } });
+  };
+  // Two-word phrases first: a full name is unambiguous where a first name is not.
+  for(var i=0;i+1<words.length;i++){
+    var pair=words[i]+' '+words[i+1];
+    if(_JV_NAME_STOP[words[i]] && _JV_NAME_STOP[words[i+1]]) continue;
+    var ph=[]; try{ ph=_jvResolveClient(pair)||[]; }catch(e){}
+    if(ph.length===1){ if(!seen[ph[0]]){ seen[ph[0]]=1; order.push(ph[0]); } return {kind:'one', code:ph[0], name:_jvNameOf(ph[0])}; }
+  }
+  words.forEach(take);
+  if(order.length===1) return {kind:'one', code:order[0], name:_jvNameOf(order[0])};
+  if(order.length>1) return {kind:'ambiguous', hits:order.map(function(c){ return {code:c, name:_jvNameOf(c)}; })};
+  // Nobody named. 'self' and 'none' take the SAME action here — both leave the
+  // existing context exactly as it was. Only 'one' and 'ambiguous' change what
+  // the model is handed. The two are kept apart because they read differently
+  // in a log, not because anything branches on them.
+  try{ if(_JV_FIRST_PERSON_RE.test(raw)) return {kind:'self'}; }catch(e){}
+  return {kind:'none'};
+}
+function _jvNameOf(code){ try{ return (CLIENTS[code]||{}).name||code; }catch(e){ return code; } }
+
+// A NAME THAT RESOLVES TO NOBODY IS SAID OUT LOUD, NOT SWALLOWED. Without this
+// "how is Roberto doing" reads as naming nobody, falls through to the board and
+// gets answered about the roster at large — which is the same failure in a
+// quieter coat. Deliberately narrow: only a sentence that puts the word in a
+// plain name FRAME counts, so an unrecognised ordinary word can never trigger it.
+var _JV_NAME_FRAME=new RegExp(
+  '(?:^|[.,;!?]\\s*)(?:how(?:\\u2019s| is| are)|what(?:\\u2019s| is| did| has| have)|hows|whats)\\s+([a-z]{3,})\\b'
+ +'|\\b(?:did|has|is|does)\\s+([a-z]{3,})\\s+(?:log|logged|eat|ate|train|trained|weigh|weighed|hit|miss|missed|do|done)\\b'
+ +'|\\b([a-z]{3,})\\u2019s\\s+(?:calorie|calories|weigh|weight|steps|food|training|workout|session|average|avg|total|totals|numbers|record|history|macros|protein)'
+ +"|\\b([a-z]{3,})'s\\s+(?:calorie|calories|weigh|weight|steps|food|training|workout|session|average|avg|total|totals|numbers|record|history|macros|protein)"
+ +'|\\b(?:pull up|pull|give me|show me|read me)\\s+([a-z]{3,})\\u2019?s?\\b', 'gi');
+function _jvUnknownName(msg){
+  var raw=String(msg||''); if(!raw.trim()) return '';
+  var re=new RegExp(_JV_NAME_FRAME.source, 'gi'), m;
+  while((m=re.exec(raw))){
+    var w=''; for(var i=1;i<m.length;i++){ if(m[i]){ w=m[i]; break; } }
+    w=String(w||'').toLowerCase(); if(!w || w.length<3) continue;
+    // A possessive stripped of its apostrophe by dictation ("todays numbers")
+    // is still the ordinary word, not a surname.
+    if(_JV_NAME_STOP[w] || _JV_NAME_STOP[w.replace(/s$/,'')]) continue;
+    if(_JV_MONTHS.indexOf(w)>-1) continue;
+    if(/^(mon|tues|wednes|thurs|fri|satur|sun)day$|^(mon|tue|wed|thu|fri|sat|sun)$/.test(w)) continue;
+    try{ if(_jvNamesSelf(w)) continue; }catch(e){}
+    var hits=[]; try{ hits=_jvResolveClient(w)||[]; }catch(e){}
+    if(hits.length) continue;
+    return w.replace(/^./,function(c){ return c.toUpperCase(); });
+  }
+  return '';
+}
+
+// ===== THE RANGE HE ASKED FOR ===========================================
+// A local calendar day, never a UTC one — a meal at 8pm lands on the next UTC
+// day and 12 of 63 of one real client's rows do exactly that.
+// NOT _jvDayKey: that name is TAKEN, by a helper 12,000 lines up that returns
+// "Aug 19, 2026". Declared twice, the later one wins for the whole file — so
+// this quietly replaced it everywhere and every existing caller started
+// getting ISO. The duplicate-ID landmine, in function form. Caught by a test
+// that asserted a real date string, which is the only reason it was caught.
+function _jvIsoDay(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function _jvDayOf(v){ var d=new Date(v); return isNaN(d)?null:_jvIsoDay(d); }
+function _jvShiftDays(base, n){ var d=new Date(base.getFullYear(), base.getMonth(), base.getDate()); d.setDate(d.getDate()+n); return d; }
+var _JV_MONTHS=['january','february','march','april','may','june','july','august','september','october','november','december'];
+var _JV_ORD={one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,eleven:11,twelve:12,fourteen:14,thirty:30,couple:2,few:3};
+
+function _jvAskedRange(msg, now){
+  var t=' '+String(msg||'').toLowerCase().replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ')+' ';
+  var today=now?new Date(now):new Date();
+  today=new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  var mk=function(from,to,label){ return {from:_jvIsoDay(from), to:_jvIsoDay(to), label:label,
+    days:Math.round((to-from)/86400000)+1}; };
+  var num=function(w){ if(w==null) return null; var n=parseInt(w,10); if(!isNaN(n)) return n; return _JV_ORD[w]||null; };
+  var m;
+  // Monday of the week containing d (weeks read Mon-Sun, the way a training week does).
+  var monOf=function(d){ var k=(d.getDay()+6)%7; return _jvShiftDays(d,-k); };
+
+  if(/\btoday\b/.test(t)) return mk(today, today, 'today');
+  if(/\byesterday\b/.test(t)){ var y=_jvShiftDays(today,-1); return mk(y,y,'yesterday'); }
+
+  // "last 7 days", "past two weeks", "30 day average", "last 3 months"
+  if((m=/\b(?:last|past|previous|over the last|in the last|trailing)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fourteen|thirty|couple|few)\s*[- ]?\s*(day|days|week|weeks|month|months)\b/.exec(t))
+   ||(m=/\b(\d+|seven|fourteen|thirty)\s*[- ]?\s*(day|days|week|weeks|month|months)\s+(?:average|avg|total|totals|window|stretch|run)\b/.exec(t))){
+    var n=num(m[1]); var unit=m[2];
+    if(n){
+      var span=/week/.test(unit)?n*7:(/month/.test(unit)?n*30:n);
+      return mk(_jvShiftDays(today,-(span-1)), today, 'the last '+span+' days');
+    }
+  }
+  // A bare "seven-day average" with no "last".
+  if((m=/\b(\d+|seven|fourteen|thirty)\s*[- ]?\s*day\b/.exec(t))){
+    var n2=num(m[1]);
+    if(n2 && n2>1 && n2<=400) return mk(_jvShiftDays(today,-(n2-1)), today, 'the last '+n2+' days');
+  }
+  // "two weeks ago", "three weeks ago" — the CALENDAR week that many back.
+  if((m=/\b(\d+|one|two|three|four|five|six|couple|few)\s+weeks?\s+ago\b/.exec(t))){
+    var wn=num(m[1]);
+    if(wn){ var mon=_jvShiftDays(monOf(today),-7*wn); return mk(mon,_jvShiftDays(mon,6),wn===1?'last week':wn+' weeks ago'); }
+  }
+  if(/\bweek before last\b/.test(t)){ var mb=_jvShiftDays(monOf(today),-14); return mk(mb,_jvShiftDays(mb,6),'the week before last'); }
+  if(/\blast week\b/.test(t)){ var ml=_jvShiftDays(monOf(today),-7); return mk(ml,_jvShiftDays(ml,6),'last week'); }
+  if(/\bthis week\b/.test(t)) return mk(monOf(today), today, 'this week so far');
+  if(/\b(\d+|one|two|three|four|five|six)\s+months?\s+ago\b/.test(t)){
+    m=/\b(\d+|one|two|three|four|five|six)\s+months?\s+ago\b/.exec(t);
+    var mo=num(m[1]);
+    if(mo){ var s=new Date(today.getFullYear(), today.getMonth()-mo, 1); var e=new Date(today.getFullYear(), today.getMonth()-mo+1, 0);
+      return mk(s,e,_JV_MONTHS[s.getMonth()].replace(/^./,function(c){return c.toUpperCase();})+' '+s.getFullYear()); }
+  }
+  if(/\blast month\b/.test(t)){ var s2=new Date(today.getFullYear(), today.getMonth()-1, 1), e2=new Date(today.getFullYear(), today.getMonth(), 0);
+    return mk(s2,e2,_JV_MONTHS[s2.getMonth()].replace(/^./,function(c){return c.toUpperCase();})+' '+s2.getFullYear()); }
+  if(/\bthis month\b/.test(t)) return mk(new Date(today.getFullYear(), today.getMonth(), 1), today, 'this month so far');
+  // A month said by name — "in July", "how did she do in June".
+  for(var i=0;i<12;i++){
+    var mo3=_JV_MONTHS[i];
+    if(new RegExp('\\b'+mo3+'\\b|\\b'+mo3.slice(0,3)+'\\b').test(t)){
+      var yr=today.getFullYear(); if(i>today.getMonth()) yr--;
+      var ms=new Date(yr,i,1), me=new Date(yr,i+1,0);
+      if(me>today) me=today;
+      return mk(ms,me,mo3.replace(/^./,function(c){return c.toUpperCase();})+' '+yr);
+    }
+  }
+  if(/\b(all time|ever|all of it|whole history|entire history|since (?:she|he|they) started|from the start)\b/.test(t))
+    return mk(_jvShiftDays(today,-729), today, 'their whole history');
+  return null;
+}
+
+// ===== ONE PERSON'S REAL ROWS, COMPUTED =================================
+// Range-fetch on logged_at, because it is the only sortable column — date_str
+// is stored as "Aug 24, 2026" and a gte on it is a lexicographic compare that
+// silently returns the wrong rows. Bucket on date_str, because it is the LOCAL
+// day the app recorded and logged_at is UTC.
+function _jvRowDay(r){
+  if(r && r.date_str){ var d=_jvDayOf(r.date_str); if(d) return d; }
+  return r ? _jvDayOf(r.logged_at||r.updated_at||r.performed_at) : null;
+}
+function _jvRound(n){ return Math.round(n*10)/10; }
+// A workout description is multi-line by design (one exercise per line).
+// One row of this table is one line, so it is flattened here — left as-is it
+// broke the table into fragments that no longer read as one day.
+function _jvOneLine(s,max){ var t=String(s||'').replace(/\s+/g,' ').trim(); return t.length>max?(t.slice(0,max)+'\u2026'):t; }
+function _jvDowShort(key){
+  var p=String(key).split('-'); var d=new Date(+p[0], +p[1]-1, +p[2]);
+  return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()];
+}
+function _jvDaysBetween(from,to){
+  var out=[], p=String(from).split('-'), q=String(to).split('-');
+  var d=new Date(+p[0],+p[1]-1,+p[2]), e=new Date(+q[0],+q[1]-1,+q[2]);
+  var guard=0;
+  while(d<=e && guard++<800){ out.push(_jvIsoDay(d)); d=_jvShiftDays(d,1); }
+  return out;
+}
+// ===== THE RECORD, ALREADY ADDED UP =====================================
+// Everything below is arithmetic done in code. What reaches the model is a
+// table it reads off, never a pile of rows it has to sum — a model summing
+// thirty rows is exactly where a wrong number comes from, and a wrong number
+// said out loud on a call is the thing this whole path is for.
+function _jvBuildRecord(who, range, data){
+  var days=_jvDaysBetween(range.from, range.to);
+  var inRange={}; days.forEach(function(k){ inRange[k]=1; });
+  var out=[], L=out.push.bind(out);
+
+  L('=== '+who.name.toUpperCase()+' — REAL RECORD, '+range.label.toUpperCase()
+    +' ('+range.from+' to '+range.to+', '+days.length+' calendar day'+(days.length===1?'':'s')+') ===');
+  L('This is '+who.name+'’s actual database, read just now and added up for you. It is ONE person: '
+    +who.name+' ['+who.code+']. Nothing here belongs to anyone else and nothing here is Yusuf’s own data.');
+  L('Every total and average below is ALREADY COMPUTED. Read the number, do not recompute it. '
+    +'If he asks something these numbers do not answer, say exactly what is missing — never estimate and never fill a gap from another day, another client, or your own guess.');
+  // A BROKEN READ IS NOT AN EMPTY ONE. Said at the top, where it governs
+  // everything below it, because the dangerous sentence here is "she logged
+  // nothing" — which sounds identical whether the table was empty or the
+  // network was.
+  if(data.broke) L('\n!! ONE OR MORE OF THESE READS DID NOT ANSWER. What is below may be incomplete. '
+    +'You may state what IS here, but you may NOT say '+who.name+' logged nothing, has no history, or missed a day — '
+    +'say instead that the read did not come back in full and offer to try again. An absence you cannot see is not an absence.');
+
+  // ---- FOOD -------------------------------------------------------------
+  var fByDay={};
+  (data.foods||[]).forEach(function(r){ var k=_jvRowDay(r); if(!k||!inRange[k]) return; (fByDay[k]=fByDay[k]||[]).push(r); });
+  var fDays=Object.keys(fByDay).sort().reverse();
+  L('\nFOOD — every logged day in this range, newest first:');
+  if(!fDays.length){
+    L('  NOTHING. '+who.name+' logged no food at all between '+range.from+' and '+range.to+'.');
+    L('  Say that plainly. Do not substitute a different range, a different client, or an older day.');
+  } else {
+    var tCal=0,tPro=0,tCar=0,tFat=0,tMeals=0;
+    fDays.forEach(function(k){
+      var rows=fByDay[k];
+      var cal=0,pro=0,car=0,fat=0;
+      rows.forEach(function(r){ cal+=(+r.calories||0); pro+=(+r.protein||0); car+=(+r.carbs||0); fat+=(+r.fat||0); });
+      tCal+=cal; tPro+=pro; tCar+=car; tFat+=fat; tMeals+=rows.length;
+      var names=rows.map(function(r){ return r.name||'(unnamed)'; }).slice(0,6).join('; ');
+      L('  '+k+' ('+_jvDowShort(k)+')  '+rows.length+' meal'+(rows.length===1?'':'s')+'  '
+        +Math.round(cal)+' cal  '+Math.round(pro)+'g protein  '+Math.round(car)+'g carbs  '+Math.round(fat)+'g fat'
+        +(names?('  — '+names):''));
+    });
+    var missed=days.filter(function(k){ return !fByDay[k]; });
+    L('  Days with food logged: '+fDays.length+' of '+days.length+'.'
+      +(missed.length?(' Nothing logged on: '+missed.slice(0,14).join(', ')+(missed.length>14?(' and '+(missed.length-14)+' more'):'')+'.'):''));
+    L('  RANGE TOTAL: '+Math.round(tCal)+' cal, '+Math.round(tPro)+'g protein, '+Math.round(tCar)+'g carbs, '+Math.round(tFat)+'g fat, across '+tMeals+' meal'+(tMeals===1?'':'s')+'.');
+    L('  AVERAGE PER LOGGED DAY: '+Math.round(tCal/fDays.length)+' cal, '+Math.round(tPro/fDays.length)+'g protein  (over the '+fDays.length+' day'+(fDays.length===1?'':'s')+' with food on '+(fDays.length===1?'it':'them')+').');
+    L('  AVERAGE PER CALENDAR DAY: '+Math.round(tCal/days.length)+' cal, '+Math.round(tPro/days.length)+'g protein  (over all '+days.length+' day'+(days.length===1?'':'s')+' in the range, counting the empty ones as zero).');
+    L('  Those two averages answer different questions and they are both real. Say WHICH one you used '
+      +'— "'+Math.round(tCal/fDays.length)+' a day across the '+fDays.length+' day'+(fDays.length===1?'':'s')+' '+who.name+' logged" is the honest phrasing when days are missing.');
+    // Week rollups make a two-week comparison a matter of reading two rows.
+    if(days.length>7){
+      var wk={};
+      fDays.forEach(function(k){
+        var p=k.split('-'), d=new Date(+p[0],+p[1]-1,+p[2]);
+        var mon=_jvShiftDays(d,-((d.getDay()+6)%7)), key=_jvIsoDay(mon);
+        wk[key]=wk[key]||{cal:0,pro:0,days:0,meals:0};
+        fByDay[k].forEach(function(r){ wk[key].cal+=(+r.calories||0); wk[key].pro+=(+r.protein||0); });
+        wk[key].days++; wk[key].meals+=fByDay[k].length;
+      });
+      var wks=Object.keys(wk).sort().reverse();
+      if(wks.length>1){
+        L('\n  BY WEEK (Monday to Sunday), so two weeks can be compared directly:');
+        wks.forEach(function(k){
+          var w=wk[k], end=_jvIsoDay(_jvShiftDays(new Date(+k.split('-')[0],+k.split('-')[1]-1,+k.split('-')[2]),6));
+          L('    week of '+k+' (to '+end+'):  '+w.days+' day'+(w.days===1?'':'s')+' logged, '
+            +Math.round(w.cal)+' cal total, '+Math.round(w.cal/w.days)+' cal per logged day, '+Math.round(w.pro)+'g protein total.');
+        });
+      }
+    }
+  }
+
+  // ---- TRAINING ---------------------------------------------------------
+  var wByDay={};
+  (data.workouts||[]).forEach(function(r){ var k=_jvRowDay(r); if(!k||!inRange[k]) return; (wByDay[k]=wByDay[k]||[]).push(r); });
+  var wDays=Object.keys(wByDay).sort().reverse();
+  L('\nTRAINING — every session in this range, newest first:');
+  if(!wDays.length){
+    L('  NOTHING. '+who.name+' logged no session between '+range.from+' and '+range.to+'. Say that plainly.');
+  } else {
+    var sess=0;
+    wDays.forEach(function(k){
+      wByDay[k].forEach(function(r){
+        sess++;
+        L('  '+k+' ('+_jvDowShort(k)+')  '+(r.title||'Workout')
+          +(r.intensity!=null?('  intensity '+r.intensity+'/10'):'')
+          +(r.duration!=null?('  '+r.duration+' min'):'')
+          +(r.description?('  — '+_jvOneLine(r.description,140)):''));
+      });
+    });
+    L('  RANGE TOTAL: '+sess+' session'+(sess===1?'':'s')+' on '+wDays.length+' day'+(wDays.length===1?'':'s')+', out of '+days.length+' calendar days.');
+  }
+
+  // ---- STEPS ------------------------------------------------------------
+  var sByDay={};
+  (data.steps||[]).forEach(function(r){ var k=_jvRowDay(r); if(!k||!inRange[k]) return; sByDay[k]=r; });
+  var sDays=Object.keys(sByDay).sort().reverse();
+  L('\nSTEPS — every day with a count in this range:');
+  if(!sDays.length){
+    L('  NOTHING. No step count on record for '+who.name+' in this range.');
+  } else {
+    var stot=0;
+    sDays.forEach(function(k){ var n=+sByDay[k].steps||0; stot+=n; L('  '+k+' ('+_jvDowShort(k)+')  '+n.toLocaleString('en-US')+' steps'); });
+    L('  RANGE TOTAL: '+stot.toLocaleString('en-US')+' steps over '+sDays.length+' day'+(sDays.length===1?'':'s')+'.');
+    L('  AVERAGE PER DAY WITH A COUNT: '+Math.round(stot/sDays.length).toLocaleString('en-US')+' steps.');
+  }
+
+  // ---- WEIGH-INS --------------------------------------------------------
+  // The FULL history, always, not just the asked range. "A weigh-in from two
+  // weeks ago" is a question about the nearest reading to a point in time, and
+  // a range that happens to be empty is not an answer — the row exists.
+  var wl=(data.weights||[]).slice().sort(function(a,b){ return new Date(b.logged_at)-new Date(a.logged_at); });
+  // THE SAME READING STORED TWICE IS ONE READING. Real rows here repeat — one
+  // client has 137.2 lbs three times on the same day — and listed as three
+  // lines a model reads them as three weigh-ins and reports "no change" over a
+  // day she stepped on the scale once. Only an EXACT duplicate is collapsed
+  // (same local day AND same value); two different numbers on one day are two
+  // real readings and both stay.
+  var _wSeen={}, _wDupes=0;
+  wl=wl.filter(function(r){
+    var k=_jvDayOf(r.logged_at)+'@'+r.weight;
+    if(_wSeen[k]){ _wDupes++; return false; }
+    _wSeen[k]=1; return true;
+  });
+  L('\nWEIGH-INS — the FULL history for '+who.name+', newest first (not limited to the range above):');
+  if(!wl.length){
+    L('  NOTHING. '+who.name+' has never logged a weigh-in. This is checked against the whole history, so it is a fact, not a gap in a window.');
+  } else {
+    var inR=[];
+    // Every reading in the asked range is shown whatever the count; outside it
+    // the list is capped so a two-year history cannot crowd out the answer. The
+    // cap is stated, because a silently truncated list is a list that lies.
+    var _shown=0, _elided=0;
+    wl.forEach(function(r){
+      var k=_jvDayOf(r.logged_at);
+      var here=!!(k && inRange[k]);
+      if(here) inR.push(r);
+      if(!here && _shown>=90){ _elided++; return; }
+      _shown++;
+      L('  '+k+' ('+(k?_jvDowShort(k):'?')+')  '+r.weight+' lbs'+(r.notes?('  — '+_jvOneLine(r.notes,60)):'')+(here?'  <-- inside the range asked':''));
+    });
+    if(_elided) L('  ('+_elided+' older weigh-in'+(_elided===1?'':'s')+' not listed above to keep this readable — they exist and can be read if he asks for that far back.)');
+    if(_wDupes) L('  ('+_wDupes+' exact duplicate row'+(_wDupes===1?'':'s')+' — same day, same number — collapsed. Those are one reading stored twice, not repeat weigh-ins.)');
+    L('  '+wl.length+' weigh-in'+(wl.length===1?'':'s')+' on record. Newest '+wl[0].weight+' lbs on '+_jvDayOf(wl[0].logged_at)
+      +', oldest '+wl[wl.length-1].weight+' lbs on '+_jvDayOf(wl[wl.length-1].logged_at)+'.');
+    if(wl.length>1){
+      var moved=_jvRound((+wl[0].weight)-(+wl[wl.length-1].weight));
+      L('  Net across the whole history: '+(moved>0?'up ':(moved<0?'down ':'no change, '))+Math.abs(moved)+' lbs.');
+    }
+    if(!inR.length) L('  NONE fall inside '+range.label+' itself. If he asked for a weigh-in from that window, say the nearest real reading and its date — never move a reading onto a date it did not happen.');
+  }
+
+  L('\nHOW TO ANSWER THIS: give him the number and the date it belongs to. Nothing above needs adding up. '
+    +'If a figure he wants is genuinely not here, say which day or which reading is missing — that is a real answer, and inventing one is not.');
+  return out.join('\n');
+}
+
+// ===== THE FETCH ========================================================
+// Range-fetch on logged_at with a generous margin, then filter on the LOCAL
+// day in code. date_str is stored as "Aug 24, 2026" — a gte on it in the query
+// is a lexicographic string compare that returns the wrong rows and returns
+// them silently, which is the worst kind of wrong here.
+//
+// sbSelect RETURNS [] ON FAILURE AND NEVER THROWS (house landmine), so an empty
+// array is two different facts — "no rows" and "the read broke". Telling him a
+// client logged nothing when the network dropped is precisely the lie this path
+// exists to stop, and it is the confident-sounding kind. _sbFailMark is the
+// signal the file already keeps for exactly this; read before, compared after.
+async function _jvFetchRecord(code, range){
+  var pad=3*86400000;
+  var lo=new Date(new Date(range.from+'T00:00:00').getTime()-pad).toISOString();
+  var hi=new Date(new Date(range.to+'T23:59:59').getTime()+pad).toISOString();
+  var q='client_code=eq.'+encodeURIComponent(code);
+  var span='&logged_at=gte.'+encodeURIComponent(lo)+'&logged_at=lte.'+encodeURIComponent(hi);
+  var mark=(typeof _sbFailMark==='function')?_sbFailMark():0;
+  var r=await Promise.all([
+    sbSelect('food_logs',    q+span+'&select=name,calories,protein,carbs,fat,meal,date_str,logged_at&order=logged_at.desc&limit=1200').catch(function(){return [];}),
+    sbSelect('workout_logs', q+span+'&select=title,description,intensity,duration,date_str,logged_at&order=logged_at.desc&limit=400').catch(function(){return [];}),
+    // step_logs has no logged_at at all — it is keyed on date_str with updated_at.
+    sbSelect('step_logs',    q+'&select=steps,date_str,updated_at&order=updated_at.desc&limit=400').catch(function(){return [];}),
+    // Weigh-ins are few and the whole history is wanted, so no span on this one.
+    sbSelect('weight_logs',  q+'&select=weight,notes,logged_at&order=logged_at.desc&limit=200').catch(function(){return [];})
+  ]);
+  var broke=(typeof _sbFailedSince==='function')?_sbFailedSince(mark):false;
+  return {foods:r[0]||[], workouts:r[1]||[], steps:r[2]||[], weights:r[3]||[], broke:broke};
+}
+
+
+
+// ===== THE ONE DOOR FOR A QUESTION ABOUT A PERSON ========================
+// Every trainer read path consults THIS and nothing else. The disease this
+// file keeps catching is one question answered in two places; the answer to
+// "who is he asking about, and what does their record say" is answered here,
+// once, and the callers only decide what to do with it.
+//
+// Returns {kind:'one', block} when one person is named and their real record
+// was read; {kind:'ambiguous', ask} and {kind:'unknown', ask} when the honest
+// move is a question; {kind:'none'} for everything else, which changes nothing.
+// ONE PHRASING OF THE QUESTION. The cockpit and the front desk both have to
+// ask it, and two hand-written versions is how they drift apart.
+function _jvAskWhich(hits){
+  var names=(hits||[]).map(function(h){ return h.name; });
+  var first=String(names[0]||'').split(' ')[0];
+  return 'Which '+first+' do you mean — '+names.join(', ')+'?';
+}
+async function _jvOnePerson(askText){
+  var t=String(askText||'');
+  if(!t.trim()) return {kind:'none'};
+  var who;
+  try{ who=_jvWhoAsked(t); }catch(e){ return {kind:'none'}; }
+  if(who.kind==='ambiguous'){
+    var first=String(who.hits[0].name||'').split(' ')[0];
+    return {kind:'ambiguous', hits:who.hits,
+      ask:'Which '+first+' do you mean — '+who.hits.map(function(h){ return h.name; }).join(', ')+'?'};
+  }
+  if(who.kind!=='one'){
+    // A NAME THAT IS NOBODY IS SAID, NOT SWALLOWED. Falling through here is how
+    // "how is Roberto doing" got answered about the roster at large.
+    var un=''; try{ un=_jvUnknownName(t); }catch(e){}
+    if(un) return {kind:'unknown', name:un, ask:'I don’t have anyone called '+un+'. Who do you mean?'};
+    return {kind:'none'};
+  }
+  // NO RANGE NAMED IS NOT NO RANGE. He asks "how is Kelly doing" far more often
+  // than he names a window, and answering that off two days is the wall this
+  // rebuild exists to remove. A month back is the floor, not the ceiling — a
+  // named range is honoured exactly as asked, however far back it reaches.
+  var range=null;
+  try{ range=_jvAskedRange(t); }catch(e){}
+  if(!range){
+    var _n=new Date(), _t=new Date(_n.getFullYear(),_n.getMonth(),_n.getDate());
+    range={from:_jvIsoDay(_jvShiftDays(_t,-29)), to:_jvIsoDay(_t), days:30, label:'the last 30 days'};
+  }
+  var data=null;
+  try{ data=await _jvFetchRecord(who.code, range); }catch(e){ data=null; }
+  if(!data) return {kind:'none'};
+  var block='';
+  try{ block=_jvBuildRecord(who, range, data); }catch(e){ return {kind:'none'}; }
+  return {kind:'one', code:who.code, name:who.name, range:range, block:block};
+}
 function _jvClientWeightBlock(msg){
   try{
     var low=' '+String(msg).toLowerCase()+' ';
     if(!/\b(weigh-?in|weighin|weight|weighed)\b/.test(low)) return '';
-    var best=null;
-    Object.keys(CLIENTS).forEach(function(k){
-      if(CLIENTS[k].isTrainer) return;
-      var nm=(CLIENTS[k].name||'').toLowerCase().trim(); if(!nm) return;
-      var first=nm.split(/\s+/)[0]; if(first.length<3) return;
-      var re=new RegExp('\\b'+first.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b');
-      if(re.test(low)){ if(!best || first.length>best.first.length) best={code:k, name:CLIENTS[k].name, first:first}; }
-    });
-    if(!best) return '';
+    // ONE RESOLVER (Yusuf, ruling, 25 Aug — "strip the path and rebuild it").
+    // This was its own hand-rolled scan of CLIENTS, and so was the schedule
+    // block below it, and so was the router: three copies of "who does he
+    // mean", drifting. Worse, this one PICKED — longest first name wins — so
+    // "Chris" silently became one of the two Chrises with nothing said. It
+    // consults _jvWhoAsked now, which asks when it cannot be sure; an
+    // ambiguous name is answered with a question upstream and never arrives.
+    var _w=null; try{ _w=_jvWhoAsked(msg); }catch(e){}
+    if(!_w || _w.kind!=='one') return '';
+    var best={code:_w.code, name:_w.name};
     var head='\n\n=== '+best.name+'\u2019S WEIGH-IN HISTORY (real, full history \u2014 not just today) ===\n';
     var st=(typeof _jvTriageState==='function')?_jvTriageState():'never';
     if(st!=='ready'){
@@ -44315,15 +44811,13 @@ async function _jvClientScheduleBlock(msg){
     // ADDS context to the prompt, never triggers a write, so broad is the
     // safe direction — more program context never hurts an answer.
     if(!/\b(calendar|schedule|split|program|the plan|her plan|his plan|their plan|what days|which days|see workout|sees workout|seeing workout|her workouts|his workouts|their workouts|training days|workout days|days will|days does|days she|days he|days they|workout on|training on|monday|tuesday|wednesday|thursday|friday|saturday|sunday|(leg|rest|push|pull|pilates|cardio|yoga|arm|upper|lower|core|back|chest|shoulder|glute|active|recovery)\s+day|\d+(st|nd|rd|th)\s+day|(first|second|third|fourth|fifth|sixth|seventh|eighth)\s+day)\b/.test(low)) return '';
-    var best=null;
-    Object.keys(CLIENTS).forEach(function(k){
-      if(CLIENTS[k].isTrainer) return;
-      var nm=(CLIENTS[k].name||'').toLowerCase().trim(); if(!nm) return;
-      var first=nm.split(/\s+/)[0]; if(first.length<3) return;
-      var re=new RegExp('\\b'+first.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b');
-      if(re.test(low)){ if(!best || first.length>best.first.length) best={code:k, name:CLIENTS[k].name, first:first}; }
-    });
-    if(!best) return '';
+    // ONE RESOLVER — the same swap as the weigh-in block above, and the second
+    // of the two hand-rolled scans that ruling removed. Identical fault:
+    // longest first name wins, silently, so three Anthonys resolved to one of
+    // them and the other two were never mentioned.
+    var _w=null; try{ _w=_jvWhoAsked(msg); }catch(e){}
+    if(!_w || _w.kind!=='one') return '';
+    var best={code:_w.code, name:_w.name};
     var pr=await fetch(SB_URL+'/rest/v1/programs?client_code=eq.'+encodeURIComponent(best.code)+'&is_active=eq.true&order=created_at.desc&limit=1',{headers:sbHeaders()});
     var rows=pr.ok?await pr.json():[];
     if(!rows.length){
@@ -44382,6 +44876,20 @@ async function jvChatSend(){
   // who "Toni" is. Everything else falls straight through to the chat below, which is
   // what builds a program and puts it in a client's app.
   try{ if(await _jvFeedCommand(msg)) return; }catch(e){ console.error('feed command',e); }
+  // AMBIGUOUS NAMES ASK, THEY DO NOT GUESS (Yusuf, ruling, 25 Aug). Before any
+  // model: "Chris" is two people here and "Anthony" is three, and the old
+  // per-block finders each picked the longest match silently. Picking is the
+  // failure — an answer about the wrong Chris is worse than a question.
+  // Asked HERE rather than inside the resolver so the feed commands above keep
+  // their own wording, and so an unresolved name is a question too.
+  try{
+    var _who=_jvWhoAsked(msg);
+    if(_who.kind==='ambiguous'){ _jvSay(_escHtml(_jvAskWhich(_who.hits))); return; }
+    if(_who.kind!=='one'){
+      var _un=_jvUnknownName(msg);
+      if(_un){ _jvSay(_escHtml('I don’t have anyone called '+_un+'. Who do you mean?')); return; }
+    }
+  }catch(e){ console.error('who asked',e); }
   var out=document.getElementById('jvReadOut');
   jvChatHistory.push({role:'user',content:msg});
   function paint(thinking){
@@ -44392,7 +44900,7 @@ async function jvChatSend(){
   }
   paint(true);
   var orb=document.getElementById('jvOrb'); if(orb) orb.classList.add('jvThinking');
-  var sys=JARVIS_CHARTER+'\n\n'+YUSUF_VOICE+'\n\nYou are Jarvis \u2014 Yusuf\'s running mate inside YOURJIMBFF. Not a copilot that nods along: a co-coach who knows how he operates and works to offset him. When he\'s flat, lift him. When he\'s spun up or scattered, ground him and narrow it to the one thing that matters. Keep him honest and keep him steady. You can see a live snapshot of his client board below: who is active, who has gone quiet and for how long, and what each person logged today. Use it directly \u2014 real names, real numbers. If it is early and few have logged today yet, say that plainly, but you still know who has been consistent and who is slipping, so coach from that. Never tell him you cannot see his data \u2014 the snapshot is right here. ANSWER WHAT HE ASKS, FIRST AND DIRECTLY: if he asks a specific question \u2014 a client\\u2019s schedule, a number, a yes/no, one person \u2014 answer THAT precisely before anything else. Do NOT open with the who-needs-you roster rundown unless he actually asks for it (\\u201cwho needs me\\u201d, \\u201cdebrief\\u201d, \\u201crun the board\\u201d, \\u201cwhat should I do today\\u201d). Leading with an unrequested briefing when he asked one narrow thing is exactly what frustrates him. Talk like a sharp, loyal friend who\'s in it with him \u2014 direct, specific, real. Use real names and numbers. Never a yes-man: if he\'s avoiding something or about to overdo it, say so plainly and kindly. No corporate or AI-sounding language, no fluff, no hype padding. Push him toward real action and real conversations with his clients and the people in his life \u2014 you point him at the work, you don\'t replace it. WHEN YOU DRAFT A TEXT TO A CLIENT (a check-in, a reply, or reaching out): write ONE real text message in the YUSUF VOICE given above \u2014 follow it exactly, and never a header, a bullet, a section label or a memo. If the client asked about or was confused by something, answer THAT first. Then find the SINGLE most real thing in what they said and speak to that one thing; do not acknowledge every point they made. Praise ONCE and mean it \u2014 never stack superlatives, never say things like "this is gold" or "that is the whole thing," no hype padding. Keep it to the few short rows the voice above allows \u2014 a long message from them does not earn a long reply. Output ONLY the message itself, ready to send \u2014 no preamble, no options, no explaining your choices. Current day context:\n'+(await _jvAssistantContext({}));
+  var sys=JARVIS_CHARTER+'\n\n'+YUSUF_VOICE+'\n\nYou are Jarvis \u2014 Yusuf\'s running mate inside YOURJIMBFF. Not a copilot that nods along: a co-coach who knows how he operates and works to offset him. When he\'s flat, lift him. When he\'s spun up or scattered, ground him and narrow it to the one thing that matters. Keep him honest and keep him steady. You can see a live snapshot of his client board below: who is active, who has gone quiet and for how long, and what each person logged today. Use it directly \u2014 real names, real numbers. If it is early and few have logged today yet, say that plainly, but you still know who has been consistent and who is slipping, so coach from that. Never tell him you cannot see his data \u2014 the snapshot is right here. ANSWER WHAT HE ASKS, FIRST AND DIRECTLY: if he asks a specific question \u2014 a client\\u2019s schedule, a number, a yes/no, one person \u2014 answer THAT precisely before anything else. Do NOT open with the who-needs-you roster rundown unless he actually asks for it (\\u201cwho needs me\\u201d, \\u201cdebrief\\u201d, \\u201crun the board\\u201d, \\u201cwhat should I do today\\u201d). Leading with an unrequested briefing when he asked one narrow thing is exactly what frustrates him. Talk like a sharp, loyal friend who\'s in it with him \u2014 direct, specific, real. Use real names and numbers. Never a yes-man: if he\'s avoiding something or about to overdo it, say so plainly and kindly. No corporate or AI-sounding language, no fluff, no hype padding. Push him toward real action and real conversations with his clients and the people in his life \u2014 you point him at the work, you don\'t replace it. WHEN YOU DRAFT A TEXT TO A CLIENT (a check-in, a reply, or reaching out): write ONE real text message in the YUSUF VOICE given above \u2014 follow it exactly, and never a header, a bullet, a section label or a memo. If the client asked about or was confused by something, answer THAT first. Then find the SINGLE most real thing in what they said and speak to that one thing; do not acknowledge every point they made. Praise ONCE and mean it \u2014 never stack superlatives, never say things like "this is gold" or "that is the whole thing," no hype padding. Keep it to the few short rows the voice above allows \u2014 a long message from them does not earn a long reply. Output ONLY the message itself, ready to send \u2014 no preamble, no options, no explaining your choices. Current day context:\n'+(await _jvAssistantContext({ask:msg}));
   try{ var _sched = await _jvClientScheduleBlock(msg); if(_sched) sys += _sched; }catch(e){}
   try{ sys += _jvClientWeightBlock(msg); }catch(e){}
   // ONE CONSTANT WITH _jtTurn's gate NOW (Yusuf, ruling, 19 Aug — was two
@@ -64598,13 +65106,43 @@ function logWorkoutFromPhoto(){
 // Returns a string summary of EVERYTHING we know about the client + today.
 // Used by both the Performance Assistant AND the food analyzer.
 // Silent on missing data — sections only appear if there's something to say.
-async function buildDayContext(){
+async function buildDayContext(askText){
   if(typeof refreshTodayDate==='function') refreshTodayDate();
   var sections=[];
   // Anchor Jim to the real current date/time so it can never claim the wrong day (a long-open PWA used to go stale).
   try{
     var _now=new Date();
     sections.push('=== CURRENT DATE & TIME ===\nRight now it is '+_now.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})+' at '+_now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})+', the client\'s local time. Treat THIS as today. Never state or guess a different date — if a log is from an earlier day, name that day relative to this one. "Today" always means '+todayDateStr+'.');
+  }catch(e){}
+
+  // ===== A QUESTION NAMING A CLIENT GETS THAT CLIENT AND NOBODY ELSE ======
+  // (Yusuf, ruling, 25 Aug — the one that could cost him a client on a call.)
+  //
+  // Everything below this point is HIS OWN data: his profile, his meals today,
+  // his training, his weigh-ins. It was appended to the same prompt as the
+  // roster snapshot, so a question about a client arrived with two people's
+  // numbers in it and no rule about which to read. That is how his own figures
+  // came back as somebody else's.
+  //
+  // So the withholding is STRUCTURAL, not an instruction. When he names one
+  // client the function returns before a single one of his own reads runs —
+  // the data is not in the prompt to be confused, and no amount of the model
+  // reading past a rule can put it there. Returning early is also why the
+  // ~25 table reads below are skipped entirely on this path.
+  //
+  // Deliberately trainer-only: on a client's account askText is never passed,
+  // and a client naming another client must never reach anyone's record.
+  try{
+    if(askText && window.cl && typeof isTrainer==='function' && isTrainer(cl.code)){
+      var _one=await _jvOnePerson(askText);
+      if(_one && _one.kind==='one' && _one.block){
+        sections.push(_one.block);
+        sections.push('=== WHOSE DATA THIS IS ===\nHe asked about '+_one.name+', so this prompt holds '+_one.name+'’s record and NOTHING ELSE. '
+          +'Yusuf’s own food, training and weigh-ins are deliberately absent — they are not missing, they are withheld, because they are not the answer to this question. '
+          +'Never answer a question about '+_one.name+' with a number that is not in the block above. If you want a figure that is not there, say which one is missing.');
+        return sections.join('\n\n');
+      }
+    }
   }catch(e){}
 
   // THE GHOST TRIGGER IS GONE (Yusuf, 8 Aug). Past 2pm with nothing logged used to
@@ -64992,7 +65530,7 @@ async function buildTrainerRosterContext(){
 }
 
 // Wrapper kept for backwards-compat with the chat code path
-async function buildChatContext(){ return await buildDayContext(); }
+async function buildChatContext(askText){ return await buildDayContext(askText); }
 
 // ===== ASK LIKE A PERSON, ONCE (Yusuf, ruling, 20 Aug) ===================
 // The fallback is a CONVERSATION, not a form. What it was doing: asking for
@@ -66582,7 +67120,10 @@ async function jimTurn(text, photos, opts){
     if(_qmTime) _qmPayload.eat_time=_qmTime;
     reply='Logged \u2014 '+_quickMatch.name+'.\n[FOOD_LOG]'+JSON.stringify(_qmPayload)+'[/FOOD_LOG]';
   } else {
-  var ctx=await buildChatContext();
+  // The read path finally sees what he asked. Without the message it could not
+  // tell a question about a client from a question about him, which is the
+  // whole reason both used to arrive in one prompt.
+  var ctx=await buildChatContext((window.cl && typeof isTrainer==='function' && isTrainer(cl.code)) ? text : null);
   var systemBlock=buildCoachVoice();
   // The fallback speaks like a capable assistant, not a form (Yusuf, ruling).
   try{ systemBlock+=JIM_ASK_RULES; }catch(e){}
