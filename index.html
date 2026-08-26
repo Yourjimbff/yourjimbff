@@ -65782,7 +65782,13 @@ async function buildDayContext(askText){
 
   // RECENT FOOD (last 7 days, excluding today) — gives Jim the ids so he can correct older logs when asked
   try{
-    var _recentFood = await sbSelect('food_logs','client_code=eq.'+cl.code+'&select=id,name,rating,calories,protein,date_str,logged_at&order=logged_at.desc&limit=80');
+    // meal AND eat_time ARE SELECTED NOW. The line below has always printed
+    // f.meal, and meal was never in this select — so every older row reached the
+    // model as "(… , )" with an empty slot. Spencer asked to move "the BREAKFAST
+    // meal from yesterday to today" and nothing in the prompt said Breakfast,
+    // which is how "I don't see anything on your week matching that" came back
+    // about a row that was sitting right there.
+    var _recentFood = await sbSelect('food_logs','client_code=eq.'+cl.code+'&select=id,name,rating,calories,protein,meal,eat_time,date_str,logged_at&order=logged_at.desc&limit=80');
     if(_recentFood && _recentFood.length){
       var _byDay={};
       _recentFood.forEach(function(f){
@@ -65790,13 +65796,21 @@ async function buildDayContext(askText){
         if(!ds || ds===todayDateStr) return; // today is already listed above
         (_byDay[ds]=_byDay[ds]||[]).push(f);
       });
-      var _days=Object.keys(_byDay).sort().reverse().slice(0,7);
+      // SORTED BY REAL DATE, NOT ALPHABETICALLY. date_str is stored as
+      // "Aug 26, 2026", so a plain .sort() compares it as text: "Aug 5" sorts
+      // after "Aug 26", and June sorts after August. The seven days kept were
+      // therefore not the seven most recent ones.
+      var _days=Object.keys(_byDay).sort(function(a,b){
+        var da=new Date(a), db=new Date(b);
+        if(isNaN(da)||isNaN(db)) return String(b).localeCompare(String(a));
+        return db-da;
+      }).slice(0,7);
       if(_days.length){
-        var rfBits=['=== RECENT FOOD (last 7 days — reference for corrections only, do not recap unprompted) ==='];
+        var rfBits=['=== RECENT FOOD (last 7 days — do not recap unprompted, but this is what you MOVE, CORRECT or DELETE from when they ask) ==='];
         _days.forEach(function(ds){
           rfBits.push(ds+':');
           _byDay[ds].forEach(function(f){
-            rfBits.push('  - (id:'+f.id+') '+f.name+' ('+(f.rating||'—')+', '+(f.calories||0)+' cal, '+(f.protein||0)+'g P, '+(f.meal||'')+')');
+            rfBits.push('  - (id:'+f.id+') '+(f.meal?(f.meal+' '):'')+f.name+' ('+(f.rating||'—')+', '+(f.calories||0)+' cal, '+(f.protein||0)+'g P'+(f.eat_time?(', '+f.eat_time):'')+')');
           });
         });
         sections.push(rfBits.join('\n'));
@@ -66338,9 +66352,24 @@ function buildCoachVoice(){
     'When you ADD or consolidate a MAIN meal (Breakfast/Lunch/Dinner) and there is relevant context — especially a workout earlier today making it a post-workout meal — include a short "insight" field per the insight rule above, so the card isn\'t blank. e.g. consolidating a post-workout lunch: include "insight":"Post-pull refuel — 103g protein to rebuild after heavy rows." Keep your visible chat reply short regardless.\n'+
     'DELETING — IMPORTANT, READ CAREFULLY:\n'+
     'You are NOT good at deciding which row to delete when entries look alike, and a wrong guess creates duplicates and chaos. So the rule is strict:\n'+
-    '- DO NOT delete meals via chat. Do NOT emit [FOOD_DELETE] to clean up duplicates, remove "the old one," or pick between similar entries. You cannot reliably tell identical-looking rows apart, and guessing makes it worse.\n'+
+    // ===== MOVING, CORRECTING AND DELETING IS A CAPABILITY ==============
+    // (Yusuf, ruling, 26 Aug, after Spencer R.) This used to open "DO NOT
+    // delete meals via chat" and send him to a button. He asked three times in
+    // plain words to move a breakfast from yesterday to today and was refused,
+    // then told nothing matched. A client correcting their own log in words is
+    // the whole point of a logging surface.
+    //
+    // The old caution was about telling identical rows apart, which is real —
+    // so the rule is ASK WHICH, not refuse. Same law as everywhere else here.
+    '- MOVING, CORRECTING AND DELETING A LOGGED MEAL IS SOMETHING YOU DO, IN WORDS, WHEN THEY ASK.\n'+
+    '  "Move that to today", "that was yesterday", "that was dinner not a snack", "delete the second one", "the calories were wrong" — all of these you carry out.\n'+
+    '  MOVE OR CORRECT = [FOOD_EDIT] with the id and ONLY the fields that change. To move a meal to another day, send date_str for the day it belongs on ("Aug 26, 2026" format). NEVER re-emit [FOOD_LOG] to move or fix something already logged — that creates a second row, and a duplicate is worse than the mistake.\n'+
+    '  The rows you can act on are in TODAY\u2019S FOOD and in RECENT FOOD above, each with its id, its meal slot and its time. If they name a meal and a day, it is in one of those two lists — FIND IT before saying you cannot.\n'+
+    '  NEVER say you cannot see something on their week without having read both lists. That sentence was returned to a real client about a row that was sitting right there.\n'+
+    '- IF TWO ROWS LOOK ALIKE, ASK WHICH ONE — never guess and never refuse. "You have two Spicy Deluxe Sandwiches on Aug 25, one at 10:15pm as dinner and one as a snack. Which one?" That is the answer, not a button.\n'+
+    '- SAY WHAT ACTUALLY CHANGED, and never claim a change you did not make. "Moved your breakfast to today" only after the marker is emitted for it. Do not restate the day\u2019s totals as if a move had already landed — the app reads the row back and will correct you in front of them.\n'+
     '- When a user wants to REMOVE a meal, or fix duplicates, or "remove it and add it back" — DO NOT try to do the deletion yourself. Instead, just ADD or EDIT what they want, and tell them to remove the unwanted one themselves: "I\'ve added the corrected one — tap the ⋯ on the [meal] row and hit Delete to clear the old entry. Takes a sec and keeps it exact." The ⋯ menu on every meal has a Delete button; that\'s the reliable path.\n'+
-    '- If they explicitly say "delete X" and there is EXACTLY ONE clear, unambiguous match in the log, you may emit a single [FOOD_DELETE] for it. If there are multiple similar entries, or any doubt at all, DO NOT delete — point them to the ⋯ Delete button instead.\n'+
+    '- DELETE: when they say to delete something and exactly one row matches, emit a single [FOOD_DELETE] for it and say which one went. When more than one matches, ask which — by slot and time, since that is what tells them apart. Never delete two rows on one instruction unless they said "both".\n'+
     'NEVER RETRY-BY-ADDING: if you already added or edited a meal this conversation and the user says it didn\'t work or something\'s off, DO NOT add it again. Re-read the current TODAY\'S FOOD list in context first. Adding again is what creates duplicates. When in doubt, add nothing and tell them to use the ⋯ Delete button to clean up.\n'+
     '[FOOD_DELETE]{"id":482}[/FOOD_DELETE]  (only for a single unambiguous explicit delete)\n'+
     'You may emit MULTIPLE [FOOD_LOG]/[FOOD_EDIT] markers in one reply. Each on its own line. If a reply has more than one [FOOD_LOG]/[WORKOUT_LOG] total, give each its own "words" field per the ONE MESSAGE, MULTIPLE ENTRIES rule above — never let two entries share the same words, never the whole message on each.\n'+
@@ -66821,6 +66850,29 @@ async function applyFoodEdit(id, fields){
   var allowed=['name','emoji','calories','protein','carbs','fat','sugar','rating','insight','meal','eat_time','date_str','felt'];
   var patch={};
   allowed.forEach(function(k){ if(fields[k]!==undefined && fields[k]!==null && fields[k]!=='') patch[k]=fields[k]; });
+  // ===== A MOVE MOVES BOTH DATE FIELDS (Spencer R, 26 Aug) ===============
+  // A row carries its day TWICE: date_str, which the Day page filters on, and
+  // logged_at, which the feed, the trainer record and every ordering read. This
+  // list moved one and not the other, so a meal moved to today still sat on
+  // yesterday everywhere that reads the timestamp — a half-move, which is what
+  // "you didn't move it" was describing.
+  //
+  // Proven in his real row: date_str "Aug 26, 2026" alongside logged_at
+  // 2026-08-25T15:00:00. Those two disagree, and only a half-move makes them.
+  //
+  // logged_at is kept at the same CLOCK TIME on the new day, so a breakfast
+  // stays a breakfast rather than jumping to whatever hour the move happened.
+  if(patch.date_str){
+    try{
+      var _nd=new Date(patch.date_str);
+      if(!isNaN(_nd)){
+        var _old=fields._wasLoggedAt ? new Date(fields._wasLoggedAt) : null;
+        var _h=(_old && !isNaN(_old)) ? _old.getHours() : 12;
+        var _mn=(_old && !isNaN(_old)) ? _old.getMinutes() : 0;
+        patch.logged_at=new Date(_nd.getFullYear(), _nd.getMonth(), _nd.getDate(), _h, _mn, 0).toISOString();
+      }
+    }catch(e){}
+  }
   ['calories','protein','carbs','fat','sugar'].forEach(function(k){ if(patch[k]!==undefined) patch[k]=Math.round(Number(patch[k])||0); });
   if(Object.keys(patch).length===0) return false;
   try{
@@ -74512,8 +74564,27 @@ function _jimHarvestSteps(raw){
   var v=parseInt(String(m[1]).replace(/,/g,''),10);
   return (!isNaN(v) && v>0 && v<=200000) ? v : null;
 }
+// ===== A COMPARISON TO A PAST MEAL IS NOT A DATE (Spencer R, 26 Aug) ======
+// "For breakfast I had the same protein coffee AS YESTERDAY along with three
+// Kirkland beef sticks" landed on yesterday. He was telling us what the coffee
+// WAS, not when he drank it — the day comes from when he says he ATE it, never
+// from a food reference.
+//
+// Proven in his real rows: the row carries eat_time 9:00 AM and a logged_at of
+// 2026-08-25T15:00:00 — a constructed timestamp, built from "yesterday" plus
+// the stated hour, on a breakfast he ate today.
+//
+// The comparison clause is blanked before the anchor reads the sentence, so an
+// ACTUAL stated day still anchors: "yesterday I had the same as the day before"
+// keeps its leading "yesterday" and loses only the trailing comparison.
+// Deliberately ONE LINE: several suites lift this with a single-line reader,
+// and a multi-line declaration is invisible to them.
+var _JIM_FOOD_CMP_RE=new RegExp('\\b(?:the\\s+)?same\\b[^.,;]{0,40}?\\bas\\s+(?:i\\s+(?:had|ate|did)\\s+)?(?:on\\s+)?(?:yesterday|last night|the day before|before)\\b|\\b(?:just\\s+)?like\\s+(?:i\\s+(?:had|ate)\\s+)?(?:on\\s+)?(?:yesterday|last night|the day before)(?:\\u2019s|\\u0027s)?\\b|\\b(?:yesterday|last night)(?:\\u2019s|\\u0027s)\\s+\\w+|\\bsame\\s+as\\s+(?:yesterday|last night|before|always|usual)\\b|\\b(?:my|the)\\s+usual\\b','ig');
+function _jimStripFoodCompare(t){
+  try{ return String(t||'').replace(new RegExp(_JIM_FOOD_CMP_RE.source,'ig'),' '); }catch(e){ return String(t||''); }
+}
 function _jimAnchorDay(raw){
-  var t=String(raw||'');
+  var t=_jimStripFoodCompare(String(raw||''));
   if(!t) return null;
   // ORDER MATTERS: "day before yesterday" CONTAINS "yesterday", so the longer
   // phrase has to be asked first or it resolves to 1 and quietly loses a day.

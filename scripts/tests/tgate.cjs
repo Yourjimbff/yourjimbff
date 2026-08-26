@@ -12,7 +12,7 @@ eval([
   L[L.findIndex(l=>l.startsWith('var _JIM_WEEKS_AGO_RE='))],
   L[L.findIndex(l=>l.startsWith('var _JIM_MONTHS='))],
   grab(l=>l.startsWith('function _jimDateSaid(')),
-  grab(l=>l.startsWith('function _jimAnchorDay(')),
+  multi('var _JIM_FOOD_CMP_RE='), grab(l=>l.startsWith('function _jimStripFoodCompare(')), grab(l=>l.startsWith('function _jimAnchorDay(')),
 ].join('\n'));
 require('./_guard.cjs')(['_JT_PAST_MEAL_RE','_jimAnchorDay','_jimDateSaid'], function(n){ return eval(n); });
 // The gate, exactly as jimTurn applies it: he reported eating AND named a past day.

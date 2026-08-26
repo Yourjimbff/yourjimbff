@@ -13,8 +13,9 @@ global.Date=FakeDate;
 eval([ one('var _JIM_DAY_BACK_RE='), one('var _JIM_DAY_NAGO_RE='), one('var _JIM_DOW='),
        one('var _JIM_WORDNUM='), one('var _JIM_DAY_MAX='), one('var _JIM_WEEKS_AGO_RE='),
        one('var _JIM_MONTHS='), grab(l=>l.startsWith('function _jimDateSaid(')),
+       one('var _JIM_FOOD_CMP_RE='), grab(l=>l.startsWith('function _jimStripFoodCompare(')), 
        grab(l=>l.startsWith('function _jimAnchorDay(')) ].join('\n'));
-require('./_guard.cjs')(['_JIM_DAY_BACK_RE','_JIM_DAY_MAX','_JIM_DAY_NAGO_RE','_JIM_DOW','_JIM_MONTHS','_JIM_WEEKS_AGO_RE','_JIM_WORDNUM','_jimAnchorDay','_jimDateSaid'], function(n){ return eval(n); });
+require('./_guard.cjs')(['_JIM_DAY_BACK_RE','_JIM_DAY_MAX','_JIM_DAY_NAGO_RE','_JIM_DOW','_JIM_MONTHS','_JIM_WEEKS_AGO_RE','_JIM_WORDNUM','_jimAnchorDay','_jimDateSaid','_jimStripFoodCompare','_JIM_FOOD_CMP_RE'], function(n){ return eval(n); });
 const fmt=(n)=>{ if(n==null) return 'null'; const d=new REAL(2026,7,24); d.setDate(d.getDate()-n); return d.toDateString().slice(0,10); };
 const C=[
   ['I had two buffet muffins yesterday', 1],
