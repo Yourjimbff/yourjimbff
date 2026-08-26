@@ -96,5 +96,39 @@ t(/NEVER say you cannot see something on their week without having read both lis
   'the exact refusal he got is named and forbidden');
 t(/never claim a change you did not make/.test(src), 'and a move is not announced before it is made');
 
+// ===== 4. "SEE EARLIER MESSAGES" WAS A DEAD BUTTON ======================
+// Not slow — dead, and only in the one state it exists for. from>=n means the
+// current sitting is EMPTY: everything on the thread is older than fifteen
+// minutes, which is exactly where he is when he comes back and taps it.
+// jtShowEarlier set _jtShown and re-rendered; _jtWindow then wiped _jtShown on
+// that same render and the window fell back to the empty sitting.
+console.log('\n  "see earlier messages" actually expands:');
+global.JT_THREAD_WINDOW=30;
+eval(grab(l=>l.startsWith('function _jtWindow(')));
+const TH=Array.from({length:50},(_,i)=>({role:i%2?'a':'u'}));
+global._jtSittingFrom=()=>50;              // a cold thread: nothing in this sitting
+window._jtShown=null;
+t(_jtWindow(TH).rows.length===0, 'a cold thread opens on the newest, showing none of it');
+window._jtShown=30; window._jtExpanding=true;
+t(_jtWindow(TH).rows.length===30, 'ONE tap reveals a windowful', _jtWindow(TH).rows.length+' rows');
+window._jtShown=60;
+t(_jtWindow(TH).rows.length===50, 'and a second tap reaches the whole thread');
+window._jtExpanding=false;
+// The reset is still right for a NEW sitting — an expansion he did while
+// reading must not follow him into tomorrow.
+window._jtShown=30;
+_jtWindow(TH);
+t(window._jtShown===null, 'but a new sitting still clears the expansion');
+t(/!window\._jtExpanding/.test(src), 'the guard is the render being serviced, not a timer');
+
+// HISTORY IS READ FROM THE DEVICE, NOT THE DATABASE — said plainly because it
+// is the difference between hidden and lost. _jtLoad reads localStorage only,
+// so this thread does not follow him to another phone or survive cleared site
+// data. Nothing is DELETED by the button; there is simply nothing stored
+// server-side for it to reach. Named here so it is not mistaken for fixed.
+const LD=grab(l=>l.startsWith('function _jtLoad('));
+t(/localStorage\.getItem\('yjb_jt_thread'\)/.test(LD), 'the thread is device-local (known limit, not a regression)');
+t(!/sbSelect/.test(LD), 'and nothing reads it back from the database');
+
 console.log(bad? '\n'+bad+' FAILED' : '\nall pass');
 process.exit(bad?1:0);
