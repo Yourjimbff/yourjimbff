@@ -130,5 +130,36 @@ const LD=grab(l=>l.startsWith('function _jtLoad('));
 t(/localStorage\.getItem\('yjb_jt_thread'\)/.test(LD), 'the thread is device-local (known limit, not a regression)');
 t(!/sbSelect/.test(LD), 'and nothing reads it back from the database');
 
+// ===== 5. ADDING A CLIENT IS A FIRST NAME AND A LAST NAME ==============
+// He asked Jarvis to add a returning client and was told she is not on his
+// roster. Jarvis then PROPOSED this exact short path itself, he said yes, and
+// it never did it — so this is a deterministic command, not a model
+// instruction. An agreed action that lives in a prompt can be agreed to and
+// forgotten between one reply and the next. This one cannot forget.
+console.log('\n  adding a client takes a first and a last name, and nothing else:');
+global.CLIENTS={chrism1:{name:'Chris McCarthy'}, janes1:{name:'Jane Smith'}};
+eval([one('var _JV_ADD_CLIENT_RE='), grab(l=>l.startsWith('function _jvCodeForName('))].join('\n'));
+['add Jane Smith','add a client Jane Smith','create Jane Smith','set up Jane Smith',
+ 'can you add Jane Smith','please add a returning client Jane Smith','onboard Jane Smith'
+].forEach(function(q){ t(!!_JV_ADD_CLIENT_RE.exec(q), 'he can say: '+JSON.stringify(q)); });
+['add Jane','how is Jane Smith doing','add 500 calories','what did Jane Smith eat',
+ 'add a note for Jane Smith saying she is travelling'
+].forEach(function(q){ t(!_JV_ADD_CLIENT_RE.exec(q), 'and this is NOT an add: '+JSON.stringify(q)); });
+// firstname + last initial + a climbing number, the shape every real code on
+// his roster already has. A second Chris M never lands on the first one.
+t(_jvCodeForName('jane','smith')==='janes2', 'the code climbs past one already taken', _jvCodeForName('jane','smith'));
+t(_jvCodeForName('chris','mccarthy')==='chrism2', 'and past chrism1', _jvCodeForName('chris','mccarthy'));
+// THE DOOR REQUIRES TWO FIELDS HE DOES NOT SAY. clientTier throws bad_arg on
+// anything but 'vip' or '1on1'; term_months goes through a number check that
+// throws on undefined. Proven by calling the live function without them and
+// getting bad_arg. They are supplied here rather than asked for - the same
+// defaults the add-client form already starts on, both his to change later.
+const AC=(src.match(/if\(\(m=_JV_ADD_CLIENT_RE\.exec\(t\)\)[\s\S]{0,3000}?return true;\n  \}/)||[''])[0];
+t(!!AC, 'the command exists');
+t(/isTrainer\(cl\.code\)/.test(AC), 'trainer only - a client saying "add John Smith" never reaches it');
+t(/tier:'1on1', term_months:6/.test(AC), 'the two required fields are supplied, not asked for');
+t(/sbSelect\('clients','code=eq\./.test(AC), 'and the row is READ BACK before the code is stated');
+t(/could not read the row back/.test(AC), 'a write it cannot confirm is never reported as done');
+
 console.log(bad? '\n'+bad+' FAILED' : '\nall pass');
 process.exit(bad?1:0);

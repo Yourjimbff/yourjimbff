@@ -13496,9 +13496,75 @@ function _jvSay(msg){
   out.innerHTML='<div class="jvChatA">'+msg+'</div>';
   try{ _jvSpeakLine(msg); }catch(e){}
 }
+// ===== ADDING A CLIENT IS A FIRST NAME AND A LAST NAME =================
+// (Yusuf, ruling, 26 Aug.) He asked Jarvis to add a returning client and was
+// told she is not on his roster. Of course she is not — that is why he is
+// adding her. Worse, Jarvis PROPOSED this exact short path itself ("why don't
+// we just put them in, then you can add the details later"), he said yes, and
+// it then never did it.
+//
+// So this is deliberately a DETERMINISTIC command, not a model instruction. An
+// agreed action that lives in a prompt can be agreed to and then forgotten
+// between one reply and the next, which is precisely what happened. This
+// cannot forget: it matches, it writes, it reads the row back, it says the
+// code. Tier, term, price, height, programme are all added later, whenever he
+// gets to it — the door already treats every one of them as optional.
+var _JV_ADD_CLIENT_RE=new RegExp('^\\s*(?:can you\\s+|please\\s+)?(?:add|create|set\\s*up|onboard|put\\s+in)\\s+(?:a\\s+)?(?:new\\s+|returning\\s+)?(?:client\\s+|person\\s+)?(?:called\\s+|named\\s+)?([a-z][a-z\\u2019\\u0027-]{1,30})\\s+([a-z][a-z\\u2019\\u0027-]{1,30})\\s*$','i');
+// firstname + last initial + a number, which is how every real code on this
+// roster is already built (chrism1, tonia1, leandram1). The number climbs until
+// the code is free, so a second Chris M never lands on the first one.
+function _jvCodeForName(first, last){
+  var f=String(first||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+  var l=String(last||'').toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,1);
+  var base=(f+l)||'client';
+  for(var n=1;n<200;n++){ var c=base+n; if(!(CLIENTS||{})[c]) return c; }
+  return base+Date.now();
+}
 async function _jvFeedCommand(text){
   var t=String(text||'').trim();
   var m;
+  // Trainer only, and above everything: this is a write, and a client saying
+  // "add John Smith" must never reach it.
+  if((m=_JV_ADD_CLIENT_RE.exec(t)) && window.cl && typeof isTrainer==='function' && isTrainer(cl.code)){
+    var _fn=m[1].replace(/[\u2019\u0027]/g,''), _ln=m[2].replace(/[\u2019\u0027]/g,'');
+    var _nm=_fn.charAt(0).toUpperCase()+_fn.slice(1)+' '+_ln.charAt(0).toUpperCase()+_ln.slice(1);
+    var _code=_jvCodeForName(_fn,_ln);
+    var _ini=((_fn[0]||'')+(_ln[0]||'')).toUpperCase();
+    var _w=null;
+    // THE DOOR NEEDS TWO FIELDS HE DID NOT SAY, so this supplies them rather
+    // than asking him for them — which is the whole ruling. clientTier throws
+    // bad_arg on anything but 'vip' or '1on1', and term_months goes through a
+    // number check that throws on undefined. Proven by trying it without them
+    // and getting bad_arg back from the live function.
+    //
+    // These are the SAME defaults the add-client form already starts on, so
+    // this path creates exactly what the form would have, and both are his to
+    // change afterwards. A default he can edit later is "everything else comes
+    // later"; a required field he must answer first is the thing being removed.
+    try{ _w=await trainerWrite('clientInsert',{code:_code, name:_nm, initials:_ini,
+      tier:'1on1', term_months:6,
+      started_at:new Date().toISOString().slice(0,10)}); }catch(e){}
+    if(!_w || !_w.ok){
+      var _why=(_w&&(_w.err||(_w.detail&&_w.detail.message)))||'';
+      _jvSay('I could not create '+_escHtml(_nm)+'.'+(_why?(' The server said: '+_escHtml(String(_why).slice(0,140))+'.'):'')
+        +' Nothing was written.');
+      return true;
+    }
+    // READ IT BACK. A boolean says the request did not error; it does not say
+    // the row landed with the values sent. House law, and the whole reason the
+    // reply below can state the code as a fact.
+    var _back=[];
+    try{ _back=await sbSelect('clients','code=eq.'+encodeURIComponent(_code)+'&select=code,name'); }catch(e){}
+    if(!_back || !_back.length){
+      _jvSay('I sent '+_escHtml(_nm)+' to the roster but could not read the row back, so I cannot tell you it landed. Check the client list before adding them again.');
+      return true;
+    }
+    try{ CLIENTS[_code]={name:_nm, initials:_ini}; }catch(e){}
+    try{ if(typeof loadClients==='function') loadClients(); }catch(e){}
+    _jvSay(_escHtml(_back[0].name)+' is in. Their sign-in code is <b>'+_escHtml(_code)+'</b>.'
+      +'<br><br>That is everything I need for now — term, tier, price and their programme can go on whenever you get to it.');
+    return true;
+  }
   // An answer to a held write, then a statement of fact — both before any model.
   try{ var _pr=await _jvPendingReply(t); if(_pr){ _jvSay(_pr.replace(/\n/g,'<br>')); return true; } }catch(e){ console.error('pending reply',e); }
   try{ var _bk=await _jvBookCommand(t); if(_bk){ _jvSay(_bk); return true; } }catch(e){ console.error('book command',e); }
