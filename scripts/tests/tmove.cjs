@@ -161,5 +161,31 @@ t(/tier:'1on1', term_months:6/.test(AC), 'the two required fields are supplied, 
 t(/sbSelect\('clients','code=eq\./.test(AC), 'and the row is READ BACK before the code is stated');
 t(/could not read the row back/.test(AC), 'a write it cannot confirm is never reported as done');
 
+// ===== 6. LAW 12: WHATEVER JIM CAN DO, JARVIS CAN DO ===================
+// (Yusuf, ruling, 26 Aug, permanent.) One engine, one set of capabilities.
+// A capability may never exist on one side and not the other, because that
+// split is the disease this engine has had pulled out of it twice: the client
+// route once carried a gate the trainer route did not, and a fallback that had
+// never once run for a client because of a trainer-only check.
+console.log('\n  law 12 is in the charter:');
+const CH=(src.match(/var JARVIS_CHARTER = \[[\s\S]*?\]\.join\('\\n'\);/)||[''])[0];
+t(/12\. WHATEVER JIM CAN DO, JARVIS CAN DO/.test(CH), 'the law exists');
+t(/log it, move it, correct it, delete it/.test(CH), 'and names the capabilities it covers');
+t(/lands on BOTH sides in the same ship, and the suite asserts both/.test(CH), 'and says a fix reaches both sides');
+
+// AND THE FIRST THING IT CATCHES, NAMED RATHER THAN QUIETLY LEFT.
+// Moving, correcting and deleting a logged meal exists on the CLIENT side only:
+// the [FOOD_EDIT] and [FOOD_DELETE] markers are in buildCoachVoice and are
+// extracted on the client reply path. The Jarvis prompt has never carried them,
+// so Jarvis cannot move a meal for a client the way a client can for
+// themselves. That is law 12 broken on the exact capability this whole thread
+// was about. It is asserted here so it stays visible and cannot be mistaken
+// for done; delete this block when the trainer side carries it too.
+console.log('\n  the gap law 12 catches, held open until it is closed:');
+const JV=(src.match(/var sys=JARVIS_CHARTER[\s\S]{0,6000}?_jvAssistantContext/)||[''])[0];
+t(!!JV, 'the Jarvis prompt is findable');
+t(!/FOOD_EDIT/.test(JV), 'KNOWN GAP: Jarvis carries no move/correct/delete marker (client side only)');
+t(/\[FOOD_EDIT\]/.test(src), 'the marker itself exists and works on the client side');
+
 console.log(bad? '\n'+bad+' FAILED' : '\nall pass');
 process.exit(bad?1:0);
