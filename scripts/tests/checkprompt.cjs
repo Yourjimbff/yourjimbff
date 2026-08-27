@@ -28,7 +28,19 @@ const MUST=[
   ['multiple markers allowed',         'You may emit MULTIPLE'],
   ['the photo food/workout split',     'PHOTO TYPE'],
   ['the workout MARKER RULES block',   'MARKER RULES:'],
-  ['the boundaries block',             'This is a PERSISTENT coaching jou']
+  ['the boundaries block',             'This is a PERSISTENT coaching jou'],
+  // ===== 27 AUG. Both of these were MISSING from this prompt entirely. The
+  // food-math rules and the cooked/dry carb reference live in analyze()'s
+  // prompt, which the gold bar's text path never reads. His quantity test
+  // passed on the model being sensible, not on the app being right.
+  ['quantity multiplies, once',        'QUANTITY MULTIPLIES THE MACROS THEY GAVE, ONCE'],
+  ['per-item macros are multiplied',   'PER ITEM (a label, one container'],
+  ['a stated total is never doubled',  'ALREADY THE TOTAL'],
+  ['unsure takes them as given',       'UNSURE which it is'],
+  ['a brand meal works in one line',   'A BRAND MEAL WITH A QUANTITY MUST WORK IN ONE SENTENCE'],
+  ['quantity does not split the entry','STILL ONE ENTRY'],
+  ['weights are cooked by default',    'WEIGHTS ARE COOKED UNLESS THEY SAY OTHERWISE'],
+  ['and the assumption is said back',  'AND SAY WHICH YOU USED']
 ];
 console.log('lines '+(start+1)+'-'+(end+1)+' of '+file);
 console.log('prompt delivered to the model: '+out.length.toLocaleString()+' chars');
