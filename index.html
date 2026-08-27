@@ -67067,16 +67067,56 @@ async function applyFoodEdit(id, fields){
   //
   // logged_at is kept at the same CLOCK TIME on the new day, so a breakfast
   // stays a breakfast rather than jumping to whatever hour the move happened.
+  //
+  // ===== AND IT KEEPS ITS REAL CLOCK TIME (Yusuf, ruling, 26 Aug) ========
+  // The line below read fields._wasLoggedAt to do that. Searched the whole
+  // file: that name appeared EXACTLY ONCE, on the line that read it. Nothing
+  // set it — not a caller, not a marker, not the prompt. So _old was always
+  // null, _h was always 12, and EVERY meal ever moved through here was stamped
+  // at midday on its new day. Right day, wrong time, and everything that sorts
+  // or reads by time showed a 7:30am breakfast as a lunch. The comment above
+  // promised the opposite, which is how it survived.
+  //
+  // So the time is READ OFF THE ROW instead of hoped for. Memory first, since
+  // the row is usually already on screen; the database itself when it is not.
+  //
+  // AND IF NEITHER ANSWERS, THE EDIT FAILS. It does not guess midday and it
+  // does not move date_str alone. A silent noon stamp is the bug being fixed
+  // here, and moving one date field without the other is the Spencer half-move
+  // this function was built to end — so the only honest third option is to
+  // write nothing and let the caller say it did not land.
   if(patch.date_str){
-    try{
-      var _nd=new Date(patch.date_str);
-      if(!isNaN(_nd)){
-        var _old=fields._wasLoggedAt ? new Date(fields._wasLoggedAt) : null;
-        var _h=(_old && !isNaN(_old)) ? _old.getHours() : 12;
-        var _mn=(_old && !isNaN(_old)) ? _old.getMinutes() : 0;
-        patch.logged_at=new Date(_nd.getFullYear(), _nd.getMonth(), _nd.getDate(), _h, _mn, 0).toISOString();
+    var _nd=new Date(patch.date_str);
+    if(!isNaN(_nd)){
+      var _wasIso=fields._wasLoggedAt||null;
+      if(!_wasIso){
+        try{
+          var _mem=null, _lists=[(typeof todayFood!=='undefined'&&todayFood)||[], (typeof allFood!=='undefined'&&allFood)||[]];
+          for(var _li=0; _li<_lists.length && !_mem; _li++){
+            for(var _ri=0; _ri<_lists[_li].length; _ri++){
+              if(String(_lists[_li][_ri].id)===String(id)){ _mem=_lists[_li][_ri]; break; }
+            }
+          }
+          if(_mem && _mem.logged_at) _wasIso=_mem.logged_at;
+        }catch(e){}
       }
-    }catch(e){}
+      if(!_wasIso){
+        try{
+          var _rr=await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id)+'&select=logged_at',{headers:sbHeaders()});
+          var _rows=_rr.ok?await _rr.json():[];
+          if(_rows && _rows.length && _rows[0].logged_at) _wasIso=_rows[0].logged_at;
+          // A row that came back with no timestamp at all has no clock to keep.
+          // Midday is as true as anything then, and it is not a guess covering
+          // a failed read — the read answered.
+          else if(_rows && _rows.length) _wasIso='NOCLOCK';
+        }catch(e){}
+      }
+      if(!_wasIso) return false;
+      var _old=(_wasIso==='NOCLOCK') ? null : new Date(_wasIso);
+      if(_old && isNaN(_old)) _old=null;
+      var _h=_old?_old.getHours():12, _mn=_old?_old.getMinutes():0, _sc=_old?_old.getSeconds():0;
+      patch.logged_at=new Date(_nd.getFullYear(), _nd.getMonth(), _nd.getDate(), _h, _mn, _sc).toISOString();
+    }
   }
   ['calories','protein','carbs','fat','sugar'].forEach(function(k){ if(patch[k]!==undefined) patch[k]=Math.round(Number(patch[k])||0); });
   if(Object.keys(patch).length===0) return false;
