@@ -54,6 +54,23 @@ t(/logFoodFromChat/.test(src) && /insertFoodLog|_ins\s*=/.test(chat), 'the write
 t(chat.indexOf('_tlRefreshDay')>chat.indexOf('if(!_ins || !_ins.ok) return false'),
   'nothing refreshes until the insert has been verified');
 
+// ===== THE SAME GAP, ON WORKOUTS (27 Aug) ==============================
+// Found by re-reading the path after the meal fix shipped. A workout logged
+// through the same bar had the identical defect, and the line meant to refresh
+// the day sat AFTER an unconditional return — dead since it was written.
+console.log('\n  P1 — AND A WORKOUT LOGGED THE SAME WAY SHOWS UP TOO:');
+const wo=fn('logWorkoutFromOffer');
+t(!!wo, 'logWorkoutFromOffer still exists');
+t(/_tlRefreshDay\(_woDate\)/.test(wo), 'it refreshes the day the workout landed on');
+t(!/return savedId;\s*\n\s*try\{ _tlInvalidate\(\); \}catch\(e\)\{\}/.test(src),
+  'and the unreachable refresh line after the return is gone');
+const wCall=wo.indexOf('_tlRefreshDay(_woDate)');
+const wBack=wo.indexOf('if(_woDaysAgo>0){');
+t(wCall>-1 && wBack>-1 && wCall<wBack, 'it runs BEFORE the back-dated return, so a backfill reaches it');
+t(wCall>wo.indexOf('if(!attempt.ok) return null;'), 'and only after the write was accepted');
+t(!/await\s+_tlRefreshDay\(_woDate\)/.test(wo), 'not awaited — it cannot delay or fail a log');
+t(/!forCode && typeof _tlRefreshDay/.test(wo), 'and it does not repaint his day for another client');
+
 console.log('\n  P4 — THE EXPANDED BAR ROW IS LAID OUT ON PURPOSE:');
 const bar=plain('jimBarHtml');
 t(/class="jimIcon jimMicBtn"/.test(bar), 'the mic has a name of its own');
