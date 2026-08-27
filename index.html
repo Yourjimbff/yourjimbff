@@ -15805,7 +15805,11 @@ function _pfCard(b, hour, now, isToday, viewDayTs){
   var outreach = '';
   var acts='<div class="pfActs pfActsFoot" onclick="event.stopPropagation();">';
   if(rk && newest._idx!=null){
-    acts+='<span class="pfAct" onclick="citeFeedItem('+newest._idx+')" title="Text them about this day">Share day</span>';
+    // THE WHOLE DAY, not the newest thing on it (Yusuf, ruling, 27 Aug). evs is
+    // already this client's day, sorted oldest to newest, so the order the
+    // message reads in is the order the card reads in.
+    var _dayIdx=evs.map(function(e){ return (e&&e._idx!=null)?e._idx:null; }).filter(function(n){ return n!==null; }).join(',');
+    acts+='<span class="pfAct" onclick="citeFeedDay(\''+b.code+'\',\''+_dayIdx+'\')" title="Text them about this day">Share day</span>';
   } else if(info.phone){
     acts+='<span class="pfAct" onclick="textClient(\''+b.code+'\')">Text</span>';
   }
@@ -47970,6 +47974,105 @@ function citeCached(code, kind, id){
 // Feed cards carry an item index rather than the row itself; this resolves it
 // from the same cache the card was built from, so a Cite from the feed quotes
 // exactly what is on the card.
+// ===== SHARE DAY CITES THE WHOLE DAY (Yusuf, ruling, 27 Aug) ============
+// Live: he tapped Share day on a card with FOUR meals and a walk on it, and the
+// thread came up holding one line — the single most recent meal. The button
+// said day and delivered an item.
+//
+// It was never wired to a day. It called citeFeedItem with the newest entry's
+// index, and the comment above it said so outright: "until then it opens the
+// same cite composer seeded from the day's newest entry". That "until then" is
+// now.
+//
+// Same voice as the single cite, because it is the same message: "On your ..."
+// with the natural date the single one uses — yesterday, or on Wednesday. Then
+// the day, one item per line, oldest first, exactly as the card is ordered.
+//
+// LAW 11'S SHAPE. One thing per row and the line break IS the bullet, so there
+// is no glyph in front of anything; the slot leads, then an em dash, then what
+// it was. Every figure carries its commas through _jvNum, the one place that
+// decides how a number looks.
+//
+// The per-meal Share buttons are untouched. One meal is their whole job.
+function _citeDayBody(items){
+  var rows=[], cal=0, pro=0, meals=0, when='';
+  (items||[]).forEach(function(it){
+    var k=String((it&&it.kind)||'').toLowerCase(), r=(it&&it.data)||null;
+    if(!r) return;
+    if(!when){ try{ when=_citeWhen(r)||''; }catch(e){} }
+    if(k==='food'||k==='meal'){
+      var slot=String(r.meal||'').trim() || 'Meal';
+      var nm=String(r.name||'').trim() || 'meal';
+      var bits=[];
+      if(+r.calories>0){ bits.push(_jvNum(r.calories)+' cal'); cal+=Math.round(+r.calories); }
+      if(+r.protein>0){ bits.push(_jvNum(r.protein)+'g protein'); pro+=Math.round(+r.protein); }
+      meals++;
+      rows.push(slot+' \u2014 '+_citeClip(nm)+(bits.length?(' ('+bits.join(', ')+')'):''));
+      return;
+    }
+    if(k==='wo'||k==='workout'){
+      var title=String(r.title||'').trim() || 'Training';
+      var det='';
+      // DURATION IS NOT ALWAYS A NUMBER. Read off a real row: Carly Long's walk
+      // carries duration "15 min", a string. +"15 min" is NaN, so a numeric test
+      // silently skipped it and the line fell through to the description.
+      var _d=r.duration;
+      if(_d!=null && String(_d).trim()!==''){
+        det=/^\d+(\.\d+)?$/.test(String(_d).trim()) ? (_jvNum(_d)+' min') : String(_d).trim();
+      }
+      if(!det){
+        try{
+          var got=_bfItemsFor(r), its=(got&&got.items)||[];
+          det=its.slice(0,3).map(function(i){ return i.detail?(i.name+' '+i.detail):i.name; }).join(', ');
+        }catch(e){}
+      }
+      if(!det) det=String(r.description||'').split('\n')[0]||'';
+      // "Walk — Walk" is not a line. Her description IS the title, which is
+      // common for a one-word session, so the dash earns its place or goes.
+      if(det && det.trim().toLowerCase()===title.trim().toLowerCase()) det='';
+      rows.push(_citeClip(title)+(det?(' \u2014 '+_citeClip(det)):''));
+      return;
+    }
+    if(k==='weight'||k==='wt'){
+      var w=(r.weight!=null&&r.weight!=='')?String(r.weight).trim():'';
+      var unit=(typeof wUnit==='function')?wUnit():'lb';
+      rows.push('Weigh-in'+(w?(' \u2014 '+w+' '+unit):''));
+      return;
+    }
+    if(k==='photo'){ rows.push('Progress photo'); return; }
+    if(k==='checkin'||k==='journal'||k==='note'){
+      var said=String(r.body||r.reflection||r.note||r.entry||r.text||'').trim();
+      rows.push('Check-in'+(said?(' \u2014 \u201c'+_citeClip(said)+'\u201d'):''));
+      return;
+    }
+  });
+  if(!rows.length) return '';
+  var out='On your day'+when+':\n\n'+rows.join('\n');
+  // The totals line is FOOD only, and it says so by naming meals. A workout has
+  // no calories to add and a weigh-in is not a total of anything.
+  if(meals>0 && (cal>0||pro>0)){
+    var t=[];
+    if(cal>0) t.push(_jvNum(cal)+' cal');
+    if(pro>0) t.push(_jvNum(pro)+'g protein');
+    out+='\n\nThat is '+t.join(' and ')+' across '+meals+' meal'+(meals===1?'':'s')+'.';
+  }
+  return out+'\n\n';
+}
+// The card renders its actions inside a string-built onclick, so it hands over
+// the day's item INDEXES rather than the rows — resolved here from the same
+// cache the card was built from, so the message quotes exactly what is on it.
+function citeFeedDay(code, idxCsv){
+  try{
+    if(!code) return;
+    var all=window._feedItems||[];
+    var items=String(idxCsv||'').split(',').map(function(n){ return all[parseInt(n,10)]; }).filter(Boolean);
+    var body='';
+    try{ body=_citeDayBody(items); }catch(e){}
+    // Reaching the client is the point: an empty body still opens a plain text,
+    // exactly as citeClient does when there is nothing worth quoting.
+    try{ textClient(code, body); }catch(e){}
+  }catch(e){}
+}
 function citeFeedItem(idx){
   try{
     var it=(window._feedItems||[])[idx];
