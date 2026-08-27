@@ -154,7 +154,14 @@ t(_jvCodeForName('chris','mccarthy')==='chrism2', 'and past chrism1', _jvCodeFor
 // throws on undefined. Proven by calling the live function without them and
 // getting bad_arg. They are supplied here rather than asked for - the same
 // defaults the add-client form already starts on, both his to change later.
-const AC=(src.match(/if\(\(m=_JV_ADD_CLIENT_RE\.exec\(t\)\)[\s\S]{0,3000}?return true;\n  \}/)||[''])[0];
+// THE WINDOW HAS TO OUTLIVE THE BLOCK IT READS (26 Aug). This was 3000, and the
+// day the add-client command grew a roster repaint it stopped matching — so AC
+// went empty and all five assertions below failed at once, pointing at the
+// command rather than at the ruler measuring it. A lazy count anchored on the
+// closing "return true;" cannot over-reach: it still ends at 3537 characters
+// with any window above 4000. Given headroom on purpose, because this block
+// grows every time the command learns something.
+const AC=(src.match(/if\(\(m=_JV_ADD_CLIENT_RE\.exec\(t\)\)[\s\S]{0,6000}?return true;\n  \}/)||[''])[0];
 t(!!AC, 'the command exists');
 t(/isTrainer\(cl\.code\)/.test(AC), 'trainer only - a client saying "add John Smith" never reaches it');
 t(/tier:'1on1', term_months:6/.test(AC), 'the two required fields are supplied, not asked for');

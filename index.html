@@ -13561,7 +13561,21 @@ async function _jvFeedCommand(text){
       return true;
     }
     try{ CLIENTS[_code]={name:_nm, initials:_ini}; }catch(e){}
-    try{ if(typeof loadClients==='function') loadClients(); }catch(e){}
+    // ===== A CLIENT HE JUST ADDED HAS TO APPEAR (Yusuf, ruling, 26 Aug) ====
+    // This line called loadClients(). There is no loadClients in this file —
+    // the name appears exactly once, here, and the typeof check meant it failed
+    // in total silence. So a client added by voice was really in the database
+    // and on no screen, until something else happened to force a load.
+    //
+    // Copied from the remove-client path, which has done this correctly all
+    // along. BOTH SURFACES, because the trainer side is two surfaces and
+    // shipping to one is the most repeated mistake in this codebase.
+    // The roster is re-read first: the row is new, so a repaint alone would
+    // redraw the same list without them in it.
+    try{ _rosterLoadPromise=null; await loadRosterFromDB(); }catch(e){}
+    try{ if(typeof jvMode!=='undefined' && jvMode==='roster' && typeof jvLoadRoster==='function') jvLoadRoster(true); }catch(e){}
+    try{ if(typeof jvRenderTriage==='function') jvRenderTriage(); }catch(e){}
+    try{ if(typeof renderMobFrontDesk==='function') renderMobFrontDesk(); }catch(e){}
     _jvSay(_escHtml(_back[0].name)+' is in. Their sign-in code is <b>'+_escHtml(_code)+'</b>.'
       +'<br><br>That is everything I need for now — term, tier, price and their programme can go on whenever you get to it.');
     return true;
@@ -27335,10 +27349,48 @@ var _JT_SCHED_INTENT_RE=new RegExp(
 //
 // AND WHEN IT IS UNSURE, IT LOGS. A log is correctable by one more sentence; a
 // wrong calendar event is clutter he has to go and find.
+// ===== A MEAL MOVE IS NOT A CALENDAR MOVE (Yusuf, ruling, 26 Aug) =======
+// "Move my breakfast to yesterday" was answered with "I don't see anything on
+// your week matching that." The calendar was taking it: _JT_CAL_RE claims the
+// bare phrase "move my/his/her", so every sentence about moving a LOGGED MEAL
+// was handed to the appointment builder before the logging engine ever saw it.
+//
+// Proven by running his own sentences through this function against the
+// deployed file: six of eleven were taken, and the ones taken were exactly the
+// "move my ..." shapes — his own meals, which is what he uses it for. A named
+// client's meal ("move Spencer's breakfast") already reached logging fine.
+//
+// The release valve below could never fire on one of these, because the thing
+// that disarms it, _JT_SCHED_INTENT_RE, contains the word "move" itself.
+//
+// So the test is what the sentence TARGETS. A meal move names a DAY —
+// yesterday, Saturday, the 22nd. A calendar move names a TIME, a repeat or a
+// block. Meal noun plus a day, with no calendar word in sight, is food.
+var _JT_MEAL_NOUN_RE=new RegExp("\\b(breakfast|lunch|dinner|brunch|supper|snack|snacks|meal|meals)\\b","i");
+var _JT_DAY_TARGET_RE=new RegExp(
+  "\\b(yesterday|today|tonight|tomorrow|last night|this morning|the day before)\\b"
+  +"|\\b(mon|tues|wednes|thurs|fri|satur|sun)day\\b"
+  +"|\\bthe \\d{1,2}(st|nd|rd|th)\\b"
+  +"|\\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* \\d{1,2}\\b"
+  +"|\\b\\d{1,2}/\\d{1,2}\\b","i");
+// Anything here means he is talking about his week, not a plate. "meal prep" is
+// in the list on purpose: it is a block on his calendar, not a meal he ate.
+var _JT_CAL_ONLY_RE=new RegExp(
+  "\\b(every|block|blocks|blocked|recurring|appointment|reminder|class|series|schedule|scheduled|scheduling)\\b"
+  +"|\\bmeal ?prep\\b","i");
+function _jtMealMove(t){
+  var s=String(t||'');
+  if(!_JT_MEAL_NOUN_RE.test(s)) return false;
+  if(!_JT_DAY_TARGET_RE.test(s)) return false;
+  if(_JT_CAL_ONLY_RE.test(s)) return false;
+  return true;
+}
 function _jtCalendarClaims(t){
   if(!_JT_CAL_RE.test(t)) return false;
   var whole=t;
   try{ if(window._jtWholeMsg && String(window._jtWholeMsg).indexOf(String(t))>=0) whole=String(window._jtWholeMsg); }catch(e){}
+  // Judged on the whole message first, same as the veto below it.
+  if(_jtMealMove(whole) || _jtMealMove(t)) return false;
   if(_JT_PAST_MEAL_RE.test(whole) && !_JT_SCHED_INTENT_RE.test(whole)) return false;
   if(_JT_PAST_MEAL_RE.test(t) && !_JT_SCHED_INTENT_RE.test(t)) return false;
   return true;
@@ -35730,10 +35782,31 @@ async function _jtRunItem(t, capture, ctx){
   // sentence; now it is what happens only when the sentence is about a program.
   // A program change is the item type the queue grows next, and this is the
   // seam it grows at.
-  if(_jtWantsMarker(t)){
+  // ===== AN IMPERATIVE BEATS THE NOUN (Yusuf, ruling, 26 Aug) ============
+  // _JT_PROG_RE claims the bare word "workout", so "log my workout, bench 3x8"
+  // went to the PROGRAMME BUILDER — a system with no logging hand at all, whose
+  // whole vocabulary is programmes and renames. It then reported back under
+  // what landed with nothing written. That is worse than a refusal: it is a
+  // claimed action with no row, on training logging.
+  //
+  // Proven against the deployed file: "log my workout", "log my push day",
+  // "logged my leg day" and "just did my workout" were all taken. "I trained
+  // legs today" was not, which is why this was invisible — it depended on the
+  // words he happened to use.
+  //
+  // So a sentence that SAYS it is a log is a log. Programme sentences do not
+  // contain "log", "I did" or "just did": "make Samantha's Friday a Pilates
+  // day", "add a leg day", "swap her Tuesday" all still reach the builder.
+  if(_jtWantsMarker(t) && !_JT_LOG_INTENT_RE.test(t)){
     try{
+      // Cleared first: a stale true from a previous turn would put this turn's
+      // answer under what landed on the strength of somebody else's write.
+      window._jtProgWrote=false;
       var pg=await _jtProgram(t);
-      if(pg) return {status:'done', modelled:true, line:pg, html:true, src:t};
+      // 'done' ONLY when a programme marker actually landed in the database.
+      // Otherwise this is an ANSWER, and an answer is 'talk' — it belongs in
+      // the thread, never in the ledger of what he got done.
+      if(pg) return {status:(window._jtProgWrote?'done':'talk'), modelled:true, line:pg, html:true, src:t};
     }catch(e){ console.error('jt program',e); }
   }
   // ===== JIM'S ENGINE IS THE LOGGING ENGINE (Yusuf, ruling, 20 Aug) ========
@@ -35760,7 +35833,10 @@ async function _jtRunItem(t, capture, ctx){
   // in this file's history, so there is no keyword list here at all.
   try{
     var _selfAcct=(window.cl && typeof isTrainer==='function' && isTrainer(cl.code));
-    if(_selfAcct && !_jtIsQuestion(t)){
+    // A question about his own day now reaches the engine holding his rows.
+    // Still a FALLTHROUGH and not a gate: if Jim writes nothing, this drops to
+    // the model exactly as it always did, so nothing he asks can dead-end here.
+    if(_selfAcct && (!_jtIsQuestion(t) || _jtOwnDayQuestion(t))){
       var _named=null;
       try{ var _f=_jvFindClientIn(t); _named=(_f && _f.hits && _f.hits.length===1) ? _f.hits[0] : null; }catch(e){}
       // THE SPEAKER IS NEVER A CLIENT — the same hard backstop _jvBuildPendingLog
@@ -36342,6 +36418,14 @@ var _JT_CLIENT_RE=new RegExp(
 // marker brain should handle is a program sentence OR a client-edit sentence,
 // and every router reads this rather than keeping its own copy — two regexes
 // for one idea drifted apart once already on this exact pipeline.
+// SAYS IT IS A LOG, SO IT IS A LOG. The one veto that takes a sentence back off
+// the programme builder. Deliberately about the VERB and not the noun: every
+// keyword list in this file's history has missed something, and "workout",
+// "leg day" and "split" are the nouns a logging sentence uses too.
+var _JT_LOG_INTENT_RE=new RegExp(
+  "\\b(log|logs|logged|logging)\\b"
+  +"|\\b(i|we)\\s*(just\\s+)?(did|trained|finished|smashed|hit|completed|ran|lifted)\\b"
+  +"|\\bjust\\s+(did|trained|finished|smashed|hit)\\b","i");
 function _jtWantsMarker(t){
   try{ return _JT_PROG_RE.test(t) || _JT_CLIENT_RE.test(t); }catch(e){ return false; }
 }
@@ -36920,6 +37004,32 @@ function _jtIsQuestion(t){
   var s=String(t||'').trim();
   if(/\?\s*$/.test(s)) return true;
   return /^(who|whose|what|whats|what's|when|where|which|why|how|is|are|was|were|do|does|did|any|anyone|anything|show|tell)\b/i.test(s);
+}
+// ===== A QUESTION ABOUT HIS OWN DAY IS FOR THE ENGINE THAT CAN SEE IT ====
+// (Yusuf, ruling, 26 Aug.) The rail hands his logging sentences to Jim, but the
+// handoff was barred to anything _jtIsQuestion called a question — which is
+// anything ending in a question mark OR opening with did/what/is/show/tell.
+// So "what did I eat today", "did my lunch save?" and "show me my breakfast"
+// never reached the one engine holding his rows, and got answered by a stage
+// that only sees a board.
+//
+// _jtIsQuestion itself is NOT touched: it is also the batch splitter, and this
+// is one call site, not a rule change. This widens that call site and nothing
+// else — and only when the sentence is about HIS OWN food, training or numbers.
+//
+// The two guards matter. Without the subject test, "who hasn't logged since
+// Monday?" would reach the logging engine on the word "logged"; the roster
+// answerer takes it first today, and this makes sure it still would if that
+// ever moved. Without the topic test, every question he asks costs a model
+// call in the logging engine before falling through.
+var _JT_OWN_DAY_RE=new RegExp(
+  "\\b(eat|ate|eaten|eating|food|meal|meals|breakfast|lunch|dinner|brunch|snack|snacks"
+  +"|calorie|calories|cal|cals|protein|carb|carbs|fat|fats|macro|macros"
+  +"|log|logs|logged|logging|weigh|weighed|weight|step|steps|workout|training|session)\\b","i");
+var _JT_OWN_SUBJ_RE=new RegExp("\\b(my|mine|me|i|i.?ve|i.?m|myself)\\b","i");
+function _jtOwnDayQuestion(t){
+  var s=String(t||'');
+  return _JT_OWN_DAY_RE.test(s) && _JT_OWN_SUBJ_RE.test(s);
 }
 // ===== STOP MEANS STOP (Yusuf, ruling, 20 Aug) ===========================
 // "Stop", "wipe that", "drop it", "forget it", "never mind", "scratch that" —
@@ -45603,6 +45713,17 @@ async function jvChatSend(){
     var _pp = await _jvApplyProgramPatch(_pe.clean);
     var _pr = await _jvApplyProgramRemove(_pp.clean);
     var _ce = await _jvApplyClientEdits(_pr.clean);
+    // DID A PROGRAMME ACTUALLY LAND. The rail calls this function and used to
+    // report every answer it produced as a completed action, so "log my
+    // workout" — which _JT_PROG_RE claims on the word workout — came back under
+    // what landed with nothing written anywhere. A reply is not a write.
+    // Every applier above pushes {code, ok:true|false} per marker it processed,
+    // so this is the database answering, not the model.
+    try{
+      window._jtProgWrote=[_pg,_pe,_pp,_pr,_ce].some(function(r){
+        return !!(r && r.results && r.results.some(function(x){ return x && x.ok===true; }));
+      });
+    }catch(e){ window._jtProgWrote=false; }
     txt = (_ce.clean && _ce.clean.trim()) ? _ce.clean : ((_pr.clean && _pr.clean.trim()) ? _pr.clean : ((_pp.clean && _pp.clean.trim()) ? _pp.clean : ((_pe.clean && _pe.clean.trim()) ? _pe.clean : txt)));
     // A marker that was cut off mid-emission never parses, so the belt-and-braces
     // strip has to know every marker name or a half-written one reaches the
