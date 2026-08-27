@@ -93,5 +93,14 @@ t(/String\(w\.rows\[0\]\.phone\|\|''\)\.replace\(\/\\D\/g,''\)===num\.replace\(\
   'and it reads the digits back off the row the server wrote');
 t(/didn.t read back correctly/.test(turn), 'and says so plainly when they do not match');
 
+console.log('\n  ONE SENTENCE SAVES ONCE AND SAYS SO ONCE:');
+// Both halves can now see the whole sentence, so both resolve the same client
+// and the same digits. Without a guard his one request confirms twice, which is
+// the app looking like it did not understand him — the whole complaint.
+t(/window\._jtPhoneDone\[_pk\]\) return null;/.test(turn), 'a second half that resolves the same save is dropped');
+t(/var _pk=code\+':'\+String\(num\)\.replace/.test(turn), 'keyed on the client AND the digits, so a real second number still goes through');
+t(/window\._jtPhoneDone=\{\};/.test(src), 'the per-turn record is opened where the whole message is');
+t(/window\._jtWholeMsg=null; window\._jtPhoneDone=null;/.test(src), 'and cleared with it, so it can never leak into a later turn');
+
 console.log('\n'+(bad?(bad+' FAILED'):'all pass'));
 process.exit(bad?1:0);
