@@ -63,6 +63,34 @@ t(_mealMacLine({calories:890,protein:28,carbs:98,fat:38},'short',{time:false})==
   'which keeps the row one line and leaves the food name room to be a name');
 t(!/\(e\.calories\|\|0\)\+' cal · '/.test(src), 'no renderer still prints its own zeros');
 
+// ===== THE MISS THAT MADE THIS SUITE NECESSARY (27 Aug) =================
+// I changed four renderers, called one of them "the feed card", and reported
+// the feed as done. It was rendTodayFood — the client's own Today list. The
+// actual feed row, _pfDayRow, still built its own two-value line, so he opened
+// the feed and there was no fat, exactly as he said.
+//
+// So this no longer trusts a list of names I happened to think of. It SWEEPS
+// the file for any surviving hand-built meal macro line and fails on a new one.
+const OWNERS=[];
+{ let owner=null;
+  src.split('\n').forEach(function(l,i){
+    if(/^(async )?function /.test(l)) owner=l.split('(')[0].replace(/^async function /,'').replace(/^function /,'');
+    if(/cal\b.{0,12}·/.test(l) && /protein|\bP\b/.test(l) && l.indexOf('_mealMacLine')<0 && !/^\s*\/\//.test(l)) OWNERS.push(owner);
+  });
+}
+// Everything left must be something OTHER than a logged meal row: a spoken
+// confirmation, a prompt example, a MENU item (a meal proposed, never logged),
+// or a function whose own name says it is unused.
+const ALLOWED=['_jvCommitPending','buildDayContext','buildCoachVoice','rendCoachMenu','rendMenuItems','openMenuShare','_openShareCardDayLegacy_UNUSED'];
+const stray=OWNERS.filter(function(o){ return ALLOWED.indexOf(o)<0; });
+t(stray.length===0, 'no meal-row renderer builds its own macro line any more', stray.length?('still hand-built in: '+stray.join(', ')):'');
+t((src.match(/_mealMacLine\(/g)||[]).length>=11, 'and every one of them calls the shared builder',
+  (src.match(/_mealMacLine\(/g)||[]).length+' references');
+
+console.log('\n  THE FEED ROW SPECIFICALLY — the one he caught:');
+t(/meta = _mealMacLine\(d,'short',\{time:false\}\)/.test(src), '_pfDayRow draws its macros from the builder');
+t(!/meta = cal\+' cal · '\+pro\+'P'/.test(src), 'and no longer hand-builds calories and protein alone');
+
 console.log('\n  AND THE PLATE TOTAL SEPARATES TOO:');
 t(/Math\.round\(tot\.cal\)\+' cal<\/b>'\s*\n\s*\+'<span>\\u00b7<\/span>'/.test(src),
   'a character between the plate calories and its protein, not just a flex gap');
