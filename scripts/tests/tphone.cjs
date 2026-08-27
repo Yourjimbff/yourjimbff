@@ -97,7 +97,21 @@ console.log('\n  ONE SENTENCE SAVES ONCE AND SAYS SO ONCE:');
 // Both halves can now see the whole sentence, so both resolve the same client
 // and the same digits. Without a guard his one request confirms twice, which is
 // the app looking like it did not understand him — the whole complaint.
-t(/window\._jtPhoneDone\[_pk\]\) return null;/.test(turn), 'a second half that resolves the same save is dropped');
+// ===== AND IT IS CONSUMED, NOT DROPPED (his ruling, 27 Aug) ============
+// This returned null for one hour. null in that ladder means NOT HANDLED, so
+// the deduped half carried on down and the model answered his one sentence a
+// second time, in a different voice. He got a correct confirmation followed by
+// a stranger introducing itself. A handled instruction is consumed.
+t(/window\._jtPhoneDone\[_pk\]\) return \{ok:true, line:''\};/.test(turn),
+  'the deduped half ENDS the item instead of falling through to the model');
+t(!/_jtPhoneDone\[_pk\]\) return null/.test(turn), 'it no longer returns null, which meant not-handled');
+// The ladder consumes any truthy result, and an empty line is filtered out of
+// both the screen and the spoken answer — so this is silent, not blank.
+t(/if\(_pn\) return \{status:\(_pn\.wait\?'wait':\(_pn\.ok\?'done':'lost'\)\)/.test(src),
+  'and the ladder consumes anything truthy it hands back');
+t(/\.map\(function\(x\)\{ return x\.line; \}\)\.filter\(Boolean\)/.test(src),
+  'an empty line renders nothing on screen');
+t(/\.filter\(Boolean\)\.join\(' '\)/.test(src), 'and says nothing out loud');
 t(/var _pk=code\+':'\+String\(num\)\.replace/.test(turn), 'keyed on the client AND the digits, so a real second number still goes through');
 t(/window\._jtPhoneDone=\{\};/.test(src), 'the per-turn record is opened where the whole message is');
 t(/window\._jtWholeMsg=null; window\._jtPhoneDone=null;/.test(src), 'and cleared with it, so it can never leak into a later turn');
