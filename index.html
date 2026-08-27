@@ -36378,8 +36378,33 @@ function _jtPhoneDigits(t){
   var digits=m[1].replace(/\D/g,'');
   return (digits.length>=7) ? m[1].trim() : '';
 }
+// ===== THE QUESTION MARK CUT HIS INSTRUCTION IN HALF (Yusuf, 27 Aug) =====
+// Live: "Can you add this phone number to Carly Long? 530-210-7123." He was
+// answered "Say that again with their name and I will save it", and then
+// "What is the number?" — the app asking back for both things he had just said.
+//
+// Neither the capability nor the parser was at fault. _jtPhoneTurn saves a
+// number properly, with a read-back, and _jtPhoneDigits finds 530-210-7123 in
+// that sentence first time. THE SPLITTER cut it. _JT_TERM is /[.!?;\n]+/ and
+// his sentence has a question mark sitting exactly between the name and the
+// number, so it became two items:
+//     "Can you add this phone number to Carly Long"   name, no digits
+//     "530-210-7123"                                  digits, no name
+// and each half then asked for the half that was in the other one. A polite
+// question mark is what broke it.
+//
+// The seam for this already exists and this route simply never used it.
+// _jtWholeMsg is set before the items run, and the comment where it is set says
+// exactly this: "Every fragment below is judged against the sentence it came
+// out of". _jtCalendarClaims has read it for weeks. So does this now.
+function _jtWholeOf(t){
+  var whole=String(t||'');
+  try{ if(window._jtWholeMsg && String(window._jtWholeMsg).indexOf(whole)>=0) whole=String(window._jtWholeMsg); }catch(e){}
+  return whole;
+}
 var _JT_PHONE_RE={test:function(t){
-  var s=String(t||'');
+  // Judged on the sentence he actually said, so half of one cannot fail to route.
+  var s=_jtWholeOf(t);
   if(/\b(?:phone|cell|mobile)\b/i.test(s)) return true;
   var digits=_jtPhoneDigits(s);
   if(!digits) return false;
@@ -36388,7 +36413,12 @@ var _JT_PHONE_RE={test:function(t){
   return !!(found && found.hits && found.hits.length===1);
 }};
 async function _jtPhoneTurn(t){
-  var num=_jtPhoneDigits(t);
+  // THE FRAGMENT FIRST, THEN THE SENTENCE IT CAME FROM. Anything this piece
+  // carries wins; only what is genuinely absent is taken from the whole. So a
+  // batch that names two people still asks which, and never borrows a name from
+  // a neighbouring instruction that had its own.
+  var whole=_jtWholeOf(t);
+  var num=_jtPhoneDigits(t) || _jtPhoneDigits(whole);
   // A QUESTION ABOUT WHAT ALREADY HAPPENED, NOT A NEW NUMBER TO SAVE — "did
   // that save to the phone field?" carries the word "phone" and no digits.
   // This stage has no memory of the last turn; the model's context now does
@@ -36397,6 +36427,9 @@ async function _jtPhoneTurn(t){
   if(!num && /\?\s*$/.test(String(t||'').trim())) return null;
   var found=null; try{ found=_jvFindClientIn(t); }catch(e){}
   var hits=(found&&found.hits)||[];
+  // Only when the fragment named nobody. An EXACT match saves; more than one
+  // still asks which, here as everywhere.
+  if(!hits.length && whole!==t){ try{ found=_jvFindClientIn(whole); hits=(found&&found.hits)||[]; }catch(e){} }
   if(!hits.length) return {wait:true, line:num?'Whose number is that?':'Whose number, and what is it?'};
   if(hits.length>1) return {wait:true, line:'A couple of clients match that — say the full name.'};
   if(!num) return {wait:true, line:'What’s the number?'};
