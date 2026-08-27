@@ -45,18 +45,18 @@ console.log();
 
 const lines=body.trimEnd().split('\n').filter(Boolean);
 console.log('  EVERY ITEM IS THERE, ONE PER LINE:');
-t(/Breakfast — Mozzarella Cheese Stick \(80 cal, 7g protein\)/.test(body), 'the breakfast');
-t(/Lunch — Tofu with Teriyaki Sauce \(360 cal, 32g protein\)/.test(body), 'the lunch');
-t(/Snack — Tofu with Teriyaki Sauce \(360 cal, 32g protein\)/.test(body), 'the snack, not collapsed into the identical lunch');
-t(/Dinner — Chicken Strips, Waffle Fries & Sprite \(890 cal, 28g protein\)/.test(body), 'the dinner — the only one the old button sent');
-t(/(^|\n)Walk — 15 min$/m.test(body), 'and the walk, carrying its real duration string');
+t(/Breakfast: Mozzarella Cheese Stick \(80 cal, 7g protein\)/.test(body), 'the breakfast');
+t(/Lunch: Tofu with Teriyaki Sauce \(360 cal, 32g protein\)/.test(body), 'the lunch');
+t(/Snack: Tofu with Teriyaki Sauce \(360 cal, 32g protein\)/.test(body), 'the snack, not collapsed into the identical lunch');
+t(/Dinner: Chicken Strips, Waffle Fries & Sprite \(890 cal, 28g protein\)/.test(body), 'the dinner, the only one the old button sent');
+t(/(^|\n)Walk: 15 min$/m.test(body), 'and the walk, carrying its real duration string');
 // Her duration is "15 min", a STRING. A numeric test skipped it and the line
 // fell through to the description — which for her walk IS the word "Walk".
 t(_citeDayBody([{kind:'wo', data:{title:'Walk', description:'Walk', duration:'', date_str:'Aug 26, 2026'}}])
-  .indexOf('Walk — Walk')<0, 'and with no "Walk — Walk" when the description just repeats the title');
+  .indexOf('Walk: Walk')<0, 'and with no "Walk: Walk" when the description just repeats the title');
 t(/(^|\n)Walk\n/.test(_citeDayBody([{kind:'wo', data:{title:'Walk', description:'Walk', duration:'', date_str:'Aug 26, 2026'}}])+'\n'),
   'it is just the title then, with no dash left dangling');
-t(/Push — 45 min/.test(_citeDayBody([{kind:'wo', data:{title:'Push', duration:45, date_str:'Aug 26, 2026'}}])),
+t(/Push: 45 min/.test(_citeDayBody([{kind:'wo', data:{title:'Push', duration:45, date_str:'Aug 26, 2026'}}])),
   'and a numeric duration still reads as minutes');
 t(lines.length===7, 'opener, five items, one total', lines.length+' lines');
 
@@ -74,6 +74,14 @@ t(/^On your day/.test(body), 'it opens "On your day", the way one meal opens "On
 t(/^On your day on (Wed|Aug|\w)/.test(body) || /^On your day (yesterday|today)/.test(body),
   'with the natural date the single cite uses', JSON.stringify(lines[0]));
 t(body.endsWith('\n\n'), 'and it ends the same way, ready for him to type under it');
+
+console.log('\n  NO LONG DASHES — this goes out under his name (his standing rule):');
+t(body.indexOf('\u2014')<0, 'the drafted day carries no long dash anywhere');
+t(/Breakfast: /.test(body), 'the items separate with a colon');
+// The same rule, the other three messages this app drafts for him to send.
+t(fnAt('_obOpener').indexOf('\u2014')<0, 'nor does the outreach opener');
+t(fnAt('_jvOnboardingBody').indexOf('\u2014')<0, 'nor the onboarding message');
+t(src.indexOf("'Hey '+first+' \u2014 '+about")<0, 'nor the text-about draft');
 
 console.log('\n  LAW 7 AND 11 — NO GLYPH, THE LINE BREAK IS THE BULLET:');
 t(!/(^|\n)\s*[-•*·]\s/.test(body), 'nothing is bulleted with a symbol');
