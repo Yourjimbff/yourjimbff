@@ -64,6 +64,29 @@ t('empty html leaves it unowned',          ()=>{ const h=makeHolder(); _feedPain
 t('CONTROL — an unwritten mark reads absent',()=>{ const h=makeHolder(); _feedPaint(h,'<div>feed</div>');
                                                  return h.firstElementChild.classList.contains('notAMarkAnyoneWrites')===false; });
 
+// THREE STATES, IN THE LOADER ITSELF (standing law). sbSelect answers [] for a
+// refusal and for a genuinely quiet week alike, and every read in the feed's
+// burst is .catch(-> []), so a whole failed burst arrives looking exactly like
+// an empty one. Painting that wipes the feed and replaces it with a sentence
+// saying nobody logged anything — a claim about his clients, made off a network
+// error. Asserted on the source because the loader needs the whole cockpit to
+// run; the behaviour itself is proven in the browser.
+const RUN=(function(){
+  const s=L.findIndex(l=>l.startsWith('async function _loadTrainerFeedRun('));
+  if(s<0) throw new Error('SEAM MOVED: _loadTrainerFeedRun not found');
+  let d=0,st=false;
+  for(let i=s;i<L.length;i++){ for(const c of L[i]){ if(c==='{'){d++;st=true;} else if(c==='}'){d--;} } if(st&&d===0) return L.slice(s,i+1).join('\n'); }
+  throw new Error('SEAM MOVED: no close for _loadTrainerFeedRun');
+})();
+t('the loader asks whether the reads FAILED before painting an empty feed',
+  ()=>/!items\.length\s*&&\s*_sbFailedSince\(/.test(RUN));
+t('...and only keeps the screen when what is on it is really ours',
+  ()=>/_hadFeed\s*=\s*_feedOwns\(holder\)/.test(RUN));
+t('...and a first mount still says it could not read',
+  ()=>/Could not load the feed/.test(RUN));
+t('a failed REFRESH says so rather than going silent',
+  ()=>/Could not refresh/.test(RUN));
+
 let bad=0;
 C.forEach(([n,ok,err])=>{ if(!ok) bad++; console.log((ok?'  ok    ':'  FAIL  ')+n+(err?'  ['+err+']':'')); });
 console.log(bad? '\n'+bad+' FAILED' : '\nall '+C.length+' pass');
