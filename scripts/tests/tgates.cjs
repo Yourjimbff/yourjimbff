@@ -31,23 +31,43 @@ const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  F
 global.window={};
 eval([one('var _JT_PAST_MEAL_RE='), one('var _JT_SCHED_INTENT_RE='), one('var _JT_CAL_RE='),
   one('var _JT_MEAL_NOUN_RE='), one('var _JT_DAY_TARGET_RE='), one('var _JT_CAL_ONLY_RE='),
+  one('var _JT_ONE_BRAIN_HOLD='),
   one('var _JT_PROG_RE='), one('var _JT_CLIENT_RE='), one('var _JT_LOG_INTENT_RE='),
   one('var _JT_OWN_DAY_RE='), one('var _JT_OWN_SUBJ_RE='),
   grabFn('_jtMealMove'), grabFn('_jtCalendarClaims'), grabFn('_jtWantsMarker'),
   grabFn('_jtIsQuestion'), grabFn('_jtOwnDayQuestion')].join('\n'));
 
-guard(['_JT_MEAL_NOUN_RE','_JT_DAY_TARGET_RE','_JT_CAL_ONLY_RE','_JT_LOG_INTENT_RE',
+guard(['_JT_ONE_BRAIN_HOLD','_JT_MEAL_NOUN_RE','_JT_DAY_TARGET_RE','_JT_CAL_ONLY_RE','_JT_LOG_INTENT_RE',
   '_JT_OWN_DAY_RE','_JT_OWN_SUBJ_RE','_jtMealMove','_jtCalendarClaims','_jtWantsMarker',
   '_jtIsQuestion','_jtOwnDayQuestion'], n=>eval(n));
 
-console.log('\n  GATE 1 — his meal sentences reach the logging engine:');
-[['move my breakfast to yesterday',false],
- ['move my lunch to today',false],
- ['move my dinner to Saturday',false],
- ['move his breakfast to Monday',false],
- ['move her snack to yesterday',false],
- ['move my breakfast to the 22nd',false]
-].forEach(([s,claim])=>t(_jtCalendarClaims(s)===claim,'"'+s+'" reaches logging'));
+// ===== HELD, 27 AUG. Read the block above _jtMealMove in index.html. ======
+// The move worked on his real row and kept its clock time. It ALSO logged an
+// invented breakfast carrying his own request as its meal text. Until the
+// logging engine stops emitting an add beside an edit, the two cuts that send a
+// NON-LOGGING sentence into it are switched off.
+//
+// The recognisers are NOT deleted, and these assertions are NOT deleted. They
+// prove the logic is still exactly right, so flipping one word restores the
+// behaviour with no guesswork. Change the first assertion and the two `true`s
+// below back when the hold lifts.
+console.log('\n  THE HOLD IS IN FORCE (27 Aug — the phantom log):');
+t(_JT_ONE_BRAIN_HOLD===true, 'the one-brain routing is held, on purpose');
+t(_jtCalendarClaims('move my breakfast to yesterday')===true, 'so a meal move goes back to the calendar for now');
+t(_jtCalendarClaims('move my lunch to today')===true, 'and so does every other one');
+
+console.log('\n  and the recogniser underneath is still correct, so unholding is one word:');
+[['move my breakfast to yesterday',true],
+ ['move my lunch to today',true],
+ ['move my dinner to Saturday',true],
+ ['move his breakfast to Monday',true],
+ ['move her snack to yesterday',true],
+ ['move my breakfast to the 22nd',true]
+].forEach(([s,mealish])=>t(_jtMealMove(s)===mealish,'"'+s+'" is still recognised as a meal move'));
+[['move my lunch block to 1pm',false],
+ ['move my Pilates to noon',false],
+ ['move my meal prep to Sunday',false]
+].forEach(([s,mealish])=>t(_jtMealMove(s)===mealish,'"'+s+'" is still NOT a meal move'));
 
 console.log('\n  and the calendar keeps every sentence that is really about his week:');
 [['move my lunch block to 1pm',true],
@@ -75,21 +95,22 @@ console.log('\n  and programme sentences still build programmes:');
  ['take Leandra off her program',true]
 ].forEach(([s,claim])=>t(takes(s)===claim,'"'+s+'" still builds the programme'));
 
-console.log('\n  GATE 3 — a question about his own day reaches the engine that holds it:');
-const reaches=s=>(!_jtIsQuestion(s) || _jtOwnDayQuestion(s));
+console.log('\n  GATE 3 — ALSO HELD, same reason, same switch:');
+const reaches=s=>(!_jtIsQuestion(s) || (!_JT_ONE_BRAIN_HOLD && _jtOwnDayQuestion(s)));
+[['what did I eat today',false],
+ ['did my lunch save?',false],
+ ['show me my breakfast',false]
+].forEach(([s,ok])=>t(reaches(s)===ok,'"'+s+'" goes back to the board for now'));
+t(reaches('log my breakfast, three eggs')===true, 'but a plain log still reaches the engine — it was never held');
+
+console.log('\n  and that recogniser is still correct too:');
 [['what did I eat today',true],
  ['did my lunch save?',true],
- ['show me my breakfast',true],
- ['how many calories have I had',true],
- ['is my breakfast on the right day?',true],
- ['log my breakfast, three eggs',true]
-].forEach(([s,ok])=>t(reaches(s)===ok,'"'+s+'" reaches the engine'));
-
-console.log('\n  and a question that is not about his own food still does not:');
+ ['how many calories have I had',true]
+].forEach(([s,ok])=>t(_jtOwnDayQuestion(s)===ok,'"'+s+'" is still an own-day question'));
 [['who are all my calls for the next two days?',false],
- ['who needs me today?',false],
- ['what does her week look like?',false]
-].forEach(([s,ok])=>t(reaches(s)===ok,'"'+s+'" stays with the board'));
+ ['who needs me today?',false]
+].forEach(([s,ok])=>t(_jtOwnDayQuestion(s)===ok,'"'+s+'" is still not one'));
 
 console.log('\n  THE FALSE "DONE" IS GONE:');
 t(/window\._jtProgWrote=false;/.test(src), 'the rail clears the flag before it asks');
@@ -111,8 +132,8 @@ t(/renderMobFrontDesk/.test(addBlock), 'the mobile front desk repaints too');
 console.log('\n  LAW 12, BOTH DIRECTIONS ON THE MEAL MOVE:');
 t(/MOVE OR CORRECT = \[FOOD_EDIT\]/.test(src), 'the client side still teaches the move');
 t(/send date_str for the day it belongs on/.test(src), 'and still moves the day field');
-t(_jtCalendarClaims('move my breakfast to yesterday')===false,
-  'and the trainer side can now reach the same engine to do it');
+t(_jtMealMove('move my breakfast to yesterday')===true,
+  'and the trainer side still recognises the same request, ready to be unheld');
 
 console.log('\n'+(bad?(bad+' FAILED'):'all pass'));
 process.exit(bad?1:0);
