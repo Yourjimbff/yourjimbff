@@ -66229,6 +66229,18 @@ async function buildDayContext(askText){
     }
   }
 
+  // THE ID SPACE THE MODEL IS ABOUT TO BE GIVEN, KEPT (27 Aug).
+  // Every id it can cite in a [FOOD_EDIT] comes from the two lists printed
+  // below. Today's rows stay in memory anyway; the recent seven days are read
+  // fresh here and then thrown away, so a correction to an older meal could
+  // not be resolved back to a name afterwards. _jimFoodRowById reads this, and
+  // the phantom guard cannot judge a marker whose row it cannot name.
+  // Rebuilt from scratch every turn: a stale row here would be a stale name.
+  try{
+    window.__jimFoodCtxRows={};
+    (todayFood||[]).forEach(function(e){ if(e && e.id!=null) window.__jimFoodCtxRows[String(e.id)]=e; });
+  }catch(e){}
+
   // TODAY — FOOD
   if(todayFood && todayFood.length>0){
     var tBits=['=== TODAY\'S FOOD ('+todayDateStr+') ==='];
@@ -66253,6 +66265,7 @@ async function buildDayContext(askText){
     // about a row that was sitting right there.
     var _recentFood = await sbSelect('food_logs','client_code=eq.'+cl.code+'&select=id,name,rating,calories,protein,meal,eat_time,date_str,logged_at&order=logged_at.desc&limit=80');
     if(_recentFood && _recentFood.length){
+      try{ _recentFood.forEach(function(f){ if(f && f.id!=null) window.__jimFoodCtxRows[String(f.id)]=f; }); }catch(e){}
       var _byDay={};
       _recentFood.forEach(function(f){
         var ds=f.date_str || (f.logged_at?isoDateStr(new Date(f.logged_at)):null);
@@ -67403,6 +67416,103 @@ function _foodEditLanded(patch, row){
     if(String(got)!==String(want)) return false;
   }
   return true;
+}
+// ===== A CORRECTION IS NOT A SECOND MEAL (approved 27 Aug) ==============
+// THE PHANTOM LOG. A turn comes back carrying BOTH a [FOOD_EDIT] for a meal
+// that already exists AND a [FOOD_LOG] naming that same meal, so the row is
+// corrected and a duplicate of it is created in one breath. Seen once, on his
+// own account, and reproduced by reasoning rather than on demand.
+//
+// The prompt has forbidden exactly this in three separate places for weeks
+// ("NEVER re-emit [FOOD_LOG] to move or fix something already logged"). A rule
+// the model can see and does not follow is not a mechanism — that is the
+// finding that put the named-day fallback into code, and it applies here. So
+// the marker is DROPPED before anything is written, not pleaded against again.
+//
+// WHAT MAKES IT SAFE IS THE CONJUNCTION, never the name on its own. An add is
+// refused only when it carries the SAME NAME, on the SAME DAY, in the SAME
+// SLOT as a row this very turn is editing. A row you are correcting already
+// exists — there is no reading under which you also need to create it.
+//
+// HIS SAME-EAT-TIME DUPE LAW DECIDES THE ONE GENUINE CASE (ruling, 27 Aug):
+// two servings of one dish are two real meals when the eat times genuinely
+// differ, and one meal logged twice when they match. So "fix this morning's
+// oatmeal, and I had oatmeal again at 3" still writes the second bowl.
+//
+// EXACT NAMES ONLY. A partial match is a guess (exact-name discipline), and a
+// guess here throws away a meal somebody really ate. An id that resolves to
+// nothing, a missing name, a near miss, an unknown day on either side: the add
+// is KEPT. Nothing is dropped on less than certainty, because the bug this
+// fixes writes one row too many and the bug it must never cause is losing one.
+//
+// adds:        one descriptor per [FOOD_LOG] — {i, name, meal, eat_time, day}
+// editTargets: one per [FOOD_EDIT] whose row could be named — same shape plus
+//              id, already merged so a rename or a move in that same marker
+//              shows its POST-edit values (edits are applied before adds).
+// The caller owns id resolution and day resolution; this decides only, which
+// is what makes it testable without a database.
+function _jimPhantomRelogDrops(adds, editTargets){
+  function _n(s){ return String(s==null?'':s).toLowerCase().replace(/\s+/g,' ').replace(/[.,;:!?]+$/,'').trim(); }
+  // A day is compared as a DATE, never as text: date_str is stored "Aug 26,
+  // 2026" and a marker may carry an ISO timestamp, and those two are the same
+  // Tuesday. An unreadable or absent day returns blank, which never matches.
+  function _day(s){
+    var v=String(s==null?'':s).trim(); if(!v) return '';
+    var d=new Date(v); if(isNaN(d.getTime())) return '';
+    return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  }
+  // Called UNGUARDED on purpose. A merge that deletes _hhmmAny should fail
+  // loudly here and turn the suite red, not degrade to "no clock known" and
+  // quietly widen what this drops.
+  function _mins(v){
+    if(v==null || String(v).trim()==='') return null;
+    return _hhmmAny(v);
+  }
+  var keep=[], dropped=[];
+  var targets=[];
+  (editTargets||[]).forEach(function(t){ if(t && _n(t.name)) targets.push(t); });
+  (adds||[]).forEach(function(a){
+    var an = a ? _n(a.name) : '';
+    if(!an){ keep.push(a); return; }
+    var ad=_day(a.day), as=_n(a.meal), at=_mins(a.eat_time);
+    var hit=null;
+    for(var i=0;i<targets.length && !hit;i++){
+      var t=targets[i];
+      if(_n(t.name)!==an) continue;                 // exact names only
+      var td=_day(t.day);
+      if(!ad || !td || ad!==td) continue;           // an unknown day is never a match
+      var ts=_n(t.meal);
+      if(as && ts && as!==ts) continue;             // a blank slot cannot contradict
+      var tt=_mins(t.eat_time);
+      if(at!=null && tt!=null && at!==tt) continue; // his law: real clocks that differ are two servings
+      hit=t;
+    }
+    if(hit) dropped.push({i:a.i, name:String(a.name||''), id:(hit.id!=null?hit.id:null)});
+    else keep.push(a);
+  });
+  return {keep:keep, dropped:dropped};
+}
+// EVERY ID THE MODEL WAS SHOWN, RESOLVABLE. It picks an id out of TODAY'S FOOD
+// or RECENT FOOD, so both of those lists are what has to answer here. Today's
+// rows are already in memory; the recent seven days are not, so the context
+// builder stashes them as it prints them and this reads that stash — the map
+// is then exactly the id space the model was able to cite.
+// Answers null rather than guessing, and a null keeps the add.
+function _jimFoodRowById(id){
+  if(id==null) return null;
+  var want=String(id), lists=[];
+  try{ if(typeof todayFood!=='undefined' && todayFood) lists.push(todayFood); }catch(e){}
+  try{ if(typeof allFood!=='undefined' && allFood) lists.push(allFood); }catch(e){}
+  for(var i=0;i<lists.length;i++){
+    for(var j=0;j<lists[i].length;j++){
+      if(lists[i][j] && String(lists[i][j].id)===want) return lists[i][j];
+    }
+  }
+  try{
+    var m=(typeof window!=='undefined') ? window.__jimFoodCtxRows : null;
+    if(m && m[want]) return m[want];
+  }catch(e){}
+  return null;
 }
 async function applyFoodEdit(id, fields){
   if(id==null || !fields) return false;
@@ -68751,6 +68861,73 @@ async function jimTurn(text, photos, opts){
   }
   foodAdds.items = _mergeSameSittingFoodAdds(foodAdds.items);
   var foodEdits = extractAllMarkers(reply, 'FOOD_EDIT'); reply = foodEdits.cleanText;
+  // ===== THE PHANTOM LOG, ENFORCED (approved 27 Aug) ====================
+  // A [FOOD_LOG] naming the very meal a [FOOD_EDIT] in this same turn is
+  // correcting is dropped here. The reasoning, and every condition that has
+  // to hold before anything is refused, is on _jimPhantomRelogDrops.
+  //
+  // HERE, BEFORE ANY WRITE, and before _totalVoicedEntries counts the adds:
+  // so a dropped marker never reaches the database, never lands in `landed`
+  // (which walks foodAdds.items), and never takes a "words" slice off a real
+  // entry that needed it.
+  //
+  // FAILS OPEN, DELIBERATELY. If anything in this block throws, every add is
+  // kept and the turn behaves exactly as it did before the guard existed. The
+  // fault being fixed writes one row too many; the fault this must never
+  // cause is losing a meal somebody actually ate.
+  if(foodEdits.items.length && foodAdds.items.length){
+    try{
+      var _ptTargets=[];
+      foodEdits.items.forEach(function(ed){
+        if(!ed || ed.id==null) return;
+        var _row=_jimFoodRowById(ed.id);
+        // The row as it will stand AFTER this edit: edits are applied before
+        // adds, so a rename or a move carried by this same marker is already
+        // true by the time an add would be written. Fields the marker does not
+        // carry fall back to the row it targets.
+        var _nm=(ed.name!=null&&ed.name!=='')?ed.name:(_row?_row.name:'');
+        if(!_nm) return;   // an id that names nothing cannot be judged against
+        _ptTargets.push({
+          id: ed.id,
+          name: _nm,
+          meal: (ed.meal!=null&&ed.meal!=='')?ed.meal:(_row?(_row.meal||''):''),
+          eat_time: (ed.eat_time!=null&&ed.eat_time!=='')?ed.eat_time:(_row?(_row.eat_time||''):''),
+          day: (ed.date_str!=null&&ed.date_str!=='')?ed.date_str:(_row?(_row.date_str||_row.logged_at||''):'')
+        });
+      });
+      if(_ptTargets.length){
+        // THE DAY, SLOT AND CLOCK EACH ADD WOULD ACTUALLY LAND ON — resolved
+        // through the SAME PIN CHAIN the writer runs below, in the same order,
+        // on a copy. Judging the raw marker instead is wrong in the one
+        // direction that costs a real meal: _pinStatedTime fills eat_time and
+        // meal OUT OF HIS WORDS when the marker left them blank, so "fix my
+        // 7:30 oatmeal, and I had another bowl at 3" reaches this guard with an
+        // add carrying no clock at all. Read raw, that add looks like the same
+        // sitting and gets refused; read through the chain, it carries 3:00 PM,
+        // differs from the row, and is written as the second serving it is.
+        // A copy because every one of these mutates, and the offer itself has
+        // to reach the writer untouched.
+        var _ptOne=(foodAdds.items.length===1);
+        var _ptOrig=foodAdds.items;
+        var _ptAdds=_ptOrig.map(function(a,_i){
+          var _c={}; try{ for(var _k in a){ if(Object.prototype.hasOwnProperty.call(a,_k)) _c[_k]=a[_k]; } }catch(e){}
+          var _cl=_ptOne ? text : String((a&&a.words)||'').trim();
+          if(_cl) _pinStatedTime(_c, _cl);
+          _pinDay(_c);
+          _pinClock(_c);
+          var _b=Math.max(0, Math.min(_JIM_DAY_MAX, parseInt(_c.daysAgo||_c.days_ago||0,10)||0));
+          return {i:_i, name:_c.name||'', meal:_c.meal||'', eat_time:_c.eat_time||'',
+                  day:(_c.dateStr || (_b>0 ? _dateStrDaysAgo(_b) : todayDateStr))};
+        });
+        var _ptRes=_jimPhantomRelogDrops(_ptAdds, _ptTargets);
+        if(_ptRes.dropped.length){
+          foodAdds.items=_ptRes.keep.map(function(_k){ return _ptOrig[_k.i]; });
+          try{ console.warn('jimTurn: dropped '+_ptRes.dropped.length+' [FOOD_LOG] re-log(s) of a meal this turn is editing — '
+            +_ptRes.dropped.map(function(d){ return d.name+' (id:'+d.id+')'; }).join(', ')); }catch(e){}
+        }
+      }
+    }catch(e){ console.error('phantom re-log guard', e); }
+  }
   var foodDeletes = extractAllMarkers(reply, 'FOOD_DELETE'); reply = foodDeletes.cleanText;
   var workoutPhotos = extractAllMarkers(reply, 'WORKOUT_PHOTO'); reply = workoutPhotos.cleanText;
   var stepsLogs = extractAllMarkers(reply, 'STEPS_LOG'); reply = stepsLogs.cleanText;
