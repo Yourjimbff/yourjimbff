@@ -185,10 +185,27 @@ t(/RANGE TOTAL: 700 cal/.test(OPEN), 'and everything in it is counted');
 // older ones rolled up by month, and every total computed from every row.
 console.log('\n  a long range rolls up rather than truncating:');
 const MANY={foods:[],workouts:[],steps:[],weights:[],broke:false};
+// THE FIXTURE WRITES ITS DAYS THE WAY THE REAL TABLE DOES (26 Aug).
+// This loop used to set date_str to "2026-08-25". No row in food_logs,
+// workout_logs or step_logs has ever looked like that — every one of them is
+// written by todayDateStr, which produces "Aug 25, 2026". The difference is not
+// cosmetic: new Date("2026-08-25") is read as midnight UTC, so on any machine
+// set to a clock BEHIND London it lands on the 24th, and the newest day of the
+// fixture fell out of the range. The suite then reported 119 of 120 days and a
+// short total, and blamed the app for it.
+//
+// So this test was green in London and red in New York, which is the worst
+// shape a test can have: it fails on a real machine over a fault that is its
+// own, and a red light nobody believes is a red light nobody reads.
+//
+// new Date("Aug 25, 2026") is read as LOCAL midnight, in every zone. Writing
+// the fixture the way the app writes it makes the suite say the same thing
+// everywhere, and makes it test the shape of data that actually exists.
 for(let d=0; d<120; d++){
   const dt=new Date(2026,7,25); dt.setDate(dt.getDate()-d);
   const iso=dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
-  MANY.foods.push({name:'Meal', calories:100, protein:10, date_str:iso, logged_at:iso+'T12:00:00Z'});
+  const ds=dt.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  MANY.foods.push({name:'Meal', calories:100, protein:10, date_str:ds, logged_at:iso+'T12:00:00Z'});
 }
 const LR=_jvBuildRecord({code:'x1',name:'Long Range'}, {from:'2026-04-28', to:'2026-08-25', label:'the last 120 days', days:120}, MANY);
 t(/RANGE TOTAL: 12,000 cal/.test(LR), 'all 120 days are in the total, printed or not');
