@@ -16,6 +16,9 @@ const guard=require('./_guard.cjs');
 const L=fs.readFileSync('index.html','utf8').split('\n');
 function grabFn(name){ const a=L.findIndex(l=>l.indexOf('async function '+name+'(')===0); if(a<0) return '';
   let b=a; while(b<L.length && L[b]!=='}') b++; return L.slice(a,b+1).join('\n'); }
+// Ship 6 gave applyFoodEdit a dependency. Lifted too, or this measures a crash.
+function grabPlain(name){ const a=L.findIndex(l=>l.indexOf('function '+name+'(')===0); if(a<0) return '';
+  let b=a; while(b<L.length && L[b]!=='}') b++; return L.slice(a,b+1).join('\n'); }
 let bad=0;
 const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  FAIL  ')+label+(extra?('  '+extra):'')); };
 
@@ -32,10 +35,14 @@ global.fetch=async function(url, opts){
     return {ok:GET_OK, json:async()=>(ROW?[ROW]:[])};
   }
   PATCHED=JSON.parse(opts.body);                    // the write
-  return {ok:true, text:async()=>''};
+  // SHIP 6 CHANGED THE CONTRACT (26 Aug). The write now asks for the row back
+  // and treats an empty answer as a failure, so this stub has to answer the way
+  // the database does — echoing the row it just wrote — or every move here
+  // fails for the wrong reason. Caught by run.sh the moment Ship 6 landed.
+  return {ok:true, json:async()=>[Object.assign({id:'r1'}, PATCHED)], text:async()=>''};
 };
-eval(grabFn('applyFoodEdit'));
-guard(['applyFoodEdit'], n=>eval(n));
+eval([grabPlain('_foodEditLanded'), grabFn('applyFoodEdit')].join('\n'));
+guard(['_foodEditLanded','applyFoodEdit'], n=>eval(n));
 
 // A real local 7:30am on 25 Aug, expressed the way the database stores it.
 const SEVEN_THIRTY=new Date(2026,7,25,7,30,0);

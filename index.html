@@ -67050,6 +67050,39 @@ function recomputeTodayFoodTotals(){
 }
 
 // Edit an existing food log by id (PATCH). Updates in-memory + UI when it's a today entry.
+// ===== A CHANGE PROVES ITSELF FROM THE ROW (Yusuf, ruling, 26 Aug — Ship 6) ==
+// An INSERT in this app has always read its row back. An EDIT and a DELETE did
+// not: they asked the server, the server said fine, and "corrected" or "deleted"
+// was said on the strength of that. But a PATCH or a DELETE that matches ZERO
+// rows also says fine — same status, same silence — so a change to a row that
+// was not there, or a row somebody else already removed, was indistinguishable
+// from one that worked. That is a claimed action with no row, which is the one
+// thing this engine is not allowed to do.
+//
+// Both write paths now ask the database to hand back what it actually touched.
+// No rows back means nothing was changed, and nothing changed is a failure, not
+// a success. The callers already branch on the boolean and only count a write
+// they were told landed, so an honest false becomes an honest sentence.
+//
+// And a row coming back is still not proof it holds what was sent — a boolean
+// says the request did not error, and a row says a row was touched. This checks
+// the VALUES. logged_at is compared as a moment rather than as text, because
+// the database returns the same instant written a different way.
+function _foodEditLanded(patch, row){
+  if(!row) return false;
+  var keys=Object.keys(patch||{});
+  for(var i=0;i<keys.length;i++){
+    var k=keys[i], want=patch[k], got=row[k];
+    if(k==='logged_at'){
+      var a=new Date(want), b=new Date(got);
+      if(isNaN(a)||isNaN(b)||a.getTime()!==b.getTime()) return false;
+      continue;
+    }
+    if(typeof want==='number'){ if(Math.round(Number(got)||0)!==Math.round(want)) return false; continue; }
+    if(String(got)!==String(want)) return false;
+  }
+  return true;
+}
 async function applyFoodEdit(id, fields){
   if(id==null || !fields) return false;
   var allowed=['name','emoji','calories','protein','carbs','fat','sugar','rating','insight','meal','eat_time','date_str','felt'];
@@ -67120,9 +67153,13 @@ async function applyFoodEdit(id, fields){
   }
   ['calories','protein','carbs','fat','sugar'].forEach(function(k){ if(patch[k]!==undefined) patch[k]=Math.round(Number(patch[k])||0); });
   if(Object.keys(patch).length===0) return false;
+  var _saved=null;
   try{
+    // return=representation IS the read-back. The row the database hands back is
+    // the row it actually wrote, in one round trip rather than two.
+    var _eh=function(){ return Object.assign({},sbHeaders(),{'Prefer':'return=representation','Content-Type':'application/json'}); };
     var res=await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id),{
-      method:'PATCH', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal','Content-Type':'application/json'}), body:JSON.stringify(patch)
+      method:'PATCH', headers:_eh(), body:JSON.stringify(patch)
     });
     if(!res.ok){
       var eb=''; try{ eb=await res.text(); }catch(e){}
@@ -67131,12 +67168,18 @@ async function applyFoodEdit(id, fields){
         delete patch.sugar;
         if(Object.keys(patch).length===0) return false;
         res=await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id),{
-          method:'PATCH', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal','Content-Type':'application/json'}), body:JSON.stringify(patch)
+          method:'PATCH', headers:_eh(), body:JSON.stringify(patch)
         });
       }
       if(!res.ok){ console.error('food edit failed', res.status); return false; }
     }
+    try{ _saved=await res.json(); }catch(e){ _saved=null; }
   }catch(e){ console.error('food edit error', e); return false; }
+  // NO ROW CAME BACK = NOTHING WAS CHANGED. The request was fine and the meal
+  // was not there. Saying "corrected" off that is the cardinal lie.
+  if(!_saved || !_saved.length){ console.error('food edit matched no row', id); return false; }
+  // A row came back, but does it hold what was sent.
+  if(!_foodEditLanded(patch, _saved[0])){ console.error('food edit did not land as sent', id); return false; }
   var te=todayFood.filter(function(x){ return x.id==id; })[0];
   if(te){ Object.keys(patch).forEach(function(k){ te[k]=patch[k]; }); recomputeTodayFoodTotals(); }
   else { var ae=allFood.filter(function(x){ return x.id==id; })[0]; if(ae) Object.keys(patch).forEach(function(k){ ae[k]=patch[k]; }); }
@@ -67148,10 +67191,15 @@ async function applyFoodDelete(id){
   _foodDupReset();
   if(id==null) return false;
   try{
+    // The deleted row comes back, so "deleted" is the database speaking. A
+    // DELETE that matched nothing returns exactly the same success as one that
+    // removed a meal, and the only thing that tells them apart is this body.
     var res=await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id),{
-      method:'DELETE', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'})
+      method:'DELETE', headers:Object.assign({},sbHeaders(),{'Prefer':'return=representation'})
     });
     if(!res.ok){ console.error('food delete failed', res.status); return false; }
+    var _gone=null; try{ _gone=await res.json(); }catch(e){ _gone=null; }
+    if(!_gone || !_gone.length){ console.error('food delete matched no row', id); return false; }
   }catch(e){ console.error('food delete error', e); return false; }
   var idx=-1; for(var i=0;i<todayFood.length;i++){ if(todayFood[i].id==id){ idx=i; break; } }
   if(idx>-1){ var removed=todayFood[idx]; todayFood.splice(idx,1); var ai=allFood.indexOf(removed); if(ai>-1) allFood.splice(ai,1); recomputeTodayFoodTotals(); }
