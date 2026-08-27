@@ -41,20 +41,27 @@ guard(['_JT_ONE_BRAIN_HOLD','_JT_MEAL_NOUN_RE','_JT_DAY_TARGET_RE','_JT_CAL_ONLY
   '_JT_OWN_DAY_RE','_JT_OWN_SUBJ_RE','_jtMealMove','_jtCalendarClaims','_jtWantsMarker',
   '_jtIsQuestion','_jtOwnDayQuestion'], n=>eval(n));
 
-// ===== HELD, 27 AUG. Read the block above _jtMealMove in index.html. ======
-// The move worked on his real row and kept its clock time. It ALSO logged an
-// invented breakfast carrying his own request as its meal text. Until the
-// logging engine stops emitting an add beside an edit, the two cuts that send a
-// NON-LOGGING sentence into it are switched off.
+// ===== UNHELD, 27 AUG. Read the block above _jtMealMove in index.html. =====
+// The hold was for the phantom log: the move worked on his real row and kept
+// its clock time, and the same sentence ALSO logged an invented breakfast
+// carrying his own request as its meal text. The two cuts that send a
+// NON-LOGGING sentence into the logging engine were switched off until the
+// engine stopped emitting an add beside an edit.
 //
-// The recognisers are NOT deleted, and these assertions are NOT deleted. They
-// prove the logic is still exactly right, so flipping one word restores the
-// behaviour with no guesswork. Change the first assertion and the two `true`s
-// below back when the hold lifts.
-console.log('\n  THE HOLD IS IN FORCE (27 Aug — the phantom log):');
-t(_JT_ONE_BRAIN_HOLD===true, 'the one-brain routing is held, on purpose');
-t(_jtCalendarClaims('move my breakfast to yesterday')===true, 'so a meal move goes back to the calendar for now');
-t(_jtCalendarClaims('move my lunch to today')===true, 'and so does every other one');
+// It has. v7.980.674 drops a new-meal marker naming the meal an edit in the
+// same turn is correcting, before anything is written (tphantom.cjs). So the
+// cuts are live and these assertions now hold the LIVE state, not the hold.
+//
+// THE SWITCH AND THE RECOGNISERS BOTH STAY. Setting the switch back to true
+// restores the hold in one word, and this suite asserts whichever state is
+// shipped — so the two cannot drift apart, in either direction.
+console.log('\n  THE HOLD IS OFF (27 Aug — the phantom log is fixed):');
+t(_JT_ONE_BRAIN_HOLD===false, 'the one-brain routing is live');
+t(_jtCalendarClaims('move my breakfast to yesterday')===false, 'so a meal move reaches the logging engine');
+t(_jtCalendarClaims('move my lunch to today')===false, 'and so does every other one');
+// HIS OWN SENTENCE, THE ONE THE HOLD WAS DECLARED OVER.
+t(_jtCalendarClaims('Can you move the blueberry pancakes I had on Saturday to this morning')===false,
+  'and the sentence this whole thread started from is no longer taken by the calendar');
 
 console.log('\n  and the recogniser underneath is still correct, so unholding is one word:');
 [['move my breakfast to yesterday',true],
@@ -95,13 +102,17 @@ console.log('\n  and programme sentences still build programmes:');
  ['take Leandra off her program',true]
 ].forEach(([s,claim])=>t(takes(s)===claim,'"'+s+'" still builds the programme'));
 
-console.log('\n  GATE 3 — ALSO HELD, same reason, same switch:');
+console.log('\n  GATE 3 — ALSO LIVE, same reason, same switch:');
 const reaches=s=>(!_jtIsQuestion(s) || (!_JT_ONE_BRAIN_HOLD && _jtOwnDayQuestion(s)));
-[['what did I eat today',false],
- ['did my lunch save?',false],
- ['show me my breakfast',false]
-].forEach(([s,ok])=>t(reaches(s)===ok,'"'+s+'" goes back to the board for now'));
-t(reaches('log my breakfast, three eggs')===true, 'but a plain log still reaches the engine — it was never held');
+[['what did I eat today',true],
+ ['did my lunch save?',true],
+ ['show me my breakfast',true]
+].forEach(([s,ok])=>t(reaches(s)===ok,'"'+s+'" reaches the engine holding his rows'));
+t(reaches('log my breakfast, three eggs')===true, 'and a plain log still reaches it — it was never held');
+// A FALLTHROUGH, NOT A GATE. Nothing he asks can dead-end here: if Jim writes
+// nothing the rail drops to the model exactly as it always did. Asserted on the
+// shipped line rather than on the idea of it.
+t(/A FALLTHROUGH, NOT A GATE/.test(src), 'and it is still a fallthrough, not a gate');
 
 console.log('\n  and that recogniser is still correct too:');
 [['what did I eat today',true],
@@ -133,7 +144,9 @@ console.log('\n  LAW 12, BOTH DIRECTIONS ON THE MEAL MOVE:');
 t(/MOVE OR CORRECT = \[FOOD_EDIT\]/.test(src), 'the client side still teaches the move');
 t(/send date_str for the day it belongs on/.test(src), 'and still moves the day field');
 t(_jtMealMove('move my breakfast to yesterday')===true,
-  'and the trainer side still recognises the same request, ready to be unheld');
+  'and the trainer side recognises the same request');
+t(_jtCalendarClaims('move my breakfast to yesterday')===false,
+  'and nothing stands between that sentence and the engine any more');
 
 console.log('\n'+(bad?(bad+' FAILED'):'all pass'));
 process.exit(bad?1:0);

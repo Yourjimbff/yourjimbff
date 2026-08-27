@@ -229,5 +229,79 @@ r=runTurn('that was 450', [{name:'Pancakes', meal:'Breakfast', eat_time:'8:00 AM
 t(r.kept.length===1, 'a throw inside the guard keeps every add, exactly as before it existed');
 _jimFoodRowById=savedById; console.error=realErr;
 
+// ===== 6. HIS ACTUAL INCIDENT, END TO END ==============================
+// "Can you move the blueberry pancakes I had on Saturday to this morning."
+//
+// The first cut of this guard did NOT catch this, and it was written to. Two
+// things were wrong and both are asserted here so neither can come back.
+//
+// ONE: the phantom did not come from the model at all. The model behaved
+// correctly and emitted a [FOOD_EDIT] with no [FOOD_LOG]. That is precisely the
+// shape the NAMED-DAY FALLBACK exists to rescue, so the fallback read "he
+// reported eating on a named day and nothing was logged", invented a meal out
+// of his REQUEST, and wrote it. _jimExtractMeal returns rating:'unknown' and no
+// emoji, which is exactly what the stray row carried.
+//
+// TWO: it landed on AUG 22 — the day the pancakes had just LEFT — while the
+// edit moved the row to Aug 27. Judged against the destination day alone, that
+// phantom looks like a different day and survives.
+console.log('\n  his own sentence, the one the hold was declared over:');
+const SENT='Can you move the blueberry pancakes I had on Saturday to this morning';
+// DERIVED, NEVER HARD-CODED. "Saturday" resolves relative to the LOCAL day, so
+// it is 5 days back here and 6 in Pacific/Kiritimati, where it is already
+// Friday — and it changes again every day this suite runs. An "Aug 22, 2026"
+// fixture is green today, red in Kiritimati, and red everywhere next week.
+// Assert the PROPERTY: his words point back to a Saturday, and the row sits on
+// whichever Saturday that is.
+const SATBACK=_jimAnchorDay(SENT);
+const OLDDAY=_dateStrDaysAgo(SATBACK);
+const PANCAKES={id:900, name:'Blueberry Pancakes', meal:'Breakfast', eat_time:'2:50 PM', date_str:OLDDAY};
+const MOVE=[{id:900, date_str:TODAY}];
+t(SATBACK>0 && new Date(OLDDAY).getDay()===6,
+  'his words anchor back to a Saturday, which is what pinned the stray row there',
+  SATBACK+' days -> '+OLDDAY);
+r=runTurn(SENT, [{name:'Blueberry Pancakes', meal:'Breakfast', calories:450, dateStr:OLDDAY}], MOVE, [PANCAKES]);
+t(r.kept.length===0, 'a re-log on the day the meal LEFT is refused');
+r=runTurn(SENT, [{name:'Blueberry Pancakes', meal:'Breakfast', calories:450, dateStr:TODAY}], MOVE, [PANCAKES]);
+t(r.kept.length===0, 'and so is one on the day it went to');
+
+// THE COUNTERPART. Judging both days widens what this refuses, so it has to be
+// shown NOT to swallow a real meal that genuinely belongs on the old day.
+console.log('\n  and a real meal on that same old day is still written:');
+r=runTurn(SENT, [{name:'Chicken Salad', meal:'Lunch', eat_time:'1:00 PM', dateStr:OLDDAY}], MOVE, [PANCAKES]);
+t(r.kept.length===1, 'a different dish on the day it left');
+// NOT a Snack fixture on his bare sentence: "this morning" anchors the slot to
+// Breakfast and deletes the clock, so the writer would file it as a breakfast on
+// that day whatever the marker said, and refusing it is his same-eat-time law.
+// The shape where a second helping really does survive is the multi-entry one,
+// each marker judged on its own clause.
+r=runTurn(SENT+' and I also had pancakes again that night',
+  [{name:'Blueberry Pancakes', meal:'Breakfast', words:'move the blueberry pancakes I had on Saturday to this morning'},
+   {name:'Blueberry Pancakes', meal:'Snack', eat_time:'9:00 PM', words:'I also had pancakes again that night'}],
+  MOVE, [PANCAKES]);
+t(r.kept.length===1 && r.kept[0].meal==='Snack',
+  'and the same dish there at a clock that genuinely differs', JSON.stringify(r.kept.map(k=>k.meal+'@'+(k.eat_time||'-'))));
+// An edit that is NOT a move must still be judged on ONE day, not two.
+r=runTurn('that was 450', [{name:'Pancakes', meal:'Breakfast', eat_time:'8:00 AM'}], [{id:482, calories:450}], [ROW]);
+t(r.kept.length===0, 'a plain correction still refuses its own re-log');
+
+// ===== 7. THE FALLBACK THAT INVENTED IT IS SHUT ON A CORRECTION =========
+// The guard above is the second line of defence. The first is that the meal is
+// never invented in the first place: a turn that edited a meal has already been
+// handled, and the fallback's own charter is the case where the model filed
+// NOTHING. An edit is not nothing.
+console.log('\n  and the fallback never invents a meal on a turn that corrected one:');
+t(/var _rawReplyHadEditTag = \/\\\[FOOD_EDIT\\\]\/\.test\(_rawReply\);/.test(src),
+  'the turn knows whether it carried a correction');
+// SEARCHED FORWARD FROM THE START INDEX. 'ONE SITTING = ONE MEAL' also appears
+// in the prompt text far earlier in the file, so a bare indexOf ran the slice
+// backwards and handed back an empty string that passed nothing.
+const iFb=src.indexOf('var _fbFired=false');
+const FB=src.slice(iFb, src.indexOf('ONE SITTING = ONE MEAL, ENFORCED', iFb));
+t(iFb>0 && FB.length>200 && FB.length<4000, 'the fallback block was sliced, forwards', 'len='+FB.length);
+t(/!_rawReplyHadEditTag/.test(FB), 'and the named-day fallback is shut when it did');
+t(/!foodAdds\.items\.length && !_rawReplyHadFoodTag && !_rawReplyHadEditTag && !hasPhoto/.test(FB),
+  'on the same condition line as its other three guards');
+
 console.log(bad? ('\n  '+bad+' FAILED') : '\n  all pass');
 process.exit(bad?1:0);

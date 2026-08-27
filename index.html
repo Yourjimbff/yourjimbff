@@ -27424,9 +27424,10 @@ var _JT_DAY_TARGET_RE=new RegExp(
 var _JT_CAL_ONLY_RE=new RegExp(
   "\\b(every|block|blocks|blocked|recurring|appointment|reminder|class|series|schedule|scheduled|scheduling)\\b"
   +"|\\bmeal ?prep\\b","i");
-// ===== HELD, 27 AUG — THE PHANTOM LOG =================================
-// The last-inch test on his own account, on his word: he said "Can you move the
-// blueberry pancakes I had on Saturday to this morning."
+// ===== UNHELD, 27 AUG — THE PHANTOM LOG IS FIXED ======================
+// WHAT THE HOLD WAS FOR. The last-inch test on his own account, on his word:
+// he said "Can you move the blueberry pancakes I had on Saturday to this
+// morning."
 //
 // THE MOVE WORKED. The real row went from Aug 22 to Aug 27, both date fields
 // together, and kept its real clock time of 2:50 PM. It did not land at noon.
@@ -27440,19 +27441,27 @@ var _JT_CAL_ONLY_RE=new RegExp(
 // that reads as "it did not move", which is the exact complaint this whole
 // thread started from.
 //
-// The fault is in the logging engine, not in the routing: it emitted an edit
-// and an add from one sentence. A CLIENT can reach the same behaviour, and has
-// been able to since the move shipped — I swept all 3,572 food rows for it and
-// nobody has, so no history is damaged. His own account is back at 117 rows and
-// 73,067 calories, byte-identical to the baseline.
+// The fault was in the logging engine, not in the routing: it emitted an edit
+// and an add from one sentence. So the two cuts that send a NON-LOGGING
+// sentence into that engine were switched off rather than the recognisers
+// deleted, and the suite asserted the hold so nobody had to remember it.
 //
-// So the two cuts that send a NON-LOGGING sentence into the logging engine are
-// held until that is fixed. Cut 2 is untouched: a sentence that says it is a log
-// should reach the logger. Cut 4 is untouched: it writes nothing.
+// WHY IT IS OFF NOW. The engine no longer does that. v7.980.674 drops a
+// new-meal marker that names the very meal an edit in the same turn is
+// correcting, before anything is written — _jimPhantomRelogDrops, which
+// refuses only on the same name, the same day and the same slot, keeps a
+// genuine second serving at a different clock, and fails open. Seven
+// deliberate breakages of it each turn tphantom.cjs red.
 //
-// This flips back with one word, and the suite asserts the hold so nobody has to
-// remember it is here.
-var _JT_ONE_BRAIN_HOLD=true;
+// So the precondition this hold named is met, and the two cuts are live: a
+// meal move reaches the logging engine again, and a question about his own day
+// reaches the engine holding his rows. Both were always fallthroughs — if Jim
+// writes nothing they drop to the model exactly as before.
+//
+// The switch stays. Setting it back to true restores the hold in one word, and
+// tgates.cjs asserts the CURRENT state either way, so flipping it needs the
+// suite flipped with it and cannot be done by accident.
+var _JT_ONE_BRAIN_HOLD=false;
 function _jtMealMove(t){
   var s=String(t||'');
   if(!_JT_MEAL_NOUN_RE.test(s)) return false;
@@ -68565,6 +68574,10 @@ async function jimTurn(text, photos, opts){
   var _rawReply = reply;
   var _rawReplyHadWorkoutTag = /\[WORKOUT_LOG\]/.test(_rawReply);
   var _rawReplyHadFoodTag = /\[FOOD_LOG\]/.test(_rawReply);
+  // AND WHETHER IT CORRECTED ONE. Read here, beside its neighbour, because the
+  // named-day fallback below runs long before the FOOD_EDIT markers are
+  // extracted and still has to know that this turn was a correction.
+  var _rawReplyHadEditTag = /\[FOOD_EDIT\]/.test(_rawReply);
   var _rawReplyHadWeightTag = /\[WEIGHT_LOG\]/.test(_rawReply);
 
   // Extract WORKOUT_LOG marker (new workout) AND WORKOUT_NOTE marker (append to existing)
@@ -68801,6 +68814,25 @@ async function jimTurn(text, photos, opts){
   // HERE, because there is nothing to pin: no record was ever proposed. So
   // this proposes one, and the day machinery that already exists does the rest.
   //
+  // ===== AND NEVER ON A TURN THAT CORRECTED A MEAL (27 Aug) ===========
+  // THIS IS WHERE THE PHANTOM LOG CAME FROM. He said "Can you move the
+  // blueberry pancakes I had on Saturday to this morning". The model did the
+  // right thing and emitted a [FOOD_EDIT] and no [FOOD_LOG] at all — which is
+  // precisely the shape this fallback was built to rescue. So it read "he
+  // reported eating on a named day and nothing was logged", invented a meal
+  // out of his REQUEST, and wrote it to Saturday: 450 cal, rating unknown, no
+  // emoji, carrying his own sentence as its meal text. The pancakes moved, and
+  // the hole they left was filled with a breakfast that never happened.
+  // On his screen that reads as "it did not move".
+  //
+  // A TURN THAT EDITED A MEAL HAS ALREADY BEEN HANDLED. The sentence was
+  // understood and a real row was changed because of it; there is no missing
+  // log to rescue. The fallback's own charter is the case where the model filed
+  // NOTHING, and an edit is not nothing.
+  //
+  // Read off the RAW reply, because the FOOD_EDIT markers are not extracted
+  // until much further down and this has to decide before it writes.
+  //
   // DELIBERATELY NARROW. It needs all four: he REPORTED eating (the router's
   // own past-meal veto, judged on the whole message exactly as _jtCalendarClaims
   // judges it), he NAMED a day that is behind us, there is no photo, and NO
@@ -68811,7 +68843,7 @@ async function jimTurn(text, photos, opts){
   try{
     var _fbDay=(typeof _jimAnchorDay==='function') ? _jimAnchorDay(text) : null;
     var _fbAte=(typeof _JT_PAST_MEAL_RE!=='undefined') && _JT_PAST_MEAL_RE.test(String(text||''));
-    if(!foodAdds.items.length && !_rawReplyHadFoodTag && !hasPhoto
+    if(!foodAdds.items.length && !_rawReplyHadFoodTag && !_rawReplyHadEditTag && !hasPhoto
        && (_fbAte || _jimLooksLikeMeal(text)) && !_jimIsAdminOnly(text)){
       var _fbMeal=null;
       try{ _fbMeal=await _jimExtractMeal(String(text||'')); }catch(e){ _fbMeal=null; }
@@ -68887,12 +68919,23 @@ async function jimTurn(text, photos, opts){
         // carry fall back to the row it targets.
         var _nm=(ed.name!=null&&ed.name!=='')?ed.name:(_row?_row.name:'');
         if(!_nm) return;   // an id that names nothing cannot be judged against
-        _ptTargets.push({
-          id: ed.id,
-          name: _nm,
-          meal: (ed.meal!=null&&ed.meal!=='')?ed.meal:(_row?(_row.meal||''):''),
-          eat_time: (ed.eat_time!=null&&ed.eat_time!=='')?ed.eat_time:(_row?(_row.eat_time||''):''),
-          day: (ed.date_str!=null&&ed.date_str!=='')?ed.date_str:(_row?(_row.date_str||_row.logged_at||''):'')
+        var _mealF=(ed.meal!=null&&ed.meal!=='')?ed.meal:(_row?(_row.meal||''):'');
+        var _timeF=(ed.eat_time!=null&&ed.eat_time!=='')?ed.eat_time:(_row?(_row.eat_time||''):'');
+        var _wasDay=_row?(_row.date_str||_row.logged_at||''):'';
+        var _nowDay=(ed.date_str!=null&&ed.date_str!=='')?ed.date_str:_wasDay;
+        // ===== A MOVE LEAVES A HOLE, AND THE HOLE GETS FILLED ==============
+        // BOTH DAYS, because a move means this one meal belongs to two days
+        // inside this single turn. His actual incident: "move the blueberry
+        // pancakes I had on Saturday to this morning" moved the row Aug 22 ->
+        // Aug 27 and then wrote an invented breakfast onto AUG 22 — the day the
+        // pancakes had just left. Judged against the destination day alone that
+        // phantom looks like a different day and survives, which is exactly what
+        // the first cut of this guard did. A re-log of a moved meal is a phantom
+        // on the day it came from just as much as on the day it went to.
+        [_nowDay, _wasDay].forEach(function(_d, _di){
+          if(!_d) return;
+          if(_di===1 && String(_d)===String(_nowDay)) return;   // not a move; one day only
+          _ptTargets.push({id: ed.id, name: _nm, meal: _mealF, eat_time: _timeF, day: _d});
         });
       });
       if(_ptTargets.length){
