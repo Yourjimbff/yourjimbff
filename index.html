@@ -36351,7 +36351,47 @@ async function _jvJarvisAddClient(nc){
     try{ delete CLIENTS[code]; }catch(e){}
     return {ok:false, line:'The sale didn’t save, so I didn’t create '+_escHtml(name)+' either — say it again.'};
   }
-  try{ if(nc.phone) await trainerWrite('clientPatch', {code:code, phone:String(nc.phone).trim()}); }catch(e){}
+  // ===== A NUMBER GIVEN AT ADD TIME IS SAVED, OR HE IS TOLD (27 Aug) =====
+  // Benjamin Plimpton was added by voice WITH his number, and the share feature
+  // said no number was on file for him the next day.
+  //
+  // clientInsert takes no phone argument at all — check trainer.js, there is no
+  // phone key in its body — so EVERY path has to follow the insert with a
+  // clientPatch, and this one did. What it did not do was look at the answer.
+  // The result was discarded, CLIENTS[code].phone was never set, and the spoken
+  // confirmation listed the code, the tier and the term and said nothing about
+  // the number either way. A number that failed to save and a number that saved
+  // produced the identical sentence, which is the cardinal lie in its quietest
+  // form: not a false claim, an ABSENT one, over a field he had just dictated.
+  //
+  // Verified the way _jtPhoneTurn already verifies it — the proven path since
+  // the Carly fix. NOT with a fresh read: phone is walled off from the anon key
+  // entirely, so an sbSelect always answers [] and would report every good write
+  // as a failure. trainer.js answers every write with return=representation, so
+  // w.rows[0] IS the row the service key just wrote. That is the read-back.
+  //
+  // Compared on DIGITS ONLY, because "919-555-0100" and "9195550100" are the
+  // same number and the door is free to store either.
+  var _phSaid=String((nc&&nc.phone)||'').trim(), _phLanded=null;
+  if(_phSaid){
+    var _pw=null;
+    try{ _pw=await trainerWrite('clientPatch', {code:code, phone:_phSaid}); }catch(e){}
+    var _pwRow=(_pw && _pw.rows && _pw.rows[0]) || null;
+    if(_pw && _pw.ok && _pwRow && String(_pwRow.phone||'').replace(/\D/g,'')===_phSaid.replace(/\D/g,'')){
+      _phLanded=String(_pwRow.phone||_phSaid);
+      // Set in memory too, so the Text button and the share sheet see it now
+      // rather than after whatever reload happens to come next. Both read
+      // CLIENTS[code].phone.
+      try{ CLIENTS[code].phone=_phLanded; }catch(e){}
+      // AND INTO THE SAME LOCAL CACHE _jvHydratePhones READS. textClient and
+      // callClient both hydrate from yjb_phones before looking at CLIENTS, so a
+      // number kept here survives a boot where the trainer-only roster tier does
+      // not populate — the failure mode that leaves every phone blank for a
+      // whole session. Same key and shape _jvSavePhone writes.
+      try{ var _pm=JSON.parse(localStorage.getItem('yjb_phones')||'{}'); _pm[code]=_phLanded;
+           localStorage.setItem('yjb_phones', JSON.stringify(_pm)); }catch(e){}
+    }
+  }
   try{
     var pd=(typeof PHASES!=='undefined') && PHASES.comp;
     var days=(pd && pd.days && pd.days[gender]) || 5;
@@ -36360,11 +36400,23 @@ async function _jvJarvisAddClient(nc){
     await sbUpsert('profiles', seed, 'client_code');
   }catch(e){}
   try{ _rosterLoadPromise=null; await loadRosterFromDB(); }catch(e){}
+  // AFTER the reload as well. The roster read preserves an existing entry and
+  // only overwrites phone when the door returns one, but a verified number is
+  // not something to leave depending on that — it is re-applied here so the
+  // share sheet and the Text button cannot come back empty on a fresh row.
+  try{ if(_phLanded) CLIENTS[code].phone=_phLanded; }catch(e){}
   // Same rule, and the separators go with it: this line is SPOKEN, and a middot
   // between every field is a stutter of pauses out loud where a comma is a
   // sentence. "mo" was fine to read but not to hear.
   var line=_escHtml(name)+' added, '+code+', '+(tier==='vip'?'VIP':'1:1 with 2 calls')+', '+term+' months';
   if(paid) line+=' · '+_sMoney(paid)+' logged as a sale';
+  // AND THE NUMBER IS NAMED, EITHER WAY. Silence is what made this invisible
+  // for a day: a number that saved and a number that did not read the same.
+  // The failure is not a toast, because this line is spoken and a toast is not,
+  // and it carries the one sentence that fixes it rather than a chore.
+  if(_phSaid && _phLanded) line+=', number saved';
+  else if(_phSaid) line+='<br><br>I could not save that number — nothing is on their card. Say “add this number to '
+    +_escHtml(name)+': '+_escHtml(_phSaid)+'” and I will put it on properly.';
   // THE ONBOARDING MESSAGE — drafted, never auto-sent (RULING 1: an
   // actually-sent text still asks, undo can't unsend an SMS). Reuses the
   // exact textprop pending-write flow every other drafted text already
