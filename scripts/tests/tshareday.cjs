@@ -54,12 +54,18 @@ t(_citeSessionNoun('Glutes')==='glute training session', 'smoke: the session nam
 // hands it. A test that is given better data than the caller gets will pass
 // over a difference the user can see. These rows are now exactly what the feed
 // puts in _feedItems and nothing more.
+//
+// AND THE ITEM CARRIES .ts, WHICH THE ROW DOES NOT. The feed builds items as
+// {kind, ts, data} and sorts on ts; a fixture without it makes every workout
+// look like midnight, which sorted her walk to the top of the day and read as a
+// product bug. Same lesson as the duration, one layer up.
+// The eat times and timestamps below are her REAL Aug 26 rows.
 const DAY=[
-  {kind:'food', data:{id:1, client_code:'carlyl1', meal:'Breakfast', name:'Mozzarella Cheese Stick',            emoji:'', calories:80,  protein:7,  carbs:1,  fat:6,  rating:'good', date_str:'Aug 26, 2026', eat_time:'11:00 AM', meal_text:null}},
-  {kind:'wo',   data:{id:2, client_code:'carlyl1', title:'Walk', intensity:null, description:'Walk', exercises:null, notes:null, date_str:'Aug 26, 2026', photo:null, performed_at:null}},
-  {kind:'food', data:{id:3, client_code:'carlyl1', meal:'Lunch',  name:'Tofu with Teriyaki Sauce',              emoji:'', calories:360, protein:32, carbs:20, fat:16, rating:'good', date_str:'Aug 26, 2026', eat_time:'2:00 PM',  meal_text:null}},
-  {kind:'food', data:{id:4, client_code:'carlyl1', meal:'Snack',  name:'Tofu with Teriyaki Sauce',              emoji:'', calories:360, protein:32, carbs:20, fat:16, rating:'good', date_str:'Aug 26, 2026', eat_time:'6:00 PM',  meal_text:null}},
-  {kind:'food', data:{id:5, client_code:'carlyl1', meal:'Dinner', name:'Chicken Strips, Waffle Fries & Sprite', emoji:'', calories:890, protein:28, carbs:98, fat:38, rating:'okay', date_str:'Aug 26, 2026', eat_time:'9:30 PM',  meal_text:null}}
+  {kind:'food', ts:Date.parse('2026-08-26T15:00:00Z'), data:{id:1, client_code:'carlyl1', meal:'Breakfast', name:'Mozzarella Cheese Stick',            emoji:'', calories:80,  protein:7,  carbs:1,  fat:6,  rating:'good', date_str:'Aug 26, 2026', eat_time:'8:00 AM',  logged_at:'2026-08-26T15:00:00+00:00', meal_text:null}},
+  {kind:'wo',   ts:Date.parse('2026-08-26T15:15:00Z'), data:{id:2, client_code:'carlyl1', title:'Walk', intensity:null, description:'Walk', exercises:null, notes:null, date_str:'Aug 26, 2026', logged_at:'2026-08-26T15:15:00+00:00', photo:null, performed_at:null}},
+  {kind:'food', ts:Date.parse('2026-08-26T18:00:00Z'), data:{id:3, client_code:'carlyl1', meal:'Lunch',  name:'Tofu with Teriyaki Sauce',              emoji:'', calories:360, protein:32, carbs:20, fat:16, rating:'good', date_str:'Aug 26, 2026', eat_time:'11:00 AM', logged_at:'2026-08-26T18:00:00+00:00', meal_text:null}},
+  {kind:'food', ts:Date.parse('2026-08-26T22:00:00Z'), data:{id:4, client_code:'carlyl1', meal:'Snack',  name:'Tofu with Teriyaki Sauce',              emoji:'', calories:360, protein:32, carbs:20, fat:16, rating:'good', date_str:'Aug 26, 2026', eat_time:'3:00 PM',  logged_at:'2026-08-26T22:00:00+00:00', meal_text:null}},
+  {kind:'food', ts:Date.parse('2026-08-27T01:30:00Z'), data:{id:5, client_code:'carlyl1', meal:'Dinner', name:'Chicken Strips, Waffle Fries & Sprite', emoji:'', calories:890, protein:28, carbs:98, fat:38, rating:'okay', date_str:'Aug 26, 2026', eat_time:'6:30 PM',  logged_at:'2026-08-27T01:30:00+00:00', meal_text:null}}
 ];
 const body=_citeDayBody(DAY);
 console.log('\n  THE DRAFTED MESSAGE:\n');
@@ -86,10 +92,32 @@ t(/Push: 45 min/.test(_citeDayBody([{kind:'wo', data:{title:'Push', duration:45,
   'and a numeric duration still reads as minutes');
 t(lines.length===9, 'opener, five items, the Summary label and its two lines', lines.length+' lines');
 
-console.log('\n  IN THE ORDER THE CARD IS IN:');
+// ===== ORDERED BY WHEN SHE ATE IT (Yusuf, from his screenshot, 28 Aug) =
+// His draft showed a Snack above a Breakfast. The feed sorts by _feedTs, which
+// reads logged_at and never eat_time — right for a stream of things as they
+// arrive, wrong for a message that reads as somebody's day.
+//
+// THE MEALS ARE ASSERTED, NOT THE WALK'S PLACE AMONG THEM. A meal carries its
+// own clock as a string, which means the same thing in every zone; a workout is
+// placed by the moment it was recorded, read in the device's zone. So her 11:15
+// walk sits after her 11:00 lunch here and before it in UTC, and BOTH are
+// correct. Pinning that pair would be pinning the reader's timezone.
+console.log('\n  IN THE ORDER SHE ATE, MORNING TO NIGHT:');
 const at=s=>body.indexOf(s);
-t(at('Breakfast')<at('Walk') && at('Walk')<at('Lunch') && at('Lunch')<at('Snack') && at('Snack')<at('Dinner'),
-  'oldest first, the walk sitting where she logged it');
+t(at('Breakfast')<at('Lunch') && at('Lunch')<at('Snack') && at('Snack')<at('Dinner'),
+  'her meals run 8:00, 11:00, 3:00, 6:30 — in that order');
+t(at('Walk')>-1, 'and the walk is in the day');
+// HIS SCREENSHOT, EXACTLY: a snack eaten at night, logged the NEXT morning,
+// handed over first. Two meals, so this holds in every zone.
+const SNACKFIRST=[
+  {kind:'food', ts:Date.parse('2026-08-28T13:00:00Z'), data:{meal:'Snack', name:'Late Snack', calories:200, protein:5, eat_time:'9:30 PM', date_str:'Aug 27, 2026', logged_at:'2026-08-28T13:00:00+00:00'}},
+  {kind:'food', ts:Date.parse('2026-08-27T14:00:00Z'), data:{meal:'Breakfast', name:'Eggs', calories:300, protein:20, eat_time:'8:00 AM', date_str:'Aug 27, 2026', logged_at:'2026-08-27T14:00:00+00:00'}}
+];
+const sf=_citeDayBody(SNACKFIRST);
+t(sf.indexOf('Breakfast')<sf.indexOf('Snack'),
+  'a snack logged the next morning still reads AFTER the breakfast it followed');
+t(_citeDayMins({kind:'food', data:{eat_time:'9:30 PM'}})===21*60+30, 'a meal is placed by its own clock');
+t(_citeDayMins({kind:'wo', ts:Date.parse('2026-08-27T12:00:00Z'), data:{}})>=0, 'and anything else by when it was recorded');
 
 console.log('\n  THE SUMMARY:');
 t(/\nSummary:\n/.test(body), 'it has its own label on its own line');
@@ -99,28 +127,40 @@ t(!/1690/.test(body), 'the figure carries its comma');
 t(_citeDayBody([DAY[0]]).indexOf('Walk')<0 && _citeDayBody([DAY[0]]).indexOf('\nSummary:\n')>-1,
   'a day with no activity gets no activity line');
 t(/2 walks/.test(_citeDayBody([DAY[1],DAY[1]])), 'two of the same session pluralise');
-t(/\n1 walk\n1 push session/.test(_citeDayBody([DAY[1],{kind:'wo',data:{title:'Push',description:'Push',date_str:'Aug 26, 2026'}}])),
+// The Push carries a ts an hour after the walk, or it would fall back to
+// midnight and sort ahead of it — the fixture trap, one more time.
+t(/\n1 walk\n1 push session/.test(_citeDayBody([DAY[1],
+    {kind:'wo', ts:Date.parse('2026-08-26T16:15:00Z'), data:{title:'Push',description:'Push',date_str:'Aug 26, 2026',logged_at:'2026-08-26T16:15:00+00:00'}}])),
   'and two different ones each get their OWN line, never a tally on one');
 
 console.log('\n  SPACING — a blank line between every item (his feng shui):');
-t(/:\n\nBreakfast:/.test(body), 'after the opening line');
-t(/protein\)\n\nWalk\n\nLunch:/.test(body), 'and between the items');
+// Which item comes first depends on the reader's zone once a workout is in the
+// day, so this asserts the blank line under the HEADING, not under a named item.
+t(/^[^\n]+:\n\n[^\n]/.test(body), 'after the opening line');
+// Not a fixed pair any more: the walk's place among her meals depends on the
+// reader's zone (see the ordering note above), so this asserts the SHAPE.
+t(/\)\n\nWalk\n/.test(body) || /\n\nWalk\n\n/.test(body), 'and between the items');
+t(body.split('\n\n').length>=6, 'every item separated by a blank line', body.split('\n\n').length+' blocks');
 t(!/\n\n\n/.test(body), 'never three in a row');
 
 console.log('\n  SAME VOICE AS THE SINGLE CITE:');
-// ===== HIS OWN WORDS LEAD (Yusuf, spec, 28 Aug) ======================
-// The body opens with an EMPTY paragraph. Whatever he types goes there and is
-// the first thing the client reads; the blank line under it holds his voice
-// apart from the report instead of running them together.
-t(/^\n\nOn your day/.test(body), 'the draft opens with a blank paragraph for his own message');
-t(!/^\n\n\n/.test(body), 'one blank paragraph, not a gap');
-const typed='Great work yesterday Kelly, this is exactly the consistency we want.';
-t(/^Great work yesterday Kelly[^\n]*\n\nOn your day/.test(typed+body),
-  'and with a message typed at the top it reads as his paragraph, then the report');
-const opener=body.replace(/^\n+/,'');
-t(/^On your day/.test(opener), 'the report still opens "On your day", the way one meal opens "On your ..."');
-t(/^On your day on (Wed|Aug|\w)/.test(opener) || /^On your day (yesterday|today)/.test(opener),
-  'with the natural date the single cite uses', JSON.stringify(opener.split('\n')[0]));
+// ===== THE DAY IS THE HEADING, HIS WORDS SIGN OFF (ruling, 28 Aug) ===
+// It used to announce itself — "On your day yesterday:" — and it used to open
+// with a blank paragraph for his comment. Both are gone: the report simply
+// quotes the day, and his comment goes at the BOTTOM where the cursor lands.
+t(!/^\s/.test(body), 'no blank line at the top — it starts with the report');
+t(!/On your day/.test(body), 'and it no longer announces itself');
+t(/^[A-Z][^\n:]*:\n\n/.test(body), 'the first line is the day, as a heading', JSON.stringify(body.split('\n')[0]));
+t(/^(Yesterday|Today|Wednesday|Tuesday|Monday|Thursday|Friday|Saturday|Sunday)\b/.test(body)
+  || /^\w+day, \w+ \d/.test(body),
+  'in the natural style, with no "last" left on the front', JSON.stringify(body.split('\n')[0]));
+// The sign-off space: one blank line under the summary, then him.
+t(/\n\n$/.test(body) && !/\n\n\n$/.test(body), 'it ends with exactly one blank line for his comment');
+const signed=body+'Great work Kelly, this is exactly the consistency we want.';
+const sLines=signed.split('\n');
+t(sLines[sLines.length-1]==='Great work Kelly, this is exactly the consistency we want.'
+  && sLines[sLines.length-2]==='',
+  'and what he types lands under the summary as its own paragraph');
 t(body.endsWith('\n\n'), 'and it ends the same way, ready for him to type under it');
 
 console.log('\n  NO LONG DASHES — this goes out under his name (his standing rule):');
@@ -164,12 +204,12 @@ t(/try\{ textClient\(code, body\); \}catch\(e\)\{\}/.test(src), 'and the thread 
 console.log('\n  KELLY G, Aug 27 — THE DAY HE TEXTED HER:');
 const KDAY='Aug 27, 2026';
 const KELLY=[
-  {kind:'food', data:{meal:'Breakfast', name:'Coffee with Cream & Honey, Pumpkin Cinnamon Roll', calories:520, protein:12, eat_time:'10:11 AM', date_str:KDAY}},
-  {kind:'food', data:{meal:'Lunch', name:'Turkey Sandwich, Chips & Tea', calories:520, protein:38, eat_time:'3:23 PM', date_str:KDAY}},
-  {kind:'wo',   data:{title:'Glutes', exercises:null, date_str:KDAY,
+  {kind:'food', ts:Date.parse('2026-08-27T15:11:17.937Z'), data:{meal:'Breakfast', name:'Coffee with Cream & Honey, Pumpkin Cinnamon Roll', calories:520, protein:12, eat_time:'10:11 AM', date_str:KDAY, logged_at:'2026-08-27T15:11:17.937+00:00'}},
+  {kind:'food', ts:Date.parse('2026-08-27T20:23:47.979Z'), data:{meal:'Lunch', name:'Turkey Sandwich, Chips & Tea', calories:520, protein:38, eat_time:'3:23 PM', date_str:KDAY, logged_at:'2026-08-27T20:23:47.979+00:00'}},
+  {kind:'wo',   ts:Date.parse('2026-08-27T16:10:00Z'), data:{title:'Glutes', exercises:null, date_str:KDAY, logged_at:'2026-08-27T16:10:00+00:00',
     description:'Barbell Hip Thrust: 125 lb \u00d7 8, 125 lb \u00d7 8, 125 lb \u00d7 8, 125 lb \u00d7 8\nLeg Press: 330 lb \u00d7 6, 330 lb \u00d7 8, 330 lb \u00d7 8, 330 lb \u00d7 8\nRomanian Deadlift: 30 lb \u00d7 10, 30 lb \u00d7 10, 30 lb \u00d7 10\nHip Abduction: 90 lb \u00d7 15, 90 lb \u00d7 15, 90 lb \u00d7 15\nHamstring Curl: 100 lb \u00d7 12, 100 lb \u00d7 12, 100 lb \u00d7 12\nAb Workout: 16 reps, 18 reps, 15 reps'}},
-  {kind:'wo',   data:{title:'Bike', exercises:null, date_str:KDAY, description:'20 minute intense cardio'}},
-  {kind:'food', data:{meal:'Snack', name:'Honeydew Melon & Pita Chips with Chocolate Hummus', calories:280, protein:8, eat_time:'8:16 PM', date_str:KDAY}}
+  {kind:'wo',   ts:Date.parse('2026-08-27T22:07:54.156Z'), data:{title:'Bike', exercises:null, date_str:KDAY, logged_at:'2026-08-27T22:07:54.156+00:00', description:'20 minute intense cardio'}},
+  {kind:'food', ts:Date.parse('2026-08-28T01:16:44.112Z'), data:{meal:'Snack', name:'Honeydew Melon & Pita Chips with Chocolate Hummus', calories:280, protein:8, eat_time:'8:16 PM', date_str:KDAY, logged_at:'2026-08-28T01:16:44.112+00:00'}}
 ];
 const kb=_citeDayBody(KELLY);
 kb.trimEnd().split('\n').forEach(l=>console.log('    | '+l));
