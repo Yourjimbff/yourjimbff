@@ -25,10 +25,21 @@ const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  F
 
 global.window={};
 global.wUnit=()=>'lb';
-global._bfItemsFor=()=>({items:[]});
-// The real helpers, lifted — the voice and the commas are theirs, not a copy.
-eval([varAt('CITE_MAX'), fnAt('_jvNum'), fnAt('_citeClip'), fnAt('_jvSpokenDay'), fnAt('_citeWhen'), fnAt('_citeDayBody')].join('\n'));
-guard(['CITE_MAX','_jvNum','_citeClip','_citeWhen','_citeDayBody'], n=>eval(n));
+// THE REAL _bfItemsFor NOW, NOT A STUB THAT RETURNS NOTHING.
+// It used to be `()=>({items:[]})`, which was honest while the workout line was
+// one clipped sentence and useless the moment the exercises had to list out: a
+// stub that answers "no exercises" can never fail an exercise assertion. Its
+// dependencies are chased out of index.html by _lift.cjs rather than named by
+// hand, because naming them by hand is how three of them went missing in one
+// day and every one was swallowed by a try/catch.
+const {closure}=require('./_lift.cjs');
+const CL=closure(['_citeDayBody','_citeSessionNoun','_bfItemsFor','_citeClip','_jvNum','_citeWhen','CITE_MAX']);
+eval(CL.code);
+guard(['CITE_MAX','_jvNum','_citeClip','_citeWhen','_citeDayBody','_citeSessionNoun','_bfItemsFor'], n=>eval(n));
+// AND THE LIFTED CHAIN WORKS, not merely arrived — the guard can only see the
+// names a suite thought to ask for.
+t(_bfItemsFor({description:'Squat: 100 lb \u00d7 5'}).items.length===1, 'smoke: the exercise parser answers');
+t(_citeSessionNoun('Glutes')==='glute training session', 'smoke: the session namer answers');
 
 // HER REAL WEDNESDAY, IN THE SHAPE THE BUTTON ACTUALLY RECEIVES.
 //
@@ -83,13 +94,13 @@ t(at('Breakfast')<at('Walk') && at('Walk')<at('Lunch') && at('Lunch')<at('Snack'
 console.log('\n  THE SUMMARY:');
 t(/\nSummary:\n/.test(body), 'it has its own label on its own line');
 t(/Summary:\n1,690 cal and 99g protein across 4 meals\n/.test(body), 'food totals first, and they add up', '80+360+360+890=1,690');
-t(/\n1 Walk$/m.test(body), 'then the activity, counted');
+t(/\n1 walk$/m.test(body), 'then the activity, named the way he would say it');
 t(!/1690/.test(body), 'the figure carries its comma');
 t(_citeDayBody([DAY[0]]).indexOf('Walk')<0 && _citeDayBody([DAY[0]]).indexOf('\nSummary:\n')>-1,
   'a day with no activity gets no activity line');
-t(/2 Walks/.test(_citeDayBody([DAY[1],DAY[1]])), 'two of the same session pluralise');
-t(/1 Walk, 1 Push/.test(_citeDayBody([DAY[1],{kind:'wo',data:{title:'Push',description:'Push',date_str:'Aug 26, 2026'}}])),
-  'and two different ones are both named');
+t(/2 walks/.test(_citeDayBody([DAY[1],DAY[1]])), 'two of the same session pluralise');
+t(/\n1 walk\n1 push session/.test(_citeDayBody([DAY[1],{kind:'wo',data:{title:'Push',description:'Push',date_str:'Aug 26, 2026'}}])),
+  'and two different ones each get their OWN line, never a tally on one');
 
 console.log('\n  SPACING — a blank line between every item (his feng shui):');
 t(/:\n\nBreakfast:/.test(body), 'after the opening line');
@@ -97,9 +108,19 @@ t(/protein\)\n\nWalk\n\nLunch:/.test(body), 'and between the items');
 t(!/\n\n\n/.test(body), 'never three in a row');
 
 console.log('\n  SAME VOICE AS THE SINGLE CITE:');
-t(/^On your day/.test(body), 'it opens "On your day", the way one meal opens "On your ..."');
-t(/^On your day on (Wed|Aug|\w)/.test(body) || /^On your day (yesterday|today)/.test(body),
-  'with the natural date the single cite uses', JSON.stringify(lines[0]));
+// ===== HIS OWN WORDS LEAD (Yusuf, spec, 28 Aug) ======================
+// The body opens with an EMPTY paragraph. Whatever he types goes there and is
+// the first thing the client reads; the blank line under it holds his voice
+// apart from the report instead of running them together.
+t(/^\n\nOn your day/.test(body), 'the draft opens with a blank paragraph for his own message');
+t(!/^\n\n\n/.test(body), 'one blank paragraph, not a gap');
+const typed='Great work yesterday Kelly, this is exactly the consistency we want.';
+t(/^Great work yesterday Kelly[^\n]*\n\nOn your day/.test(typed+body),
+  'and with a message typed at the top it reads as his paragraph, then the report');
+const opener=body.replace(/^\n+/,'');
+t(/^On your day/.test(opener), 'the report still opens "On your day", the way one meal opens "On your ..."');
+t(/^On your day on (Wed|Aug|\w)/.test(opener) || /^On your day (yesterday|today)/.test(opener),
+  'with the natural date the single cite uses', JSON.stringify(opener.split('\n')[0]));
 t(body.endsWith('\n\n'), 'and it ends the same way, ready for him to type under it');
 
 console.log('\n  NO LONG DASHES — this goes out under his name (his standing rule):');
@@ -130,6 +151,63 @@ t(/On your '\+_citeClip\(nm\)\+when/.test(single), 'and the single-meal cite sti
 console.log('\n  AN EMPTY DAY STILL OPENS A PLAIN TEXT, never a refusal:');
 t(_citeDayBody([])==='', 'nothing to quote gives an empty body');
 t(/try\{ textClient\(code, body\); \}catch\(e\)\{\}/.test(src), 'and the thread opens anyway');
+
+// ===== KELLY G'S REAL DAY, THE ONE HE TEXTED (Yusuf, spec, 28 Aug) =====
+// Read out of the database: Aug 27 2026, three meals, a Glutes session and a
+// Bike. His three upgrades were written from the text he actually sent her.
+//
+// IN THE FEED'S SHAPE, WHICH IS THE TRAP THIS SUITE ALREADY CARRIES ONCE.
+// The feed selects title, description, exercises — and NO DURATION. Her bike
+// carries duration "20 min" in the database and the button never sees it, so a
+// fixture built from the database would prove a line production cannot print.
+// Her glutes row has exercises:null too: the list lives in the description.
+console.log('\n  KELLY G, Aug 27 — THE DAY HE TEXTED HER:');
+const KDAY='Aug 27, 2026';
+const KELLY=[
+  {kind:'food', data:{meal:'Breakfast', name:'Coffee with Cream & Honey, Pumpkin Cinnamon Roll', calories:520, protein:12, eat_time:'10:11 AM', date_str:KDAY}},
+  {kind:'food', data:{meal:'Lunch', name:'Turkey Sandwich, Chips & Tea', calories:520, protein:38, eat_time:'3:23 PM', date_str:KDAY}},
+  {kind:'wo',   data:{title:'Glutes', exercises:null, date_str:KDAY,
+    description:'Barbell Hip Thrust: 125 lb \u00d7 8, 125 lb \u00d7 8, 125 lb \u00d7 8, 125 lb \u00d7 8\nLeg Press: 330 lb \u00d7 6, 330 lb \u00d7 8, 330 lb \u00d7 8, 330 lb \u00d7 8\nRomanian Deadlift: 30 lb \u00d7 10, 30 lb \u00d7 10, 30 lb \u00d7 10\nHip Abduction: 90 lb \u00d7 15, 90 lb \u00d7 15, 90 lb \u00d7 15\nHamstring Curl: 100 lb \u00d7 12, 100 lb \u00d7 12, 100 lb \u00d7 12\nAb Workout: 16 reps, 18 reps, 15 reps'}},
+  {kind:'wo',   data:{title:'Bike', exercises:null, date_str:KDAY, description:'20 minute intense cardio'}},
+  {kind:'food', data:{meal:'Snack', name:'Honeydew Melon & Pita Chips with Chocolate Hummus', calories:280, protein:8, eat_time:'8:16 PM', date_str:KDAY}}
+];
+const kb=_citeDayBody(KELLY);
+kb.trimEnd().split('\n').forEach(l=>console.log('    | '+l));
+
+console.log('\n  1. EVERY EXERCISE ON ITS OWN LINE, ALL SIX, NEVER A SENTENCE:');
+t(/\nGlutes:\nBarbell Hip Thrust\nLeg Press\nRomanian Deadlift\nHip Abduction\nHamstring Curl\nAb Workout\n/.test(kb),
+  'her whole glutes session, in her order, one per line');
+t(kb.indexOf('\u2026')<0, 'nothing is cut off with an ellipsis');
+t(!/Barbell Hip Thrust, Leg Press/.test(kb), 'and they are not joined back into a sentence');
+t(!/125 lb/.test(kb) && !/16 reps/.test(kb), 'names only for now — no sets, no reps, no weights');
+// A description that is PROSE is not an exercise list. Her bike would otherwise
+// list one "exercise" called "20 minute intense cardio".
+t(!/\nBike:\n/.test(kb), 'her bike is not turned into a one-exercise list');
+// And a sign-off after the list is not an exercise either. Her Aug 14 glutes
+// really ends "Killed it".
+const kSign=_citeDayBody([{kind:'wo', data:{title:'Glutes', exercises:null, date_str:KDAY,
+  description:'Barbell Hip Thrust: 125 lb \u00d7 8\nHamstring Curl: 100 lb \u00d7 12\n\nKilled it '}}]);
+t(/Glutes:\nBarbell Hip Thrust\nHamstring Curl/.test(kSign) && kSign.indexOf('Killed it')<0,
+  'and a sign-off under the list is not listed as an exercise');
+
+console.log('\n  3. THE SUMMARY SPEAKS:');
+t(/Summary:\n1,320 cal and 58g protein across 3 meals\n1 glute training session\n1 bike ride \(20 minute intense cardio\)/.test(kb),
+  'exactly the three lines he asked for');
+t(!/1 Glutes/.test(kb) && !/1 Bike/.test(kb), 'and never the old tally of titles');
+// THEIR WORDS ONLY. The parenthetical is her description, not a phrase built here.
+t(/\(20 minute intense cardio\)/.test(kb), 'the note in brackets is her own sentence');
+t(_citeDayBody([KELLY[3],KELLY[3]]).indexOf('(20 minute intense cardio)')<0,
+  'and it is held back when a title appears twice, because it belongs to one of them');
+// The namer, on the shapes this roster actually holds.
+[['Glutes','glute training session'],['Bike','bike ride'],['Walk','walk'],['Run','run'],
+ ['Push Day','push day'],['Pilates','pilates session'],['Legs','leg training session'],
+ ['Upper','upper body training session'],['Stairmaster','stairmaster session']
+].forEach(([a,b])=>t(_citeSessionNoun(a)===b, '"'+a+'" reads as "'+b+'"', _citeSessionNoun(a)));
+
+console.log('\n  AND HIS STANDING RULES STILL HOLD ON HER DAY:');
+t(kb.indexOf('\u2014')<0, 'no long dash in a message going out under his name');
+t(!/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(kb), 'no emoji');
+t(!/(^|\n)\s*[-\u2022*\u00b7]\s/.test(kb), 'no bullet glyph — the line break is the bullet');
 
 console.log('\n'+(bad?(bad+' FAILED'):'all pass'));
 process.exit(bad?1:0);

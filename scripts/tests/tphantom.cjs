@@ -160,7 +160,13 @@ console.warn=function(){ warned.push(Array.prototype.join.call(arguments,' ')); 
 const realErr=console.error; console.error=function(){};
 function runTurn(text, adds, edits, rows, opts){
   opts=opts||{};
-  global.todayFood=rows||[]; global.allFood=rows||[]; global.todayDateStr=TODAY;
+  // ASSIGNED, NOT global.-ASSIGNED. The closure lifts
+  // `var allFood=[], todayFood=[], todayWo=[];` because _jimFoodRowById reads
+  // them, so those names are declared in THIS module scope. Writing to
+  // global.todayFood then creates a different binding, the lifted resolver goes
+  // on reading its own empty array, finds no row for any id, and every drop
+  // assertion fails while looking like a product regression.
+  todayFood=rows||[]; allFood=rows||[]; todayDateStr=TODAY;
   const foodAdds={items:adds.slice()}, foodEdits={items:edits.slice()};
   const _dayPin=(function(){ try{ return _jimAnchorDay(text); }catch(e){ return null; } })();
   function _pinDay(o){

@@ -38,7 +38,11 @@ function defOf(name){
     }
     return L.slice(a,b+1).join('\n');
   }
-  const vRe=new RegExp('^var '+esc+'\\s*=');
+  // const and let as well as var. CITE_MAX is `const CITE_MAX=...` and a
+  // var-only pattern missed it — which surfaced as a loud ReferenceError from
+  // inside _citeClip rather than a silent fallback, because that one is not
+  // wrapped in a try/catch. Not every hole is that polite.
+  const vRe=new RegExp('^(?:var|const|let) '+esc+'\\s*=');
   a=L.findIndex(l=>vRe.test(l));
   if(a<0) return '';
   if(/;\s*$/.test(L[a])) return L[a];
@@ -51,8 +55,17 @@ function definedIn(code){
   const out=new Set();
   code.split('\n').forEach(l=>{
     let m=/^(?:async )?function ([A-Za-z_$][\w$]*)\s*\(/.exec(l); if(m) out.add(m[1]);
-    m=/^var ([A-Za-z_$][\w$]*)\s*=/.exec(l); if(m) out.add(m[1]);
-    m=/^\s+(?:var|function) ([A-Za-z_$][\w$]*)/.exec(l); if(m) out.add(m[1]);
+    // EVERY DECLARATOR ON THE LINE. `var allFood=[], todayFood=[], todayWo=[];`
+    // declares three, and counting only the first left the other two looking
+    // undefined — which is how a harness ends up stubbing a name the lifted
+    // code has already shadowed with an empty array.
+    m=/^(?:var|const|let) /.exec(l);
+    if(m){ (l.slice(m[0].length).match(/([A-Za-z_$][\w$]*)\s*=/g)||[])
+             .forEach(d=>out.add(d.replace(/\s*=$/,''))); }
+    m=/^\s+(?:var|const|let|function) ([A-Za-z_$][\w$]*)/.exec(l); if(m) out.add(m[1]);
+    // for(var _si=0; ...) declares _si and does not start with var.
+    (l.match(/for\s*\(\s*(?:var|let)\s+([A-Za-z_$][\w$]*)/g)||[])
+      .forEach(d=>out.add(d.replace(/^for\s*\(\s*(?:var|let)\s+/,'')));
   });
   return out;
 }
@@ -68,14 +81,31 @@ function closure(seeds){
     const bare=code.replace(/\/\/[^\n]*/g,'')
                    .replace(/'(?:[^'\\]|\\.)*'/g,"''")
                    .replace(/"(?:[^"\\]|\\.)*"/g,'""');
-    const refs=new Set(bare.match(/\b_[A-Za-z_$][\w$]*/g)||[]);
+    // ANY identifier that has a top-level definition, not only _-prefixed ones.
+    // CITE_MAX is `var CITE_MAX=96;` and an underscore-only chase never looked
+    // for it — _citeClip then threw at the first long name. The filter that
+    // matters is defOf: a name with no definition in index.html is a browser or
+    // harness global and is left alone, so widening this cannot pull in String
+    // or Math, only things this file really declares.
+    const refs=new Set(bare.match(/\b[A-Za-z_$][\w$]*/g)||[]);
     let added=false;
     refs.forEach(n=>{
       if(have.has(n) || seen.has(n)) return;
       if(!defOf(n)) return;
       seen.add(n); names.push(n); added=true;
     });
-    if(!added) return {code, names, unresolved:[...refs].filter(n=>!have.has(n) && !defOf(n))};
+    if(!added){
+      // CHASED WIDE, REPORTED NARROW. The chase has to consider every
+      // identifier or it misses a constant like CITE_MAX. The REPORT is for a
+      // caller asking "is anything missing that this file ought to define", and
+      // at that width it would hand back every keyword and property name in the
+      // lifted bodies. So the report keeps the two shapes that are file-level
+      // identifiers here by convention: _prefixed, and ALL_CAPS.
+      // Single letters are character-class fragments from regex literals
+      // ([A-Za-z]), which the string-stripper above does not blank.
+      const looksOurs=n=>n.length>1 && (/^_/.test(n) || /^[A-Z][A-Z0-9_]*$/.test(n));
+      return {code, names, unresolved:[...refs].filter(n=>!have.has(n) && !defOf(n) && looksOurs(n))};
+    }
   }
   throw new Error('static closure did not converge');
 }

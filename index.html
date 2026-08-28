@@ -48068,6 +48068,40 @@ function citeCached(code, kind, id){
 // decides how a number looks.
 //
 // The per-meal Share buttons are untouched. One meal is their whole job.
+// ===== A SESSION IS NAMED THE WAY HE WOULD SAY IT (Yusuf, spec, 28 Aug) =
+// "1 Glutes, 1 Bike" is a tally of titles, not a sentence. The summary is read
+// by a client in a message thread, so it says "1 glute training session" and
+// "1 bike ride".
+//
+// TWO EXPLICIT MAPS AND NO RULE THAT GUESSES. A general "strip the s and add
+// training session" turns Pilates into a pilate training session. Everything
+// not named here falls through to "<title> session", which is never wrong and
+// never invents a kind of training he did not write down.
+var _CITE_SESSION_NOUNS={
+  bike:'bike ride', cycling:'bike ride', spin:'spin class', peloton:'peloton ride',
+  run:'run', running:'run', jog:'jog', walk:'walk', hike:'hike', swim:'swim',
+  row:'row', rowing:'row', stairmaster:'stairmaster session', stairs:'stairmaster session',
+  elliptical:'elliptical session', treadmill:'treadmill session', cardio:'cardio session',
+  yoga:'yoga session', pilates:'pilates session', stretch:'stretch session',
+  mobility:'mobility session', recovery:'recovery session'
+};
+// Singulars, listed rather than derived — calves does not lose an s, and abs
+// and biceps do not lose the same one.
+var _CITE_MUSCLE={
+  glutes:'glute', legs:'leg', quads:'quad', hamstrings:'hamstring', hams:'hamstring',
+  arms:'arm', abs:'ab', delts:'delt', lats:'lat', pecs:'pec', shoulders:'shoulder',
+  biceps:'bicep', triceps:'tricep', calves:'calf', back:'back', chest:'chest',
+  glute:'glute', leg:'leg', upper:'upper body', lower:'lower body', 'full body':'full body'
+};
+function _citeSessionNoun(title){
+  var t=String(title||'').replace(/\s+/g,' ').trim().toLowerCase();
+  if(!t) return 'session';
+  if(_CITE_SESSION_NOUNS[t]) return _CITE_SESSION_NOUNS[t];
+  // "push day", "leg day" already read as a session out loud.
+  if(/\bday$/.test(t)) return t;
+  if(_CITE_MUSCLE[t]) return _CITE_MUSCLE[t]+' training session';
+  return t+' session';
+}
 function _citeDayBody(items){
   var rows=[], cal=0, pro=0, meals=0, when='', act={};
   (items||[]).forEach(function(it){
@@ -48086,6 +48120,45 @@ function _citeDayBody(items){
     }
     if(k==='wo'||k==='workout'){
       var title=String(r.title||'').trim() || 'Training';
+      // ===== EVERY EXERCISE ON ITS OWN LINE (Yusuf, spec, 28 Aug) ========
+      // From a real text he sent Kelly G. It used to read "Glutes: Barbell Hip
+      // Thrust, Leg Press, Romanian Deadlift" — three of her six, joined into a
+      // sentence and then clipped with an ellipsis. A workout is a list and it
+      // is written as one: the name, a colon, then one exercise per line.
+      // Never a sentence, never three of six, never cut off.
+      //
+      // NAMES ONLY for now, on his word. Sets and reps are his to add later.
+      //
+      // A DETAIL IS WHAT MAKES A LINE AN EXERCISE. exercises is null on every
+      // one of her rows, so _bfItemsFor re-parses the description — and a
+      // description that is PROSE comes back as one item whose name is the
+      // whole sentence with no detail under it. Her bike is "20 minute intense
+      // cardio", which is not an exercise called that. It also drops a sign-off:
+      // her Aug 14 glutes ends "Killed it", which parses the same way. So a line
+      // counts only when there is real work recorded against it.
+      var exNames=[];
+      try{
+        var _got=_bfItemsFor(r), _its=(_got&&_got.items)||[];
+        exNames=_its.filter(function(i){ return i && i.name && i.detail!=null && String(i.detail).trim()!==''; })
+                    .map(function(i){ return String(i.name).replace(/\s+/g,' ').trim(); })
+                    .filter(Boolean);
+      }catch(e){}
+      // THEIR OWN WORDS ABOUT THE SESSION, kept for the summary and only when
+      // the description is not the exercise list itself.
+      var _note='';
+      if(!exNames.length){
+        var _dsc=String(r.description||'').trim();
+        if(_dsc && _dsc.indexOf('\n')<0 && _dsc.toLowerCase()!==title.toLowerCase()) _note=_citeClip(_dsc);
+      }
+      if(!act[title]) act[title]={n:0, note:''};
+      act[title].n++;
+      if(_note && !act[title].note) act[title].note=_note;
+      if(exNames.length){
+        // NOT through _citeClip: it collapses to one line and truncates with an
+        // ellipsis, which is the exact shape this replaces.
+        rows.push(title+':\n'+exNames.join('\n'));
+        return;
+      }
       var det='';
       // DURATION IS NOT ALWAYS A NUMBER. Read off a real row: Carly Long's walk
       // carries duration "15 min", a string. +"15 min" is NaN, so a numeric test
@@ -48094,18 +48167,11 @@ function _citeDayBody(items){
       if(_d!=null && String(_d).trim()!==''){
         det=/^\d+(\.\d+)?$/.test(String(_d).trim()) ? (_jvNum(_d)+' min') : String(_d).trim();
       }
-      if(!det){
-        try{
-          var got=_bfItemsFor(r), its=(got&&got.items)||[];
-          det=its.slice(0,3).map(function(i){ return i.detail?(i.name+' '+i.detail):i.name; }).join(', ');
-        }catch(e){}
-      }
       if(!det) det=String(r.description||'').split('\n')[0]||'';
       // "Walk — Walk" is not a line. Her description IS the title, which is
       // common for a one-word session, so the dash earns its place or goes.
       if(det && det.trim().toLowerCase()===title.trim().toLowerCase()) det='';
       rows.push(_citeClip(title)+(det?(': '+_citeClip(det)):''));
-      act[title]=(act[title]||0)+1;
       return;
     }
     if(k==='weight'||k==='wt'){
@@ -48125,7 +48191,14 @@ function _citeDayBody(items){
   // ROOM TO BREATHE (Yusuf, 27 Aug — "extra spacing for feng shui"). A blank
   // line between every item, and after the opening line too. He reads this in a
   // message thread, not on a dashboard.
-  var out='On your day'+when+':\n\n'+rows.join('\n\n');
+  // ===== HIS OWN WORDS LEAD (Yusuf, spec, 28 Aug) ======================
+  // Whatever he types is HIS voice and has to read as his, not as a preamble
+  // bolted onto a report. The body therefore opens with an EMPTY paragraph:
+  // the composer puts the cursor in it, what he types becomes the first thing
+  // the client reads, and the blank line under it holds the report apart.
+  // Typed nothing, sent as it stands, the leading blank costs one empty line
+  // at the top of the thread and nothing else.
+  var out='\n\nOn your day'+when+':\n\n'+rows.join('\n\n');
   // ===== THE SUMMARY (Yusuf, spec, 27 Aug) ===============================
   // A label, then the food totals, then what was actually done. The totals stay
   // FOOD ONLY — a walk has no calories to add — and the activity line is a
@@ -48143,16 +48216,19 @@ function _citeDayBody(items){
     if(pro>0) t.push(_jvNum(pro)+'g protein');
     sum.push(t.join(' and ')+' across '+meals+' meal'+(meals===1?'':'s'));
   }
-  // Counted by what he called them, so a day of two walks reads "2 Walks" and a
-  // day of a walk and a push day names both. Nothing at all on a day with no
-  // activity on it — an absence is not a line.
-  var actKeys=Object.keys(act);
-  if(actKeys.length){
-    sum.push(actKeys.map(function(k){
-      var n=act[k];
-      return n+' '+(n===1 ? k : (/s$/i.test(k) ? k : k+'s'));
-    }).join(', '));
-  }
+  // ===== AND IT SAYS THEM (Yusuf, spec, 28 Aug) ========================
+  // "1 Glutes, 1 Bike" is a tally of titles on one line. Each session gets its
+  // own line and is named the way he would say it, and when the client wrote a
+  // short description of it that description rides along in parentheses —
+  // THEIR words, never a detail this invented.
+  //
+  // The parenthetical is held back when a title appears more than once, because
+  // there is no honest way to attach one session's note to two of them.
+  // Nothing at all on a day with no activity: an absence is not a line.
+  Object.keys(act).forEach(function(k){
+    var a=act[k], n=a.n, noun=_citeSessionNoun(k);
+    sum.push(n+' '+noun+(n===1?'':'s')+((n===1 && a.note)?(' ('+a.note+')'):''));
+  });
   if(sum.length) out+='\n\nSummary:\n'+sum.join('\n');
   return out+'\n\n';
 }
