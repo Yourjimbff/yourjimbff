@@ -44929,11 +44929,25 @@ async function tlSetMeal(meal){
   // The card used to move on screen and say "Moved to Snack" with the server
   // having refused the change. Proven live, 15 Aug. Now neither happens unless
   // the write landed.
-  var r=await sbWrite('PATCH', 'food_logs?id=eq.'+encodeURIComponent(id), patch);
-  if(!r.ok){
+  //
+  // AND "THE WRITE LANDED" MEANS A ROW, NOT A STATUS (29 Aug). This went
+  // through sbWrite, which sends return=minimal and reports ok on any 2xx — and
+  // a PATCH whose filter matches NOTHING is a 204. So a meal that was not there
+  // produced the identical success as one that moved. Same fault as its sibling
+  // tlShiftMealDay, and the same fix: applyFoodEdit is the one writer that
+  // compares the row it gets back against what it sent.
+  //
+  // It also carries the other half. A day change here wrote date_str alone,
+  // which is the half-move — the meal lands on the new day on the Day page and
+  // stays on the old one everywhere that reads logged_at. applyFoodEdit moves
+  // both, keeping the real clock time off the row.
+  var moved=false;
+  try{ moved=await applyFoodEdit(id, patch); }catch(e){ moved=false; }
+  if(!moved){
     _sbFailToast('move that');
     window._mmDayChanged=false;
     try{ closeM('mMoveMeal'); }catch(e){}
+    try{ renderDayTimeline(); }catch(e){}
     return;
   }
   try{ ((window._tlCache&&window._tlCache.foods)||[]).forEach(function(x){ if(x.id==id){ for(var k in patch) x[k]=patch[k]; } }); }catch(e){}
@@ -44953,14 +44967,37 @@ async function tlShiftMealDay(delta){
   var d=_parseDs(ds); if(!d){ try{ closeM('mMoveMeal'); }catch(e){} return; }
   d.setDate(d.getDate()+delta);
   var nds=_tlDateStr(d);
-  try{
-    await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+encodeURIComponent(id), {method:'PATCH',
-      headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
-      body:JSON.stringify({date_str:nds})});
-    try{ (allFood||[]).forEach(function(f){ if(f.id==id) f.date_str=nds; }); }catch(e){}
-    try{ todayFood=(todayFood||[]).filter(function(f){ return f.id!=id; }); }catch(e){}
-    try{ showToast('Moved to '+nds); }catch(e){}
-  }catch(e){ try{ showToast('Could not move it'); }catch(_){} }
+  // ===== TWO FAULTS, BOTH FIXED BY CALLING THE ONE WRITER =================
+  // 1. IT SAID "MOVED" WITHOUT A ROW. The write asked for return=minimal, the
+  //    response was never looked at, and the catch only fires on a network
+  //    error — so a 401, or a filter that matched nothing, fell straight
+  //    through to a toast saying it moved. It also emptied the row out of
+  //    todayFood BEFORE knowing anything, so the screen agreed with the toast.
+  //    That is the cardinal lie with a tick on it, on a client surface.
+  //
+  // 2. IT WAS A HALF-MOVE. A food row carries its day TWICE, date_str and
+  //    logged_at, and this wrote only date_str. That is precisely the fault
+  //    applyFoodEdit carries a long warning about — the meal lands on the new
+  //    day on the Day page and stays on the old day everywhere that reads the
+  //    timestamp, which is what "you didn't move it" described the first time.
+  //
+  // applyFoodEdit already does all of it correctly: both date fields, the clock
+  // read off the real row rather than guessed at midday, the read-back compared
+  // field by field, and the in-memory update. So this calls it instead of being
+  // a second, worse copy of it.
+  var moved=false;
+  try{ moved=await applyFoodEdit(id, {date_str:nds}); }catch(e){ moved=false; }
+  if(!moved){
+    // NOTHING IS TOUCHED ON A FAILURE. The row is still where it was, and the
+    // screen still says so.
+    try{ showToast('Could not move it — nothing changed'); }catch(e){}
+    try{ closeM('mMoveMeal'); }catch(e){}
+    try{ renderDayTimeline(); }catch(e){}
+    return;
+  }
+  // It really moved, so it really leaves today.
+  try{ todayFood=(todayFood||[]).filter(function(f){ return f.id!=id; }); }catch(e){}
+  try{ showToast('Moved to '+nds); }catch(e){}
   try{ closeM('mMoveMeal'); }catch(e){}
   try{ renderDayTimeline(); }catch(e){}
   try{ _syncToday(); }catch(e){}

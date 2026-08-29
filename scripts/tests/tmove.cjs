@@ -194,5 +194,58 @@ t(!!JV, 'the Jarvis prompt is findable');
 t(!/FOOD_EDIT/.test(JV), 'KNOWN GAP: Jarvis carries no move/correct/delete marker (client side only)');
 t(/\[FOOD_EDIT\]/.test(src), 'the marker itself exists and works on the client side');
 
+// ---- THE MOVE SHEET'S OWN TWO BUTTONS (29 Aug) --------------------------
+// The Day page's "Move meal" sheet has two controls, and BOTH carried the two
+// faults this suite was written about.
+//
+//   tlShiftMealDay  asked for return=minimal, never looked at the response at
+//                   all, and its catch only fires on a network error - so a
+//                   401, or a filter matching nothing, fell straight through to
+//                   a toast saying it moved. It also emptied the row out of
+//                   todayFood BEFORE knowing anything, so the screen agreed.
+//   tlSetMeal       checked sbWrite's ok, which sounds right and is not: sbWrite
+//                   sends return=minimal and reports ok on any 2xx, and a PATCH
+//                   whose filter matches NOTHING is a 204.
+//
+// And both wrote date_str WITHOUT logged_at, which is the half-move above.
+// Both now call applyFoodEdit, the one writer that moves both date fields and
+// compares the row it gets back against what it sent.
+const SRC=require('fs').readFileSync('index.html','utf8');
+function fnOf(name){
+  const at=SRC.indexOf('async function '+name+'(');
+  if(at<0) return '';
+  return SRC.slice(at, SRC.indexOf('\n}', at)+2);
+}
+console.log('\n  THE MOVE SHEET CLAIMS NOTHING WITHOUT A ROW:');
+[['tlShiftMealDay','the day arrows'],['tlSetMeal','the slot buttons']].forEach(function(pair){
+  const fn=fnOf(pair[0]);
+  if(!fn){ bad++; console.log('  FAIL  '+pair[0]+' is not findable'); return; }
+  const ok1=/applyFoodEdit\(/.test(fn);
+  if(!ok1) bad++;
+  console.log((ok1?'  ok    ':'  FAIL  ')+pair[1]+' go through the one writer');
+  // THE RAW WRITE IS GONE. Not "also calls applyFoodEdit" - instead of.
+  const raw=fn.replace(/\/\/[^\n]*/g,'');
+  const ok2=!/sbWrite\(|fetch\(SB_URL/.test(raw);
+  if(!ok2) bad++;
+  console.log((ok2?'  ok    ':'  FAIL  ')+'   and no longer write the row themselves');
+  // NOTHING IS CLAIMED OR CHANGED ON A FAILURE.
+  const ok3=/if\(!moved\)\{/.test(fn);
+  if(!ok3) bad++;
+  console.log((ok3?'  ok    ':'  FAIL  ')+'   and branch on whether it actually moved');
+  const gate=fn.indexOf('if(!moved){'), toast=fn.indexOf("showToast('Moved");
+  const ok4=(gate>=0 && (toast<0 || toast>gate));
+  if(!ok4) bad++;
+  console.log((ok4?'  ok    ':'  FAIL  ')+'   with the success toast AFTER that gate, never before');
+});
+// AND THE MEMORY IS NOT EMPTIED BEFORE THE WRITE IS KNOWN. This is what made
+// the old lie invisible: the row vanished from today, so the screen agreed with
+// the toast even when the server had refused.
+const shift=fnOf('tlShiftMealDay');
+const filterAt=shift.indexOf('todayFood=(todayFood||[]).filter');
+const gateAt=shift.indexOf('if(!moved){');
+const okMem=(filterAt<0 || (gateAt>=0 && filterAt>gateAt));
+if(!okMem) bad++;
+console.log((okMem?'  ok    ':'  FAIL  ')+'the row leaves today only after the move is confirmed');
+
 console.log(bad? '\n'+bad+' FAILED' : '\nall pass');
 process.exit(bad?1:0);
