@@ -82,11 +82,12 @@ t('they follow the name in order', ()=>{
 t('NOTHING is truncated', ()=>out.indexOf('…')<0 && out.indexOf('...')<0);
 t('no sets, reps or load reach the message', ()=>!/\b\d+\s*(x|×|sets?|reps?|lb|kg)\b/i.test(out));
 t('the client’s own note is NOT in his text to them', ()=>out.indexOf(HAYDEN_NOTE)<0 && out.toLowerCase().indexOf('machine')<0);
-// THE SUMMARY'S WORDING IS NOT THIS SUITE'S ANY MORE. The 27 Aug order said it
-// stayed "1 Legs"; main now says "1 leg training session" via _citeSessionNoun,
-// and the opener line was removed too — both later, both deliberate, both
-// another lane's. So this asserts only that the session is still COUNTED once,
-// which is what this lane's change must not break, and leaves the words alone.
+// THE NATURAL FORM IS THE RULING (Yusuf, 29 Aug, settling it). "1 leg training
+// session", not "1 Legs" — it matches his later natural-speech rulings, and the
+// opener line is gone for the same reason. Not a regression, and not this
+// lane's wording to pin: what this suite asserts is that the session is still
+// COUNTED once, which is what a change here must never break, and the words are
+// left to the lane that owns them.
 t('the summary still counts the session once', ()=>/Summary:\n1 /.test(out) && !/\n2 /.test(out));
 t('a workout with no food carries no food totals line', ()=>!/cal\b/.test(out) && !/protein/.test(out));
 t('a blank line still separates the blocks', ()=>/\n\nSummary:/.test(out));
