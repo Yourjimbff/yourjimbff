@@ -121,11 +121,15 @@ t(RP.indexOf('_jimFileProgressPhoto')<RP.indexOf('Progress photo added'),
 
 console.log('\n  5. PARITY — ONE ENGINE, TWO DOORS (charter 12):');
 const JV=src.slice(src.indexOf('// ===== PARITY: A PROGRESS PHOTO FOR A NAMED CLIENT'),
-                   src.indexOf('// ===== PARITY: A PROGRESS PHOTO FOR A NAMED CLIENT')+2600);
+                   src.indexOf('// ===== PARITY: A PROGRESS PHOTO FOR A NAMED CLIENT')+3400);
 t(JV.length>800, 'the Jarvis branch is findable');
-t(/_jimFileProgressPhoto\(_ph\[0\], _ppWho\.code, _ppDs\)/.test(JV), 'it calls THE SAME filing engine, for that client');
+t(/_jimFileProgressPhoto\(_ph\[0\], _ppCode, _ppDs\)/.test(JV), 'it calls THE SAME filing engine, for that client');
+// _jvFindClientIn answers CODE STRINGS. Reading .code off one is undefined,
+// so this branch never fired for a named client at all - it shipped that way
+// and the same mistake was in the debrief door.
+t(!/_ppWho/.test(JV.split('\n').filter(l=>!/^\s*\/\//.test(l)).join('\n')), 'and does not read .code off a code string');
 t(/_jimProgressPhotoDay\(String\(t\|\|''\), null\)/.test(JV), 'with the same dating rule');
-t(/_ppWho=\(_f && _f\.hits && _f\.hits\.length===1\)/.test(JV), 'and only on an EXACT single match — a guess files onto a stranger');
+t(/_ppCode=\(_f && _f\.hits && _f\.hits\.length===1\)/.test(JV), 'and only on an EXACT single match — a guess files onto a stranger');
 t(/_jvSaysSelf/.test(JV), '"my progress photo" on his own account is himself, not a question');
 t(/I have not saved that/.test(JV), 'and when it names nobody it says nothing was written');
 t(/if\(!_ppRow\)/.test(JV), 'a refused write is reported, never claimed');

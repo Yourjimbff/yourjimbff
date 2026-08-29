@@ -141,16 +141,56 @@ let D=null;
   const DATA=src.slice(src.indexOf('async function _jvDebriefData('), src.indexOf('// ===== THE SPOKEN DEBRIEF'));
   t(DATA.length>2000, 'the computing half is findable');
   t(!/analyze|_jtModel|messages:\[/.test(DATA), 'it calls no model at all');
-  const DOOR=src.slice(src.indexOf('async function _jvDebriefTurn('), src.indexOf('async function _jvDebriefTurn(')+1800);
+  const DOOR=src.slice(src.indexOf('async function _jvDebriefTurn('), src.indexOf('async function _jvDebriefTurn(')+3200);
   t(!/analyze|_jtModel/.test(DOOR), 'and neither does the door');
   t(/isTrainer\(cl\.code\)\)\) return null;/.test(DOOR), 'TRAINER ONLY — a client can never reach it');
-  t(/f\.hits\.length===1/.test(DOOR), 'exact-name discipline: one hit, or it asks');
-  t(/Which client is the debrief for\?/.test(DOOR), 'and it asks rather than guessing');
+  t(/hits\.length>1/.test(DOOR), 'exact-name discipline: more than one hit asks which');
+  t(/Which one\?/.test(DOOR), 'and it asks rather than guessing');
   // Voice rules on the spoken half.
   const SPK=src.slice(src.indexOf('function _jvDebriefSpoken('), src.indexOf('// ===== THE DEBRIEF ON SCREEN'));
   t(!/·/.test(SPK), 'the spoken half carries no middot');
   t(!/—/.test(SPK.replace(/\/\/[^\n]*/g,'')), 'and no long dash in anything it says');
   t(/_dbOnDate|_dbSayDate/.test(SPK), 'and dates are spoken, never printed');
+
+  // ===== WHOSE DEBRIEF, AND WHO GETS THE SENTENCE FIRST ===============
+  // Both faults this section holds shipped in v7.980.696 and reached his phone.
+  console.log('\n  THE SENTENCE REACHES THIS DOOR AT ALL:');
+  // _JV_RQ_DAY, the gate on his own front-desk board, ends with |\bdebrief\b.
+  // It sat THIRTY LINES ABOVE this door, so "give me the debrief for Chris
+  // McCarthy" came back as his morning board and the debrief never ran. Proved
+  // by calling the door directly and never walking the router.
+  t(/\\bdebrief\\b/.test(defOf('_JV_RQ_DAY')), 'the board gate really does claim the word "debrief"');
+  const iDeb=src.indexOf('var _db=await _jvDebriefTurn(t);');
+  const iBoard=src.indexOf('var _rd=await _jvDayReadout(t);');
+  t(iDeb>0 && iBoard>0 && iDeb<iBoard, 'so the debrief door runs BEFORE the board', 'debrief@'+iDeb+' board@'+iBoard);
+  // And it must not steal the board back: "debrief" with nobody named is his
+  // own day and always has been.
+  const DOOR2=src.slice(src.indexOf('async function _jvDebriefTurn('), src.indexOf('async function _jvDebriefTurn(')+3200);
+  // COMMENTS STRIPPED for the two below. The comment above the fix explains
+  // the bug and quotes "hits[0].code" in doing so, which is exactly the string
+  // they assert is gone - a search that matches its own explanation passes
+  // itself, the same trap tgates.cjs already carries a note about.
+  const CODE2=DOOR2.split('\n').filter(l=>!/^\s*\/\//.test(l)).join('\n');
+  t(/if\(!hits\.length\) return null;/.test(DOOR2), 'and returns null when nobody is named, so his own day still reaches the board');
+
+  console.log('\n  WHOSE DEBRIEF — hits are CODE STRINGS, not objects:');
+  // _jvFindClientIn answers {hits:['chrism1']}. Reading hits[0].code gives
+  // undefined, so the door could never resolve anybody and every named ask fell
+  // to "which client is it for". The suite had only ever read the regex.
+  t(!/hits\[0\]\.code/.test(CODE2), 'the door does not read .code off a string');
+  t(/var code=hits\[0\];/.test(DOOR2), 'it takes the code itself');
+  t(/CLIENTS\[code\]/.test(CODE2), 'and looks the name up in CLIENTS, like every proven caller');
+  t(/_jvDebriefData\(code\)/.test(DOOR2), 'and hands that code to the reader');
+  // The same fault was in the Jarvis progress-photo parity, shipped the same day.
+  const PP=src.slice(src.indexOf('// ===== PARITY: A PROGRESS PHOTO FOR A NAMED CLIENT'), src.indexOf('// ===== PARITY: A PROGRESS PHOTO FOR A NAMED CLIENT')+2600);
+  t(!/_ppWho\.code/.test(PP) && !/_ppWho/.test(PP), 'and the progress-photo parity no longer reads .code off a string either');
+  t(/_jimFileProgressPhoto\(_ph\[0\], _ppCode, _ppDs\)/.test(PP), 'it files against the code itself');
+
+  console.log('\n  EXACT-NAME DISCIPLINE, on the two Chrises that really exist:');
+  t(/if\(hits\.length>1\)/.test(DOOR2), 'more than one match asks which');
+  t(/Which one\?/.test(DOOR2), 'in those words');
+  t(/_jvDeepCode/.test(DOOR2), 'and a pronoun leans on the client card he has open');
+  t(/\(his\|her\|their\|them\|this client\)/.test(DOOR2), 'only on an explicit pronoun');
 
   console.log('\n'+(bad?(bad+' FAILED'):'all pass'));
   process.exit(bad?1:0);

@@ -35898,6 +35898,24 @@ async function _jtRunItem(t, capture, ctx){
       if(_uk) return {status:'talk', line:_escHtml('I don’t have anyone called '+_uk+'. Who do you mean?'), html:true, src:t};
     }
   }catch(e){ console.error('jt who asked',e); }
+  // ===== THE CHECK-IN DEBRIEF, ABOVE THE BOARD (defect, 29 Aug) =======
+  // "Can you give me the debrief for Chris McCarthy" came back as his own
+  // front-desk board. _JV_RQ_DAY, the gate on _jvDayReadout thirty lines below,
+  // ends with |\bdebrief\b — so the word alone summoned his day and the
+  // sentence never reached this door at all. The same stolen-sentence disease
+  // as the calendar and the programme builder, and I missed it because I proved
+  // the debrief by calling it directly instead of walking the router.
+  //
+  // Hoisted above the board rather than carving the word out of _JV_RQ_DAY,
+  // which belongs to that lane and is CORRECT for him: "debrief" with nobody
+  // named is his own day and always has been. This door now returns null on
+  // zero name hits, so that sentence still falls straight through to it.
+  //
+  // Every figure is computed before anything speaks, and this writes nothing.
+  try{
+    var _db=await _jvDebriefTurn(t);
+    if(_db) return {status:(_db.ok?'talk':'wait'), line:_db.line, html:true, speak:_db.speak, src:t};
+  }catch(e){ console.error('jt debrief', e); }
   // ROSTER QUESTIONS ARE ANSWERED FROM THE BOARD, NOT BY A MODEL. Deterministic,
   // so the count and the list are the same array and cannot contradict each
   // other — which is the invented-count bug at its source.
@@ -35928,19 +35946,6 @@ async function _jtRunItem(t, capture, ctx){
       return {status:(_rr.ok?'done':'lost'), line:_rr.line, html:true, src:t};
     }
   }catch(e){ console.error('jt reinstate',e); }
-  // ===== THE CHECK-IN DEBRIEF (Yusuf, order, 29 Aug) ==================
-  // Above the generic model on purpose, and above the client-edit doors: every
-  // figure in it is computed by _jvDebriefData before a word is spoken, and a
-  // model asked to summarise a client's month would do the arithmetic itself,
-  // which is the one thing this lane exists to prevent.
-  //
-  // It writes NOTHING. It reads four tables and formats what it read, so it is
-  // safe to sit this early — a sentence it does not claim falls straight
-  // through to everything below, exactly as before.
-  try{
-    var _db=await _jvDebriefTurn(t);
-    if(_db) return {status:(_db.ok?'talk':'wait'), line:_db.line, html:true, speak:_db.speak, src:t};
-  }catch(e){ console.error('jt debrief', e); }
   // ADD A CLIENT (+ A SALE, IN ONE SENTENCE) — together or not at all
   // (Yusuf, ruling, 19 Aug). Own dedicated extraction call, not folded into
   // _jtModel's JSON contract: a wrong field here is a real account and real
@@ -37907,21 +37912,23 @@ async function _jtTurn(t, opts){
     // person's progress tab. Anything short of both falls through to the photo
     // turn below, untouched.
     if(typeof _jimProgressPhotoAsked==='function' && _jimProgressPhotoAsked(String(t||''))){
-      var _ppWho=null;
-      try{ var _f=_jvFindClientIn(String(t||'')); _ppWho=(_f && _f.hits && _f.hits.length===1) ? _f.hits[0] : null; }catch(e){}
+      // A CODE STRING, NOT AN OBJECT. _jvFindClientIn answers {hits:['kellyg1']}
+      // and I read .code off it, which is undefined - so this branch never fired
+      // for a named client and every "add this as a progress photo for Kelly"
+      // got the "say who it is for" line instead. Same mistake as the debrief
+      // door, made twice on the same day.
+      var _ppCode=null;
+      try{ var _f=_jvFindClientIn(String(t||'')); _ppCode=(_f && _f.hits && _f.hits.length===1) ? _f.hits[0] : null; }catch(e){}
       // HIS OWN, WHEN HE SAYS SO. "add this as my progress photo" names nobody
-      // on the roster and means himself; without this it would ask him which
-      // client he meant about a photo of himself.
+      // on the roster and means himself.
       try{
-        if(!_ppWho && typeof _jvSaysSelf==='function' && _jvSaysSelf(String(t||'')) && cl && cl.code){
-          _ppWho={code:cl.code, name:(cl.name||cl.code)};
-        }
+        if(!_ppCode && typeof _jvSaysSelf==='function' && _jvSaysSelf(String(t||'')) && cl && cl.code) _ppCode=cl.code;
       }catch(e){}
-      if(_ppWho && _ppWho.code){
+      if(_ppCode){
         var _ppDs=_jimProgressPhotoDay(String(t||''), null);
         var _ppRow=null;
-        try{ _ppRow=await _jimFileProgressPhoto(_ph[0], _ppWho.code, _ppDs); }catch(e){ console.error('jarvis progress photo', e); }
-        var _ppNm=_jvSafeName(_ppWho.code, _ppWho.name||_ppWho.code);
+        try{ _ppRow=await _jimFileProgressPhoto(_ph[0], _ppCode, _ppDs); }catch(e){ console.error('jarvis progress photo', e); }
+        var _ppNm=_jvSafeName(_ppCode, (CLIENTS[_ppCode]||{}).name||_ppCode);
         if(!_ppRow){
           var _pf='That did not save \u2014 nothing is on '+_ppNm+'\u2019s progress tab.';
           return {html:_escHtml(_pf), speak:_pf};
@@ -49021,28 +49028,79 @@ function _dbScreenDayLog(dl){
 // EXACT-NAME DISCIPLINE. One hit and only one hit. A partial match names
 // nobody, so it asks instead of guessing - a debrief about the wrong person,
 // read out on a call, is worse than no debrief.
+// TWO TIERS, BECAUSE "CHECK-IN" IS A LOADED WORD HERE.
+//
+// STRONG is unambiguous: nothing else in this app is called a debrief, and
+// "check-in summary" can only be this.
 var _JV_DEBRIEF_RE=new RegExp(
   '\\bdebrief\\b'
-  +'|\\bcheck[- ]?in (?:debrief|summary|report|prep)\\b'
+  +'|\\bcheck[- ]?in (?:debrief|summary|report|prep|notes|numbers)\\b'
   +'|\\b(?:call|meeting) (?:prep|summary|notes) for\\b'
   +'|\\bprep me for\\b','i');
+// SOFT is the bare word, widened on his ruling so "run his check-in" and
+// "Chris's check-in" work. It is safe for three reasons and not one:
+//
+//   1. "check in ON" and "check in WITH" are excluded outright. Those are how
+//      he says he CONTACTED somebody, and _CC_VERB already lists "checked in
+//      with" and "checked in on" as contact verbs.
+//   2. Past tense is refused below - "checked in with Chris" is a statement
+//      about something he did, never a request for a report.
+//   3. _ccHandleStatement runs BEFORE this door in _jtTurn, so a contact
+//      statement is claimed before the debrief ever sees it. The suite asserts
+//      that ordering, because it is load-bearing and easy to undo by accident.
+//
+// And the real gate on both tiers is unchanged: exactly one client resolves, or
+// it asks. A phrase alone never produces a debrief about anybody.
+var _JV_DEBRIEF_SOFT_RE=new RegExp('\\bcheck[- ]?in\\b(?!\\s+(?:on|with)\\b)','i');
+var _JV_DEBRIEF_PAST_RE=new RegExp('\\bchecked[- ]?in\\b','i');
 async function _jvDebriefTurn(t){
   var s=String(t||'');
-  if(!_JV_DEBRIEF_RE.test(s)) return null;
+  var strong=_JV_DEBRIEF_RE.test(s);
+  // The bare word only counts when he is not telling me what he already did.
+  var soft=!strong && _JV_DEBRIEF_SOFT_RE.test(s) && !_JV_DEBRIEF_PAST_RE.test(s);
+  if(!strong && !soft) return null;
   if(!(window.cl && typeof isTrainer==='function' && isTrainer(cl.code))) return null;
-  var who=null;
-  try{ var f=_jvFindClientIn(s); who=(f && f.hits && f.hits.length===1) ? f.hits[0] : null; }catch(e){}
-  if(!who || !who.code){
-    var ask='Which client is the debrief for?';
-    return {ok:false, line:_escHtml(ask), speak:ask, html:true};
+  // ===== WHOSE DEBRIEF (exact-name discipline) =========================
+  //   one hit  -> theirs
+  //   several  -> ask which, never guess. "Chris" is genuinely two people on
+  //               this roster (chrism1 and christiana1), so a bare first name
+  //               must ask; "Chris McCarthy" is one and resolves.
+  //   none     -> NOT THIS DOOR'S SENTENCE. It returns null so "debrief" with
+  //               nobody named still reaches his own day readout, which is what
+  //               that word has always meant when he says it about himself.
+  //               Claiming it here would steal his morning board.
+  // HITS ARE CODE STRINGS, NOT OBJECTS. _jvFindClientIn answers
+  // {hits:['chrism1'], tried:'Chris McCarthy'} - I read hits[0].code, which is
+  // undefined for a string, so this door could never resolve anybody and every
+  // named ask fell to the "which client" question. The proven callers all do
+  // `var code=hits[0]` and look the name up in CLIENTS; so does this now.
+  var hits=[];
+  try{ var f=_jvFindClientIn(s); hits=(f && f.hits)||[]; }catch(e){ hits=[]; }
+  // ===== "RUN HIS CHECK-IN" (his ruling, 29 Aug) =======================
+  // A pronoun names nobody, so this needs an antecedent, and there is exactly
+  // one honest source for it: the client card he has open. window._jvDeepCode
+  // is set when he opens somebody and is already used this way for assistant
+  // context. Only on an explicit pronoun, and only when a card is genuinely
+  // open - with nothing open, "run his check-in" resolves nobody and falls
+  // through rather than picking somebody.
+  if(!hits.length && /\b(his|her|their|them|this client)\b/i.test(s)){
+    try{ if(window._jvDeepCode && CLIENTS[window._jvDeepCode]) hits=[window._jvDeepCode]; }catch(e){}
   }
+  if(!hits.length) return null;
+  if(hits.length>1){
+    var many='That matches '+hits.length+': '
+      + hits.map(function(h){ return _jvSafeName(h, (CLIENTS[h]||{}).name||h); }).join(', ')+'. Which one?';
+    return {ok:false, line:_escHtml(many), speak:many, html:true};
+  }
+  var code=hits[0];
+  if(!code) return null;
   var d=null;
-  try{ d=await _jvDebriefData(who.code); }catch(e){ console.error('debrief', e); }
+  try{ d=await _jvDebriefData(code); }catch(e){ console.error('debrief', e); }
   if(!d){
     var bad='I could not read their rows just now, so I have no debrief to give you. Nothing is wrong with their data.';
     return {ok:false, line:_escHtml(bad), speak:bad, html:true};
   }
-  var nm=_jvSafeName(who.code, who.name||who.code);
+  var nm=_jvSafeName(code, (CLIENTS[code]||{}).name||code);
   return {ok:true, html:true, line:_jvDebriefHtml(d, nm), speak:_jvDebriefSpoken(d, nm), debrief:d};
 }
 
