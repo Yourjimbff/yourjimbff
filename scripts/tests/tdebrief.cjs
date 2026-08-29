@@ -267,6 +267,40 @@ let D=null;
   t(!/\u00b7/.test(sq), 'and no middot');
   t(_jvDebriefVerify(sq,_jvDebriefFigures(DQ)).ok, 'and that script verifies too');
 
+  // ===== THE SPOKEN SCRIPT ACTUALLY REACHES THE SPEAKER (defect, 29 Aug)
+  // He heard the debrief "massively scattered, jumping section to section".
+  // It was not the audio handoff and not the chunker: both seams that carry a
+  // turn's result THREW THE SPOKEN SCRIPT AWAY and let jtSay fall back to
+  // reading the rendered HTML aloud. For a one-line answer the panel and the
+  // script are the same sentence, which is why it hid for weeks; the debrief is
+  // the first item whose screen form is a table.
+  console.log('\n  THE SCRIPT REACHES THE SPEAKER, NOT THE PANEL:');
+  const SINGLE=src.slice(src.indexOf('async function _jtSingle(t){'), src.indexOf('// ===== THE COMPOSER GROWS'));
+  t(SINGLE.length>200, 'the single-item path is findable');
+  t(!/speak:null\}/.test(SINGLE), 'it no longer discards the spoken script');
+  t(/r\.speak!=null/.test(SINGLE), 'it carries what the item wrote for the ear');
+  const BATCH=src.slice(src.indexOf('  var spoken=done.concat(wait).concat(lost)'), src.indexOf('  spoken+=(promoted'));
+  t(BATCH.length>200, 'and the batch path is findable');
+  t(/x\.speak!=null/.test(BATCH), 'which prefers x.speak too — fixed at the queue, not on the debrief');
+  t(/_jvSpeakStrip\?_jvSpeakStrip\(x\.line\):x\.line/.test(BATCH),
+    'and still falls back to the stripped line for items that wrote none');
+  // jtSay's own rule is what both feed, and it is unchanged.
+  const SAY=src.slice(src.indexOf('function jtSay(html, speak){'), src.indexOf('function jtSay(html, speak){')+900);
+  t(/var _say=\(speak!=null && String\(speak\)\.trim\(\)\) \? speak : html;/.test(SAY),
+    'jtSay speaks the script when there is one, and the html only when there is not');
+  // ONE READ, IN ORDER. The player holds one audio element and the loop awaits
+  // each clip, so clips cannot race; a newer answer bumps the generation and
+  // the older loop returns rather than talking over it.
+  const SPKLINE=src.slice(src.indexOf('async function _jvSpeakLine('), src.indexOf('var _JV_PENDING_MS'));
+  t(/await _jvPlayUrl\(url\)/.test(SPKLINE), 'each clip is awaited, so they play in written order');
+  t(/if\(gen!==window\._jvSpeakGen\) return;/.test(SPKLINE), 'and a newer answer stops the old read');
+  t(/if\(!_jvAudioEl\) _jvAudioEl=new Audio\(\);/.test(src), 'through ONE audio element, so two reads cannot overlap');
+  // And the debrief really does hand over two different strings.
+  t(_jvDebriefSpoken(DN,'Test Client')!==_jvDebriefHtml(DN,'Test Client'),
+    'the debrief speaks something different from what it renders');
+  t(!/dbrf|Typical day \u00b7/.test(_jvDebriefSpoken(DN,'Test Client')),
+    'and no panel label can reach the ear');
+
   console.log('\n'+(bad?(bad+' FAILED'):'all pass'));
   process.exit(bad?1:0);
 })();
