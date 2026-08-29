@@ -160,7 +160,13 @@ console.warn=function(){ warned.push(Array.prototype.join.call(arguments,' ')); 
 const realErr=console.error; console.error=function(){};
 function runTurn(text, adds, edits, rows, opts){
   opts=opts||{};
-  global.todayFood=rows||[]; global.allFood=rows||[]; global.todayDateStr=TODAY;
+  // ASSIGNED, NOT global.-ASSIGNED. The closure lifts
+  // `var allFood=[], todayFood=[], todayWo=[];` because _jimFoodRowById reads
+  // them, so those names are declared in THIS module scope. Writing to
+  // global.todayFood then creates a different binding, the lifted resolver goes
+  // on reading its own empty array, finds no row for any id, and every drop
+  // assertion fails while looking like a product regression.
+  todayFood=rows||[]; allFood=rows||[]; todayDateStr=TODAY;
   const foodAdds={items:adds.slice()}, foodEdits={items:edits.slice()};
   const _dayPin=(function(){ try{ return _jimAnchorDay(text); }catch(e){ return null; } })();
   function _pinDay(o){
@@ -254,12 +260,18 @@ const SENT='Can you move the blueberry pancakes I had on Saturday to this mornin
 // Assert the PROPERTY: his words point back to a Saturday, and the row sits on
 // whichever Saturday that is.
 const SATBACK=_jimAnchorDay(SENT);
-const OLDDAY=_dateStrDaysAgo(SATBACK);
+// AND IT SURVIVES BEING RUN ON A SATURDAY. In Pacific/Kiritimati it is already
+// Aug 29 — a Saturday — so his words resolve to 0 days back, not 5. That is
+// correct: "the pancakes I had on Saturday" IS today there. The property that
+// actually matters is that they land on a SATURDAY, whichever one; the fixture
+// then puts the row on an earlier Saturday so the move is still a move.
+t(SATBACK!=null && new Date(_dateStrDaysAgo(SATBACK)).getDay()===6,
+  'his words anchor to a Saturday, which is what pinned the stray row there',
+  SATBACK+' days -> '+_dateStrDaysAgo(SATBACK));
+const OLDDAY=_dateStrDaysAgo(SATBACK>0?SATBACK:7);
 const PANCAKES={id:900, name:'Blueberry Pancakes', meal:'Breakfast', eat_time:'2:50 PM', date_str:OLDDAY};
 const MOVE=[{id:900, date_str:TODAY}];
-t(SATBACK>0 && new Date(OLDDAY).getDay()===6,
-  'his words anchor back to a Saturday, which is what pinned the stray row there',
-  SATBACK+' days -> '+OLDDAY);
+t(new Date(OLDDAY).getDay()===6 && OLDDAY!==TODAY, 'and the row sits on an earlier Saturday, so the move is a move', OLDDAY);
 r=runTurn(SENT, [{name:'Blueberry Pancakes', meal:'Breakfast', calories:450, dateStr:OLDDAY}], MOVE, [PANCAKES]);
 t(r.kept.length===0, 'a re-log on the day the meal LEFT is refused');
 r=runTurn(SENT, [{name:'Blueberry Pancakes', meal:'Breakfast', calories:450, dateStr:TODAY}], MOVE, [PANCAKES]);

@@ -24,12 +24,22 @@ let liftChecks=true;
 try{ lift('_citeNothingLikeThis'); liftChecks=false; }catch(e){ liftChecks=/SEAM MOVED/.test(e.message); }
 
 const CITE_MAX=+constant(/var CITE_MAX *= *(\d+)/,'CITE_MAX');
+// A multi-line constant declaration, taken whole — it is not a function and the
+// brace counter above would not know where it ends.
+function constBlock(startsWith){
+  const a=L.findIndex(l=>l.startsWith(startsWith));
+  if(a<0) throw new Error('SEAM MOVED: '+startsWith);
+  let b=a; while(b<L.length && !/;\s*$/.test(L[b])) b++;
+  return L.slice(a,b+1).join('\n');
+}
 const src=[
   'var CITE_MAX='+CITE_MAX+';',
+  constBlock('var _CITE_SESSION_NOUNS'), constBlock('var _CITE_MUSCLE'),
   // _setWord is an inner var of _bfItemsFor and comes with it.
   // _dayFoodTotals is the ONE tally the card and this summary both read; it has
   // to come with _citeDayBody now that the summary no longer counts its own day.
-  lift('_citeClip'), lift('_bfParseDesc'), lift('_bfItemsFor'), lift('_dayFoodTotals'), lift('_citeDayBody'),
+  lift('_citeClip'), lift('_parseClock'), lift('_hhmmAny'), lift('_citeDayMins'), lift('_citeSessionNoun'),
+  lift('_bfParseDesc'), lift('_bfItemsFor'), lift('_dayFoodTotals'), lift('_citeDayBody'),
   'function _has(){ return false; }',
   'function _jvNum(n){ return String(n); }',
   'function _citeWhen(){ return " today"; }',
@@ -72,9 +82,14 @@ t('they follow the name in order', ()=>{
 t('NOTHING is truncated', ()=>out.indexOf('…')<0 && out.indexOf('...')<0);
 t('no sets, reps or load reach the message', ()=>!/\b\d+\s*(x|×|sets?|reps?|lb|kg)\b/i.test(out));
 t('the client’s own note is NOT in his text to them', ()=>out.indexOf(HAYDEN_NOTE)<0 && out.toLowerCase().indexOf('machine')<0);
-t('the summary still counts the session, unchanged', ()=>/\n1 Legs\b/.test(out));
+// THE SUMMARY'S WORDING IS NOT THIS SUITE'S ANY MORE. The 27 Aug order said it
+// stayed "1 Legs"; main now says "1 leg training session" via _citeSessionNoun,
+// and the opener line was removed too — both later, both deliberate, both
+// another lane's. So this asserts only that the session is still COUNTED once,
+// which is what this lane's change must not break, and leaves the words alone.
+t('the summary still counts the session once', ()=>/Summary:\n1 /.test(out) && !/\n2 /.test(out));
 t('a workout with no food carries no food totals line', ()=>!/cal\b/.test(out) && !/protein/.test(out));
-t('blank line between items, same as the rest', ()=>/On your day today:\n\n/.test(out));
+t('a blank line still separates the blocks', ()=>/\n\nSummary:/.test(out));
 
 // The whole point is the shape he wrote out. Assert it verbatim.
 t('the block reads exactly as ordered', ()=>{
@@ -95,10 +110,14 @@ t('...and does not grow an empty colon block', ()=>w.split('\n').indexOf('Walk:'
 // Degenerate rows must not produce a heading with nothing under it.
 const empty=_citeDayBody([{kind:'wo', data:{title:'Legs', exercises:[]}}]);
 t('an empty exercise list does not leave a dangling heading', ()=>empty.split('\n').indexOf('Legs:')<0);
-const noname=_citeDayBody([{kind:'wo', data:{title:'Legs', exercises:[{name:'  '},{name:'Squat'}]}}]);
+// A DETAIL IS WHAT MAKES A LINE AN EXERCISE (main's rule, and a good one — it is
+// what keeps "Killed it" and "20 minute intense cardio" out of an exercise list).
+// So the surviving one carries real work; the nameless one carries the same and
+// must still be dropped for having no name.
+const noname=_citeDayBody([{kind:'wo', data:{title:'Legs', exercises:[
+  {name:'  ', sets:3, reps:10, weight:100}, {name:'Squat', sets:3, reps:10, weight:225}]}}]);
 t('a nameless exercise is dropped, the rest survive', ()=>{
-  const at=noname.split('\n').indexOf('Legs:');
-  return at>=0 && noname.split('\n')[at+1]==='Squat'; });
+  const l=noname.split('\n'); return l.indexOf('Squat')>=0 && l.indexOf('  ')<0; });
 // A one-word session whose description IS its title must not render a heading
 // with the same word underneath it.
 t('a walk does not list itself as its own exercise', ()=>!/Walk:\nWalk/.test(w));
@@ -126,7 +145,7 @@ t('REAL ROW: his note, buried in the description, does not reach the client', ()
   real.toLowerCase().indexOf('machine')<0 && real.toLowerCase().indexOf('per leg')<0);
 t('REAL ROW: no loads or rep counts', ()=>!/135|180|\u00d7|\blb\b/.test(real));
 t('REAL ROW: nothing truncated', ()=>real.indexOf('\u2026')<0);
-t('REAL ROW: summary still 1 Legs', ()=>/\n1 Legs\b/.test(real));
+t('REAL ROW: the session is still counted once', ()=>/Summary:\n1 /.test(real) && !/\n2 /.test(real));
 
 let bad=0;
 C.forEach(([n,ok,err])=>{ if(!ok) bad++; console.log((ok?'  ok    ':'  FAIL  ')+n+(err?'  ['+err+']':'')); });

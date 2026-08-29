@@ -22,9 +22,9 @@ try{ lift('_pfNothingLikeThis'); liftChecks=false; }catch(e){ liftChecks=/SEAM M
 
 const src=[
   lift('_jvNum'), lift('_feedHasTz'), lift('_feedTs'), lift('_foodMins'),
-  lift('_mealMins'), lift('_dayFoodTotals'), lift('_mealMacLine'),
-  lift('_pfWhenMins'), lift('_pfTotalsHtml'),
-  'module.exports={_dayFoodTotals,_mealMacLine,_pfWhenMins,_pfTotalsHtml,_mealMins,_feedTs};'
+  lift('_mealMins'), lift('_parseClock'), lift('_hhmmAny'), lift('_citeDayMins'),
+  lift('_dayFoodTotals'), lift('_mealMacLine'), lift('_pfTotalsHtml'),
+  'module.exports={_dayFoodTotals,_mealMacLine,_citeDayMins,_pfTotalsHtml,_mealMins,_feedTs};'
 ].join('\n');
 const m={exports:{}};
 new Function('module','exports',src)(m,m.exports);
@@ -47,7 +47,7 @@ const CHRIS=[
   food('Dinner','7:20 PM',   N+'00:20:10+00:00',620,36,64,12),
   food('Lunch','1:40pm',     N+'01:56:42+00:00',250,20,46,6),
 ];
-const order=a=>a.slice().sort((x,y)=>{ const d=O._pfWhenMins(x)-O._pfWhenMins(y); return d||((x.ts||0)-(y.ts||0)); })
+const order=a=>a.slice().sort((x,y)=>{ const d=O._citeDayMins(x)-O._citeDayMins(y); return d||((x.ts||0)-(y.ts||0)); })
   .map(it=>it.kind==='food'?it.data.meal:it.data.title);
 
 const C=[]; const t=(n,f)=>{ let ok=false,err=null; try{ ok=!!f(); }catch(e){ err=e.message; } C.push([n,ok,err]); };
@@ -83,13 +83,17 @@ t('and a MEAL row keeps its ungrouped number', ()=>
   O._mealMacLine({calories:2040,protein:10,carbs:0,fat:0},'short',{time:false})==='2040 cal · 10g P');
 
 // ---- MORNING TO NIGHT ------------------------------------------------------
-t('eat time wins over the log stamp', ()=>O._pfWhenMins(CHRIS[0])===9*60+14);
-t('a lowercase "9:14am" reads the same as "9:14 AM"', ()=>O._pfWhenMins(CHRIS[3])===9*60+14);
-t('a workout has only its log time, and uses it', ()=>O._pfWhenMins(CHRIS[2])===19*60+53);
+t('eat time wins over the log stamp', ()=>O._citeDayMins(CHRIS[0])===9*60+14);
+t('a lowercase "9:14am" reads the same as "9:14 AM"', ()=>O._citeDayMins(CHRIS[3])===9*60+14);
+t('a workout has only its log time, and uses it', ()=>O._citeDayMins(CHRIS[2])===19*60+53);
 t('a meal with no eat time falls back to its log time',
-  ()=>O._pfWhenMins(food('Lunch',null,D+'13:05:00+00:00',1,1,1,1))===13*60+5);
-t('nothing answerable sorts to the END of the day, never the top',
-  ()=>O._pfWhenMins({kind:'wo',data:{}})===99999);
+  ()=>O._citeDayMins(food('Lunch',null,D+'13:05:00+00:00',1,1,1,1))===13*60+5);
+// The shared helper answers 0 for a thing with no clock at all, so it leads the
+// day rather than trailing it. That is ITS call, not this card's — the point of
+// consuming it is that the card and the message he sends agree, and a rule this
+// edge-case only ever changes in one place.
+t('a thing with no clock at all is not silently dropped',
+  ()=>O._citeDayMins({kind:'wo',data:{}})===0);
 // The card he actually reported.
 // Dinner was EATEN at 19:20; the workout was LOGGED at 19:53 and has no clock of
 // its own. So dinner comes first — my first expectation had these the wrong way

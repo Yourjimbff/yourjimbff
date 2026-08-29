@@ -116,5 +116,60 @@ t(/var _pk=code\+':'\+String\(num\)\.replace/.test(turn), 'keyed on the client A
 t(/window\._jtPhoneDone=\{\};/.test(src), 'the per-turn record is opened where the whole message is');
 t(/window\._jtWholeMsg=null; window\._jtPhoneDone=null;/.test(src), 'and cleared with it, so it can never leak into a later turn');
 
+// ===== A NUMBER GIVEN AT ADD TIME (Benjamin Plimpton, 27 Aug) ==========
+// He added a client by voice WITH his number and the next day the share
+// feature said no number was on file.
+//
+// clientInsert TAKES NO PHONE. There is no phone key in its body in
+// trainer.js, so every add path has to follow the insert with a clientPatch.
+// The form did that and checked the answer. The voice path did it and threw
+// the answer away: no read-back, CLIENTS[code].phone never set, and a spoken
+// confirmation that listed the code, the tier and the term and said nothing
+// about the number either way. A number that saved and a number that did not
+// produced the identical sentence — the cardinal lie in its quietest form, an
+// ABSENT claim over a field he had just dictated.
+console.log('\n  THE DOOR ITSELF — an insert cannot carry a number:');
+const door=fs.readFileSync('netlify/functions/trainer.js','utf8');
+const ins=door.slice(door.indexOf('clientInsert:'), door.indexOf('clientDelete:'));
+t(ins.length>100, 'clientInsert is findable in the door');
+t(!/\bphone\b/.test(ins), 'and it has no phone field at all, so a follow-up patch is mandatory');
+t(/if \(a\.phone !== undefined\) body\.phone = nullableStr\(a\.phone, 40\);/.test(door),
+  'clientPatch is the one op that does take it');
+t(/roster: \(\) => 'clients\?select=code,name,initials,phone/.test(door),
+  'and the roster read hands phone back, so the write and the read share one field');
+
+console.log('\n  EVERY ADD PATH VERIFIES THE NUMBER IT WAS GIVEN:');
+// The voice path, which is the one that ran for Benjamin.
+const va=src.slice(src.indexOf('async function _jvJarvisAddClient('), src.indexOf('async function _jtNewClientTurn('));
+t(va.length>500, 'the voice add path is findable');
+t(/trainerWrite\('clientPatch', \{code:code, phone:_phSaid\}\)/.test(va), 'it patches the number it was given');
+t(/_pw && _pw\.ok && _pwRow/.test(va), 'and looks at the answer instead of discarding it');
+t(/String\(_pwRow\.phone\|\|''\)\.replace\(\/\\D\/g,''\)===_phSaid\.replace\(\/\\D\/g,''\)/.test(va),
+  'compared on digits, off the row the door wrote back');
+t(/CLIENTS\[code\]\.phone=_phLanded/.test(va), 'sets it where the share sheet and the Text button read it');
+t(/_pm\[code\]=_phLanded;/.test(va) && /localStorage\.setItem\('yjb_phones'/.test(va),
+  'and into the cache those two hydrate from, by the same key _jvSavePhone uses');
+t(/number saved/.test(va), 'the spoken line says so when it landed');
+t(/I could not save that number/.test(va), 'and says so plainly when it did not');
+t(va.indexOf('I could not save that number')>va.indexOf('_pwRow'), 'the failure line is decided by the read-back, not guessed');
+
+// The form path, which was already correct — asserted so it stays that way.
+const fa=src.slice(src.indexOf('async function addClientToDb('), src.indexOf('async function addClientToDb(')+9000);
+t(/trainerWrite\('clientPatch',\{code:code, phone:_ph\}\)/.test(fa), 'the form patches its number too');
+t(/if\(_pw && _pw\.ok\)\{ CLIENTS\[code\]\.phone=_ph; \}/.test(fa), 'and only claims it on a good answer');
+t(/did not save/.test(fa), 'and tells him when it did not');
+
+// The quick-add path CANNOT carry one, and must not pretend to.
+console.log('\n  and the bare quick-add cannot silently swallow a number:');
+const qa=varAt('_JV_ADD_CLIENT_RE');
+t(qa.length>50, 'the quick-add recogniser is findable');
+eval(qa);
+t(_JV_ADD_CLIENT_RE.test('add a new client Benjamin Plimpton')===true, 'it claims a bare two-word add');
+[['add a new client Benjamin Plimpton his number is 919-555-0100'],
+ ['add a new client Benjamin Plimpton, 919-555-0100'],
+ ['create a new client called Benjamin Plimpton phone 919-555-0100']
+].forEach(([x])=>t(_JV_ADD_CLIENT_RE.test(x)===false,
+  'and refuses one carrying a number, so it falls to the path that can save it'));
+
 console.log('\n'+(bad?(bad+' FAILED'):'all pass'));
 process.exit(bad?1:0);

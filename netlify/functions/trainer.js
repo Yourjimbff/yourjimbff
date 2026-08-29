@@ -1524,6 +1524,158 @@ async function handleLogPhoto(URL, SERVICE, args) {
   }
 }
 
+// ---- mealEdit / mealDelete — THE GUARDED ROW OPS ----------------------------
+// logWeight/logFood/logSteps above are append-only on purpose, and say so in
+// their own comment: "an assistant that misfires can add a row somebody can see
+// and remove, never rewrite or erase a history." These two take that back. They
+// are the first ops in this door that can change or destroy something a client
+// already logged, so they carry a guard the append-only ops never needed.
+//
+// THE GUARD. A row id on its own NAMES SOMEBODY. The caller supplies it, so the
+// filter carries the client_code as well and both must match the same row —
+// exactly the shape handleMyBookingCancel uses for a client cancelling their own
+// booking. A mismatched pair matches zero rows, and zero rows is a REFUSAL
+// (404 not_yours_or_missing), never a silent success and never an act on
+// whichever client the id really belonged to.
+//
+// WHY THIS EXISTS. Measured against the live project on 29 Aug with the anon key
+// that ships in the page source: food_logs accepts PATCH and DELETE filtered on
+// id ALONE. Proven end to end on a scratch code — one row rewritten, then
+// destroyed, using nothing but the key any reader of the page already has.
+// THIS DOOR DOES NOT CLOSE THAT HOLE. Only revoking anon's UPDATE and DELETE
+// grant closes it. This is the authorised route that has to exist first, so
+// there is somewhere for the app's own edits and deletes to go when it does.
+//
+// NOTHING CALLS THESE YET. Banked, by the same convention as clientProfile and
+// roster before their cutover.
+
+// food_logs.id is a UUID. encId() is digit-only and would reject every real row
+// — the precise bug this file already carries a warning about above, where
+// noteDelete could never delete anything because its ids were not integers.
+// Measured off the live table, not assumed from the column name.
+function mealRowId(v) {
+  const s = String(v == null ? '' : v);
+  if (/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(s)) return s;
+  throw new Error('bad_arg');
+}
+
+// The fields an edit may touch, each with the same validator the insert side
+// uses for it. client_code IS DELIBERATELY ABSENT and must stay absent: moving a
+// row to another client through an "edit" would be precisely the cross-client
+// act this guard exists to stop, wearing an innocent name. id is absent for the
+// same reason.
+const MEAL_EDIT_FIELDS = {
+  name:     (v) => str(v, 200),
+  calories: (v) => num(v),
+  protein:  (v) => num(v),
+  carbs:    (v) => num(v),
+  fat:      (v) => num(v),
+  rating:   (v) => str(v, 40),
+  meal:     (v) => str(v, 40),
+  eat_time: (v) => str(v, 20),
+  date_str: (v) => str(v, 40),
+};
+
+// args: { client_code, id, and at least one of MEAL_EDIT_FIELDS }
+async function handleMealEdit(URL, SERVICE, args) {
+  let id, code, patch;
+  try {
+    id = mealRowId(args.id);
+    code = enc(args.client_code);
+    patch = {};
+    Object.keys(MEAL_EDIT_FIELDS).forEach((k) => {
+      if (args[k] !== undefined) patch[k] = MEAL_EDIT_FIELDS[k](args[k]);
+    });
+  } catch (e) { return json(400, { error: 'bad_arg' }); }
+
+  // AN EMPTY PATCH IS NOT A WRITE. PostgREST answers an empty body with 204 and
+  // touches nothing, so sending {} would hand back a confident success over a
+  // row that never changed — the cardinal lie with a 2xx on it. Measured while
+  // proving the hole above: an empty PATCH answered 204 even against a filter
+  // naming a column that does not exist. Refused here instead.
+  if (!Object.keys(patch).length) return json(400, { error: 'nothing_to_change' });
+
+  try {
+    const filter = `food_logs?id=eq.${encodeURIComponent(id)}&client_code=eq.${code}`;
+    const w = await fetch(`${URL}/rest/v1/${filter}`, {
+      method: 'PATCH',
+      headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+      body: JSON.stringify(patch),
+    });
+    const text = await w.text();
+    if (!w.ok) {
+      console.error('trainer: mealEdit failed', w.status, text.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'mealEdit', detail: text.slice(0, 200) });
+    }
+    let rows = []; try { rows = JSON.parse(text); } catch (e) {}
+    if (!rows.length) return json(404, { error: 'not_yours_or_missing', op: 'mealEdit', id: id });
+
+    // THE READ-BACK IS THE PROOF, field by field against what was sent — not the
+    // 2xx, and not the fact that a row came back at all. Compared as strings so
+    // a number that made the round trip as 320 still matches the 320 we sent.
+    const landed = rows[0];
+    const wrong = Object.keys(patch).filter((k) => String(landed[k]) !== String(patch[k]));
+    if (wrong.length) {
+      return json(502, { error: 'unconfirmed', op: 'mealEdit', id: id, fields: wrong });
+    }
+    return json(200, [{
+      id: landed.id, client_code: landed.client_code, name: landed.name,
+      calories: landed.calories, protein: landed.protein, carbs: landed.carbs, fat: landed.fat,
+      rating: landed.rating, meal: landed.meal, eat_time: landed.eat_time,
+      date_str: landed.date_str, logged_at: landed.logged_at,
+      changed: Object.keys(patch),
+      confirmed_by_read_back: true,
+    }]);
+  } catch (e) {
+    console.error('trainer: mealEdit threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'mealEdit' });
+  }
+}
+
+// args: { client_code, id }
+async function handleMealDelete(URL, SERVICE, args) {
+  let id, code;
+  try { id = mealRowId(args.id); code = enc(args.client_code); }
+  catch (e) { return json(400, { error: 'bad_arg' }); }
+  try {
+    const filter = `food_logs?id=eq.${encodeURIComponent(id)}&client_code=eq.${code}`;
+    const w = await fetch(`${URL}/rest/v1/${filter}`, {
+      method: 'DELETE',
+      headers: Object.assign({}, svc(SERVICE), { Prefer: 'return=representation' }),
+    });
+    const text = await w.text();
+    if (!w.ok) {
+      console.error('trainer: mealDelete failed', w.status, text.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'mealDelete', detail: text.slice(0, 200) });
+    }
+    let rows = []; try { rows = JSON.parse(text); } catch (e) {}
+    if (!rows.length) return json(404, { error: 'not_yours_or_missing', op: 'mealDelete', id: id });
+    const gone = rows[0];
+
+    // A SECOND, INDEPENDENT READ. The representation says what PostgREST claims
+    // it removed; this asks the table whether the row is actually absent. A
+    // delete is the one act that cannot be inspected afterwards by the person it
+    // happened to, so "deleted" is made a fact here rather than a return value.
+    const chk = await fetch(`${URL}/rest/v1/food_logs?id=eq.${encodeURIComponent(id)}&select=id&limit=1`,
+      { headers: svc(SERVICE) });
+    if (!chk.ok) return json(502, { error: 'unconfirmed', op: 'mealDelete', id: id });
+    let still = []; try { still = JSON.parse(await chk.text()) || []; } catch (e) { still = []; }
+    if (still.length) return json(502, { error: 'unconfirmed', op: 'mealDelete', id: id, still_there: true });
+
+    // The row that was destroyed, handed back so the caller can NAME the meal it
+    // removed instead of saying a bare "done".
+    return json(200, [{
+      id: gone.id, client_code: gone.client_code, name: gone.name,
+      calories: gone.calories, meal: gone.meal, eat_time: gone.eat_time,
+      date_str: gone.date_str, logged_at: gone.logged_at,
+      deleted: true, confirmed_by_read_back: true,
+    }]);
+  } catch (e) {
+    console.error('trainer: mealDelete threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'mealDelete' });
+  }
+}
+
 // ---- consultInsert ----------------------------------------------------------
 // Yusuf booking a consult for a lead he is already mid-text with, without
 // touching the offer page. Sits beside consultList and consultSetStatus and is
@@ -2712,6 +2864,11 @@ exports.handler = async (event) => {
   if (op === 'consultInsert') return handleConsultInsert(URL, SERVICE, args);
   if (op === 'consultDelete') return handleConsultDelete(URL, SERVICE, args);
   if (op === 'logPhoto') return handleLogPhoto(URL, SERVICE, args);
+  // The two guarded row ops. Registered HERE, past the is_trainer gate, and
+  // never beside the session-scoped my* ops above — those act on the caller's
+  // own claim, these act on a NAMED client, which is the whole difference.
+  if (op === 'mealEdit') return handleMealEdit(URL, SERVICE, args);
+  if (op === 'mealDelete') return handleMealDelete(URL, SERVICE, args);
   if (op === 'cancelCallForClient') return handleCancelCallForClient(URL, SERVICE, args);
   if (op === 'vipOccurrences') return handleVipOccurrences(URL, SERVICE, args);
   // The trainer's half of the same threads. forCode null: any client's call.
