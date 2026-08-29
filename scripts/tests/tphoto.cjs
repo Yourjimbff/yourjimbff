@@ -106,22 +106,26 @@ t(/I have not saved that/.test(JV), 'and when it names nobody it says nothing wa
 t(/if\(!_ppRow\)/.test(JV), 'a refused write is reported, never claimed');
 
 console.log('\n  6. JIM PINNED LEFT OF THE WEEK — the corrected scope:');
-t(/id="pgJimDock"/.test(src), 'the dock exists');
-t(/<div class="tab" id="tProgram">\s*\n\s*<!-- JIM, PINNED LEFT/.test(src), 'inside the Program tab, first child, so it reads left');
-t(/body\.cl-desk #tProgram\.active\{[^}]*grid-template-columns:340px minmax\(0,1fr\)/.test(src.replace(/\n/g,'')),
-  'a two-column grid on the client desktop calendar');
-t(/body\.cl-desk \.pgJimDock\{[^}]*position:sticky/.test(src.replace(/\n/g,'')), 'pinned, and sticky rather than fixed');
-t(/^\.pgJimDock\{display:none;\}/m.test(src), 'and OFF by default, outside the desktop block, or a phone would render it');
-// The scope correction, asserted: nothing else got a bar.
-t(!/id="dayJimDock"/.test(src) && !/id="progressJimDock"/.test(src), 'no dock on Day or Progress');
-const MOUNT=src.slice(src.indexOf('function _pgJimDeskOn('), src.indexOf('// Crossing the 1024px line'));
-t(/matchMedia\('\(min-width:1024px\)'\)/.test(MOUNT), 'desktop only');
-t(/cl-desk/.test(MOUNT), 'clients only');
+// IT FILLS THE SLOT THE CALENDAR LANE RESERVED, and builds no panel of its own.
+// That lane sized #clJimSlot at left:232px and wired --clJim into the three-pane
+// margins specifically for this, and said so: "the assistant lane owns moving
+// their chat in ... fills this and turns it on". A second panel squeezed the
+// week to 326px on the deployed screen.
+t(/id="clJimSlot"/.test(src), 'the reserved slot exists');
+t(!/pgJimDock/.test(src), 'and this lane did NOT build a second panel beside it');
+t(/body\.cl-desk\.cl-jimOn \.clJimSlot\{display:block;\}/.test(src), 'their switch is the one that shows it');
+t(/body\.cl-jimOn\{--clJim:300px;\}/.test(src), 'and their variable is what moves the calendar over');
+t(!/#tProgram\.active\{[^}]*grid-template-columns/.test(src.replace(/\n/g,'')), 'the calendar page keeps its own layout');
+const MOUNT=src.slice(src.indexOf('function _pgJimDeskOn('), src.indexOf('function _pgJimSync('));
+t(/_clPaneMode\(\)==='cl3'/.test(MOUNT), 'gated on THEIR pane mode, not a second idea of desktop');
 t(/isTrainer\(cl\.code\)\) return false/.test(MOUNT), 'and never him — he keeps Jarvis');
-t(/t\.classList\.contains\('active'\)/.test(MOUNT), 'and only while the calendar page is the one on screen');
+t(/classList\.add\('cl-jimOn'\)/.test(MOUNT), 'mounting turns their class on');
+t(/classList\.remove\('cl-jimOn'\)/.test(MOUNT), 'and unmounting takes it off, or the week keeps a margin for nothing');
+t(/_pgJimSync\(\); \}catch\(e\)\{\}\n    _clRightArrange\(\);/.test(src),
+  'and it rides _clPaneApply, which already runs on resize and on entering the calendar');
 
 console.log('\n  IT BORROWS THE REAL CHAT, IT DOES NOT BUILD A SECOND ONE:');
-t(/slot\.appendChild\(sc\); slot\.appendChild\(inp\);/.test(MOUNT), 'the real #chatScroll and #askChatInput are moved in');
+t(/host\.appendChild\(sc\); host\.appendChild\(inp\);/.test(MOUNT), 'the real #chatScroll and #askChatInput are moved in');
 t(/if\(!_jimOvlHome\)\{ _jimOvlHome=/.test(MOUNT), 'sharing the overlay’s own home record, so both give them back to one place');
 t(!/jimBarHtml/.test(MOUNT), 'and it never builds a second bar — that would duplicate jimIn_<day>');
 t(/try\{ _pgJimSync\(\); \}catch\(e\)\{\}\n\}/.test(src), 'closing the sheet hands them back to the dock');
