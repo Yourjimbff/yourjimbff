@@ -354,6 +354,13 @@ body:not(.is-trainer) .trainer-only{display:none !important;}
    Bigger than the chart and set looser on purpose: this is prose to be read at
    a glance on a call, not a table to be scanned. The chart keeps its own
    smaller type below. */
+/* A CONVERSATIONAL ANSWER READS LIKE THE DEBRIEF DOES (his order, 29 Aug).
+   Every prose answer of more than a couple of sentences is paragraphed, with
+   real air between topics, instead of arriving as one wall of text. Same
+   spacing language as the debrief script above; this is the chat-bubble
+   version of it, so line-height and rhythm match what he already reads. */
+.jvPara{margin:0 0 11px;line-height:1.62;}
+.jvPara:last-child{margin-bottom:0;}
 .dbrfScript{margin:14px 0 4px;}
 .dbrfPara{margin:0 0 18px;}
 .dbrfPara:last-child{margin-bottom:6px;}
@@ -21207,6 +21214,18 @@ function _jvSpeakStrip(html){
         if(n.parentNode) n.parentNode.replaceChild(document.createTextNode('. '), n);
       }
     }catch(e){}
+    // A BLOCK CONTRIBUTES NO WHITESPACE EITHER. Same fault as the <br> above,
+    // one element up: textContent runs adjacent divs straight together, so a
+    // paragraphed answer would be read as "...set him.Training was five...".
+    // Only matters when a door writes paragraphs and NO spoken copy — which is
+    // the case this fallback exists for, so it has to be right.
+    try{
+      var blocks=d.querySelectorAll('div,p,li');
+      for(var b2=0;b2<blocks.length;b2++){
+        var bn=blocks[b2];
+        if(bn.nextSibling) bn.appendChild(document.createTextNode('. '));
+      }
+    }catch(e){}
     // The ear gets no symbols. Before the punctuation pass below, so a bullet
     // turned into a space cannot leave a stray stop behind it.
     var t=_jvSpeakDesymbol(d.textContent||'').replace(/\s+/g,' ').trim();
@@ -35884,6 +35903,53 @@ async function _jvClientDayAnswer(t){
   return head+'<br>'+rows.map(function(r){ return '• '+_escHtml(r); }).join('<br>')
        + (tenure?('<br><br>'+_escHtml(tenure)):'');
 }
+// ===== A LONG ANSWER IS PARAGRAPHED, AND SPOKEN FROM ITS OWN TEXT ========
+// (his order, 29 Aug, from his phone: "how's Chris McCarthy")
+//
+// TWO FAULTS, ONE CAUSE. The answer painted as a wall of text AND the voice
+// jumped. Both because the model's prose was turned into HTML and nothing else:
+// no spoken copy was ever written for it, so _jtBatch fell back to reading the
+// STRIPPED PANEL — the exact thing the debrief fix cured at the queue, on a door
+// that never got the treatment because it does not look like a panel.
+//
+// Stripping escaped HTML back into speech is also why it "leapt": &#39; and
+// &amp; and lost <br> boundaries are what a stripped panel sounds like.
+//
+// ONE WRITER. The printed string and the spoken string come from the SAME
+// paragraphs; the only difference between them is markup.
+function _jvProseParas(text){
+  var raw=String(text==null?'':text).replace(/\r\n/g,'\n').trim();
+  if(!raw) return [];
+  // HIS OWN BREAKS WIN. If the model already separated its topics, that IS the
+  // grouping and it is never second-guessed.
+  var byBlank=raw.split(/\n\s*\n+/).map(function(x){ return x.trim(); }).filter(Boolean);
+  if(byBlank.length>1) return byBlank;
+  var byLine=raw.split(/\n+/).map(function(x){ return x.trim(); }).filter(Boolean);
+  if(byLine.length>1) return byLine;
+  // ONE UNBROKEN BLOCK, which is what he was looking at. A short answer is left
+  // exactly as it is — a one-liner is not improved by being cut in half — but a
+  // five-topic paragraph gets grouped so it can be read at a glance on a phone.
+  if(raw.length<=200) return [raw];
+  var sent=raw.match(/[^.!?]+(?:[.!?]+["\')\]]*|$)/g)||[raw];
+  sent=sent.map(function(x){ return x.trim(); }).filter(Boolean);
+  if(sent.length<3) return [raw];
+  var out=[], cur='';
+  sent.forEach(function(x){
+    cur = cur ? (cur+' '+x) : x;
+    if(cur.length>=150){ out.push(cur); cur=''; }
+  });
+  if(cur){ if(out.length && cur.length<60) out[out.length-1]+=' '+cur; else out.push(cur); }
+  return out.length?out:[raw];
+}
+// {line, speak} — the two halves of one answer. Callers pass PLAIN TEXT.
+function _jvProse(text){
+  var paras=_jvProseParas(text);
+  if(!paras.length) return {line:'', speak:''};
+  return {
+    line: paras.map(function(x){ return '<div class="jvPara">'+_escHtml(x)+'</div>'; }).join(''),
+    speak: paras.join('\n\n')
+  };
+}
 async function _jtRunItem(t, capture, ctx){
   function held(){
     var p=window._jvPendingWrite;
@@ -36144,18 +36210,26 @@ async function _jtRunItem(t, capture, ctx){
             var _fail=_rest;
             try{ _fail=_fail.replace(/^\s*(?:logged|got it|done|added|saved)\b[^\n\.!]*[\.!]?\s*/i,'').trim(); }catch(e){}
             if(!_fail) _fail='That did not save \u2014 tell me again and I will take it.';
-            return {status:'lost', line:_escHtml(_fail).replace(/\n/g,'<br>'), html:true, src:t};
+            var _fp=_jvProse(_fail);
+      return {status:'lost', line:_fp.line, speak:_fp.speak, html:true, src:t};
           }
           var _head=_jvSelfLandedLine(_landed);
           try{ _rest=_rest.replace(/^\s*(logged|got it|done)\b[^\n]*\n*/i,'').trim(); }catch(e){}
-          return {status:'done', line:_escHtml(_head)+(_rest?('<br><br>'+_escHtml(_rest).replace(/\n/g,'<br>')):''),
+          // The head stays its own paragraph (it is the confirmation line he
+          // scans for); the rest is paragraphed like any other prose, and the
+          // ear gets both in the same words.
+          var _rp=_rest?_jvProse(_rest):{line:'',speak:''};
+          return {status:'done',
+                  line:'<div class="jvPara">'+_escHtml(_head)+'</div>'+_rp.line,
+                  speak:(_head+(_rp.speak?('\n\n'+_rp.speak):'')),
                   html:true, src:t};
         }
         // Jim answered but wrote nothing AND asked something — that is a real
         // logging conversation ("what were the macros?"), and it belongs to Jim,
         // not to a second model turn that has never seen the food.
         if(_jimReply && typeof _jimWantsReply==='function' && _jimWantsReply(_jimReply)){
-          return {status:'wait', line:_escHtml(String(_jimReply).trim()).replace(/\n/g,'<br>'), html:true, src:t};
+          var _jr=_jvProse(String(_jimReply).trim());
+      return {status:'wait', line:_jr.line, speak:_jr.speak, html:true, src:t};
         }
       }
     }
@@ -36273,9 +36347,13 @@ async function _jtRunItem(t, capture, ctx){
     }
     var _dpark='';
     if(capture) _jvQueueAdd(_door); else _dpark=_jvPendSet(_door);
-    return {status:'wait', modelled:true, line:_escHtml(_dline+_dpark).replace(/\n/g,'<br>'), html:true, src:t};
+    var _dp=_jvProse(_dline+_dpark);
+    return {status:'wait', modelled:true, line:_dp.line, speak:_dp.speak, html:true, src:t};
   }
-  if(mo.reply) return {status:'talk', modelled:true, line:_escHtml(mo.reply).replace(/\n/g,'<br>'), html:true, src:t};
+  if(mo.reply){
+    var _pr=_jvProse(mo.reply);
+    return {status:'talk', modelled:true, line:_pr.line, speak:_pr.speak, html:true, src:t};
+  }
   return {status:'lost', modelled:true, line:'“'+_escHtml(t)+'” — I couldn’t place that one. Say it again on its own and I’ll take it.', html:true, src:t};
 }
 // ===== THE SELF-DESCRIPTION IS THE WIRED CAPABILITY LIST, NOT A PARAGRAPH ===
@@ -68212,6 +68290,7 @@ function buildCoachVoice(){
     '- Example: "How is Kelly doing?" → "Kelly logged 3 clean meals yesterday, 1820 cal, 145g protein. Hit a 7/10 push workout this morning. Energy was \'Good\' on her last check-in. She\'s locked in."\n'+
     '- Example: "Who hasn\'t trained this week?" → list the names with no workout in last 48h, briefly.\n'+
     '- When he asks for a "read on X" or "insight on X", do the actual reading: pull what their data says, flag patterns (good or bad), suggest one move he could make.\n'+
+    'LONG ANSWERS BREATHE. When your answer covers more than one topic — his week, their training, their weight, how their food is going, what they changed — put a BLANK LINE between the topics. Short paragraphs, never one solid block. He reads these on a phone, often while the app is speaking them to him.\n'+
     'NEVER TELL HIM TO MESSAGE YUSUF. He IS Yusuf. Every "that is a Yusuf call", "message him and he will adjust it" and "check with your coach" line above is written for a CLIENT and is nonsense on this account — it tells him to text himself. On this account the program is HIS to change, and you say so. And never send him to a screen, panel, page or tab to do anything: name plainly what you can see, or say what stopped you.'
   ) : '';
 
