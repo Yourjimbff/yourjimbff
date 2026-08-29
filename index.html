@@ -37484,7 +37484,9 @@ async function _jtUndoLastWrite(){
     var it=w[i];
     if(it.table!=='food_logs' || it.id==null) continue;
     var ok=false;
-    try{ ok=await applyFoodDelete(it.id); }catch(e){}
+    // Same law as the edit path: somebody else's row goes through the door.
+    var _uFor=(it.code && it.code!==((typeof cl!=='undefined'&&cl&&cl.code)||'')) ? it.code : null;
+    try{ ok=await applyFoodDelete(it.id, _uFor); }catch(e){}
     if(!ok) continue;
     // Proven gone, not assumed.
     var still=[];
@@ -68896,7 +68898,11 @@ async function logFoodFromChat(offer, photo, targetCode){
   // the thing just logged, and it cannot do that from prose — it needs the row.
   // Collected here because this is the one place a food row's id is known.
   try{
-    if(_ins.id!=null){ window._jimWrote=window._jimWrote||[]; window._jimWrote.push({table:'food_logs', id:_ins.id, label:r.name}); }
+    // WHOSE ROW, not just which row. This function writes for a NAMED client
+    // when _tc is set, and the undo below deleted by id alone - so taking back
+    // "that entry" reached across accounts with the public key. The code rides
+    // along so the undo can go through the guarded door too.
+    if(_ins.id!=null){ window._jimWrote=window._jimWrote||[]; window._jimWrote.push({table:'food_logs', id:_ins.id, label:r.name, code:_code}); }
   }catch(e){}
   // Remember it — this is the other half of matching her own history before
   // the AI round trip (see _jimQuickFoodMatch): a food logged only through
@@ -69115,7 +69121,21 @@ function _jimFoodRowById(id){
   }catch(e){}
   return null;
 }
-async function applyFoodEdit(id, fields){
+// ===== SOMEBODY ELSE'S ROW GOES THROUGH THE DOOR (29 Aug) ==============
+// forCode is set ONLY when this is running for a NAMED client, which is how
+// _jvCommitPending drives Jim from the trainer thread. Without it this function
+// PATCHes food_logs filtered on the row id ALONE, with the public key, checking
+// nobody's ownership - so a stale or wrong id here rewrites whoever really owns
+// that row. The add path beside it has honoured forCode all along; the edit and
+// the delete never did.
+//
+// Ship 8's law is that Jarvis touches a client's meal through the guarded door
+// or not at all. This was the other route.
+//
+// The patch is built EXACTLY as before either way - all the date logic below is
+// untouched and still runs. Only the destination changes, which is why his own
+// rows and every client's own rows behave identically to yesterday.
+async function applyFoodEdit(id, fields, forCode){
   if(id==null || !fields) return false;
   var allowed=['name','emoji','calories','protein','carbs','fat','sugar','rating','insight','meal','eat_time','date_str','felt'];
   var patch={};
@@ -69185,6 +69205,22 @@ async function applyFoodEdit(id, fields){
   }
   ['calories','protein','carbs','fat','sugar'].forEach(function(k){ if(patch[k]!==undefined) patch[k]=Math.round(Number(patch[k])||0); });
   if(Object.keys(patch).length===0) return false;
+  if(forCode){
+    // client_code AND id together. A mismatched pair matches zero rows and the
+    // door answers 404, which arrives here as no rows and is a refusal.
+    var _dw=null;
+    try{ _dw=await trainerWrite('mealEdit', Object.assign({client_code:forCode, id:id}, patch)); }
+    catch(e){ _dw=null; }
+    if(!_dw || !_dw.ok || !_dw.rows || !_dw.rows.length){
+      console.error('food edit refused by the door', id); return false;
+    }
+    // The same field-by-field check the public-key path does, on the row the
+    // door read back. Nothing is claimed off a status code.
+    if(!_foodEditLanded(patch, _dw.rows[0])){ console.error('food edit did not land as sent', id); return false; }
+    // Deliberately NOT touching todayFood/allFood: those hold the SIGNED-IN
+    // person's rows, and this edit belongs to somebody else entirely.
+    return true;
+  }
   var _saved=null;
   try{
     // return=representation IS the read-back. The row the database hands back is
@@ -69219,9 +69255,24 @@ async function applyFoodEdit(id, fields){
 }
 
 // Delete an existing food log by id (DELETE). Updates in-memory + UI when it's a today entry.
-async function applyFoodDelete(id){
+// forCode: same law as applyFoodEdit above. Destroying somebody else's row by
+// id alone, with the key that ships in the page, is the single most damaging
+// thing on this path - a delete is the one act the person it happened to cannot
+// inspect afterwards. Through the door it is filtered on client AND id, refused
+// as a mismatched pair, and the door additionally re-reads the table to confirm
+// the row is really gone before it answers.
+async function applyFoodDelete(id, forCode){
   _foodDupReset();
   if(id==null) return false;
+  if(forCode){
+    var _dd=null;
+    try{ _dd=await trainerWrite('mealDelete', {client_code:forCode, id:id}); }catch(e){ _dd=null; }
+    if(!_dd || !_dd.ok || !_dd.rows || !_dd.rows.length){
+      console.error('food delete refused by the door', id); return false;
+    }
+    // todayFood/allFood belong to the signed-in person, not to this client.
+    return true;
+  }
   try{
     // The deleted row comes back, so "deleted" is the database speaking. A
     // DELETE that matched nothing returns exactly the same success as one that
@@ -71057,16 +71108,22 @@ async function jimTurn(text, photos, opts){
   // seam gating on wrote>0 silently stops confirming anything. Caught by reading
   // the order back rather than by the syntax check, which is perfectly happy.
   var _edVerified=0, _delVerified=0;
+  // WHOSE ROWS THESE ARE. _forCode is set only when this engine is running FOR a
+  // named client (the trainer thread, via _jvCommitPending). Then every edit and
+  // delete goes through the guarded door instead of a public-key PATCH filtered
+  // on the row id alone. Null on his own thread and on every client's, so those
+  // take the path they always have.
+  var _mealFor = (_forCode && _forCode!==((typeof cl!=='undefined'&&cl&&cl.code)||'')) ? _forCode : null;
   if(foodDeletes.items.length){
     for(var fd=0; fd<foodDeletes.items.length; fd++){
       var delId = foodDeletes.items[fd].id;
-      if(delId!=null){ var dOk = await applyFoodDelete(delId); if(dOk){ _foodToasts++; _delVerified++; } }
+      if(delId!=null){ var dOk = await applyFoodDelete(delId, _mealFor); if(dOk){ _foodToasts++; _delVerified++; } }
     }
   }
   if(foodEdits.items.length){
     for(var fe=0; fe<foodEdits.items.length; fe++){
       var ed = foodEdits.items[fe];
-      if(ed && ed.id!=null){ var eOk = await applyFoodEdit(ed.id, ed); if(eOk){ _foodToasts++; _edVerified++; } }
+      if(ed && ed.id!=null){ var eOk = await applyFoodEdit(ed.id, ed, _mealFor); if(eOk){ _foodToasts++; _edVerified++; } }
     }
   }
   var _foodExpected=0, _foodVerified=0;

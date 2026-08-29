@@ -237,16 +237,42 @@ const parse = (res) => ({ status: res.statusCode, body: JSON.parse(res.body) });
   t(r.status === 502 && r.body.error === 'write_failed', 'a failing write says write_failed', r.status);
   t(table.length === 1, 'and the row is still there', table.length);
 
-  console.log('\n  WHO CALLS THESE (ship 8 wired mealEdit):');
+  console.log('\n  EVERY ROUTE TO A CLIENT\'S MEAL GOES THROUGH THE DOOR:');
   const fs = require('fs');
   const app = fs.readFileSync('index.html', 'utf8');
-  // ONE CALLER. A second route to a client's meal is how the guard stops being
-  // the guard: the whole value of this door is that nothing goes round it.
+  // The point of the guard is that nothing goes round it. There are exactly
+  // three routes by which this app touches a meal belonging to somebody other
+  // than the signed-in person, and all three are here:
+  //   1. _jvClientMealMove  - "move Chris's breakfast to yesterday" (ship 8)
+  //   2. applyFoodEdit      - Jim's [FOOD_EDIT] while running for a named client
+  //   3. applyFoodDelete    - Jim's [FOOD_DELETE], and the undo that takes it back
   const edits = (app.match(/trainerWrite\('mealEdit'/g) || []).length;
-  t(edits === 1, 'exactly one caller of mealEdit, the ship 8 meal move', String(edits));
+  const dels  = (app.match(/trainerWrite\('mealDelete'/g) || []).length;
+  t(edits === 2, 'two callers of mealEdit: the meal move and applyFoodEdit', String(edits));
+  t(dels === 1, 'one caller of mealDelete: applyFoodDelete', String(dels));
   t(!/['"]mealEdit['"]/.test(app.replace(/trainerWrite\('mealEdit'/g, '')),
-    'and the op is named nowhere else in the app');
-  t(!/['"]mealDelete['"]/.test(app), 'mealDelete is still called by nothing');
+    'and the ops are named nowhere else in the app');
+  t(!/['"]mealDelete['"]/.test(app.replace(/trainerWrite\('mealDelete'/g, '')), 'neither of them');
+
+  // THE DOOR BRANCH MUST COME FIRST. If the public-key fetch ran before the
+  // forCode check, the guard would be decoration - the row would already be
+  // written by the time anybody asked whose it was.
+  const edFn = app.slice(app.indexOf('async function applyFoodEdit(id, fields, forCode){'),
+                         app.indexOf('async function applyFoodDelete('));
+  t(edFn.length > 500, 'applyFoodEdit is findable and takes forCode', String(edFn.length));
+  t(edFn.indexOf("trainerWrite('mealEdit'") < edFn.indexOf("method:'PATCH'"),
+    'its door branch runs BEFORE the public-key patch');
+  t(/return true;/.test(edFn.slice(edFn.indexOf("trainerWrite('mealEdit'"), edFn.indexOf("method:'PATCH'"))),
+    'and returns without ever reaching it');
+  const delFn = app.slice(app.indexOf('async function applyFoodDelete(id, forCode){'),
+                          app.indexOf('async function applyFoodDelete(id, forCode){') + 1600);
+  t(delFn.indexOf("trainerWrite('mealDelete'") < delFn.indexOf("method:'DELETE'"),
+    'and the delete door branch runs before its public-key delete');
+
+  // WHOSE ROW IT WAS has to survive as far as the undo, or the undo reaches
+  // across accounts with the public key exactly as it used to.
+  t(/_jimWrote\.push\(\{table:'food_logs', id:_ins\.id, label:r\.name, code:_code\}\)/.test(app),
+    'a logged row records WHOSE it was, not just which');
 
   console.log('');
   if (bad) { console.log('  ' + bad + ' FAILED'); process.exit(1); }

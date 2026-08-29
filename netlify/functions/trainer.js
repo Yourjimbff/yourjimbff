@@ -1566,14 +1566,25 @@ function mealRowId(v) {
 // same reason.
 const MEAL_EDIT_FIELDS = {
   name:     (v) => str(v, 200),
+  emoji:    (v) => str(v, 16),
   calories: (v) => num(v),
   protein:  (v) => num(v),
   carbs:    (v) => num(v),
   fat:      (v) => num(v),
+  sugar:    (v) => num(v),
   rating:   (v) => str(v, 40),
+  insight:  (v) => str(v, 2000),
+  felt:     (v) => str(v, 300),
   meal:     (v) => str(v, 40),
   eat_time: (v) => str(v, 20),
   date_str: (v) => str(v, 40),
+  // BOTH DATE FIELDS OR NEITHER. A food row carries its day TWICE — date_str,
+  // which the Day page filters on, and logged_at, which the feed and every
+  // ordering read. Moving one and not the other is the "half-move" the app's
+  // own applyFoodEdit carries a warning about: the meal lands on the new day in
+  // one place and stays on the old day everywhere else. So this door accepts
+  // logged_at, and a caller moving a meal sends both.
+  logged_at: (v) => isoTs(v),
 };
 
 // args: { client_code, id, and at least one of MEAL_EDIT_FIELDS }
@@ -1611,21 +1622,35 @@ async function handleMealEdit(URL, SERVICE, args) {
     if (!rows.length) return json(404, { error: 'not_yours_or_missing', op: 'mealEdit', id: id });
 
     // THE READ-BACK IS THE PROOF, field by field against what was sent — not the
-    // 2xx, and not the fact that a row came back at all. Compared as strings so
-    // a number that made the round trip as 320 still matches the 320 we sent.
+    // 2xx, and not the fact that a row came back at all.
+    //
+    // COMPARED BY TYPE, NOT AS STRINGS. A timestamp does not survive a string
+    // comparison: we send "2026-08-28T16:00:00.000Z" and Postgres hands back
+    // "2026-08-28T16:00:00+00:00". Those are the same instant and different
+    // text, so a string check would call every single day-move unconfirmed and
+    // refuse a write that landed perfectly. Numbers get the same treatment for
+    // the same reason — 320 and "320" are one value here.
     const landed = rows[0];
-    const wrong = Object.keys(patch).filter((k) => String(landed[k]) !== String(patch[k]));
+    const wrong = Object.keys(patch).filter((k) => {
+      const want = patch[k], got = landed[k];
+      if (k === 'logged_at') {
+        const a = new Date(want), b = new Date(got);
+        return isNaN(a) || isNaN(b) || a.getTime() !== b.getTime();
+      }
+      if (typeof want === 'number') return Math.round(Number(got) || 0) !== Math.round(want);
+      return String(got) !== String(want);
+    });
     if (wrong.length) {
       return json(502, { error: 'unconfirmed', op: 'mealEdit', id: id, fields: wrong });
     }
-    return json(200, [{
-      id: landed.id, client_code: landed.client_code, name: landed.name,
-      calories: landed.calories, protein: landed.protein, carbs: landed.carbs, fat: landed.fat,
-      rating: landed.rating, meal: landed.meal, eat_time: landed.eat_time,
-      date_str: landed.date_str, logged_at: landed.logged_at,
+    // THE WHOLE ROW GOES BACK, not a projection. The caller does its own
+    // field-by-field check against what it sent (the app's _foodEditLanded), and
+    // a projection that dropped emoji, sugar, insight or felt would fail that
+    // check for fields that landed perfectly well.
+    return json(200, [Object.assign({}, landed, {
       changed: Object.keys(patch),
       confirmed_by_read_back: true,
-    }]);
+    })]);
   } catch (e) {
     console.error('trainer: mealEdit threw', e && e.message);
     return json(502, { error: 'write_failed', op: 'mealEdit' });
