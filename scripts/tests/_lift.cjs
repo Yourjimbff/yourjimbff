@@ -21,7 +21,19 @@ const fs=require('fs');
 const src=fs.readFileSync('index.html','utf8');
 const L=src.split('\n');
 
+// MEMOISED. defOf walks a 100,000-line array, and the closure below asks it
+// about every identifier it meets — which after the chase was widened past
+// _-prefixed names is thousands of lookups per run. Uncached that is ~40s a
+// suite and four time zones blow a two-minute budget; the answers never change
+// within a run, so they are computed once.
+const _defCache=new Map();
 function defOf(name){
+  if(_defCache.has(name)) return _defCache.get(name);
+  const out=_defOf(name);
+  _defCache.set(name, out);
+  return out;
+}
+function _defOf(name){
   const esc=String(name).replace(/[$]/g,'\\$');
   const fnRe=new RegExp('^(?:async )?function '+esc+'\\s*\\(');
   let a=L.findIndex(l=>fnRe.test(l));

@@ -1,0 +1,139 @@
+// PROGRESS PHOTOS THROUGH JIM, AND JIM PINNED LEFT OF THE WEEK
+// (Yusuf, brief + scope correction, 28 Aug.)
+//
+// THE SACRED PATH IS THE POINT OF THIS SUITE. A photo sent to Jim has always
+// been a meal, and the whole risk of this build is that it stops being one. So
+// the assertions that matter most are the ones proving _jimPhotoRoute answers
+// NULL — null is what hands the turn to the untouched food path, and every
+// food photo, and everything it cannot decide, has to reach it.
+const fs=require('fs');
+const guard=require('./_guard.cjs');
+const {closure}=require('./_lift.cjs');
+const src=fs.readFileSync('index.html','utf8');
+let bad=0;
+const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  FAIL  ')+label+(extra?('  '+extra):'')); };
+
+global.window={addEventListener:function(){}, removeEventListener:function(){}, matchMedia:function(){ return {matches:false}; }};
+// A lifted body can sit next to a top-level document.addEventListener, which
+// runs the moment this eval does. Stubbed rather than trimmed: trimming means
+// guessing where a declaration ends, which is the lifting trap CLAUDE.md lists.
+global.document={
+  addEventListener:function(){}, removeEventListener:function(){},
+  getElementById:function(){ return null; }, querySelectorAll:function(){ return []; },
+  createElement:function(){ return {style:{}, classList:{add:function(){},remove:function(){}}}; },
+  body:{classList:{contains:function(){return false;}, add:function(){}, remove:function(){}, toggle:function(){}}, style:{}},
+  hidden:false
+};
+global.localStorage={getItem:function(){return null;}, setItem:function(){}, removeItem:function(){}};
+const CL=closure(['_jimProgressPhotoAsked','_JIM_PROGRESS_RE','_jimProgressPhotoDay','_jimDataUrlToBlob',
+                  '_jimAnchorDay','_dateStrDaysAgo','_tlDateStr']);
+eval(CL.code);
+guard(['_JIM_PROGRESS_RE','_jimProgressPhotoAsked','_jimProgressPhotoDay','_jimAnchorDay','_dateStrDaysAgo'],
+  n=>eval(n));
+t(_jimAnchorDay('yesterday I ate eggs')===1, 'smoke: the day anchor answers');
+
+console.log('\n  1. THEIR WORDS SAY PROGRESS:');
+['progress photo','progress pic','here is my progress picture','physique check',
+ 'physique photo','progress shot','this is my progress photo from Tuesday',
+ 'body check','transformation photo','add this as a progress photo for Kelly'
+].forEach(x=>t(_jimProgressPhotoAsked(x)===true, JSON.stringify(x)));
+
+console.log('\n  and these are NOT progress words — every one is a meal or a person talking:');
+['chicken and rice','my lunch','here is my dinner','this is what I ate',
+ 'protein shake','post workout meal','breakfast',
+ // "check-in" already means the daily weigh-in/mood tile in this app, so a
+ // client saying it means that and must never be read as a physique photo.
+ 'my check-in for today','check in'
+].forEach(x=>t(_jimProgressPhotoAsked(x)===false, JSON.stringify(x)));
+
+console.log('\n  2. THE DAY COMES OUT OF THEIR OWN WORDS:');
+const TODAY=_tlDateStr(new Date());
+t(_jimProgressPhotoDay('progress photo', null)===TODAY, 'nothing said lands on today');
+const yd=_jimProgressPhotoDay('this is my progress photo from yesterday', null);
+t(yd===_dateStrDaysAgo(1), 'yesterday lands on yesterday', yd);
+// A weekday resolves relative to the LOCAL day, so the assertion is the
+// property — it lands on a Tuesday — not a hardcoded date that is right here
+// and wrong in Kiritimati, and wrong here next week.
+const tu=_jimProgressPhotoDay('this is my progress photo from Tuesday', null);
+t(new Date(tu).getDay()===2, 'and Tuesday lands on a Tuesday', tu);
+t(_jimProgressPhotoDay('progress photo', {dateStr:'Aug 20, 2026'})==='Aug 20, 2026',
+  "and a caller's own day is honoured when nothing was said");
+// EVERY WEEKDAY, not just the one his example happens to name, and asserted as
+// a PROPERTY so it survives being run on any day in any zone.
+['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].forEach(function(n,i){
+  var got=_jimProgressPhotoDay('progress photo from '+n, null);
+  t(new Date(got).getDay()===i, '"from '+n+'" lands on a '+n, got);
+});
+t(new Date(_jimProgressPhotoDay('progress photo taken Friday', null)).getDay()===5, '"taken Friday" too');
+// AND THE SHARED ANCHOR IS NOT WIDENED. "leftovers from Tuesday" is food eaten
+// today, and the day resolver every meal runs through must keep answering that.
+t(_jimAnchorDay('the leftovers from Tuesday')===null,
+  'and the meal-side day anchor still refuses "from Tuesday" — it was NOT widened');
+
+console.log('\n  3. THE ROUTE — read off the shipped source, since it awaits the network:');
+const RT=src.slice(src.indexOf('async function _jimPhotoRoute('), src.indexOf('async function _jimProgressPhotoReply('));
+t(RT.length>500, 'the route is findable');
+t(/if\(!has\) return null;/.test(RT), 'no photo in the turn is not its business');
+t(/if\(t && mealish\) return null;/.test(RT), 'A FOOD PHOTO IS HANDED STRAIGHT BACK — the sacred path');
+t(/_jimLooksLikeMeal/.test(RT), 'and it uses the meal recogniser this file already has');
+t(/window\._mealSlot/.test(RT), 'a door opened for a meal slot counts as meal context too');
+t(/return 'Meal or progress photo\?';/.test(RT), 'ambiguous asks ONE question, in those words');
+t((RT.match(/return '[^']*\?'/g)||[]).length===1, 'and exactly one question is ever asked', String((RT.match(/return '[^']*\?'/g)||[]).length));
+t(/_jimPhotoPend=\{photo:photos\[0\], at:Date\.now\(\)\}/.test(RT), 'the photo is parked while it asks');
+t(/jimTurn\(t, \[mp\.photo\], opts\)/.test(RT), 'and answering "meal" hands the parked photo to the untouched path');
+
+console.log('\n  4. THE WRITE IS READ BACK, NEVER TRUSTED:');
+const FL=src.slice(src.indexOf('async function _jimFileProgressPhoto('), src.indexOf('function _jimProgressPhotoDay('));
+t(/Prefer.*return=representation/.test(FL), 'the insert asks for the row back');
+t(/if\(rows && rows\.length\) return rows\[0\];/.test(FL), 'and only a row counts as saved');
+t(/\}\s*\n\s*return null;\s*\n\}/.test(FL), 'and everything else answers null, after the last attempt');
+const RP=src.slice(src.indexOf('async function _jimProgressPhotoReply('), src.indexOf('async function _jimProgressPhotoReply(')+2200);
+t(/if\(!row\) return 'That did not save/.test(RP), 'a failure says so, and says nothing landed');
+t(/Progress photo added for/.test(RP), 'and the confirmation is plain and factual');
+t(!/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}✓]/u.test(RP), 'no icon, no tick, no hype');
+t(RP.indexOf('_jimFileProgressPhoto')<RP.indexOf('Progress photo added'),
+  'the line is only ever said AFTER the row came back');
+
+console.log('\n  5. PARITY — ONE ENGINE, TWO DOORS (charter 12):');
+const JV=src.slice(src.indexOf('// ===== PARITY: A PROGRESS PHOTO FOR A NAMED CLIENT'),
+                   src.indexOf('// ===== PARITY: A PROGRESS PHOTO FOR A NAMED CLIENT')+2600);
+t(JV.length>800, 'the Jarvis branch is findable');
+t(/_jimFileProgressPhoto\(_ph\[0\], _ppWho\.code, _ppDs\)/.test(JV), 'it calls THE SAME filing engine, for that client');
+t(/_jimProgressPhotoDay\(String\(t\|\|''\), null\)/.test(JV), 'with the same dating rule');
+t(/_ppWho=\(_f && _f\.hits && _f\.hits\.length===1\)/.test(JV), 'and only on an EXACT single match — a guess files onto a stranger');
+t(/_jvSaysSelf/.test(JV), '"my progress photo" on his own account is himself, not a question');
+t(/I have not saved that/.test(JV), 'and when it names nobody it says nothing was written');
+t(/if\(!_ppRow\)/.test(JV), 'a refused write is reported, never claimed');
+
+console.log('\n  6. JIM PINNED LEFT OF THE WEEK — the corrected scope:');
+t(/id="pgJimDock"/.test(src), 'the dock exists');
+t(/<div class="tab" id="tProgram">\s*\n\s*<!-- JIM, PINNED LEFT/.test(src), 'inside the Program tab, first child, so it reads left');
+t(/body\.cl-desk #tProgram\.active\{[^}]*grid-template-columns:340px minmax\(0,1fr\)/.test(src.replace(/\n/g,'')),
+  'a two-column grid on the client desktop calendar');
+t(/body\.cl-desk \.pgJimDock\{[^}]*position:sticky/.test(src.replace(/\n/g,'')), 'pinned, and sticky rather than fixed');
+t(/^\.pgJimDock\{display:none;\}/m.test(src), 'and OFF by default, outside the desktop block, or a phone would render it');
+// The scope correction, asserted: nothing else got a bar.
+t(!/id="dayJimDock"/.test(src) && !/id="progressJimDock"/.test(src), 'no dock on Day or Progress');
+const MOUNT=src.slice(src.indexOf('function _pgJimDeskOn('), src.indexOf('// Crossing the 1024px line'));
+t(/matchMedia\('\(min-width:1024px\)'\)/.test(MOUNT), 'desktop only');
+t(/cl-desk/.test(MOUNT), 'clients only');
+t(/isTrainer\(cl\.code\)\) return false/.test(MOUNT), 'and never him — he keeps Jarvis');
+t(/t\.classList\.contains\('active'\)/.test(MOUNT), 'and only while the calendar page is the one on screen');
+
+console.log('\n  IT BORROWS THE REAL CHAT, IT DOES NOT BUILD A SECOND ONE:');
+t(/slot\.appendChild\(sc\); slot\.appendChild\(inp\);/.test(MOUNT), 'the real #chatScroll and #askChatInput are moved in');
+t(/if\(!_jimOvlHome\)\{ _jimOvlHome=/.test(MOUNT), 'sharing the overlay’s own home record, so both give them back to one place');
+t(!/jimBarHtml/.test(MOUNT), 'and it never builds a second bar — that would duplicate jimIn_<day>');
+t(/try\{ _pgJimSync\(\); \}catch\(e\)\{\}\n\}/.test(src), 'closing the sheet hands them back to the dock');
+t(/try\{ _pgJimSync\(\); \}catch\(e\)\{\}\s*\n\s*if\(t==='Foodlog'\)/.test(src)
+  || /classList\.add\('active'\);\s*\n\s*\/\/ JIM'S PINNED DOCK FOLLOWS THE TAB/.test(src),
+  'and switching tabs re-syncs it');
+
+console.log('\n  NOTHING WAS CHANGED NEAR LOGGING:');
+t(/var foodAdds = extractAllMarkers\(reply, 'FOOD_LOG'\); reply = foodAdds\.cleanText;/.test(src),
+  'the FOOD_LOG extraction is untouched');
+t(/var aOk = await logFoodFromChat\(/.test(src), 'the meal write is untouched');
+t(/return await jimTurn\(text, photos, opts\);/.test(src), 'and jimDoor still ends in the same call it always did');
+
+console.log('\n'+(bad?(bad+' FAILED'):'all pass'));
+process.exit(bad?1:0);
