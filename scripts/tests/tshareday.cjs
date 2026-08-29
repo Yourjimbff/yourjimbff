@@ -249,5 +249,61 @@ t(kb.indexOf('\u2014')<0, 'no long dash in a message going out under his name');
 t(!/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(kb), 'no emoji');
 t(!/(^|\n)\s*[-\u2022*\u00b7]\s/.test(kb), 'no bullet glyph — the line break is the bullet');
 
+// ===== SHARE DAY ON THE PHONE (Yusuf, order, 28 Aug) ===================
+// It existed only on the desktop wall, where a card IS one client's day and the
+// button sits at its foot. The phone renders one tile per LOG inside a day band
+// mixed across clients, so there was no "day" to share and nowhere to put it.
+//
+// The phone's band now groups by client, in the order the ranking already put
+// them, and each client's run ends with their own Share day.
+console.log('\n  SHARE DAY REACHES THE PHONE:');
+const MOB=src.slice(src.indexOf("// ===== SHARE DAY ON THE PHONE"), src.indexOf("if(_dtk) html+='</div>';                 // close the day's grid"));
+t(MOB.length>600, 'the phone branch is findable');
+t(/if\(!_dtk\)\{/.test(MOB), 'it is the PHONE path — _dtk is the desktop wall');
+t(/_mBy\[c\]\.push\(it\)/.test(MOB), 'the day is grouped by client');
+t(/_mOrder\.push\(c\)/.test(MOB), 'in the order the ranking already put them, not re-sorted');
+t(/citeFeedDay\(/.test(MOB), 'and each group ends in Share day');
+t(/_mBy\[c\]\.map\(function\(e\)\{ return \(e&&e\._idx!=null\)\?e\._idx:null; \}\)/.test(MOB),
+  "carrying that client's OWN item indexes, so it shares their day and nobody else's");
+t(/if\(c && _mIdx\)/.test(MOB), 'and nothing without a client gets one — a Moment is nobody’s day');
+
+console.log('\n  ONE WRITER, TWO SCREENS — never two versions:');
+// Both surfaces call the SAME function with the same argument shape. That is
+// the guarantee: there is no second draft builder to drift.
+t((src.match(/citeFeedDay\(/g)||[]).length>=3, 'citeFeedDay is called from both surfaces and defined once');
+t((src.match(/function citeFeedDay\(/g)||[]).length===1, 'and there is exactly ONE citeFeedDay');
+t((src.match(/function _citeDayBody\(/g)||[]).length===1, 'and exactly ONE day-message writer');
+t(/function citeFeedDay\(code, idxCsv\)\{[\s\S]{0,600}_citeDayBody\(items\)/.test(src),
+  'which is what the phone button reaches, through the same call the desktop card makes');
+
+console.log('\n  AND IT COUNTS FOR THE OUTREACH TRACKER, BY THE SAME MARK:');
+// citeFeedDay ends in textClient, and textClient is what records the contact.
+// So the phone marks the tracker with the feed lane's own mark and this build
+// wrote no second one.
+t(/try\{ textClient\(code, body\); \}catch\(e\)\{\}/.test(src), 'citeFeedDay hands off to textClient');
+const TC=src.slice(src.indexOf('function textClient(code, body){'), src.indexOf('function textClient(code, body){')+3000);
+t(/jvLogContact\(code, 'text', '', true\)/.test(TC), "and textClient records the contact — the feed lane's own mark");
+// The point is not how many places record a contact — there are two, and both
+// predate this build (the Text button, and the "text about" flow). The point is
+// that the phone's Share day writes NO mark of its own: it reaches the tracker
+// only by going through textClient, exactly as the desktop card does.
+t(!/jvLogContact/.test(MOB), 'the phone branch records nothing itself — it goes through textClient');
+t(!/_ccLast|jvActRecord/.test(MOB), 'and touches none of the feed lane’s contact bookkeeping');
+
+console.log('\n  AND NOTHING ELSE WAS ADDED TO THE PHONE:');
+t(!/id="mShareDayTab"/.test(src) && !/switchTab\('ShareDay'/.test(src), 'no new screen');
+t(/\.fdShareBtn\{[^}]*border:1px solid var\(--border\)/.test(src.replace(/\n/g,'')),
+  'and the button is the bordered kind this feed already draws, not a floating one');
+t(!/\.fdShareBtn\{[^}]*position:fixed/.test(src.replace(/\n/g,'')), 'nothing floats');
+// A button that renders and cannot be seen is the one thing reading the source
+// cannot catch on its own, so the two ways of hiding it are named here. The
+// real proof is the screen at 375, and it was taken.
+t(!/class="fdShareRow"[^>]*hidden/.test(src), 'the row is not rendered hidden');
+t(!/\.fdShareRow\{[^}]*display:none/.test(src.replace(/\n/g,'')) && !/\.fdShareBtn\{[^}]*display:none/.test(src.replace(/\n/g,'')),
+  'and nothing hides it in CSS');
+t(/\.fdShareRow\{display:flex/.test(src.replace(/\n/g,'')), 'it is laid out as a visible row');
+// The desktop card is untouched.
+t(/acts\+='<span class="pfAct" onclick="citeFeedDay/.test(src), "the desktop card's own Share day is unchanged");
+
 console.log('\n'+(bad?(bad+' FAILED'):'all pass'));
 process.exit(bad?1:0);
