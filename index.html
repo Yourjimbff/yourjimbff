@@ -590,6 +590,12 @@ body.jv-wkProgEditWide #mEditProgramDay.mbg{align-items:center;}
    widths, and styling it only inside body.jv-on is exactly how a feature ends up
    half-shipped. The line states a count and nothing else — it does not grade the
    count, colour it, or congratulate anybody for it. */
+/* The day's food totals, at the foot of a client's card. Reads as a quiet
+   summing-up of the rows above it, not as a headline — same type size and the
+   same muted colour as a meal row's own macros, with a hairline above to say
+   "this is the end of that list" rather than one more row in it. */
+.pfTot{margin:9px 0 0;padding-top:8px;border-top:1px solid rgba(240,236,228,0.09);
+  font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;}
 .fdReach{font-size:11.5px;font-weight:700;color:var(--muted);margin:-4px 0 10px;
   font-variant-numeric:tabular-nums;}
 /* THE CONTROL ROW PINS ON THE PHONE (Yusuf, order, 27 Aug). The cockpit's
@@ -14629,6 +14635,31 @@ function _pfWoNote(desc){
 // The chronological law stands: this only inserts a header when a food's slot
 // differs from the last food's slot in the time-ordered list already being built.
 function _pfSlotCap(key){ return {breakfast:'Breakfast', lunch:'Lunch', dinner:'Dinner', snack:'Snack'}[key] || 'Snack'; }
+// When a thing HAPPENED, as minutes past midnight. A meal answers with the time
+// the client ate it; everything else has only the moment it was recorded, which
+// for a workout or a weigh-in is the same thing. 99999 keeps anything
+// unanswerable at the end of the day rather than silently at the top of it.
+function _pfWhenMins(it){
+  try{
+    if(it && it.kind==='food' && it.data) return _mealMins(it.data);
+    var d=new Date((it&&it.ts)||0);
+    if((it&&it.ts) && !isNaN(d.getTime())) return d.getHours()*60+d.getMinutes();
+  }catch(e){}
+  return 99999;
+}
+// THE DAY'S FOOD, ONCE, AT THE FOOT OF THE CARD (Yusuf, ruling, 29 Aug). The
+// same tally Share day's summary reads, printed by the same builder the meal
+// rows above it use — so the card cannot disagree with either. Grouped, because
+// a day runs to four figures where a single meal does not.
+// Nothing at all on a day with no food: an absence is not a line, and a
+// workout-only day must not grow a row of zeroes.
+function _pfTotalsHtml(evs){
+  var t=_dayFoodTotals(evs);
+  if(!t.meals) return '';
+  var line=_mealMacLine({calories:t.cal, protein:t.protein, carbs:t.carbs, fat:t.fat},
+                        'short', {time:false, group:true});
+  return line ? ('<div class="pfTot">'+line+'</div>') : '';
+}
 function _pfDayList(evs){
   var out='', lastSlot=null;
   evs.forEach(function(it){
@@ -15888,7 +15919,21 @@ function _pfCard(b, hour, now, isToday, viewDayTs){
   var _rawName=_jvShareName(b.code, info.name);
   var nm=_pfEsc(_rawName);
   var first=String(_rawName).split(' ')[0];
-  var evs=b.evs.slice().sort(function(x,y){ return x.ts-y.ts; });     // the day, oldest to newest
+  // MORNING TO NIGHT BY WHEN IT HAPPENED, not by when it was typed (Yusuf,
+  // ruling, 29 Aug — Chris McCarthy's card read Pull, Breakfast, Dinner, Lunch).
+  // This sorted on it.ts, which is logged_at, so a client who writes the day up
+  // in one sitting got a card in the order he happened to type it. Read off his
+  // real Aug 28: a breakfast EATEN at 9:14 was LOGGED at 20:52 and landed after
+  // a workout logged at 19:53. The ruling that eat_time is the meal's real clock
+  // already existed, with helpers — this card simply never asked.
+  // MINUTES PAST MIDNIGHT, not a timestamp: _feedItemMs pins an eat_time onto
+  // TODAY by design, which is right for the live river and wrong for a card that
+  // may be showing any of seven days. Time-of-day compares correctly on all of
+  // them.
+  var evs=b.evs.slice().sort(function(x,y){
+    var d=_pfWhenMins(x)-_pfWhenMins(y);
+    return d || ((x.ts||0)-(y.ts||0));            // stable when two share a clock
+  });
   // THE QUIET BRANCH IS GONE (Yusuf, ruling, 23 Aug). A client with nothing
   // logged is no longer a stripped-down version of this card — it is the quiet
   // section’s own briefing card, two clocks and three doors, built by _qsCard.
@@ -15984,6 +16029,7 @@ function _pfCard(b, hour, now, isToday, viewDayTs){
     // event, keeps its time there and takes the badge between the two.
     +'<div class="pfHead"><span class="pfName" onclick="event.stopPropagation();jvOpenDeep(\''+b.code+'\')">'+nm+'</span>'+_fbBadgeHtml(b.code)+'</div>'
     +'<div class="pfDay">'+_pfDayList(evs)+'</div>'
+    + _pfTotalsHtml(evs)
     // HIS TOUCH TRAILS THEIR NEWS, never leads it (Yusuf, amendment, 23 Aug).
     // Below the day, above the action — a fact he reads on the way past, not a
     // headline competing with what they actually did.
@@ -48312,9 +48358,9 @@ function _citeDayBody(items){
       var slot=String(r.meal||'').trim() || 'Meal';
       var nm=String(r.name||'').trim() || 'meal';
       var bits=[];
-      if(+r.calories>0){ bits.push(_jvNum(r.calories)+' cal'); cal+=Math.round(+r.calories); }
-      if(+r.protein>0){ bits.push(_jvNum(r.protein)+'g protein'); pro+=Math.round(+r.protein); }
-      meals++;
+      // Counted by _dayFoodTotals below, not here — one tally, read twice.
+      if(+r.calories>0) bits.push(_jvNum(r.calories)+' cal');
+      if(+r.protein>0)  bits.push(_jvNum(r.protein)+'g protein');
       rows.push(slot+': '+_citeClip(nm)+(bits.length?(' ('+bits.join(', ')+')'):''));
       return;
     }
@@ -48399,6 +48445,7 @@ function _citeDayBody(items){
   // lookalike unicode letters renders as boxes or gibberish on some phones and
   // is unreadable to a screen reader. A label on its own line is the emphasis
   // the channel actually supports.
+  var _ft=_dayFoodTotals(items); cal=_ft.cal; pro=_ft.protein; meals=_ft.meals;
   var sum=[];
   if(meals>0 && (cal>0||pro>0)){
     var t=[];
@@ -72054,15 +72101,42 @@ async function consumeWeeklyCall(code){
 // SEPARATORS ARE REAL CHARACTERS. A margin or a flex gap looks identical on
 // screen and vanishes the moment the line is copied — which is exactly how
 // "520 cal52g protein" reached him.
+// ===== ONE DAY'S FOOD, COUNTED ONCE (Yusuf, ruling, 29 Aug) ================
+// The card's totals line and Share day's summary must never disagree, so they do
+// not each add their own day up: this is the single tally and both read it.
+// FOOD ONLY — a walk has no calories to contribute — and a meal MISSING a macro
+// contributes what it does have rather than being dropped, so a day of meals
+// that never recorded fat still totals its calories and protein honestly.
+// Same shape as the summary already used, so nothing about that text moves.
+function _dayFoodTotals(items){
+  var t={cal:0, protein:0, carbs:0, fat:0, meals:0};
+  (items||[]).forEach(function(it){
+    var k=String((it&&it.kind)||'').toLowerCase();
+    if(k!=='food' && k!=='meal') return;
+    var r=(it&&it.data)||null; if(!r) return;
+    t.meals++;
+    if(+r.calories>0) t.cal+=Math.round(+r.calories);
+    if(+r.protein>0)  t.protein+=Math.round(+r.protein);
+    if(+r.carbs>0)    t.carbs+=Math.round(+r.carbs);
+    if(+r.fat>0)      t.fat+=Math.round(+r.fat);
+  });
+  return t;
+}
 function _mealMacLine(f, style, opts){
   if(!f) return '';
   opts=opts||{};
   var longUnits=(style!=='short');
+  // A DAY'S TOTAL RUNS TO FOUR FIGURES where one meal does not, so the totals
+  // line asks for grouping ("2,625 cal") and the meal rows keep the bare number
+  // they have always printed. One builder either way — the card cannot drift
+  // from the rows it sits under, which is the only reason it is an option here
+  // rather than a second function.
+  var num=opts.group ? function(v){ return _jvNum(v); } : function(v){ return Math.round(+v); };
   var mm=[];
-  if(+f.calories) mm.push(Math.round(+f.calories)+' cal');
-  if(+f.protein)  mm.push(Math.round(+f.protein)+(longUnits?'g protein':'g P'));
-  if(+f.carbs)    mm.push(Math.round(+f.carbs)+(longUnits?'g carbs':'g C'));
-  if(+f.fat)      mm.push(Math.round(+f.fat)+(longUnits?'g fat':'g F'));
+  if(+f.calories) mm.push(num(f.calories)+' cal');
+  if(+f.protein)  mm.push(num(f.protein)+(longUnits?'g protein':'g P'));
+  if(+f.carbs)    mm.push(num(f.carbs)+(longUnits?'g carbs':'g C'));
+  if(+f.fat)      mm.push(num(f.fat)+(longUnits?'g fat':'g F'));
   // The Day row prints the clock in its own header, so it asks for the macros
   // without it rather than repeating the time on every line underneath.
   var t=(opts.time===false)?'':(f.eatTime||f.eat_time||'');

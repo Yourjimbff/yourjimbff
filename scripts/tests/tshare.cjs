@@ -27,7 +27,9 @@ const CITE_MAX=+constant(/var CITE_MAX *= *(\d+)/,'CITE_MAX');
 const src=[
   'var CITE_MAX='+CITE_MAX+';',
   // _setWord is an inner var of _bfItemsFor and comes with it.
-  lift('_citeClip'), lift('_bfParseDesc'), lift('_bfItemsFor'), lift('_citeDayBody'),
+  // _dayFoodTotals is the ONE tally the card and this summary both read; it has
+  // to come with _citeDayBody now that the summary no longer counts its own day.
+  lift('_citeClip'), lift('_bfParseDesc'), lift('_bfItemsFor'), lift('_dayFoodTotals'), lift('_citeDayBody'),
   'function _has(){ return false; }',
   'function _jvNum(n){ return String(n); }',
   'function _citeWhen(){ return " today"; }',
