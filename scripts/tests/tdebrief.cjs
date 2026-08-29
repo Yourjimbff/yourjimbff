@@ -28,8 +28,12 @@ const MINE=['_JV_DEBRIEF_DAYS','_JV_DEBRIEF_ROLL','_JV_DB_LIFT_TITLE','_JV_DB_CA
   '_JV_DB_SAYS_RE','_JV_DB_THEMES','_JV_DEBRIEF_RE',
   '_dbMedian','_dbRoll','_dbIsSaid','_dbKind','_dbIsLift','_dbDay','_dbDs',
   '_dbSayRate','_dbSayCount','_dbCap','_dbSayDate','_dbOnDate','_dbSayDayLog','_dbScreenDayLog',
-  '_DB_NUMWORD','_jvDebriefFigures','_jvDebriefNumsIn','_jvDebriefVerify','_dbMonthWord',
-  '_jvDebriefNarrate','_jvDebriefSpokenPlain','_tlDateStr',
+  '_DB_NUMWORD','_jvDebriefFigures','_jvDebriefNumsIn','_jvDebriefVerify',
+  // ONE WRITER now (his order, 29 Aug). _jvDebriefNarrate and _dbMonthWord are
+  // gone: the script the ear hears and the script the screen shows are the same
+  // sentences, built once by _jvDebriefScript. tscript.cjs proves they match.
+  '_dbAboutCal','_dbBandTen','_dbBand','_dbAboutRate','_dbAboutLb','_DB_TIGHT','_dbIsTight',
+  '_jvDebriefScript','_jvDebriefScriptText','_jvDebriefSpokenPlain','_tlDateStr',
   '_jvDebriefData','_jvDebriefSpoken','_jvDebriefHtml'];
 const SHARED=['_bfItemsFor','_jvNum','_escHtml','_jvSpokenDateStr','_sbFailMark','_sbFailedSince'];
 eval(closure(SHARED).code);
@@ -103,16 +107,21 @@ let D=null;
     JSON.stringify(DY2.training.last7.split));
   const hy=_jvDebriefHtml(DY,'Test Client');
   t(/4 sessions \(3 lifting, 1 yoga\)/.test(hy), 'on screen it reads exactly his way: "4 sessions (3 lifting, 1 yoga)"');
-  t(/four sessions last week, three of them lifting/i.test(_jvDebriefSpoken(DY,'Test Client')),
-    'and spoken his way: "four sessions last week, three of them lifting"');
+  // HIS FORMAT, as approved 29 Aug: "five lifts plus a yoga class". The ruling
+  // being protected is unchanged - the COUNT leads and lifting qualifies it -
+  // only the register moved.
+  t(/four sessions last week, three lifts plus a yoga class/i.test(_jvDebriefSpoken(DY,'Test Client')),
+    'and spoken his way: "four sessions last week, three lifts plus a yoga class"');
   t(!/not counted as lifting/i.test(hy), 'and nothing is listed as "not counted" any more');
 
   console.log('\n  HIS WORDING (rulings 2 and 3):');
   t(!/Where they live/.test(src), '"Where they live" is gone from the file entirely');
   t(/Typical day/.test(hy), 'the screen reads "Typical day"');
-  // The voice is a conversation now, so the phrase is "typically eats around"
-  // in a sentence rather than the sectioned reading's "they typically eat".
-  t(/typically eats around/.test(_jvDebriefSpoken(DY,'Test Client')), 'and the voice says "typically eats around"');
+  // The figure underneath is still the MIDDLE day, not the average - that is
+  // the ruling. The approved register states it as "eating around X a day
+  // lately" rather than the sectioned reading's "they typically eat".
+  t(/eating around [\d,]+ a day lately/.test(_jvDebriefSpoken(DY,'Test Client')),
+    'and the voice says "eating around ... a day lately"', _jvDebriefSpoken(DY,'Test Client').slice(0,0)||'');
   // Quarters, so a rate is never rounded: 19 sessions in 28 days is exactly
   // four and three quarters a week.
   t(_dbSayRate(4.75)==='four and three quarters', '4.75 a week is said exactly', _dbSayRate(4.75));
@@ -133,7 +142,12 @@ let D=null;
     'the panel states the two-week gap rather than inventing a trend');
   t(/no two week trend to read/.test(_jvDebriefSpokenPlain(D,'Test Client')),
     'and so does the plain reading underneath');
-  t(!/two week/.test(sp), 'while the conversation keeps weight to the month, the way he asked');
+  // THE TREND stays on the month - that is the ruling, and it holds. His
+  // approved script of 29 Aug does cite the two-week weigh-in COUNT ("only
+  // weighed in once in two weeks"), which is a reason to nudge him, not a
+  // second trend. So: no two-week trend, and the month is what is read.
+  t(!/two week trend/.test(sp) && /on the month/.test(sp),
+    'the conversation keeps the weight TREND to the month, the way he asked', sp.slice(-90));
 
   console.log('\n  A FAILED READ IS NOT AN EMPTY MONTH:');
   // sbSelect returns [] when it fails (CLAUDE.md landmine). Without the witness
@@ -209,7 +223,10 @@ let D=null;
   sbSelect=async function(tbl){ return tbl==='workout_logs'?WY:(tbl==='food_logs'?F:WT); };
   const DN=await _jvDebriefData('TEST_DEBRIEF');
   const sc=_jvDebriefSpoken(DN,'Test Client');
-  t(/has had a (strong|steady|light) month/.test(sc), 'it opens with how the month went', sc.slice(0,60));
+  // THE APPROVED OPENER (29 Aug). It names who this is and why he is hearing
+  // it; how the month went is the very next thing, under Training.
+  t(/^Alright, here is Test Client before your call\./.test(sc), 'it opens the way he approved', sc.slice(0,60));
+  t(/Training's been (strong|steady|light)\./.test(sc), 'and how the month went comes straight after');
   t(!/^Test Client, the last four weeks\./.test(sc), 'and not with the old sectioned reading');
   t(!/\u2014|\u00b7/.test(sc), 'NO SYMBOLS read aloud - no long dash, no middot');
   t(sc.split(/\s+/).length<200, 'and it stays about a minute', sc.split(/\s+/).length+' words');
@@ -232,7 +249,8 @@ let D=null;
   t(/I am not going to read it out/.test(SPKF), 'and an unverifiable one is withheld, in plain words');
   t(/on screen/.test(SPKF), 'pointing at the panel, which still holds every figure');
   // NO MODEL NARRATES, which is why no figure can drift in the first place.
-  const NAR=src.slice(src.indexOf('function _jvDebriefNarrate('), src.indexOf('// ===== THE SPOKEN DEBRIEF ='));
+  const NAR=src.slice(src.indexOf('function _jvDebriefScript(d, name){'), src.indexOf('// ===== THE SPOKEN DEBRIEF ='));
+  t(NAR.length>500, 'the one writer is findable', String(NAR.length));
   t(!/analyze|_jtModel|messages:\[/.test(NAR), 'the narration calls no model');
 
   // ===== RUN, NOT READ. Both of these passed a source search while the
@@ -246,7 +264,7 @@ let D=null;
   sbSelect=async function(tbl){ return tbl==='workout_logs'?W:(tbl==='food_logs'?Ftoday:WT); };
   const DT=await _jvDebriefData('TEST_DEBRIEF');
   const st=_jvDebriefSpoken(DT,'Test Client');
-  t(/Today only has one meal on it so far/.test(st), 'a single meal logged TODAY is named as the day still going', st.slice(-120));
+  t(/today only has one meal on it so far/i.test(st), 'a single meal logged TODAY is named as the day still going', st.slice(-120));
   // The lead-in belongs to the past-thin-days clause, and gluing it on when
   // there are none produced "There is and today only has one meal on it".
   t(!/There is and/.test(st) && !/There are and/.test(st), 'and it is a sentence, not two clauses glued together');
