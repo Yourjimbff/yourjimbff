@@ -48866,11 +48866,216 @@ function _dbSayDayLog(dl){
   else out.push('nothing to eat');
   return out.join(', and ');
 }
+// ===== THE SPOKEN DEBRIEF IS A CONVERSATION (Yusuf, order, 29 Aug) ======
+// The screen stays a table. The VOICE is a trusted assistant who knows this
+// client briefing him before a call: it leads with the month, joins the dots,
+// and flags the one thing worth raising.
+//
+// ===== THE NUMBERS LAW, ENFORCED AND NOT PROMISED =====================
+// Every figure spoken is one _jvDebriefData computed. Two things hold that:
+//
+//   1. NO MODEL NARRATES. This is built in code, so there is no stage that
+//      could round, drift or invent a figure in the first place.
+//   2. IT IS CHECKED ANYWAY. _jvDebriefVerify pulls every number back out of
+//      the finished script - digits AND number words - and refuses to speak it
+//      if even one is not in the computed set. The gate exists so that the day
+//      a model IS given the narration, the enforcement is already here and
+//      already asserted, rather than being a rule somebody remembered.
+//
+// A debrief with an unverifiable number is not spoken. It says so and points
+// at the panel, which is the honest failure: the screen still carries every
+// figure, and nothing false is read out on a call.
+var _DB_NUMWORD={zero:0,one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,
+  nine:9,ten:10,eleven:11,twelve:12};
+// Everything a script is allowed to say, as canonical numbers.
+function _jvDebriefFigures(d){
+  var out={};
+  var add=function(v){
+    if(v==null||v==='') return;
+    var n=Number(v); if(!isFinite(n)) return;
+    out[String(Math.round(n*100)/100)]=1;
+    out[String(Math.abs(Math.round(n*100)/100))]=1;   // "up 1.2" from a -1.2
+  };
+  // The windows themselves. "four weeks", "last week", "two weeks" are labels,
+  // not readings, and they are named here so the check cannot be argued with.
+  [0,1,2,3,4,7,14,28].forEach(add);
+  var t=d.training||{};
+  ['last7','last14','last28'].forEach(function(k){
+    var w=t[k]; if(!w) return;
+    add(w.sessions); add(w.lifting); add(w.perWeek);
+    (w.split||[]).forEach(function(x){ add(x.n); });
+  });
+  var n=d.nutrition||{};
+  add(n.days); add(n.roll);
+  (n.thin||[]).forEach(function(x){ add(x.meals); add(x.calories); add(new Date(x.ds).getDate()); });
+  add((n.thin||[]).length);
+  Object.keys(n.per||{}).forEach(function(k){
+    var p=n.per[k]; if(!p) return;
+    if(p.high) add(p.high.value);
+    if(p.low) add(p.low.value);
+    ['roll','w2','w4'].forEach(function(w){ if(p.lives&&p.lives[w]){ add(p.lives[w].value); add(p.lives[w].days); } });
+  });
+  var w=d.words||{};
+  add(w.total); (w.themes||[]).forEach(function(x){ add(x.count); });
+  (w.all||[]).forEach(function(q){
+    if(q.dayLog && q.dayLog.food){ add(q.dayLog.food.calories); add(q.dayLog.food.protein); add(q.dayLog.food.meals); }
+    try{ add(new Date(q.ds).getDate()); }catch(e){}
+  });
+  var wt=d.weight||{};
+  add(wt.total);
+  ['w2','w4'].forEach(function(k){
+    var x=wt[k]; if(!x) return;
+    add(x.count); add(x.delta);
+    if(x.from){ add(x.from.v); try{ add(new Date(x.from.ds).getDate()); }catch(e){} }
+    if(x.to){ add(x.to.v); try{ add(new Date(x.to.ds).getDate()); }catch(e){} }
+    if(x.only){ add(x.only.v); }
+  });
+  return out;
+}
+// Every number in a script, canonicalised. Digits with commas ("1,868"), decimals
+// ("1.2"), ordinals ("13th") and number words ("six") all count, because any of
+// them could carry a figure.
+function _jvDebriefNumsIn(text){
+  var s=String(text||''), found=[];
+  (s.match(/\d[\d,]*(?:\.\d+)?/g)||[]).forEach(function(x){
+    var n=Number(String(x).replace(/,/g,''));
+    if(isFinite(n)) found.push(String(Math.round(n*100)/100));
+  });
+  Object.keys(_DB_NUMWORD).forEach(function(w){
+    if(new RegExp('\\b'+w+'\\b','i').test(s)) found.push(String(_DB_NUMWORD[w]));
+  });
+  return found;
+}
+// Returns {ok, bad:[...]}. Anything not in the computed set is a figure nobody
+// checked, and one of those is enough to withhold the whole script.
+function _jvDebriefVerify(text, figures){
+  var bad=[];
+  _jvDebriefNumsIn(text).forEach(function(n){ if(!figures[n] && bad.indexOf(n)<0) bad.push(n); });
+  return {ok:bad.length===0, bad:bad};
+}
+// How the month reads, decided from the rate and from nothing else. This is a
+// TRAINER briefing about a client, which is the one place the app is asked to
+// join dots rather than only state them - the no-grading rule is about what a
+// CLIENT is told about themselves, and none of this reaches them.
+function _dbMonthWord(perWeek){
+  if(perWeek>=4) return 'a strong month';
+  if(perWeek>=2.5) return 'a steady month';
+  if(perWeek>0) return 'a light month';
+  return 'a month with no training logged';
+}
+// The narration. Every figure comes straight off the computed object; nothing
+// here rounds, and the verifier below refuses anything that did.
+function _jvDebriefNarrate(d, name){
+  var who=String(name||d.code), first=who.split(' ')[0]||who;
+  var f=d.failed||{}, P=[];
+  var t=d.training, n=d.nutrition, w=d.words, wt=d.weight;
+  // ---- the month, and training ----
+  if(f.workouts){
+    P.push(who+"'s workouts did not read just now, so I cannot tell you how the month went. That is my read failing, not an empty month.");
+  } else {
+    var open=who+' has had '+_dbMonthWord(t.last28.perWeek)+'.';
+    var sess=_dbCap(_dbSayCount(t.last7.sessions))+' session'+(t.last7.sessions===1?'':'s')+' last week';
+    if(t.last7.sessions){
+      var other=(t.last7.split||[]).filter(function(x){ return x.kind!=='lifting'; });
+      if(t.last7.lifting && other.length){
+        sess+=', '+_dbSayCount(t.last7.lifting)+' of them lifting and '
+            + other.map(function(x){ return (x.n===1?('a '+x.kind+' session'):(_dbSayCount(x.n)+' '+x.kind+' sessions')); }).join(' and ');
+      } else if(t.last7.lifting){ sess+=', all lifting'; }
+    }
+    P.push(open+' '+sess+'. Across the month he is averaging '+_dbSayRate(t.last28.perWeek)+' a week.');
+  }
+  // ---- food, as a direction rather than a table ----
+  if(f.food){
+    P.push('His meals did not read just now, so there are no numbers to give you on food.');
+  } else if(!n.days){
+    P.push('Nothing logged to eat this month, so there is nothing to read on food.');
+  } else {
+    var c=n.per.calories, p=n.per.protein;
+    var now=c.lives.roll.value, month=c.lives.w4.value;
+    var dir = (now>month) ? 'and it has been climbing' : (now<month ? 'and it has come down' : 'and it has held');
+    var food='Food has been steady '+dir+'. He typically eats around '+_jvNum(now)
+           + ' a day lately, '+(now>month?'up from ':(now<month?'down from ':'against '))+_jvNum(month)
+           + ' across the month, with protein holding between '+Math.min(p.lives.w4.value,p.lives.roll.value)
+           + ' and '+Math.max(p.lives.w4.value,p.lives.roll.value)+' grams.';
+    P.push(food);
+  }
+  // ---- the one thing worth raising ----
+  var said='';
+  if(!f.workouts && !f.food && w.total){
+    // The hard day first if there is one, because that is what he would want
+    // raised on a call; otherwise whatever they said most recently.
+    var tough=(w.themes||[]).filter(function(x){ return x.k==='tough'; })[0];
+    var q=(tough && tough.quotes[0]) || w.all[0];
+    if(q){
+      var full=(w.all||[]).filter(function(x){ return x.text===q.text; })[0]||q;
+      said='One thing worth raising on the call: '+_dbOnDate(q.ds)+' he wrote, '+String(q.text).replace(/[.…]+$/,'');
+      var dl=full.dayLog;
+      if(dl && dl.sessions && dl.sessions.length){
+        said+=', and still showed up for '+dl.sessions.join(' and ').toLowerCase();
+        if(dl.food) said+=', on '+_jvNum(dl.food.calories)+' calories and '+dl.food.protein+' grams of protein that day';
+      }
+      said+='.';
+      var adj=(w.themes||[]).filter(function(x){ return x.k==='adjust'; })[0];
+      if(adj && adj.count) said+=' He also made '+_dbSayCount(adj.count)+' adjustment'+(adj.count===1?'':'s')+' to his own sessions this month.';
+      P.push(said);
+    }
+  }
+  // ---- the gaps, in passing, never as a headline ----
+  if(!f.food && n.thin && n.thin.length){
+    // TODAY IS NOT A THIN DAY, IT IS AN UNFINISHED ONE. Chris logged one meal
+    // this morning, and calling that "a gap in the logging" on a call would be
+    // wrong twice: it is not a gap, and it is pulling the recent typical down
+    // because the day is still going. Named for what it is.
+    var _today=_tlDateStr(new Date());
+    var _past=n.thin.filter(function(x){ return x.ds!==_today; });
+    var _isToday=n.thin.length!==_past.length;
+    // THREE SHAPES, AND EACH HAS TO BE A SENTENCE. Gluing a lead-in onto
+    // whichever clauses happened to exist produced "There is and today only has
+    // one meal on it so far" the moment nothing but today was thin.
+    var _pastTxt = _past.length
+      ? ('There '+(_past.length===1?'is ':'are ')+_dbSayCount(_past.length)+' thin day'+(_past.length===1?'':'s')
+         +' in there, '+(_past.length===1?'a single meal logged':'a single meal logged on each')
+         +', which is a gap in the logging rather than a light day')
+      : '';
+    var _todayTxt = _isToday
+      ? ('today only has one meal on it so far, so the recent figure is running low while the day finishes')
+      : '';
+    if(_pastTxt && _todayTxt) P.push(_pastTxt+', and '+_todayTxt+'.');
+    else if(_pastTxt) P.push(_pastTxt+'.');
+    else if(_todayTxt) P.push(_dbCap(_todayTxt)+'.');
+  }
+  // ---- weight, last, short ----
+  if(f.weight){ P.push('His weigh-ins did not read just now, so I have no trend for you.'); }
+  else if(wt.w4.ok){
+    P.push('Weight is '+(wt.w4.dir==='level'?'level':(wt.w4.dir==='up'?'up ':'down ')+Math.abs(wt.w4.delta)+' pounds')+' over the month.');
+  } else if(wt.total){
+    P.push('Only '+_dbSayCount(wt.w4.count)+' weigh-in this month, so there is no trend to read.');
+  } else {
+    P.push('No weigh-ins this month, so there is no trend to read.');
+  }
+  return P.join(' ');
+}
 // ===== THE SPOKEN DEBRIEF ==============================================
-// Every figure in here was computed by _jvDebriefData. This function only
-// chooses words. NO SYMBOLS: no middots, no dashes, no "g" hanging off a
-// number, because this is read out loud.
+// Narrates, then CHECKS ITSELF, then speaks. A script carrying a figure the app
+// did not compute is never read out; it says so and points at the panel, which
+// still holds every number.
 function _jvDebriefSpoken(d, name){
+  if(!d) return 'I could not build that debrief.';
+  var figures=_jvDebriefFigures(d);
+  var script='';
+  try{ script=_jvDebriefNarrate(d, name); }catch(e){ console.error('debrief narrate', e); }
+  if(script){
+    var v=_jvDebriefVerify(script, figures);
+    if(v.ok) return script;
+    // NOT SPOKEN. The rule is absolute and this is what enforcing it looks like.
+    try{ console.error('debrief: unverifiable figure(s) in the spoken draft, refusing to speak it', v.bad); }catch(e){}
+    return 'I have '+String(name||d.code)+"'s debrief on screen, but I am not going to read it out: "
+      + 'a figure in the summary did not match what I computed, so I cannot stand behind it out loud.';
+  }
+  return _jvDebriefSpokenPlain(d, name);
+}
+// The sectioned reading, kept as the floor: computed the same way, said plainly.
+function _jvDebriefSpokenPlain(d, name){
   if(!d) return 'I could not build that debrief.';
   var who=String(name||d.code);
   var L=[];

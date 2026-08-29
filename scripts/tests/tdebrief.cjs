@@ -28,6 +28,8 @@ const MINE=['_JV_DEBRIEF_DAYS','_JV_DEBRIEF_ROLL','_JV_DB_LIFT_TITLE','_JV_DB_CA
   '_JV_DB_SAYS_RE','_JV_DB_THEMES','_JV_DEBRIEF_RE',
   '_dbMedian','_dbRoll','_dbIsSaid','_dbKind','_dbIsLift','_dbDay','_dbDs',
   '_dbSayRate','_dbSayCount','_dbCap','_dbSayDate','_dbOnDate','_dbSayDayLog','_dbScreenDayLog',
+  '_DB_NUMWORD','_jvDebriefFigures','_jvDebriefNumsIn','_jvDebriefVerify','_dbMonthWord',
+  '_jvDebriefNarrate','_jvDebriefSpokenPlain','_tlDateStr',
   '_jvDebriefData','_jvDebriefSpoken','_jvDebriefHtml'];
 const SHARED=['_bfItemsFor','_jvNum','_escHtml','_jvSpokenDateStr','_sbFailMark','_sbFailedSince'];
 eval(closure(SHARED).code);
@@ -108,7 +110,9 @@ let D=null;
   console.log('\n  HIS WORDING (rulings 2 and 3):');
   t(!/Where they live/.test(src), '"Where they live" is gone from the file entirely');
   t(/Typical day/.test(hy), 'the screen reads "Typical day"');
-  t(/typically eat around/.test(_jvDebriefSpoken(DY,'Test Client')), 'and the voice says "typically eat around"');
+  // The voice is a conversation now, so the phrase is "typically eats around"
+  // in a sentence rather than the sectioned reading's "they typically eat".
+  t(/typically eats around/.test(_jvDebriefSpoken(DY,'Test Client')), 'and the voice says "typically eats around"');
   // Quarters, so a rate is never rounded: 19 sessions in 28 days is exactly
   // four and three quarters a week.
   t(_dbSayRate(4.75)==='four and three quarters', '4.75 a week is said exactly', _dbSayRate(4.75));
@@ -122,7 +126,14 @@ let D=null;
   t(D.weight.w4.ok && D.weight.w4.delta===-2 && D.weight.w4.dir==='down', 'weight down 2 over four weeks', JSON.stringify(D.weight.w4.delta));
   t(D.weight.w2.ok===false && D.weight.w2.count===1, 'and two weeks holds ONE weigh-in, so it states no trend');
   const sp=_jvDebriefSpoken(D,'Test Client');
-  t(/no two week trend to read/.test(sp), 'the spoken line says so rather than inventing one');
+  // THE CONVERSATION REPORTS THE MONTH, as his own example does - it does not
+  // read a two-week weight line out loud. So the honest gap is asserted where
+  // it is actually stated: on the panel, and in the plain reading underneath.
+  t(/one weigh-in/.test(_jvDebriefHtml(D,'Test Client')) && /no trend to read/.test(_jvDebriefHtml(D,'Test Client')),
+    'the panel states the two-week gap rather than inventing a trend');
+  t(/no two week trend to read/.test(_jvDebriefSpokenPlain(D,'Test Client')),
+    'and so does the plain reading underneath');
+  t(!/two week/.test(sp), 'while the conversation keeps weight to the month, the way he asked');
 
   console.log('\n  A FAILED READ IS NOT AN EMPTY MONTH:');
   // sbSelect returns [] when it fails (CLAUDE.md landmine). Without the witness
@@ -191,6 +202,70 @@ let D=null;
   t(/Which one\?/.test(DOOR2), 'in those words');
   t(/_jvDeepCode/.test(DOOR2), 'and a pronoun leans on the client card he has open');
   t(/\(his\|her\|their\|them\|this client\)/.test(DOOR2), 'only on an explicit pronoun');
+
+  // ===== THE SPOKEN DEBRIEF IS A CONVERSATION (ruling, 29 Aug) ========
+  // And the numbers law is enforced, not promised.
+  console.log('\n  THE VOICE TALKS LIKE A PERSON:');
+  sbSelect=async function(tbl){ return tbl==='workout_logs'?WY:(tbl==='food_logs'?F:WT); };
+  const DN=await _jvDebriefData('TEST_DEBRIEF');
+  const sc=_jvDebriefSpoken(DN,'Test Client');
+  t(/has had a (strong|steady|light) month/.test(sc), 'it opens with how the month went', sc.slice(0,60));
+  t(!/^Test Client, the last four weeks\./.test(sc), 'and not with the old sectioned reading');
+  t(!/\u2014|\u00b7/.test(sc), 'NO SYMBOLS read aloud - no long dash, no middot');
+  t(sc.split(/\s+/).length<200, 'and it stays about a minute', sc.split(/\s+/).length+' words');
+  t(/Training\./.test(sc)===false, 'it is not a table read out');
+
+  console.log('\n  EVERY SPOKEN FIGURE IS ONE THE APP COMPUTED:');
+  const FIG=_jvDebriefFigures(DN);
+  const V=_jvDebriefVerify(sc, FIG);
+  t(V.ok, 'every number in the script verifies against the computed set', V.bad.join(', '));
+  t(_jvDebriefNumsIn(sc).length>0, 'and there really are numbers in it to check',
+    _jvDebriefNumsIn(sc).length+' numbers');
+  // The verifier has to have teeth: an invented figure must be refused.
+  t(_jvDebriefVerify('he ate 9999 calories', FIG).ok===false, 'an invented figure fails the check');
+  t(_jvDebriefVerify('he did seventeen sessions', FIG).bad.length>=0, 'and number words are read too');
+  t(_jvDebriefVerify('six sessions', {6:1}).ok===true, 'a number word that IS computed passes');
+  t(_jvDebriefVerify('nine sessions', {6:1}).ok===false, 'and one that is not, fails');
+  // A script that cannot be verified is NOT SPOKEN.
+  const SPKF=src.slice(src.indexOf('function _jvDebriefSpoken(d, name){'), src.indexOf('function _jvDebriefSpokenPlain('));
+  t(/if\(v\.ok\) return script;/.test(SPKF), 'a verified script is spoken');
+  t(/I am not going to read it out/.test(SPKF), 'and an unverifiable one is withheld, in plain words');
+  t(/on screen/.test(SPKF), 'pointing at the panel, which still holds every figure');
+  // NO MODEL NARRATES, which is why no figure can drift in the first place.
+  const NAR=src.slice(src.indexOf('function _jvDebriefNarrate('), src.indexOf('// ===== THE SPOKEN DEBRIEF ='));
+  t(!/analyze|_jtModel|messages:\[/.test(NAR), 'the narration calls no model');
+
+  // ===== RUN, NOT READ. Both of these passed a source search while the
+  // behaviour was broken, so they are driven through the narrator instead.
+  console.log('\n  AND TODAY IS AN UNFINISHED DAY, NOT A THIN ONE:');
+  // A client with ONE meal today and nothing else thin: the script must call it
+  // an unfinished day, and must not call it a gap in the logging.
+  const Ftoday=[{id:1,calories:520,protein:30,carbs:40,fat:20,date_str:dayStr(0),logged_at:iso(0),meal:'Breakfast',name:'x'}]
+    .concat([1,2,3].map(n=>({id:10+n,calories:2000,protein:150,carbs:200,fat:60,date_str:dayStr(n),logged_at:iso(n),meal:'Lunch',name:'y'})))
+    .concat([1,2,3].map(n=>({id:20+n,calories:400,protein:20,carbs:40,fat:10,date_str:dayStr(n),logged_at:iso(n),meal:'Snack',name:'z'})));
+  sbSelect=async function(tbl){ return tbl==='workout_logs'?W:(tbl==='food_logs'?Ftoday:WT); };
+  const DT=await _jvDebriefData('TEST_DEBRIEF');
+  const st=_jvDebriefSpoken(DT,'Test Client');
+  t(/Today only has one meal on it so far/.test(st), 'a single meal logged TODAY is named as the day still going', st.slice(-120));
+  // The lead-in belongs to the past-thin-days clause, and gluing it on when
+  // there are none produced "There is and today only has one meal on it".
+  t(!/There is and/.test(st) && !/There are and/.test(st), 'and it is a sentence, not two clauses glued together');
+  t(!/thin day/.test(st), 'and is NOT counted among the thin days, which are a logging gap');
+  t(_jvDebriefVerify(st,_jvDebriefFigures(DT)).ok, 'and that script still verifies');
+
+  console.log('\n  NO SYMBOL IS EVER READ ALOUD, on the line he hears most:');
+  // The quote line is where an em dash slipped in once. Driven through with a
+  // real note on a real session so the whole clause renders.
+  const Wnote=[{id:1,title:'Legs',date_str:dayStr(2),logged_at:iso(2),
+    description:'Squat: 100 lb x 5\nLeg Press: 200 lb x 8\n\nFeeling shitty so did what I could'}];
+  sbSelect=async function(tbl){ return tbl==='workout_logs'?Wnote:(tbl==='food_logs'?F:WT); };
+  const DQ=await _jvDebriefData('TEST_DEBRIEF');
+  const sq=_jvDebriefSpoken(DQ,'Test Client');
+  t(/Feeling shitty so did what I could/.test(sq), 'their own words reach the script, verbatim', sq.slice(0,80));
+  t(/still showed up for/.test(sq), 'with what they did that day beside it');
+  t(!/\u2014/.test(sq), 'and NO long dash anywhere in it');
+  t(!/\u00b7/.test(sq), 'and no middot');
+  t(_jvDebriefVerify(sq,_jvDebriefFigures(DQ)).ok, 'and that script verifies too');
 
   console.log('\n'+(bad?(bad+' FAILED'):'all pass'));
   process.exit(bad?1:0);
