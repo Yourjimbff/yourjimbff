@@ -26,7 +26,7 @@ global.document={
 };
 global.localStorage={getItem:function(){return null;}, setItem:function(){}, removeItem:function(){}};
 const CL=closure(['_jimProgressPhotoAsked','_JIM_PROGRESS_RE','_jimProgressPhotoDay','_jimDataUrlToBlob',
-                  '_jimAnchorDay','_dateStrDaysAgo','_tlDateStr']);
+                  '_JIM_MEAL_CTX_RE','_jimAnchorDay','_dateStrDaysAgo','_tlDateStr']);
 eval(CL.code);
 guard(['_JIM_PROGRESS_RE','_jimProgressPhotoAsked','_jimProgressPhotoDay','_jimAnchorDay','_dateStrDaysAgo'],
   n=>eval(n));
@@ -69,6 +69,31 @@ t(new Date(_jimProgressPhotoDay('progress photo taken Friday', null)).getDay()==
 // today, and the day resolver every meal runs through must keep answering that.
 t(_jimAnchorDay('the leftovers from Tuesday')===null,
   'and the meal-side day anchor still refuses "from Tuesday" — it was NOT widened');
+
+// ===== MEAL CONTEXT, CAUGHT ON THE DEPLOYED SCREEN =====================
+// A photo captioned "my lunch" was asked "Meal or progress photo?" instead of
+// going to the meal path. _jimLooksLikeMeal answers a different question - is
+// there a meal to PARSE here - and a bare slot noun has no food in it. The
+// question this route asks is only "is this photo about food at all".
+console.log('\n  2b. A PHOTO ABOUT FOOD IS ABOUT FOOD, even with nothing to parse:');
+[['my lunch',true],['here is my dinner',true],['breakfast',true],['ate this at 3',true],
+ ['post workout meal',true],['320 calories',true],['my plate',true],
+ ['progress photo',false],['physique check',false],['',false],['nice weather',false]
+].forEach(([x,want])=>t(_JIM_MEAL_CTX_RE.test(x)===want, JSON.stringify(x)+' -> meal context '+want));
+// And the order matters: progress words are checked BEFORE meal context, so a
+// progress photo taken after lunch is still a progress photo.
+t(_jimProgressPhotoAsked('progress photo after lunch')===true && _JIM_MEAL_CTX_RE.test('progress photo after lunch')===true,
+  'both match "progress photo after lunch" — the route checks progress first');
+const ORD=src.slice(src.indexOf('async function _jimPhotoRoute('), src.indexOf('async function _jimProgressPhotoReply('));
+t(ORD.indexOf('_jimProgressPhotoAsked(t)')<ORD.indexOf('_JIM_MEAL_CTX_RE'), 'and the shipped order proves it');
+// The shared recogniser is NOT widened: it decides whether to invent a meal
+// record out of a sentence, and "my lunch" must go on meaning nothing to parse.
+// Asserted by its CONTENT, not by a brittle window after the signature: the
+// shared recogniser still knows nothing about progress photos or meal context.
+const LLM=src.slice(src.indexOf('function _jimLooksLikeMeal(raw){'), src.indexOf('function _jimLooksLikeMeal(raw){')+2000);
+t(LLM.length>200 && /_jimWithoutNumbers/.test(LLM), '_jimLooksLikeMeal is findable and unchanged in shape');
+t(!/_JIM_MEAL_CTX_RE/.test(LLM) && !/_JIM_PROGRESS_RE/.test(LLM),
+  'and it was NOT widened — it still answers "is there a meal to parse here"');
 
 console.log('\n  3. THE ROUTE — read off the shipped source, since it awaits the network:');
 const RT=src.slice(src.indexOf('async function _jimPhotoRoute('), src.indexOf('async function _jimProgressPhotoReply('));
