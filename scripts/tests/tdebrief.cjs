@@ -91,6 +91,14 @@ let D=null;
     DY.training.last7.sessions+' sessions, '+DY.training.last7.lifting+' lifting');
   t(JSON.stringify(DY.training.last7.split)==='[{"kind":"lifting","n":3},{"kind":"yoga","n":1}]',
     'and the split names it "yoga", not its whole title', JSON.stringify(DY.training.last7.split));
+  // LIFTING LEADS, whatever order the sessions happened in. Ordered by first
+  // appearance it printed "(1 yoga, 5 lifting)" on Chris's real week, purely
+  // because his yoga class was the oldest session in it.
+  const WY2=[{id:1,title:'Hour Long Hot Yoga Class',description:'yoga',date_str:dayStr(6),logged_at:iso(6)}].concat(W);
+  sbSelect=async function(tbl){ return tbl==='workout_logs'?WY2:(tbl==='food_logs'?F:WT); };
+  const DY2=await _jvDebriefData('TEST_DEBRIEF');
+  t(DY2.training.last7.split[0].kind==='lifting', 'lifting leads even when the other kind came first',
+    JSON.stringify(DY2.training.last7.split));
   const hy=_jvDebriefHtml(DY,'Test Client');
   t(/4 sessions \(3 lifting, 1 yoga\)/.test(hy), 'on screen it reads exactly his way: "4 sessions (3 lifting, 1 yoga)"');
   t(/four sessions last week, three of them lifting/i.test(_jvDebriefSpoken(DY,'Test Client')),
