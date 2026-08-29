@@ -237,11 +237,16 @@ const parse = (res) => ({ status: res.statusCode, body: JSON.parse(res.body) });
   t(r.status === 502 && r.body.error === 'write_failed', 'a failing write says write_failed', r.status);
   t(table.length === 1, 'and the row is still there', table.length);
 
-  console.log('\n  NOTHING CALLS THESE YET (ship 7 is the door only):');
+  console.log('\n  WHO CALLS THESE (ship 8 wired mealEdit):');
   const fs = require('fs');
   const app = fs.readFileSync('index.html', 'utf8');
-  t(!/['"]mealEdit['"]/.test(app), 'index.html does not call mealEdit');
-  t(!/['"]mealDelete['"]/.test(app), 'index.html does not call mealDelete');
+  // ONE CALLER. A second route to a client's meal is how the guard stops being
+  // the guard: the whole value of this door is that nothing goes round it.
+  const edits = (app.match(/trainerWrite\('mealEdit'/g) || []).length;
+  t(edits === 1, 'exactly one caller of mealEdit, the ship 8 meal move', String(edits));
+  t(!/['"]mealEdit['"]/.test(app.replace(/trainerWrite\('mealEdit'/g, '')),
+    'and the op is named nowhere else in the app');
+  t(!/['"]mealDelete['"]/.test(app), 'mealDelete is still called by nothing');
 
   console.log('');
   if (bad) { console.log('  ' + bad + ' FAILED'); process.exit(1); }

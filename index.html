@@ -27571,10 +27571,16 @@ var _JT_CAL_ONLY_RE=new RegExp(
 // tgates.cjs asserts the CURRENT state either way, so flipping it needs the
 // suite flipped with it and cannot be done by accident.
 var _JT_ONE_BRAIN_HOLD=false;
+// A SLOT IS A TARGET TOO (found by the ship 8 routing proof, 29 Aug).
+// The test above was "meal noun plus a DAY", so "move my lunch to dinner" named
+// no day, the veto never fired, and _JT_CAL_RE's "move my" handed his own slot
+// move to the appointment builder. Same fault as the one this veto was written
+// for, one word narrower. A meal moving to another SLOT is still food.
+var _JT_SLOT_TARGET_RE=new RegExp("\\bto\\s+(?:a\\s+)?(?:breakfast|lunch|dinner|brunch|supper|snack)\\b","i");
 function _jtMealMove(t){
   var s=String(t||'');
   if(!_JT_MEAL_NOUN_RE.test(s)) return false;
-  if(!_JT_DAY_TARGET_RE.test(s)) return false;
+  if(!_JT_DAY_TARGET_RE.test(s) && !_JT_SLOT_TARGET_RE.test(s)) return false;
   if(_JT_CAL_ONLY_RE.test(s)) return false;
   return true;
 }
@@ -35930,6 +35936,15 @@ async function _jtRunItem(t, capture, ctx){
     var _db=await _jvDebriefTurn(t);
     if(_db) return {status:(_db.ok?'talk':'wait'), line:_db.line, html:true, speak:_db.speak, src:t};
   }catch(e){ console.error('jt debrief', e); }
+  // MOVING A NAMED CLIENT'S MEAL (ship 8). Above the calendar gate, which
+  // claims the bare phrase "move my/his/her", and above the logging engine,
+  // which acts on the SIGNED-IN account and would move his own meal instead.
+  // It returns null on zero name hits, so "move my breakfast to yesterday"
+  // still falls all the way through to the engine that has always had it.
+  try{
+    var _mv=await _jvClientMealMove(t);
+    if(_mv) return {status:(_mv.ok?'done':'lost'), line:_mv.line, html:true, speak:_mv.speak, src:t};
+  }catch(e){ console.error('jt meal move', e); }
   // ROSTER QUESTIONS ARE ANSWERED FROM THE BOARD, NOT BY A MODEL. Deterministic,
   // so the count and the list are the same array and cannot contradict each
   // other — which is the invented-count bug at its source.
@@ -49477,6 +49492,207 @@ async function _jvDebriefTurn(t){
   }
   var nm=_jvSafeName(code, (CLIENTS[code]||{}).name||code);
   return {ok:true, html:true, line:_jvDebriefHtml(d, nm), speak:_jvDebriefSpoken(d, nm), debrief:d};
+}
+
+// ===== MOVING A CLIENT'S MEAL (ship 8) =================================
+// Jarvis moves a NAMED client's logged meal, and does it through the guarded
+// door only. Never with the public key, never on a row id alone.
+//
+// WHY A DOOR AND NOT A PATCH. The client's own surfaces move their own meals
+// with the key in the page (tlSetMeal, tlShiftMealDay). This is a different
+// act: the assistant reaching into somebody else's history because it decided a
+// sentence was about them. That is privileged, and it goes through mealEdit,
+// which filters on client_code AND row id together and refuses a mismatched
+// pair. See ship 7.
+//
+// EXACT-NAME DISCIPLINE, and the fallthrough that matters more than the door.
+// Zero name hits RETURNS NULL rather than answering. "Move my breakfast to
+// yesterday" is his own meal and belongs to the logging engine, exactly as it
+// does today - claiming it here would take his own meal moves away from him.
+// One hit resolves; more than one asks which, because "Chris" is two people.
+//
+// THE EAT-TIME CLOCK RULE IS HONOURED BY NOT TOUCHING IT. A moved meal keeps
+// its stated eat time when it has one. So the patch carries the day and, when
+// one is named, the slot - and never eat_time. The row's clock is its own.
+
+// A session, a call or a block is not a plate. Checked before anything else,
+// because "move his session to Tuesday" is the calendar's sentence and this
+// recogniser would otherwise take it on the day word alone.
+var _JV_MMV_NOTFOOD_RE=new RegExp(
+  '\\b(session|sessions|workout|workouts|training|lift|lifts|leg day|push day|pull day'
+  +'|cardio|yoga|pilates|class|walk|call|calls|consult|appointment|booking|block|blocks)\\b','i');
+function _jvMealMoveAsked(s){
+  s=String(s||'');
+  if(!/\b(move|moving|shift|switch)\b/i.test(s)) return false;
+  if(_JV_MMV_NOTFOOD_RE.test(s)) return false;
+  if(_JT_CAL_ONLY_RE.test(s)) return false;
+  // It has to name a meal, or at least name a day to move something to.
+  return _JT_MEAL_NOUN_RE.test(s) || _JT_DAY_TARGET_RE.test(s);
+}
+// A day named in a sentence, as the app's own date string, or null when the
+// sentence names no day. Null is not a failure: "move his lunch to dinner"
+// names a slot and no day at all.
+//
+// DERIVED FROM `now`, NEVER HARD-CODED. A weekday means the most recent one
+// that has already happened, today included - which is what "move it to
+// Saturday" means. This never reaches forward for a weekday; "tomorrow" is the
+// word for that and has its own branch.
+var _MV_MONTHS=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+function _mvDayFrom(s, now){
+  s=String(s||'').toLowerCase();
+  var base=now?new Date(now):new Date(); base.setHours(0,0,0,0);
+  var d=new Date(base);
+  if(/\btomorrow\b/.test(s)){ d.setDate(d.getDate()+1); return _tlDateStr(d); }
+  if(/\bthe day before\b/.test(s)){ d.setDate(d.getDate()-2); return _tlDateStr(d); }
+  if(/\b(yesterday|last night)\b/.test(s)){ d.setDate(d.getDate()-1); return _tlDateStr(d); }
+  if(/\b(today|this morning|this afternoon|this evening|tonight)\b/.test(s)) return _tlDateStr(d);
+  // "Aug 22" / "August 22"
+  var m=/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})\b/.exec(s);
+  if(m){
+    var mo=_MV_MONTHS.indexOf(m[1]), dd=+m[2];
+    if(mo>=0 && dd>=1 && dd<=31){
+      var y=base.getFullYear();
+      var cand=new Date(y, mo, dd); cand.setHours(0,0,0,0);
+      // A date ahead of today means he means last year's, not a future meal.
+      if(cand>base) cand=new Date(y-1, mo, dd);
+      return _tlDateStr(cand);
+    }
+  }
+  // "8/22"
+  m=/\b(\d{1,2})\/(\d{1,2})\b/.exec(s);
+  if(m){
+    var c2=new Date(base.getFullYear(), (+m[1])-1, +m[2]); c2.setHours(0,0,0,0);
+    if(!isNaN(c2.getTime())){ if(c2>base) c2.setFullYear(c2.getFullYear()-1); return _tlDateStr(c2); }
+  }
+  // "the 22nd"
+  m=/\bthe (\d{1,2})(?:st|nd|rd|th)\b/.exec(s);
+  if(m){
+    var day=+m[1];
+    if(day>=1 && day<=31){
+      var c3=new Date(base.getFullYear(), base.getMonth(), day); c3.setHours(0,0,0,0);
+      if(c3>base) c3=new Date(base.getFullYear(), base.getMonth()-1, day);
+      return _tlDateStr(c3);
+    }
+  }
+  var W=['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+  m=/\b(sun|mon|tues|tue|wednes|wed|thurs|thur|thu|fri|satur|sat)(?:day)?\b/.exec(s);
+  if(m){
+    var want=-1;
+    W.forEach(function(w,i){ if(w.indexOf(m[1])===0) want=i; });
+    if(want>=0){
+      var back=(base.getDay()-want+7)%7;
+      d.setDate(d.getDate()-back);
+      return _tlDateStr(d);
+    }
+  }
+  return null;
+}
+// The slot a phrase names, in the app's own casing, or null.
+function _mvSlotFrom(s){
+  s=String(s||'').toLowerCase();
+  if(/\bbreakfast\b|\bthis morning\b/.test(s)) return 'Breakfast';
+  if(/\b(lunch|brunch)\b/.test(s)) return 'Lunch';
+  if(/\b(dinner|supper)\b|\blast night\b|\btonight\b/.test(s)) return 'Dinner';
+  if(/\bsnack\b/.test(s)) return 'Snack';
+  return null;
+}
+// THE SENTENCE HAS TWO HALVES and they mean opposite things. "Move his lunch to
+// dinner" names the source before "to" and the target after it. Split on the
+// LAST " to ", so "move the pancakes I had on Saturday to this morning" reads
+// Saturday as where it came from and this morning as where it is going.
+function _mvHalves(s){
+  var str=String(s||''), i=str.toLowerCase().lastIndexOf(' to ');
+  if(i<0) return {from:str, to:''};
+  return {from:str.slice(0,i), to:str.slice(i+4)};
+}
+// Returns HTML when it handled the sentence, or null to fall through.
+async function _jvClientMealMove(t){
+  var s=String(t||'');
+  if(!_jvMealMoveAsked(s)) return null;
+  if(!(window.cl && typeof isTrainer==='function' && isTrainer(cl.code))) return null;
+  var hits=[];
+  try{ var f=_jvFindClientIn(s); hits=(f && f.hits)||[]; }catch(e){ hits=[]; }
+  // NOT THIS DOOR'S SENTENCE. His own meal move keeps going to the engine that
+  // has always handled it.
+  if(!hits.length) return null;
+  if(hits.length>1){
+    var many='That matches '+hits.length+': '
+      + hits.map(function(h){ return _jvSafeName(h, (CLIENTS[h]||{}).name||h); }).join(', ')+'. Which one?';
+    return {ok:false, line:_escHtml(many), speak:many};
+  }
+  var code=hits[0]; if(!code) return null;
+  var who=_jvSafeName(code, (CLIENTS[code]||{}).name||code);
+  var H=_mvHalves(s);
+  var toDay=_mvDayFrom(H.to), toSlot=_mvSlotFrom(H.to);
+  var fromDay=_mvDayFrom(H.from), fromSlot=_mvSlotFrom(H.from);
+  if(!toDay && !toSlot){
+    var nowhere='I can move '+who+"'s meal, but I need to know where to. Name a day or a slot.";
+    return {ok:false, line:_escHtml(nowhere), speak:nowhere};
+  }
+  // A FAILED READ IS NOT AN EMPTY DAY. sbSelect answers [] on a refusal, and
+  // without this witness "I cannot see that meal" would be said about a client
+  // whose rows simply did not load - and then nothing would be moved, silently.
+  var rows=[], mark=_sbFailMark();
+  try{
+    rows=await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(code)
+      +'&select=id,name,meal,eat_time,calories,date_str,logged_at&order=logged_at.desc&limit=400')||[];
+  }catch(e){ rows=[]; }
+  if(_sbFailedSince(mark)){
+    var blind="I could not read "+who+"'s meals just now, so I have not moved anything. That is my read failing, not an empty day.";
+    return {ok:false, line:_escHtml(blind), speak:blind};
+  }
+  // Match on what he actually said: the day it came from, the slot he called it,
+  // and the food's own name if he used it.
+  var fromTxt=H.from.toLowerCase();
+  var cand=rows.filter(function(r){
+    if(fromDay && String(r.date_str||'')!==fromDay) return false;
+    if(fromSlot && String(r.meal||'')!==fromSlot) return false;
+    return true;
+  });
+  var byName=cand.filter(function(r){
+    var n=String(r.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').trim();
+    return n && n.length>2 && fromTxt.indexOf(n)>=0;
+  });
+  if(byName.length) cand=byName;
+  if(!cand.length){
+    var none='I cannot see '+(fromSlot?('a '+fromSlot.toLowerCase()):'a meal')
+      + (fromDay?(' on '+fromDay):'')+' for '+who+', so I have not moved anything.';
+    return {ok:false, line:_escHtml(none), speak:none};
+  }
+  if(cand.length>1){
+    var list=cand.slice(0,5).map(function(r){ return (r.name||'a meal')+' on '+(r.date_str||'an unknown day'); });
+    var which='That could be '+cand.length+' of '+who+"'s meals: "+list.join(', ')+'. Which one?';
+    return {ok:false, line:_escHtml(which), speak:which};
+  }
+  var row=cand[0];
+  var patch={client_code:code, id:row.id};
+  if(toDay) patch.date_str=toDay;
+  if(toSlot) patch.meal=toSlot;
+  // eat_time is DELIBERATELY ABSENT. The clock rule: a moved meal keeps its
+  // stated eat time. Sending it would rewrite the client's own clock.
+  var w=null;
+  try{ w=await trainerWrite('mealEdit', patch); }catch(e){ w=null; }
+  if(!w || !w.ok || !w.rows || !w.rows.length){
+    var failed='I could not move that meal, so nothing changed. '
+      + (w && w.status===404 ? 'The door did not find that row on '+who+'.' : 'The door refused the write.');
+    return {ok:false, line:_escHtml(failed), speak:failed};
+  }
+  // THE READ-BACK IS THE CONFIRMATION. The door already compared what it wrote
+  // against the row it read; this checks the same fields again before any
+  // sentence claims the meal moved.
+  var landed=w.rows[0];
+  if((toDay && String(landed.date_str)!==toDay) || (toSlot && String(landed.meal)!==toSlot)){
+    var odd='The door wrote that meal but it did not come back where I sent it, so I am not going to tell you it moved.';
+    return {ok:false, line:_escHtml(odd), speak:odd};
+  }
+  var what=landed.name||'that meal';
+  var line='Moved '+who+"'s "+what
+    + (row.date_str && toDay && row.date_str!==toDay ? (' from '+row.date_str+' to '+toDay) : (toDay?(' to '+toDay):''))
+    + (toSlot?(toDay?', and into '+toSlot:' to '+toSlot):'')+'.';
+  // The clock, stated, because it is the thing that silently goes wrong.
+  if(landed.eat_time) line+=' It kept its stated time of '+landed.eat_time+'.';
+  line+=' Read back from the row.';
+  return {ok:true, line:_escHtml(line), speak:line, moved:landed};
 }
 
 // ===== PER-CLIENT VERBATIM NOTES =====

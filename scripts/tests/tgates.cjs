@@ -30,14 +30,14 @@ const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  F
 
 global.window={};
 eval([one('var _JT_PAST_MEAL_RE='), one('var _JT_SCHED_INTENT_RE='), one('var _JT_CAL_RE='),
-  one('var _JT_MEAL_NOUN_RE='), one('var _JT_DAY_TARGET_RE='), one('var _JT_CAL_ONLY_RE='),
+  one('var _JT_MEAL_NOUN_RE='), one('var _JT_DAY_TARGET_RE='), one('var _JT_SLOT_TARGET_RE='), one('var _JT_CAL_ONLY_RE='),
   one('var _JT_ONE_BRAIN_HOLD='),
   one('var _JT_PROG_RE='), one('var _JT_CLIENT_RE='), one('var _JT_LOG_INTENT_RE='),
   one('var _JT_OWN_DAY_RE='), one('var _JT_OWN_SUBJ_RE='),
   grabFn('_jtMealMove'), grabFn('_jtCalendarClaims'), grabFn('_jtWantsMarker'),
   grabFn('_jtIsQuestion'), grabFn('_jtOwnDayQuestion')].join('\n'));
 
-guard(['_JT_ONE_BRAIN_HOLD','_JT_MEAL_NOUN_RE','_JT_DAY_TARGET_RE','_JT_CAL_ONLY_RE','_JT_LOG_INTENT_RE',
+guard(['_JT_ONE_BRAIN_HOLD','_JT_MEAL_NOUN_RE','_JT_DAY_TARGET_RE','_JT_SLOT_TARGET_RE','_JT_CAL_ONLY_RE','_JT_LOG_INTENT_RE',
   '_JT_OWN_DAY_RE','_JT_OWN_SUBJ_RE','_jtMealMove','_jtCalendarClaims','_jtWantsMarker',
   '_jtIsQuestion','_jtOwnDayQuestion'], n=>eval(n));
 
