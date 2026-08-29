@@ -258,4 +258,9 @@ const run=async(s)=>{ sent=null; return await _jvClientMealMove(s); };
   console.log('');
   if(bad){ console.log('  '+bad+' FAILED'); process.exit(1); }
   console.log('  all pass');
+  // EXIT EXPLICITLY, like every other suite here. Falling off the end leaves
+  // node alive whenever the lift has pulled in anything that holds a handle,
+  // so the suite PASSES and then hangs forever — and run.sh, which waits for
+  // each suite in turn, waits with it. Cost me the whole run once.
+  process.exit(0);
 })();

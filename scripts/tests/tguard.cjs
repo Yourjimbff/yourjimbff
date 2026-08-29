@@ -277,4 +277,7 @@ const parse = (res) => ({ status: res.statusCode, body: JSON.parse(res.body) });
   console.log('');
   if (bad) { console.log('  ' + bad + ' FAILED'); process.exit(1); }
   console.log('  all pass');
+  // EXIT EXPLICITLY, like every other suite here — see tshadow for what a
+  // suite that passes and then hangs does to run.sh.
+  process.exit(0);
 })();

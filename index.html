@@ -17865,6 +17865,22 @@ async function feedDetailRecent(code){
 // to scroll. Sits under the version line because that is already the
 // diagnostics corner of this surface. TRAINER ONLY - a client has no use for
 // it and should never be shown a flight recorder.
+// The shadow report, one tap, same clipboard-or-say-so contract as the audio one.
+async function jvShadowCopy(){
+  var txt='';
+  try{ txt=_jvShadowReport(); }catch(e){ txt='The shadow report itself failed: '+(e&&e.message||e); }
+  var ok=false;
+  try{ if(navigator.clipboard && navigator.clipboard.writeText){ await navigator.clipboard.writeText(txt); ok=true; } }catch(e){}
+  if(!ok){
+    try{
+      var ta=document.createElement('textarea');
+      ta.value=txt; ta.style.position='fixed'; ta.style.left='-9999px';
+      document.body.appendChild(ta); ta.select(); ok=document.execCommand('copy');
+      document.body.removeChild(ta);
+    }catch(e){ ok=false; }
+  }
+  try{ showToast(ok ? 'Shadow report copied — paste it anywhere' : 'Could not copy. Say “shadow report” to read it on screen.'); }catch(e){}
+}
 async function jvTapeCopy(){
   var txt='';
   try{ txt=_jvTapeReport(); }catch(e){ txt='The recorder itself failed: '+(e&&e.message||e); }
@@ -17888,7 +17904,10 @@ function _feedVersionHtml(){
   var _tape='';
   try{
     if(cl && typeof isTrainer==='function' && isTrainer(cl.code)){
-      _tape='<div onclick="jvTapeCopy()" style="font-size:9px;color:var(--muted);opacity:0.55;margin-top:5px;text-decoration:underline;cursor:pointer;">copy audio report</div>';
+      _tape='<div style="margin-top:5px;font-size:9px;color:var(--muted);opacity:0.55;">'
+        +'<span onclick="jvTapeCopy()" style="text-decoration:underline;cursor:pointer;">copy audio report</span>'
+        +'<span style="opacity:0.5;"> · </span>'
+        +'<span onclick="jvShadowCopy()" style="text-decoration:underline;cursor:pointer;">copy shadow report</span></div>';
     }
   }catch(e){}
   return '<div style="text-align:center;margin:-6px 0 14px;line-height:1.5;">'
@@ -36112,7 +36131,321 @@ function _jvProse(text){
     speak: paras.join('\n\n')
   };
 }
+// ===== THE BRAIN: UNDERSTANDING BEFORE TOOLS (his order, 29 Aug) ========
+// SHADOW MODE. Nothing below changes what the app does. It routes silently
+// beside the existing gates, records what it WOULD have done, and never acts.
+// The flip to live is a separate, watched ship, after he has read the tape.
+//
+// THE BREAKING CASE THIS EXISTS FOR. He asked about Chris McCarthy, got
+// "Ready. What do you need?", said "full debrief" — and got his own day board.
+// Every gate involved behaved exactly as written: _jvDebriefTurn returns null
+// when no name resolves, so "full debrief" fell past it to _jvDayReadout, which
+// claims the bare word "debrief" and means HIS day. Nothing was broken. The
+// architecture was: a phrase-matcher cannot know that "full debrief" three
+// seconds after "how's Chris McCarthy" is still about Chris.
+//
+// So the brain gets what a phrase never had: the subject on the table.
+//
+// THE BRAIN NEVER DOES THE WORK. It names a tool and a client. Every number,
+// every row, every write still comes from the hardened machinery underneath,
+// unchanged. This is a dispatcher with judgement, not a second engine.
+
+// ---- 1. THE TOOLBOX, DESCRIBED BY PURPOSE ------------------------------
+// NOT A TRIGGER WORD ANYWHERE IN THIS LIST, on purpose. "full debrief", "run it
+// back" and "gimme the breakdown" have to resolve by MEANING, and a list of
+// phrases is the thing being replaced.
+var JV_TOOLS=[
+  {id:'debrief',      p:'The full check-in prep on ONE client: how their month went, their training, their food, what they wrote, their weight. Everything he would want in his head before getting on a call with that person.'},
+  {id:'day_board',    p:'HIS OWN day. His agenda, his calls today, what he personally has on. About Yusuf himself, never about a client.'},
+  {id:'roster_answer',p:'A question across the whole roster at once: who has gone quiet, who is in term, who logged today, who has not trained this week.'},
+  {id:'client_day',   p:'What one named client ate or did on a particular day. A single day, not a month.'},
+  {id:'meal_move',    p:'Move a meal a client already logged to a different day or a different slot, or correct which meal it was filed as.'},
+  {id:'book',         p:'Book, move, reschedule or cancel a call, a consult or an appointment.'},
+  {id:'contact',      p:'He is TELLING you he already contacted somebody — texted, called, spoke to, checked in with them. A statement about something he did, not a request.'},
+  {id:'new_client',   p:'Add a new person to the roster, or reinstate somebody who used to be on it.'},
+  {id:'phone_save',   p:'Save or correct a client phone number.'},
+  {id:'rename',       p:'Change what a client is called.'},
+  {id:'calendar',     p:'His own week: a recurring block, a training slot, a reminder, moving something on his own schedule.'},
+  {id:'program',      p:'Build, change, patch or remove a client workout PROGRAMME — the plan they follow, not something already done.'},
+  {id:'log_food',     p:'Record food, weight or steps that were actually eaten or done — for himself, or for a named client.'},
+  {id:'text_draft',   p:'Draft a message to a client for him to look at before anything sends.'},
+  {id:'note',         p:'Record something worth keeping on a client profile: what they are working on, something they said, a fact about them.'},
+  {id:'audio_report', p:'Show the audio flight recorder: what the voice just did, piece by piece.'},
+  {id:'help',         p:'What can you actually do. A question about your own capabilities.'},
+  {id:'stop',         p:'Stop, cancel, undo, wipe that — take back what was just done, or halt what is happening right now.'},
+  {id:'answer',       p:'A question or a remark that none of the above performs: something to think about, judge, or answer in words using what you can see.'}
+];
+// ---- 2. THE MEMORY OF THE MOMENT --------------------------------------
+// What a phrase-matcher never had. A bare follow-up inherits the subject that
+// is already on the table.
+function _jvBrainMemory(){
+  var m={subject:'', subjectName:'', card:'', turns:[]};
+  try{
+    if(window._jvDeepCode && CLIENTS[window._jvDeepCode]){
+      m.card=window._jvDeepCode;
+      m.subject=m.card;
+    }
+  }catch(e){}
+  try{
+    var th=(_jtLoad()||[]).slice(-6);
+    th.forEach(function(x){
+      var txt='';
+      try{ txt=String(x.h||'').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim(); }catch(e){}
+      if(txt) m.turns.push({who:(x.r==='jarvis'?'you':'him'), text:txt.slice(0,220)});
+    });
+  }catch(e){}
+  // THE SUBJECT ON THE TABLE: the last client named in the recent turns, which
+  // is what "full debrief" was about and what the gates could not see.
+  try{
+    for(var i=m.turns.length-1;i>=0 && !m.subject;i--){
+      var f=_jvFindClientIn(m.turns[i].text);
+      if(f && f.hits && f.hits.length===1) m.subject=f.hits[0];
+    }
+  }catch(e){}
+  try{ if(m.subject) m.subjectName=(CLIENTS[m.subject]||{}).name||m.subject; }catch(e){}
+  return m;
+}
+// ---- 3. THE MASTER PROMPT ---------------------------------------------
+function _jvBrainPrompt(mem){
+  var L=[];
+  // Identity.
+  L.push('You are Jarvis, chief of staff to Yusuf, who owns and runs this coaching business. The person typing IS Yusuf. He is not a client and has no coach above him.');
+  L.push('Your ONE job in this step is to understand what he means and name the tool that does it. You do not answer him, you do not do the work, and you never touch a number or a row. The app does all of that.');
+  // The toolbox, by purpose.
+  L.push('\nTHE TOOLS, by what they are FOR. Choose by meaning, never by matching words:');
+  JV_TOOLS.forEach(function(x){ L.push('- '+x.id+': '+x.p); });
+  // The memory of the moment.
+  L.push('\nTHE MOMENT:');
+  if(mem.subjectName) L.push('- The subject on the table right now is '+mem.subjectName+' ('+mem.subject+'). A follow-up that names nobody is almost certainly still about them.');
+  else L.push('- No client is on the table yet.');
+  // NO APOSTROPHE IN THIS FILE'S STRING LITERALS if it can be avoided: a lone
+  // one, in either quote style, walks check.sh's string-stripper off its place
+  // and it then reports the constants below as never defined. It did exactly
+  // that to the three shadow regexes twice while this was being written — once
+  // as a backslash-escape, once inside double quotes. Reworded, not escaped.
+  if(mem.card) L.push('- He has the card for '+((CLIENTS[mem.card]||{}).name||mem.card)+' open.');
+  if(mem.turns.length){
+    L.push('- The last few turns, oldest first:');
+    mem.turns.forEach(function(x){ L.push('    '+x.who+': '+x.text); });
+  }
+  // The laws, as ethics rather than rules.
+  L.push('\nWHAT YOU WILL NOT DO, ever:');
+  L.push('- You never produce a number. Every figure he is ever told is computed by the app from real rows. If a tool is needed to know something, name the tool.');
+  L.push('- You never claim anything happened. Only the app can write, and only the app can say it wrote.');
+  L.push('- A name that matches more than one person is asked about, never guessed. If he says a first name that could be two people on the roster, set ask_which to those names.');
+  L.push('- A name that matches nobody is not invented. Leave client empty and say so in why.');
+  // DOUBLE QUOTES, DELIBERATELY. An escaped apostrophe inside a single-quoted
+  // string is the landmine this repo already carries a warning about: check.sh's
+  // string-stripper reads the backslash-apostrophe as a real closing quote and
+  // loses its place, then reports the constants BELOW as never defined. It did
+  // exactly that here, naming three shadow regexes that are defined two lines
+  // above their first use.
+  L.push('- Writing to a NAMED client is confirmed with him first. Set confirm true for anything that changes the record of another person.');
+  // Tone.
+  L.push('\nTONE, for the one line you write in why: plain, short, natural. No applause, no filler.');
+  // The contract.
+  L.push('\nReturn ONLY JSON, no markdown:');
+  L.push('{"tool":"<one id from the list>","client":"<client_code or empty>","confirm":true|false,"ask_which":[],"why":"<one short line: what he meant, and why that tool>"}');
+  return L.join('\n');
+}
+// ---- 4. THE ROUTER ----------------------------------------------------
+// Haiku, deliberately: this is a routing decision, it runs on every message,
+// and he watches spend. It never sees a row and never writes one.
+var _JV_BRAIN_MODEL='claude-haiku-4-5-20251001';
+async function _jvBrainRoute(text){
+  var t0=Date.now();
+  var mem=_jvBrainMemory();
+  var sys=_jvBrainPrompt(mem);
+  // NO Authorization HEADER HERE ON PURPOSE. The global fetch wrapper adds the
+  // session token to every /.netlify/functions/analyze call and gives it a 60s
+  // abort — one seam, one condition, precisely so thirty call sites do not each
+  // build their own. Adding one here would duplicate it, not fix anything.
+  var res=await fetch('/.netlify/functions/analyze',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({model:_JV_BRAIN_MODEL, max_tokens:220,
+      messages:[{role:'user', content:sys+'\n\nHIS MESSAGE:\n'+String(text||'')}]})});
+  if(!res.ok) throw new Error('brain http '+res.status);
+  var j=await res.json();
+  var raw='';
+  try{ raw=(j && j.content && j.content[0] && j.content[0].text) || j.reply || ''; }catch(e){ raw=''; }
+  var out=null;
+  try{
+    var m=String(raw).match(/\{[\s\S]*\}/);
+    out=m?JSON.parse(m[0]):null;
+  }catch(e){ out=null; }
+  if(!out || !out.tool) throw new Error('brain gave no tool');
+  out.ms=Date.now()-t0;
+  out.subject=mem.subject;
+  return out;
+}
+// ---- 5. WHAT THE GATES WOULD DO ---------------------------------------
+// The same recognisers, in the same order, so the two answers can be put side
+// by side. A MODEL of the ladder, and it says so: `modelled` from the live run
+// is the check on it, and a disagreement between them is printed rather than
+// hidden.
+// THE PARAMETER IS `msg`, NOT `t`, DELIBERATELY. This function repeats the
+// ladder's own conditions, and with the same parameter name it produced text
+// character-for-character identical to the real gates. troute2 finds those
+// gates by searching the file for their source text, so it located THIS copy
+// instead of the gate it was written to guard, and reported the ladder as out
+// of order. A model of the ladder must never be mistakable for the ladder.
+//
+// And this comment does not quote the search text either — writing it out here
+// put the collision straight back, one line further down, which is how the
+// second version of this fix was caught.
+function _jvGateWouldClaim(msg){
+  try{
+    if(_JV_HELP_RE.test(msg)) return 'help';
+    if(_JV_TAPE_CLEAR_RE.test(msg) || _JV_TAPE_RE.test(msg)) return 'audio_report';
+    var strong=_JV_DEBRIEF_RE.test(msg);
+    var soft=!strong && _JV_DEBRIEF_SOFT_RE.test(msg) && !_JV_DEBRIEF_PAST_RE.test(msg);
+    if(strong||soft){
+      var f=null; try{ f=_jvFindClientIn(msg); }catch(e){}
+      if(f && f.hits && f.hits.length===1) return 'debrief';
+      if(f && f.hits && f.hits.length>1) return 'debrief(asks which)';
+    }
+    if(typeof _jvMealMoveAsked==='function' && _jvMealMoveAsked(msg)){
+      var f2=null; try{ f2=_jvFindClientIn(msg); }catch(e){}
+      if(f2 && f2.hits && f2.hits.length===1) return 'meal_move';
+    }
+    if(typeof _JV_RQ_DAY!=='undefined' && _JV_RQ_DAY.test(msg)) return 'day_board';
+    if(typeof _JT_NEWCLIENT_RE!=='undefined' && _JT_NEWCLIENT_RE.test(msg)) return 'new_client';
+    if(typeof _JT_PHONE_RE!=='undefined' && _JT_PHONE_RE.test(msg)) return 'phone_save';
+    if(typeof _jtCalendarClaims==='function' && _jtCalendarClaims(msg)) return 'calendar';
+    return 'answer';
+  }catch(e){ return 'answer'; }
+}
+// ---- 6. THE SHADOW TAPE -----------------------------------------------
+// Same shape as the audio recorder, same discipline: read-only, capped,
+// on his device, pasteable.
+var _JV_SHADOW=[], _JV_SHADOW_MAX=120, _JV_SHADOW_KEY='yjb_shadow';
+// The switch. Shadow mode costs one small model call per trainer message, so
+// it is a switch and not a permanent tax.
+// A DAILY CEILING, because he watches spend and this runs on every message he
+// types. Two hundred routing calls on the small model is far more than a normal
+// day of use and still a bounded, knowable number. Past it, shadow mode stops
+// for the day on its own and the report says so rather than going quiet.
+var _JV_SHADOW_CAP=200;
+function _jvShadowCount(bump){
+  try{
+    var today=new Date().toDateString();
+    var raw=localStorage.getItem('yjb_shadow_n');
+    var o=raw?JSON.parse(raw):null;
+    if(!o || o.d!==today) o={d:today, n:0};
+    if(bump){ o.n++; localStorage.setItem('yjb_shadow_n', JSON.stringify(o)); }
+    return o.n;
+  }catch(e){ return 0; }
+}
+// A QUESTION, WITH NO SIDE EFFECT. The first version of this spent a call off
+// the daily budget just for being ASKED whether shadow mode was on, which is a
+// trap for whoever calls it next for a harmless check. The counter is bumped by
+// the one place that actually spends, at the moment it spends.
+function _jvShadowOn(){
+  try{
+    if(!(window.cl && typeof isTrainer==='function' && isTrainer(cl.code))) return false;
+    var v=localStorage.getItem('yjb_shadow_on');
+    if(v!==null && v!=='1') return false;
+    return _jvShadowCount(false)<_JV_SHADOW_CAP;
+  }catch(e){ return false; }
+}
+function _jvShadowRecord(text, gate, brain, err){
+  try{
+    _JV_SHADOW.push({t:Date.now(), said:String(text||'').slice(0,180),
+      gate:String(gate||''), tool:(brain&&brain.tool)||'', client:(brain&&brain.client)||'',
+      why:(brain&&brain.why)||'', ms:(brain&&brain.ms)||0, err:String(err||'')});
+    if(_JV_SHADOW.length>_JV_SHADOW_MAX) _JV_SHADOW.splice(0, _JV_SHADOW.length-_JV_SHADOW_MAX);
+    try{ localStorage.setItem(_JV_SHADOW_KEY, JSON.stringify(_JV_SHADOW)); }catch(e){}
+  }catch(e){}
+}
+function _jvShadowLoad(){
+  try{
+    if(_JV_SHADOW.length) return _JV_SHADOW;
+    var raw=localStorage.getItem(_JV_SHADOW_KEY);
+    if(raw) _JV_SHADOW=JSON.parse(raw)||[];
+  }catch(e){ _JV_SHADOW=[]; }
+  return _JV_SHADOW;
+}
+function _jvShadowClear(){ try{ _JV_SHADOW=[]; localStorage.removeItem(_JV_SHADOW_KEY); }catch(e){} }
+// AGREEMENTS ARE COUNTED, DISAGREEMENTS ARE QUOTED. He does not need to read a
+// hundred lines where the two agreed; he needs the ones where they did not.
+function _jvShadowReport(){
+  var S=_jvShadowLoad();
+  if(!S.length) return 'SHADOW REPORT\n\nNothing recorded yet. Shadow mode watches while you use Jarvis normally.';
+  var agree=0, diff=[], errs=0;
+  S.forEach(function(x){
+    if(x.err){ errs++; return; }
+    var g=String(x.gate).replace(/\(.*\)/,'');
+    if(g===x.tool) agree++; else diff.push(x);
+  });
+  var _n=0, _capped=false;
+  try{ _n=_jvShadowCount(false); _capped=_n>=_JV_SHADOW_CAP; }catch(e){}
+  var L=['SHADOW REPORT','',
+    'app '+(typeof APP_VERSION!=='undefined'?APP_VERSION:'?')
+      +(_capped?('  ·  STOPPED FOR TODAY at the '+_JV_SHADOW_CAP+' call ceiling'):('  ·  '+_n+' of '+_JV_SHADOW_CAP+' calls used today')),
+    S.length+' message'+(S.length===1?'':'s')+' watched  ·  '+agree+' agreed  ·  '+diff.length+' differed  ·  '+errs+' the brain could not answer',
+    '', 'WHERE THEY DIFFERED (the brain is not live — nothing below actually happened):'];
+  if(!diff.length) L.push('  none');
+  diff.slice(-25).forEach(function(x){
+    var when=''; try{ when=new Date(x.t).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }catch(e){}
+    L.push('');
+    // SHARING MODE REACHES THIS SCREEN TOO. This report has its own rendering,
+    // which is exactly how a surface silently opts out of an app-wide redaction
+    // — it happened once already, on the roster, with every real name showing
+    // while he was filming. The client code goes through the same one helper
+    // every other trainer surface uses; with sharing off it returns what it
+    // always did.
+    var _who=x.client;
+    try{ if(x.client) _who=_jvSafeName(x.client, x.client); }catch(e){}
+    L.push('  '+when+'  "'+x.said+'"');
+    L.push('     gate  -> '+x.gate);
+    L.push('     brain -> '+x.tool+(_who?(' ('+_who+')'):'')+'   '+x.ms+'ms');
+    if(x.why) L.push('     why   : '+x.why);
+  });
+  if(errs){
+    L.push('', 'THE BRAIN FAILED TO ANSWER ON:');
+    S.filter(function(x){ return x.err; }).slice(-6).forEach(function(x){
+      L.push('  "'+x.said+'" — '+x.err);
+    });
+  }
+  L.push('', 'end of report');
+  return L.join('\n');
+}
+var _JV_SHADOW_RE=new RegExp('\\b(shadow report|shadow mode|brain report)\\b','i');
+var _JV_SHADOW_OFF_RE=new RegExp('\\b(stop|turn off|disable|pause)\\b[\\s\\S]{0,20}\\bshadow\\b','i');
+var _JV_SHADOW_ONN_RE=new RegExp('\\b(start|turn on|enable|resume)\\b[\\s\\S]{0,20}\\bshadow\\b','i');
+// ===== THE SHADOW SEAM =================================================
+// The gates below are UNTOUCHED. This wrapper starts the brain, hands the
+// message to the ladder exactly as before, returns the ladder's answer
+// unchanged, and records the two side by side whenever the brain lands.
+//
+// IT CANNOT SLOW HIM DOWN AND IT CANNOT BREAK HIM. The brain is never awaited
+// on the way to an answer, its promise is caught, and the whole thing sits
+// inside a try. If shadow mode threw every single time, this function would
+// still behave exactly as it does today.
 async function _jtRunItem(t, capture, ctx){
+  var _sh=null, _gateGuess='';
+  try{
+    if(_jvShadowOn()){
+      _gateGuess=_jvGateWouldClaim(t);
+      _jvShadowCount(true);          // one call off the day's ceiling, here where it is spent
+      _sh=_jvBrainRoute(t);          // NOT awaited
+    }
+  }catch(e){ _sh=null; }
+  var out=await _jtRunItemGates(t, capture, ctx);
+  try{
+    if(_sh){
+      // `modelled` comes from the LIVE run and is the check on _jvGateWouldClaim,
+      // which is only a model of the ladder. If the live item reached the model
+      // then no gate claimed it, whatever the model of the ladder guessed.
+      var gate=(out && out.modelled) ? 'answer' : _gateGuess;
+      if(out && out.modelled && _gateGuess!=='answer') gate=_gateGuess+' [model of the ladder disagreed with the run]';
+      _sh.then(function(b){ _jvShadowRecord(t, gate, b, ''); })
+         .catch(function(e){ _jvShadowRecord(t, gate, null, (e&&e.message)||'failed'); });
+    }
+  }catch(e){}
+  return out;
+}
+async function _jtRunItemGates(t, capture, ctx){
   function held(){
     var p=window._jvPendingWrite;
     if(!p) return false;
@@ -36168,6 +36501,25 @@ async function _jtRunItem(t, capture, ctx){
     var _rep=''; try{ _rep=_jvTapeReport(); }catch(e){ _rep='The recorder itself failed: '+(e&&e.message||e); }
     return {status:'talk', html:true, src:t, speak:'',
             line:'<pre class="jvTape">'+_escHtml(_rep)+'</pre>'};
+  }
+  // ===== SHADOW MODE, ITS REPORT AND ITS SWITCH ========================
+  // Same shape and same reasoning as the audio report above: deterministic,
+  // high in the ladder, and never spoken — reading a routing comparison out
+  // loud would be absurd, and it is a table.
+  if(_JV_SHADOW_OFF_RE.test(t)){
+    try{ localStorage.setItem('yjb_shadow_on','0'); }catch(e){}
+    return {status:'done', speak:'', html:true, src:t,
+            line:_escHtml('Shadow mode off. Nothing was ever live, so nothing changes for you either way.')};
+  }
+  if(_JV_SHADOW_ONN_RE.test(t)){
+    try{ localStorage.setItem('yjb_shadow_on','1'); }catch(e){}
+    return {status:'done', speak:'', html:true, src:t,
+            line:_escHtml('Shadow mode on. It watches and records; it still never acts.')};
+  }
+  if(_JV_SHADOW_RE.test(t)){
+    var _sr=''; try{ _sr=_jvShadowReport(); }catch(e){ _sr='The shadow report itself failed: '+(e&&e.message||e); }
+    return {status:'talk', html:true, src:t, speak:'',
+            line:'<pre class="jvTape">'+_escHtml(_sr)+'</pre>'};
   }
   // AMBIGUOUS NAMES ASK, THEY DO NOT GUESS (Yusuf, ruling, 25 Aug). Same gate
   // the cockpit runs, at the same depth: after the local command layers, before
