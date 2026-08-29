@@ -345,6 +345,30 @@ body:not(.is-trainer) .trainer-only{display:none !important;}
    width of the row it sits in — so this reads as the surface's existing button
    and not a new kind of control. Unscoped: the desktop wall never renders it,
    because that path has its own Share day at the foot of the client's card. */
+/* THE CHECK-IN DEBRIEF, on screen. Trainer surface, so it inherits the cockpit
+   palette; listed rather than prose because he reads it beside a call. */
+.dbrf{font-size:13px;line-height:1.55;color:var(--text);}
+.dbrfHd{font-family:'Plus Jakarta Sans',sans-serif;font-size:17px;font-weight:800;letter-spacing:-0.2px;}
+.dbrfSub{font-size:11px;color:var(--m2);margin:2px 0 10px;}
+.dbrfSec{font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:var(--gold);
+  margin:14px 0 6px;}
+.dbrfRows{display:flex;flex-direction:column;gap:3px;}
+.dbrfRow{display:flex;align-items:baseline;gap:8px;}
+.dbrfRow > span{flex:1 1 auto;color:var(--m2);min-width:0;}
+.dbrfRow > b{flex:0 0 auto;font-weight:800;}
+.dbrfRow > i{flex:0 0 auto;font-style:normal;font-size:11px;color:var(--m2);}
+.dbrfNil{color:var(--m2);font-weight:600;}
+.dbrfNut{margin:9px 0 0;}
+.dbrfNutT{font-size:12px;font-weight:800;margin-bottom:3px;}
+.dbrfNote{font-size:11px;color:var(--m2);line-height:1.5;margin:6px 0;}
+/* A stated gap is not an error and must not read as one. */
+.dbrfGap{font-size:12px;color:var(--m2);font-style:normal;margin:4px 0;}
+/* A FAILED READ IS NOT A GAP AND MUST NOT LOOK LIKE ONE. Gold, because it is
+   something he has to know before he trusts the panel. */
+.dbrfFail{font-size:12px;color:var(--gold);line-height:1.5;margin:4px 0;}
+.dbrfQ{border-left:2px solid var(--gold);padding:2px 0 2px 10px;margin:8px 0;}
+.dbrfQT{font-size:13px;line-height:1.5;}
+.dbrfQM{font-size:11px;color:var(--m2);margin-top:2px;}
 .fdShareRow{display:flex;justify-content:flex-start;margin:2px 0 14px;}
 .fdShareBtn{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;
   padding:8px 16px;border:1px solid var(--border);border-radius:9px;cursor:pointer;
@@ -35904,6 +35928,19 @@ async function _jtRunItem(t, capture, ctx){
       return {status:(_rr.ok?'done':'lost'), line:_rr.line, html:true, src:t};
     }
   }catch(e){ console.error('jt reinstate',e); }
+  // ===== THE CHECK-IN DEBRIEF (Yusuf, order, 29 Aug) ==================
+  // Above the generic model on purpose, and above the client-edit doors: every
+  // figure in it is computed by _jvDebriefData before a word is spoken, and a
+  // model asked to summarise a client's month would do the arithmetic itself,
+  // which is the one thing this lane exists to prevent.
+  //
+  // It writes NOTHING. It reads four tables and formats what it read, so it is
+  // safe to sit this early — a sentence it does not claim falls straight
+  // through to everything below, exactly as before.
+  try{
+    var _db=await _jvDebriefTurn(t);
+    if(_db) return {status:(_db.ok?'talk':'wait'), line:_db.line, html:true, speak:_db.speak, src:t};
+  }catch(e){ console.error('jt debrief', e); }
   // ADD A CLIENT (+ A SALE, IN ONE SENTENCE) — together or not at all
   // (Yusuf, ruling, 19 Aug). Own dedicated extraction call, not folded into
   // _jtModel's JSON contract: a wrong field here is a real account and real
@@ -48448,6 +48485,517 @@ function _obQuietLine(code){
   if(days<14) return 'Quiet '+days+' days';
   if(days<60) return 'Quiet '+Math.round(days/7)+' weeks';
   return 'Quiet '+Math.round(days/30.44)+' months';
+}
+
+// ===== THE CHECK-IN DEBRIEF (Yusuf, order, 29 Aug) ======================
+// What he reads before a bi-weekly or monthly call with a VIP client:
+// training frequency, where their nutrition actually lives, their own words,
+// and which way their weight is going.
+//
+// EVERY NUMBER IS COMPUTED HERE, BEFORE ANY MODEL SPEAKS. Nothing in this file
+// asks a model to average, count, or compare anything. The model's only job, if
+// it is involved at all, is reading out a sentence this code already wrote.
+// That is the law the whole lane exists for: a figure a model produced is a
+// figure nobody checked.
+//
+// AND IT IS BUILT FROM ROWS READ FRESH. No cache, no roster snapshot. A client
+// with thin data gets a stated gap - "one weigh-in in this window, so there is
+// no trend to read" - and never a number standing in for one.
+var _JV_DEBRIEF_DAYS=28;
+// The rolling window his ruling asks for: 3-4 days, so one party or one sick
+// day cannot pull a stretch around. Four, because it spans a weekend edge.
+var _JV_DEBRIEF_ROLL=4;
+// The middle of a set of days, which is what "where they actually live" means.
+// The MEDIAN and not the mean, deliberately: a 4,000 calorie Saturday moves a
+// mean and cannot move a median, and that is the entire point of the figure.
+function _dbMedian(a){
+  var v=(a||[]).filter(function(n){ return typeof n==='number' && isFinite(n); }).slice().sort(function(x,y){ return x-y; });
+  if(!v.length) return null;
+  var m=Math.floor(v.length/2);
+  return v.length%2 ? v[m] : (v[m-1]+v[m])/2;
+}
+// Every run of N CALENDAR-CONSECUTIVE days, as {from,to,avg,minMeals}.
+//
+// CONSECUTIVE IS NOT OPTIONAL, and this is the correction that mattered most.
+// Sliding over the days that HAVE data instead of over the calendar made
+// Chris's "lightest stretch" read Aug 10 to Aug 14 - five days for a four-day
+// window, because it stepped straight over the 12th, which he simply did not
+// log. A stretch that skips a day is not a stretch, and the dates printed
+// beside it were not true.
+//
+// A day he did not log is not a day he ate nothing, so an unlogged day ends the
+// run rather than entering it as a zero. minMeals rides along so the renderer
+// can say when a stretch leans on a day with almost nothing logged on it - that
+// 894-calorie answer was really one day with a single 280-calorie meal on it,
+// which is a gap in the logging wearing the clothes of a light week.
+function _dbRoll(days, key, n){
+  var out=[];
+  for(var i=0;i+n<=days.length;i++){
+    var win=days.slice(i,i+n), ok=true;
+    for(var j=1;j<win.length;j++){
+      if(Math.round((win[j].d-win[j-1].d)/86400000)!==1){ ok=false; break; }
+    }
+    if(!ok) continue;
+    var vals=[], minM=null;
+    for(var k=0;k<win.length;k++){
+      if(win[k][key]==null){ ok=false; break; }
+      vals.push(win[k][key]);
+      minM=(minM==null)?win[k].meals:Math.min(minM,win[k].meals);
+    }
+    if(!ok || vals.length<n) continue;
+    var s=0; for(var m=0;m<vals.length;m++) s+=vals[m];
+    out.push({from:win[0].ds, to:win[win.length-1].ds, avg:s/vals.length, minMeals:minM});
+  }
+  return out;
+}
+// A LINE HE WROTE, not a movement he did. The tail of a workout description
+// carries both: "Hanging leg raises" is an exercise with no load recorded, and
+// "Feeling shitty so did what I could" is him talking. Read off his real rows -
+// the difference is a first-person pronoun, a word about how it went, or a verb
+// about changing the session, and anything else is a movement.
+var _JV_DB_SAYS_RE=new RegExp(
+  '\\b(i|i\\u2019m|im|my|me|myself)\\b'
+  +'|\\b(feel|feeling|felt|tired|sore|exhausted|sick|shitty|rough|weak|strong|great|good|easy|hard|heavy|light|struggled|struggling|killed|pr|best|worst)\\b'
+  +'|\\b(switched|lowered|dropped|increased|added|changed|swapped|reduced|upped|skipped|shortened|cut|worked on)\\b','i');
+function _dbIsSaid(line){
+  var s=String(line||'').trim();
+  if(!s) return false;
+  if(s.length>90) return true;                        // nobody names a movement in a paragraph
+  return _JV_DB_SAYS_RE.test(s);
+}
+// The three things he asked to see in their words. Counted, never interpreted.
+var _JV_DB_THEMES=[
+  {k:'tough',  label:'a hard day', re:new RegExp('\\b(shitty|rough|tired|exhausted|sore|sick|weak|struggled|struggling|worst|did what i could|off day|low energy|drained|flat)\\b','i')},
+  {k:'strong', label:'a good day', re:new RegExp('\\b(strong|great|good|easy|killed|crushed|best|pr\\b|felt great|solid|smashed)\\b','i')},
+  {k:'adjust', label:'an adjustment they made', re:new RegExp('\\b(switched|lowered|dropped|increased|added|changed|swapped|reduced|upped|skipped|shortened|cut|worked on|form)\\b','i')}
+];
+// A lifting session is one with load recorded against a movement, or one titled
+// for a lifting split. A yoga class and a bike ride are training and are NOT
+// lifting, and the debrief says how many of those there were rather than
+// quietly dropping them out of the count.
+var _JV_DB_LIFT_TITLE=new RegExp('\\b(push|pull|legs?|upper|lower|full body|arms?|chest|back|shoulders?|glutes?|quads?|hamstrings?|deadlift|squat|bench)\\b','i');
+var _JV_DB_CARDIO_TITLE=new RegExp('\\b(yoga|pilates|spin|class|walk|run|jog|bike|cycling|swim|row|tennis|cardio|hike|stretch|mobility|recovery|sauna)\\b','i');
+function _dbIsLift(w){
+  var t=String((w&&w.title)||'');
+  if(_JV_DB_CARDIO_TITLE.test(t) && !_JV_DB_LIFT_TITLE.test(t)) return false;
+  // Load recorded against a movement is the strongest signal there is.
+  try{
+    var got=_bfItemsFor(w), its=(got&&got.items)||[];
+    for(var i=0;i<its.length;i++){ if(its[i] && its[i].detail && String(its[i].detail).trim()) return true; }
+  }catch(e){}
+  return _JV_DB_LIFT_TITLE.test(t);
+}
+// "Aug 26, 2026" -> a local midnight, so day arithmetic never drifts by a zone.
+function _dbDay(ds, iso){
+  var d=null;
+  if(ds){ d=new Date(ds); if(isNaN(d.getTime())) d=null; }
+  if(!d && iso){ d=new Date(iso); if(isNaN(d.getTime())) d=null; }
+  if(!d) return null;
+  d.setHours(0,0,0,0); return d;
+}
+function _dbDs(d){ return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
+// ===== THE READ AND THE ARITHMETIC =====================================
+// Returns a fully computed object. Nothing downstream calculates anything; the
+// renderer and the spoken line only format what is decided here.
+async function _jvDebriefData(code){
+  if(!code) return null;
+  var today=new Date(); today.setHours(0,0,0,0);
+  var floor=new Date(today); floor.setDate(floor.getDate()-(_JV_DEBRIEF_DAYS-1));
+  var floorIso=new Date(floor.getFullYear(),floor.getMonth(),floor.getDate(),0,0,0).toISOString();
+  var enc=encodeURIComponent(code);
+  // READ FRESH, and each read stands alone: one table refusing must not blank
+  // the other three. weight_logs has NO date_str column - selecting one 400s the
+  // whole request, which is exactly how a debrief would come back empty-handed
+  // and look like a client with no weigh-ins.
+  //
+  // AND A FAILED READ IS NOT AN EMPTY ONE. sbSelect returns [] when it fails -
+  // the landmine CLAUDE.md names - so without this a network blip produced a
+  // complete, confident debrief saying the client had trained nothing, eaten
+  // nothing, written nothing and never weighed in. I watched it print exactly
+  // that. Read out on a call it is the worst thing this app could say about
+  // somebody, and every word of it would have been false.
+  //
+  // _sbFailMark/_sbFailedSince is the witness this file already keeps for it.
+  // Each table is marked separately, so one table refusing costs that section
+  // and not the other three.
+  var W=[],F=[],WT=[], failed={workouts:false, food:false, weight:false};
+  var _m1=_sbFailMark();
+  try{ W =await sbSelect('workout_logs','client_code=eq.'+enc+'&select=id,title,description,exercises,notes,date_str,logged_at&order=logged_at.asc&limit=400')||[]; }catch(e){}
+  if(_sbFailedSince(_m1)){ failed.workouts=true; W=[]; }
+  var _m2=_sbFailMark();
+  try{ F =await sbSelect('food_logs','client_code=eq.'+enc+'&select=id,name,meal,calories,protein,carbs,fat,date_str,logged_at,meal_text,felt&order=logged_at.asc&limit=1200')||[]; }catch(e){}
+  if(_sbFailedSince(_m2)){ failed.food=true; F=[]; }
+  var _m3=_sbFailMark();
+  try{ WT=await sbSelect('weight_logs','client_code=eq.'+enc+'&select=id,weight,logged_at,notes&order=logged_at.asc&limit=400')||[]; }catch(e){}
+  if(_sbFailedSince(_m3)){ failed.weight=true; WT=[]; }
+  var inWin=function(d){ return d && d>=floor && d<=today; };
+  var daysAgo=function(d){ return Math.round((today-d)/86400000); };
+
+  // ---- 1. TRAINING -----------------------------------------------------
+  var lifts=[], others=[];
+  W.forEach(function(w){
+    var d=_dbDay(w.date_str, w.logged_at); if(!inWin(d)) return;
+    (_dbIsLift(w) ? lifts : others).push({d:d, ds:_dbDs(d), title:String(w.title||'').trim(), row:w});
+  });
+  var win=function(n){ return lifts.filter(function(x){ return daysAgo(x.d)<n; }).length; };
+  var training={
+    last7:{sessions:win(7), perWeek:win(7)},
+    last14:{sessions:win(14), perWeek:Math.round((win(14)/2)*10)/10},
+    last28:{sessions:win(28), perWeek:Math.round((win(28)/4)*10)/10},
+    otherSessions:others.length,
+    otherTitles:others.map(function(x){ return x.title; }).filter(Boolean)
+  };
+
+  // ---- 2. NUTRITION ----------------------------------------------------
+  // Daily totals first, then everything is read off those. A day with meals
+  // logged is a day; a day with none is a hole and stays a hole.
+  var byDay={};
+  F.forEach(function(f){
+    var d=_dbDay(f.date_str, f.logged_at); if(!inWin(d)) return;
+    var k=_dbDs(d);
+    if(!byDay[k]) byDay[k]={ds:k, d:d, calories:0, protein:0, carbs:0, fat:0, meals:0};
+    byDay[k].calories+=(+f.calories||0); byDay[k].protein+=(+f.protein||0);
+    byDay[k].carbs+=(+f.carbs||0);       byDay[k].fat+=(+f.fat||0);
+    byDay[k].meals++;
+  });
+  var dayList=Object.keys(byDay).map(function(k){ return byDay[k]; }).sort(function(a,b){ return a.d-b.d; });
+  // A DAY WITH ONE MEAL ON IT IS A LOGGING GAP, NOT A LIGHT DAY, and it is
+  // counted here so the debrief can say so out loud instead of quietly
+  // averaging it in. Chris has one: a single 280-calorie entry on the 13th.
+  var thinDays=dayList.filter(function(x){ return x.meals<=1; }).map(function(x){ return {ds:x.ds, meals:x.meals, calories:Math.round(x.calories)}; });
+  var NUTS=[['calories','calories',''],['protein','protein','g'],['carbs','carbs','g'],['fat','fat','g']];
+  var nutrition={days:dayList.length, roll:_JV_DEBRIEF_ROLL, thin:thinDays, per:{}};
+  NUTS.forEach(function(n){
+    var key=n[0];
+    var rolls=_dbRoll(dayList, key, _JV_DEBRIEF_ROLL);
+    var hi=null, lo=null;
+    rolls.forEach(function(r){
+      if(!hi || r.avg>hi.avg) hi=r;
+      if(!lo || r.avg<lo.avg) lo=r;
+    });
+    var livesIn=function(n2){
+      var vals=dayList.filter(function(x){ return daysAgo(x.d)<n2; }).map(function(x){ return x[key]; });
+      var m=_dbMedian(vals);
+      return {value:(m==null?null:Math.round(m)), days:vals.length};
+    };
+    nutrition.per[key]={
+      unit:n[2], label:n[1],
+      high:hi?{value:Math.round(hi.avg), from:hi.from, to:hi.to, minMeals:hi.minMeals}:null,
+      low: lo?{value:Math.round(lo.avg), from:lo.from, to:lo.to, minMeals:lo.minMeals}:null,
+      stretches:rolls.length,
+      lives:{ roll:livesIn(_JV_DEBRIEF_ROLL), w2:livesIn(14), w4:livesIn(28) }
+    };
+  });
+
+  // ---- 3. THEIR OWN WORDS ---------------------------------------------
+  // Swept out of the rows themselves: the tail of a workout description, a
+  // notes field, and how a meal sat with them. Nothing is rewritten - what is
+  // stored is what is quoted.
+  var said=[];
+  var pushSaid=function(d, text, from, evidence){
+    var t=String(text||'').trim(); if(!t) return;
+    if(!_dbIsSaid(t)) return;
+    said.push({ds:_dbDs(d), d:d, text:t, from:from, evidence:evidence||''});
+  };
+  W.forEach(function(w){
+    var d=_dbDay(w.date_str, w.logged_at); if(!inWin(d)) return;
+    var ev=String(w.title||'Training').trim();
+    try{
+      var got=_bfItemsFor(w), its=(got&&got.items)||[];
+      var moves=its.filter(function(i){ return i && i.detail && String(i.detail).trim(); }).length;
+      if(moves) ev+=' \u2014 '+moves+' exercise'+(moves===1?'':'s');
+      // TWO PLACES, BECAUSE A CLIENT WRITES IN TWO PLACES. _bfItemsFor already
+      // separates a note that sits under a BLANK LINE and hands it back as
+      // .note - that is where "Feeling shitty so did what I could" lives, and
+      // reading only the items missed it entirely on the first run. Commentary
+      // typed straight into the list instead ("Lowered squat weight to work on
+      // form") has no blank line above it and arrives as an item with no load
+      // against it, so both are swept and _dbIsSaid decides which lines are him
+      // talking rather than a movement he did not load.
+      // LINE BY LINE, because .note is everything after the first blank line
+      // and that can be more than one thing. Chris's Aug 21 note is his comment
+      // AND an exercise under it; quoting the block glued "Rear delt fly on
+      // machine" onto the end of a sentence he wrote about switching machines.
+      // Each line is judged on its own and quoted whole - never stitched, never
+      // trimmed into something he did not write.
+      if(got && got.note){
+        String(got.note).split('\n').forEach(function(ln){ pushSaid(d, ln, 'workout', ev); });
+      }
+      its.forEach(function(i){
+        if(i && i.name && !(i.detail && String(i.detail).trim())) pushSaid(d, i.name, 'workout', ev);
+      });
+    }catch(e){}
+    if(w.notes) pushSaid(d, w.notes, 'workout', ev);
+  });
+  F.forEach(function(f){
+    var d=_dbDay(f.date_str, f.logged_at); if(!inWin(d)) return;
+    if(f.felt) pushSaid(d, f.felt, 'meal', String(f.name||'a meal'));
+  });
+  WT.forEach(function(w){
+    var d=_dbDay(null, w.logged_at); if(!inWin(d)) return;
+    if(w.notes) pushSaid(d, w.notes, 'weigh-in', (w.weight!=null?(w.weight+' lb'):''));
+  });
+  said.sort(function(a,b){ return b.d-a.d; });
+  // WHAT THEY LOGGED THAT DAY, as his ruling asks - the quote on its own is a
+  // mood, and the quote beside the session and the plate is a fact he can act
+  // on. Built from the rows already read, never a second query.
+  // FACTS, NOT A SENTENCE. The screen wants "1,730 cal, 123g protein" and the
+  // voice wants "1,730 calories and 123 grams of protein" - the same day either
+  // way. Storing the finished string here meant the spoken debrief read
+  // abbreviations out loud, so the parts live here and each renderer says them
+  // in its own register.
+  var dayLog=function(ds){
+    var f=byDay[ds];
+    return {
+      sessions: lifts.concat(others).filter(function(x){ return x.ds===ds; })
+                     .map(function(x){ return x.title||'Training'; }),
+      food: f ? {calories:Math.round(f.calories), protein:Math.round(f.protein), meals:f.meals} : null
+    };
+  };
+  said.forEach(function(s){ s.dayLog=dayLog(s.ds); });
+  var themes=_JV_DB_THEMES.map(function(t){
+    var hits=said.filter(function(s){ return t.re.test(s.text); });
+    return {k:t.k, label:t.label, count:hits.length, quotes:hits.map(function(h){ return {ds:h.ds, text:h.text, evidence:h.evidence}; })};
+  }).filter(function(t){ return t.count>0; });
+  // A one-off is something they said that nothing else that period echoes.
+  var oneOffs=said.filter(function(s){
+    var n=0; themes.forEach(function(t){ if(t.quotes.some(function(q){ return q.text===s.text; })) n=Math.max(n,t.count); });
+    return n<=1;
+  });
+  var words={total:said.length, themes:themes, oneOffs:oneOffs, all:said};
+
+  // ---- 4. WEIGHT -------------------------------------------------------
+  var wts=WT.map(function(w){ var d=_dbDay(null, w.logged_at); return d&&inWin(d) ? {d:d, ds:_dbDs(d), v:+w.weight} : null; })
+            .filter(function(x){ return x && isFinite(x.v); });
+  var trend=function(n){
+    var pts=wts.filter(function(x){ return daysAgo(x.d)<n; });
+    if(pts.length<2) return {ok:false, count:pts.length,
+      only:(pts.length===1?{ds:pts[0].ds, v:pts[0].v}:null)};
+    var a=pts[0], b=pts[pts.length-1];
+    var delta=Math.round((b.v-a.v)*10)/10;
+    return {ok:true, count:pts.length, from:{ds:a.ds, v:a.v}, to:{ds:b.ds, v:b.v},
+            delta:delta, dir:(delta>0?'up':(delta<0?'down':'level'))};
+  };
+  var weight={total:wts.length, w2:trend(14), w4:trend(28)};
+
+  return {
+    code:code, days:_JV_DEBRIEF_DAYS,
+    from:_dbDs(floor), to:_dbDs(today),
+    failed:failed,
+    training:training, nutrition:nutrition, words:words, weight:weight
+  };
+}
+// A rate said the way he says it. "5.5 a week" is a figure; "five and a half a
+// week" is a sentence, and this line is SPOKEN.
+function _dbSayRate(n){
+  if(n==null) return '';
+  var whole=Math.floor(n), half=(Math.round((n-whole)*10)===5);
+  var W=['zero','one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve'];
+  var w=(whole<=12)?W[whole]:String(whole);
+  if(half) return (whole===0?'half':(w+' and a half'));
+  if(Math.round(n)!==n) return String(Math.round(n*10)/10);
+  return w;
+}
+function _dbSayCount(n){
+  var W=['no','one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve'];
+  return (n<=12)?W[n]:String(n);
+}
+// A date, said. Never "Aug 26, 2026" out loud.
+function _dbSayDate(ds){
+  try{ var s=_jvSpokenDateStr(ds); if(s) return s; }catch(e){}
+  return ds;
+}
+// "On last Wednesday" is not English. A day word that already places itself
+// takes no preposition; a dated one does.
+function _dbOnDate(ds){
+  var s=_dbSayDate(ds);
+  return /^(yesterday|today|last |this )/i.test(s) ? s : ('on '+s);
+}
+// These sentences are built from counts, and a count word starts lowercase.
+function _dbCap(s){ s=String(s||''); return s ? (s.charAt(0).toUpperCase()+s.slice(1)) : s; }
+// A day's log, said out loud. No abbreviations, no symbols.
+function _dbSayDayLog(dl){
+  if(!dl) return '';
+  var out=[];
+  if(dl.sessions && dl.sessions.length) out.push('a '+dl.sessions.join(' and a ')+' session');
+  if(dl.food) out.push(_jvNum(dl.food.calories)+' calories and '+dl.food.protein+' grams of protein across '
+    +_dbSayCount(dl.food.meals)+' meal'+(dl.food.meals===1?'':'s'));
+  else out.push('nothing to eat');
+  return out.join(', and ');
+}
+// ===== THE SPOKEN DEBRIEF ==============================================
+// Every figure in here was computed by _jvDebriefData. This function only
+// chooses words. NO SYMBOLS: no middots, no dashes, no "g" hanging off a
+// number, because this is read out loud.
+function _jvDebriefSpoken(d, name){
+  if(!d) return 'I could not build that debrief.';
+  var who=String(name||d.code);
+  var L=[];
+  L.push(who+', the last four weeks.');
+  var f=d.failed||{};
+  var t=d.training;
+  if(f.workouts) L.push('Training. Their workouts did not read just now, so I cannot tell you how often they trained. That is my read failing, not an empty month.');
+  else{
+  var tr='Training. '+_dbCap(_dbSayCount(t.last7.sessions))+' lifting session'+(t.last7.sessions===1?'':'s')+' in the last week. '
+       + _dbCap(_dbSayRate(t.last14.perWeek))+' a week across two weeks. '
+       + _dbCap(_dbSayRate(t.last28.perWeek))+' a week across four weeks.';
+  if(t.otherSessions) tr+=' Also '+_dbSayCount(t.otherSessions)+' session'+(t.otherSessions===1?'':'s')+' that was not lifting'
+       + (t.otherTitles.length?(', '+t.otherTitles.slice(0,2).join(' and ')):'')+'.';
+  L.push(tr);
+  }
+  var n=d.nutrition, c=n.per.calories, p=n.per.protein;
+  if(f.food){ L.push('Nutrition. Their meals did not read just now, so there are no numbers to give you. That is my read failing, not an empty month.'); }
+  else if(!n.days){ L.push('Nutrition. Nothing logged to eat in this period, so there is nothing to read.'); }
+  else{
+    var nu='Nutrition. Calories sit around '+_jvNum(c.lives.roll.value)+' a day over the last few days, '
+         + _jvNum(c.lives.w2.value)+' over two weeks and '+_jvNum(c.lives.w4.value)+' over four weeks. '
+         + 'Protein sits around '+p.lives.roll.value+', '+p.lives.w2.value+' and '+p.lives.w4.value+' grams.';
+    if(c.high) nu+=' The heaviest stretch was '+_jvNum(c.high.value)+' a day from '+_dbSayDate(c.high.from)+' to '+_dbSayDate(c.high.to)+'.';
+    if(c.low)  nu+=' The lightest was '+_jvNum(c.low.value)+' a day from '+_dbSayDate(c.low.from)+' to '+_dbSayDate(c.low.to)+'.';
+    if(n.thin && n.thin.length) nu+=' '+_dbCap(_dbSayCount(n.thin.length))+' day'+(n.thin.length===1?' has':'s have')
+         +' a single meal logged, so that day is a gap in the logging rather than a light day.';
+    L.push(nu);
+  }
+  var w=d.words;
+  if(f.workouts||f.food){ L.push('In their own words. I could not read everything they wrote, so I am not going to summarise it.'); }
+  else if(!w.total){ L.push('In their own words. Nothing written in this period.'); }
+  else{
+    var ws='In their own words. '+_dbCap(_dbSayCount(w.total))+' note'+(w.total===1?'':'s')+' in four weeks';
+    if(w.themes.length) ws+=', '+w.themes.map(function(x){ return _dbSayCount(x.count)+' about '+x.label; }).join(' and ');
+    ws+='.';
+    var q=w.oneOffs[0]||w.all[0];
+    if(q) ws+=' '+_dbCap(_dbOnDate(q.ds))+' they wrote, '+q.text.replace(/[.\u2026]+$/,'')+'. That day they logged '+_dbSayDayLog(q.dayLog)+'.';
+    L.push(ws);
+  }
+  var wt=d.weight;
+  if(f.weight){ L.push('Weight. Their weigh-ins did not read just now. That is my read failing, not an absence of weigh-ins.'); }
+  else if(!wt.total){ L.push('Weight. No weigh-ins in this period, so there is no trend to read.'); }
+  else{
+    var s4=wt.w4.ok
+      ? ('Weight. '+(wt.w4.dir==='level'?'Level':(wt.w4.dir==='up'?'Up':'Down'))+' '+Math.abs(wt.w4.delta)+' pounds over four weeks, from '
+         + wt.w4.from.v+' '+_dbOnDate(wt.w4.from.ds)+' to '+wt.w4.to.v+' '+_dbOnDate(wt.w4.to.ds)+'.')
+      : ('Weight. Only '+_dbSayCount(wt.w4.count)+' weigh-in in four weeks, so there is no trend to read.');
+    var s2=wt.w2.ok
+      ? (' Over two weeks, '+(wt.w2.dir==='level'?'level':(wt.w2.dir==='up'?'up':'down'))+' '+Math.abs(wt.w2.delta)+' pounds.')
+      : (' Over two weeks there '+(wt.w2.count===1?'is only one weigh-in':'are no weigh-ins')+', so there is no two week trend to read.');
+    L.push(s4+s2);
+  }
+  return L.join('\n\n');
+}
+// ===== THE DEBRIEF ON SCREEN ===========================================
+// The same computed object, listed rather than spoken. Abbreviations are fine
+// here and symbols are fine here; this is read, not heard.
+function _jvDebriefHtml(d, name){
+  if(!d) return '<div class="dbrf">I could not build that debrief.</div>';
+  var e=_escHtml, who=String(name||d.code);
+  var H='<div class="dbrf"><div class="dbrfHd">'+e(who)+' · check-in debrief</div>'
+      + '<div class="dbrfSub">'+e(d.from)+' to '+e(d.to)+' · built from their rows, read just now</div>';
+  var f=d.failed||{};
+  var t=d.training;
+  H+='<div class="dbrfSec">Training</div>';
+  if(f.workouts) H+='<div class="dbrfFail">Their workouts did not read just now. This is a failed read, not an empty month.</div>';
+  else H+='<div class="dbrfRows">'
+   + '<div class="dbrfRow"><span>Last week</span><b>'+t.last7.sessions+' lifting session'+(t.last7.sessions===1?'':'s')+'</b></div>'
+   + '<div class="dbrfRow"><span>Last 2 weeks</span><b>'+t.last14.perWeek+' a week</b><i>'+t.last14.sessions+' total</i></div>'
+   + '<div class="dbrfRow"><span>Last 4 weeks</span><b>'+t.last28.perWeek+' a week</b><i>'+t.last28.sessions+' total</i></div>'
+   + (t.otherSessions?('<div class="dbrfNote">Not counted as lifting: '+e(t.otherTitles.join(', '))+'</div>'):'')
+   + '</div>';
+  var n=d.nutrition;
+  H+='<div class="dbrfSec">Nutrition</div>';
+  if(f.food){ H+='<div class="dbrfFail">Their meals did not read just now. This is a failed read, not an empty month.</div>'; }
+  else if(!n.days){ H+='<div class="dbrfGap">Nothing logged to eat in this period.</div>'; }
+  else{
+    H+='<div class="dbrfNote">Where they live is the middle day, not the average, so one heavy day cannot move it. '
+      +'High and low are the heaviest and lightest run of '+n.roll+' days in a row.</div>';
+    [['calories','Calories',''],['protein','Protein','g'],['carbs','Carbs','g'],['fat','Fat','g']].forEach(function(k){
+      var p=n.per[k[0]]; if(!p) return;
+      var u=k[2], f=function(v){ return v==null?'—':(_jvNum(v)+u); };
+      H+='<div class="dbrfNut"><div class="dbrfNutT">'+k[1]+'</div><div class="dbrfRows">'
+       + '<div class="dbrfRow"><span>Where they live · last '+n.roll+' days</span><b>'+f(p.lives.roll.value)+'</b><i>'+p.lives.roll.days+' day'+(p.lives.roll.days===1?'':'s')+'</i></div>'
+       + '<div class="dbrfRow"><span>Where they live · 2 weeks</span><b>'+f(p.lives.w2.value)+'</b><i>'+p.lives.w2.days+' days</i></div>'
+       + '<div class="dbrfRow"><span>Where they live · 4 weeks</span><b>'+f(p.lives.w4.value)+'</b><i>'+p.lives.w4.days+' days</i></div>'
+       + (p.high?('<div class="dbrfRow"><span>High</span><b>'+f(p.high.value)+' a day</b><i>'+e(p.high.from)+' to '+e(p.high.to)+'</i></div>'):'')
+       + (p.low ?('<div class="dbrfRow"><span>Low</span><b>'+f(p.low.value)+' a day</b><i>'+e(p.low.from)+' to '+e(p.low.to)+'</i></div>'):'')
+       + (!p.high&&!p.low?('<div class="dbrfGap">No run of '+n.roll+' days in a row logged, so there is no stretch to read.</div>'):'')
+       + '</div></div>';
+    });
+    if(n.thin && n.thin.length){
+      H+='<div class="dbrfNote">'+n.thin.map(function(x){ return e(x.ds)+' has a single meal logged ('+_jvNum(x.calories)+' cal)'; }).join('; ')
+        +' — a gap in the logging rather than a light day.</div>';
+    }
+  }
+  var w=d.words;
+  H+='<div class="dbrfSec">Their own words</div>';
+  if(f.workouts||f.food){ H+='<div class="dbrfFail">Part of their history did not read, so this is not a complete sweep of what they wrote.</div>'; }
+  else if(!w.total){ H+='<div class="dbrfGap">Nothing written in this period.</div>'; }
+  else{
+    H+='<div class="dbrfRows">';
+    w.themes.forEach(function(th){
+      H+='<div class="dbrfRow"><span>'+e(_dbCap(th.label))+'</span><b>'+th.count+'</b></div>';
+    });
+    H+='</div>';
+    // VERBATIM. Their line, their punctuation, with the date and what they
+    // logged that day beside it.
+    w.all.forEach(function(q){
+      H+='<div class="dbrfQ"><div class="dbrfQT">“'+e(q.text)+'”</div>'
+       + '<div class="dbrfQM">'+e(q.ds)+' · '+e(_dbScreenDayLog(q.dayLog))+'</div></div>';
+    });
+  }
+  var wt=d.weight;
+  H+='<div class="dbrfSec">Weight</div>';
+  if(f.weight){ H+='<div class="dbrfFail">Their weigh-ins did not read just now. This is a failed read, not an absence of weigh-ins.</div>'; }
+  else if(!wt.total){ H+='<div class="dbrfGap">No weigh-ins in this period, so there is no trend to read.</div>'; }
+  else{
+    H+='<div class="dbrfRows">'
+     + '<div class="dbrfRow"><span>Last 2 weeks</span>'+(wt.w2.ok
+        ? ('<b>'+(wt.w2.delta>0?'+':'')+wt.w2.delta+' lb</b><i>'+e(wt.w2.from.ds)+' to '+e(wt.w2.to.ds)+'</i>')
+        : ('<b class="dbrfNil">'+(wt.w2.count===1?'one weigh-in':'no weigh-ins')+'</b><i>no trend to read</i>'))+'</div>'
+     + '<div class="dbrfRow"><span>Last 4 weeks</span>'+(wt.w4.ok
+        ? ('<b>'+(wt.w4.delta>0?'+':'')+wt.w4.delta+' lb</b><i>'+wt.w4.from.v+' → '+wt.w4.to.v+'</i>')
+        : ('<b class="dbrfNil">'+(wt.w4.count===1?'one weigh-in':'no weigh-ins')+'</b><i>no trend to read</i>'))+'</div>'
+     + '</div>';
+  }
+  return H+'</div>';
+}
+function _dbScreenDayLog(dl){
+  if(!dl) return '';
+  var out=[];
+  if(dl.sessions && dl.sessions.length) out.push(dl.sessions.join(', '));
+  if(dl.food) out.push(_jvNum(dl.food.calories)+' cal, '+dl.food.protein+'g protein across '+dl.food.meals+' meal'+(dl.food.meals===1?'':'s'));
+  else out.push('nothing logged to eat');
+  return out.join(' · ');
+}
+// ===== THE DOOR ========================================================
+// TRAINER ONLY. A client asking for a debrief must never reach this - it reads
+// another person's rows by design, and the gate is the same one every other
+// trainer route in this file uses.
+//
+// EXACT-NAME DISCIPLINE. One hit and only one hit. A partial match names
+// nobody, so it asks instead of guessing - a debrief about the wrong person,
+// read out on a call, is worse than no debrief.
+var _JV_DEBRIEF_RE=new RegExp(
+  '\\bdebrief\\b'
+  +'|\\bcheck[- ]?in (?:debrief|summary|report|prep)\\b'
+  +'|\\b(?:call|meeting) (?:prep|summary|notes) for\\b'
+  +'|\\bprep me for\\b','i');
+async function _jvDebriefTurn(t){
+  var s=String(t||'');
+  if(!_JV_DEBRIEF_RE.test(s)) return null;
+  if(!(window.cl && typeof isTrainer==='function' && isTrainer(cl.code))) return null;
+  var who=null;
+  try{ var f=_jvFindClientIn(s); who=(f && f.hits && f.hits.length===1) ? f.hits[0] : null; }catch(e){}
+  if(!who || !who.code){
+    var ask='Which client is the debrief for?';
+    return {ok:false, line:_escHtml(ask), speak:ask, html:true};
+  }
+  var d=null;
+  try{ d=await _jvDebriefData(who.code); }catch(e){ console.error('debrief', e); }
+  if(!d){
+    var bad='I could not read their rows just now, so I have no debrief to give you. Nothing is wrong with their data.';
+    return {ok:false, line:_escHtml(bad), speak:bad, html:true};
+  }
+  var nm=_jvSafeName(who.code, who.name||who.code);
+  return {ok:true, html:true, line:_jvDebriefHtml(d, nm), speak:_jvDebriefSpoken(d, nm), debrief:d};
 }
 
 // ===== PER-CLIENT VERBATIM NOTES =====
