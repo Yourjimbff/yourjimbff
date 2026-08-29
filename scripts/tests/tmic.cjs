@@ -97,5 +97,50 @@ ACTS.forEach(fn=>{
   t(src.slice(at, at+1400).includes('_micStopAll'), fn);
 });
 
+// ---- A MIC THAT DIES MUST SAY SO ----------------------------------------
+// The Jarvis-family mics are the ones he uses with a phone in his hand and a
+// client in front of him, and a dead one there is dead air at the very front of
+// the loop. Their onerror goes through _jtMicFail, which writes the hint,
+// TOASTS and SPEAKS, because the screen is not always what he is looking at.
+//
+// Two of these five announced nothing at all until 29 Aug: the rail bar mic and
+// the Feed mic reset their icon and went quiet, so a dictation that failed on a
+// motorway was indistinguishable from a mic he had tapped off himself.
+//
+// onend is deliberately NOT in this law. Stopping a mic yourself is not a
+// failure and must never announce, which is asserted below so a future fix for
+// one does not accidentally give him a toast every time he stops talking.
+function bodyOf(v, prop){
+  const m=new RegExp(v.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\.'+prop+'\\s*=\\s*function\\([^)]*\\)\\s*\\{').exec(src);
+  if(!m) return null;
+  let depth=1, out='';
+  for(const ch of src.slice(m.index+m[0].length, m.index+m[0].length+800)){
+    if(ch==='{') depth++;
+    else if(ch==='}'){ depth--; if(!depth) break; }
+    out+=ch;
+  }
+  return out;
+}
+const ANNOUNCE=['_jtRec','_jvPaneRec','_admRec','_jvBarRec','jarvisRec'];
+console.log('\n  every Jarvis-family mic announces its own death:');
+ANNOUNCE.forEach(v=>{
+  const err=bodyOf(v,'onerror');
+  t(err!==null, v+' has an onerror at all');
+  t(!!err && err.includes('_jtMicFail'), v+' routes it through the helper that speaks');
+});
+console.log('\n  and stopping one yourself stays silent:');
+ANNOUNCE.forEach(v=>{
+  const end=bodyOf(v,'onend');
+  if(end===null){ t(true, v+' has no onend of its own'); return; }
+  t(!end.includes('_jtMicFail'), v+' onend does NOT announce');
+});
+// The helper really does reach all three channels — asserted, not assumed,
+// because "it calls _jtMicFail" is only worth anything if _jtMicFail speaks.
+const failFn=(src.match(/function _jtMicFail\([\s\S]*?\n\}/)||[''])[0];
+t(/textContent\s*=\s*msg/.test(failFn), '_jtMicFail writes the hint label');
+t(/showToast\(msg\)/.test(failFn), '_jtMicFail toasts');
+t(/_jvSpeakLine\(msg\)/.test(failFn), '_jtMicFail SPEAKS');
+t(/err===.aborted./.test(failFn), 'and a normal abort is never announced');
+
 console.log(bad? '\n'+bad+' FAILED' : '\nall pass');
 process.exit(bad?1:0);
