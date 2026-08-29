@@ -311,7 +311,15 @@ let D=null;
   // the older loop returns rather than talking over it.
   const SPKLINE=src.slice(src.indexOf('async function _jvSpeakLine('), src.indexOf('var _JV_PENDING_MS'));
   t(/await _jvPlayUrl\(url\)/.test(SPKLINE), 'each clip is awaited, so they play in written order');
-  t(/if\(gen!==window\._jvSpeakGen\) return;/.test(SPKLINE), 'and a newer answer stops the old read');
+  // THE GUARD, NOT ITS FORMATTING. It was one line until the flight recorder
+  // put a SUPERSEDED event in front of each return, so a same-line regex now
+  // says "gone" about a guard that is still there twice over. Counted instead:
+  // once before the fetch and once after it, each returning.
+  const _gens=(SPKLINE.match(/if\(gen!==window\._jvSpeakGen\)/g)||[]).length;
+  t(_gens>=2, 'a newer answer stops the old read, before AND after the fetch', _gens+' checks');
+  t(/if\(gen!==window\._jvSpeakGen\)\{[\s\S]{0,220}?return;/.test(SPKLINE)
+    || /if\(gen!==window\._jvSpeakGen\) return;/.test(SPKLINE),
+    'and each one actually returns rather than only noting it');
   t(/if\(!_jvAudioEl\) _jvAudioEl=new Audio\(\);/.test(src), 'through ONE audio element, so two reads cannot overlap');
   // And the debrief really does hand over two different strings.
   t(_jvDebriefSpoken(DN,'Test Client')!==_jvDebriefHtml(DN,'Test Client'),

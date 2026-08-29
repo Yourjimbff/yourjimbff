@@ -359,6 +359,12 @@ body:not(.is-trainer) .trainer-only{display:none !important;}
    real air between topics, instead of arriving as one wall of text. Same
    spacing language as the debrief script above; this is the chat-bubble
    version of it, so line-height and rhythm match what he already reads. */
+/* The flight recorder's tape. Monospace and scrollable so the columns line up
+   in a screenshot, and selectable so he can paste it straight back. */
+.jvTape{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;line-height:1.45;
+  white-space:pre;overflow-x:auto;max-height:60vh;overflow-y:auto;margin:0;
+  background:var(--s2);border:1px solid var(--border);border-radius:var(--rs);padding:10px;
+  color:var(--text);-webkit-user-select:text;user-select:text;}
 .jvPara{margin:0 0 11px;line-height:1.62;}
 .jvPara:last-child{margin-bottom:0;}
 .dbrfScript{margin:14px 0 4px;}
@@ -17854,10 +17860,41 @@ async function feedDetailRecent(code){
     box.setAttribute('data-loaded','1'); if(btn) btn.textContent='Hide recent activity';
   }catch(e){ box.innerHTML='<div style="font-size:12px;color:rgba(240,236,228,0.78);">Could not load.</div>'; if(btn) btn.textContent='Show recent activity · last 3 days'; }
 }
+// ONE TAP, STRAIGHT TO THE CLIPBOARD. He asked for the tape in a form he can
+// paste, and this is the shortest route to it: no thread, no modal, no screen
+// to scroll. Sits under the version line because that is already the
+// diagnostics corner of this surface. TRAINER ONLY - a client has no use for
+// it and should never be shown a flight recorder.
+async function jvTapeCopy(){
+  var txt='';
+  try{ txt=_jvTapeReport(); }catch(e){ txt='The recorder itself failed: '+(e&&e.message||e); }
+  var ok=false;
+  try{ if(navigator.clipboard && navigator.clipboard.writeText){ await navigator.clipboard.writeText(txt); ok=true; } }catch(e){}
+  if(!ok){
+    // Clipboard access is refused in plenty of contexts. Falling back to a
+    // selectable box is better than a toast claiming a copy that did not happen
+    // - the cardinal lie has a UI form too.
+    try{
+      var ta=document.createElement('textarea');
+      ta.value=txt; ta.style.position='fixed'; ta.style.left='-9999px';
+      document.body.appendChild(ta); ta.select();
+      ok=document.execCommand('copy');
+      document.body.removeChild(ta);
+    }catch(e){ ok=false; }
+  }
+  try{ showToast(ok ? 'Audio report copied — paste it anywhere' : 'Could not copy. Say “audio report” to read it on screen.'); }catch(e){}
+}
 function _feedVersionHtml(){
+  var _tape='';
+  try{
+    if(cl && typeof isTrainer==='function' && isTrainer(cl.code)){
+      _tape='<div onclick="jvTapeCopy()" style="font-size:9px;color:var(--muted);opacity:0.55;margin-top:5px;text-decoration:underline;cursor:pointer;">copy audio report</div>';
+    }
+  }catch(e){}
   return '<div style="text-align:center;margin:-6px 0 14px;line-height:1.5;">'
     +'<div style="font-size:10px;font-weight:700;letter-spacing:0.5px;color:var(--muted);opacity:0.7;">YOURJIMBFF '+APP_VERSION+'</div>'
     +'<div style="font-size:9px;color:var(--muted);opacity:0.5;margin-top:3px;padding:0 6px;">'+APP_BUILD+'</div>'
+    +_tape
   +'</div>';
 }
 // The three tiles all count PEOPLE, so the sets are built once, here, and cached —
@@ -21250,6 +21287,88 @@ function _jvSpeakStrip(html){
 // gone quiet, the only fact in the answer that needed acting on — dropped in
 // silence. With eyes on the road and the screen unread, half an answer is
 // worse than no answer, because no answer is at least obviously no answer.
+// ===== THE AUDIO FLIGHT RECORDER (his order, 29 Aug) ====================
+// His ear failed on a read the payload test had already passed. That means the
+// fault lives PAST the handoff — in the chunking, the fetching, the player, or
+// in a second reader nobody has looked at — and none of that is reachable from
+// a node suite. So this is a witness, not a fix.
+//
+// READ-ONLY, ABSOLUTELY. It appends to an array and writes a string to
+// localStorage. It never gates, never delays, never changes an argument, and
+// every single call is wrapped so a fault in the recorder can never become a
+// fault in the speech. If this file's audio behaves differently with the
+// recorder in it, the recorder is wrong.
+//
+// WHAT IT IS LOOKING FOR, named so the tape can be read against the suspects:
+//   the stutter          -> "player was BUSY" on a play start, or the same
+//                           piece index played twice
+//   fragments            -> the chunk list, with every piece's real text
+//   things read after    -> a second `say` with a different source arriving
+//                           late, or a read whose gen was never superseded
+//   two readers at once  -> overlapping reads, visible as interleaved gens
+//   the Eleven Labs cut  -> piece boundaries printed verbatim, so a cut
+//                           mid-sentence is visible as text rather than guessed
+var _JV_TAPE=[], _JV_TAPE_MAX=600, _JV_TAPE_KEY='yjb_audio_tape';
+var _jvTapeRead=0, _jvTapeT0=0;
+function _jvTape(ev, d){
+  try{
+    var now=Date.now();
+    if(!_jvTapeT0) _jvTapeT0=now;
+    _JV_TAPE.push({t:now, r:_jvTapeRead, ev:ev, d:(d==null?'':String(d))});
+    if(_JV_TAPE.length>_JV_TAPE_MAX) _JV_TAPE.splice(0, _JV_TAPE.length-_JV_TAPE_MAX);
+    try{ localStorage.setItem(_JV_TAPE_KEY, JSON.stringify(_JV_TAPE)); }catch(e){}
+  }catch(e){}
+}
+// A snippet of what was actually said, so a fragment in his ear can be matched
+// to a piece on the tape. Trimmed, never reshaped.
+function _jvTapeSnip(s, n){
+  try{
+    var x=String(s==null?'':s).replace(/\s+/g,' ').trim();
+    n=n||70;
+    return x.length>n ? (x.slice(0,n)+'…') : x;
+  }catch(e){ return ''; }
+}
+function _jvTapeLoad(){
+  try{
+    if(_JV_TAPE.length) return _JV_TAPE;
+    var raw=localStorage.getItem(_JV_TAPE_KEY);
+    if(raw) _JV_TAPE=JSON.parse(raw)||[];
+  }catch(e){ _JV_TAPE=[]; }
+  return _JV_TAPE;
+}
+// THE TAPE, AS SOMETHING HE CAN PASTE. Plain text on purpose: he screenshots it
+// or pastes it back, and neither survives markup.
+function _jvTapeReport(){
+  var T=_jvTapeLoad();
+  if(!T.length) return 'AUDIO REPORT\n\nNothing on the tape. Ask something that speaks, let it play, then ask for the audio report again.';
+  // The last three reads only. Older ones are noise once he has reproduced it.
+  var reads=[];
+  T.forEach(function(x){ if(reads.indexOf(x.r)<0) reads.push(x.r); });
+  var keep=reads.slice(-3);
+  var L=['AUDIO REPORT', '', 'app '+(typeof APP_VERSION!=='undefined'?APP_VERSION:'?')
+        +'  ·  '+keep.length+' read'+(keep.length===1?'':'s')+' on the tape, newest last'];
+  keep.forEach(function(rid){
+    var rows=T.filter(function(x){ return x.r===rid; });
+    if(!rows.length) return;
+    var t0=rows[0].t;
+    var when='';
+    try{ when=new Date(t0).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',second:'2-digit'}); }catch(e){}
+    L.push('', '── read '+rid+'  '+when+' ──');
+    rows.forEach(function(x){
+      var ms=x.t-t0;
+      var stamp=('+'+ms+'ms').padStart(9,' ');
+      L.push(stamp+'  '+String(x.ev).padEnd(14,' ')+'  '+x.d);
+    });
+  });
+  L.push('', 'end of tape');
+  return L.join('\n');
+}
+// Clearing is his, so a fresh reproduction is not read against yesterday's tape.
+function _jvTapeClear(){
+  try{ _JV_TAPE=[]; _jvTapeT0=0; localStorage.removeItem(_JV_TAPE_KEY); }catch(e){}
+}
+var _JV_TAPE_RE=new RegExp('\\b(audio report|sound report|voice report|audio log|audio tape)\\b','i');
+var _JV_TAPE_CLEAR_RE=new RegExp('\\b(clear|reset|wipe|new)\\b[\\s\\S]{0,20}\\b(audio report|audio tape|audio log)\\b','i');
 // 300 IS THE SERVER'S OWN CEILING (netlify/functions/jarvis-speak.js rejects
 // anything longer with a 400), so it cannot be raised from here. The answer
 // is to say all of it, in order, one clip per piece.
@@ -21342,9 +21461,10 @@ async function _jvClipFor(t){
         body:JSON.stringify({text:t})});
     }
   }
-  if(!res.ok){ _jvSpeakFail('server said '+res.status); return null; }
+  if(!res.ok){ try{ _jvTape('fetch FAILED','server said '+res.status); }catch(e){} _jvSpeakFail('server said '+res.status); return null; }
   var buf=await res.arrayBuffer();
-  if(!buf || !buf.byteLength){ _jvSpeakFail('came back empty'); return null; }
+  if(!buf || !buf.byteLength){ try{ _jvTape('fetch EMPTY','no audio came back'); }catch(e){} _jvSpeakFail('came back empty'); return null; }
+  try{ _jvTape('fetch ok', Math.round(buf.byteLength/1024)+'kb'); }catch(e){}
   var url=URL.createObjectURL(new Blob([buf],{type:'audio/mpeg'}));
   // Held for replay. Capped, and the oldest url is revoked as it goes so a
   // long session cannot leak blobs.
@@ -21364,11 +21484,20 @@ function _jvPlayUrl(url){
     try{
       if(!_jvAudioEl) _jvAudioEl=new Audio();
       var el=_jvAudioEl, done=false;
+      // THE STUTTER SUSPECT, MEASURED. If the element is mid-clip when a new
+      // src is assigned, the old clip is cut off — which is what a stutter is.
+      // Recorded BEFORE the assignment, so the tape shows what it interrupted.
+      var _wasBusy=false, _at=0;
+      try{ _wasBusy=!el.paused && !el.ended && el.currentTime>0; _at=Math.round((el.currentTime||0)*1000); }catch(e){}
+      try{ _jvTape('play start', (_wasBusy?('player was BUSY, cut at '+_at+'ms'):'player was idle')); }catch(e){}
+      var _t0=Date.now();
       function fin(){ if(done) return; done=true; try{ el.onended=null; el.onerror=null; el.onabort=null; }catch(e){} res(); }
-      el.onended=fin; el.onerror=fin; el.onabort=fin;
+      el.onended=function(){ try{ _jvTape('play end','played '+(Date.now()-_t0)+'ms'); }catch(e){} fin(); };
+      el.onerror=function(){ try{ _jvTape('play ERROR','after '+(Date.now()-_t0)+'ms'); }catch(e){} fin(); };
+      el.onabort=function(){ try{ _jvTape('play ABORT','after '+(Date.now()-_t0)+'ms'); }catch(e){} fin(); };
       el.src=url;
       var p=el.play();
-      if(p && p.catch) p.catch(function(){ _jvSpeakFail('blocked by the browser'); fin(); });
+      if(p && p.catch) p.catch(function(){ try{ _jvTape('play BLOCKED','browser refused'); }catch(e){} _jvSpeakFail('blocked by the browser'); fin(); });
     }catch(e){ res(); }
   });
 }
@@ -21382,7 +21511,14 @@ async function _jvSpeakLine(textOrHtml, opts){
     // runner holds this flag while it works the items and drops it to speak the
     // summary, so speaking still lives inside the render and nowhere else.
     if(window._jvQuiet && !opts.force) return;
+    var _inLen=String(textOrHtml==null?'':textOrHtml).length;
     var full=_jvSpeakStrip(textOrHtml);
+    try{
+      _jvTapeRead++;
+      _jvTape('read', 'gen '+(window._jvSpeakGen+1)+(opts.force?' FORCED':'')
+        +' | in '+_inLen+' chars, after strip '+(full?full.length:0));
+      if(full) _jvTape('text', _jvTapeSnip(full, 160));
+    }catch(e){}
     if(!full){
       // A deliberate tap that produces no sound is a dead control, and a dead
       // control is exactly what "auto-speak is broken" felt like from his side.
@@ -21393,16 +21529,37 @@ async function _jvSpeakLine(textOrHtml, opts){
     }
     var chunks=_jvSpeakChunks(full);
     var gen=++window._jvSpeakGen;
+    // EVERY PIECE, VERBATIM. A fragment in his ear is matched to a piece here,
+    // and a cut mid-sentence is visible as text instead of guessed at.
+    try{
+      _jvTape('chunks', chunks.length+' piece'+(chunks.length===1?'':'s')
+        +' ['+chunks.map(function(c){ return c.length; }).join(', ')+' chars]');
+      chunks.forEach(function(c,ci){ _jvTape('piece '+(ci+1)+'/'+chunks.length, _jvTapeSnip(c, 90)); });
+    }catch(e){}
     for(var i=0;i<chunks.length;i++){
-      if(gen!==window._jvSpeakGen) return;      // a newer answer took over
-      if(!opts.force && !jvVoiceOn()) return;   // muted part-way through
+      if(gen!==window._jvSpeakGen){
+        try{ _jvTape('SUPERSEDED','at piece '+(i+1)+' of '+chunks.length+' — gen '+gen+' lost to gen '+window._jvSpeakGen); }catch(e){}
+        return;      // a newer answer took over
+      }
+      if(!opts.force && !jvVoiceOn()){
+        try{ _jvTape('muted','at piece '+(i+1)+' of '+chunks.length); }catch(e){}
+        return;   // muted part-way through
+      }
+      try{ _jvTape('fetch','piece '+(i+1)+(_JV_CLIPS[chunks[i]]?' (cached)':' (from the server)')); }catch(e){}
       var url=await _jvClipFor(chunks[i]);
-      if(gen!==window._jvSpeakGen) return;
-      if(!url) return;                          // _jvClipFor already said why
+      if(gen!==window._jvSpeakGen){
+        try{ _jvTape('SUPERSEDED','after fetching piece '+(i+1)+' — gen '+gen+' lost to gen '+window._jvSpeakGen); }catch(e){}
+        return;
+      }
+      if(!url){
+        try{ _jvTape('no clip','piece '+(i+1)+' — nothing came back'); }catch(e){}
+        return;                          // _jvClipFor already said why
+      }
       await _jvPlayUrl(url);
       _jvSpeakFailNoted=false; // a piece actually played — a fresh failure earns its own toast
     }
-  }catch(e){ _jvSpeakFail('unexpected error'); }
+    try{ _jvTape('done','all '+chunks.length+' piece'+(chunks.length===1?'':'s')+' spoken'); }catch(e){}
+  }catch(e){ try{ _jvTape('THREW', String(e&&e.message||e)); }catch(_){} _jvSpeakFail('unexpected error'); }
 }
 var _JV_PENDING_MS=10*60*1000;      // a confirmation older than this is not a confirmation
 // A STATED DAY IS A DATE (Yusuf, live, 20 Aug — "can you log Kellyg1's steps
@@ -35157,6 +35314,11 @@ function jtSay(html, speak){
   // that — its spoken line is '' when the ledger renders with every group empty.
   // An empty string then died at the no-text guard inside _jvSpeakLine, silently.
   var _say=(speak!=null && String(speak).trim()) ? speak : html;
+  // WITNESS ONLY. Whether this answer wrote a script for the ear, or is about
+  // to have its panel read to it, is the first thing the tape has to settle.
+  try{ _jvTape('say', (speak!=null && String(speak).trim() ? 'SCRIPT ' : 'PANEL FALLBACK ')
+    +'speak='+(speak?String(speak).length:0)+' html='+(html?String(html).length:0)
+    +' | '+_jvTapeSnip(_say)); }catch(e){}
   try{ _jvSpeakLine(_say); }catch(e){}
 }
 // ===== THE RAIL'S CONVERSATION IS ONE STREAM (Yusuf, ruling) ==============
@@ -35990,6 +36152,23 @@ async function _jtRunItem(t, capture, ctx){
   // can you do" can never fall through to a hand-written prompt paragraph
   // that oversells or a truncatable model call at all.
   if(_JV_HELP_RE.test(t)) return {status:'talk', line:_jvCapabilitySummary(), html:true, src:t};
+  // ===== THE AUDIO REPORT (his order, 29 Aug) ==========================
+  // A diagnostic has to be reachable when everything else is misbehaving, so it
+  // sits HIGH — above every door that could plausibly claim the word "report" —
+  // and it is deterministic, with no model and no network.
+  //
+  // IT IS NEVER SPOKEN. speak:'' on purpose: reading a flight recorder tape out
+  // loud, on the very audio path being investigated, would be absurd — and
+  // would also write new events onto the tape he is trying to read.
+  if(_JV_TAPE_CLEAR_RE.test(t)){
+    try{ _jvTapeClear(); }catch(e){}
+    return {status:'done', line:_escHtml('Audio tape cleared. Ask something that speaks, let it play out however it plays, then say “audio report”.'), speak:'', html:true, src:t};
+  }
+  if(_JV_TAPE_RE.test(t)){
+    var _rep=''; try{ _rep=_jvTapeReport(); }catch(e){ _rep='The recorder itself failed: '+(e&&e.message||e); }
+    return {status:'talk', html:true, src:t, speak:'',
+            line:'<pre class="jvTape">'+_escHtml(_rep)+'</pre>'};
+  }
   // AMBIGUOUS NAMES ASK, THEY DO NOT GUESS (Yusuf, ruling, 25 Aug). Same gate
   // the cockpit runs, at the same depth: after the local command layers, before
   // anything answers. "Chris" is two people on this roster and "Anthony" is
@@ -36366,6 +36545,7 @@ async function _jtRunItem(t, capture, ctx){
 // nothing formats this through a model, so there is nothing left to drift or
 // to truncate.
 var JV_CAPABILITIES=[
+  {v:'tell you exactly what my voice just did', d:'say “audio report” after a read that sounded wrong — every piece, every play, every interrupt, in order. There is a copy link under the version on the Clients tab too'},
   {v:'book a call, a consult, or a generic appointment', d:'exact name and a clear time — I do it, no confirmation unless the time is already taken'},
   {v:'move or cancel a call, a consult, or a standing call for one day', d:'same — I just do it and tell you'},
   {v:'add a new client', d:'name (and phone, tier, term, fee if you say them) — code checked and picked for you, and if you mention a fee it lands as a real sale or the whole thing rolls back and I say so'},
