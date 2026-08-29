@@ -45,5 +45,32 @@ C.forEach(function(c){
   const ok=(g===c[1]); if(!ok) bad++;
   console.log((ok?'  ok    ':'  FAIL  ')+String(g).padStart(5)+'  '+fmt(g).padEnd(11)+JSON.stringify(c[0])+(ok?'':'   (wanted '+c[1]+')'));
 });
+// ---- NOTHING REPEATS WHAT _syncToday ALREADY DOES (29 Aug) --------------
+// _syncToday() re-renders the day AND re-reads two tables (loadTodayWorkouts,
+// loadWeights). Three call sites followed it with a hand-rolled copy of part of
+// its own body, so moving a meal re-rendered the same totals three times and
+// deleting a workout awaited a SECOND copy of a network read that was already
+// in flight. It always converged, which is why it survived: the screen was
+// right and the work was wasted.
+//
+// Structural, so a fourth cannot be added quietly.
+const SRC=fs.readFileSync('index.html','utf8');
+const SY=(SRC.match(/function _syncToday\(\)\{[\s\S]*?\n\}/)||[''])[0];
+const inside=['rendTodayFood','updTots','refreshTileStates','updHalo','updStats',
+              'loadTodayWorkouts','renderWeightCard','loadWeights'].filter(f=>SY.includes(f+'()'));
+let dup=0, where=[];
+const lines=SRC.split('\n');
+lines.forEach((l,i)=>{
+  if(!l.includes('_syncToday()') || l.includes('function _syncToday')) return;
+  const after=lines.slice(i+1,i+4).join('\n');
+  inside.forEach(f=>{ if(after.includes(f+'(')){ dup++; where.push((i+1)+':'+f); } });
+});
+console.log('\n  the day refresh does its work once:');
+if(!(SY.length>50)) bad++;
+console.log((SY.length>50?'  ok    ':'  FAIL  ')+'_syncToday is findable, and owns '+inside.length+' refreshers');
+if(dup!==0) bad++;
+console.log((dup===0?'  ok    ':'  FAIL  ')+'no call site repeats one straight after it'
+  +(dup?('  '+where.join(', ')):''));
+
 console.log(bad? '\n'+bad+' FAILED' : '\nall '+C.length+' pass');
 process.exit(bad?1:0);
