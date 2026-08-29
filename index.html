@@ -21498,27 +21498,86 @@ async function _jvClipFor(t){
 // piece cannot strand the rest of an answer half-said. The url is NOT revoked
 // on end: it is the cached clip now, and revoking it made a second play of the
 // same line silent.
+// ===== THE LONGEST-LIVED BUG, CONVICTED BY THE TAPE (29 Aug) ============
+// onabort was attached BEFORE el.src was assigned. Assigning a src makes the
+// browser abort whatever resource is currently loaded — and that abort landed
+// on the handler just attached for the NEW clip. So every piece "finished"
+// within tens of milliseconds of starting: the loop moved on while the audio
+// carried on playing, and the next src assignment cut it mid-sentence. Five
+// pieces, five aborts, nothing ever finished. That is the stutter, the
+// fragments, and the jumping, all from one line ordering.
+//
+// THE FIRST CLIP OF A SESSION DID IT TOO, with no next piece anywhere near it:
+// the silent unlock wav was still loaded, and tearing THAT down fired the
+// abort. That is the 31ms abort on read 1 of his tape, and it is what proves
+// the cause is the TEARDOWN and not a race between pieces.
+//
+// SO: an abort arriving BEFORE this clip has actually started playing is the
+// previous resource going away, and is ignored. Once `playing` has fired, an
+// abort is real — something genuinely interrupted us — and it resolves.
+// _jvPlayEnd holds the CURRENT play's resolver. A new play replaces the
+// element's handlers, so without this the previous promise would never settle
+// and whoever was awaiting it would hang for good — one leaked pending await
+// per interruption. The old code got away with it by accident: its promise
+// resolved on the very abort that this fix now correctly ignores.
+//
+// Found because this suite exited 0 with eight failures on the mutant — node
+// ran out of work while still inside the async function and left quietly.
+var _jvPlayToken=0, _jvPlayEnd=null;
 function _jvPlayUrl(url){
   return new Promise(function(res){
     try{
       if(!_jvAudioEl) _jvAudioEl=new Audio();
-      var el=_jvAudioEl, done=false;
-      // THE STUTTER SUSPECT, MEASURED. If the element is mid-clip when a new
-      // src is assigned, the old clip is cut off — which is what a stutter is.
-      // Recorded BEFORE the assignment, so the tape shows what it interrupted.
+      var el=_jvAudioEl, done=false, started=false;
+      var mine=++_jvPlayToken;
       var _wasBusy=false, _at=0;
       try{ _wasBusy=!el.paused && !el.ended && el.currentTime>0; _at=Math.round((el.currentTime||0)*1000); }catch(e){}
       try{ _jvTape('play start', (_wasBusy?('player was BUSY, cut at '+_at+'ms'):'player was idle')); }catch(e){}
-      var _t0=Date.now();
-      function fin(){ if(done) return; done=true; try{ el.onended=null; el.onerror=null; el.onabort=null; }catch(e){} res(); }
-      el.onended=function(){ try{ _jvTape('play end','played '+(Date.now()-_t0)+'ms'); }catch(e){} fin(); };
-      el.onerror=function(){ try{ _jvTape('play ERROR','after '+(Date.now()-_t0)+'ms'); }catch(e){} fin(); };
-      el.onabort=function(){ try{ _jvTape('play ABORT','after '+(Date.now()-_t0)+'ms'); }catch(e){} fin(); };
+      var _t0=Date.now(), watch=null;
+      function clear(){ try{ el.onended=null; el.onerror=null; el.onabort=null; el.onplaying=null; }catch(e){} }
+      function fin(why){
+        if(done) return; done=true;
+        try{ if(watch) clearTimeout(watch); }catch(e){}
+        try{ if(_jvPlayEnd===fin) _jvPlayEnd=null; }catch(e){}
+        clear();
+        try{ _jvTape(why, (started?'played ':'never started, ')+(Date.now()-_t0)+'ms'); }catch(e){}
+        res();
+      }
+      // Settle whatever was playing before this, for the reason above.
+      try{ var prev=_jvPlayEnd; if(prev){ _jvPlayEnd=null; prev('play REPLACED'); } }catch(e){}
+      _jvPlayEnd=fin;
+      // Detached BEFORE the teardown, so nothing synchronous can reach a
+      // handler meant for this clip. The started-guard below is the real
+      // defence; this is belt and braces.
+      clear();
+      try{ el.pause(); }catch(e){}
       el.src=url;
+      el.onplaying=function(){ if(mine===_jvPlayToken) started=true; };
+      el.onended=function(){ if(mine===_jvPlayToken) fin('play end'); };
+      el.onerror=function(){ if(mine===_jvPlayToken) fin('play ERROR'); };
+      el.onabort=function(){
+        if(mine!==_jvPlayToken) return;
+        if(!started){ try{ _jvTape('abort ignored','the previous clip being torn down'); }catch(e){} return; }
+        fin('play ABORT');
+      };
+      // A START THAT NEVER COMES MUST NOT STRAND THE READ. This bounds only the
+      // START — once playing, a clip of any length runs to its own natural end,
+      // which is the whole point of the fix and must never be capped.
+      watch=setTimeout(function(){ if(!started) fin('play NEVER STARTED'); }, 12000);
       var p=el.play();
-      if(p && p.catch) p.catch(function(){ try{ _jvTape('play BLOCKED','browser refused'); }catch(e){} _jvSpeakFail('blocked by the browser'); fin(); });
+      if(p && p.catch) p.catch(function(){ _jvSpeakFail('blocked by the browser'); fin('play BLOCKED'); });
     }catch(e){ res(); }
   });
+}
+// A fetch that can be started early and awaited later. It never rejects, so a
+// clip that fails while it is running ahead cannot become an unhandled
+// rejection in the background — it simply resolves to null and the loop stops
+// there, saying why, exactly as it did before.
+function _jvClipAhead(text){
+  try{
+    try{ _jvTape('fetch', (_JV_CLIPS[text]?'cached · ':'from the server · ')+_jvTapeSnip(text, 46)); }catch(e){}
+    return Promise.resolve(_jvClipFor(text)).catch(function(){ return null; });
+  }catch(e){ return Promise.resolve(null); }
 }
 async function _jvSpeakLine(textOrHtml, opts){
   opts=opts||{};
@@ -21530,8 +21589,17 @@ async function _jvSpeakLine(textOrHtml, opts){
     // runner holds this flag while it works the items and drops it to speak the
     // summary, so speaking still lives inside the render and nowhere else.
     if(window._jvQuiet && !opts.force) return;
-    var _inLen=String(textOrHtml==null?'':textOrHtml).length;
-    var full=_jvSpeakStrip(textOrHtml);
+    var _raw=String(textOrHtml==null?'':textOrHtml);
+    var _inLen=_raw.length;
+    // PLAIN TEXT IS NOT HTML. jtSay hands this the SCRIPT whenever a door wrote
+    // one, and pushing plain prose through innerHTML loses characters — his own
+    // tape showed 1,186 in and 1,182 out on a script containing no markup at
+    // all. Harmless there (collapsed blank lines) and not harmless the first
+    // time an answer contains a < or an &. The stripper is for the panel
+    // fallback, which is the only thing that is actually HTML.
+    var full=(/<[a-z!\/][\s\S]*>/i.test(_raw))
+      ? _jvSpeakStrip(_raw)
+      : _jvSpeakDesymbol(_raw).replace(/\s+/g,' ').trim();
     try{
       _jvTapeRead++;
       _jvTape('read', 'gen '+(window._jvSpeakGen+1)+(opts.force?' FORCED':'')
@@ -21548,6 +21616,8 @@ async function _jvSpeakLine(textOrHtml, opts){
     }
     var chunks=_jvSpeakChunks(full);
     var gen=++window._jvSpeakGen;
+    // Primed before the loop so piece one is already on its way.
+    var _ahead=chunks.length?_jvClipAhead(chunks[0]):null;
     // EVERY PIECE, VERBATIM. A fragment in his ear is matched to a piece here,
     // and a cut mid-sentence is visible as text instead of guessed at.
     try{
@@ -21564,8 +21634,8 @@ async function _jvSpeakLine(textOrHtml, opts){
         try{ _jvTape('muted','at piece '+(i+1)+' of '+chunks.length); }catch(e){}
         return;   // muted part-way through
       }
-      try{ _jvTape('fetch','piece '+(i+1)+(_JV_CLIPS[chunks[i]]?' (cached)':' (from the server)')); }catch(e){}
-      var url=await _jvClipFor(chunks[i]);
+      var url=null;
+      try{ url=await _ahead; }catch(e){ url=null; }
       if(gen!==window._jvSpeakGen){
         try{ _jvTape('SUPERSEDED','after fetching piece '+(i+1)+' — gen '+gen+' lost to gen '+window._jvSpeakGen); }catch(e){}
         return;
@@ -21574,6 +21644,11 @@ async function _jvSpeakLine(textOrHtml, opts){
         try{ _jvTape('no clip','piece '+(i+1)+' — nothing came back'); }catch(e){}
         return;                          // _jvClipFor already said why
       }
+      // FETCH AHEAD, PLAY IN ORDER. The next clip starts downloading while this
+      // one speaks, so there is no silence between pieces — but it is not
+      // PLAYED until this one reaches its own natural end. Fetching ahead was
+      // never the bug; playing ahead was.
+      _ahead=(i+1<chunks.length) ? _jvClipAhead(chunks[i+1]) : null;
       await _jvPlayUrl(url);
       _jvSpeakFailNoted=false; // a piece actually played — a fresh failure earns its own toast
     }

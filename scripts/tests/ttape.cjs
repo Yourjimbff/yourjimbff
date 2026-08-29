@@ -66,8 +66,16 @@ console.log('\n  EVERY NAMED SUSPECT HAS A PROBE ON THE PATH:');
  ['the Eleven Labs chunking',       "_jvTape('piece '+(ci+1)+'/'+chunks.length"],
  ['the panel being read instead',   "'PANEL FALLBACK '"],
  ['a clip that never came back',    "_jvTape('fetch FAILED'"],
- ['the player refusing outright',   "_jvTape('play BLOCKED'"],
- ['an error mid-clip',              "_jvTape('play ERROR'"]
+ // These two now reach the tape through fin(), which stamps whether the clip
+ // had actually started — so the needle is the call into fin, not a separate
+ // probe. taudio drives the real player and proves the events land.
+ ['the player refusing outright',   "fin('play BLOCKED')"],
+ ['an error mid-clip',              "fin('play ERROR')"],
+ // NEW, and the whole point of the 29 Aug fix: the teardown abort is seen,
+ // named, and NOT treated as the clip ending.
+ ['a teardown abort, ignored',      "_jvTape('abort ignored'"],
+ ['a clip that ran to its own end', "fin('play end')"],
+ ['a play replaced by a newer one', "prev('play REPLACED')"]
 ].forEach(([label,needle])=>t(src.indexOf(needle)>=0, label));
 
 console.log('\n  IT IS READ-ONLY — the recorder cannot change the sound:');
