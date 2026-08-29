@@ -17,10 +17,22 @@ global.document={addEventListener:()=>{},removeEventListener:()=>{},getElementBy
   createElement:()=>({style:{},classList:{add(){},remove(){}},appendChild(){}}),
   body:{classList:{contains:()=>false,add(){},remove(){},toggle:()=>{}},style:{},appendChild(){}},hidden:false};
 global.localStorage={getItem:()=>null,setItem:()=>{}};
-const CL=closure(['_sbFailMark','_sbFailedSince','_jvDebriefData','_jvDebriefSpoken','_jvDebriefHtml',
-                  '_dbMedian','_dbRoll','_dbIsSaid','_bfItemsFor','_jvNum','_jvSpokenDateStr','_escHtml','_JV_DEBRIEF_RE']);
-eval(CL.code);
-guard(['_jvDebriefData','_jvDebriefSpoken','_jvDebriefHtml','_dbMedian','_dbRoll','_dbIsSaid','_JV_DEBRIEF_RE'], n=>eval(n));
+// LIFTED PRECISELY, NOT CHASED FROM THE TOP.
+// _jvDebriefData references sbSelect, and chasing THAT pulls in the entire
+// Supabase layer - 883 names, including top-level statements that run on load
+// and throw. So the debrief's own functions are taken by name with no chasing,
+// sbSelect is stubbed by this suite anyway, and only the small shared helpers
+// are closed over (each is two or three names).
+const {defOf}=require('./_lift.cjs');
+const MINE=['_JV_DEBRIEF_DAYS','_JV_DEBRIEF_ROLL','_JV_DB_LIFT_TITLE','_JV_DB_CARDIO_TITLE',
+  '_JV_DB_SAYS_RE','_JV_DB_THEMES','_JV_DEBRIEF_RE',
+  '_dbMedian','_dbRoll','_dbIsSaid','_dbKind','_dbIsLift','_dbDay','_dbDs',
+  '_dbSayRate','_dbSayCount','_dbCap','_dbSayDate','_dbOnDate','_dbSayDayLog','_dbScreenDayLog',
+  '_jvDebriefData','_jvDebriefSpoken','_jvDebriefHtml'];
+const SHARED=['_bfItemsFor','_jvNum','_escHtml','_jvSpokenDateStr','_sbFailMark','_sbFailedSince'];
+eval(closure(SHARED).code);
+eval(MINE.map(defOf).join('\n'));
+guard(MINE.concat(SHARED), n=>eval(n));
 t(_bfItemsFor({description:'Squat: 100 lb x 5'}).items.length===1, 'smoke: the exercise parser answers');
 
 console.log('\n  THE MIDDLE, NOT THE AVERAGE — one freak day may not move it:');
@@ -65,9 +77,37 @@ sbSelect=async function(tbl){ return tbl==='workout_logs'?W:(tbl==='food_logs'?F
 let D=null;
 (async()=>{
   D=await _jvDebriefData('TEST_DEBRIEF');
-  t(D.training.last7.sessions===3, 'three lifting sessions inside 7 days', String(D.training.last7.sessions));
+  t(D.training.last7.sessions===3, 'three sessions inside 7 days', String(D.training.last7.sessions));
   t(D.training.last14.sessions===5 && D.training.last14.perWeek===2.5, 'five inside 14 days is 2.5 a week', D.training.last14.perWeek+'');
   t(D.training.last28.sessions===6 && D.training.last28.perWeek===1.5, 'six inside 28 days is 1.5 a week', D.training.last28.perWeek+'');
+  // ===== A SESSION IS A SESSION (ruling, 29 Aug) ======================
+  // Yoga and cardio COUNT, with the split shown beside the number. Before the
+  // ruling these windows counted lifting only and listed the rest as "not
+  // counted", which read as though the class had not happened.
+  const WY=W.concat([{id:99,title:'Hour Long Hot Yoga Class',description:'Hour long hot yoga class',date_str:dayStr(1),logged_at:iso(1)}]);
+  sbSelect=async function(tbl){ return tbl==='workout_logs'?WY:(tbl==='food_logs'?F:WT); };
+  const DY=await _jvDebriefData('TEST_DEBRIEF');
+  t(DY.training.last7.sessions===4 && DY.training.last7.lifting===3, 'the yoga class is counted as a session, and is not lifting',
+    DY.training.last7.sessions+' sessions, '+DY.training.last7.lifting+' lifting');
+  t(JSON.stringify(DY.training.last7.split)==='[{"kind":"lifting","n":3},{"kind":"yoga","n":1}]',
+    'and the split names it "yoga", not its whole title', JSON.stringify(DY.training.last7.split));
+  const hy=_jvDebriefHtml(DY,'Test Client');
+  t(/4 sessions \(3 lifting, 1 yoga\)/.test(hy), 'on screen it reads exactly his way: "4 sessions (3 lifting, 1 yoga)"');
+  t(/four sessions last week, three of them lifting/i.test(_jvDebriefSpoken(DY,'Test Client')),
+    'and spoken his way: "four sessions last week, three of them lifting"');
+  t(!/not counted as lifting/i.test(hy), 'and nothing is listed as "not counted" any more');
+
+  console.log('\n  HIS WORDING (rulings 2 and 3):');
+  t(!/Where they live/.test(src), '"Where they live" is gone from the file entirely');
+  t(/Typical day/.test(hy), 'the screen reads "Typical day"');
+  t(/typically eat around/.test(_jvDebriefSpoken(DY,'Test Client')), 'and the voice says "typically eat around"');
+  // Quarters, so a rate is never rounded: 19 sessions in 28 days is exactly
+  // four and three quarters a week.
+  t(_dbSayRate(4.75)==='four and three quarters', '4.75 a week is said exactly', _dbSayRate(4.75));
+  t(_dbSayRate(5.5)==='five and a half' && _dbSayRate(6)==='six' && _dbSayRate(4.25)==='four and a quarter',
+    'and so are halves, quarters and whole numbers');
+  // All four macros stay (ruling 4).
+  ['Calories','Protein','Carbs','Fat'].forEach(m=>t(new RegExp('>'+m+'<').test(hy), m+' is on the panel'));
   const c=D.nutrition.per.calories;
   t(c.lives.w4.value===2000, 'four identical days put the middle at 2,000', String(c.lives.w4.value));
   t(c.high && c.high.value===2000, 'and the heaviest stretch is 2,000 a day');

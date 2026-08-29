@@ -48575,6 +48575,15 @@ var _JV_DB_THEMES=[
 // quietly dropping them out of the count.
 var _JV_DB_LIFT_TITLE=new RegExp('\\b(push|pull|legs?|upper|lower|full body|arms?|chest|back|shoulders?|glutes?|quads?|hamstrings?|deadlift|squat|bench)\\b','i');
 var _JV_DB_CARDIO_TITLE=new RegExp('\\b(yoga|pilates|spin|class|walk|run|jog|bike|cycling|swim|row|tennis|cardio|hike|stretch|mobility|recovery|sauna)\\b','i');
+// The KIND of a session, for the split. "Hour Long Hot Yoga Class" is a yoga
+// session; the split says "1 yoga" and not the whole title, which is his own
+// phrasing and the only thing that fits on the line.
+function _dbKind(w){
+  if(_dbIsLift(w)) return 'lifting';
+  var m=_JV_DB_CARDIO_TITLE.exec(String((w&&w.title)||''));
+  if(m && m[1]) return String(m[1]).toLowerCase().replace(/s$/,'').replace(/^cycling$/,'bike');
+  return 'other';
+}
 function _dbIsLift(w){
   var t=String((w&&w.title)||'');
   if(_JV_DB_CARDIO_TITLE.test(t) && !_JV_DB_LIFT_TITLE.test(t)) return false;
@@ -48632,19 +48641,34 @@ async function _jvDebriefData(code){
   var daysAgo=function(d){ return Math.round((today-d)/86400000); };
 
   // ---- 1. TRAINING -----------------------------------------------------
-  var lifts=[], others=[];
+  // ===== A SESSION IS A SESSION (Yusuf, ruling, 29 Aug) ================
+  // These counted LIFTING only and listed the rest underneath as "not counted".
+  // His ruling: sessions are all training - lifting, yoga, cardio classes, all
+  // of it - and the split is shown beside the count, "6 sessions (5 lifting,
+  // 1 yoga)". Lifting is now a subset of the number, not the number itself.
+  var lifts=[], others=[], sess=[];
   W.forEach(function(w){
     var d=_dbDay(w.date_str, w.logged_at); if(!inWin(d)) return;
-    (_dbIsLift(w) ? lifts : others).push({d:d, ds:_dbDs(d), title:String(w.title||'').trim(), row:w});
+    var rec={d:d, ds:_dbDs(d), title:String(w.title||'').trim(), kind:_dbKind(w), row:w};
+    sess.push(rec);
+    (rec.kind==='lifting' ? lifts : others).push(rec);
   });
-  var win=function(n){ return lifts.filter(function(x){ return daysAgo(x.d)<n; }).length; };
-  var training={
-    last7:{sessions:win(7), perWeek:win(7)},
-    last14:{sessions:win(14), perWeek:Math.round((win(14)/2)*10)/10},
-    last28:{sessions:win(28), perWeek:Math.round((win(28)/4)*10)/10},
-    otherSessions:others.length,
-    otherTitles:others.map(function(x){ return x.title; }).filter(Boolean)
+  var inN=function(n){ return sess.filter(function(x){ return daysAgo(x.d)<n; }); };
+  // The split, as counts per kind, in the order they first appear.
+  var splitOf=function(rows){
+    var order=[], by={};
+    rows.forEach(function(r){ if(by[r.kind]==null){ by[r.kind]=0; order.push(r.kind); } by[r.kind]++; });
+    return order.map(function(k){ return {kind:k, n:by[k]}; });
   };
+  // n/1, n/2 and n/4 land exactly on quarters, so no rate here is ever rounded.
+  var winStat=function(n, weeks){
+    var rows=inN(n);
+    return {sessions:rows.length,
+            lifting:rows.filter(function(x){ return x.kind==='lifting'; }).length,
+            perWeek:rows.length/weeks,
+            split:splitOf(rows)};
+  };
+  var training={ last7:winStat(7,1), last14:winStat(14,2), last28:winStat(28,4) };
 
   // ---- 2. NUTRITION ----------------------------------------------------
   // Daily totals first, then everything is read off those. A day with meals
@@ -48789,12 +48813,16 @@ async function _jvDebriefData(code){
 // week" is a sentence, and this line is SPOKEN.
 function _dbSayRate(n){
   if(n==null) return '';
-  var whole=Math.floor(n), half=(Math.round((n-whole)*10)===5);
+  var whole=Math.floor(n), frac=Math.round((n-whole)*100);
   var W=['zero','one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve'];
   var w=(whole<=12)?W[whole]:String(whole);
-  if(half) return (whole===0?'half':(w+' and a half'));
-  if(Math.round(n)!==n) return String(Math.round(n*10)/10);
-  return w;
+  // The windows are one, two and four weeks, so a rate is always a whole
+  // number of quarters. Saying them as quarters means no rate spoken here is
+  // ever rounded - "four and three quarters a week" is exactly 19 in 28 days.
+  if(frac===0) return w;
+  var q={25:'a quarter', 50:'a half', 75:'three quarters'}[frac];
+  if(q) return (whole===0?q:(w+' and '+q));
+  return String(Math.round(n*100)/100);
 }
 function _dbSayCount(n){
   var W=['no','one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve'];
@@ -48836,20 +48864,24 @@ function _jvDebriefSpoken(d, name){
   var t=d.training;
   if(f.workouts) L.push('Training. Their workouts did not read just now, so I cannot tell you how often they trained. That is my read failing, not an empty month.');
   else{
-  var tr='Training. '+_dbCap(_dbSayCount(t.last7.sessions))+' lifting session'+(t.last7.sessions===1?'':'s')+' in the last week. '
-       + _dbCap(_dbSayRate(t.last14.perWeek))+' a week across two weeks. '
-       + _dbCap(_dbSayRate(t.last28.perWeek))+' a week across four weeks.';
-  if(t.otherSessions) tr+=' Also '+_dbSayCount(t.otherSessions)+' session'+(t.otherSessions===1?'':'s')+' that was not lifting'
-       + (t.otherTitles.length?(', '+t.otherTitles.slice(0,2).join(' and ')):'')+'.';
+  // HIS WORDING (ruling, 29 Aug): "six sessions last week, five of them
+  // lifting." The count leads and lifting qualifies it.
+  var tr='Training. '+_dbCap(_dbSayCount(t.last7.sessions))+' session'+(t.last7.sessions===1?'':'s')+' last week';
+  if(t.last7.sessions && t.last7.lifting!==t.last7.sessions) tr+=', '+_dbSayCount(t.last7.lifting)+' of them lifting';
+  else if(t.last7.sessions) tr+=', all of them lifting';
+  tr+='. '+_dbCap(_dbSayRate(t.last14.perWeek))+' a week across two weeks. '
+     + _dbCap(_dbSayRate(t.last28.perWeek))+' a week across four weeks.';
   L.push(tr);
   }
   var n=d.nutrition, c=n.per.calories, p=n.per.protein;
   if(f.food){ L.push('Nutrition. Their meals did not read just now, so there are no numbers to give you. That is my read failing, not an empty month.'); }
   else if(!n.days){ L.push('Nutrition. Nothing logged to eat in this period, so there is nothing to read.'); }
   else{
-    var nu='Nutrition. Calories sit around '+_jvNum(c.lives.roll.value)+' a day over the last few days, '
+    // HIS WORDING (ruling, 29 Aug): "typically eats around 1,868 a day".
+    // Same figure underneath - the middle day, not the average.
+    var nu='Nutrition. They typically eat around '+_jvNum(c.lives.roll.value)+' calories a day over the last four days, '
          + _jvNum(c.lives.w2.value)+' over two weeks and '+_jvNum(c.lives.w4.value)+' over four weeks. '
-         + 'Protein sits around '+p.lives.roll.value+', '+p.lives.w2.value+' and '+p.lives.w4.value+' grams.';
+         + 'Protein is typically '+p.lives.roll.value+' grams, then '+p.lives.w2.value+' and '+p.lives.w4.value+'.';
     if(c.high) nu+=' The heaviest stretch was '+_jvNum(c.high.value)+' a day from '+_dbSayDate(c.high.from)+' to '+_dbSayDate(c.high.to)+'.';
     if(c.low)  nu+=' The lightest was '+_jvNum(c.low.value)+' a day from '+_dbSayDate(c.low.from)+' to '+_dbSayDate(c.low.to)+'.';
     if(n.thin && n.thin.length) nu+=' '+_dbCap(_dbSayCount(n.thin.length))+' day'+(n.thin.length===1?' has':'s have')
@@ -48893,27 +48925,35 @@ function _jvDebriefHtml(d, name){
   var f=d.failed||{};
   var t=d.training;
   H+='<div class="dbrfSec">Training</div>';
+  // THE SPLIT, IN HIS STYLE (ruling, 29 Aug): "6 sessions (5 lifting, 1 yoga)".
+  // A window holding only one kind says so plainly rather than "(5 lifting)".
+  var splitTxt=function(win){
+    if(!win.sessions) return 'no sessions';
+    var s2=win.sessions+' session'+(win.sessions===1?'':'s');
+    if(win.split.length<2) return s2;
+    return s2+' ('+win.split.map(function(x){ return x.n+' '+x.kind; }).join(', ')+')';
+  };
+  var rate=function(n){ return (Math.round(n*100)/100)+' a week'; };
   if(f.workouts) H+='<div class="dbrfFail">Their workouts did not read just now. This is a failed read, not an empty month.</div>';
   else H+='<div class="dbrfRows">'
-   + '<div class="dbrfRow"><span>Last week</span><b>'+t.last7.sessions+' lifting session'+(t.last7.sessions===1?'':'s')+'</b></div>'
-   + '<div class="dbrfRow"><span>Last 2 weeks</span><b>'+t.last14.perWeek+' a week</b><i>'+t.last14.sessions+' total</i></div>'
-   + '<div class="dbrfRow"><span>Last 4 weeks</span><b>'+t.last28.perWeek+' a week</b><i>'+t.last28.sessions+' total</i></div>'
-   + (t.otherSessions?('<div class="dbrfNote">Not counted as lifting: '+e(t.otherTitles.join(', '))+'</div>'):'')
+   + '<div class="dbrfRow"><span>Last week</span><b>'+e(splitTxt(t.last7))+'</b></div>'
+   + '<div class="dbrfRow"><span>Last 2 weeks</span><b>'+rate(t.last14.perWeek)+'</b><i>'+e(splitTxt(t.last14))+'</i></div>'
+   + '<div class="dbrfRow"><span>Last 4 weeks</span><b>'+rate(t.last28.perWeek)+'</b><i>'+e(splitTxt(t.last28))+'</i></div>'
    + '</div>';
   var n=d.nutrition;
   H+='<div class="dbrfSec">Nutrition</div>';
   if(f.food){ H+='<div class="dbrfFail">Their meals did not read just now. This is a failed read, not an empty month.</div>'; }
   else if(!n.days){ H+='<div class="dbrfGap">Nothing logged to eat in this period.</div>'; }
   else{
-    H+='<div class="dbrfNote">Where they live is the middle day, not the average, so one heavy day cannot move it. '
+    H+='<div class="dbrfNote">Typical day is the middle day, not the average, so one heavy day cannot move it. '
       +'High and low are the heaviest and lightest run of '+n.roll+' days in a row.</div>';
     [['calories','Calories',''],['protein','Protein','g'],['carbs','Carbs','g'],['fat','Fat','g']].forEach(function(k){
       var p=n.per[k[0]]; if(!p) return;
       var u=k[2], f=function(v){ return v==null?'—':(_jvNum(v)+u); };
       H+='<div class="dbrfNut"><div class="dbrfNutT">'+k[1]+'</div><div class="dbrfRows">'
-       + '<div class="dbrfRow"><span>Where they live · last '+n.roll+' days</span><b>'+f(p.lives.roll.value)+'</b><i>'+p.lives.roll.days+' day'+(p.lives.roll.days===1?'':'s')+'</i></div>'
-       + '<div class="dbrfRow"><span>Where they live · 2 weeks</span><b>'+f(p.lives.w2.value)+'</b><i>'+p.lives.w2.days+' days</i></div>'
-       + '<div class="dbrfRow"><span>Where they live · 4 weeks</span><b>'+f(p.lives.w4.value)+'</b><i>'+p.lives.w4.days+' days</i></div>'
+       + '<div class="dbrfRow"><span>Typical day · last '+n.roll+' days</span><b>'+f(p.lives.roll.value)+'</b><i>'+p.lives.roll.days+' day'+(p.lives.roll.days===1?'':'s')+'</i></div>'
+       + '<div class="dbrfRow"><span>Typical day · 2 weeks</span><b>'+f(p.lives.w2.value)+'</b><i>'+p.lives.w2.days+' days</i></div>'
+       + '<div class="dbrfRow"><span>Typical day · 4 weeks</span><b>'+f(p.lives.w4.value)+'</b><i>'+p.lives.w4.days+' days</i></div>'
        + (p.high?('<div class="dbrfRow"><span>High</span><b>'+f(p.high.value)+' a day</b><i>'+e(p.high.from)+' to '+e(p.high.to)+'</i></div>'):'')
        + (p.low ?('<div class="dbrfRow"><span>Low</span><b>'+f(p.low.value)+' a day</b><i>'+e(p.low.from)+' to '+e(p.low.to)+'</i></div>'):'')
        + (!p.high&&!p.low?('<div class="dbrfGap">No run of '+n.roll+' days in a row logged, so there is no stretch to read.</div>'):'')
