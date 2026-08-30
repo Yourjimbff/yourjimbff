@@ -25,8 +25,16 @@ global.document={
   hidden:false
 };
 global.localStorage={getItem:function(){return null;}, setItem:function(){}, removeItem:function(){}};
+// saveProgramDay IS SEEDED ON PURPOSE (Calendar, 30 Aug). index.html reassigns
+// it at top level — "var _originalSaveProgramDay = saveProgramDay;" and then
+// "saveProgramDay = async function(){...}" — and definedIn() reads that
+// reassignment as the definition, so the closure never pulls the real
+// "async function saveProgramDay(){...}" and the reassignment line then throws
+// on a name that does not exist yet. It only shows up when the closure happens
+// to shrink and stops including the real one by another route, which is what a
+// change on my side did. Seeding it puts the definition first, where it belongs.
 const CL=closure(['_jimProgressPhotoAsked','_JIM_PROGRESS_RE','_jimProgressPhotoDay','_jimDataUrlToBlob',
-                  '_JIM_MEAL_CTX_RE','_jimAnchorDay','_dateStrDaysAgo','_tlDateStr']);
+                  '_JIM_MEAL_CTX_RE','_jimAnchorDay','_dateStrDaysAgo','_tlDateStr','saveProgramDay']);
 eval(CL.code);
 guard(['_JIM_PROGRESS_RE','_jimProgressPhotoAsked','_jimProgressPhotoDay','_jimAnchorDay','_dateStrDaysAgo'],
   n=>eval(n));
@@ -142,15 +150,29 @@ console.log('\n  6. JIM PINNED LEFT OF THE WEEK — the corrected scope:');
 // week to 326px on the deployed screen.
 t(/id="clJimSlot"/.test(src), 'the reserved slot exists');
 t(!/pgJimDock/.test(src), 'and this lane did NOT build a second panel beside it');
-t(/body\.cl-desk\.cl-jimOn \.clJimSlot\{display:block;\}/.test(src), 'their switch is the one that shows it');
-t(/body\.cl-jimOn\{--clJim:300px;\}/.test(src), 'and their variable is what moves the calendar over');
+// THE CONTRACT MOVED, THE ASSERTION DID NOT (Calendar, 30 Aug). The one-screen
+// ruling took the rail out, so the slot starts at the edge, is wider, and lays
+// its borrowed thread and bar out as a column — display:flex, not block. What
+// these two lines are actually for is that the ASSISTANT lane's switch is what
+// reveals the panel and the CALENDAR lane's variable is what moves the week
+// over. Both are still exactly true; only the literals changed. Pinned loosely
+// enough to survive a width ruling and tightly enough to still fail if either
+// side stops using the other's seam.
+t(/body\.cl-desk\.cl-jimOn \.clJimSlot\{display:(block|flex);\}/.test(src), 'their switch is the one that shows it');
+t(/body\.cl-jimOn\{--clJim:\d+px;\}/.test(src), 'and their variable is what moves the calendar over');
 t(!/#tProgram\.active\{[^}]*grid-template-columns/.test(src.replace(/\n/g,'')), 'the calendar page keeps its own layout');
 const MOUNT=src.slice(src.indexOf('function _pgJimDeskOn('), src.indexOf('function _pgJimSync('));
 t(/_clPaneMode\(\)==='cl3'/.test(MOUNT), 'gated on THEIR pane mode, not a second idea of desktop');
 t(/isTrainer\(cl\.code\)\) return false/.test(MOUNT), 'and never him — he keeps Jarvis');
 t(/classList\.add\('cl-jimOn'\)/.test(MOUNT), 'mounting turns their class on');
 t(/classList\.remove\('cl-jimOn'\)/.test(MOUNT), 'and unmounting takes it off, or the week keeps a margin for nothing');
-t(/_pgJimSync\(\); \}catch\(e\)\{\}\n    _clRightArrange\(\);/.test(src),
+// Was pinned as two adjacent lines. The pinned message and the rotating
+// placeholder now sit between them, so it asks the real question instead: are
+// both calls inside _clPaneApply, which is the function that already runs on
+// resize and on entering the calendar.
+const _ai=src.indexOf('function _clPaneApply(');
+const APPLY=src.slice(_ai, src.indexOf('\nfunction ', _ai+10));
+t(/_pgJimSync\(\)/.test(APPLY) && /_clRightArrange\(\)/.test(APPLY),
   'and it rides _clPaneApply, which already runs on resize and on entering the calendar');
 
 console.log('\n  IT BORROWS THE REAL CHAT, IT DOES NOT BUILD A SECOND ONE:');

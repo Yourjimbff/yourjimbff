@@ -41,8 +41,29 @@ function promptFrom(text, asTrainer){
   function isTrainer(c){ return c==='thegoat'; }
   var YOURJIMBFF_NUTRITION_FORMULA='<<nutrition formula>>';
   var JIM_ASK_RULES='<<ask rules>>';
+  // THE MACRO TABLE, LIFTED FROM WHICHEVER COPY IS BEING READ (Calendar,
+  // 30 Aug). buildCoachVoice now calls _mtPromptBlock(), so evaluating it
+  // needs the table — and it has to come from the SAME source string, or
+  // main's prompt would be built with this branch's table and the comparison
+  // below would compare the wrong two things. A copy that has no table (main,
+  // before this ships) simply does not define it and is evaluated as it was.
+  function _lf(re, endTest){
+    const i=src.findIndex(l=>re.test(l));
+    if(i<0) return '';
+    if(endTest){ for(let j=i;j<src.length;j++) if(endTest(src[j])) return src.slice(i,j+1).join('\n'); return ''; }
+    return src[i];
+  }
+  const _tbl=[
+    _lf(/^var MB_PALM_OZ/),
+    _lf(/^var MT_ROWS=\[/, l=>l.trim()===');'||l.trim()==='];'),
+    /^var MT_ROWS=\[/.test(src.find(l=>/^var MT_ROWS=\[/.test(l))||'')?'var _MT_BY=null;':'',
+    (function(){ const i=src.findIndex(l=>l.startsWith('function _mtIndex(')); if(i<0) return '';
+      let d=0,st=false; for(let j=i;j<src.length;j++){ for(const c of src[j]){ if(c==='{'){d++;st=true;} else if(c==='}'){d--;} } if(st&&d===0) return src.slice(i,j+1).join('\n'); } return ''; })(),
+    (function(){ const i=src.findIndex(l=>l.startsWith('function _mtPromptBlock(')); if(i<0) return '';
+      let d=0,st=false; for(let j=i;j<src.length;j++){ for(const c of src[j]){ if(c==='{'){d++;st=true;} else if(c==='}'){d--;} } if(st&&d===0) return src.slice(i,j+1).join('\n'); } return ''; })()
+  ].filter(Boolean).join('\n');
   let out;
-  eval(body+'\nout=buildCoachVoice();');
+  eval(_tbl+'\n'+body+'\nout=buildCoachVoice();');
   return out;
 }
 
