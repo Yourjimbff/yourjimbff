@@ -10710,6 +10710,13 @@ function noteBodyTalk(text){
     var row={ client_code: cl.code,
               note: 'Body-image signal: brought up "'+hit.part+'" '+recent.length+' times in the last 30 days. Worth a human conversation.',
               sent_at: new Date().toISOString() };
+    // THE PUBLIC KEY HERE IS DELIBERATE — DO NOT MOVE THIS TO THE DOOR. A CLIENT
+    // is writing this flag about themselves, and the trainer door refuses anyone
+    // without a trainer session, so routing it there would silence the one signal
+    // this whole function exists to raise. coach_notes is write-only to the anon
+    // key by design: INSERT is granted, SELECT/UPDATE/DELETE are revoked, which
+    // is exactly the shape a client-raised flag needs. Checked and queued on
+    // failure, which is the part that matters.
     (async function(){
       try{
         var r=await fetch(SB_URL+'/rest/v1/coach_notes',{method:'POST',
@@ -19539,21 +19546,23 @@ async function saveEditedWorkout(){
   }
 }
 
+// SAID "DELETED" ON EVERY REFUSAL. fetch() resolves on a 401, so the catch
+// never fired: the modal closed, the toast said Deleted, and loadTrainingHistory
+// redrew a list the workout was still in. Checked, then read back — a DELETE
+// that matched no row answers 204 like any other, so the reply alone proves
+// nothing and only the read-back does.
 async function deleteEditedWorkout(){
   if(!currentEditWorkoutId) return;
   if(!window.confirm('Delete this workout? This cannot be undone.')) return;
-  try{
-    await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+currentEditWorkoutId, {
-      method:'DELETE',
-      headers: sbHeaders()
-    });
-    closeM('mEditWorkout');
-    showToast('Deleted');
-    currentEditWorkoutId = null;
-    loadTrainingHistory();
-  }catch(e){
-    showToast('Could not delete');
-  }
+  var _wid=currentEditWorkoutId;
+  var r=await sbWrite('DELETE','workout_logs?id=eq.'+encodeURIComponent(_wid));
+  if(!r.ok){ showToast('Could not delete that - it is still there.'); return; }
+  var back=await sbSelect('workout_logs','select=id&id=eq.'+encodeURIComponent(_wid)+'&limit=1');
+  if(back && back.length){ showToast('It says removed but is still there - check it before trusting it.'); return; }
+  closeM('mEditWorkout');
+  showToast('Deleted');
+  currentEditWorkoutId = null;
+  loadTrainingHistory();
 }
 
 // ===== SAVE LOGGED WORKOUT TO PROGRAM =====
@@ -62070,13 +62079,23 @@ async function tpHistAppend(id){
   var line=String(el.value||'').trim(); if(!line) return;
   var w=_tpHistory.find(function(x){ return String(x.id)===String(id); }); if(!w) return;
   var desc=(w.description||'').trim();
-  w.description = desc ? desc+'\n'+line : line;
+  var _next = desc ? desc+'\n'+line : line;
+  // THE LINE WENT ON THE SCREEN BEFORE THE WRITE, and the write was never
+  // checked — so a refused PATCH left the session showing an exercise the
+  // server had never heard of, until the next load quietly took it away again.
+  // Nothing is painted now until the row has been read back with the line in it.
+  var r=await sbWrite('PATCH','workout_logs?id=eq.'+encodeURIComponent(id), {description:_next});
+  if(!r.ok){ showToast('Could not save that - nothing was added.'); return; }
+  var back=await sbSelect('workout_logs','select=id,description&id=eq.'+encodeURIComponent(id)+'&limit=1');
+  var row=(back&&back[0])||null;
+  if(!row || String(row.description||'').indexOf(line)<0){
+    showToast('It says saved but the line is not there - check it before trusting it.');
+    return;
+  }
+  w.description=_next;
   _tpHistOpen=null;
   _tpRepaint();
-  try{
-    await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+id,{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),body:JSON.stringify({description:w.description})});
-    showToast('\u2713 Added to that workout');
-  }catch(e){ showToast('Could not save'); }
+  showToast('Added to that workout');
 }
 // Shown when we've never been told, so a provisional week is visibly provisional
 // rather than a programme the client appears to have chosen.
@@ -63008,19 +63027,40 @@ async function loadAvailability(force){
   _availCache = rows;
   return rows;
 }
+// DELETE-THEN-INSERT WITH NEITHER HALF CHECKED WAS A WAY TO LOSE HIS WEEK.
+// fetch() resolves on a 401, so the old rows went and the new rows never
+// arrived, and this still returned true — the toast said "Availability saved",
+// his own device kept showing the hours out of localStorage, and the CLIENT
+// booking picker, which reads the table and not his cache, offered nobody a
+// single slot. A booking that never gets made is the most expensive silent
+// failure in this app, and it looked exactly like success from his side.
+//
+// Now the new rows are written FIRST and only the rows that were already there
+// are cleared, by id. Nothing is removed until its replacement has landed, so
+// the worst case is a duplicate window — visible on the screen and fixable in
+// one tap — rather than an empty week nobody can book into.
 async function saveAvailabilityRows(rows){
   try{ localStorage.setItem('yjb_avail', JSON.stringify(rows)); }catch(e){}
   _availCache = rows;
-  try{
-    await fetch(SB_URL+'/rest/v1/availability?client_code=eq.'+encodeURIComponent(_trainerCode()),
-      {method:'DELETE', headers:sbHeaders()});
-    if(rows.length){
-      await fetch(SB_URL+'/rest/v1/availability',{method:'POST',
-        headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
-        body:JSON.stringify(rows)});
-    }
-    return true;
-  }catch(e){ return false; }
+  var _acode=_trainerCode();
+  if(!_acode) return false;
+  var _aq='client_code=eq.'+encodeURIComponent(_acode);
+  // What is on the server right now — the only rows this call may remove.
+  // sbSelect answers [] on failure, so a refused read means we delete nothing
+  // and the check at the bottom reports the truth about it.
+  var _before=await sbSelect('availability','select=id&'+_aq)||[];
+  var _oldIds=_before.map(function(r){ return r.id; }).filter(function(x){ return x!=null; });
+  if(rows.length){
+    var _ins=await sbWrite('POST','availability', rows);
+    if(!_ins.ok) return false;          // nothing was removed, nothing is lost
+  }
+  if(_oldIds.length){
+    var _del=await sbWrite('DELETE','availability?id=in.('+_oldIds.join(',')+')');
+    if(!_del.ok) return false;
+  }
+  // READ IT BACK. Two 2xx replies are not a week of availability.
+  var _after=await sbSelect('availability','select=id&'+_aq)||[];
+  return _after.length===rows.length;
 }
 
 // ---- bookings ----
@@ -63805,7 +63845,9 @@ async function saveAvailability(){
     return {client_code:_trainerCode(), weekday:+r.weekday, start_min:+r.start_min, end_min:+r.end_min, tz:_myTz()};
   });
   var ok=await saveAvailabilityRows(rows);
-  try{ showToast(ok?'Availability saved':'Saved on this device only'); }catch(e){}
+  // "Saved on this device only" understated it: the server copy is what clients
+  // book against, so a failure here means they still see the OLD hours.
+  try{ showToast(ok?'Availability saved':'Could not save that - check your availability before trusting it.'); }catch(e){}
   try{ closeM('mAvail'); }catch(e){}
 }
 
@@ -65775,11 +65817,15 @@ function openProgressPhotoViewer(i){
   ov.style.display='flex';
 }
 
+// TOOK THE PHOTO OFF THE PAGE WHATEVER THE SERVER SAID, and said nothing at
+// all when the server said no — the photo simply came back on the next load.
+// It leaves the screen once the row is gone and confirmed gone, never before.
 async function deleteProgressPhoto(id){
   if(!confirm('Delete this progress photo?')) return;
-  try{
-    await fetch(SB_URL+'/rest/v1/progress_photos?id=eq.'+encodeURIComponent(id), {method:'DELETE', headers:sbHeaders()});
-  }catch(e){}
+  var r=await sbWrite('DELETE','progress_photos?id=eq.'+encodeURIComponent(id));
+  if(!r.ok){ _sbFailToast('delete that photo'); return; }
+  var back=await sbSelect('progress_photos','select=id&id=eq.'+encodeURIComponent(id)+'&limit=1');
+  if(back && back.length){ try{ showToast('It says removed but is still there - check it before trusting it.'); }catch(e){} return; }
   progressPhotos = progressPhotos.filter(function(p){ return String(p.id)!==String(id); });
   rendProgressPhotos();
   var ov=document.getElementById('ppViewer'); if(ov) ov.style.display='none';
@@ -77629,32 +77675,23 @@ async function cnPost(code) {
   (window._cnCache[code] = window._cnCache[code] || []).unshift(row);
   if (el) el.value = '';
   _cnRepaint(code);
+  // THROUGH THE DOOR. This wrote with the public key, which still holds INSERT
+  // on coach_notes — but SELECT, UPDATE and DELETE on that table are revoked, so
+  // this was the one half of the note's life that ran outside the door while
+  // reading it and deleting it already went through. noteSend is the op
+  // deleteClientNote's sibling already uses, and it stamps sent_at server-side.
+  // The long error triage below is gone with it: the door reports its own reason.
   try {
-    var res = await fetch(SB_URL + '/rest/v1/coach_notes', {
-      method: 'POST', headers: Object.assign({}, sbHeaders(), {'Prefer': 'return=representation'}),
-      body: JSON.stringify(row)
-    });
-    if (res.ok) {
-      var back = await res.json();
+    var w = await trainerWrite('noteSend', {client_code: code, note: body,
+                                            date_str: row.date_str, time_str: row.time_str});
+    if (w.ok) {
+      var back = w.rows || [];
       if (back && back[0] && back[0].id) window._cnCache[code][0].id = back[0].id;
       showToast('Note left for ' + ((CLIENTS[code] || {}).name || code).split(' ')[0]);
       return;
     }
-    // Say what actually went wrong. "Check the table exists" was a guess, and it
-    // was the wrong one when the table was already there.
-    var msg = '';
-    try { var j = await res.json(); msg = j.message || j.hint || j.details || ''; } catch (e) {}
-    console.error('cnPost failed', res.status, msg, row);
-    if (res.status === 401 || res.status === 403 || /row-level security|policy/i.test(msg)) {
-      showToast('Blocked by row-level security on coach_notes');
-    } else if (res.status === 404 || /does not exist|schema cache/i.test(msg)) {
-      showToast("Table not visible \u2014 run: notify pgrst, 'reload schema'");
-    } else if (/column/i.test(msg)) {
-      var col = (msg.match(/'([a-z_]+)'/) || [])[1];
-      showToast(col ? ("No '" + col + "' column on coach_notes") : 'A column on coach_notes is missing');
-    } else {
-      showToast('Note failed \u2014 ' + (msg || ('HTTP ' + res.status)));
-    }
+    console.error('cnPost failed', w.status, w.err, row);
+    showToast(w.err ? ('Note failed - ' + w.err) : 'Note failed - it is still in the box');
     // it stays on screen either way; nothing they wrote is thrown away
   } catch (e) {
     console.error('cnPost', e);
@@ -77662,13 +77699,27 @@ async function cnPost(code) {
   }
 }
 
+// THIS BUTTON HAD ALREADY STOPPED WORKING AND NOTHING SAID SO. coach_notes is
+// revoked to the public key — SELECT, UPDATE and DELETE all answer 42501 — so
+// this raw DELETE had been getting a 401 for as long as the lockdown has been
+// in place. The result was discarded, the note was pulled off the screen first,
+// and the repaint made it look done; it was back on the next load. That is the
+// whole argument for checking every write: a revoke that nobody can see is a
+// revoke that breaks the app in silence.
+//
+// Through the door, exactly like deleteClientNote's coach_notes branch, and the
+// screen is put back if the door refuses.
 async function cnDelete(id, code) {
   if (!id) return;
-  window._cnCache[code] = (window._cnCache[code] || []).filter(function (n) { return n.id !== id; });
+  var _prev = (window._cnCache[code] || []).slice();
+  window._cnCache[code] = _prev.filter(function (n) { return n.id !== id; });
   _cnRepaint(code);
-  try {
-    await fetch(SB_URL + '/rest/v1/coach_notes?id=eq.' + id, {method: 'DELETE', headers: sbHeaders()});
-  } catch (e) {}
+  var w = await trainerWrite('noteDelete', {id: id});
+  if (!w.ok) {
+    window._cnCache[code] = _prev;
+    _cnRepaint(code);
+    try { showToast('Could not delete that note - it is still there'); } catch (e) {}
+  }
 }
 
 function _cnRepaint(code) {
