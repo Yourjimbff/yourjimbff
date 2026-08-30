@@ -302,7 +302,13 @@ let D=null;
   const desk=src.slice(src.indexOf('function _pfCard('), src.indexOf('function feedCloseDetail('));
   t(/_cuDue\(b\.code\)/.test(desk) && /jvCatchUp\(/.test(desk),
     'the desktop cockpit card carries it');
-  const mob=src.slice(src.indexOf('SHARE DAY ON THE PHONE'), src.indexOf('SHARE DAY ON THE PHONE')+4000);
+  // SLICED TO THE BRANCH'S OWN END, not to a fixed 4,000 characters. The window
+  // was 693 characters short the first time a comment was added above the button
+  // (30 Aug, the client-group order) and this suite went red over code that was
+  // still exactly where it belongs. A byte count is not a boundary.
+  const mobA=src.indexOf('SHARE DAY ON THE PHONE');
+  const mobB=src.indexOf("if(_grp) html+='</div>';", mobA);
+  const mob=src.slice(mobA, mobB>mobA?mobB+40:mobA+6000);
   t(/_cuDue\(c\)/.test(mob) && /jvCatchUp\(/.test(mob),
     'and so does the mobile front desk');
   // IN the row, not merely built — asserted by where it sits between the row's
