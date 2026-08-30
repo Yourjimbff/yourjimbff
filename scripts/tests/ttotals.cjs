@@ -98,9 +98,28 @@ t('and a MEAL row keeps its ungrouped number', ()=>
 // ---- MORNING TO NIGHT ------------------------------------------------------
 t('eat time wins over the log stamp', ()=>O._citeDayMins(CHRIS[0])===9*60+14);
 t('a lowercase "9:14am" reads the same as "9:14 AM"', ()=>O._citeDayMins(CHRIS[3])===9*60+14);
-t('a workout has only its log time, and uses it', ()=>O._citeDayMins(CHRIS[2])===19*60+53);
+// ===== A LOG STAMP IS AN INSTANT, READ ON THE DEVICE'S CLOCK ===============
+// These three assertions were UTC-bound and this suite was RED on his own
+// machine — 3 failures in Eastern, green only in UTC. The ROWS are right: a
+// workout stamped 19:53:00+00:00 is real, and it prints "3:53 PM" on his feed,
+// which is what the card shows. What was wrong is the expectation: it read the
+// Z-time as if it were a wall clock, so it asked _citeDayMins (which uses
+// getHours(), deliberately — the day is the client's, the clock is the
+// device's) to answer in a zone it does not work in.
+//
+// Expected values now come from the SAME conversion the card prints beside the
+// row, so each one states the rule instead of a coincidence of zone, and the
+// suite holds in Eastern, UTC and anywhere else.
+const localMins=iso=>{ const d=new Date(iso); return d.getHours()*60+d.getMinutes(); };
+t('a workout has only its log time, and uses it',
+  ()=>O._citeDayMins(CHRIS[2])===localMins(D+'19:53:00+00:00'));
+// ...and it is genuinely READING that stamp, not falling through to the 0 that
+// a clockless thing gets. Without this the assertion above would pass on a
+// function that always answered midnight, in any zone.
+t('...and that is a real reading, not the clockless fallback',
+  ()=>O._citeDayMins(CHRIS[2])!==0 && O._citeDayMins(CHRIS[2])===localMins(D+'19:53:00+00:00'));
 t('a meal with no eat time falls back to its log time',
-  ()=>O._citeDayMins(food('Lunch',null,D+'13:05:00+00:00',1,1,1,1))===13*60+5);
+  ()=>O._citeDayMins(food('Lunch',null,D+'13:05:00+00:00',1,1,1,1))===localMins(D+'13:05:00+00:00'));
 // The shared helper answers 0 for a thing with no clock at all, so it leads the
 // day rather than trailing it. That is ITS call, not this card's — the point of
 // consuming it is that the card and the message he sends agree, and a rule this
@@ -108,11 +127,35 @@ t('a meal with no eat time falls back to its log time',
 t('a thing with no clock at all is not silently dropped',
   ()=>O._citeDayMins({kind:'wo',data:{}})===0);
 // The card he actually reported.
-// Dinner was EATEN at 19:20; the workout was LOGGED at 19:53 and has no clock of
-// its own. So dinner comes first — my first expectation had these the wrong way
-// round and the fixture bug was hiding it.
+// THE ORDER DEPENDS ON THE READER'S ZONE, because eat_time is a bare wall clock
+// the client typed and logged_at is an instant. Dinner was EATEN at 7:20 PM.
+// The workout has no clock of its own and falls back to its stamp, which is
+// 19:53Z — 3:53 PM on his Eastern screen, and 7:53 PM on a UTC box. So the
+// truthful expectation is computed, not written down: on his machine the Pull
+// sits before dinner, which is exactly what the card prints beside the rows.
+//
+// The previous fixed string said "Dinner > Pull" and was reasoned from reading
+// 19:53Z as a wall clock. It is right only in UTC.
+//
+// The expectation is CROSS-COMPUTED, not enumerated: the minutes below are read
+// off the eat_time strings by hand, the way a person reads them, and the
+// workout takes its stamp on the local clock. Sorting that independent list
+// must agree with the order _citeDayMins produces. So this checks the parser
+// (both "9:14 AM" and the lowercase "9:14am"), the eat-time-wins rule and the
+// log-time fallback all at once, and it is true in every zone — in Tokyo the
+// Pull legitimately sorts to the front, and that is the card there.
+const BY_HAND=[9*60+14, 13*60+40, null, 9*60+14, 19*60+20, 13*60+40];   // null = the workout
+const CHRIS_EXPECT=CHRIS.map((it,i)=>({
+    name: it.kind==='food' ? it.data.meal : it.data.title,
+    mins: BY_HAND[i]==null ? localMins(D+'19:53:00+00:00') : BY_HAND[i],
+    ts:   it.ts||0,
+  })).sort((a,b)=>(a.mins-b.mins)||(a.ts-b.ts)).map(x=>x.name).join(' > ');
 t('CHRIS AUG 28 reads morning to night', ()=>
-  order(CHRIS).join(' > ')==='Breakfast > Breakfast > Lunch > Lunch > Dinner > Pull');
+  order(CHRIS).join(' > ')===CHRIS_EXPECT);
+// Whatever the zone, the four meals still run in eat-time order and the day
+// never reverts to the log order he reported. That part is zone-free.
+t('...and the meals run breakfast, breakfast, lunch, lunch in every zone', ()=>
+  order(CHRIS).filter(x=>x!=='Pull').join(' > ')==='Breakfast > Breakfast > Lunch > Lunch > Dinner');
 t('...and NOT the log order he was shown', ()=>
   order(CHRIS).join(' > ')!=='Breakfast > Lunch > Pull > Breakfast > Dinner > Lunch');
 // Ben Plimpton, Aug 29: logged 18:31-18:33, eaten across the day.
