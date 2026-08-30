@@ -219,6 +219,31 @@ const BANK = [
  noAssertedFact:true,
  why:'A DEPARTED client, named in this repo as one that was deleted. Whether somebody is still on the roster is exactly the fact it cannot see.'},
 
+// ── CATEGORY 5c — TAGGED QUESTIONS (6). His order: 100%, not 99. ──
+// A TAG IS THE ONE IDENTITY IN THIS SYSTEM WITH NO INFERENCE BEHIND IT. He
+// picked the person off a list and the literal client_code is in the text, so
+// there is nothing to resolve, nothing to score and nothing to be nearly right
+// about. Anything less than every one of these is not a bad score, it is a
+// broken law — which is why they are graded at 100 and not against a bar.
+{id:54, cat:5, layer:'route', q:"how is @chrism1 doing",
+ expect:{tool:'debrief', client:'chrism1', confirm:false, askWhich:'none'}, tagged:true,
+ why:'The plain case. The tag says who; nothing else may.'},
+{id:55, cat:5, layer:'route', q:"what did @blakeb1 eat yesterday",
+ expect:{tool:'client_day', client:'blakeb1', confirm:false, askWhich:'none'}, tagged:true,
+ why:'A tag with a day. The day still parses; the person is settled.'},
+{id:56, cat:5, layer:'route', q:"how is Kelly doing @chrism1",
+ expect:{tool:'ANY', client:'chrism1', confirm:false, askWhich:'none'}, tagged:true,
+ why:'A TAG BEATS AN UNTAGGED NAME IN THE SAME SENTENCE. Not a tie to break - the untagged name simply loses.'},
+{id:57, cat:5, layer:'route', q:"how is @anthonyd1 getting on",
+ expect:{tool:'debrief', client:'anthonyd1', confirm:false, askWhich:'none'}, tagged:true,
+ why:'THREE Anthonys, and a tag ends it. This is the whole point: the ambiguity that must otherwise be asked about does not arise.'},
+{id:58, cat:5, layer:'route', q:"move @spencerr1 lunch to Thursday",
+ expect:{tool:'meal_move', client:'spencerr1', confirm:true, askWhich:'none'}, tagged:true,
+ why:'A tag settles WHO. It settles nothing about whether he meant it - confirm still stands on a write.'},
+{id:59, cat:6, layer:'route', q:"@everyone who has not logged today",
+ expect:{tool:'roster_answer', client:'', confirm:false, askWhich:'none'}, everyone:true,
+ why:'@everyone is a SCOPE, not a person. Roster-wide, and the client field stays empty.'},
+
 // ── CATEGORY 6 — ROSTER-WIDE INTELLIGENCE (5). The queue-feeding queries. ──
 {id:42, cat:6, layer:'route', q:"who's slipping",
  expect:{tool:'roster_answer', client:'', confirm:false, askWhich:'none'},
