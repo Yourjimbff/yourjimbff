@@ -175,6 +175,33 @@ const nbt=lines.slice(lines.findIndex(l=>/function noteBodyTalk/.test(l))).slice
 t(/rest\/v1\/coach_notes/.test(nbt) && /DO NOT MOVE THIS TO THE DOOR/.test(nbt),
   'and the client-raised flag stays on the public key, with the reason written down');
 
+console.log('\n  4b. THE KILL SWITCH SURVIVES EVERYTHING EXCEPT HIS WORD (his order, 30 Aug):');
+// It did not, and that is why this exists. The state lived in one key, and a
+// single removeItem — mine, while measuring the failure — put the brain back on
+// about a minute after he had thrown the switch. A kill anybody can clear by
+// accident is not a kill.
+const killW=lines.filter(l=>!/^\s*\/\//.test(l))
+  .filter(l=>/yjb_brain_live|yjb_brain_killed|_JV_FLIP_KEY|_JV_FLIP_KILLED/.test(l))
+  .filter(l=>/setItem|removeItem/.test(l));
+// Every write to either key must be inside _jvBrainKill. Four lines live there;
+// anything else touching them is a way for the kill to be undone by accident.
+t(killW.length===4, 'only the one guarded writer touches the kill state',
+  killW.length+' write line(s): '+killW.map(l=>l.trim().slice(0,52)).join(' | '));
+t(/function _jvBrainKill\(off, by\)\{[\s\S]{0,120}if\(by!=='his-word'\) return false;/.test(src),
+  'and it refuses any caller that is not his word');
+t(/localStorage\.setItem\(_JV_FLIP_KILLED/.test(src), 'a kill writes a SECOND durable key');
+t(/if\(localStorage\.getItem\(_JV_FLIP_KILLED\)\) return true;/.test(src),
+  'and that key alone keeps the brain off, whatever the other one says');
+t(/\}catch\(e\)\{ return true; \}   \/\/ FAIL CLOSED/.test(src),
+  'storage it cannot read is not permission - it fails closed');
+// One definition and ONE call site: the branch handles both directions through
+// !back, so there is a single place in the file where the kill state changes.
+// (This first asserted three and was simply wrong about the code.)
+t((src.match(/_jvBrainKill\(/g)||[]).length===2,
+  'one definition, one call site - a single place the kill state can change',
+  String((src.match(/_jvBrainKill\(/g)||[]).length));
+t(/_jvBrainKill\(!back, 'his-word'\)/.test(src), 'and that call is the one his two phrases reach');
+
 console.log('\n  5. THE ACCESS-CODE ROUTINE STAYS BURIED (his word, 29 Aug):');
 // It PATCHed ten tables unchecked, never wrote to `clients` (anon UPDATE there is
 // revoked), and registered the new code in this device's localStorage only — so it

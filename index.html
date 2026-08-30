@@ -13559,8 +13559,19 @@ function _jvResolveClient(name){
   // Dictation frequently drops the apostrophe entirely — "move Blakes call".
   // LAST resort, and only when it lands on exactly one person, so a real name
   // ending in s is never quietly replaced by a shorter one.
+  // WHERE HAYDEN CAME FROM (traced 30 Aug). This rule exists for a dropped
+  // possessive — "move Blakes call" — and it turned the ENGLISH VERB "has" into
+  // the two-letter stem "ha", which prefix-matches "hayden hauser" uniquely on a
+  // roster of 84. His own question, "has this guy Dante logged anything", named
+  // a client who had nothing to do with it. The model never said Hayden; three
+  // letters of his own sentence did.
+  //
+  // A stem this short cannot identify anybody. Two characters match dozens of
+  // names by luck and one matches hundreds, so below three the rule is not
+  // repairing a possessive, it is guessing. Dante was in that same sentence and
+  // resolves perfectly — he was simply never reached, because "has" comes first.
   var noS=raw.replace(/s$/i,'');
-  if(noS && noS!==raw){ var h2=_jvResolveOne(noS); if(h2.length===1) return h2; }
+  if(noS && noS!==raw && noS.length>=3){ var h2=_jvResolveOne(noS); if(h2.length===1) return h2; }
   return [];
 }
 function _jvResolveOne(name){
@@ -22343,7 +22354,12 @@ function _jvFindClientIn(text){
   }catch(e){}
   var stripped=_jvStripBookWords(_pre);
   var toks=stripped.split(/\s+/).filter(Boolean)
-    .filter(function(w){ return !/^(and|&|the|a|an|for|to|with|at|on|wants?|would|like|likes|please|us|him|her|them|is|was)$/i.test(w); })
+    // ELEVEN STOPWORDS WAS NOT A LIST, IT WAS A SAMPLE. "has", "this", "guy",
+    // "logged" and "anything" were all offered to the roster matcher as
+    // candidate names out of one short question. A word this ordinary is never
+    // what he called somebody, and every one of them costs a chance to reach
+    // the name he actually said.
+    .filter(function(w){ return !/^(and|&|the|a|an|for|to|with|at|on|wants?|would|like|likes|please|us|him|her|them|is|was|has|have|had|this|that|these|those|guy|guys|man|dude|been|being|are|were|did|does|do|done|get|got|any|anything|something|nothing|logged|logging|log|logs|about|from|into|over|what|when|where|who|whom|whose|why|how|his|hers|our|out|off|up|down|then|than|there|here|just|only|also|still|yet|not|but|or|if|so|as|it|its|new|old|last|next|today|tomorrow|yesterday|week|month|year|day|days)$/i.test(w); })
     // A DICTATED MACRO IS NOT A NAME (Yusuf, caught live on the scratch corpus).
     // "28 g of protein" handed this resolver a bare "g" and it came back with
     // George Tremoulis — a real client, on a real roster, from a unit. Said out
@@ -36636,11 +36652,37 @@ var _JV_FLIP_KEY = 'yjb_brain_live';
 // THE KILL SWITCH IS A STOP, NOT A SETTING. It is checked before anything else
 // on every single turn, it persists, and nothing can turn it back on except him
 // saying so. An instant kill that needs a menu is not instant.
+// GUARDED STORAGE (his order, 30 Aug: "kill survives everything except my
+// word"). The first version kept the state in ONE key, and a single
+// removeItem put the brain straight back on — which is exactly what happened
+// while the failure was being measured, about a minute after he had thrown the
+// switch. Clearing a key is the easiest accident in this file to have.
+//
+// So a kill writes a SECOND, durable key, and _jvBrainLive refuses while that
+// key exists whatever the first one says. Removing either one on its own does
+// not resurrect the brain, and only the ON phrase clears the durable one.
+// Nothing else in this file may write either key; twrite asserts that.
+var _JV_FLIP_KILLED='yjb_brain_killed';
 function _jvBrainKilled(){
-  try{ return localStorage.getItem(_JV_FLIP_KEY)==='off'; }catch(e){ return false; }
+  try{
+    if(localStorage.getItem(_JV_FLIP_KILLED)) return true;   // durable, wins outright
+    return localStorage.getItem(_JV_FLIP_KEY)==='off';
+  }catch(e){ return true; }   // FAIL CLOSED. Storage we cannot read is not permission.
 }
-function _jvBrainKill(off){
-  try{ localStorage.setItem(_JV_FLIP_KEY, off?'off':'on'); }catch(e){}
+// THE ONLY WRITER. `by` is required and recorded so a future reader can see
+// that every call came from him saying one of the two phrases, and nothing else.
+function _jvBrainKill(off, by){
+  if(by!=='his-word') return false;      // no other caller may touch the kill state
+  try{
+    if(off){
+      localStorage.setItem(_JV_FLIP_KEY,'off');
+      localStorage.setItem(_JV_FLIP_KILLED, new Date().toISOString());
+    } else {
+      localStorage.removeItem(_JV_FLIP_KILLED);
+      localStorage.setItem(_JV_FLIP_KEY,'on');
+    }
+  }catch(e){}
+  return true;
 }
 function _jvBrainLive(){
   try{
@@ -36679,7 +36721,7 @@ async function _jtRunItem(t, capture, ctx){
     var _on=!_off && _JV_BRAIN_ON_RE.test(_msg);     // OFF wins, always
     if(_off || _on){
       var back=_on;
-      _jvBrainKill(!back);
+      _jvBrainKill(!back, 'his-word');
       return {status:'talk', src:t, html:true,
         line:(back ? 'Brain back on. I am reading what you mean again.'
                    : 'Brain off. Back to the old gates, exactly as they were.')};
@@ -38653,8 +38695,20 @@ function _jtQuoteVerdict(t){
   // own notes and types a question around them constantly; a question put to
   // this engine is his by definition, whatever shape the text arrived in.
   if(_jtAddressedToJarvis(t)) return {v:'his', quoted:'', sig:['to-jarvis']};
+  // THE PASTE MARK NO LONGER MAKES ANYTHING A CLIENT'S MESSAGE (his order,
+  // 30 Aug, after it cost him a flip morning). He pastes and dictates into his
+  // own composer constantly — that is how he talks to this thing — and the
+  // mechanical act of pasting says nothing whatever about whose words they are.
+  // "has this guy Dante logged anything", pasted, was classified as a client
+  // message and answered with a compose card for a client who had nothing to do
+  // with it. Typed, the same sentence was right ten times out of ten.
+  //
+  // A forwarded message is recognised by what it SAYS — quotation marks, an
+  // attribution, an addressee — and never by how it arrived. Those signals are
+  // untouched below, which is why every red-team injection still lands: they
+  // all carry "Kelly sent me this", "client text:", "Spencer wrote:".
   var p=_jtPastedIn(t);
-  if(p) return {v:'quoted', quoted:p, sig:['paste']};
+  if(p && _jtQuoteSignals(t).length) return {v:'quoted', quoted:p, sig:['paste'].concat(_jtQuoteSignals(t))};
   var sig=_jtQuoteSignals(t);
   // ONE STRONG SIGNAL IS ENOUGH, AND NOTHING WEAKER EVER IS. It used to take two
   // of five, where two of the five were length and line count — so a long typed
@@ -38799,7 +38853,13 @@ async function _jtQuotedTurn(quoted, mine){
       var _w=String(who||'').trim();
       if(_w && new RegExp('\\b'+_w.replace(/[.*+?^${}()|[\]\\]/g,'\\$&').split(/\s+/)[0]+'\\b','i').test(String(quoted||''))) _wIn=_w;
     }catch(e){ _wIn=''; }
-    var f=_jvFindClientIn(_wIn||quoted);
+    // THE GUARD ABOVE FELL BACK INTO THE THING IT GUARDS AGAINST. When the
+    // model's name was NOT in the quoted words it set _wIn empty, and this line
+    // then scanned the WHOLE message for anybody at all — which is exactly the
+    // unguarded resolve the comment above says was fixed. A rejected name must
+    // resolve NOBODY. The card then makes no claim about who sent it, which is
+    // the honest state when nothing in the words names a person.
+    var f=_wIn ? _jvFindClientIn(_wIn) : {hits:[]};
     if(f && f.hits && f.hits.length===1){ code=f.hits[0]; nm=(CLIENTS[code]||{}).name||code; }
   }catch(e){}
   // THE HEADER MUST NOT CLAIM WHAT THE MODEL GUESSED (Yusuf, ruling, 22 Aug).
