@@ -216,10 +216,22 @@ t(live.length>500, 'the live path is findable', String(live.length));
 // actually runs.
 const turn=src.slice(src.indexOf('async function _jtRunItem(t, capture, ctx){'),
                      src.indexOf('async function _jtRunItemShadow(t, capture, ctx){'));
-t(turn.indexOf('_JV_KILL_RE.test')>=0 && turn.indexOf('_JV_KILL_RE.test')<turn.indexOf('_live=_jvBrainLive()'),
+t(turn.indexOf('_JV_BRAIN_OFF_RE.test')>=0 && turn.indexOf('_JV_BRAIN_OFF_RE.test')<turn.indexOf('_live=_jvBrainLive()'),
   'the kill switch is checked BEFORE the brain is ever consulted');
-t(turn.indexOf('_JV_KILL_RE.test')<turn.indexOf('_jvBrainRoute'),
+t(turn.indexOf('_JV_BRAIN_OFF_RE.test')<turn.indexOf('_jvBrainRoute'),
   'and before the model is called at all');
+// A ONE-WAY KILL IS A TRAP, and the first version was one: "brain off" worked
+// and "brain back on" did not, because both ON alternatives had a word missing
+// from the middle. Caught by running it, not by reading it.
+const OFF=eval(defOf('_JV_BRAIN_OFF_RE').replace(/^var _JV_BRAIN_OFF_RE=/,''));
+const ON=eval(defOf('_JV_BRAIN_ON_RE').replace(/^var _JV_BRAIN_ON_RE=/,''));
+['brain off','turn the brain off','stop the brain','kill the brain','go back to the old way']
+  .forEach(x=>t(OFF.test(x) && !(!OFF.test(x)&&ON.test(x)), 'OFF: '+JSON.stringify(x)));
+['brain on','brain back on','turn the brain back on','turn the brain on','put the brain back on','start the brain']
+  .forEach(x=>t(ON.test(x) && !OFF.test(x), 'ON:  '+JSON.stringify(x)));
+// And OFF must win any sentence that trips both, or a stop could read as a start.
+t(OFF.test('turn the brain off'), 'a stop is never read as a start');
+t(turn.indexOf('_off=_JV_BRAIN_OFF_RE')<turn.indexOf('_on=!_off'), 'OFF is evaluated first, in code');
 t(/localStorage\.setItem\(_JV_FLIP_KEY/.test(src), 'and it persists, so a reload does not undo a stop');
 t(/if\(_jvBrainKilled\(\)\) return false;/.test(src), 'a killed brain is never live again by itself');
 t(/if\(!cl \|\| !isTrainer\(cl\.code\)\) return false;/.test(src), 'and it is trainer-side only, as ordered');
