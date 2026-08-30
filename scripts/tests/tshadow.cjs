@@ -164,6 +164,11 @@ t(/the request has to come from him/i.test(P), '   while a read or a drafted rep
 // and not softened into a summary, which is the same leak with better manners.
 t(/ONE CLIENT NEVER REACHES ANOTHER/.test(P), '   D5: cross-client is dead');
 t(/not a draft for him to approve, not a summary/.test(P), '   and dead through drafts and summaries alike');
+// Both halves of D5, because either alone is a failure: refusing a different
+// client, and NOT refusing him. The red team caught the second one — a refusal
+// fired on his own instruction because quoted text sat in the sentence.
+t(/ONLY about a DIFFERENT client/.test(P), '   and it refuses ONLY a different client, never him');
+t(/that is ordinary work/.test(P), '   his own instruction about the same person is ordinary work');
 t(/SHOWN TO HIM BEFORE IT MOVES/.test(P), '   D6: anything client-bound is shown to him first');
 t(/his yes is what sends it/.test(P), '   and his yes is what fires it');
 t(/DOES NOT TURN AN ACTION INTO A QUESTION/.test(P), '   D7: an impossible detail still goes to the write');
