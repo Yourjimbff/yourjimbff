@@ -186,19 +186,60 @@ const leaks=JV_TOOLS.filter(x=>/"|say |type |the word|phrase/i.test(x.p));
 t(leaks.length===0, 'and not one of them is described by a trigger word', leaks.map(x=>x.id).join(','));
 t(/full debrief/.test(P)===false, 'the prompt never lists his phrasings, so new ones resolve too');
 
-console.log('\n  THE SEAM CANNOT TOUCH THE LIVE PATH:');
-const wrap=src.slice(src.indexOf('async function _jtRunItem(t, capture, ctx){'),
+console.log('\n  THE SHADOW PATH IS STILL WHOLE (it is what the kill switch returns him to):');
+// THIS BLOCK USED TO GUARD _jtRunItem AND NOW GUARDS _jtRunItemShadow. The flip
+// was called on 30 Aug, so the wrapper awaits the brain when live — deliberately.
+// The old assertion "the brain is NEVER awaited" kept PASSING after the flip
+// went in, because the live path spells it Promise.race(_jvBrainRoute(t), ...)
+// and the regex was looking for the literal `await _jvBrainRoute`. It was
+// asserting a property that had stopped being true. That is the most dangerous
+// kind of green there is, and it is why the shadow path is now guarded by name.
+const wrap=src.slice(src.indexOf('async function _jtRunItemShadow(t, capture, ctx){'),
                      src.indexOf('async function _jtRunItemGates(t, capture, ctx){'));
-t(wrap.length>200, 'the wrapper is findable', String(wrap.length));
+t(wrap.length>200, 'the pre-flip path still exists', String(wrap.length));
 t(/var out=await _jtRunItemGates\(t, capture, ctx\);/.test(wrap), 'it calls the untouched ladder');
 t(/return out;/.test(wrap), 'and returns exactly what the ladder returned');
-// THE ONE THING THAT WOULD MAKE THIS DANGEROUS: awaiting the brain.
-t(!/await _jvBrainRoute/.test(wrap), 'the brain is NEVER awaited on the way to an answer');
+t(!/await _jvBrainRoute/.test(wrap), 'and here the brain is still NEVER awaited');
 t(/_sh=_jvBrainRoute\(t\);/.test(wrap), 'it is started and left to land on its own');
 t(/\.catch\(function\(e\)\{ _jvShadowRecord/.test(wrap), 'and a brain that fails is recorded, not thrown');
 t((wrap.match(/try\{/g)||[]).length>=2, 'every part of the seam sits in a try', String((wrap.match(/try\{/g)||[]).length));
-// AND IT NEVER DISPATCHES. Shadow means shadow.
-t(!/_jvBrainDispatch|out=b\.|out\.tool=/.test(wrap), 'nothing the brain says is ever acted on');
+
+console.log('\n  THE FLIP, called by him 30 Aug — reads only, writes untouched:');
+const live=src.slice(src.indexOf('var _JV_FLIP_AT'),
+                     src.indexOf('async function _jtRunItemShadow(t, capture, ctx){'));
+t(live.length>500, 'the live path is findable', String(live.length));
+// THE KILL SWITCH IS THE WHOLE SAFETY STORY. It is checked before anything else
+// happens on the turn, it persists, and nothing but him can undo it.
+// Scoped to the TURN BODY, not the whole live block: _jvBrainLive is defined
+// above _jtRunItem, so searching the block found its definition rather than its
+// call and the ordering test was meaningless. Order only matters where the turn
+// actually runs.
+const turn=src.slice(src.indexOf('async function _jtRunItem(t, capture, ctx){'),
+                     src.indexOf('async function _jtRunItemShadow(t, capture, ctx){'));
+t(turn.indexOf('_JV_KILL_RE.test')>=0 && turn.indexOf('_JV_KILL_RE.test')<turn.indexOf('_live=_jvBrainLive()'),
+  'the kill switch is checked BEFORE the brain is ever consulted');
+t(turn.indexOf('_JV_KILL_RE.test')<turn.indexOf('_jvBrainRoute'),
+  'and before the model is called at all');
+t(/localStorage\.setItem\(_JV_FLIP_KEY/.test(src), 'and it persists, so a reload does not undo a stop');
+t(/if\(_jvBrainKilled\(\)\) return false;/.test(src), 'a killed brain is never live again by itself');
+t(/if\(!cl \|\| !isTrainer\(cl\.code\)\) return false;/.test(src), 'and it is trainer-side only, as ordered');
+// WRITES DO NOT MOVE. This is what keeps a first live day survivable.
+t(/if\(tool==='debrief' && nm\)/.test(live) && /if\(tool==='day_board'\)/.test(live),
+  'the dispatch map covers reads');
+['meal_move','log_food','book','note','rename','phone_save','program','new_client','stop']
+  .forEach(function(w){ t(live.indexOf("tool==='"+w+"'")<0, '   no write path for '+w+' — it stays on the ladder'); });
+// A BRAIN THAT HANGS MUST NOT HANG HIM.
+t(/Promise\.race/.test(live) && /4000/.test(live), 'the brain is bounded, and a slow one hands back to the ladder');
+t(/return await _jtRunItemGates\(t, capture, ctx\);/.test(live),
+  'and anything it does not own falls through to the ladder untouched');
+t(/_jvShadowRecord\(t, 'LIVE:/.test(live), 'every live decision is recorded on the tape');
+// SCOPED TO `wrap`, WHICH IS THE SHADOW PATH — read that before believing it.
+// On the live path the brain very much is acted on; that is the flip. What this
+// asserts is that the path the kill switch returns him to has not quietly
+// acquired a dispatch of its own, because a kill switch that lands you
+// somewhere the brain still steers is not a kill switch.
+t(!/_jvBrainDispatch|out=b\.|out\.tool=/.test(wrap),
+  'and the path a kill returns him to still acts on nothing the brain says');
 
 console.log('\n  IT IS OFF FOR EVERYONE BUT HIM:');
 const onFn=(src.match(/function _jvShadowOn\(\)\{[\s\S]*?\n\}/)||[''])[0];
