@@ -32485,7 +32485,11 @@ async function jvBuildClientMemory(code){
     var msgs=await sbSelect('chat_messages','client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.asc&limit=400')||[];
     var notes=(await trainerOp('clientNotes',{code:code})||[]).slice().reverse();
     var nm=(CLIENTS[code]&&CLIENTS[code].name)||'the client';
-    var realNotes=notes.filter(function(n){return (n.note||'').indexOf('[MEMORY]')!==0;});
+    // The file is excluded here too. Feeding a JSON blob to the dossier prompt
+    // would have the model summarise the shelf's own syntax back as if it were
+    // something observed about the person.
+    var realNotes=notes.filter(function(n){ var s=(n.note||'');
+      return s.indexOf('[MEMORY]')!==0 && s.indexOf(_CF_MARK)!==0; });
     if(msgs.length===0 && realNotes.length===0){
       var mel=document.getElementById('jvMemDossier');
       if(mel) mel.innerHTML='<div style="background:#1a1a1a;border:1px dashed #4a3a2a;border-radius:10px;padding:14px;font-size:12.5px;color:#f5c518;line-height:1.55;">Jim found <b>0 chats</b> and <b>0 notes</b> for <b>'+nm.replace(/</g,"&lt;")+'</b> (code <code style="color:#f0ece4;">'+code+'</code>). Either they haven\u2019t talked to Jim yet, or their messages are stored under a different code than this one.</div>';
@@ -32513,7 +32517,10 @@ async function _jvLoadClientNotes(code){
   var log=document.getElementById('jvClientJarvisLog'); if(!log) return;
   try{
     var rows=await trainerOp('clientNotes',{code:code})||[];
-    rows=rows.filter(function(n){return (n.note||'').indexOf('[MEMORY]')!==0;});
+    // [FILE] alongside [MEMORY]: neither is something a person said about them,
+    // and a JSON payload rendered into this log is the shelf leaking onto a screen.
+    rows=rows.filter(function(n){ var s=(n.note||'');
+      return s.indexOf('[MEMORY]')!==0 && s.indexOf(_CF_MARK)!==0; });
     if(!rows.length){ log.innerHTML='<div style="font-size:11.5px;color:rgba(240,236,228,0.78);padding:4px 0;line-height:1.5;">Nothing here yet. Tell him about '+(((CLIENTS[code]&&CLIENTS[code].name)||'this client').split(' ')[0])+' above and it starts building.</div>'; return; }
     log.innerHTML='<div style="font-size:9.5px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;color:rgba(240,236,228,0.78);margin-bottom:7px;">Everything said about them</div>'+rows.map(function(n){
       var when=''; try{ if(n.logged_at) when=new Date(n.logged_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}); }catch(e){}
@@ -52522,7 +52529,269 @@ function _cnIsPrivateNote(note){
   if(_cnIsCoaching(s)) return false;
   if(_nsIsObservation(s)) return false;
   if(s.indexOf('[MEMORY]')===0) return false;
+  // A CLIENT FILE IS NOT A NOTE HE WROTE. It rides this table, so without this
+  // line the catch-all below ("anything unmarked is private") would classify a
+  // JSON payload as one of his own reads and print it into the notes list.
+  if(s.indexOf(_CF_MARK)===0) return false;
   return true;
+}
+// ===== THE CLIENT FILE (Yusuf, order, 30 Aug) ===========================
+// Item 1 of the post-convergence ladder, and the thing the rest of it is
+// downstream of: "Once Client Files exist, every brain answer about a person
+// draws on their file, not just their rows" (scripts/eval/LADDER.md), and
+// "everything converges on the Leverage Engine: Client Files + the intent
+// brain + the approval queue" (his coordination protocol, 29 Aug).
+//
+// THIS IS STORAGE AND INGESTION. No UI, no renderer, no door on any screen —
+// his order says so in as many words, and a surface built before the shelf is
+// trusted is a surface that has to be rebuilt.
+//
+// ===== WHY IT RIDES client_notes AND NOT A TABLE OF ITS OWN ============
+// A client_files table is the right long-term home and I could not create one:
+// DDL needs the Supabase SQL editor or a management token, the service_role key
+// lives in Netlify's environment and not in this lane's, and PostgREST cannot
+// CREATE TABLE with any key at all. Handing him a paste to run is the one thing
+// his standing law forbids outright, so the choice was a shelf on an existing
+// table today or no shelf at all.
+//
+// client_notes is the honest home rather than the convenient one:
+//   · it is THE per-client log both trainer surfaces already read;
+//   · it already speaks exactly this language — [MEMORY], [Jarvis] and
+//     [COACHING] rows have carried structured payloads in `note` for months,
+//     and [MEMORY] in particular is a whole generated dossier in one row;
+//   · it is in JV_CLIENT_TABLES, so a deleted client takes their file with
+//     them. A NEW table would have to be added to that list or leave orphaned
+//     rows behind forever, which is a landmine CLAUDE.md names by name;
+//   · its private column is service-role only since 20 Aug, so a file is not
+//     readable with the anon key.
+// migrations/2026-08-30-client-files-TABLE.sql carries the promotion when a
+// token exists. Nothing has to change here when it lands — cfLoad/cfSave are
+// the only two functions that touch storage.
+var _CF_MARK='[FILE] ';
+var _CF_SCHEMA=1;
+// HIS TEN FIELDS, IN HIS ORDER, WITH HIS OWN HEADINGS. The label is kept
+// verbatim because a file shown back to him has to read exactly as he pasted
+// it; the key is what code addresses so a heading he rewords later does not
+// silently orphan a field.
+var _CF_FIELDS=[
+  {k:'goal',               n:1,  label:'GOAL'},
+  {k:'why_words',          n:2,  label:'WHY, IN HIS WORDS'},
+  {k:'push_points',        n:3,  label:'PUSH POINTS'},
+  {k:'knowledge_base',     n:4,  label:'KNOWLEDGE BASE'},
+  {k:'personal_details',   n:5,  label:'PERSONAL DETAILS'},
+  {k:'tracked_progress',   n:6,  label:'TRACKED PROGRESS'},
+  {k:'relationship_state', n:7,  label:'RELATIONSHIP STATE'},
+  {k:'red_lines',          n:8,  label:'RED LINES'},
+  {k:'wins_record',        n:9,  label:'WINS RECORD'},
+  {k:'last_touch',         n:10, label:'LAST TOUCH'}
+];
+function _cfKeyFor(n){
+  for(var i=0;i<_CF_FIELDS.length;i++){ if(_CF_FIELDS[i].n===+n) return _CF_FIELDS[i].k; }
+  return null;
+}
+// ===== WHAT COUNTS AS A HEADING ========================================
+// The schema is LOCKED, so this does not guess: a heading is a numbered line
+// whose text, with any parenthetical stripped, is entirely upper case. That
+// admits "6. TRACKED PROGRESS (pointer)" and "2. WHY, IN HIS WORDS" while
+// refusing every body line in a real file — the numbers his files actually
+// contain are "135-150g protein", "1,600-1,850 cal" and "0.8g/lb", none of
+// which is one-or-two digits followed by a full stop and a capitalised phrase.
+//
+// The parenthetical is stripped rather than matched because "(pointer)" is his
+// annotation about the field, not part of its name.
+function _cfIsHeading(line){
+  var m=/^\s*(\d{1,2})\.[ \t]+(.+?)\s*$/.exec(String(line||''));
+  if(!m) return null;
+  var n=+m[1]; if(!(n>=1 && n<=_CF_FIELDS.length)) return null;
+  var core=String(m[2]).replace(/\([^)]*\)/g,'').trim();
+  if(!core || !/[A-Z]/.test(core) || core!==core.toUpperCase()) return null;
+  return {n:n, heading:m[2], key:_cfKeyFor(n)};
+}
+// ===== INGESTION: VERBATIM, OR IT DID NOT HAPPEN =======================
+// "no rewording, no enrichment" is his order, and the way this keeps it is that
+// nothing is normalised on the way in. Each field holds `raw` — the exact lines
+// between its heading and the next one, blank lines and hard wraps included —
+// and `text`, the same thing with its outer blank lines trimmed, for code that
+// wants to read it. Only `raw` is ever written back out.
+//
+// A field that is present but says "[empty — not asked this call]" is PRESENT
+// and its words are stored, because that sentence is his instruction to himself
+// and deleting it would be an edit.
+function cfParse(text){
+  var lines=String(text==null?'':text).split('\n');
+  var heads=[];
+  for(var i=0;i<lines.length;i++){
+    var h=_cfIsHeading(lines[i]);
+    if(h){ h.at=i; heads.push(h); }
+  }
+  var out={schema:_CF_SCHEMA, title:'', fields:{}, order:[], headings:{},
+           missing:[], duplicates:[], unknown:[]};
+  // Everything above the first heading is the title block, kept verbatim.
+  out.title = heads.length ? lines.slice(0, heads[0].at).join('\n') : lines.join('\n');
+  var seen={};
+  heads.forEach(function(h, idx){
+    var stop = (idx+1 < heads.length) ? heads[idx+1].at : lines.length;
+    // NO LINES AT ALL IS NOT ONE EMPTY LINE. Joining the slice made those two
+    // pastes identical — "1. GOAL" straight onto "2. WHY" produced the same
+    // empty string as "1. GOAL", a blank line, then "2. WHY" — and cfStringify
+    // then had to guess, always guessing the blank line. A heading he has not
+    // filled in yet gained a line it never had, and the file stopped writing
+    // back byte-exact at exactly the moment it was a half-filled skeleton.
+    // null means the heading had nothing under it; '' means it had one blank line.
+    var _body = lines.slice(h.at+1, stop);
+    var raw = _body.length ? _body.join('\n') : null;
+    if(seen[h.key]){ out.duplicates.push(h.key); return; }   // first wins; never merged
+    seen[h.key]=1;
+    out.order.push(h.key);
+    out.headings[h.key]=h.heading;
+    out.fields[h.key]={raw:raw, text:(raw==null?'':raw.replace(/^\n+/,'').replace(/\s+$/,''))};
+  });
+  _CF_FIELDS.forEach(function(f){ if(!seen[f.k]) out.missing.push(f.k); });
+  // ===== THE VERBATIM GATE, DECIDED HERE AND CARRIED ==================
+  // Written as "the gate, not a nicety" and then wired to NOTHING — cfRoundTrips
+  // had no caller anywhere, so a paste that did not survive ingestion would have
+  // saved silently. Found by an adversarial pass over this very block, and it is
+  // the exact class of mistake this lane keeps catching: a guard that exists,
+  // reads well, and never runs.
+  //
+  // The case it actually catches: _cfIsHeading judges a line on its own, so a
+  // numbered upper-case list INSIDE a field ("1. NO DAIRY" under KNOWLEDGE BASE)
+  // reads as a heading. cfParse then drops it as a duplicate key and files the
+  // prose after it under the wrong field — text deleted, and two of his fields
+  // merged. The round trip sees that immediately; nothing else does.
+  out.verbatim = (cfStringify(out)===String(text==null?'':text));
+  return out;
+}
+// The file, written back out. Byte-identical to what was parsed when the paste
+// was well formed — which is what makes "show it back identical" a thing this
+// can PROVE rather than a thing a person eyeballs. See cfRoundTrips.
+function cfStringify(file){
+  if(!file) return '';
+  var parts=[];
+  if(file.title!=null && file.title!=='') parts.push(file.title);
+  (file.order||[]).forEach(function(k){
+    var f=(file.fields||{})[k]; if(!f) return;
+    var n=null;
+    for(var i=0;i<_CF_FIELDS.length;i++){ if(_CF_FIELDS[i].k===k) n=_CF_FIELDS[i].n; }
+    parts.push(n+'. '+((file.headings||{})[k]||'')+(f.raw!=null?('\n'+f.raw):''));
+  });
+  return parts.join('\n');
+}
+// THE VERBATIM PROOF. Parse, write back, compare to the original. Anything that
+// does not survive the round trip was changed by the ingestion, and his order
+// says ingestion may not change anything — so this is the gate, not a nicety.
+function cfRoundTrips(text){
+  try{ return cfStringify(cfParse(text))===String(text==null?'':text); }catch(e){ return false; }
+}
+// Which of the ten moved. "Any field change produces a fresh draft" is his law
+// for everything downstream, and this is the function that decides it — compared
+// on `text`, so a trailing newline is not a change of mind.
+function cfChangedFields(a, b){
+  var out=[];
+  _CF_FIELDS.forEach(function(f){
+    var x=((a&&a.fields&&a.fields[f.k])||{}).text||'';
+    var y=((b&&b.fields&&b.fields[f.k])||{}).text||'';
+    if(x!==y) out.push(f.k);
+  });
+  return out;
+}
+// ===== STORAGE ==========================================================
+// One row per SAVE, newest wins. The older rows are the file's history, which
+// is the shape his law needs anyway: "any field change produces a fresh draft"
+// means somebody has to be able to say WHICH field changed and WHEN, and a
+// row-per-save answers that without a second table.
+//
+// The payload is JSON so every field stays independently addressable — that is
+// the whole difference between a file and a note. The [FILE] marker in front of
+// it is what every other reader of this table keys off to leave it alone.
+function _cfRowNote(file){
+  return _CF_MARK+JSON.stringify({
+    schema:_CF_SCHEMA, title:file.title||'', order:file.order||[],
+    headings:file.headings||{},
+    fields:(function(){ var o={}; Object.keys(file.fields||{}).forEach(function(k){ o[k]={raw:file.fields[k].raw}; }); return o; })()
+  });
+}
+function _cfFromNote(note){
+  var s=String(note||'');
+  if(s.indexOf(_CF_MARK)!==0) return null;
+  var o=null;
+  try{ o=JSON.parse(s.slice(_CF_MARK.length)); }catch(e){ return null; }
+  if(!o || typeof o!=='object' || !o.fields) return null;
+  var f={schema:o.schema||_CF_SCHEMA, title:o.title||'', order:o.order||[],
+         headings:o.headings||{}, fields:{}, missing:[], duplicates:[], unknown:[]};
+  Object.keys(o.fields).forEach(function(k){
+    // ||'' WOULD COLLAPSE null BACK INTO '' and undo the fix above the moment
+    // the file went through a save. Read the property, do not truthiness it.
+    var raw=(o.fields[k] && o.fields[k].raw!==undefined) ? o.fields[k].raw : null;
+    f.fields[k]={raw:raw, text:(raw==null?'':raw.replace(/^\n+/,'').replace(/\s+$/,''))};
+  });
+  _CF_FIELDS.forEach(function(x){ if(!f.fields[x.k]) f.missing.push(x.k); });
+  return f;
+}
+// THE NEWEST FILE FOR ONE CLIENT, or null when they have none.
+//
+// THROUGH THE DOOR. client_notes' private column has been service-role only
+// since 20 Aug, so an anon read of this table comes back without `note` and a
+// file would silently read as "no file" — the same shape as a client who has
+// none. trainerOp is the read that can actually see it.
+//
+// AND A FAILED READ IS NOT AN ABSENT FILE. trainerOp answers [] for every
+// failure (the landmine this lane keeps re-learning), so this reports which of
+// the two happened instead of letting a network blip mean "Ben has no file"
+// and a fresh ingestion overwrite one that exists.
+async function cfLoad(code){
+  if(!code) return {ok:false, file:null, reason:'no code'};
+  var rows=null;
+  try{ rows=await trainerOpChecked('clientNotes',{code:code}); }
+  catch(e){ rows=null; }
+  if(!rows || !rows.ok) return {ok:false, file:null, reason:'read failed'};
+  var list=rows.rows||[];
+  // clientNotes comes back logged_at.desc, so the first [FILE] row is newest.
+  for(var i=0;i<list.length;i++){
+    var f=_cfFromNote(list[i].note);
+    if(f) return {ok:true, file:f, id:list[i].id, at:list[i].logged_at||null,
+                  history:list.filter(function(r){ return String(r.note||'').indexOf(_CF_MARK)===0; }).length};
+  }
+  return {ok:true, file:null, reason:'no file yet'};
+}
+// SAVE, THEN READ IT BACK AND COMPARE. Standing law in this repo: a boolean says
+// the request did not error, never that the row landed carrying what was sent.
+// So this re-reads the file it just wrote and checks all ten fields round-trip.
+// Anything less and a half-written file would look exactly like a saved one.
+async function cfSave(code, file){
+  if(!code || !file) return {ok:false, reason:'nothing to save'};
+  // A FILE THAT DID NOT SURVIVE INGESTION IS NEVER STORED. His order is that
+  // ingestion is verbatim; this is where that stops being a claim. cfParse sets
+  // .verbatim by writing the parsed file back out and comparing it to the paste.
+  if(file.verbatim===false) return {ok:false, reason:'not verbatim'};
+  // ===== THE CODE HAS TO BE A REAL PERSON =============================
+  // An INSERT with a wrong client_code does not fail. It succeeds, creates a
+  // row belonging to nobody, and reads back through cfLoad for that same wrong
+  // code perfectly — so every check below would pass and the file would be
+  // reported saved. That is the landmine CLAUDE.md names for UPDATE, one step
+  // worse, and it is how a Client File becomes a file he thinks he has.
+  //
+  // The roster is read through the door rather than off the in-memory CLIENTS
+  // map, which that same register calls stale and says not to infer codes from.
+  //
+  // FAIL CLOSED. A roster read that does not answer refuses the save: "I could
+  // not check" is not "it is fine", and this is the one write in this block.
+  var who=null;
+  try{ who=await trainerOpChecked('roster',{}); }catch(e){ who=null; }
+  if(!who || !who.ok) return {ok:false, reason:'could not confirm the client'};
+  if(!(who.rows||[]).some(function(r){ return String(r.code||'')===String(code); }))
+    return {ok:false, reason:'no such client'};
+  var note=_cfRowNote(file);
+  var saved=null;
+  try{ saved=await sbInsertReturning('client_notes',
+        {client_code:code, note:note, logged_at:new Date().toISOString()}, 'id'); }
+  catch(e){ saved=null; }
+  if(!saved) return {ok:false, reason:'write refused'};
+  var back=await cfLoad(code);
+  if(!back.ok || !back.file) return {ok:false, reason:'saved but could not read it back'};
+  var moved=cfChangedFields(file, back.file);
+  if(moved.length) return {ok:false, reason:'read back different', fields:moved};
+  return {ok:true, id:(saved.id!=null?saved.id:null), file:back.file};
 }
 // ONE list, BOTH stores.
 //
