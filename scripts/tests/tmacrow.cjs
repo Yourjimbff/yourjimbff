@@ -88,7 +88,11 @@ t((src.match(/_mealMacLine\(/g)||[]).length>=11, 'and every one of them calls th
   (src.match(/_mealMacLine\(/g)||[]).length+' references');
 
 console.log('\n  THE FEED ROW SPECIFICALLY — the one he caught:');
-t(/meta = _mealMacLine\(d,'short',\{time:false\}\)/.test(src), '_pfDayRow draws its macros from the builder');
+// The call is wrapped in _feedNumBind since 30 Aug (numbers are never cut), so
+// this asks that the BUILDER is still the source of the row's macros rather than
+// that the call stands bare — a literal match here would forbid the row ever
+// passing that string through anything, which is not what he ruled.
+t(/meta = (?:_feedNumBind\()?_mealMacLine\(d,'short',\{time:false\}\)/.test(src), '_pfDayRow draws its macros from the builder');
 t(!/meta = cal\+' cal · '\+pro\+'P'/.test(src), 'and no longer hand-builds calories and protein alone');
 
 console.log('\n  AND THE PLATE TOTAL SEPARATES TOO:');
