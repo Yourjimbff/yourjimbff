@@ -439,7 +439,7 @@ body:not(.is-trainer) .trainer-only{display:none !important;}
 .dbrfQ{border-left:2px solid var(--gold);padding:2px 0 2px 10px;margin:8px 0;}
 .dbrfQT{font-size:13px;line-height:1.5;}
 .dbrfQM{font-size:11px;color:var(--m2);margin-top:2px;}
-.fdShareRow{display:flex;justify-content:flex-start;margin:2px 0 14px;}
+.fdShareRow{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-start;margin:2px 0 14px;}
 .fdShareBtn{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;
   padding:8px 16px;border:1px solid var(--border);border-radius:9px;cursor:pointer;
   color:rgba(240,236,228,0.78);background:var(--s2);}
@@ -14684,9 +14684,17 @@ async function _loadTrainerFeedRun(targetId){
           if(c && _mIdx){
             var _mNm='';
             try{ _mNm=_jvShareName(c, (CLIENTS[c]&&CLIENTS[c].name)||c); }catch(e){ _mNm=c; }
+            // BOTH SURFACES OR IT IS HALF SHIPPED (CLAUDE.md, and the single
+            // most repeated mistake in this file's history). The phone gets the
+            // same button in the same place — the foot of one client's day —
+            // calling the same jvCatchUp the cockpit calls. One writer, two
+            // screens, and the draft is byte-identical on both.
+            var _cuBtn='';
+            try{ if(_cuDue(c)) _cuBtn='<span class="fdShareBtn" onclick="event.stopPropagation();jvCatchUp(\''+c+'\')">Catch up</span>'; }catch(e){}
             html+='<div class="fdShareRow">'
               +'<span class="fdShareBtn" onclick="event.stopPropagation();citeFeedDay(\''+c+'\',\''+_mIdx+'\')">'
               +'Share '+_pfEsc(String(_mNm).split(' ')[0]||'their')+'\u2019s day</span>'
+              +_cuBtn
             +'</div>';
           }
         });
@@ -16121,6 +16129,17 @@ function _pfCard(b, hour, now, isToday, viewDayTs){
   } else if(info.phone){
     acts+='<span class="pfAct" onclick="textClient(\''+b.code+'\')">Text</span>';
   }
+  // ===== CATCH UP SITS BESIDE SHARE DAY (Yusuf, order, 30 Aug) ==========
+  // Two days without a word and the day-sized button is the wrong size: what he
+  // needs is the SPAN, not the day. Same row, same weight, and only when it is
+  // actually due — a button that is always there stops meaning anything, and
+  // this one appearing IS the fact that somebody has gone quiet on him.
+  //
+  // OUTSIDE the Share-day branch above on purpose. That branch needs a citable
+  // item on the card; a client four days silent has none and is precisely who
+  // this is for. It also cannot collide with Undo touch below — that one only
+  // renders at zero days and this one only at two or more.
+  try{ if(_cuDue(b.code)) acts+='<span class="pfAct" onclick="jvCatchUp(\''+b.code+'\')" title="Draft a catch up across the days since you last spoke">Catch up</span>'; }catch(e){}
   // The way back sits beside the action that made the stamp.
   try{ acts+=_ccUndoHtml(b.code); }catch(e){}
   acts+='</div>';
@@ -49961,6 +49980,274 @@ function citeFeedDay(code, idxCsv){
     // exactly as citeClient does when there is nothing worth quoting.
     try{ textClient(code, body); }catch(e){}
   }catch(e){}
+}
+// ===== THE CATCH UP (Yusuf, order, 30 Aug) ==============================
+// Share day is ONE day, drafted for a client he is already talking to. This is
+// the other shape of the same job: a client he has not spoken to in two days or
+// more, and every day since that nobody has said anything about.
+//
+// WHY IT IS NOT SHARE DAY IN A LOOP. Share day reads the FEED CACHE — seven
+// days of everyone, already narrowed by whatever lens and hidden-client set is
+// live, already grouped by meal slot and already ordered for a screen. Running
+// a span through it inherits every one of those decisions, so a filter he set
+// an hour ago would silently shorten somebody's week and the message would
+// still read as complete. This reads the two tables fresh for ONE person, the
+// way the debrief does, for the same reason.
+//
+// AND A FAILED READ IS NOT AN EMPTY ONE — the landmine CLAUDE.md names, and the
+// one the debrief was corrected for. sbSelect answers [] for a refusal, so
+// without the fail marks below a dropped request drafts a message telling a
+// real client they logged nothing all week, in his name, confidently. It
+// refuses to draft instead. Same for a read that came back at its exact limit:
+// that is unread, never complete.
+var _CU_DUE_DAYS=2;                // his rule: last-touch two days or more
+var _CU_MAX_DAYS=7;                // and no message is ever longer than a week
+var _CU_WO_LIMIT=300;
+var _CU_FOOD_LIMIT=600;
+// HOW MANY DAYS THE MESSAGE COVERS. Days since the last touch, which is exactly
+// the days nothing has been said about: he texted Chris on Friday, so Friday is
+// spoken for and Saturday and today are not. A client never contacted at all
+// has no touch to count from and gets the full week.
+function _cuSpan(code){
+  var d=null; try{ d=_ccDaysSince(code); }catch(e){ d=null; }
+  if(d==null) return _CU_MAX_DAYS;
+  return Math.max(_CU_DUE_DAYS, Math.min(d, _CU_MAX_DAYS));
+}
+function _cuDue(code){
+  var d=null; try{ d=_ccDaysSince(code); }catch(e){ d=null; }
+  return (d==null) || (d>=_CU_DUE_DAYS);
+}
+// The day, said the way every other surface says one. _jvSpokenDay is the one
+// answer to "what is this day called" in this app and this does not get a
+// second: "last Wednesday" is right inside a sentence and wrong as a heading,
+// so the qualifier comes off, exactly as _citeDayHeading does it.
+function _cuDayLabel(d){
+  var sp=''; try{ sp=_jvSpokenDay(d)||''; }catch(e){}
+  sp=String(sp).replace(/^(?:last|next)\s+/i,'');
+  if(!sp){ try{ sp=new Date(d).toLocaleDateString('en-US',{weekday:'long'}); }catch(e){ sp=''; } }
+  return sp ? (sp.charAt(0).toUpperCase()+sp.slice(1)) : '';
+}
+// THEIR OWN WORDS ABOUT A SESSION, and only those. `notes` is the column for it
+// and wins outright when it is filled. Otherwise the description is mined the
+// way the debrief mines it — line by line, keeping only lines that are somebody
+// TALKING — with one deliberate tightening: the debrief also treats any line
+// over ninety characters as speech, on the reasoning that nobody names a
+// movement in a paragraph. That holds for one line among many and breaks here,
+// because a chat-logged workout carries a single long description line that is
+// the exercise list itself (CLAUDE.md, 10 Aug). Quoting a client's own squat
+// numbers back to them as something they "wrote" is not a note, so this asks
+// for the actual signal — a pronoun, a word about how it felt, a word about
+// changing the session — and quotes nothing when there is none.
+function _cuWoNote(w){
+  var n=String((w&&w.notes)||'').replace(/\s+/g,' ').trim();
+  if(n) return n;
+  var t=String((w&&w.title)||'').trim().toLowerCase();
+  var out=[];
+  String((w&&w.description)||'').split('\n').forEach(function(l){
+    var s=String(l).replace(/\s+/g,' ').trim();
+    if(!s || s.toLowerCase()===t) return;
+    if(_JV_DB_SAYS_RE.test(s)) out.push(s);
+  });
+  return out.join(' ');
+}
+// ===== THE READ =========================================================
+// One client, two tables, bounded by date on the SERVER. The debrief reads a
+// client's whole history ascending and filters afterwards, which is fine at its
+// limits and is not a pattern to copy at a smaller one: ascending plus a limit
+// answers the OLDEST rows, so a long-term client's recent week would be the
+// part that fell off. Bounded here instead, with a two-day pad because the day
+// bands are the client's own date_str and the filter is an instant — those two
+// disagree by up to a day at either edge, and the exact day is decided in JS.
+async function _jvCatchUpData(code, span){
+  if(!code) return null;
+  span=Math.max(1, Math.min(+span||_CU_MAX_DAYS, _CU_MAX_DAYS));
+  var today=new Date(); today.setHours(0,0,0,0);
+  var floor=new Date(today); floor.setDate(floor.getDate()-(span-1));
+  var pad=new Date(floor); pad.setDate(pad.getDate()-2);
+  var padIso=new Date(pad.getFullYear(),pad.getMonth(),pad.getDate(),0,0,0).toISOString();
+  var enc=encodeURIComponent(code), sinceQ='&logged_at=gte.'+encodeURIComponent(padIso);
+  var W=[], F=[], failed={workouts:false, food:false};
+  var _m1=_sbFailMark();
+  try{ W=await sbSelect('workout_logs','client_code=eq.'+enc+'&select=id,title,description,exercises,notes,date_str,logged_at'+sinceQ+'&order=logged_at.asc&limit='+_CU_WO_LIMIT)||[]; }catch(e){}
+  if(_sbFailedSince(_m1) || _sbAtCap(W,_CU_WO_LIMIT)){ failed.workouts=true; W=[]; }
+  var _m2=_sbFailMark();
+  try{ F=await sbSelect('food_logs','client_code=eq.'+enc+'&select=id,name,meal,calories,protein,carbs,fat,felt,date_str,logged_at'+sinceQ+'&order=logged_at.asc&limit='+_CU_FOOD_LIMIT)||[]; }catch(e){}
+  if(_sbFailedSince(_m2) || _sbAtCap(F,_CU_FOOD_LIMIT)){ failed.food=true; F=[]; }
+  // EVERY DAY IN THE SPAN EXISTS BEFORE ANY ROW IS READ. That is what makes
+  // "nothing logged" a day this message shows rather than a day it skips —
+  // the days are the frame and the rows fall into it, never the other way
+  // round. Oldest first, because a catch up reads forwards.
+  var days=[], byDs={};
+  for(var i=span-1;i>=0;i--){
+    var d=new Date(today); d.setDate(d.getDate()-i); d.setHours(0,0,0,0);
+    var row={d:d, ds:_dbDs(d), label:_cuDayLabel(d), isToday:(i===0), meals:[], notes:[], sessions:[],
+             cal:0, pro:0, car:0, fat:0, any:false};
+    days.push(row); byDs[row.ds]=row;
+  }
+  F.forEach(function(f){
+    var dd=_dbDay(f.date_str, f.logged_at); if(!dd) return;
+    var slot=byDs[_dbDs(dd)]; if(!slot) return;
+    var nm=String(f.name||'').replace(/\s+/g,' ').trim();
+    if(nm) slot.meals.push(nm);
+    slot.cal+=(+f.calories||0); slot.pro+=(+f.protein||0);
+    slot.car+=(+f.carbs||0);    slot.fat+=(+f.fat||0);
+    var felt=String(f.felt||'').replace(/\s+/g,' ').trim();
+    if(felt) slot.notes.push(felt);
+    slot.any=true;
+  });
+  W.forEach(function(w){
+    var dd=_dbDay(w.date_str, w.logged_at); if(!dd) return;
+    var slot=byDs[_dbDs(dd)]; if(!slot) return;
+    slot.sessions.push({title:(String(w.title||'').replace(/\s+/g,' ').trim()||'Training'),
+                        note:_cuWoNote(w)});
+    slot.any=true;
+  });
+  return {code:code, span:span, days:days, failed:failed};
+}
+// ===== ONE DAY, THREE LINES AT MOST =====================================
+// His shape, and the line budget is the shape: the day, what they ate, what
+// that came to, what they trained. Four lines when a day has everything on it
+// and fewer when it does not — an absent line is never a blank one.
+//
+// A day with nothing at all is ONE line and it is still printed. "Never
+// skipped" is his rule and it is the whole point of the button: the holes are
+// what he is writing about.
+var _CU_LINE_MAX=110;
+// ONE FOOD'S NAME, not the line they are joined into. Read off a real draft to
+// Chris: seven meals joined and then cut at 110 characters gave "Sourdough
+// Bre\u2026" and "Rice, Black Beans, Double C\u2026" \u2014 food hidden behind an
+// ellipsis, which is the exact thing his 10 Aug ruling forbids ("names every
+// food \u2014 'and N more' hid what was actually on the plate behind a count").
+// So the JOIN is never cut. A single runaway name still is, because one of
+// those is a typo and not a plate.
+var _CU_NAME_MAX=64;
+function _cuCut(t, max){
+  t=String(t||'').replace(/\s+/g,' ').trim();
+  return t.length>max ? (t.slice(0,max-1).replace(/[ ,;:.-]+$/,'')+'\u2026') : t;
+}
+function _cuClip(t){ return _cuCut(t,_CU_LINE_MAX); }
+function _cuQuote(t){ return '\u201c'+_cuClip(t)+'\u201d'; }
+function _cuDayLines(day){
+  if(!day) return [];
+  // A DAY IN PROGRESS IS NOT A DAY THEY MISSED. Found at 9:05 on a Sunday
+  // morning, in a real draft to a real client: "Today \u2014 nothing logged",
+  // sent about a day nine hours old. His rule is that a day with nothing on it
+  // is PRINTED and never skipped, and it still is \u2014 the hole is right there
+  // in the message. One word keeps it from being an accusation about a morning.
+  if(!day.any) return [day.label+' \u2014 nothing logged'+(day.isToday?' yet':'')];
+  var out=[day.label];
+  if(day.meals.length){
+    // MEAL NAMES, BRIEF — his words. The plate, not the ledger; the numbers get
+    // their own line directly underneath and do not need repeating per item.
+    var line=day.meals.map(function(n){ return _cuCut(n,_CU_NAME_MAX); }).join(' \u00b7 ');
+    // A note they wrote against a meal rides here rather than earning a fifth
+    // line. His rule is that ANY note they wrote gets quoted, and the training
+    // line cannot carry one that belongs to a plate.
+    if(day.notes.length) line+=' \u2014 '+_cuQuote(day.notes[0]);
+    out.push(line);
+    var mac=[];
+    if(day.pro>0) mac.push(Math.round(day.pro)+'g protein');
+    if(day.car>0) mac.push(Math.round(day.car)+'g carbs');
+    if(day.fat>0) mac.push(Math.round(day.fat)+'g fat');
+    // No calories and no macros means a plate logged with nothing behind it,
+    // which is a real thing clients do. The names line already said what it was.
+    if(day.cal>0 || mac.length){
+      out.push((day.cal>0?(_jvNum(day.cal)+' cal'):'')
+        + ((day.cal>0&&mac.length)?' \u00b7 ':'') + mac.join(' / '));
+    }
+  }
+  if(day.sessions.length){
+    // CARDIO IS TRAINING (his order, in as many words). Nothing here filters by
+    // kind — every workout_logs row on the day is named, so a bike ride and a
+    // pull day sit on the same line because they were both work.
+    var titles=day.sessions.map(function(s){ return _cuCut(s.title,_CU_NAME_MAX); }).join(' \u00b7 ');
+    var said=day.sessions.map(function(s){ return s.note; }).filter(Boolean);
+    out.push('Trained: '+titles+(said.length?(' \u2014 '+_cuQuote(said[0])):''));
+  }
+  return out;
+}
+// ===== THE FEEDBACK HE EDITS ============================================
+// Drafted from the whole span, in code, from figures this file just computed —
+// never by a model. That is the lane's founding law and it is not softened for
+// a draft: a number a model produced is a number nobody checked, and this one
+// is going into a message to a real client under his name.
+//
+// It states what the days show and asks for the thing the days are missing. It
+// does not grade anybody: "the app reports facts and doesn't grade people" is
+// house law, and a coach's judgement is his to type over the top of this.
+//
+// UNICODE BOLD ON THE LABEL, his order. The Share-day summary label is
+// deliberately NOT bold and that reasoning stands where it stands — this is his
+// explicit ruling for this line, and the label is one word, so a phone that
+// cannot render the face degrades to a readable word and not to a wall.
+var _CU_FEEDBACK_LABEL='\uD835\uDDD9\uD835\uDDF2\uD835\uDDF2\uD835\uDDF1\uD835\uDDEF\uD835\uDDEE\uD835\uDDF0\uD835\uDDF8';
+function _cuFeedback(D){
+  var days=(D&&D.days)||[], span=(D&&D.span)||days.length||0;
+  var lived=days.filter(function(x){ return x.any; });
+  var fed=days.filter(function(x){ return x.meals.length; });
+  var quiet=span-lived.length;
+  var sess=0; days.forEach(function(x){ sess+=x.sessions.length; });
+  var cal=0, pro=0;
+  fed.forEach(function(x){ cal+=x.cal; pro+=x.pro; });
+  var avgCal=fed.length?Math.round(cal/fed.length):0;
+  var avgPro=fed.length?Math.round(pro/fed.length):0;
+  if(!lived.length){
+    return 'Nothing has come through from you in those '+span+' days. Tell me what has been going on '
+      + 'and we will build around it \u2014 I can only coach the days I can see. What is the first one we get back?';
+  }
+  var s=[];
+  if(fed.length){
+    s.push('You logged food on '+fed.length+' of the '+span+(span===1?' day':' days')
+      + (avgCal>0 ? (', averaging '+_jvNum(avgCal)+' cal'+(avgPro>0?(' and '+avgPro+'g protein'):'')+' on those days') : '')
+      + '.');
+  } else {
+    s.push('No food logged across the '+span+(span===1?' day':' days')+'.');
+  }
+  s.push(sess ? ('That is '+sess+' session'+(sess===1?'':'s')+' in the same stretch.')
+              : 'No training logged in the same stretch.');
+  s.push(quiet
+    ? ('The '+quiet+' day'+(quiet===1?'':'s')+' with nothing on '+(quiet===1?'it':'them')
+       +(quiet===1?' is':' are')+' what I want to close \u2014 log the days that go badly too, those are the ones I need to see.')
+    : ('Every one of those days is logged, which is the part most people drop first. Keep it exactly there.'));
+  return s.join(' ');
+}
+// ===== THE MESSAGE ======================================================
+// PLAIN TEXT, handed to the phone's own composer. One blank line between days,
+// the same room-to-breathe spacing Share day was ruled into, and his feedback
+// last because it is the part he rewrites.
+function _cuBody(D){
+  if(!D) return '';
+  var span=D.span, blocks=[];
+  (D.days||[]).forEach(function(day){
+    var ls=_cuDayLines(day);
+    if(ls.length) blocks.push(ls.join('\n'));
+  });
+  if(!blocks.length) return '';
+  var head='On your last '+span+(span===1?' day':' days')+':';
+  var fb=''; try{ fb=_cuFeedback(D); }catch(e){}
+  return head+'\n\n'+blocks.join('\n\n')+(fb?('\n\n'+_CU_FEEDBACK_LABEL+': '+fb):'');
+}
+// The button. Reads, drafts, and hands off through textClient — which is what
+// stamps the contact clock, so "completing it stamps the clock, same as Share
+// day" is true because it is the same door and not because it was copied.
+async function jvCatchUp(code){
+  if(!code) return;
+  if(window._cuBusy) return;            // the read takes a moment; one at a time
+  window._cuBusy=1;
+  try{
+    var first='';
+    try{ first=String(_jvShareName(code,(CLIENTS[code]&&CLIENTS[code].name)||code)||code).split(' ')[0]; }catch(e){ first=''; }
+    try{ showToast('Building the catch up'+(first?(' for '+first):'')+'\u2026'); }catch(e){}
+    var D=null;
+    try{ D=await _jvCatchUpData(code, _cuSpan(code)); }catch(e){}
+    if(!D || D.failed.food || D.failed.workouts){
+      try{ showToast('Could not read their days \u2014 nothing drafted'); }catch(e){}
+      return;
+    }
+    var body=''; try{ body=_cuBody(D); }catch(e){}
+    if(!body){ try{ showToast('Could not draft the catch up'); }catch(e){} return; }
+    try{ textClient(code, body); }catch(e){}
+  } finally { window._cuBusy=0; }
 }
 function citeFeedItem(idx){
   try{
