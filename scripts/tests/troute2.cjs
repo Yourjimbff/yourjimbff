@@ -19,7 +19,7 @@ global.window={addEventListener:()=>{},matchMedia:()=>({matches:false})};
 global.document={addEventListener:()=>{},getElementById:()=>null,querySelectorAll:()=>[],
   body:{classList:{contains:()=>false}}};
 global.localStorage={getItem:()=>null,setItem:()=>{}};
-eval(closure(['_jvFindClientIn']).code);
+eval(closure(['_jvNameMatch','_jvFindClientIn']).code);
 eval(['_JV_DEBRIEF_RE','_JV_DEBRIEF_SOFT_RE','_JV_DEBRIEF_PAST_RE','_JV_RQ_DAY','_JV_RQ_QUIET',
       '_JV_RQ_TERM','_JV_RQ_TODAY','_JV_HELP_RE','_JT_NEWCLIENT_RE','_JV_ADD_CLIENT_RE',
       '_JT_CAL_RE','_JT_PROG_RE'].map(defOf).join('\n'));

@@ -49,6 +49,7 @@ eval([
   line('var _JV_FIRST_PERSON_RE='),
   grab(l=>l.startsWith('function _jvDepossess(')), grab(l=>l.startsWith('function _jvSelfCode(')),
   grab(l=>l.startsWith('function _jvSelfNames(')), grab(l=>l.startsWith('function _jvNamesSelf(')),
+  grab(l=>l.startsWith('function _jvNameMatch(')),
   grab(l=>l.startsWith('function _jvResolveOne(')), grab(l=>l.startsWith('function _jvResolveClient(')),
   iife('var _JV_NAME_STOP='), grab(l=>l.startsWith('function _jvWhoAsked(')),
   grab(l=>l.startsWith('function _jvNameOf(')),
@@ -137,10 +138,21 @@ t(_jtQuoteVerdict('Hey Yusuf, what do you think his target should be').v==='his'
   'a question to Jarvis beats even an addressed greeting');
 
 console.log('\n  and the card cannot name a client he never wrote:');
-const QT=(src.match(/THE MODEL['’]S `who` IS ONLY A POINTER INTO THE TEXT[\s\S]{0,1200}?\}catch\(e\)\{\}/)||[''])[0];
+// WINDOW WIDENED 30 Aug. The three assertions below all went red at once
+// because the comment explaining the fix grew past the 1200-character window —
+// the guard was intact and the suite could no longer see it. A length-bounded
+// window around prose is a fuse on the comment, not a test of the code.
+const QT=(src.match(/THE MODEL['’]S `who` IS ONLY A POINTER INTO THE TEXT[\s\S]{0,4000}?\}catch\(e\)\{\}/)||[''])[0];
 t(!!QT, 'the guard exists');
 t(/new RegExp\('\\\\b'\+_w\.replace/.test(QT), 'the model’s name must appear in the quoted words');
-t(/_jvFindClientIn\(_wIn\|\|quoted\)/.test(QT), 'and only then is it resolved');
+// AND THE HOLE IT USED TO FALL INTO. When the guard REJECTED the model's name
+// it set _wIn empty and the next line scanned the whole message for anybody at
+// all — the same unguarded resolve the guard exists to prevent. That is how
+// "has this guy Dante logged anything" produced a card for Hayden Hauser.
+t(/_jvFindClientIn\(_wIn\)/.test(QT) && !/_jvFindClientIn\(_wIn\|\|quoted\)/.test(QT),
+  'and a REJECTED name resolves nobody, never the whole message');
+t(/var f=_wIn \? _jvFindClientIn\(_wIn\) : \{hits:\[\]\}/.test(QT),
+  'no name in his words means no name on the card');
 
 // ===== THE CAPABILITY ===================================================
 console.log('\n  he can talk body composition with it, from the logs:');

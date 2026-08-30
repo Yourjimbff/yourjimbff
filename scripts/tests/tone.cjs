@@ -45,6 +45,7 @@ eval([
   grab(l=>l.startsWith('function _jvSelfCode(')),
   grab(l=>l.startsWith('function _jvSelfNames(')),
   grab(l=>l.startsWith('function _jvNamesSelf(')),
+  grab(l=>l.startsWith('function _jvNameMatch(')),
   grab(l=>l.startsWith('function _jvResolveOne(')),
   grab(l=>l.startsWith('function _jvResolveClient(')),
   iife('var _JV_NAME_STOP='),

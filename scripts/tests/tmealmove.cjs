@@ -26,7 +26,7 @@ const MINE=['_JT_MEAL_NOUN_RE','_JT_DAY_TARGET_RE','_JT_SLOT_TARGET_RE','_JT_CAL
   '_JV_MMV_NOTFOOD_RE','_jvMealMoveAsked','_MV_MONTHS','_mvDayFrom','_mvSlotFrom','_mvHalves',
   '_jvClientMealMove','_tlDateStr','_jtMealMove','_jtCalendarClaims','_JT_PAST_MEAL_RE','_JT_SCHED_INTENT_RE',
   '_JT_ONE_BRAIN_HOLD'];
-const SHARED=['_jvFindClientIn','_jvSafeName','_escHtml','_sbFailMark','_sbFailedSince'];
+const SHARED=['_jvNameMatch','_jvFindClientIn','_jvSafeName','_escHtml','_sbFailMark','_sbFailedSince'];
 eval(closure(SHARED).code);
 eval(MINE.map(defOf).join('\n'));
 guard(MINE.concat(SHARED), n=>eval(n));
@@ -258,4 +258,9 @@ const run=async(s)=>{ sent=null; return await _jvClientMealMove(s); };
   console.log('');
   if(bad){ console.log('  '+bad+' FAILED'); process.exit(1); }
   console.log('  all pass');
+  // EXIT EXPLICITLY, like every other suite here. Falling off the end leaves
+  // node alive whenever the lift has pulled in anything that holds a handle,
+  // so the suite PASSES and then hangs forever — and run.sh, which waits for
+  // each suite in turn, waits with it. Cost me the whole run once.
+  process.exit(0);
 })();
