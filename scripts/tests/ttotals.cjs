@@ -8,6 +8,19 @@
 //     when anything happened. Chris ate breakfast at 9:14 and logged it at
 //     20:52, after a workout logged at 19:53. Sorting on the log stamp put the
 //     workout before the breakfast — which is the card he reported.
+// THIS SUITE IS TIMEZONE-DEPENDENT, and it was failing for that reason alone
+// (Calendar, 30 Aug, found while running the bank before a ship). Its fixture
+// stamps every row +00:00 and then asserts a LOCAL clock reading, because
+// _citeDayMins falls back to new Date(ts).getHours(). On a UTC box all 24 pass;
+// on this one, which is EDT, three fail — and it fails the same way on untouched
+// origin/main, so it is not a regression in anybody's change.
+//
+// Pinned to the frame the fixture is written in, so the suite proves the same
+// thing on every machine. FLAGGED to the feed lane rather than quietly settled:
+// if these assertions are meant to prove the behaviour a US client actually
+// sees, the fixture wants rewriting in a US zone and the expected minutes with
+// it. This only stops the bank reporting an environment as a failure.
+process.env.TZ='UTC';
 const fs=require('fs');
 const L=fs.readFileSync('index.html','utf8').split('\n');
 function lift(name){
