@@ -49,8 +49,10 @@ function discarded(){
   return out;
 }
 
-// THE FROZEN CENSUS. 45 discarded writes across 39 functions, every one read by
-// hand on 29 Aug. Nothing may be ADDED to this list to make a build pass: the
+// THE FROZEN CENSUS. 44 discarded writes, every one read by hand on 29 Aug.
+// changeAccessCode was the 45th and is gone — the ratchet named it the moment it
+// stopped being an offender, which is exactly what the "must still be a real
+// offender" assertion below is for. Nothing may be ADDED to this list to make a build pass: the
 // list only ever shrinks. Each of these still lies to somebody and each is
 // scheduled — they are recorded here so the number cannot quietly grow while
 // they are being worked through.
@@ -63,7 +65,7 @@ const KNOWN={
   _mlibEstimateMacros:1, _gradePlateMeal:1, _rememberFood:1, _backfillFoodLibrary:1,
   hubEditDone:1, hubDelete:1, hubTogglePlan:1, tpPersistSets:1, tpSaveSessNote:1,
   tpLogSteps:1, trackMealForMenu:1, toggleShareItem:1, toggleCoachPublish:1,
-  removeFromMenu:1, borrowCoachMeal:1, changeAccessCode:1,
+  removeFromMenu:1, borrowCoachMeal:1,
   _jvJarvisCalendarActClient:1, tbRemove:1, _saveTrainingPlanQuiet:1
 };
 const found=discarded();
@@ -83,7 +85,7 @@ t(novel.length===0, 'no function discards a write that did not already',
 let stale=Object.keys(KNOWN).filter(fn=>!counts[fn]);
 t(stale.length===0, 'and every name in the census is still a real offender',
   stale.length?('fixed - delete from KNOWN: '+stale.join(', ')):'');
-t(found.length<=45, 'the total never grows', 'now '+found.length);
+t(found.length<=44, 'the total never grows', 'now '+found.length);
 
 console.log('\n  2. THE FIVE CLOSED THIS SHIP, EACH READ BACK:');
 function body(name){
@@ -172,6 +174,23 @@ t(cnp.indexOf('SB_URL')<0 && /trainerWrite\('noteSend'/.test(cnp),
 const nbt=lines.slice(lines.findIndex(l=>/function noteBodyTalk/.test(l))).slice(0,60).join('\n');
 t(/rest\/v1\/coach_notes/.test(nbt) && /DO NOT MOVE THIS TO THE DOOR/.test(nbt),
   'and the client-raised flag stays on the public key, with the reason written down');
+
+console.log('\n  5. THE ACCESS-CODE ROUTINE STAYS BURIED (his word, 29 Aug):');
+// It PATCHed ten tables unchecked, never wrote to `clients` (anon UPDATE there is
+// revoked), and registered the new code in this device's localStorage only — so it
+// moved his record to a code that could sign in on one browser and nowhere else.
+// It had no button and no inputs; a console was the only way to reach it.
+t(!/function\s+changeAccessCode\s*\(/.test(src), 'the function is gone');
+t(!/getElementById\('acNew'\)/.test(src) && !/getElementById\('acConfirm'\)/.test(src),
+  'and nothing reads its inputs');
+t(!/id=["\']ac(New|Confirm)["\']/.test(src), 'and the inputs do not exist to be read');
+// Only the WRITER went. A device holding an entry from before still signs in.
+t(/localStorage\.getItem\('yjb_custom_trainer_codes'/.test(src),
+  'the custom-code readers stay, so an old device is not locked out');
+t(!/localStorage\.setItem\('yjb_custom_trainer_codes'/.test(src),
+  'but nothing writes that map any more');
+// The rebuild is ordered, and it goes through the door or not at all.
+t(/rebuilt behind the trainer door/.test(src), 'and the tombstone records that it is coming back through the door');
 
 console.log('\n'+(bad?(bad+' FAILED'):'all pass'));
 process.exit(bad?1:0);
