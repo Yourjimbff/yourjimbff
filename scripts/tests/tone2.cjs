@@ -49,6 +49,7 @@ eval([
   line('var _JV_FIRST_PERSON_RE='),
   grab(l=>l.startsWith('function _jvDepossess(')), grab(l=>l.startsWith('function _jvSelfCode(')),
   grab(l=>l.startsWith('function _jvSelfNames(')), grab(l=>l.startsWith('function _jvNamesSelf(')),
+  grab(l=>l.startsWith('function _jvNameMatch(')),
   grab(l=>l.startsWith('function _jvResolveOne(')), grab(l=>l.startsWith('function _jvResolveClient(')),
   iife('var _JV_NAME_STOP='), grab(l=>l.startsWith('function _jvWhoAsked(')),
   grab(l=>l.startsWith('function _jvNameOf(')),

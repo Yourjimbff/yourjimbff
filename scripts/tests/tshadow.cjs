@@ -40,7 +40,7 @@ const MINE=['JV_TOOLS','_jvBrainMemory','_jvBrainPrompt','_jvGateWouldClaim',
   '_JT_MEAL_NOUN_RE','_JT_DAY_TARGET_RE','_JT_SLOT_TARGET_RE','_JT_CAL_ONLY_RE','_JT_CAL_RE',
   '_JV_MMV_NOTFOOD_RE','_jvMealMoveAsked','_jtMealMove','_jtCalendarClaims',
   '_JT_PAST_MEAL_RE','_JT_SCHED_INTENT_RE','_JT_ONE_BRAIN_HOLD'];
-const SHARED=['_jvFindClientIn'];
+const SHARED=['_jvNameMatch','_jvFindClientIn'];
 eval(closure(SHARED).code);
 eval(MINE.map(defOf).join('\n'));
 guard(MINE.concat(SHARED), n=>eval(n));
