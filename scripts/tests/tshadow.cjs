@@ -320,6 +320,12 @@ t(/"then":\[/.test(P), 'the contract carries an ordered list of intents');
 t(/Never drop one/.test(P), 'and says plainly that none may be dropped');
 t(/_then\.slice\(0,2\)/.test(route), 'and the cap of three is enforced in code, not merely asked for');
 t(/dropped_extra/.test(route), 'with anything past the cap named rather than silently cut');
+// A QUOTE GETS NO SECOND DOOR. The injection was refused in the primary slot
+// and walked straight into `then` — a law that only guards slot one is not a law.
+t(/_jtQuoteSignals\(String\(text\|\|''\)\)/.test(route), 'an attributed message is detected in the router itself');
+t(/out\.then=\[\];/.test(route), 'and its chain is truncated to the primary alone');
+t(/out\.quote_refused=out\.tool; out\.tool='answer'/.test(route), 'a primary that would write is refused outright');
+t(/quote_dropped/.test(route), 'and what was dropped is named, never silently cut');
 t(!/sbSelect|trainerWrite|trainerOp/.test(route), 'the router never reads a row and never writes one');
 
 console.log('');
