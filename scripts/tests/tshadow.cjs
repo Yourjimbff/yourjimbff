@@ -115,13 +115,32 @@ t(_jvBrainMemory().subject==='', 'with nobody on the table it stays empty, never
 console.log('\n  THE MASTER PROMPT CARRIES ALL FIVE PARTS HE ORDERED:');
 global.window._jtThread=[{r:'me', h:"how's Chris McCarthy", t:Date.now()}];
 const P=_jvBrainPrompt(_jvBrainMemory());
+// hoisted: the name-discipline assertions below need the router body too, and
+// the seam is now half of that discipline.
+const route=(src.match(/async function _jvBrainRoute\(text\)\{[\s\S]*?\n\}/)||[''])[0];
 t(/chief of staff to Yusuf/.test(P), '1. identity — his chief of staff, keyed to him');
 t(/The person typing IS Yusuf/.test(P) && /not a client/.test(P), '   and never mistakes him for a client');
 t(/THE TOOLS, by what they are FOR/.test(P), '2. the toolbox');
 t(/Choose by meaning, never by matching words/.test(P), '   described by purpose, not trigger words');
 t(/THE MOMENT:/.test(P) && /subject on the table right now is Chris McCarthy/.test(P), '3. the memory of the moment');
 t(/never produce a number/.test(P) && /never claim anything happened/.test(P), '4. the laws, as ethics');
-t(/matches more than one person is asked about, never guessed/.test(P), '   including exact-name discipline');
+// EXACT-NAME DISCIPLINE MOVED, IT DID NOT GO. This used to assert the prompt
+// line that told the MODEL to spot two people with one first name. Eval run 2
+// proved that wording was doing harm as well as good: asked to adjudicate a
+// roster it has never been shown, it decided Chris McCarthy was not on it and
+// emptied the field, on his own archetype sentence. So the discipline is now
+// where it belongs — _jvFindClientIn, the resolver the gates have always used,
+// which is measurably right about one hit, many hits and none. The prompt tells
+// the model to stop deciding; the seam does the deciding. Both halves asserted,
+// because either one alone would let a guess back in.
+t(/never decide whether that person is on the roster/.test(P),
+  '   the model is told not to adjudicate a roster it cannot see');
+t(/PUT THE NAME HE SAID IN client/.test(P),
+  '   and to report the name it heard instead');
+t(/_jvFindClientIn/.test(route) && /ask_which=_hits/.test(route),
+  '   and the resolver turns that name into a code, or into a question');
+t(/_hits\.length>1/.test(route) && /out\.client=''/.test(route),
+  '   more than one hit NEVER resolves to a person');
 t(/TONE/.test(P), '5. his tone rules');
 t(/Return ONLY JSON/.test(P) && /"tool"/.test(P), 'and a contract the app can dispatch on');
 
@@ -203,7 +222,8 @@ t(src.indexOf('_JV_SHADOW_OFF_RE.test(t)') < src.indexOf('if(_JV_SHADOW_RE.test(
   'and OFF is tested before REPORT, or "stop shadow mode" would only print it');
 
 console.log('\n  THE ROUTER IS THE SMALL MODEL, because he watches spend:');
-const route=(src.match(/async function _jvBrainRoute\(text\)\{[\s\S]*?\n\}/)||[''])[0];
+// (the router body is hoisted to the prompt section above, where the name
+//  discipline is now half prompt and half seam.)
 t(/_JV_BRAIN_MODEL='claude-haiku-4-5-20251001'/.test(src), 'haiku, not the expensive one');
 t(/max_tokens:220/.test(route), 'and a tight ceiling — this returns one small object', String(/max_tokens:220/.test(route)));
 t(!/sbSelect|trainerWrite|trainerOp/.test(route), 'the router never reads a row and never writes one');

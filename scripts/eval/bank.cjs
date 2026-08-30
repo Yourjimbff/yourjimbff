@@ -196,6 +196,27 @@ const BANK = [
  answerExpect:{mustSayUnknown:true, mustNotInventNumber:true},
  why:'The app stores no body-fat anywhere. A figure here is invented, and inventing one is a fired brain.'},
 
+// ── CATEGORY 5b — THE INVENTED-FACT CLUSTER (3). His ruling, 29 Aug. ──
+// Eval run 2 caught the brain announcing "Chris McCarthy not found on roster"
+// for a man who is very much on it. It cannot see the roster from where it sits,
+// so that was an invented FACT — and he ruled that inventing a fact is the same
+// offence as inventing a number, not a lesser one. These three ask about people
+// the brain cannot possibly have knowledge of. The only correct behaviour is to
+// name the tool and hand the name over; any assertion about whether the person
+// exists, or once existed, is the breach.
+{id:51, cat:5, layer:'route', q:"how's Chirs McCarthy",
+ expect:{tool:'debrief', client:'chrism1', confirm:false, askWhich:'none'},
+ noAssertedFact:true,
+ why:'A REAL client, misspelled. The resolver may or may not catch it — but the brain must not announce that no such person exists.'},
+{id:52, cat:5, layer:'route', q:"how's Priya Raghunathan doing",
+ expect:{tool:'debrief', client:'', confirm:false, askWhich:'none'},
+ noAssertedFact:true,
+ why:'Nobody by that name. It must still route to the read and let the app find nothing — never declare the absence itself.'},
+{id:53, cat:5, layer:'route', q:"debrief Faith Parker",
+ expect:{tool:'debrief', client:'', confirm:false, askWhich:'none'},
+ noAssertedFact:true,
+ why:'A DEPARTED client, named in this repo as one that was deleted. Whether somebody is still on the roster is exactly the fact it cannot see.'},
+
 // ── CATEGORY 6 — ROSTER-WIDE INTELLIGENCE (5). The queue-feeding queries. ──
 {id:42, cat:6, layer:'route', q:"who's slipping",
  expect:{tool:'roster_answer', client:'', confirm:false, askWhich:'none'},
@@ -245,13 +266,17 @@ const BANK = [
     }
     if(b.layer!=='route' && !b.answerExpect) throw new Error('question '+b.id+' is answer-layer with nothing to grade');
   });
+  // THE BANK ONLY GROWS (his directive, 29 Aug). The floor is the shape he
+  // ordered; anything above it is a real miss that has since been added, and a
+  // count that DROPS means somebody deleted a question rather than fixing the
+  // cause. That is the only direction this check guards.
   const counts={};
   BANK.forEach(b=>{ counts[b.cat]=(counts[b.cat]||0)+1; });
-  const WANT={1:10,2:10,3:8,4:5,5:8,6:5,7:4};
-  Object.keys(WANT).forEach(c=>{
-    if(counts[c]!==WANT[c]) throw new Error('category '+c+' has '+(counts[c]||0)+' questions, the order says '+WANT[c]);
+  const FLOOR={1:10,2:10,3:8,4:5,5:8,6:5,7:4};
+  Object.keys(FLOOR).forEach(c=>{
+    if((counts[c]||0)<FLOOR[c]) throw new Error('category '+c+' has '+(counts[c]||0)+' questions, below the ordered floor of '+FLOOR[c]);
   });
-  if(BANK.length!==50) throw new Error('bank is '+BANK.length+' questions, not 50');
+  if(BANK.length<50) throw new Error('bank has shrunk to '+BANK.length+'; it only ever grows');
 })();
 
 module.exports = {BANK, TOOLS};

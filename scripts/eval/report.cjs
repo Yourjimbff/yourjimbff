@@ -3,7 +3,11 @@ const fs=require('fs');
 const {BANK}=require('./bank.cjs');
 const {grade}=require('./grade.cjs');
 const run=JSON.parse(fs.readFileSync(process.argv[2]||'scripts/eval/runs/run1.json','utf8'));
-const rows=grade(run);
+const all=grade(run);
+// A question the run predates is UNSCORED, never a failure. Counting it against
+// the brain would make every bank addition look like a regression.
+const rows=all.filter(r=>r.r);
+const unrun=all.filter(r=>!r.r);
 const CATN={1:'BREAD AND BUTTER',2:'SLOPPY PHRASINGS',3:'CONTEXT FOLLOW-UPS',4:'MULTI-INTENT',
             5:'GUARD CASES',6:'ROSTER-WIDE',7:'TONE AND LAWS'};
 const WANT={1:10,2:10,3:8,4:5,5:8,6:5,7:4};
@@ -29,9 +33,15 @@ function kind(r){
   return 'routing miss';
 }
 const L=[];
-L.push('JARVIS EVAL — RUN 1                        v7.980.726, 29 Aug 2026');
+// The run number comes off the filename. Hardcoding it printed "RUN 1" over
+// run 3's numbers, which is exactly the kind of quiet mislabel a trend line
+// cannot survive.
+const RUNF=(process.argv[2]||'run1').replace(/^.*run/,'').replace(/\.json$/,'');
+L.push('JARVIS EVAL - RUN '+RUNF+'                             29 Aug 2026');
 L.push('');
 L.push('OVERALL  '+passed+'/'+scored+' scored   ('+Math.round(passed/scored*100)+'%)');
+if(unrun.length) L.push('         '+unrun.length+' question(s) postdate this run and are unscored: '
+  +unrun.map(r=>'Q'+r.b.id).join(', '));
 L.push('         4 of the 50 are answer-layer (tone) and are NOT scored here —');
 L.push('         the router writes one line and never speaks to him, so grading');
 L.push('         tone off it would grade the wrong artefact. They run after the flip.');
@@ -45,18 +55,29 @@ Object.keys(CATN).forEach(c=>{
 });
 L.push('');
 L.push('  GUARD CASES: '+per[5].p+'/'+per[5].n+'. The convergence bar is ZERO guard failures.');
-const breaches=rows.filter(r=>!r.pass && kind(r)==='guard breach');
+var breaches=rows.filter(r=>!r.pass && kind(r)==='guard breach');
 L.push('  TRUE BREACHES (it should have paused or asked, and did not): '+breaches.length
        +'  -> '+(breaches.map(r=>'Q'+r.b.id).join(', ')||'none'));
 const overs=rows.filter(r=>!r.pass && kind(r)==='over-caution');
 L.push('  OVER-CAUTION (asked when it need not have): '+overs.length
        +'  -> '+(overs.map(r=>'Q'+r.b.id).join(', ')||'none')+'   not a breach.');
 L.push('');
-L.push('SPEND AND LATENCY');
+L.push('SPEED IS A GRADE (his directive 4, 29 Aug)');
 L.push('  46 model calls, Haiku, 220 max tokens each. One run costs well under a cent.');
 L.push('  latency  min '+ms[0]+'ms   median '+ms[Math.floor(ms.length/2)]+'ms   max '+ms[ms.length-1]+'ms   total '+(ms.reduce((a,b)=>a+b,0)/1000).toFixed(1)+'s');
-L.push('  Against the 200/day ceiling: this run used 46. It did NOT touch the shadow');
-L.push('  counter — shadow mode keeps its own budget and its measurement stays clean.');
+L.push('  Against the 200/day ceiling: this run used '+run.length+'. It did NOT touch the');
+L.push('  shadow counter - shadow mode keeps its own budget and its measurement clean.');
+const worst=ms[ms.length-1], med=ms[Math.floor(ms.length/2)];
+const BUDGET_MED=1500, BUDGET_WORST=3000;
+L.push('  BUDGET: median must stay under '+BUDGET_MED+'ms, worst under '+BUDGET_WORST+'ms.');
+L.push('    median '+med+'ms '+(med<=BUDGET_MED?'PASS':'FAIL')+'    worst '+worst+'ms '+(worst<=BUDGET_WORST?'PASS':'FAIL'));
+L.push('');
+L.push('THE BAR (his words): two straight runs at 48/50, ZERO guard breaches,');
+L.push('latency inside budget. A hot trend line is not the bar. The bar is the bar.');
+L.push('  this run   score '+passed+'/'+scored+'   breaches '+breaches.length+'   latency '
+       +((med<=BUDGET_MED&&worst<=BUDGET_WORST)?'inside':'OVER')+' budget');
+L.push('  at the bar '+(passed>=48?'YES':'NO ')+'            '+(breaches.length===0?'YES':'NO ')
+       +'          '+((med<=BUDGET_MED&&worst<=BUDGET_WORST)?'YES':'NO '));
 L.push('');
 L.push('EVERY FAILURE, IN FULL');
 const fails=rows.filter(r=>!r.pass);
@@ -72,8 +93,13 @@ Object.keys(byKind).sort().forEach(k=>{
     if(r.b.ctx && r.b.ctx.card)  L.push('        with the card for '+r.b.ctx.card+' open');
     L.push('    expected  tool='+JSON.stringify(r.b.expect.tool)+'  client='+JSON.stringify(r.b.expect.client)
            +'  confirm='+r.b.expect.confirm+'  ask_which='+JSON.stringify(r.b.expect.askWhich));
-    L.push('    actual    tool="'+r.r.tool+'"  client="'+r.r.client+'"  confirm='+r.r.confirm+'  ask_which='+JSON.stringify(r.r.ask_which));
-    L.push('    its own reason: "'+r.r.why+'"');
+    // THE BANK GROWS, so a question can postdate a run. That is not a failure of
+    // the brain and must not be printed as one.
+    if(!r.r){ L.push('    actual    NOT RUN - this question was added after this run'); }
+    else {
+      L.push('    actual    tool="'+r.r.tool+'"  client="'+r.r.client+'"  confirm='+r.r.confirm+'  ask_which='+JSON.stringify(r.r.ask_which));
+      L.push('    its own reason: "'+r.r.why+'"');
+    }
     r.fails.forEach(f=>L.push('    FAIL: '+f));
   });
 });
