@@ -53,13 +53,27 @@ function grade(results){
       fails.push('confirm: expected '+b.expect.confirm+', got '+!!r.confirm);
     if(b.expect.askWhich!==undefined && !askOk(b.expect.askWhich, r.ask_which))
       fails.push('ask_which: expected '+JSON.stringify(b.expect.askWhich)+', got '+JSON.stringify(r.ask_which||[]));
-    // Multi-intent: whichever half it takes, the other must be named in why.
+    // MULTI-INTENT, graded against the CONTRACT now, not against prose. Until
+    // 30 Aug the router had one tool field, so the only evidence a second intent
+    // had survived was whether the `why` line mentioned it — a weak proxy that
+    // scored 1 of 5. The contract carries an ordered chain now, so the honest
+    // test is whether the chain actually contains both intents. The prose
+    // fallback stays for a run recorded before the chain existed, so old runs
+    // still grade and the trend line remains comparable.
     if(b.bothIntents){
-      const why=String(r.why||'').toLowerCase();
-      const other=b.bothIntents.filter(t=>t!==r.tool);
-      const spoken = other.some(t=>why.indexOf(t.replace('_',' '))>=0 || why.indexOf(t)>=0)
-        || /\bthen\b|\bafter\b|\balso\b|\bsecond\b|\bseparate\b|\btwo things\b|\bbut\b/.test(why);
-      if(!spoken) fails.push('multi-intent: the other half ('+other.join('/')+') is not mentioned in why — silently dropped');
+      const chain=Array.isArray(r.chain)?r.chain.map(x=>x.tool)
+                 :[r.tool].concat((r.then||[]).map(x=>x&&x.tool).filter(Boolean));
+      const missing=b.bothIntents.filter(t=>chain.indexOf(t)<0);
+      if(!missing.length){ /* both intents are in the chain, in order */ }
+      else if(r.chain || (r.then&&r.then.length)){
+        fails.push('multi-intent: the chain is ['+chain.join(' -> ')+'] and never reaches '+missing.join('/'));
+      } else {
+        const why=String(r.why||'').toLowerCase();
+        const spoken = missing.some(t=>why.indexOf(t.replace('_',' '))>=0 || why.indexOf(t)>=0)
+          || /\bthen\b|\bafter\b|\balso\b|\bsecond\b|\bseparate\b|\btwo things\b|\bbut\b/.test(why);
+        if(!spoken) fails.push('multi-intent: the other half ('+missing.join('/')+') is not mentioned in why — silently dropped');
+        else notes.push('pre-chain run: credited off the why line');
+      }
     }
     rows.push({b, r, pass:fails.length===0, fails, notes});
   });

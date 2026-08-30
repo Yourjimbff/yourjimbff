@@ -36240,8 +36240,8 @@ function _jvProse(text){
 // phrases is the thing being replaced.
 var JV_TOOLS=[
   {id:'debrief',      p:'The full check-in prep on ONE client: how their month went, their training, their food, what they wrote, their weight. Everything he would want in his head before getting on a call with that person. This is also what he means by going over somebody AGAIN, running it back on them, or another look at them.'},
-  {id:'day_board',    p:'HIS OWN day. His agenda, his calls today, what he personally has on. About Yusuf himself, never about a client.'},
-  {id:'roster_answer',p:'A question across the whole roster at once: who has gone quiet, who is in term, who logged today, who has not trained this week.'},
+  {id:'day_board',    p:'HIS OWN agenda on ANY day - today, tomorrow, the rest of the week. His calls, what he personally has on. About Yusuf himself, never about a client. (His ruling, 30 Aug: who has calls tomorrow is this.)'},
+  {id:'roster_answer',p:'A question spanning MANY people at once: who has gone quiet, who is in term, who logged today, who has not trained this week. The answer is a LIST of people. If he named one particular person, this is never the tool, whatever shape the sentence takes - where somebody is at, how they are getting on and how far behind they are are all reads on that one person.'},
   {id:'client_day',   p:'What one named client ate or did on a particular day. A single day, not a month.'},
   {id:'meal_move',    p:'Move a meal a client already logged to a different day or a different slot, or correct which meal it was filed as.'},
   {id:'book',         p:'Book, move, reschedule or cancel a call, a consult or an appointment.'},
@@ -36257,7 +36257,7 @@ var JV_TOOLS=[
   {id:'audio_report', p:'A TECHNICAL diagnostic about the SPEAKING ITSELF: which audio clips played, how long each took, what cut out. Only when he is asking about the voice as machinery. Asking to go back over a PERSON again is never this.'},
   {id:'help',         p:'What can you actually do. A question about your own capabilities.'},
   {id:'stop',         p:'Stop, cancel, undo, wipe that — take back what was just done, or halt what is happening right now.'},
-  {id:'answer',       p:'A question or a remark that none of the above performs: something to think about, judge, or answer in words using what you can see.'}
+  {id:'answer',       p:'A question or a remark that none of the above performs: something to think about, judge, or answer in words using what you can see. STILL NAME THE PERSON in client if the question is about somebody - a question you cannot route is still a question about them, and the app has nowhere to look without the name.'}
 ];
 // ---- 2. THE MEMORY OF THE MOMENT --------------------------------------
 // What a phrase-matcher never had. A bare follow-up inherits the subject that
@@ -36338,12 +36338,26 @@ function _jvBrainPrompt(mem){
   // exactly that here, naming three shadow regexes that are defined two lines
   // above their first use.
   L.push('- Writing to a NAMED client is confirmed with him first. Set confirm true for anything that changes the record of another person.');
-  L.push('- Concretely: meal_move, log_food aimed at somebody else, note, rename, phone_save, program and anything that removes a row all change another person and all take confirm true whenever a client is named. His OWN record and his OWN diary do not: day_board, calendar, book and a log_food about himself are confirm false.');
+  L.push('- Concretely: meal_move, log_food aimed at somebody else, note, rename, phone_save, program and anything that removes a row all change another person and all take confirm true whenever a client is named.');
+  L.push('- BOOK IS ALWAYS confirm false, even with a client named (his ruling, 30 Aug). Putting a call in his diary changes HIS week, not their record, and it undoes in one tap - asking him twice for every booking is friction on the thing he does most. day_board, calendar and a log_food about himself are confirm false for the same reason.');
   // Tone.
   L.push('\nTONE, for the one line you write in why: plain, short, natural. No applause, no filler.');
   // The contract.
+  // TWO THINGS IN ONE SENTENCE (his design ruling, 30 Aug). The contract used to
+  // have ONE tool field, so "move Kelly lunch to Thursday and tell me who has not
+  // logged" could only ever come back as half an answer — the brain was not being
+  // stupid, it had nowhere to put the second half. Eval run 3 scored multi-intent
+  // 1 of 5 for exactly that reason, and no prompt wording could have fixed it.
+  //
+  // `then` is an ORDERED list of the remaining intents, capped at two more so the
+  // whole message is at most three actions. Each one is dispatched through its own
+  // tool exactly as if he had said it alone, and the results are reported in
+  // order. NOTHING IS EVER SILENTLY DROPPED: an intent that cannot run says which
+  // one it was and why, which is the half of this ruling that matters most.
+  L.push('\nIF HE ASKED FOR MORE THAN ONE THING, put the FIRST in tool and every other one in `then`, in the order he said them. Up to two more. Never drop one and never merge two into a single tool - they are dispatched separately and he is told about each.');
   L.push('\nReturn ONLY JSON, no markdown:');
-  L.push('{"tool":"<one id from the list>","client":"<client_code or empty>","confirm":true|false,"ask_which":[],"why":"<one short line: what he meant, and why that tool>"}');
+  L.push('{"tool":"<one id from the list>","client":"<the name he said, or empty>","confirm":true|false,"ask_which":[],"why":"<one short line: what he meant, and why that tool>","then":[{"tool":"<id>","client":"<name or empty>","confirm":true|false,"why":"<one short line>"}]}');
+  L.push('`then` is an empty array when he asked for one thing, which is most of the time.');
   return L.join('\n');
 }
 // ---- 4. THE ROUTER ----------------------------------------------------
@@ -36360,7 +36374,10 @@ async function _jvBrainRoute(text){
   // build their own. Adding one here would duplicate it, not fix anything.
   var res=await fetch('/.netlify/functions/analyze',{
     method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:_JV_BRAIN_MODEL, max_tokens:220,
+    // 220 was sized for one intent and would truncate a three-intent chain
+    // mid-JSON, which parses as nothing at all. Still a routing call on the
+    // small model; the ceiling is reported every eval run.
+    body:JSON.stringify({model:_JV_BRAIN_MODEL, max_tokens:420,
       messages:[{role:'user', content:sys+'\n\nHIS MESSAGE:\n'+String(text||'')}]})});
   if(!res.ok) throw new Error('brain http '+res.status);
   var j=await res.json();
@@ -36390,16 +36407,40 @@ async function _jvBrainRoute(text){
   //
   // Only ever NARROWS. A code the brain somehow got right is left alone, and a
   // resolver that finds nothing sets client empty rather than inventing one.
-  try{
-    var _said=String(out.client||'').trim();
-    if(_said && !(typeof CLIENTS!=='undefined' && CLIENTS[_said])){
+  // EVERY STEP GETS RESOLVED, not just the first. A chain whose second intent
+  // still carried a bare name would hand a tool something it cannot take, which
+  // is the exact fault this seam was built to end - and it would do it on the
+  // half of the message that is already easiest to lose.
+  function _jvResolveStep(step){
+    try{
+      var _said=String(step.client||'').trim();
+      if(!_said) return step;
+      if(typeof CLIENTS!=='undefined' && CLIENTS[_said]) return step;   // already a code
       var _r=_jvFindClientIn(_said.replace(new RegExp("_","g")," "));
       var _hits=(_r && _r.hits) ? _r.hits : [];
-      if(_hits.length===1){ out.client=_hits[0]; }
-      else if(_hits.length>1){ out.client=''; out.ask_which=_hits; }
-      else { out.client=''; out.unknown_person=_said; }
-    }
-  }catch(e){}
+      if(_hits.length===1){ step.client=_hits[0]; }
+      else if(_hits.length>1){ step.client=''; step.ask_which=_hits; }
+      else { step.client=''; step.unknown_person=_said; }
+    }catch(e){}
+    return step;
+  }
+  _jvResolveStep(out);
+  // THE CAP IS THREE ACTIONS TOTAL, enforced here and not merely requested in the
+  // prompt. A model that returns nine intents gets three; the rest are named in
+  // dropped_extra so even the truncation is visible rather than silent.
+  try{
+    var _then=Array.isArray(out.then)?out.then:[];
+    _then=_then.filter(function(x){ return x && x.tool; });
+    if(_then.length>2){ out.dropped_extra=_then.slice(2).map(function(x){ return x.tool; }); _then=_then.slice(0,2); }
+    _then.forEach(_jvResolveStep);
+    out.then=_then;
+    // The whole message as one ordered list, which is what a dispatcher wants.
+    out.chain=[{tool:out.tool, client:out.client, confirm:!!out.confirm,
+                ask_which:out.ask_which||[], why:out.why||''}].concat(_then.map(function(x){
+      return {tool:x.tool, client:x.client||'', confirm:!!x.confirm,
+              ask_which:x.ask_which||[], why:x.why||''};
+    }));
+  }catch(e){ out.then=[]; out.chain=[{tool:out.tool, client:out.client, confirm:!!out.confirm, ask_which:out.ask_which||[], why:out.why||''}]; }
   out.ms=Date.now()-t0;
   out.subject=mem.subject;
   return out;

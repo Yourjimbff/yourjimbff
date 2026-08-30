@@ -139,8 +139,12 @@ t(/PUT THE NAME HE SAID IN client/.test(P),
   '   and to report the name it heard instead');
 t(/_jvFindClientIn/.test(route) && /ask_which=_hits/.test(route),
   '   and the resolver turns that name into a code, or into a question');
-t(/_hits\.length>1/.test(route) && /out\.client=''/.test(route),
+t(/_hits\.length>1/.test(route) && /step\.client=''/.test(route),
   '   more than one hit NEVER resolves to a person');
+// EVERY step of a chain, not only the first. A second intent still carrying a
+// bare name would hand a tool something it cannot take, on the half of the
+// message that is already easiest to lose.
+t(/_then\.forEach\(_jvResolveStep\)/.test(route), '   and every step of a chain is resolved, not just the first');
 t(/TONE/.test(P), '5. his tone rules');
 t(/Return ONLY JSON/.test(P) && /"tool"/.test(P), 'and a contract the app can dispatch on');
 
@@ -225,7 +229,16 @@ console.log('\n  THE ROUTER IS THE SMALL MODEL, because he watches spend:');
 // (the router body is hoisted to the prompt section above, where the name
 //  discipline is now half prompt and half seam.)
 t(/_JV_BRAIN_MODEL='claude-haiku-4-5-20251001'/.test(src), 'haiku, not the expensive one');
-t(/max_tokens:220/.test(route), 'and a tight ceiling — this returns one small object', String(/max_tokens:220/.test(route)));
+// RAISED 220 -> 420 on 30 Aug when the contract grew an ordered chain of up to
+// three intents. 220 was sized for one, and a truncated chain is not a small
+// answer — it is invalid JSON, which parses to nothing at all. Still a routing
+// call on the small model, and the ceiling is reported every eval run.
+const _mt=(/max_tokens:(\d+)/.exec(route)||[])[1];
+t(_mt && +_mt<=500, 'and a ceiling that still fits a routing call', 'max_tokens '+_mt);
+t(/"then":\[/.test(P), 'the contract carries an ordered list of intents');
+t(/Never drop one/.test(P), 'and says plainly that none may be dropped');
+t(/_then\.slice\(0,2\)/.test(route), 'and the cap of three is enforced in code, not merely asked for');
+t(/dropped_extra/.test(route), 'with anything past the cap named rather than silently cut');
 t(!/sbSelect|trainerWrite|trainerOp/.test(route), 'the router never reads a row and never writes one');
 
 console.log('');

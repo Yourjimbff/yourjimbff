@@ -52,9 +52,11 @@ const BANK = [
 {id:3, cat:1, layer:'route', q:"what did Blake log today",
  expect:{tool:'client_day', client:'blakeb1', confirm:false, askWhich:'none'},
  why:'One day for one client — client_day, never the month-long debrief.'},
+// RULED, 30 Aug (docket D2): the day board. The loose three-way expectation is
+// gone and the tool description was widened from "today" to his agenda on any
+// day, so the ambiguity is fixed at the cause rather than tolerated in the bank.
 {id:4, cat:1, layer:'route', q:"who has calls tomorrow",
- expect:{tool:['day_board','calendar','roster_answer'], client:'', confirm:false, askWhich:'none'},
- loose:'Three defensible tools. The toolbox cannot currently separate them — a Phase 4 target.',
+ expect:{tool:'day_board', client:'', confirm:false, askWhich:'none'},
  why:'His own schedule, nobody else’s record.'},
 {id:5, cat:1, layer:'route', real:true, q:"How's Chris McCarthy doing? Debrief me for our check in",
  expect:{tool:'debrief', client:'chrism1', confirm:false, askWhich:'none'},
@@ -73,7 +75,7 @@ const BANK = [
  why:'His own board. Must never attach a client.'},
 {id:10, cat:1, layer:'route', real:true, q:"book Kelly Tuesday at 9",
  expect:{tool:'book', client:'kellyg1', confirm:false, askWhich:'none'},
- why:'Verbatim. Booking is his own diary, so no confirm is required.'},
+ why:'Verbatim. RULED 30 Aug (docket D1): booking takes NO extra confirm even with a client named — it changes his week, not their record, and it undoes in one tap.'},
 
 // ── CATEGORY 2 — SLOPPY PHRASINGS (10). Must resolve by MEANING. ──
 {id:11, cat:2, layer:'route', real:true, q:"gimme the breakdown on Chris McCarthy",
