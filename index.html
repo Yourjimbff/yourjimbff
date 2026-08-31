@@ -25626,16 +25626,36 @@ function _wkSplitBlocks(html){
 function _wkNoHide(){
   try{ return document.body.classList.contains('is-trainer'); }catch(e){ return false; }
 }
-var _wkFlowQueued=false;
+// NEVER SCHEDULED ON FRAMES ALONE, and this is the second thing running the
+// rows caught rather than reasoned about. Measured on the deployed file at
+// 1280: document.hidden was true, so requestAnimationFrame was never called —
+// a hidden tab gets no frames. The single-flight flag had been set on the way
+// in and there was nothing left to clear it, so it WEDGED: every later render
+// saw a flag that said "already scheduled" and skipped its own pass. The
+// calendar then kept its overlapping layout for the whole session, and coming
+// back to the tab did not repair it.
+// So the guaranteed path is a timer, which fires in a hidden tab, throttled but
+// real. The frame path stays as the fast one when the tab is on screen. The
+// debounce is a timer handle rather than a boolean, so there is no state that
+// can survive a trigger that never arrives. _wkFlowAll is idempotent — it reads
+// each block's own recorded top and height, never the last pass's output — so
+// both paths running is two cheap passes with the same result, not a conflict.
+var _wkFlowT=null;
 function _wkFlowSoon(){
   try{
-    if(!_wkNoHide() || _wkFlowQueued) return;
-    _wkFlowQueued=true;
-    var run=function(){ _wkFlowQueued=false; try{ _wkFlowAll(); }catch(e){ console.error('wkFlow', e); } };
+    if(!_wkNoHide()) return;
+    if(_wkFlowT) clearTimeout(_wkFlowT);
+    _wkFlowT=setTimeout(function(){
+      _wkFlowT=null;
+      try{ _wkFlowAll(); }catch(e){ console.error('wkFlow', e); }
+    }, 120);
     // Two frames: one for the innerHTML write that is about to happen in this
-    // same task, one for the layout it causes.
-    if(window.requestAnimationFrame) requestAnimationFrame(function(){ requestAnimationFrame(run); });
-    else setTimeout(run, 16);
+    // same task, one for the layout it causes. Skipped entirely when hidden.
+    if(window.requestAnimationFrame && !document.hidden){
+      requestAnimationFrame(function(){
+        requestAnimationFrame(function(){ try{ _wkFlowAll(); }catch(e){} });
+      });
+    }
   }catch(e){}
 }
 var WK_FLOW_MIN=17;      // .wkMark's own height — the shortest real box on the grid
@@ -25703,11 +25723,20 @@ function _wkFlowWatch(g){
 }
 // A web font landing after first paint changes wrapping the same way a resize
 // does, and it lands once per session. Bound once, costs one pass.
+// A web font landing after first paint changes wrapping the same way a resize
+// does, and it lands once per session. A tab coming back to the front is the
+// other one: it was measured while hidden, where a browser can report zero for
+// anything it never laid out. Both bound once.
 function _wkFlowFontWatch(){
   try{
-    if(document.__wkFontBound || !document.fonts || !document.fonts.ready) return;
+    if(document.__wkFontBound) return;
     document.__wkFontBound=true;
-    document.fonts.ready.then(function(){ try{ _wkFlowSoon(); }catch(e){} });
+    if(document.fonts && document.fonts.ready){
+      document.fonts.ready.then(function(){ try{ _wkFlowSoon(); }catch(e){} });
+    }
+    document.addEventListener('visibilitychange', function(){
+      try{ if(!document.hidden) _wkFlowSoon(); }catch(e){}
+    });
   }catch(e){}
 }
 // The columns of one grid stay the same height as each other — a day that grew
