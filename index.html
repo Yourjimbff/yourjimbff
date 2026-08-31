@@ -2242,15 +2242,23 @@ body.cl-desk.cl-jimOn .clJimSlot{display:flex;}
    the reason is written at _jimInfoHtml: a duplicate id, the landmine CLAUDE.md
    names. It is gone, header and body and the quiet line it carried, and this
    is what stands in its place. Anchored to an icon, never a modal, never a
-   full card. The slot is overflow:hidden, so the panel opens DOWNWARD inside
-   the box it belongs to and cannot spill out of it. */
+   full card.
+   IT ESCAPES THE COLUMN (Yusuf, 31 Aug, urgent). It used to be absolutely
+   positioned inside the Jim column, and the page lock puts overflow:hidden on
+   that column — so every line of it was cut mid-word on his screen. Absolute
+   positioning cannot leave a clipping ancestor, and position:fixed alone cannot
+   either once any ancestor carries a transform, filter or backdrop-filter, all
+   of which this design uses. So the panel is MOVED TO THE BODY when it opens
+   and placed by hand against the icon: it has no clipping ancestor left to be
+   cut by. It flips left when there is no room right, flips above when there is
+   no room below, and is clamped inside the viewport with a 12px margin. */
 .clJimInfoWrap{position:relative;display:inline-flex;align-items:center;flex:0 0 auto;}
 .clJimInfo{display:inline-flex;align-items:center;justify-content:center;
   width:22px;height:22px;padding:0;margin:0;border:0;background:none;cursor:pointer;
   color:var(--muted);opacity:0.75;line-height:0;}
 .clJimInfo:hover,.clJimInfo[aria-expanded="true"]{color:var(--text);opacity:1;}
-.clJimPop{position:absolute;top:calc(100% + 9px);left:-10px;width:288px;max-width:80vw;
-  display:none;z-index:120;
+.clJimPop{position:fixed;top:0;left:0;width:288px;max-width:calc(100vw - 24px);
+  display:none;z-index:9998;
   background:rgba(22,22,22,0.96);
   -webkit-backdrop-filter:blur(26px) saturate(1.3);backdrop-filter:blur(26px) saturate(1.3);
   border:1px solid var(--border);border-radius:14px;
@@ -29496,8 +29504,11 @@ function _jimInfoBind(){
       try{
         var p=document.getElementById('clJimPop');
         if(!p || !p.classList.contains('open')) return;
-        var w=p.parentNode;
-        if(w && w.contains(e.target)) return;      // the icon, or the popover itself
+        // The panel now lives on the body, not beside the icon, so its parent
+        // is no longer the thing that holds both. Ask each of them directly.
+        if(p.contains(e.target)) return;                       // the popover itself
+        var b=document.getElementById('clJimInfoBtn');
+        if(b && b.contains(e.target)) return;                  // the icon
         _jimInfoClose();
       }catch(_){}
     }, true);
@@ -29506,17 +29517,62 @@ function _jimInfoBind(){
     });
   }catch(e){}
 }
+// PLACE IT AGAINST THE ICON, IN THE PAGE'S OWN COORDINATES. Nothing here reads
+// a parent: the panel is on the body by the time this runs, so the only frame
+// it needs is the viewport and the icon's rectangle inside it. Right of the
+// icon by default; flipped left when the right edge would run out of room;
+// below by default, flipped above when the bottom would; then clamped to the
+// viewport with a 12px margin so no edge of it can ever leave the screen.
+var _JIM_POP_M=12;
+function _jimInfoPlace(){
+  try{
+    var p=document.getElementById('clJimPop'); if(!p||!p.classList.contains('open')) return;
+    var b=document.getElementById('clJimInfoBtn'); if(!b) return;
+    var r=b.getBoundingClientRect();
+    var vw=window.innerWidth||document.documentElement.clientWidth;
+    var vh=window.innerHeight||document.documentElement.clientHeight;
+    // Measured, not assumed: the panel is display:block by now, so this is the
+    // width and height it will actually paint at, wrapping included.
+    var pw=p.offsetWidth, ph=p.offsetHeight;
+    var left=r.left-10;
+    if(left+pw > vw-_JIM_POP_M) left=r.right+10-pw;      // flip to the left of the icon
+    if(left < _JIM_POP_M) left=_JIM_POP_M;
+    if(left+pw > vw-_JIM_POP_M) left=Math.max(_JIM_POP_M, vw-_JIM_POP_M-pw);
+    var top=r.bottom+9;
+    if(top+ph > vh-_JIM_POP_M){
+      var above=r.top-9-ph;
+      if(above >= _JIM_POP_M) top=above;                  // flip above the icon
+      else top=Math.max(_JIM_POP_M, vh-_JIM_POP_M-ph);
+    }
+    p.style.left=Math.round(left)+'px';
+    p.style.top=Math.round(top)+'px';
+  }catch(e){}
+}
 function _jimInfoToggle(ev){
   try{
     if(ev && ev.stopPropagation) ev.stopPropagation();
     _jimInfoBind();
     var p=document.getElementById('clJimPop'); if(!p) return;
     var open=!p.classList.contains('open');
-    if(open) p.classList.add('open'); else p.classList.remove('open');
+    if(open){
+      // OUT OF THE COLUMN BEFORE IT IS SHOWN. The Jim column is overflow:hidden
+      // under the page lock; anything positioned inside it gets cut by it.
+      try{ if(p.parentNode!==document.body) document.body.appendChild(p); }catch(_){}
+      p.classList.add('open');
+      _jimInfoPlace();
+    } else {
+      p.classList.remove('open');
+    }
     var b=document.getElementById('clJimInfoBtn');
     if(b) b.setAttribute('aria-expanded', open?'true':'false');
   }catch(e){}
 }
+// A resize changes which side has room; a scroll moves the icon out from under
+// it. Both re-place rather than close, so the panel never drifts off its icon.
+try{
+  window.addEventListener('resize', function(){ _jimInfoPlace(); });
+  window.addEventListener('scroll', function(){ _jimInfoPlace(); }, true);
+}catch(e){}
 function _jimPinWatch(){
   try{
     var sc=document.getElementById('chatScroll'); if(!sc) return;
@@ -76655,6 +76711,11 @@ function _pgJimMount(){
   // the nodes it is about to receive.
   var host=document.getElementById('clJimHost');
   if(!host){
+    // THE PANEL MAY BE ON THE BODY. It is moved there when it opens, so a
+    // rebuild of this header would mint a SECOND element with the same id and
+    // every later lookup would find the wrong one — the exact landmine that
+    // emptied the bar this popover replaced. Clear the stray first.
+    try{ var _sp=document.getElementById('clJimPop'); if(_sp && _sp.parentNode===document.body) _sp.parentNode.removeChild(_sp); }catch(_){}
     // ONE LINE AND AN ICON, NOTHING ELSE (Yusuf, 31 Aug). The second line was
     // an instruction, and an instruction in a header is a line every client
     // reads before they can act. The words moved into the popover the icon
