@@ -22643,6 +22643,16 @@ function _jvPendingSummary(p){
   if(p.kind==='textprop'){
     return 'I have a text drafted for '+_jvPendWho(p)+': “'+p.body+'” — nothing is sent until you say yes. Send it?';
   }
+  // An invite parked behind another confirmation has to state itself back the
+  // same way a booking does, and say the ONE thing that separates it from one:
+  // no time is being taken. The question count, never the questions — those
+  // are read back word for word by the act itself, once, when it lands.
+  if(p.kind==='invite'){
+    var _iq=(p.questions||[]).length;
+    return 'Inviting '+_jvPendWho(p)+' to book their own check-in call'
+      + (_iq ? (', with '+_iq+' question'+(_iq===1?'':'s')+' to answer while they pick the time') : '')
+      + ' — nothing goes on the calendar until they pick. Yes?';
+  }
   if(p.kind==='appt'){
     return 'Putting “'+p.title+'” on your calendar for '+(p.when||'')+' — an hour held, and it blocks your booking page. Yes?';
   }
@@ -22722,7 +22732,7 @@ function _jvPendStem(p){
     // log — that's the original shape this function was built for, so it stays
     // on the cut path below.
     if(p.kind==='jimlog') return 'that food for '+p.name;
-    var _STEM_SAFE_KINDS={workingon:1, consult:1, booking:1, textprop:1, appt:1, vipmove:1};
+    var _STEM_SAFE_KINDS={workingon:1, consult:1, booking:1, textprop:1, appt:1, vipmove:1, invite:1};
     if(p.kind && !_STEM_SAFE_KINDS[p.kind]) return 'the thing we were setting up';
     var s=String(_jvPendingSummary(p)).replace(/\s*(?:Yes\?|Right client\?)\s*$/,'').trim();
     // Only the FIRST sentence, which is the one that says who and when. What
@@ -22934,6 +22944,58 @@ async function _jvCommitPending(p){
     try{ jvActRecord('Drafted a text to '+p.name, null); }catch(e){}
     try{ jvPaneRender(); }catch(e){}
     return '✓ Messages is open with the draft to '+p.name+' — read it once more and hit send. I’ve logged the contact.';
+  }
+  // ===== THE CHECK-IN INVITE, THE ACT ======================================
+  // It reaches her BOTH ways (Yusuf, ruling, 30 Aug): an in-app card on her
+  // calls surface, seen on her NEXT sign-in, and a text drafted into Messages
+  // that HE sends. Nothing here pushes, pings or emails her, and nothing here
+  // presses send — textClient opens the draft and stops, exactly as it does
+  // for every other drafted text in this file.
+  //
+  // THE INVITE IS THE ACT; THE TEXT IS ITS SECOND HALF. If the draft cannot
+  // open — no number saved — the invite still stands and this says so rather
+  // than claiming a text that is not on screen.
+  if(p.kind==='invite'){
+    window._jvPendingWrite=null;
+    var iw=null;
+    try{ iw=await trainerWrite('inviteCreate',{client_code:p.code, questions:(p.questions||[])}); }catch(e){}
+    if(!iw || !iw.ok || !iw.rows || !iw.rows[0]){
+      if(iw && iw.err==='invites_table_missing')
+        return 'The invites table is not there yet, so nothing was created. Run the call_invites migration and say it again.';
+      if(iw && iw.err==='no_such_client')
+        return 'The roster has no client under that code, so nothing was created. Check the tag and say it again.';
+      if(iw && iw.err==='questions_not_verbatim')
+        return 'The questions did not store exactly as you wrote them, so I stopped rather than send her a reworded version. Nothing was created.';
+      return 'That did not save, so '+_jvPendWho(p)+' has no invite. Nothing was written — say it again and I’ll retry.';
+    }
+    var irow=iw.rows[0];
+    // READ THEM BACK, WORD FOR WORD. The door already compared what it stored
+    // against what it sent; this prints the DATABASE's copy, because a report
+    // that quotes the sentence it just typed proves nothing about the row.
+    var istored=Array.isArray(irow.questions)?irow.questions:[];
+    try{ jvActRecord('Invited '+p.name+' to book a check-in call', {kind:'invite', code:p.code, id:(irow.id!=null?irow.id:null)}); }catch(e){}
+
+    // The text. Base wording, his to edit in Messages before he sends it.
+    var ifirst=String(_jvPendWho(p)||'').split(' ')[0]||'';
+    var ibody='Hey '+ifirst+', I’m also inviting you to schedule your check in call to review progress. '
+      + 'Pick your time here: https://yourjimbff.netlify.app';
+    var iphone=false;
+    try{ _jvHydratePhones(); iphone=!!((CLIENTS[p.code]||{}).phone); }catch(e){}
+    var iopened=false;
+    if(iphone){ try{ textClient(p.code, ibody); iopened=true; }catch(e){ iopened=false; } }
+    try{ jvPaneRender(); }catch(e){}
+
+    var iline='✓ '+_jvPendWho(p)+' is invited to book their check-in call. The card is on their calls screen '
+      + 'and they will see it next time they sign in — nothing was pushed at them.';
+    if(istored.length){
+      iline+=' Stored to ask them, word for word: '
+        + istored.map(function(q){ return '“'+_escHtml(String(q))+'”'; }).join(' ');
+    }
+    iline += iopened
+      ? ' Messages is open with the draft — read it and hit send yourself.'
+      : (iphone ? ' I could not open Messages, so the text is not drafted. The invite still stands: “'+_escHtml(ibody)+'”'
+                : ' There is no number saved for them, so no text was drafted. The invite still stands, and the wording was: “'+_escHtml(ibody)+'”');
+    return iline;
   }
   if(p.kind==='deeper'){
     window._jvPendingWrite=null;
@@ -32638,6 +32700,139 @@ async function _jvCancelCommand(t){
 var _JV_SOLO_EVENT_RE=new RegExp('\\b(?:walk|walks|walking|run|running|jog|jogging|gym|workout|training|train|lift|lifting'
   +'|cardio|stairmaster|treadmill|bike|biking|cycle|cycling|swim|swimming|row|rowing|yoga|pilates|stretch|stretching'
   +'|sauna|steam|class|reminder|remind|block|checkpoint|meditation|meditate|steps)\\b','i');
+
+// ===== THE CHECK-IN INVITE — THE PARSE (Yusuf, ruling, 30 Aug) =============
+// He invites a client to book their own check-in call, and hands them a short
+// list of questions they answer while they pick the time. An invite is not a
+// booking: nothing lands on anyone's calendar here, and no time is chosen by
+// him. She gets a card on her next sign-in and a text he sends himself.
+//
+// THE FIVE LAWS, in force for this and every future invite:
+//
+//   1. THE CLIENT IS THE @TAG AND NOTHING ELSE. No tag, no action. This layer
+//      never consults _jvFindClientIn, so a sentence that merely mentions a
+//      name cannot become an invite to that person — and a tag that does not
+//      resolve is a question back, never a fuzzy match onto somebody near it.
+//   2. QUESTIONS VERBATIM. Never reworded, merged, invented — and never SPLIT
+//      DIFFERENTLY, which is why a NEWLINE is the only delimiter recognised
+//      here. A question mark inside one of his lines is his punctuation, not
+//      a separator. The one normalisation is stripping the whitespace around
+//      a line, because indentation is the keyboard's, not his.
+//   3. THE REMIND-FORM IS VALID WITH ZERO QUESTIONS. An invite with no ask
+//      block is a complete invite that asks nothing, and it goes.
+//   4. UNCERTAIN MEANS ONE QUESTION BACK AND ZERO EXECUTION. Two tags, an
+//      unknown tag, or an ask block with nothing under it all stop here and
+//      create nothing. Never a partial — never the invite without the
+//      questions, and never three questions onto a guessed client.
+//   5. TALKING ABOUT A CALL CREATES NOTHING. Asking whether one is booked,
+//      cancelling one, moving one: this hands every one of them straight back
+//      to the routes that already own them, by returning null.
+//
+// The @tag is also what keeps this layer off the existing booking route. A
+// direct "book Blake for 9am tomorrow" carries no tag, never reaches here, and
+// still books exactly as it always has.
+var _JV_INV_TAG_RE=new RegExp('@([A-Za-z][A-Za-z0-9_.-]{1,39})','g');
+// The ask marker, found anywhere on a line rather than only at its start, so
+// the whole command can be typed on one line without changing what it means.
+var _JV_INV_ASK_RE=new RegExp('\\bask\\s+(?:her|him|them)\\b\\s*:?','i');
+// Law 5's verbs. Deliberately wider than _JV_MOVE_RE — this list only ever
+// causes this layer to STAND DOWN, so a false positive costs an invite he can
+// restate, while a miss would create one out of a sentence about cancelling.
+var _JV_INV_NOTHING_RE=new RegExp('\\b(cancel|cancels|cancelled|canceled|cancelling|canceling'
+  +'|reschedule|reschedules|rescheduled|rescheduling|move|moves|moved|moving|shift|shifts|shifted'
+  +'|push|pushes|pushed|skip|skips|skipped|postpone|postpones|postponed|delete|remove|removes)\\b','i');
+// A sentence that ASKS rather than instructs, once the politeness is off the
+// front. "is a call booked with @blakeb1" is a question about the calendar.
+var _JV_INV_ASKING_RE=new RegExp('^(is|are|was|were|did|do|does|has|have|had|when|what|whats'
+  +'|who|whose|why|how|which|any|anything)\\b','i');
+var _JV_INV_POLITE_RE=new RegExp('^(?:\\s*(?:hey|hi|ok|okay|so|and|then|please|jarvis)\\b[\\s,]*)*'
+  +'(?:(?:can|could|would|will|want\\s+you\\s+to|need\\s+you\\s+to)\\s+(?:you|we|u)\\s+(?:please\\s+)?)?','i');
+// What makes it an invite rather than a remark. "invite" alone is enough; so
+// is any of the booking verbs, which is what he actually says.
+var _JV_INV_VERB_RE=new RegExp('\\b(book|schedule|set\\s*up|pencil(?:\\s+in)?|invite|invites|inviting)\\b','i');
+// The door refuses a question longer than this rather than truncating one, so
+// this layer asks first instead of letting the act fail on his behalf.
+var _JV_INV_Q_MAX=300;
+// Returns null (not an invite — fall through, laws 1 and 5), {ask:'…'} (law 4:
+// one question back, zero execution), or {code, tag, questions, cmd}.
+function _jvParseInvite(text){
+  var raw=String(text||'');
+  if(!raw.trim()) return null;
+
+  // Where the ask block starts, if it starts at all. Everything before it is
+  // the command; everything from it is his questions and is never parsed for
+  // meaning — that is what verbatim means.
+  var lines=raw.split(/\r?\n/);
+  var askLine=-1, askCut=-1, inline='';
+  for(var i=0;i<lines.length;i++){
+    var m=_JV_INV_ASK_RE.exec(lines[i]);
+    if(m){ askLine=i; askCut=m.index; inline=lines[i].slice(m.index+m[0].length).trim(); break; }
+  }
+  var cmd = (askLine<0) ? raw : lines.slice(0,askLine).concat([lines[askLine].slice(0,askCut)]).join('\n');
+  cmd=cmd.trim();
+
+  // LAW 1 — the tag, and only the tag. Read off the COMMAND, never off his
+  // questions: "ask her how @blakeb1 is getting on" names nobody to invite.
+  var tags=[], tm;
+  _JV_INV_TAG_RE.lastIndex=0;
+  while((tm=_JV_INV_TAG_RE.exec(cmd))!==null){
+    var tg=String(tm[1]||'').toLowerCase().replace(/[.\-_]+$/,'');
+    if(tg && tags.indexOf(tg)<0) tags.push(tg);
+  }
+  if(!tags.length) return null;                       // no tag, no action
+
+  // LAW 5 — measured on the command only. His questions are his own words and
+  // a client who wants to "move" house must never stand this layer down.
+  var core=cmd.replace(_JV_INV_POLITE_RE,'').trim();
+  if(_JV_INV_NOTHING_RE.test(core)) return null;
+  if(_JV_INV_ASKING_RE.test(core)) return null;
+  if(!_JV_INV_VERB_RE.test(core)) return null;
+
+  // LAW 4 — two people is two invites and he should say which.
+  if(tags.length>1){
+    return {ask:'That names '+tags.length+' people — '+tags.map(function(t){ return '@'+t; }).join(' and ')
+      +'. An invite goes to one person. Which one?'};
+  }
+  var code=tags[0];
+  var who=(typeof CLIENTS!=='undefined' && CLIENTS) ? CLIENTS[code] : null;
+  // LAW 4 again, and law 1's teeth: an unknown tag stops. It is never widened
+  // into a roster search, because the tag IS the client by ruling.
+  if(!who) return {ask:'I do not have anyone on the roster under @'+code+'. Check the tag and say it again.'};
+  if(who.isTrainer) return {ask:'@'+code+' is you. An invite goes to a client — who is it for?'};
+
+  // LAW 2 and LAW 3 — his lines, in his order, or none at all.
+  var questions=[];
+  if(askLine>=0){
+    if(inline) questions.push(inline);
+    for(var j=askLine+1;j<lines.length;j++){
+      var q=lines[j].trim();
+      if(q) questions.push(q);
+    }
+    // LAW 4 — he said to ask her something and did not say what. That is not
+    // an invite with no questions, it is an unfinished sentence.
+    if(!questions.length){
+      return {ask:'You said to ask them something, but the questions did not come through. '
+        +'Put each one on its own line and I will send them exactly as you write them.'};
+    }
+    for(var k=0;k<questions.length;k++){
+      if(questions[k].length>_JV_INV_Q_MAX){
+        return {ask:'Question '+(k+1)+' is longer than I can store without cutting it, and I will not cut it. '
+          +'Shorten that one and say it again.'};
+      }
+    }
+  }
+  return {code:code, tag:code, questions:questions, cmd:cmd};
+}
+// The act. Nothing is written by the parse above; this is what fires.
+async function _jvInviteCommand(text){
+  var p=null;
+  try{ p=_jvParseInvite(text); }catch(e){ p=null; }
+  if(!p) return null;
+  if(p.ask) return p.ask;                              // law 4: one question, zero execution
+  var name=String((CLIENTS[p.code]||{}).name||p.code);
+  return await _jvFireNow({kind:'invite', code:p.code, name:name, questions:p.questions,
+    parts:[], payload:{}, at:Date.now()});
+}
 async function _jvBookCommand(text){
   var t=String(text||'').trim();
   // The trigger word routes BEFORE any roster resolution, so a lead's name is
@@ -32654,6 +32849,13 @@ async function _jvBookCommand(text){
   // silently swallowed some cancel sentences and dropped others straight to
   // the model. One dedicated stage, one dedicated act.
   try{ var _cn=await _jvCancelCommand(t); if(_cn) return _cn; }catch(e){ console.error('cancel command',e); }
+  // THE INVITE, after the cancel stage and never before it — law 5 says a
+  // cancel creates nothing, and the surest way to honor that is to let the
+  // route that already owns cancelling take the sentence first. An invite is
+  // an @tag and a booking verb; without a tag this returns null on its first
+  // line and every existing booking sentence reaches the layer below exactly
+  // as it always did.
+  try{ var _iv=await _jvInviteCommand(t); if(_iv) return _iv; }catch(e){ console.error('invite command',e); }
   // A GENERIC APPOINTMENT — neither a consult nor anyone's call. "dentist at 2
   // Thursday" used to fall all the way to the model and come back as talk.
   // After the ask-reply (so an answer to a held question is never stolen),
@@ -43096,7 +43298,13 @@ var JV_CLIENT_TABLES=[
   // separately: it has no owner column of its own, only a foreign key to
   // calendar_blocks(id) ON DELETE CASCADE, so deleting the block here takes
   // its exceptions with it automatically.
-  ['calendar_blocks','planned week items']
+  ['calendar_blocks','planned week items'],
+  // call_invites (31 Aug): the check-in invite and the client's answers to the
+  // questions it carried. client_code-keyed, dark to anon, door-only, and on
+  // this list in the same breath the table was created — same as vip_calls and
+  // call_notes above. booking_id is a plain column here, not a cascading key,
+  // so nothing else would ever clean these up.
+  ['call_invites','call invites']
 ];
 // `sales` is client_code-keyed and deliberately NOT on the list above (Yusuf's ruling:
 // the books outlive the roster). It carries paid_amount, total_amount, due_date and
@@ -43104,7 +43312,9 @@ var JV_CLIENT_TABLES=[
 // orphaned. That is the one exception to the keep-this-list-in-step-with-the-schema
 // rule, and it is a decision rather than an oversight — do not "fix" it by adding the
 // table back. Anything ELSE new that keys on client_code does belong on the list.
-// Five of these 29 tables are trainer-only and go through the door — a direct anon HEAD
+// Nine of these 35 tables are trainer-only and go through the door — a direct anon HEAD
+// (the count in this line read "five of 29" and had been stale for some time; it is
+// counted rather than remembered now, and call_invites made it nine of 35)
 // against them would 401/403 once the lock lands, and the whole point of counting before
 // deleting is that a refusal must never read as "zero rows here," or a real row gets
 // deleted out from under an undercount. Reuses the same full-roster ops trainerOp()
@@ -43120,7 +43330,11 @@ var JV_DOOR_TABLES = {
   // therefore never named in the "what's attached" list he confirms against.
   // callNotes with no client_code is the roster-wide read and every row carries
   // client_code, which is exactly the shape _jvCountRows filters on.
-  call_notes:'callNotes'
+  call_notes:'callNotes',
+  // call_invites (31 Aug): dark to anon from creation, exactly like call_notes
+  // above, so the generic HEAD count below could never see it either. Added in
+  // the same breath the table was — not after an audit finds it missing.
+  call_invites:'inviteList'
 };
 // The lock took the public key's DELETE off these same five tables. _jvDeleteRows
 // used to reach every client-keyed table the same way; without this it would
@@ -43137,7 +43351,11 @@ var JV_DOOR_DELETE_OPS = {
   // in trainer.js from the day the table was created and had never once been
   // called. Most rows cascade from bookings/vip_calls; "most" is not the
   // standard this list is held to.
-  call_notes:'callNoteDeleteAll'
+  call_notes:'callNoteDeleteAll',
+  // And the delete side for call_invites. There is no cascade to fall back on
+  // here: booking_id is a plain column, not a foreign key, so this op is the
+  // ONLY thing that ever removes an invite and the answers written into it.
+  call_invites:'inviteDeleteAll'
 };
 // Exact count via PostgREST's Content-Range. null means the table isn't there or
 // doesn't key on client_code — either way there's nothing of theirs in it.
@@ -66184,7 +66402,10 @@ async function createBooking(startISO){
     return {ok:false, taken:true};
   }
   if(_bookCache) _bookCache.push(Object.assign({client_code:cl.code}, w.rows[0]));
-  return {ok:true};
+  // The id rides back now. Additive — the one existing caller reads .ok and is
+  // untouched — and it is what lets an invite's answers attach to the call they
+  // were written for instead of being guessed at from the timestamp.
+  return {ok:true, id:(w.rows[0].id!=null?w.rows[0].id:null)};
 }
 // Through the door, and the door filters on the session's own client_code as
 // well as the id — so a booking id that is not theirs matches nothing and is
@@ -66407,6 +66628,9 @@ function _pcCadenceLine(weekdays){
 // it on his own side of the app; on her screen it is a call with her coach.
 function _pcEyebrow(state){
   if(state==='standing'||state==='booked') return 'Your call with Yusuf';
+  // An invitation is not a plan and not a booking, and saying so is the point:
+  // nothing is on her calendar yet, and she is the one who decides when.
+  if(state==='invited') return 'An invitation from Yusuf';
   return 'Calls with Yusuf';
 }
 function _pcCardHtml(next, state, credits, opts){
@@ -66437,6 +66661,19 @@ function _pcCardHtml(next, state, credits, opts){
       body+='<div style="font-size:13.5px;color:var(--text);line-height:1.5;">'+_pcCadenceLine(opts.weekdays)+'</div>'
         +'<div style="font-size:13px;color:var(--m2);margin-top:8px;">Couldn\u2019t load your next time just now.</div>';
     }
+  } else if(state==='invited'){
+    // HER INVITE, IN HER WORDS. It states the one fact that matters — he asked
+    // her to book a call — and then the door. The question COUNT earns its
+    // place because it tells her what she is walking into; the questions
+    // themselves are on the booking screen, where she answers them, and are
+    // never previewed here in a card she cannot type into.
+    var _ivq=((opts.invite&&opts.invite.questions)||[]).length;
+    body='<div style="font-size:13.5px;color:var(--text);line-height:1.5;">Yusuf has invited you to book your check-in call.</div>';
+    if(_ivq){
+      body+='<div style="font-size:12.5px;color:var(--m2);line-height:1.5;margin-top:6px;">'
+        + _ivq+' question'+(_ivq===1?'':'s')+' to answer while you pick your time.</div>';
+    }
+    body+='<div style="font-size:12.5px;color:var(--gold);font-weight:700;margin-top:8px;">Pick your time →</div>';
   } else if(state==='booked'){
     body='<div style="font-size:15px;font-weight:800;color:var(--text);">'
       +next.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})+'</div>'
@@ -66522,6 +66759,23 @@ async function _pcFetchBookings(){
     return {ok:true, rows:r.rows.map(function(b){ return Object.assign({client_code:cl.code}, b); })};
   }catch(e){ return {ok:false, rows:[]}; }
 }
+// ===== THE CHECK-IN INVITE, HER HALF (Yusuf, ruling, 30 Aug) ===============
+// Her pending invite, scoped server-side to her own code. Same {ok, row} shape
+// and the same reasoning as _pcFetchBookings above: a door that did not answer
+// must never arrive here wearing the shape of "she has no invite", or the card
+// silently drops an invitation her coach sent her.
+//
+// IT DOES NOT PUSH, PING OR EMAIL HER. This read runs when she opens the app,
+// which is what "seen on her next sign-in" means — there is no notification
+// path anywhere in this feature, deliberately.
+async function _pcFetchInvite(){
+  try{
+    var r=await trainerOpChecked('myInvite', {});
+    if(!r.ok) return {ok:false, row:null};
+    var rows=r.rows||[];
+    return {ok:true, row:(rows.length?rows[0]:null)};
+  }catch(e){ return {ok:false, row:null}; }
+}
 async function _pgCallsCard(_retried){
   if(!cl) return;
   var hosts=_pcHosts();
@@ -66539,6 +66793,24 @@ async function _pgCallsCard(_retried){
   // natural renewal. This card asks every time it's opened instead.
   try{ await sessEnsure(cl.code, true); }catch(e){}
   var now=new Date();
+  // THE INVITE COMES FIRST, and it wins the card. It is the one state here that
+  // asks her to DO something her coach asked for, and burying it under a call
+  // she already has booked is how it would go unseen — which is the whole
+  // failure this feature exists to avoid. Read before anything else so the
+  // branches below cannot return past it.
+  //
+  // A failed read is not "no invite": _pcFetchInvite says which, and on a
+  // failure this simply carries on to the states that were already there.
+  // Nothing asserts that she has no invitation.
+  var _inv=await _pcFetchInvite();
+  if(_inv.ok && _inv.row){
+    window._bkInvite=_inv.row;
+    host.innerHTML=_pcCardHtml(null,'invited',null,{invite:_inv.row});
+    host.onclick=function(){ openBooking(); };
+    host.style.cursor='pointer';
+    return;
+  }
+  try{ window._bkInvite=null; }catch(e){}
   var nextBooking=null, nextVip=null, bookOk=true, vipOk=true;
   var _bk=await _pcFetchBookings(), nextBookingId=null;
   bookOk=_bk.ok;
@@ -66928,12 +67200,74 @@ async function saveAvailability(){
 async function openBooking(){
   try{ await loadTrainerBlocks(true); }catch(e){}
   try{ openM('mBook'); }catch(e){}
+  // THE INVITE IS READ HERE TOO, not only by the calls card. The picker has
+  // several doors — the Account modal, Add Activity, the timeline — and a
+  // client who reaches it through one of those would otherwise get the booking
+  // screen with his questions missing, book, and leave him nothing to read.
+  // One extra read on a deliberate tap, never on app load, and it also means
+  // the questions are the ones on the row right now rather than whatever the
+  // card happened to fetch earlier. A failed read leaves the picker exactly as
+  // it was before invites existed.
+  try{
+    if(cl && !(typeof isTrainer==='function' && isTrainer(cl.code))){
+      var _iv=await _pcFetchInvite();
+      if(_iv.ok){
+        window._bkInvite=_iv.row;
+        // ANSWERS ARE POSITIONAL, so they belong to ONE invite. A second
+        // invite supersedes the first with a different list of questions, and
+        // carrying a draft across would put answer two under a question she
+        // never read. Dropped the moment the invite id changes.
+        var _ivId=(_iv.row && _iv.row.id!=null) ? String(_iv.row.id) : '';
+        if(String(window._bkAnsFor||'')!==_ivId){ window._bkAns={}; window._bkAnsFor=_ivId; }
+      }
+    }
+  }catch(e){}
   var host=document.getElementById('bookBody');
   if(host) host.innerHTML='<div style="text-align:center;padding:30px;color:rgba(240,236,228,0.78);font-size:13px;">Loading\u2026</div>';
   var avail = await loadAvailability(true);
   var booked = await loadBookings(true);
   var safety = await _loadPickerSafetyBusy(21, true);
   renderBookingSlots(avail, booked, safety);
+}
+// ===== THE INVITE'S QUESTIONS, ON THE BOOKING SCREEN =======================
+// HIS WORDS, NOT A PARAPHRASE OF THEM. Every question is printed exactly as it
+// came out of the database — the same array the report reads back to him — and
+// each one gets its OWN field, in his order. Nothing here merges two, splits
+// one, or adds a fourth.
+//
+// ABOVE THE DAY STRIP ON PURPOSE. Tapping a slot opens the confirm sheet over
+// this screen, so anything below the grid would be unreachable the moment she
+// picks a time. She reads, answers, then chooses.
+//
+// THE DRAFT LIVES IN STATE, never in the textarea — bkPickDay repaints this
+// whole body, and a repaint landing mid-sentence would take her words with it.
+// That is the same lesson the shared call notes learned, in the same words.
+function bkAnsDraft(i, v){ try{ (window._bkAns=window._bkAns||{})[+i]=String(v==null?'':v); }catch(e){} }
+function _bkInviteFieldsHtml(){
+  var inv=null; try{ inv=window._bkInvite; }catch(e){}
+  if(!inv) return '';
+  var qs=(inv && Array.isArray(inv.questions)) ? inv.questions : [];
+  var ans=null; try{ ans=window._bkAns||{}; }catch(e){ ans={}; }
+  var out='<div style="background:#1e1e1e;border-left:3px solid #f5c518;border-radius:8px;padding:12px 14px;margin-bottom:14px;">'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:1.1px;text-transform:uppercase;color:#f0ece4;">Invited by Yusuf</div>'
+    +'<div style="font-size:12.5px;color:rgba(240,236,228,0.78);line-height:1.55;margin-top:5px;">'
+    + (qs.length
+        ? 'Pick a time below. He asked you '+qs.length+' thing'+(qs.length===1?'':'s') + ' — your answers go to him with the booking.'
+        : 'Pick a time below and it goes straight on his calendar.')
+    +'</div></div>';
+  if(!qs.length) return out;
+  qs.forEach(function(q, i){
+    var v=String((ans && ans[i]!=null) ? ans[i] : '');
+    out+='<div style="margin-bottom:12px;">'
+      +'<div style="font-size:13.5px;font-weight:700;color:#f0ece4;line-height:1.45;margin-bottom:6px;">'+_escHtml(String(q))+'</div>'
+      +'<textarea oninput="bkAnsDraft('+i+', this.value)" rows="2" placeholder="Your answer"'
+      +' style="width:100%;box-sizing:border-box;background:#141414;border:1px solid rgba(240,236,228,0.13);'
+      +'border-radius:10px;padding:10px 12px;color:#f0ece4;font-size:13.5px;font-family:inherit;line-height:1.5;resize:vertical;">'
+      +_escHtml(v)+'</textarea>'
+    +'</div>';
+  });
+  out+='<div style="height:4px;"></div>';
+  return out;
 }
 function renderBookingSlots(avail, booked, safety){
   var host=document.getElementById('bookBody'); if(!host) return;
@@ -66944,7 +67278,7 @@ function renderBookingSlots(avail, booked, safety){
   var tz=(avail[0] && avail[0].tz) || _myTz();
   var mine=(booked||[]).filter(function(b){ return b.client_code===cl.code; });
 
-  var html='';
+  var html=_bkInviteFieldsHtml();
   if(mine.length){
     mine.forEach(function(b){
       var d=new Date(b.starts_at);
@@ -67048,24 +67382,39 @@ async function confirmBooking(){
   // Caught while proving the weekly tier can't be spent twice; applies the
   // same fix to the pre-existing one-off-credit path since it had the
   // identical gap.
-  if(weeklyCallsFor(cl.code) && !hasWeeklyCreditNow(cl.weekly_call_spent_at, new Date())){
+  // AN INVITE IS THE GRANT, AND IT SPENDS NOTHING. He chose to invite her, so
+  // the two gates below \u2014 which exist to stop a client spending a credit she
+  // does not have \u2014 have nothing to refuse here: no credit is being spent.
+  // Without this, an invited client on a weekly or credit-only tier would read
+  // "Yusuf has invited you to book your check-in call", pick a time, and be
+  // turned away by her own plan, which would make the invitation a lie.
+  // FLAGGED FOR HIM: this is the one place the invite widens what a client can
+  // do, and it is a decision about his tiers, not a technical detail.
+  var _bkInv=null; try{ _bkInv=window._bkInvite; }catch(e){}
+  if(!_bkInv && weeklyCallsFor(cl.code) && !hasWeeklyCreditNow(cl.weekly_call_spent_at, new Date())){
     try{ showToast('Your next check-in call opens '+_nextWeeklyBoundaryAfter(new Date()).toLocaleDateString('en-US',{weekday:'long'})+'.'); }catch(e){}
     try{ openBooking(); }catch(e){}
     return;
   }
-  if(callsAreCreditOnly(cl.code) && callCreditsLeft(cl.code)<=0){
+  if(!_bkInv && callsAreCreditOnly(cl.code) && callCreditsLeft(cl.code)<=0){
     try{ showToast('No calls left on your plan right now.'); }catch(e){}
     try{ openBooking(); }catch(e){}
     return;
   }
   var res=await createBooking(iso);
   if(res.ok){
-    // a one-off is only one-off if it gets spent; a weekly call the same
+    // a one-off is only one-off if it gets spent; a weekly call the same.
+    // An invited booking spends neither, per the ruling above.
     try{
-      if(weeklyCallsFor(cl.code)) await consumeWeeklyCall(cl.code);
+      if(_bkInv){ /* nothing to spend */ }
+      else if(weeklyCallsFor(cl.code)) await consumeWeeklyCall(cl.code);
       else if(callsAreCreditOnly(cl.code)) await consumeCallCredit(cl.code);
     }catch(e){}
-    try{ showToast('\u2713 Booked'); }catch(e){}
+    // Her answers go with the call, and the invite is closed out against the
+    // booking they belong to. Awaited before the toast so a failure can say so.
+    var _ansOk=true;
+    if(_bkInv){ try{ _ansOk=await _bkAnswerInvite(_bkInv, res.id); }catch(e){ _ansOk=false; } }
+    try{ showToast(_ansOk ? '\u2713 Booked' : '\u2713 Booked \u2014 your answers did not send'); }catch(e){}
     try{ window._tlCache=null; renderDayTimeline(); }catch(e){}
     try{ if(typeof _retireTodayTiles==='function') _retireTodayTiles(); }catch(e){}
     var avail=await loadAvailability(); var booked=await loadBookings(true); try{ await loadTrainerBlocks(); }catch(e){}
@@ -67077,6 +67426,58 @@ async function confirmBooking(){
     var s2=await _loadPickerSafetyBusy(21, true);
     renderBookingSlots(a2, b2, s2);
   }
+}
+// ===== HER ANSWERS, ONTO THE CALL SHE JUST BOOKED ==========================
+// Two writes, in this order and for two different reasons:
+//
+//   1. myInviteAnswer closes the invite out and keeps the PAIRING — question
+//      one with answer one — on a row nothing else can edit. That is the
+//      record of what was asked and what she said.
+//   2. myCallNoteAdd puts the same pairs into the call's own notes thread,
+//      which is what surfaces them in his pre-call debrief. Notes are prose
+//      either of them can delete; the invite row is not, which is why both
+//      exist rather than only the note.
+//
+// HER ANSWERS AND ONLY HERS. Nothing here writes anything he said into her
+// half, and the notes land as author 'client' because they are her words.
+//
+// AN EMPTY ANSWER IS STILL AN ANSWER'S PLACE. Blanks are kept in the array so
+// answer three stays opposite question three, and are skipped when writing
+// notes, because a note reading "How do you feel about it? —" is noise.
+async function _bkAnswerInvite(inv, bookingId){
+  if(!inv || inv.id==null) return true;
+  var qs=Array.isArray(inv.questions)?inv.questions:[];
+  var draft=null; try{ draft=window._bkAns||{}; }catch(e){ draft={}; }
+  var answers=qs.map(function(q,i){ return String((draft && draft[i]!=null) ? draft[i] : '').trim(); });
+
+  var w=null;
+  try{ w=await trainerWrite('myInviteAnswer', {id:inv.id, booking_id:(bookingId!=null?bookingId:null), answers:answers}); }catch(e){}
+  // A WRITE IS NOT DONE BECAUSE IT DIDN'T ERROR — the door hands back the row
+  // it actually landed, and it is that row's status this reads, never the
+  // request's success. Her drafts stay in state on a failure so the words are
+  // not lost, and the invite stays pending so the card is still there.
+  var landed=!!(w && w.ok && (w.rows||[])[0] && String(w.rows[0].status)==='answered');
+  if(!landed){
+    try{ console.error('call invite: answer write failed', (w&&w.status)||'', (w&&w.err)||''); }catch(e){}
+    return false;
+  }
+
+  // The notes half. Best effort by design: the answers are already safe on the
+  // invite row above, so a thread that will not take them is worth reporting
+  // and not worth losing the booking over.
+  if(bookingId!=null){
+    for(var i=0;i<qs.length;i++){
+      if(!answers[i]) continue;
+      try{
+        await trainerOpChecked('myCallNoteAdd', {source:'booking', booking_id:bookingId,
+          body:String(qs[i])+'\n'+answers[i]});
+      }catch(e){}
+    }
+  }
+
+  try{ window._bkInvite=null; window._bkAns={}; }catch(e){}
+  try{ if(typeof _pgCallsCard==='function') _pgCallsCard(); }catch(e){}
+  return true;
 }
 async function onCancelBooking(id){
   if(!id) return;

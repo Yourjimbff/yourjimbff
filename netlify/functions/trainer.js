@@ -114,6 +114,10 @@ const OPS = {
   // For Admin's calendar view. Trainer-only read, same as every other OPS entry —
   // a client's own read goes through myVipCalls below instead, never this.
   vipCallList: () => 'vip_calls?select=id,client_code,weekdays,time_local,tz,duration_minutes,start_date,end_date,notes,active,created_at&order=start_date.desc&limit=500',
+  // The roster-wide invite read. Exists for the same reason vipCallList does:
+  // call_invites is dark to anon, so the delete guard's generic HEAD count can
+  // never see it and would report "nothing of theirs in there" over a real row.
+  inviteList: () => 'call_invites?select=id,client_code,created_by,questions,answers,booking_id,status,created_at,answered_at&order=created_at.desc&limit=500',
 
   // Per-occurrence exceptions to those rules — one row per (vip_call_id,
   // occurrence_date), 'skip' or 'move'. The SERIES itself is never written by
@@ -586,6 +590,13 @@ const WRITE_OPS = {
   bookingsDeleteAll: (a) => ({ method: 'DELETE', path: `bookings?client_code=eq.${enc(a.client_code)}` }),
 
   callNoteDeleteAll: (a) => ({ method: 'DELETE', path: `call_notes?client_code=eq.${enc(a.client_code)}` }),
+
+  // call_invites' delete-guard companion, written in the same breath as the
+  // table. booking_id here is a plain column, not a cascading foreign key, so
+  // unlike call_notes there is no second mechanism that would clean these up:
+  // without this op every future client deletion orphans their invites and the
+  // answers they wrote into them, forever.
+  inviteDeleteAll: (a) => ({ method: 'DELETE', path: `call_invites?client_code=eq.${enc(a.client_code)}` }),
 };
 
 // A client_code carried in a WRITE BODY (not a URL filter) still gets the same shape
@@ -2817,6 +2828,191 @@ async function handleMyBookings(URL, SERVICE, code) {
   }
 }
 
+// ---- CALL INVITES -----------------------------------------------------------
+// (Yusuf, ruling, 30 Aug.) He invites a client to book a check-in call and
+// hands them a short list of questions to answer while they pick the time.
+//
+// Three ops, split exactly the way every other table through this door is
+// split: inviteCreate acts on a NAMED client and lives past the is_trainer
+// gate; myInvite and myInviteAnswer act on claims.client_code and nothing a
+// caller can supply, beside myBookings and the my* notes ops.
+//
+// VERBATIM IS A CONTRACT, NOT A HOPE (law 2 of the parse). The questions are
+// stored exactly as he said them, so this door does NOT trim them and does NOT
+// truncate an over-long one — a silent slice would be the door quietly
+// rewording him. Too long is refused, loudly, and the caller hears about it.
+const INVITE_Q_MAX = 300;
+const INVITE_A_MAX = 2000;
+const INVITE_LIST_MAX = 10;
+
+function inviteStrings(v, cap) {
+  if (v == null) return [];
+  if (!Array.isArray(v)) throw new Error('bad_arg');
+  if (v.length > INVITE_LIST_MAX) throw new Error('bad_arg');
+  return v.map((s) => {
+    const t = String(s == null ? '' : s);
+    if (t.length > cap) throw new Error('bad_arg');
+    return t;
+  });
+}
+
+// Does this code name a real client? Asked of the live table, never of a map —
+// an invite written against a code with no row is an invite nobody will ever
+// see, and it looks exactly like success from here.
+async function inviteClientExists(URL, SERVICE, code) {
+  const r = await fetch(`${URL}/rest/v1/clients?code=eq.${encodeURIComponent(code)}&select=code&limit=1`,
+    { headers: svc(SERVICE) });
+  if (!r.ok) return null;                       // unknown, not absent — caller must fail closed
+  const rows = await r.json().catch(() => []);
+  return Array.isArray(rows) && rows.length > 0;
+}
+
+const INVITE_COLS = 'id,client_code,created_by,questions,answers,booking_id,status,created_at,answered_at';
+
+async function handleInviteCreate(URL, SERVICE, args, byCode) {
+  const code = str(args.client_code, 64);
+  let questions;
+  try {
+    if (!code) throw new Error('bad_arg');
+    questions = inviteStrings(args.questions, INVITE_Q_MAX);
+  } catch (e) { return json(400, { error: 'bad_arg' }); }
+
+  try {
+    const exists = await inviteClientExists(URL, SERVICE, code);
+    if (exists === null) return json(502, { error: 'query_failed', op: 'inviteCreate' });
+    if (exists === false) return json(404, { error: 'no_such_client', client_code: code });
+
+    // ONE PENDING INVITE PER CLIENT. A second invite supersedes the first
+    // rather than stacking two cards on her screen — and 'superseded' rather
+    // than 'cancelled', because he did not withdraw the first one, he
+    // replaced it, and her screen should not have to guess which.
+    await fetch(`${URL}/rest/v1/call_invites?client_code=eq.${encodeURIComponent(code)}&status=eq.pending`, {
+      method: 'PATCH',
+      headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=minimal' }),
+      body: JSON.stringify({ status: 'superseded' }),
+    }).catch(() => {});
+
+    const w = await fetch(`${URL}/rest/v1/call_invites`, {
+      method: 'POST',
+      headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+      body: JSON.stringify({ client_code: code, created_by: byCode || null, questions: questions, status: 'pending' }),
+    });
+    const text = await w.text();
+    if (!w.ok) {
+      if (missingTable(text)) return json(503, { error: 'invites_table_missing' });
+      console.error('trainer: inviteCreate write failed', w.status, text.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'inviteCreate', detail: text.slice(0, 200) });
+    }
+    let landed = []; try { landed = JSON.parse(text); } catch (e) {}
+    const id = landed[0] && landed[0].id;
+    if (id == null) return json(502, { error: 'unconfirmed', op: 'inviteCreate' });
+
+    // READ IT BACK, and read back the QUESTIONS THEMSELVES — a boolean says
+    // the request did not error, not that his words landed unaltered. The
+    // caller states these back to him word for word, so they have to be the
+    // database's copy and not the one it just sent.
+    const rr = await fetch(`${URL}/rest/v1/call_invites?id=eq.${encodeURIComponent(id)}&select=${INVITE_COLS}&limit=1`,
+      { headers: svc(SERVICE) });
+    if (!rr.ok) return json(502, { error: 'unconfirmed', op: 'inviteCreate', id: id });
+    const back = await rr.json().catch(() => []);
+    const row = back && back[0];
+    if (!row || String(row.status) !== 'pending') return json(502, { error: 'unconfirmed', op: 'inviteCreate', id: id });
+    const stored = Array.isArray(row.questions) ? row.questions : [];
+    if (stored.length !== questions.length || stored.some((q, i) => String(q) !== String(questions[i]))) {
+      return json(502, { error: 'questions_not_verbatim', op: 'inviteCreate', id: id });
+    }
+    return json(200, [row]);
+  } catch (e) {
+    console.error('trainer: inviteCreate threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'inviteCreate' });
+  }
+}
+
+// The client's own pending invite, scoped server-side to their own code. One
+// row or none — never a list, because the card that renders this shows one
+// invite and superseding is what keeps it to one.
+async function handleMyInvite(URL, SERVICE, code) {
+  try {
+    const r = await fetch(`${URL}/rest/v1/call_invites?client_code=eq.${encodeURIComponent(code)}`
+      + `&status=eq.pending&select=${INVITE_COLS}&order=created_at.desc&limit=1`,
+      { headers: svc(SERVICE) });
+    const text = await r.text();
+    if (!r.ok) {
+      // A table that does not exist yet is not a client with no invite. Said
+      // apart, so the card can stay quiet instead of rendering "no invite" at
+      // a client who has one waiting in a table this deploy cannot see.
+      if (missingTable(text)) return json(503, { error: 'invites_table_missing' });
+      console.error('trainer: myInvite query failed', r.status, text.slice(0, 300));
+      return json(502, { error: 'query_failed', op: 'myInvite' });
+    }
+    let rows = []; try { rows = JSON.parse(text) || []; } catch (e) { rows = []; }
+    return json(200, rows);
+  } catch (e) {
+    console.error('trainer: myInvite threw', e && e.message);
+    return json(502, { error: 'query_failed', op: 'myInvite' });
+  }
+}
+
+// HER ANSWERS, AND ONLY HERS. The filter carries client_code as well as the
+// id, so an invite id belonging to somebody else matches no row and is
+// refused — the same discipline myBookingCancel already uses, and for the same
+// reason: an id names a person.
+async function handleMyInviteAnswer(URL, SERVICE, args, code) {
+  let id, bookingId, answers;
+  try {
+    id = encId(args.id);
+    bookingId = (args.booking_id == null || args.booking_id === '') ? null : encId(args.booking_id);
+    answers = inviteStrings(args.answers, INVITE_A_MAX);
+  } catch (e) { return json(400, { error: 'bad_arg' }); }
+
+  try {
+    // The booking she names has to be HERS. Without this an answer could
+    // attach her invite to somebody else's call, and the notes written
+    // against it would land in that call's thread.
+    if (bookingId != null) {
+      const br = await fetch(`${URL}/rest/v1/bookings?id=eq.${encodeURIComponent(bookingId)}`
+        + `&client_code=eq.${encodeURIComponent(code)}&select=id&limit=1`, { headers: svc(SERVICE) });
+      if (!br.ok) return json(502, { error: 'query_failed', op: 'myInviteAnswer' });
+      const brows = await br.json().catch(() => []);
+      if (!Array.isArray(brows) || !brows.length) {
+        console.warn('trainer: session tried to answer an invite onto another client\'s booking', code);
+        return json(403, { error: 'not_yours' });
+      }
+    }
+
+    const filter = `call_invites?id=eq.${encodeURIComponent(id)}`
+      + `&client_code=eq.${encodeURIComponent(code)}&status=eq.pending`;
+    const w = await fetch(`${URL}/rest/v1/${filter}&select=${INVITE_COLS}`, {
+      method: 'PATCH',
+      headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+      body: JSON.stringify({
+        answers: answers, booking_id: bookingId,
+        status: 'answered', answered_at: new Date().toISOString(),
+      }),
+    });
+    const text = await w.text();
+    if (!w.ok) {
+      if (missingTable(text)) return json(503, { error: 'invites_table_missing' });
+      console.error('trainer: myInviteAnswer failed', w.status, text.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'myInviteAnswer' });
+    }
+    let rows = []; try { rows = JSON.parse(text); } catch (e) {}
+    if (!rows.length) return json(404, { error: 'not_yours_or_missing', id: id });
+    const row = rows[0];
+    // Read back what actually landed, not what we sent.
+    const got = Array.isArray(row.answers) ? row.answers : [];
+    if (String(row.status) !== 'answered'
+        || got.length !== answers.length
+        || got.some((a, i) => String(a) !== String(answers[i]))) {
+      return json(502, { error: 'unconfirmed', op: 'myInviteAnswer', id: id });
+    }
+    return json(200, [row]);
+  } catch (e) {
+    console.error('trainer: myInviteAnswer threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'myInviteAnswer' });
+  }
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return json(405, { error: 'POST only' });
 
@@ -2875,6 +3071,16 @@ exports.handler = async (event) => {
   if (op === 'myCallNoteDelete') {
     return handleCallNoteDelete(URL, SERVICE, args, claims.client_code);
   }
+  // The invited client's own two ops. Same exception and the same discipline
+  // as the ops above: the account acted on is ALWAYS claims.client_code, and
+  // myInviteAnswer additionally proves the BOOKING belongs to that client
+  // before it attaches one, because an id names a person.
+  if (op === 'myInvite') {
+    return handleMyInvite(URL, SERVICE, claims.client_code);
+  }
+  if (op === 'myInviteAnswer') {
+    return handleMyInviteAnswer(URL, SERVICE, args, claims.client_code);
+  }
 
   if (claims.is_trainer !== true) {
     // A real client's session reaching the trainer-only door is worth knowing about.
@@ -2886,6 +3092,9 @@ exports.handler = async (event) => {
   // client, which is exactly why they sit here and not with the three
   // session-scoped ops above.
   if (op === 'bookCallForClient') return handleBookCallForClient(URL, SERVICE, args, claims.client_code);
+  // Acts on a NAMED client, so it sits here, past the gate, and never beside
+  // the my* invite ops above.
+  if (op === 'inviteCreate') return handleInviteCreate(URL, SERVICE, args, claims.client_code);
   if (op === 'consultInsert') return handleConsultInsert(URL, SERVICE, args);
   if (op === 'consultDelete') return handleConsultDelete(URL, SERVICE, args);
   if (op === 'logPhoto') return handleLogPhoto(URL, SERVICE, args);
