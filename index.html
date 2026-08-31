@@ -43132,9 +43132,19 @@ function _tlTotLine(slots, dayState){
   // barely noticeable across a fortnight, absurd across the months a client can
   // now reach. An empty past day states the fact and nothing else: no prompt to
   // act on a day that is gone, and nothing that reads as a mark against them.
-  if(!meals) return '<div class="tlTot"><span>'
-    + ((dayState||'today')==='past' ? 'Nothing logged.' : 'Nothing logged yet - the day\'s ahead of you.')
-    + '</span></div>';
+  if(!meals){
+    // THREE DAYS, THREE SENTENCES (Yusuf, 30 Aug). One line used to cover both
+    // "today" and "ahead", so a day you are STANDING IN was told it was ahead of
+    // you. Today gets the pen; a day still to come says so; a day already gone
+    // states the fact and stops. _tlDayState is the only gate, and it already
+    // returns exactly these three.
+    var _dst=(dayState||'today');
+    return '<div class="tlTot"><span>'
+      + (_dst==='past'  ? 'Nothing logged.'
+       : _dst==='ahead' ? 'Nothing here yet. That day’s still ahead.'
+       :                  'Nothing here yet. The pen’s yours.')
+      + '</span></div>';
+  }
   return '<div class="tlTot">'
     +'<b>'+Math.round(cal).toLocaleString()+'</b><span>cal</span><span>·</span>'
     +'<span><b style="font-size:12.5px;">'+Math.round(pro)+'g</b> protein</span><span>·</span>'
@@ -43241,7 +43251,7 @@ function _tlWnCard(ds){
   return '<div class="tlWn">'
     +'<div class="tlWnX" data-tl="wnday" data-ds="'+_escHtml(ds)+'"><svg width="9" height="9" viewBox="0 0 9 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1 1l7 7M8 1 1 8"/></svg></div>'
     +'<div class="tlWnRow" style="border-bottom:none;padding-top:2px;">Jim’s back, and sharper.</div>'
-    +'<div class="tlWnRow" style="border-bottom:none;">Tell him what you ate like you’d text me — palms, handfuls, plain words.</div>'
+    +'<div class="tlWnRow" style="border-bottom:none;">He takes plain words. Palms, handfuls, the way you’d text me.</div>'
     +'<div class="tlWnRow" style="border-bottom:none;padding-bottom:2px;">He’ll build your day as you go.</div>'
   +'</div>';
 }
@@ -45813,7 +45823,11 @@ function _tlMoveLine(key, label, it, ds){
   var m=_tlMins(it);
   var bits=[];
   var dur=String(it.duration||'').trim();
-  if(dur) bits.push(dur+' min');
+  // duration is free text as often as it is a number. A bare " min" glued onto
+  // it printed "1 hour min" on a real client's walk. Append the unit only when
+  // the value IS a number; anything already carrying its own words prints whole.
+  // Same test _jvBits uses on the trainer side, so the two read the same.
+  if(dur) bits.push(/^\d+(\.\d+)?$/.test(dur) ? (dur+' min') : dur);
   var clock=(m!=null&&m<99999&&m>0)?_tlClock(m):'';
   if(clock) bits.push(clock);
   // The description on these rows usually just restates the name ("Morning walk at
@@ -82379,62 +82393,69 @@ function jimReady(ds){
 // The bar should ask for the thing you're most likely about to log. Time of day
 // gets it right most of the time; what's already logged gets it right the rest.
 function _jimAsk(ds) {
+  // THE DAY BAR ASKS THE SAME WAY THE CHAT COMPOSER DOES (Yusuf, 30 Aug).
+  // One food example, one training example, alternating, each MEASURED against
+  // the field it is going into, and the field left EMPTY rather than showing a
+  // cut one. That law and those examples are already written once, above, for
+  // #chatInput (_JIM_EG_FOOD / _JIM_EG_WORK / _jimFits / _jimPlaceholderTick).
+  // This REUSES them rather than restating them: two lists of examples would
+  // drift into two voices, and the 10 Aug clipping bug is exactly what the
+  // measurement below exists to prevent.
+  //
+  // WHAT WENT: five time-aware prompts ("Walked yet?", "Breakfast?", "Lunch?",
+  // "Trained?", "Dinner?") and the fallback "Tell me everything - I'll log each
+  // one." The fallback measured 251px into a 227px field at 375 and wrapped to
+  // two lines, which is the thing this may never do. The five asked whether you
+  // had done a thing yet; the page reports, it does not chase.
+  var butler = !!(cl && typeof isTrainer === 'function' && isTrainer(cl.code));
+  // JIM IS JARVIS ON HIS OWN ACCOUNT (Yusuf, ruling) — empty field, no line,
+  // on every branch. Unchanged.
+  if (butler) return "";
+
   var m = 0;
   try { var n = new Date(); m = n.getHours() * 60 + n.getMinutes(); } catch (e) {}
-  var done = {};
+
+  // EVENING ASKS ONCE, IN THE WORDS ALREADY THERE. From 6pm on the CLIENT'S own
+  // clock the field stops offering examples and asks the only thing left. Today
+  // only: "close the day out" is meaningless on the back-day bar, which is
+  // writing to a day that closed already.
+  var _isToday = true;
+  try { _isToday = (ds === _tlDateStr(new Date())); } catch (e) {}
+  if (_isToday && m >= 18 * 60) return _jimAskPick(["Let\u2019s close the day out."]);
+
+  // The hour is the rotation. A per-render flip would change the line under
+  // someone mid-look, because this bar is rebuilt on every timeline patch.
+  var _d = 1;
+  try { _d = new Date().getDate(); } catch (e) {}
+  var wantWork = (((_d + Math.floor(m / 60)) % 2) === 1);
+  return _jimAskPick(wantWork ? _JIM_EG_WORK : _JIM_EG_FOOD);
+}
+// Longest that FITS, or nothing. Measures against a real .jimIn when the page
+// already has one — this bar is rebuilt constantly, so it almost always does.
+// On the very first paint there is no node yet: the bar's chrome is a fixed
+// 152px of the viewport and the column caps at 278px, both measured live at
+// 320, 375 and 1440.
+function _jimAskPick(pool) {
+  var el = null;
+  try { var f = document.querySelector('.jimIn'); if (f && f.clientWidth > 40) el = f; } catch (e) {}
+  var avail = 223;
+  try { avail = Math.min(window.innerWidth - 152, 278); } catch (e) {}
+  var srt = (pool || []).slice().sort(function (a, b) { return String(b).length - String(a).length; });
+  for (var i = 0; i < srt.length; i++) {
+    var ok = false;
+    try { ok = el ? _jimFits(srt[i], el) : _jimAskFitsW(srt[i], avail); } catch (e) { ok = false; }
+    if (ok) return srt[i];
+  }
+  return "";
+}
+// The no-element case only. Same canvas and same 15px face the field uses.
+function _jimAskFitsW(text, avail) {
   try {
-    var day = (window._tlCache && window._tlCache.foods) || [];
-    day.forEach(function (f) {
-      if (String(f.date_str || '') === ds) done[_mealSlotFor(f)] = 1;
-    });
-    ((window._tlCache && window._tlCache.workouts) || []).forEach(function (w) {
-      if (String(w.date_str || '') !== ds) return;
-      if (/walk/i.test(String(w.title || ''))) done.walk = 1; else done.workout = 1;
-    });
-  } catch (e) {}
-
-  // Two registers. Both take the burden — the difference is that a client is
-  // also being told what belongs here, because nothing else teaches them.
-  var butler = !!(cl && typeof isTrainer === 'function' && isTrainer(cl.code));
-
-  // Windows, not just ceilings. The bar is pinned to the screen now, so a "Dinner?"
-  // that fired at 2pm because dinner hadn't happened yet sat there all afternoon \u2014
-  // and contradicted the day's own prompt, which uses these same bounds.
-  //
-  // ONE LINE, ALWAYS (ruled 10 Aug \u2014 the clipping bug): the textarea only grows
-  // on user input, never for a placeholder, so a placeholder that wrapped to two
-  // lines showed its first line and lost its second with no scroll affordance
-  // visible \u2014 on a client's phone that read as "...you did and I'll log it" cut off
-  // behind the camera/mic buttons. Every line below is sized to sit on one line
-  // next to both buttons at 390px. Don't add a longer line back without checking
-  // it fits at that width \u2014 this is the whole fix.
-  // JIM IS JARVIS ON HIS OWN ACCOUNT (Yusuf, ruling): he built the app, so
-  // this composer does not instruct him \u2014 empty field, no line, on every
-  // branch below. Every client-facing line is untouched.
-  // THE TIME-AWARE PROMPTS LEAD; THE RULED LINE IS THE FALLBACK (Yusuf, 20 Aug).
-  // The short prompts are the ones that teach — they name the thing that is
-  // actually due — so they come first and the general line catches everything
-  // they don't cover.
-  // Both are subject to the 10 Aug clipping rule. The short ones fit on one line
-  // at 375px as they always did; the fallback does NOT, and the field takes two
-  // lines while it is showing rather than cutting it. Measured, see .jimIn.
-  if (m < 9 * 60 && !done.walk)
-    return butler ? "" : "Walked yet? Say it, it's logged.";
-  if (m < 11 * 60 && !done.breakfast)
-    return butler ? "" : "Breakfast? Say it, it's logged.";
-  if (m >= 10 * 60 && m < 16 * 60 && !done.lunch)
-    return butler ? "" : "Lunch? Say it, it's logged.";
-  if (m >= 15 * 60 && m < 20 * 60 && !done.workout)
-    return butler ? "" : "Trained? Say it, it's logged.";
-  if (m >= 15 * 60 && m < 21 * 60 && !done.dinner)
-    return butler ? "" : "Dinner? Say it, it's logged.";
-  // INVITE THE WHOLE DUMP, not one item (ruling, 24 Aug). "any meal or
-  // activity" asks for a thing; the echo under the field now shows a line per
-  // record as they are spoken, so the field can honestly ask for all of it.
-  // 38 characters against the old 46, so it still sits on one line at 390px
-  // beside the camera and the mic - the 10 Aug clipping rule above binds and
-  // this is SHORTER than the line it replaces.
-  return butler ? "" : "Tell me everything - I'll log each one.";
+    var c = _jimFits._c || (_jimFits._c = document.createElement('canvas'));
+    var ctx = c.getContext('2d');
+    ctx.font = '400 15px "Plus Jakarta Sans", sans-serif';
+    return ctx.measureText(String(text)).width <= avail;
+  } catch (e) { return false; }
 }
 
 // ---- reading a screenshot from another app ----
