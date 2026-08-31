@@ -10531,6 +10531,151 @@ async function checkForUpdate(){
     window.location.replace(window.location.pathname + '?v=' + Date.now());
   }catch(e){ /* offline or fetch blocked — just run the cached version, no harm */ }
 }
+/* ===== VIEW AS CLIENT =====================================================
+   Yusuf, ruling, 31 Aug: from a client's record, open their page exactly as
+   they see it, read only, with every write path closed AT THE DOOR rather
+   than by care.
+
+   WHY A BOOT AND NOT A SWAP. The client layout is decided at sign-in —
+   isTrainer(cl.code) sets body.is-trainer, the nav, the Jim panel, the Day
+   renderer — and thirty other places read cl mid-render. Swapping cl in place
+   leaves half the cockpit's state behind and the exit has to guess what to put
+   back. Booting the app as that client is the only version where what is on
+   screen IS the client's page and not a costume of one.
+
+   WHY THE DOOR IS window.fetch. Nothing in this file writes any other way:
+   no XMLHttpRequest, no sendBeacon, not one. So a single wrapper that refuses
+   every method except GET and HEAD closes every write in the app — the ones
+   nobody remembered to list, and the ones written next month. A refusal is
+   REPORTED, never swallowed: it lands in the console, it is counted on the
+   marker, and status 423 sends the app down its own "nothing changed" path.
+
+   WHY THE QUEUE IS CLOSED TOO. A refused write to a queued table is pushed to
+   sqPush and replayed later — that is how a weigh-in refused during testing
+   turned up on the server afterwards. A refusal that arrives an hour late is
+   not a refusal, so sqPush refuses in here as well.
+
+   WHY LOCALSTORAGE IS AN OVERLAY. The view leaves no trace on the client's
+   record and none on his device either. Writes go to memory for the life of
+   the view and read back from there, so the app behaves normally while his own
+   signed-in code, session and caches stay exactly as he left them. It is also
+   what makes the exit trustworthy: there is nothing to put back.
+========================================================================== */
+var VA_KEY='yjb_view_as';
+window.VIEWAS=null;
+try{
+  var _vaSaved=sessionStorage.getItem(VA_KEY);
+  if(_vaSaved) window.VIEWAS={code:String(_vaSaved).toLowerCase(), refused:[]};
+}catch(e){}
+
+// The control on the client's record. sessionStorage, not local: the view dies
+// with the tab, so a browser left open overnight never comes back wearing it.
+function viewAsClient(code){
+  if(!code || window.VIEWAS) return false;
+  try{ sessionStorage.setItem(VA_KEY, String(code).toLowerCase()); }
+  catch(e){ try{ if(typeof showToast==='function') showToast('Can’t open the view here'); }catch(_e){} return false; }
+  window._navigatingAway=true;
+  window.location.replace(window.location.pathname);
+  return true;
+}
+// One tap out. Nothing to restore — the overlay never wrote anything.
+function viewAsExit(){
+  try{ sessionStorage.removeItem(VA_KEY); }catch(e){}
+  window._navigatingAway=true;
+  window.location.replace(window.location.pathname);
+}
+function _vaShortUrl(u){
+  try{
+    var s=String(u||'');
+    var i=s.indexOf('/rest/v1/'); if(i>-1) return s.slice(i+9).split('?')[0];
+    var j=s.indexOf('/.netlify/functions/'); if(j>-1) return s.slice(j+20).split('?')[0];
+    return s.replace(/^https?:\/\/[^/]+/,'').split('?')[0] || s;
+  }catch(e){ return String(u||''); }
+}
+function _vaRefused(what){
+  if(!window.VIEWAS) return;
+  try{ window.VIEWAS.refused.push({what:what, at:Date.now()}); }catch(e){}
+  try{ console.error('[view-as] REFUSED '+what+' — read-only view of '+window.VIEWAS.code+'. Nothing was sent.'); }catch(e){}
+  try{ _vaPaint(); }catch(e){}
+  try{ if(typeof showToast==='function') showToast('Read-only view — nothing was changed'); }catch(e){}
+}
+function _vaName(){
+  try{
+    var c=window.VIEWAS&&window.VIEWAS.code;
+    if(typeof _jvSafeName==='function'){ var n=_jvSafeName(c); if(n) return n; }
+    if(typeof CLIENTS!=='undefined' && CLIENTS[c] && CLIENTS[c].name) return CLIENTS[c].name;
+    return c||'this client';
+  }catch(e){ return 'this client'; }
+}
+function _vaStyle(){
+  try{
+    if(!document.head || document.getElementById('vaMarkCss')) return;
+    var s=document.createElement('style'); s.id='vaMarkCss';
+    // Small, not gold, and it sits in the gutter under the page rather than on
+    // top of anything: bottom centre on desktop, lifted clear of the bottom nav
+    // on a phone. Gold on a client screen means now and next, and this is
+    // neither — it is a label on the glass.
+    s.textContent='#vaMark{position:fixed;left:50%;transform:translateX(-50%);'
+      +'bottom:calc(12px + env(safe-area-inset-bottom));z-index:2147483000;'
+      +'display:flex;align-items:center;gap:9px;max-width:94vw;'
+      +'background:rgba(38,44,54,0.95);border:1px solid rgba(160,178,200,0.42);'
+      +'border-radius:999px;padding:6px 7px 6px 14px;'
+      +'font-family:\'Plus Jakarta Sans\',sans-serif;font-size:11.5px;font-weight:700;'
+      +'color:#dfe6ee;letter-spacing:0.1px;white-space:nowrap;overflow:hidden;'
+      +'text-overflow:ellipsis;box-shadow:0 6px 20px rgba(0,0,0,0.45);}'
+      +'#vaMark #vaMarkX{background:#39414d;border:1px solid rgba(160,178,200,0.5);'
+      +'color:#eef3f8;border-radius:999px;padding:5px 11px;font-size:11px;font-weight:800;'
+      +'cursor:pointer;font-family:inherit;flex-shrink:0;}'
+      +'#vaMark #vaMarkX:hover{background:#454f5e;}'
+      +'@media (max-width:1023px){#vaMark{bottom:calc(76px + env(safe-area-inset-bottom));}}';
+    document.head.appendChild(s);
+  }catch(e){}
+}
+function _vaPaint(){
+  try{
+    if(!window.VIEWAS || !document.body) return;
+    _vaStyle();
+    var el=document.getElementById('vaMark');
+    if(!el){
+      el=document.createElement('div'); el.id='vaMark';
+      el.innerHTML='<span id="vaMarkTxt"></span><button id="vaMarkX" type="button">Exit view</button>';
+      document.body.appendChild(el);
+      var x=document.getElementById('vaMarkX');
+      if(x) x.onclick=function(ev){ try{ ev.stopPropagation(); }catch(e){} viewAsExit(); };
+    }
+    if(el.parentNode!==document.body) document.body.appendChild(el);
+    var n=0; try{ n=window.VIEWAS.refused.length; }catch(e){}
+    var t=document.getElementById('vaMarkTxt');
+    if(t) t.textContent='Viewing as '+_vaName()+' · read only'
+      + (n ? (' · '+n+' write'+(n===1?'':'s')+' refused') : '');
+  }catch(e){}
+}
+if(window.VIEWAS){
+  (function(){
+    var _vaFetch=window.fetch.bind(window);
+    window.fetch=function(input, init){
+      var m='GET';
+      try{ m=String((init&&init.method)||(input&&input.method)||'GET').toUpperCase(); }catch(e){}
+      if(m==='GET'||m==='HEAD') return _vaFetch(input, init);
+      var u=''; try{ u=String((typeof input==='string')?input:((input&&input.url)||'')); }catch(e){}
+      _vaRefused(m+' '+_vaShortUrl(u));
+      return Promise.resolve(new Response('{"refused":true,"reason":"view-as-client is read only"}',
+        {status:423, statusText:'Refused - read-only view',
+         headers:{'Content-Type':'application/json'}}));
+    };
+    try{
+      var _ls=window.localStorage, _vaMem={}, _vaGone={};
+      var _lsGet=_ls.getItem.bind(_ls);
+      _ls.getItem=function(k){ if(_vaGone[k]) return null; return (k in _vaMem)?_vaMem[k]:_lsGet(k); };
+      _ls.setItem=function(k,v){ _vaMem[k]=String(v); if(_vaGone[k]) delete _vaGone[k]; };
+      _ls.removeItem=function(k){ if(k in _vaMem) delete _vaMem[k]; _vaGone[k]=1; };
+      _ls.clear=function(){ _vaMem={}; };
+    }catch(e){}
+    try{ document.addEventListener('DOMContentLoaded', function(){ _vaPaint(); }); }catch(e){}
+    try{ setInterval(function(){ _vaPaint(); }, 1000); }catch(e){}
+  })();
+}
+
 window.addEventListener('load', function(){
   // tidy the cache-bust param left by an auto-update or manual refresh
   if(location.search.indexOf('v=')>-1){ try{ history.replaceState(null,'',location.pathname); }catch(e){} }
@@ -10546,7 +10691,11 @@ window.addEventListener('load', function(){
                            new Promise(function(r){ setTimeout(r, 1500); }) ]);
     }catch(e){}
     if(window._navigatingAway) return;   // a reload is already in flight; start nothing
-    var savedCode = localStorage.getItem('yjb_logged_in');
+    // A VIEW BOOTS AS THE PERSON BEING VIEWED. Everything else on this path is
+    // unchanged: the same doLogin, the same roster seed, the same render. The
+    // only difference is whose code it is handed, which is what makes the screen
+    // their page rather than a trainer's idea of it.
+    var savedCode = (window.VIEWAS && window.VIEWAS.code) || localStorage.getItem('yjb_logged_in');
     // No roster ships in this file any more, so a returning device seeds its OWN
     // record from the copy saved at last sign-in — auto-login stays instant and
     // works offline without the page carrying anyone else's name, phone or code.
@@ -11127,6 +11276,8 @@ var _SQ_KEY='yjb_savequeue';
 function _sqAll(){ try{ return JSON.parse(localStorage.getItem(_SQ_KEY)||'[]'); }catch(e){ return []; } }
 function _sqWrite(a){ try{ localStorage.setItem(_SQ_KEY, JSON.stringify(a.slice(-80))); }catch(e){} }
 function sqPush(table, row, method, matchCol){
+  // A refusal that replays later is not a refusal. See the VIEW AS CLIENT block.
+  if(window.VIEWAS){ try{ _vaRefused('queued '+(method||'POST')+' '+table); }catch(e){} return; }
   var q=_sqAll();
   // While the breaker is open every attempt queues, so five taps on a dead
   // server used to become five identical rows — and the replay path is a raw
@@ -18650,6 +18801,23 @@ function _covPaidHtml(code){
       + 'onclick="event.stopPropagation();" onchange="rsSetPaid(this,\''+code+'\')">'
   +'</div>';
 }
+// THE CONTROL. On the record, next to the close, and only where it can mean
+// something: he must be the trainer, the person must be a client, and a view
+// cannot open a view. A client looking at their own page never sees it.
+function _covViewAsBtnHtml(code, info){
+  try{
+    if(window.VIEWAS) return '';
+    if(!(typeof cl!=='undefined' && cl && typeof isTrainer==='function' && isTrainer(cl.code))) return '';
+    if(info && info.isTrainer) return '';
+    var first=String(_jvSafeName(code)||'').split(' ')[0]||'them';
+    return '<button class="covViewAs" onclick="event.stopPropagation();viewAsClient(\''+code+'\')" '
+      + 'title="Open their page exactly as they see it. Read only." '
+      + 'style="background:#26303c;border:1px solid rgba(160,178,200,0.42);color:#dfe6ee;'
+      + 'border-radius:10px;padding:8px 12px;font-size:12px;font-weight:800;cursor:pointer;'
+      + 'font-family:\'Plus Jakarta Sans\',sans-serif;margin-left:auto;margin-right:8px;'
+      + 'white-space:nowrap;">View as '+_escHtml(first)+'</button>';
+  }catch(e){ return ''; }
+}
 function _covShellHtml(code){
   var info=CLIENTS[code]||{};
   var open=!!window._jvDeepExpanded;
@@ -18666,6 +18834,7 @@ function _covShellHtml(code){
       + '<div class="covWho"><div class="covName">'+_escHtml(_jvSafeName(code))+'</div>'
         + _covPaidHtml(code)
       + '</div>'
+      + _covViewAsBtnHtml(code, info)
       + '<button class="covX" onclick="covClose()" title="Close">×</button>'
     + '</div>'
     + '<div class="covCols">'
