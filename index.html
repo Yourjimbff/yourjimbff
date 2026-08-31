@@ -47730,26 +47730,33 @@ function _stableJson(x){
 // knows which day it's offering. Jim's marker path resolves a type name to a
 // key itself before calling this, so the code — not the model — is what
 // decides legality either way.
-async function tlDoSwap(targetKey){
+async function tlDoSwap(targetKey, fromKey, ds){
   if(window._tlRO || !cl || !_tpPlan) return false;
-  var todayKey=_tlSwapKey(); if(!todayKey || !targetKey || targetKey===todayKey) return false;
-  // Writes to the WEEK, never the template again (Yusuf ruling) — today-swap
-  // and the week planner are the same mechanism now, just two doors onto it.
-  var weekKey=_tpWeekKeyFor(new Date());
+  // ANCHORED TO THE CARD'S OWN DATE, not to today: a client recording Sunday's
+  // session is standing on Sunday's card, and today's week is the wrong week
+  // to write when that Sunday belongs to another one.
+  var anchor=null; try{ anchor=ds?_parseDs(ds):null; }catch(e){}
+  if(!anchor) anchor=new Date();
+  var todayKey=fromKey||_tlSwapKey();
+  if(!todayKey || !targetKey || targetKey===todayKey) return false;
+  if(WEEKDAYS.indexOf(todayKey)<0 || WEEKDAYS.indexOf(targetKey)<0) return false;
+  // Writes to the WEEK, never the template (Yusuf ruling) — today-swap, the
+  // week planner and this all share the one mechanism.
+  var weekKey=_tpWeekKeyFor(anchor);
   var eff=_tpEffectiveWeek(weekKey);
-  var legal=_tlLegalSwapTargets(eff, todayKey);
-  if(!legal.some(function(t){ return t.key===targetKey; })){
-    try{ showToast('That swap isn’t available anymore'); }catch(e){}
-    return false;
-  }
+  // NO LEGALITY GATE (Yusuf, 31 Aug). _tlLegalSwapTargets used to veto the
+  // trade here as well as hide it in the UI. Both are gone for this door: the
+  // trade is between two named days inside one week, the client saw what sits
+  // on each of them, and no session is added, deleted or duplicated by it.
   var a=eff[todayKey], b=eff[targetKey];
   var delta={}; delta[todayKey]=b; delta[targetKey]=a;
   var ok=await _tpPatchWeekOverride(weekKey, delta);
-  if(!ok){ try{ showToast('Could not save the swap — try again'); }catch(e){} return false; }
+  if(!ok){ try{ showToast('Could not save that move \u2014 try again'); }catch(e){} return false; }
   // The quiet private note, same pattern every program edit already files —
   // Yusuf sees the movement, the client sees nothing bureaucratic.
   try{
-    _pnFile('Swapped today’s '+((a&&a.type)||'Rest')+' for '+(FULL_WEEKDAY[targetKey]||targetKey)+'’s '+((b&&b.type)||'Rest')+' (this week only).');
+    _pnFile('Moved '+((a&&a.type)||'Rest')+' to '+(FULL_WEEKDAY[targetKey]||targetKey)
+      +', took '+((b&&b.type)||'Rest')+' in return (this week only).');
   }catch(e){}
   try{ window._tlCache=null; renderDayTimeline(); }catch(e){}
   return true;
@@ -47794,30 +47801,45 @@ async function tlRestToday(){
 // same as before that merge.
 function _tlChangeControl(ds, effWeek, todayKey){
   if(window._tlRO || !window._tpFromServer || !todayKey) return '';
-  var todayIdx=WEEKDAYS.indexOf(todayKey); if(todayIdx<0) return '';
-  var canRest=_tlRestTodayLegal(effWeek, todayIdx);
-  var targets=_tlLegalSwapTargets(effWeek, todayKey);
-  if(!canRest && !targets.length) return '';
+  var idx=WEEKDAYS.indexOf(todayKey); if(idx<0) return '';
+  // EVERY DAY, NOT THE "LEGAL" ONES (Yusuf ruling, 31 Aug). This list used to
+  // be filtered by the collision law — the rule that stops the same split
+  // landing back to back. That rule is about what a TEMPLATE should look like.
+  // It is not a rule about which day a body actually worked, and using it here
+  // is what left George unable to record a session he really did, and Andrea
+  // asking three times for a day she never got. The plan is a plan.
+  // Every other day in this week is offered now. Where the target already
+  // carries a session the pill says so before it is tapped, so nothing is ever
+  // traded away silently — the client reads both halves and chooses.
+  var isToday=false; try{ isToday=(ds===_tlDateStr(new Date())); }catch(e){}
+  var canRest=isToday && _tlRestTodayLegal(effWeek, idx);
   var open=!!(window._tlSwapOpen && window._tlSwapOpen[ds]);
-  var s='<span class="tlChangeLink" data-tl="swaptog" data-ds="'+_escHtml(ds)+'">Change</span>';
+  var targets=[];
+  WEEKDAYS.forEach(function(k){
+    if(k===todayKey) return;
+    targets.push({key:k, type:((effWeek[k]||{}).type||'Rest')});
+  });
+  if(!canRest && !targets.length) return '';
+  var s='<span class="tlChangeLink" data-tl="swaptog" data-ds="'+_escHtml(ds)+'">Trained this on another day?</span>';
   if(open){
     s+='<div class="tlSwapRow">';
     // THE TWO RESTS (ruled, 10 Aug): this pill and the plain "Rest" pill below can
     // both be sitting in the same row and must read as different things without
     // an explainer. This one cascades the whole week forward a day; say so, in
-    // the butler register — a fact offered, not an instruction.
-    // Reworded 14 Aug — Yusuf's own read of "slides up a day" was that it reads
-    // backwards (up sounds like sooner). What actually happens, per the mechanic
-    // above: everything AFTER today keeps its order but lands one day later.
-    if(canRest) s+='<span class="tlSwapPill" data-tl="resttoday" data-ds="'+_escHtml(ds)+'">Resting today · the rest of the week moves a day later</span>';
+    // the butler register — a fact offered, not an instruction. Today only:
+    // "the rest of the week moves a day later" is meaningless on a past card.
+    if(canRest) s+='<span class="tlSwapPill" data-tl="resttoday" data-ds="'+_escHtml(ds)+'">Resting today \u00b7 the rest of the week moves a day later</span>';
     s+=targets.map(function(t){
-      return '<span class="tlSwapPill" data-tl="swapdo" data-ds="'+_escHtml(ds)+'" data-target="'+_escHtml(t.key)+'">'+_escHtml(t.type)+'</span>';
+      var label=(FULL_WEEKDAY[t.key]||t.key)+' \u00b7 '+t.type;
+      // "Say so plainly and let the client choose" — the pill carries the
+      // consequence in its own face rather than behind a confirm dialog.
+      if(t.type!=='Rest') label+=' (you\u2019d trade)';
+      return '<span class="tlSwapPill" data-tl="swapdo" data-ds="'+_escHtml(ds)+'" data-from="'+_escHtml(todayKey)+'" data-target="'+_escHtml(t.key)+'">'+_escHtml(label)+'</span>';
     }).join('');
     s+='</div>';
   }
   return s;
 }
-
 function _tlSlot(key, label, filled, ds, plan){
   var has = Array.isArray(filled) ? filled.length>0 : !!filled;
 
@@ -47882,7 +47904,9 @@ function _tlSlot(key, label, filled, ds, plan){
             // Only ever offered on today's own card, only when a real saved
             // program is behind it — nothing to swap within a synthesised
             // stand-in week that isn't actually stored anywhere.
-            +(_isToday && _pOn && _effWeek ? _tlChangeControl(ds, _effWeek, dayKey) : '')
+            +(_pOn && _effWeek ? _tlChangeControl(ds, _effWeek, dayKey) : '') // ANY DAY OF THE WEEK, not just today (Yusuf, 31 Aug): the whole
+            // point is recording a session on the day it was actually done,
+            // which is by definition not today.
           +'</div>'
           +'<div class="tlHeroChev"'+(open?' style="transform:rotate(90deg);"':'')+'>›</div>'
         +'</div>';
@@ -48807,7 +48831,7 @@ function _tlBindTaps(){
     if(a==='swapdo'){
       ev.stopPropagation();
       var _sdo=el.getAttribute('data-ds'); if(window._tlSwapOpen) window._tlSwapOpen[_sdo]=false;
-      tlDoSwap(el.getAttribute('data-target')).then(function(ok){ if(ok){ try{ showToast('✓ Changed'); }catch(e){} } });
+      tlDoSwap(el.getAttribute('data-target'), el.getAttribute('data-from'), _sdo).then(function(ok){ if(ok){ try{ showToast('✓ Moved'); }catch(e){} } });
       return;
     }
     // RESTING TODAY (Yusuf ruling) — one tap, immediate, no further submenu.
