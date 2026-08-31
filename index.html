@@ -20323,7 +20323,14 @@ function renderTrainingCalendar(){
   if((_wkUnwritten || _preStart) && progLabel && progLabel.style.display!=='none'){
     var _noteTxt = _preStart
       ? ('Your programme starts on '+_w1start.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})+'.')
-      : ('Week '+_wkUnwritten+' of your programme has not been written yet.');
+      // IT REPORTS, IT DOES NOT ACCUSE (Yusuf, 31 Aug). "Has not been written
+      // yet" is the client's own screen telling her that her coach has not done
+      // his job, and she reads it before he has even seen it. The state is the
+      // same and the sentence is now about the week, not about a person, and it
+      // gives her something to do with the day in front of her.
+      // ONE SENTENCE FOR THIS ACROSS THE APP: the calendar's own note in
+      // _mwProgFromProgramme says exactly this, word for word.
+      : ('Week '+_wkUnwritten+' of your programme is not up yet. Log whatever you train on the Day tab and it saves to your record.');
     progLabel.innerHTML += '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:11.5px;color:var(--m2);line-height:1.5;">'+_noteTxt+'</div>';
   }
   var _restStepGoal = 0;
@@ -30046,7 +30053,10 @@ function _mwProgFromProgramme(ws){
       // The midpoint sits inside the week under either anchor.
       var _mid=considered.length ? considered[Math.floor(considered.length/2)] : (firstDrawn||new Date(ws));
       var vw=null; try{ vw=_progWeekIndex(prog, _mid); }catch(e){}
-      if(vw!=null && vw>=1) note='Week '+vw+' of your programme has not been written yet.';
+      // Same sentence as the Program page's, word for word, and for the same
+      // reason: it reports the state of the week instead of naming someone who
+      // has not done something. (Yusuf, 31 Aug.)
+      if(vw!=null && vw>=1) note='Week '+vw+' of your programme is not up yet. Log whatever you train on the Day tab and it saves to your record.';
     }
   }
   return {program:(prog&&prog.name?{name:prog.name}:null), days:days, note:note, fromProgramme:true};
@@ -36970,6 +36980,109 @@ function _jvTouchRow(o){
     +'<span>Logging fine \u00b7 nothing from you in '+o.since+' days</span>'
   +'</button>';
 }
+// ===== A WEEK NOBODY WROTE, FOUND BEFORE THE CLIENT FINDS IT ==============
+// (Yusuf, 31 Aug: "A client should never be the one to discover it.")
+//
+// Blake opened her own calendar and read that week two of her programme had not
+// been written. The sentence was TRUE — her programme holds week one and
+// nothing else — and the fault was never the banner. The fault was that her
+// screen was the first place the fact appeared.
+//
+// So the cockpit asks the same question her calendar asks, a week EARLIER, and
+// answers it here first. Only a NUMBERED programme can be asked it: one with no
+// [wk1:] anchor is an ordinary repeating week and has no week two to be
+// missing. And a numbered programme with no numbered rows at all is not a
+// missing week two either — it is a programme nobody has begun, which her own
+// screen already says in its own words.
+//
+// NEVER A CONFIDENT ZERO, the same rule the rest of this pane runs on. It says
+// "reading" until the read has landed and says so out loud when the read fails,
+// because an empty group here would claim every programme is written.
+var _jvPW=null, _jvPWAt=0, _jvPWLoading=false, _jvPWFailed=false;
+var JV_PW_TTL=300000;
+function _jvProgWeeksState(){
+  if(_jvPWFailed) return 'failed';
+  return (_jvPW && (Date.now()-_jvPWAt)<JV_PW_TTL) ? 'ready' : 'never';
+}
+// The anchor, read the way _progWeek1Start reads it — noon, then floored — so
+// this and the client's own calendar can never disagree about which week it is.
+function _jvProgWeekAnchor(p){
+  try{
+    var m=String((p&&p.description)||'').match(new RegExp("\\[wk1:(\\d{4}-\\d{2}-\\d{2})\\]","i"));
+    if(!m) return null;
+    var d=new Date(m[1]+'T12:00:00');
+    if(isNaN(d.getTime())) return null;
+    d.setHours(0,0,0,0);
+    return d;
+  }catch(e){ return null; }
+}
+function _jvProgWeekIndexAt(anchor, when){
+  var d=new Date(when); d.setHours(0,0,0,0);
+  var diff=Math.floor((d.getTime()-anchor.getTime())/86400000);
+  if(diff<0) return 1;
+  return Math.floor(diff/7)+1;
+}
+async function _jvProgWeeksRead(){
+  var progs=await fetch(SB_URL+'/rest/v1/programs?is_active=eq.true&select=id,client_code,name,description',
+    {headers:sbHeaders()}).then(function(r){ if(!r.ok) throw new Error('programs '+r.status); return r.json(); });
+  if(!Array.isArray(progs)) throw new Error('programs came back the wrong shape');
+  var anchored=progs.filter(function(p){ return !!_jvProgWeekAnchor(p); });
+  if(!anchored.length) return [];
+  var ids=anchored.map(function(p){ return p.id; }).join(',');
+  var rows=await fetch(SB_URL+'/rest/v1/program_workouts?program_id=in.('+ids+')&select=program_id,week_index',
+    {headers:sbHeaders()}).then(function(r){ if(!r.ok) throw new Error('workouts '+r.status); return r.json(); });
+  if(!Array.isArray(rows)) throw new Error('workouts came back the wrong shape');
+  var by={};
+  rows.forEach(function(w){ if(w.week_index!=null){ (by[w.program_id]=by[w.program_id]||{})[w.week_index]=1; } });
+  var today=new Date(); today.setHours(0,0,0,0);
+  var next=new Date(today.getTime()+7*86400000);
+  var out=[];
+  anchored.forEach(function(p){
+    var a=_jvProgWeekAnchor(p), written=by[p.id]||{};
+    if(!Object.keys(written).length) return;
+    var wNow=_jvProgWeekIndexAt(a, today), wNext=_jvProgWeekIndexAt(a, next);
+    var missNow=!written[wNow], missNext=(wNext!==wNow) && !written[wNext];
+    if(!missNow && !missNext) return;
+    var nm=p.client_code;
+    try{ if(typeof _jvSafeName==='function') nm=_jvSafeName(p.client_code)||p.client_code; }catch(e){}
+    out.push({code:p.client_code, name:nm, program:(p.name||'their programme'),
+      week:(missNow?wNow:wNext), live:!!missNow});
+  });
+  // The week they are standing in first, then the one that is coming.
+  out.sort(function(a,b){ return (b.live?1:0)-(a.live?1:0); });
+  return out;
+}
+function _jvProgWeeksWarm(after){
+  if(_jvPWLoading) return;
+  if(_jvProgWeeksState()==='ready'){ try{ after&&after(); }catch(e){} return; }
+  try{ if(typeof isTrainer!=='function' || !window.cl || !isTrainer(cl.code)) return; }catch(e){ return; }
+  _jvPWLoading=true;
+  Promise.resolve(_jvProgWeeksRead())
+    .then(function(list){ _jvPW=list; _jvPWAt=Date.now(); _jvPWFailed=false; })
+    .catch(function(e){ console.error('progWeeks', e); _jvPWFailed=true; })
+    .then(function(){ _jvPWLoading=false; try{ after&&after(); }catch(e){} });
+}
+function _jvProgWeeksHtml(){
+  var st=_jvProgWeeksState();
+  var h='<div class="jvNeedGroup"><div class="jvNeedHead"><b>Programme weeks</b><span>this week and next</span></div>';
+  if(st==='failed'){
+    h+='<div class="jvPaneWait">Could not read the programmes — that is a read that failed, not every week written.</div>';
+  } else if(st!=='ready'){
+    h+='<div class="jvPaneWait">Reading which programme weeks are written…</div>';
+  } else if(!_jvPW.length){
+    h+='<div class="jvPaneClear">Every numbered programme has this week and next.</div>';
+  } else {
+    h+=_jvPW.map(function(o){
+      return '<button class="jvNeedRow" onclick="jvOpenDeep(\''+o.code+'\')">'
+        +'<b>'+_escHtml(o.name)+'</b>'
+        +'<span>'+(o.live
+            ? ('Week '+o.week+' of '+_escHtml(o.program)+' is not written. It is on their calendar now.')
+            : ('Week '+o.week+' of '+_escHtml(o.program)+' starts within the week and is not written.'))
+        +'</span></button>';
+    }).join('');
+  }
+  return h+'</div>';
+}
 function jvRenderNeeds(hostId){
   var host=document.getElementById(hostId||'jvNeeds'); if(!host) return;
   // Filming: the pane is names and numbers end to end, so it goes entirely,
@@ -36979,6 +37092,10 @@ function jvRenderNeeds(hostId){
     return;
   }
   var html='';
+  // FIRST IN THE PANE, above silence, because it is the only group here with a
+  // deadline on it: a week that starts on Monday stops being preventable on
+  // Monday.
+  html+=_jvProgWeeksHtml();
   // SILENCE. A count here is a claim about every client at once, so it waits
   // for a real read. An empty pane reads as "everyone is fine", which is the
   // worst thing this could say untruthfully.
@@ -37427,6 +37544,16 @@ function _jvNeedsMiniRender(){
   if(st!=='ready') label='Reading who needs you…';
   else{
     var n=0; try{ var g=_jvSilenceGroups(); n=(g.nudge||[]).length+(g.escalate||[]).length+(g.untouched||[]).length; }catch(e){}
+    // THE UNWRITTEN WEEKS ARE PART OF THIS COUNT, and the count waits for them.
+    // Saying "3 worth a look" while the programme read is still in flight is a
+    // confident number that is missing a row, which is the same fault as a
+    // confident zero. It says reading until both halves are in.
+    var pwSt='never'; try{ pwSt=_jvProgWeeksState(); }catch(e){}
+    if(pwSt==='ready'){ try{ n+=_jvPW.length; }catch(e){} }
+    if(pwSt==='never'){ host.innerHTML='<div class="jvNeedsMiniHead" onclick="jvNeedsToggle()">Reading who needs you…'
+      +'<span class="jvNeedsCaret">'+(open?'▾':'▸')+'</span></div>'+(open?'<div class="jvNeedsBody" id="jvNeeds"></div>':'');
+      if(open){ try{ jvRenderNeeds('jvNeeds'); }catch(e){} }
+      return; }
     label = n ? (n+' worth a look') : 'Nobody needs you right now';
   }
   host.innerHTML='<div class="jvNeedsMiniHead" onclick="jvNeedsToggle()">'+_escHtml(label)
@@ -37437,6 +37564,13 @@ function _jvNeedsMiniRender(){
 function jvNeedsToggle(){ window._jvNeedsOpen=!window._jvNeedsOpen; _jvNeedsMiniRender(); }
 function jvPaneRender(){
   try{ _jvTodayCallsWarm(function(){ try{ _jvNeedsMiniRender(); }catch(e){} }); }catch(e){}
+  // The programme read rides the same path: fetched once, cached, and the pane
+  // repainted when it lands. If the group is already open it is repainted too,
+  // or the answer would sit in memory behind a "reading" line.
+  try{ _jvProgWeeksWarm(function(){
+    try{ _jvNeedsMiniRender(); }catch(e){}
+    try{ if(window._jvNeedsOpen && document.getElementById('jvNeeds')) jvRenderNeeds('jvNeeds'); }catch(e){}
+  }); }catch(e){}
   try{
     var d=document.getElementById('jvPaneDay');
     if(d) d.textContent='Today · '+new Date().toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
