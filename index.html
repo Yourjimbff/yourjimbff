@@ -1117,6 +1117,49 @@ body.jv-ovl-on #jvOvlWrap{display:flex;align-items:flex-end;justify-content:cent
   border:1px solid #343434;box-shadow:0 3px 10px rgba(0,0,0,0.34);
   transition:border-color 0.12s,color 0.12s,transform 0.1s;}
 .wkMore:hover{border-color:rgba(245,197,24,0.45);color:#f0ece4;transform:translateY(-1px);}
+
+/* ===== NOTHING HIDES, NOTHING IS CUT, NOTHING OVERLAPS ====================
+   (Yusuf, 31 Aug, the "+1 more" order and its addendum.)
+
+   THREE FAULTS, ONE CAUSE. A block's height came from its DURATION, so a
+   30-minute meal got 34px whatever its name was. Everything else followed from
+   that: the title was clamped to the lines that fitted and ellipsised, the sub
+   line was dropped outright by .wkNoSub, and when two blocks shared a slot the
+   packer drew the FIRST one and put the rest behind a "+1 more" chip — a count
+   standing in for "Blueberries", a name that fits in the space with room over.
+   Growing a block past its duration is not new and is not mine to rule on: 1d
+   ruled it "EXPANSION IS VISUAL ONLY" and named the cost. This makes it the
+   default rather than a per-block opt-in, and adds the flow that keeps grown
+   boxes off each other.
+
+   ONE SOURCE FOR EACH VALUE, declared here and used by every box on the grid:
+   the gap between siblings, the corner radius, the border weight. .wkMark used
+   6px where .wkBlock used 9px and .wkMore used a third border colour; a person
+   reads that as three kinds of object on one surface.
+
+   TRAINER SURFACES ONLY, and said plainly rather than quietly: this is gated on
+   body.is-trainer because the client-side proof rows could not be run this run
+   (I cannot render a client surface as thegoat, and the 9:12am order says to
+   say so and stop rather than sign in anywhere). The client half of the
+   addendum is NOT shipped. When a client surface can be proven, the gate comes
+   off and this applies there unchanged — that is the whole of the change. */
+body.is-trainer{--wkGap:4px;--wkRad:9px;--wkBd:1px;}
+body.is-trainer .wkBlock,
+body.is-trainer .wkCal,
+body.is-trainer .wkMark,
+body.is-trainer .wkMore{border-radius:var(--wkRad);border-width:var(--wkBd);}
+/* The face of a flowed block. Height is written by _wkFlowAll from what the
+   content actually measures, so overflow stays hidden with nothing to hide. */
+body.is-trainer .wkBlock.wkFlow b,
+body.is-trainer .wkCal.wkFlow b{-webkit-line-clamp:none;line-clamp:none;display:block;
+  overflow:visible;white-space:normal;overflow-wrap:anywhere;}
+body.is-trainer .wkBlock.wkFlow span,
+body.is-trainer .wkCal.wkFlow span{white-space:normal;text-overflow:clip;overflow:visible;
+  display:block;}
+body.is-trainer .wkBlock.wkFlow,
+body.is-trainer .wkCal.wkFlow{overflow:visible;}
+body.is-trainer .wkMark.wkFlow{white-space:normal;text-overflow:clip;overflow:visible;
+  height:auto;min-height:17px;}
 /* Every row in an expanded band is a real 44px target on both axes — the panel
    is 380px wide, so the width half is satisfied by the panel rather than by a
    column that measured 80.9px on the cockpit and 46.1px on the phone. */
@@ -25548,7 +25591,120 @@ function _wkSplitBlocks(html){
   }
   return out;
 }
+// ===== THE FLOW PASS: nothing hides, nothing is cut, nothing overlaps =====
+// (Yusuf, 31 Aug — the "+1 more" order and its addendum. "Never hide one
+// behind a count, never cut a name, one gap value, one radius, one border,
+// boxes that never overlap.")
+//
+// WHY A POST-RENDER PASS AND NOT A CHANGE TO THE PACKER. The packer builds a
+// string and has no way to ask how tall a name will actually render — the old
+// _wkFitHeight guessed at it with title.length/22, which is a character count
+// standing in for a measurement. Real heights only exist once the block is in
+// the document, so the honest place to size a box is after it is drawn. One
+// hook, scheduled from _wkBandPack, which every one of the six calendar
+// surfaces already calls once per column — so no renderer needed editing and a
+// seventh surface gets this for free.
+//
+// WHAT IT DOES, per column, in order:
+//   1. Lets every block show its whole title and its sub line (--wkLines and
+//      .wkNoSub are inline, so they are cleared inline — a stylesheet rule
+//      would have lost to them, which is the landmine CLAUDE.md names).
+//   2. Measures what the content actually needs, and takes the LARGER of that
+//      and the block's duration height. A block never shrinks below its slot.
+//   3. Walks the column in time order and pushes any box that would land on
+//      the one above it down by exactly one gap. Zero overlap by construction
+//      rather than by hope.
+//
+// THE COST, NAMED, because 1d named the same one when it ruled expansion
+// visual-only: a grown or pushed box no longer lines up with its own hour line.
+// The stored time never moves and neither does the grid's pixel-to-time
+// mapping — wkColClick still derives minutes from the column's geometry — so
+// this is what is DRAWN, never what is recorded. A box that shows its whole
+// name two rows below its hour beats a name behind a count, which is the ruling.
+//
+// NEVER UNDER A FINGER: a column with a block mid-drag is left exactly alone.
+function _wkNoHide(){
+  try{ return document.body.classList.contains('is-trainer'); }catch(e){ return false; }
+}
+var _wkFlowQueued=false;
+function _wkFlowSoon(){
+  try{
+    if(!_wkNoHide() || _wkFlowQueued) return;
+    _wkFlowQueued=true;
+    var run=function(){ _wkFlowQueued=false; try{ _wkFlowAll(); }catch(e){ console.error('wkFlow', e); } };
+    // Two frames: one for the innerHTML write that is about to happen in this
+    // same task, one for the layout it causes.
+    if(window.requestAnimationFrame) requestAnimationFrame(function(){ requestAnimationFrame(run); });
+    else setTimeout(run, 16);
+  }catch(e){}
+}
+var WK_FLOW_MIN=17;      // .wkMark's own height — the shortest real box on the grid
+function _wkFlowCol(col){
+  var els=col.querySelectorAll('.wkBlock,.wkCal,.wkMark');
+  if(!els.length) return 0;
+  var i, items=[];
+  for(i=0;i<els.length;i++){ if(els[i].classList.contains('dragging')) return 0; }
+  for(i=0;i<els.length;i++){
+    var el=els[i];
+    // The block's OWN numbers, kept once so a second pass measures from where
+    // the renderer put it and never from where the last pass moved it.
+    var natural=parseFloat(el.getAttribute('data-wk-top'));
+    if(!isFinite(natural)){ natural=parseFloat(el.style.top)||0; el.setAttribute('data-wk-top', String(natural)); }
+    var timeH=parseFloat(el.getAttribute('data-wk-h'));
+    if(!isFinite(timeH)){ timeH=parseFloat(el.style.height)||el.offsetHeight||0; el.setAttribute('data-wk-h', String(timeH)); }
+    el.classList.add('wkFlow');
+    el.classList.remove('wkNoSub');
+    el.style.setProperty('--wkLines','99');
+    el.style.height='auto';
+    items.push({el:el, top:natural, timeH:timeH});
+  }
+  // Every height read after every write, so this costs one reflow, not one per block.
+  for(i=0;i<items.length;i++) items[i].need=Math.max(items[i].timeH, items[i].el.offsetHeight, WK_FLOW_MIN);
+  items.sort(function(a,b){ return (a.top-b.top) || (a.timeH-b.timeH); });
+  var gap=parseFloat(getComputedStyle(document.body).getPropertyValue('--wkGap'));
+  if(!isFinite(gap)) gap=4;
+  var prevBottom=-1e9, maxBottom=0;
+  for(i=0;i<items.length;i++){
+    var it=items[i], top=Math.max(it.top, prevBottom+gap);
+    it.el.style.top=top.toFixed(1)+'px';
+    it.el.style.height=it.need.toFixed(1)+'px';
+    prevBottom=top+it.need;
+    if(prevBottom>maxBottom) maxBottom=prevBottom;
+  }
+  return maxBottom;
+}
+// The columns of one grid stay the same height as each other — a day that grew
+// must not leave the other six ending early with their hour lines stopping in
+// mid-air. The gutter goes with them for the same reason.
+function _wkFlowAll(){
+  if(!_wkNoHide()) return;
+  var grids=document.querySelectorAll('.wkGrid');
+  for(var g=0; g<grids.length; g++){
+    var cols=grids[g].querySelectorAll('.wkDayCol');
+    if(!cols.length) continue;
+    var need=0, k;
+    for(k=0;k<cols.length;k++){ var b=_wkFlowCol(cols[k]); if(b>need) need=b; }
+    var base=parseFloat(cols[0].getAttribute('data-wk-base'));
+    if(!isFinite(base)){
+      base=parseFloat(cols[0].style.height)||0;
+      for(k=0;k<cols.length;k++) cols[k].setAttribute('data-wk-base', String(base));
+    }
+    var h=Math.max(base, need+6);
+    if(Math.abs(h-(parseFloat(cols[0].style.height)||0))>0.5){
+      var hs=h.toFixed(1)+'px';
+      for(k=0;k<cols.length;k++) cols[k].style.height=hs;
+      var gut=grids[g].querySelector('.wkHourGutter'); if(gut) gut.style.height=hs;
+    }
+  }
+}
 function _wkBandPack(html){
+  // Scheduled from here because every calendar surface builds its columns
+  // through this one function, whether or not anything in them overlaps.
+  _wkFlowSoon();
+  // NOTHING HIDES BEHIND A COUNT. The packer used to emit band[0] alone and
+  // hand the rest to a chip; the rest were never in the document at all.
+  // They are all real boxes now and _wkFlowAll is what keeps them apart.
+  if(_wkNoHide()) return html;
   var parts=_wkSplitBlocks(html);
   if(parts.length<2) return html;
   var items=parts.map(function(pt){
