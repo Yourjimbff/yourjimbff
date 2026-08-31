@@ -16,6 +16,7 @@
 //   SUPABASE_JWT_SECRET    same secret session.js signs with
 
 const { verify } = require('./session.js');
+const { gcalConfigured, gcalSync, gcalDelete, gcalBudget, gcalClearBudget } = require('./_gcal.js');
 
 const json = (code, obj) => ({
   statusCode: code,
@@ -1201,10 +1202,19 @@ async function handleBookCallForClient(URL, SERVICE, args, trainerCode) {
     }
     if (!confirmed) return json(502, { error: 'unconfirmed', op: 'bookCallForClient', booking_id: bookingId || null });
 
+    // The same calendar write as a client's own booking, and for the same
+    // reason it sits here: the booking is confirmed above and stays confirmed
+    // whatever this returns.
+    const cal = await calSyncCall(URL, SERVICE, {
+      table: 'bookings', id: confirmed.id, clientCode: confirmed.client_code || row.code,
+      clientName: row.name || row.code,
+      startISO: confirmed.starts_at, durationMin: confirmed.duration_min, callType: 'Check-in',
+    });
     return json(200, [Object.assign({}, confirmed, {
       client_name: row.name || row.code, tier: tier, spent: spent,
       spend_error: spendError, credit_note: creditNote,
       conflict: shape.conflict, forced: !!(clash && args.force === true),
+      calendar: cal,
     })]);
   } catch (e) {
     console.error('trainer: bookCallForClient threw', e && e.message);
@@ -1240,6 +1250,14 @@ async function handleConsultDelete(URL, SERVICE, args) {
     const was = (await pre.json() || [])[0];
     if (!was) return json(404, { error: 'no_such_consult', id: id });
 
+    // THE EVENT ID HAS TO BE READ BEFORE THE ROW GOES. This is a hard delete,
+    // so afterwards there is nothing left to read it off, and the event would
+    // sit on his calendar forever with nothing pointing at it. Read
+    // separately, and tolerantly: the column arrives in its own migration.
+    const evPre = await calRead(URL, SERVICE, `consult_requests?id=eq.${encodeURIComponent(id)}&select=google_event_id&limit=1`);
+    const evId = (evPre.ok && evPre.rows[0] && evPre.rows[0].google_event_id)
+      ? String(evPre.rows[0].google_event_id) : null;
+
     const d = await fetch(sel, {
       method: 'DELETE',
       headers: Object.assign({}, svc(SERVICE), { Prefer: 'return=representation' }),
@@ -1257,7 +1275,19 @@ async function handleConsultDelete(URL, SERVICE, args) {
     if (still) return json(502, { error: 'unconfirmed', op: 'consultDelete', id: id });
 
     console.warn('trainer: consultDelete removed row', id, JSON.stringify(was).slice(0, 200));
-    return json(200, [{ id: id, deleted: true, confirmed_gone: true, was: was }]);
+    // And the event with it. Only ever the id this row named — never a search,
+    // because the row that would have justified adopting an event is gone.
+    let cal = { ok: true, nothing_to_remove: true };
+    if (evId && gcalConfigured()) {
+      try {
+        gcalBudget(CAL_BUDGET_MS);
+        const r = await gcalDelete(evId);
+        cal = r.ok ? { ok: true, removed: true } : { ok: false, reason: r.reason || 'failed' };
+        if (!r.ok) console.error('gcal: consult event ' + evId + ' not removed', r.reason || '');
+      } catch (e) { cal = { ok: false, reason: 'threw' }; }
+      finally { gcalClearBudget(); }
+    }
+    return json(200, [{ id: id, deleted: true, confirmed_gone: true, was: was, calendar: cal }]);
   } catch (e) {
     console.error('trainer: consultDelete threw', e && e.message);
     return json(502, { error: 'delete_failed', op: 'consultDelete' });
@@ -1354,8 +1384,25 @@ async function handleMyBookingCreate(URL, SERVICE, args, code) {
     let landed = []; try { landed = JSON.parse(text); } catch (e) {}
     const got = landed[0];
     if (!got || !got.id) return json(502, { error: 'unconfirmed', op: 'myBookingCreate' });
+    // ONTO HIS CALENDAR, AFTER THE BOOKING IS ALREADY REAL. The row above is
+    // confirmed and the client has their call whatever happens next; this only
+    // decides whether he also sees it without opening the app. The result
+    // rides back on the response as `calendar` so a failure is reportable
+    // rather than silent, and no branch below can turn it into an error.
+    // The name read is inside the gate too: with no Google credentials set
+    // this whole block costs nothing at all, which is the state the site is
+    // in until he configures them.
+    let cal = { ok: false, reason: 'not_configured' };
+    if (gcalConfigured()) {
+      const whoBooked = await readClientRow(URL, SERVICE, code);
+      cal = await calSyncCall(URL, SERVICE, {
+        table: 'bookings', id: got.id, clientCode: code,
+        clientName: (whoBooked && whoBooked.name) || code,
+        startISO: got.starts_at, durationMin: got.duration_min, callType: 'Check-in',
+      });
+    }
     return json(200, [{ id: got.id, starts_at: got.starts_at, duration_min: got.duration_min,
-      status: got.status, client_tz: got.client_tz }]);
+      status: got.status, client_tz: got.client_tz, calendar: cal }]);
   } catch (e) {
     console.error('trainer: myBookingCreate threw', e && e.message);
     return json(502, { error: 'write_failed', op: 'myBookingCreate' });
@@ -1384,10 +1431,305 @@ async function handleMyBookingCancel(URL, SERVICE, args, code) {
     let rows = []; try { rows = JSON.parse(text); } catch (e) {}
     if (!rows.length) return json(404, { error: 'not_yours_or_missing', id: id });
     if (rows[0].status !== 'cancelled') return json(502, { error: 'unconfirmed', op: 'myBookingCancel' });
-    return json(200, [{ id: rows[0].id, status: 'cancelled' }]);
+    // Cancel removes the event. After the cancel is confirmed, and unable to
+    // undo it: a calendar that will not answer leaves a stale event on his
+    // screen, which is a great deal better than a client who could not cancel.
+    const cal = await calRemoveCall(URL, SERVICE, 'bookings', rows[0].id);
+    return json(200, [{ id: rows[0].id, status: 'cancelled', calendar: cal }]);
   } catch (e) {
     console.error('trainer: myBookingCancel threw', e && e.message);
     return json(502, { error: 'write_failed', op: 'myBookingCancel' });
+  }
+}
+
+// ===== EVERY BOOKING LANDS ON HIS CALENDAR (his order, 30 Aug) ==============
+// The bridge between a booking in this database and an event on his own Google
+// Calendar. _gcal.js is the Google half and knows nothing about clients; this
+// half knows what a call IS and what belongs in its description.
+//
+// THREE RULES SHAPE EVERY LINE BELOW, and they are all his:
+//
+//   A BOOKING NEVER DEPENDS ON HIS CALENDAR. Every entry point here is called
+//   AFTER the booking is already confirmed in the database, wrapped so it
+//   cannot throw, and given a hard time budget so it cannot make a booking
+//   response late. The worst this can do is come back {ok:false} and put a
+//   flag on a response that already said the booking succeeded.
+//
+//   ONE BOOKING, ONE EVENT, FOREVER. The event id is stored on the booking row
+//   and reused. Nothing here ever creates a second event for a row that
+//   already names one.
+//
+//   THE EVENT IS HIS. No attendees, no invitations, no sharing — enforced in
+//   _gcal.js, where the event body is built.
+//
+// THE CALENDAR COLUMN MAY NOT EXIST YET. google_event_id arrives in its own
+// migration, and this code has to be safe on a deploy that lands before it is
+// run. Every read of that column tolerates the 400 PostgREST answers for an
+// unknown column and carries on with no id, and every write of it tolerates
+// the same. Nothing here reports a booking as broken because a column is
+// missing.
+const CAL_BUDGET_MS = 4000;        // the whole exchange, not one request
+const CAL_DESC_MAX = 7000;         // Google's own limit is far higher; his screen is not
+
+function firstNameOf(s) {
+  return String(s == null ? '' : s).trim().split(/\s+/)[0] || '';
+}
+
+// A read that can tell "nothing there" from "could not look", and treats an
+// unknown column as neither — because a column that is not migrated yet is a
+// deploy state, not a fact about this client.
+async function calRead(URL, SERVICE, path) {
+  try {
+    const r = await fetch(`${URL}/rest/v1/${path}`, { headers: svc(SERVICE) });
+    const text = await r.text();
+    if (!r.ok) {
+      return { ok: false, rows: [], noColumn: !!badColumn(text), noTable: !!missingTable(text) };
+    }
+    let rows = []; try { rows = JSON.parse(text) || []; } catch (e) { rows = []; }
+    return { ok: true, rows: rows };
+  } catch (e) { return { ok: false, rows: [] }; }
+}
+
+// THE DESCRIPTION IS WHAT HE READS WHEN THE CALL RINGS, so it carries the
+// three things he asked for and nothing else: what the client answered before
+// the call IN THEIR OWN WORDS, what is open with them, and when they were last
+// touched.
+//
+// NEVER A SUMMARY THAT LOSES THEIR WORDS (his rule). Answers are copied
+// verbatim, one per question, in the order they were asked. Nothing here
+// shortens, joins or paraphrases a client's sentence — the only cut is a total
+// length cap far above anything a person types into three boxes, and if it
+// ever bites it says so rather than trailing off silently.
+//
+// AND A FAILED READ IS SAID OUT LOUD. A section that could not be read prints
+// as "couldn't read", never as absence — the same never-assert law the calls
+// card in index.html already lives by. He should not learn from a blank line
+// that a client said nothing, when the truth is that nobody asked.
+async function callEventDescription(URL, SERVICE, o) {
+  const code = String(o.clientCode || '');
+  const name = String(o.clientName || '') || code;
+  const out = [];
+  out.push(name + (code ? '  (' + code + ')' : ''));
+
+  // ---- what they answered before the call ----
+  // Two sources, and the invite is the better one: it keeps question one
+  // paired with answer one on a row nothing can edit. The notes thread is the
+  // fallback and also the place anything said outside an invite shows up.
+  const answered = [];
+  let answersUnread = false;
+  if (o.bookingId != null) {
+    const inv = await calRead(URL, SERVICE, 'call_invites'
+      + `?booking_id=eq.${encodeURIComponent(o.bookingId)}`
+      + `&client_code=eq.${encodeURIComponent(code)}`
+      + '&select=questions,answers,answered_at&order=answered_at.desc&limit=1');
+    // A table that does not exist is not an unreadable one: invites may simply
+    // not be built on this deploy, and that is silence, not a failure.
+    if (!inv.ok && !inv.noTable && !inv.noColumn) answersUnread = true;
+    const row = inv.rows[0];
+    if (row) {
+      const qs = Array.isArray(row.questions) ? row.questions : [];
+      const as = Array.isArray(row.answers) ? row.answers : [];
+      qs.forEach((q, i) => {
+        const a = String(as[i] == null ? '' : as[i]).trim();
+        answered.push(String(q) + '\n  ' + (a || '(no answer given)'));
+      });
+    }
+    if (!answered.length) {
+      const notes = await calRead(URL, SERVICE, 'call_notes'
+        + `?booking_id=eq.${encodeURIComponent(o.bookingId)}&source=eq.booking`
+        + `&client_code=eq.${encodeURIComponent(code)}`
+        + '&select=author,body,created_at&order=created_at.asc&limit=50');
+      if (!notes.ok && !notes.noTable) answersUnread = true;
+      notes.rows.filter((n) => String(n.author) === 'client')
+        .forEach((n) => answered.push(String(n.body || '')));
+    }
+  }
+  if (answered.length) {
+    out.push('');
+    out.push('BEFORE THE CALL, IN THEIR WORDS');
+    answered.forEach((a) => out.push(a));
+  } else if (answersUnread) {
+    out.push('');
+    out.push('BEFORE THE CALL, IN THEIR WORDS');
+    out.push('  Couldn\'t read their answers just now — there may be some.');
+  }
+
+  // ---- what is open with them ----
+  // The most recent coaching note. That is where "working on" is stored: a
+  // client_notes row whose body carries the [COACHING] marker index.html
+  // writes. The marker is stripped for display and nothing else is changed.
+  const cn = await calRead(URL, SERVICE, 'client_notes'
+    + `?client_code=eq.${encodeURIComponent(code)}`
+    + '&select=note,logged_at&order=logged_at.desc&limit=25');
+  if (cn.ok) {
+    const open = cn.rows.map((r) => String(r.note || ''))
+      .filter((n) => n.indexOf('[COACHING] ') === 0)
+      .map((n) => n.slice('[COACHING] '.length).trim())
+      .filter(Boolean)[0];
+    if (open) { out.push(''); out.push('OPEN WITH THEM'); out.push('  ' + open); }
+  } else if (!cn.noTable) {
+    out.push(''); out.push('OPEN WITH THEM'); out.push('  Couldn\'t read their notes just now.');
+  }
+
+  // ---- last touch ----
+  const ct = await calRead(URL, SERVICE, 'client_contacts'
+    + `?client_code=eq.${encodeURIComponent(code)}`
+    + '&select=kind,contacted_at&order=contacted_at.desc&limit=1');
+  if (ct.ok) {
+    const last = ct.rows[0];
+    if (last && last.contacted_at) {
+      const d = new Date(last.contacted_at);
+      const when = isNaN(d.getTime()) ? String(last.contacted_at)
+        : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: TRAINER_TZ });
+      out.push(''); out.push('LAST TOUCH');
+      out.push('  ' + when + (last.kind ? ' — ' + String(last.kind) : ''));
+    } else {
+      out.push(''); out.push('LAST TOUCH'); out.push('  No contact recorded.');
+    }
+  } else if (!ct.noTable) {
+    out.push(''); out.push('LAST TOUCH'); out.push('  Couldn\'t read their contact record just now.');
+  }
+
+  let text = out.join('\n');
+  if (text.length > CAL_DESC_MAX) {
+    text = text.slice(0, CAL_DESC_MAX) + '\n\n[cut here — the rest is in the app]';
+  }
+  return text;
+}
+
+// A CONSULT'S CONTEXT IS THE INTAKE FORM, in the lead's own words. These are
+// the answers they typed on the offer page, printed under the questions they
+// were asked, and nothing here rewrites one. A trainer-booked consult has none
+// of them — he booked it off a phone call — and simply prints the number.
+const CONSULT_INTAKE = [
+  ['goal', 'What they want'],
+  ['main_problem', 'What is in the way'],
+  ['why_reaching_out', 'Why now'],
+  ['willing_to_invest', 'Willing to invest'],
+  ['serious', 'How serious'],
+  ['excited_or_nervous', 'Excited or nervous'],
+];
+function consultEventDescription(row) {
+  const out = [];
+  out.push(String((row && row.name) || 'Consultation'));
+  const phone = String((row && row.phone) || '').trim();
+  out.push(phone ? ('  ' + phone) : '  No number on file');
+  const said = [];
+  CONSULT_INTAKE.forEach(([key, label]) => {
+    const v = String((row && row[key]) != null ? row[key] : '').trim();
+    if (v) said.push(label + '\n  ' + v);
+  });
+  if (said.length) {
+    out.push('');
+    out.push('WHAT THEY SAID ON THE FORM');
+    said.forEach((s) => out.push(s));
+  }
+  let text = out.join('\n');
+  if (text.length > CAL_DESC_MAX) text = text.slice(0, CAL_DESC_MAX) + '\n\n[cut here — the rest is in the app]';
+  return text;
+}
+
+// Store the event id back onto the booking row. Best effort, and loud when it
+// fails: an event that exists but whose id was never stored is the one state
+// that CAN produce a duplicate later, so it is worth a log line even though
+// nothing about the booking is wrong.
+async function calStoreEventId(URL, SERVICE, table, id, eventId) {
+  try {
+    const r = await fetch(`${URL}/rest/v1/${table}?id=eq.${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=minimal' }),
+      body: JSON.stringify({ google_event_id: eventId }),
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      if (badColumn(text)) {
+        console.error('gcal: google_event_id column not migrated — event ' + eventId
+          + ' is on the calendar but not linked to ' + table + ' ' + id);
+        return false;
+      }
+      console.error('gcal: could not store event id on ' + table + ' ' + id, r.status, text.slice(0, 200));
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error('gcal: storing event id threw', e && e.message);
+    return false;
+  }
+}
+
+async function calReadEventId(URL, SERVICE, table, id) {
+  const r = await calRead(URL, SERVICE, `${table}?id=eq.${encodeURIComponent(id)}&select=google_event_id&limit=1`);
+  if (!r.ok) return null;                       // includes the not-yet-migrated case
+  const row = r.rows[0];
+  return (row && row.google_event_id) ? String(row.google_event_id) : null;
+}
+
+// Put a call on his calendar, or move the one it already has. Returns a small
+// object the caller can put on its response; it never throws and it never
+// decides anything about the booking itself.
+//
+// o: { table, id, clientCode, clientName, startISO, durationMin, callType }
+async function calSyncCall(URL, SERVICE, o) {
+  if (!gcalConfigured()) return { ok: false, reason: 'not_configured' };
+  try {
+    gcalBudget(CAL_BUDGET_MS);
+    const existing = await calReadEventId(URL, SERVICE, o.table, o.id);
+    const first = firstNameOf(o.clientName || o.clientCode);
+    // A consult is a LEAD, not a client: there is no roster row behind it, no
+    // notes and no contact history, so the caller hands the description in
+    // ready-made from the intake answers instead.
+    const description = (o.description != null) ? String(o.description)
+      : await callEventDescription(URL, SERVICE, {
+        clientCode: o.clientCode, clientName: o.clientName,
+        bookingId: (o.table === 'bookings' ? o.id : null),
+      });
+    const r = await gcalSync(existing, {
+      summary: String(o.callType || 'Call') + ': ' + (first || String(o.clientCode || '')),
+      description: description,
+      startISO: o.startISO,
+      durationMin: o.durationMin,
+      // The adoption match. His own hand-made event for a client carries their
+      // name in the title, which with the exact-instant test is enough to know
+      // it is the same call — and narrow enough that nothing else can match.
+      adoptMatch: first,
+    });
+    if (!r.ok) {
+      console.error('gcal: sync failed for ' + o.table + ' ' + o.id, r.reason || '', r.status || '');
+      return { ok: false, reason: r.reason || 'failed' };
+    }
+    if (r.id && r.id !== existing) await calStoreEventId(URL, SERVICE, o.table, o.id, r.id);
+    return { ok: true, event_id: r.id, adopted: !!r.adopted };
+  } catch (e) {
+    console.error('gcal: calSyncCall threw', e && e.message);
+    return { ok: false, reason: 'threw' };
+  } finally {
+    gcalClearBudget();
+  }
+}
+
+// Take a cancelled call off his calendar. An event that is already gone counts
+// as done — he may have deleted it himself, and that is the state this was
+// asked for.
+async function calRemoveCall(URL, SERVICE, table, id) {
+  if (!gcalConfigured()) return { ok: false, reason: 'not_configured' };
+  try {
+    gcalBudget(CAL_BUDGET_MS);
+    const existing = await calReadEventId(URL, SERVICE, table, id);
+    if (!existing) return { ok: true, nothing_to_remove: true };
+    const r = await gcalDelete(existing);
+    if (!r.ok) {
+      console.error('gcal: delete failed for ' + table + ' ' + id, r.reason || '', r.status || '');
+      return { ok: false, reason: r.reason || 'failed' };
+    }
+    // The link goes with the event. Left behind, it would make the next
+    // booking on that row try to update an event that is not there.
+    await calStoreEventId(URL, SERVICE, table, id, null);
+    return { ok: true, removed: true };
+  } catch (e) {
+    console.error('gcal: calRemoveCall threw', e && e.message);
+    return { ok: false, reason: 'threw' };
+  } finally {
+    gcalClearBudget();
   }
 }
 
@@ -1818,10 +2160,28 @@ async function handleConsultInsert(URL, SERVICE, args) {
     if (!back || back.status !== 'accepted') {
       return json(502, { error: 'unconfirmed', op: 'consultInsert', id: id, read_back: back || null });
     }
+    // The consult goes on his calendar too — a consultation is a call he turns
+    // up to, same as any other. Intake answers are read separately because the
+    // read-back above deliberately selects only what the panel shows.
+    let cal = { ok: false, reason: 'not_configured' };
+    if (gcalConfigured()) {
+      let intake = null;
+      try {
+        const ir = await calRead(URL, SERVICE, `consult_requests?id=eq.${encodeURIComponent(id)}`
+          + '&select=name,phone,goal,main_problem,why_reaching_out,willing_to_invest,serious,excited_or_nervous&limit=1');
+        intake = ir.ok ? (ir.rows[0] || null) : null;
+      } catch (e) { intake = null; }
+      cal = await calSyncCall(URL, SERVICE, {
+        table: 'consult_requests', id: id, clientCode: '', clientName: back.name,
+        startISO: back.requested_at, durationMin: CONSULT_MIN, callType: 'Consult',
+        description: consultEventDescription(intake || back),
+      });
+    }
     return json(200, [Object.assign({}, back, {
       source: landed[0].source != null ? landed[0].source : null,
       source_column_missing: landed[0].source === undefined,
       conflict: shape.conflict, forced: !!(clash && args.force === true),
+      calendar: cal,
     })]);
   } catch (e) {
     console.error('trainer: consultInsert threw', e && e.message);
@@ -1959,11 +2319,13 @@ async function handleCancelCallForClient(URL, SERVICE, args) {
       return json(502, { error: 'unconfirmed', op: 'cancelCallForClient', booking_id: bk.id });
     }
     const clientAfter = await readClientRow(URL, SERVICE, bk.client_code);
+    const cal = await calRemoveCall(URL, SERVICE, 'bookings', bk.id);
 
     return json(200, [Object.assign({}, after, {
       refund: refunded, refund_reason: refundWhy, refund_error: refundError,
       call_credits: clientAfter ? clientAfter.call_credits : null,
       weekly_call_spent_at: clientAfter ? clientAfter.weekly_call_spent_at : null,
+      calendar: cal,
     })]);
   } catch (e) {
     console.error('trainer: cancelCallForClient threw', e && e.message);
