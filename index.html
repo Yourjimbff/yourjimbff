@@ -85152,6 +85152,262 @@ function _woSayBody(ex, name){
   }
   return reps.slice(0,-1).join(', ') + ' and ' + reps[reps.length-1] + ' ' + n;
 }
+
+/* =========================================================================
+   CALLS — ONE PLACE THAT ANSWERS "WHAT CALLS DO I HAVE" (Yusuf, order, 1 Sep)
+   His words: "I need a better view of when I get calls. I can't forget when I
+   get calls. I need to see it in front of me."
+
+   TWO PARTS, ONE RENDERER.
+     1. #callsBar — a fixed line on the trainer surface that says what is next
+        today WITHOUT A TAP, wherever he lands. When nothing is booked today it
+        says so plainly rather than showing an empty box (his order, verbatim).
+     2. openCallsView() — the full sheet: today first, then the rest of the
+        week, name / time / call type, and any answers one tap away.
+
+   NOTHING NEW IS READ. _schDay is the same source the week grid and the day
+   peek already use, so a call cannot appear in one and not the other, and a
+   read that failed is said out loud here exactly as it is there.
+
+   BLOCKS ARE NOT CALLS. His own blocked time (dentist, work, walk) is a real
+   row on that calendar and it is deliberately NOT in this view — this view
+   answers one question and answering a second one quietly is how it stops
+   being glanceable.
+   ========================================================================= */
+var _CALLS_DAYS = 7;              // today plus the rest of the week
+var _CALLS_TIMER = null;
+
+function _callsIsCall(r){
+  return r && (r.kind==='consult' || r.kind==='vip' || r.kind==='booking');
+}
+function _callsOn(){
+  try{ return !!(window.cl && typeof isTrainer==='function' && isTrainer(cl.code)); }catch(e){ return false; }
+}
+function _callsTime(ts){
+  try{ return _jvSpokenTime(new Date(ts)); }catch(e){
+    try{ return new Date(ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }catch(e2){ return ''; }
+  }
+}
+function _callsWho(r){
+  if(r.kind==='consult') return String(r.who||'Consult');
+  var c=CLIENTS[r.code]||{};
+  return String(c.name||r.code||'Client');
+}
+// The chip the calendar already uses, so the same call is never called two
+// different things on two screens.
+function _callsType(r){
+  try{ return _schKindChip(r); }catch(e){ return r.kind==='consult'?'consult':'call'; }
+}
+
+/* Today plus the six days after it. Each day carries its own read state, so a
+   day whose sources failed is reported as "could not read", never as clear. */
+async function _callsWeek(force){
+  var t0=_schTodayTs(), out=[];
+  for(var i=0;i<_CALLS_DAYS;i++){
+    var ts=t0+i*86400000, d=null;
+    try{ d=await _schDay(ts, (force&&i===0)); }catch(e){ d=null; }
+    var failed = !d || ['consults','bookings','vip'].some(function(k){ return d.state && d.state[k]==='failed'; });
+    out.push({ts:ts, failed:failed, rows:(d?(d.rows||[]).filter(_callsIsCall):[])});
+  }
+  return out;
+}
+
+/* ---- THE ALWAYS-ON LINE ------------------------------------------------ */
+/* Anchored above whatever already floats at the bottom of his screen — the
+   today button, the chat bubble, the tab bar — measured at render time rather
+   than guessed at, so it never lands on top of a control. */
+function _callsBarPlace(bar){
+  var floor=null;
+  ['tlTodayBtn','jvOvlGlyph','bnav'].forEach(function(id){
+    var e=document.getElementById(id); if(!e) return;
+    var r=e.getBoundingClientRect(); if(!r.height) return;
+    if(floor===null || r.top<floor) floor=r.top;
+  });
+  var h=window.innerHeight||800;
+  bar.style.bottom = (floor===null ? 18 : Math.max(12, Math.round(h-floor)+8)) + 'px';
+}
+function _callsBarEl(){
+  var bar=document.getElementById('callsBar');
+  if(bar) return bar;
+  bar=document.createElement('div');
+  bar.id='callsBar';
+  bar.setAttribute('role','button');
+  bar.setAttribute('aria-label','Your calls');
+  bar.style.cssText='position:fixed;left:12px;right:12px;max-width:520px;margin:0 auto;'
+    +'z-index:95;display:flex;align-items:center;gap:9px;padding:9px 13px;border-radius:13px;'
+    +'background:rgba(24,24,24,0.94);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);'
+    +'border:1px solid #3a3a3a;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;'
+    +'box-shadow:0 6px 22px rgba(0,0,0,0.45);';
+  bar.onclick=function(){ try{ openCallsView(); }catch(e){} };
+  document.body.appendChild(bar);
+  return bar;
+}
+async function callsBarRender(force){
+  if(!_callsOn()){ var old=document.getElementById('callsBar'); if(old&&old.parentNode) old.parentNode.removeChild(old); return; }
+  // ONLY TODAY for the line. The week costs seven filters over one cached read,
+  // but the line is redrawn every minute and only ever says today — asking for
+  // the week here would be six days of work thrown away sixty times an hour.
+  var today;
+  try{
+    var d=await _schDay(_schTodayTs(), force);
+    var bad=['consults','bookings','vip'].some(function(k){ return d.state && d.state[k]==='failed'; });
+    today={ts:_schTodayTs(), failed:bad, rows:(d.rows||[]).filter(_callsIsCall)};
+  }catch(e){ today={rows:[], failed:true}; }
+  var now=Date.now();
+  var left=today.rows.filter(function(r){ return r.at>=now-30*60000; });   // a call that started 20 minutes ago is still the one he is on
+  var bar=_callsBarEl();
+  var body;
+  if(today.failed){
+    body='<span style="font-size:12.5px;font-weight:700;color:#f0ece4;">Your calls did not load</span>'
+       + '<span style="font-size:11.5px;color:rgba(240,236,228,0.6);">that is a read that failed, not a clear day</span>';
+  } else if(!today.rows.length){
+    body='<span style="font-size:12.5px;font-weight:700;color:rgba(240,236,228,0.86);">No calls booked today</span>';
+  } else if(!left.length){
+    body='<span style="font-size:12.5px;font-weight:700;color:rgba(240,236,228,0.86);">Today’s calls are done</span>'
+       + '<span style="font-size:11.5px;color:rgba(240,236,228,0.6);">'+today.rows.length+' earlier</span>';
+  } else {
+    var n=left[0];
+    body='<span style="font-size:12.5px;font-weight:800;color:var(--gold);white-space:nowrap;">'+_escHtml(_callsTime(n.at))+'</span>'
+       + '<span style="font-size:12.5px;font-weight:700;color:#f0ece4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+_escHtml(_callsWho(n))+'</span>'
+       + '<span style="font-size:11px;color:rgba(240,236,228,0.6);white-space:nowrap;">'+_escHtml(_callsType(n))+'</span>'
+       + (left.length>1?'<span style="font-size:11px;color:rgba(240,236,228,0.6);white-space:nowrap;">+'+(left.length-1)+' more</span>':'');
+  }
+  bar.innerHTML='<span style="font-size:9.5px;font-weight:800;letter-spacing:0.7px;text-transform:uppercase;color:rgba(240,236,228,0.5);white-space:nowrap;">Calls</span>'
+    +'<span style="flex:1;display:flex;align-items:baseline;gap:8px;min-width:0;">'+body+'</span>'
+    +'<span style="font-size:14px;color:rgba(240,236,228,0.5);">›</span>';
+  _callsBarPlace(bar);
+}
+function callsBarStart(){
+  if(_CALLS_TIMER) return;
+  try{ callsBarRender(false); }catch(e){}
+  _CALLS_TIMER=setInterval(function(){ try{ callsBarRender(false); }catch(e){} }, 60000);
+  window.addEventListener('resize', function(){ var b=document.getElementById('callsBar'); if(b) _callsBarPlace(b); });
+}
+
+/* ---- THE SHEET --------------------------------------------------------- */
+/* Answers come from the row that already holds them: a consultation carries
+   what the lead typed on the booking form, a booking carries its note. Nothing
+   here invents a field, and a call with nothing attached simply has no tap. */
+async function _callsAnswerIndex(){
+  var idx={consult:{}, booking:{}};
+  try{
+    var c=await trainerOpChecked('consultList',{});
+    if(c && c.ok) (c.rows||[]).forEach(function(r){ idx.consult[String(r.id)]=r; });
+  }catch(e){}
+  try{
+    var b=await trainerOpChecked('bookingsAll',{});
+    if(b && b.ok) (b.rows||[]).forEach(function(r){ idx.booking[String(r.id)]=r; });
+  }catch(e){}
+  return idx;
+}
+var _CALLS_QA=[['goal','Goal'],['main_problem','Biggest problem'],['why_reaching_out','Why they reached out'],
+               ['age','Age'],['height','Height'],['weight','Weight'],
+               ['willing_to_invest','Willing to invest'],['serious','How serious'],['excited_or_nervous','Excited or nervous']];
+function _callsAnswersFor(r, idx){
+  var out=[];
+  if(r.kind==='consult' && r.consult_id!=null){
+    var c=idx.consult[String(r.consult_id)]; if(!c) return out;
+    _CALLS_QA.forEach(function(p){
+      var v=c[p[0]]; if(v===null||v===undefined||String(v).trim()==='') return;
+      out.push([p[1], String(v)]);
+    });
+  } else if(r.kind==='booking' && r.booking_id!=null){
+    var b=idx.booking[String(r.booking_id)];
+    if(b && b.note && String(b.note).trim()) out.push(['Note', String(b.note)]);
+  }
+  return out;
+}
+function _callsRowHtml(r, idx, i){
+  var qa=_callsAnswersFor(r, idx);
+  var key='cq'+i;
+  var phone=null; try{ phone=(r.kind==='consult'? r.phone : _phoneOf(r.code))||null; }catch(e){}
+  return '<div style="border-top:1px solid #242424;padding:12px 0;">'
+    + '<div style="display:flex;align-items:baseline;gap:10px;">'
+    +   '<div style="font-size:13.5px;font-weight:800;color:var(--gold);white-space:nowrap;min-width:74px;">'+_escHtml(_callsTime(r.at))+'</div>'
+    +   '<div style="flex:1;min-width:0;">'
+    +     '<div style="font-size:14.5px;font-weight:700;color:#f0ece4;">'+_escHtml(_callsWho(r))+'</div>'
+    +     '<div style="font-size:11.5px;color:rgba(240,236,228,0.6);margin-top:2px;">'+_escHtml(_callsType(r))+'</div>'
+    +   '</div>'
+    + '</div>'
+    + (qa.length
+        ? '<div id="'+key+'" style="display:none;margin:9px 0 0 84px;padding:10px 12px;background:#161616;border:1px solid #262626;border-radius:11px;">'
+          + qa.map(function(p){ return '<div style="margin-bottom:7px;"><div style="font-size:9.5px;font-weight:800;letter-spacing:0.6px;text-transform:uppercase;color:rgba(240,236,228,0.5);">'+_escHtml(p[0])+'</div>'
+              + '<div style="font-size:12.5px;color:rgba(240,236,228,0.86);line-height:1.5;">'+_escHtml(p[1])+'</div></div>'; }).join('')
+          + '</div>'
+          + '<div style="margin:8px 0 0 84px;"><span onclick="_callsToggle(\''+key+'\',this)" style="font-size:11.5px;font-weight:700;color:rgba(240,236,228,0.78);text-decoration:underline;text-underline-offset:3px;cursor:pointer;padding:6px 0;display:inline-block;">Their answers</span>'
+          + (phone?'<span onclick="_callsText(\''+(r.kind==='consult'?'':String(r.code||''))+'\',\''+_escHtml(String(phone))+'\')" style="margin-left:16px;font-size:11.5px;font-weight:700;color:rgba(240,236,228,0.78);text-decoration:underline;text-underline-offset:3px;cursor:pointer;padding:6px 0;display:inline-block;">Text them</span>':'')
+          + '</div>'
+        : (phone?'<div style="margin:6px 0 0 84px;"><span onclick="_callsText(\''+(r.kind==='consult'?'':String(r.code||''))+'\',\''+_escHtml(String(phone))+'\')" style="font-size:11.5px;font-weight:700;color:rgba(240,236,228,0.78);text-decoration:underline;text-underline-offset:3px;cursor:pointer;padding:6px 0;display:inline-block;">Text them</span></div>':''))
+    + '</div>';
+}
+function _callsToggle(id, el){
+  var e=document.getElementById(id); if(!e) return;
+  var open=(e.style.display!=='none');
+  e.style.display=open?'none':'block';
+  if(el) el.textContent=open?'Their answers':'Hide answers';
+}
+function _callsText(code, phone){
+  if(code){ try{ textClient(code); return; }catch(e){} }
+  try{ window.location.href='sms:'+String(phone).replace(/[^0-9+]/g,''); }catch(e){}
+}
+async function openCallsView(){
+  if(!_callsOn()) return;
+  var ov=document.getElementById('callsOverlay');
+  if(ov) return;
+  ov=document.createElement('div');
+  ov.id='callsOverlay';
+  // Same shape as every other sheet in here: the overlay is the scroller, the
+  // backdrop closes, Escape closes, and there is a real 44px X. A modal with no
+  // exit is a broken app (Yusuf, ruling, 23 Aug).
+  ov.style.cssText='position:fixed;inset:0;z-index:99997;display:flex;align-items:flex-start;justify-content:center;'
+    +'padding:22px 16px calc(30px + env(safe-area-inset-bottom, 0px));background:rgba(7,7,9,0.9);'
+    +'-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;';
+  ov.onclick=function(e){ if(e.target===ov) closeCallsView(); };
+  ov.innerHTML='<div style="position:relative;max-width:460px;width:100%;margin:auto;background:#131313;border:1px solid #2c2c2c;border-radius:22px;padding:22px;font-family:\'Plus Jakarta Sans\',sans-serif;">'
+    +'<button type="button" aria-label="Close" onclick="closeCallsView()" style="position:absolute;top:10px;right:10px;width:44px;height:44px;border-radius:50%;background:#1f1f1f;border:1px solid var(--border);color:var(--m2);font-size:20px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;font-family:inherit;">×</button>'
+    +'<div style="font-size:19px;font-weight:800;color:#f0ece4;padding-right:46px;">Your calls</div>'
+    +'<div id="callsBody" style="margin-top:14px;"><div style="font-size:12.5px;color:rgba(240,236,228,0.6);">Loading…</div></div>'
+    +'</div>';
+  document.body.appendChild(ov);
+  ov._esc=function(e){ if(e.key==='Escape'){ e.preventDefault(); closeCallsView(); } };
+  document.addEventListener('keydown', ov._esc);
+
+  var week=await _callsWeek(true);
+  var idx=await _callsAnswerIndex();
+  var body=document.getElementById('callsBody'); if(!body) return;
+  var n=0, html='';
+  week.forEach(function(d, i){
+    var head = i===0 ? 'Today' : new Date(d.ts).toLocaleDateString('en-US',{weekday:'long', month:'short', day:'numeric'});
+    if(i>0 && !d.rows.length && !d.failed) return;              // a quiet Thursday is not worth a heading
+    html+='<div style="margin-top:'+(i===0?0:18)+'px;">'
+      +'<div style="font-size:10px;font-weight:800;letter-spacing:0.9px;text-transform:uppercase;color:'+(i===0?'var(--gold)':'rgba(240,236,228,0.5)')+';">'+_escHtml(head)+'</div>';
+    if(d.failed){
+      html+='<div style="font-size:12.5px;color:rgba(240,236,228,0.78);padding:10px 0;line-height:1.5;">Your calls did not load for this day. That is a read that failed, not a clear day — reload, and sign in again if it stays.</div>';
+    } else if(!d.rows.length){
+      html+='<div style="font-size:13px;color:rgba(240,236,228,0.72);padding:10px 0;">Nothing booked today.</div>';
+    } else {
+      d.rows.forEach(function(r){ html+=_callsRowHtml(r, idx, n++); });
+    }
+    html+='</div>';
+  });
+  var any=week.some(function(d){ return d.rows.length; });
+  if(!any) html+='<div style="margin-top:16px;font-size:12.5px;color:rgba(240,236,228,0.6);line-height:1.5;">Nothing booked for the rest of the week either.</div>';
+  body.innerHTML=html;
+}
+function closeCallsView(){
+  var ov=document.getElementById('callsOverlay'); if(!ov) return;
+  try{ if(ov._esc) document.removeEventListener('keydown', ov._esc); }catch(e){}
+  if(ov.parentNode) ov.parentNode.removeChild(ov);
+}
+
+/* The line starts itself. It is not hung off any one screen's loader, because
+   "wherever he lands" is the whole point of it — and callsBarRender removes it
+   the moment the session is not the trainer's, so a client never sees it. */
+try{
+  if(document.readyState==='loading') window.addEventListener('load', function(){ setTimeout(callsBarStart, 1800); });
+  else setTimeout(callsBarStart, 1800);
+}catch(e){}
+
 </script>
 </body>
 </html>
