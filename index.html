@@ -30594,6 +30594,11 @@ function _jimInfoHtml(){
     +c('<b>Carbs</b> - handfuls or ounces.')
     +x('\u201c1.5 handfuls of potatoes.\u201d')
     +x('\u201c3 handfuls of blueberries.\u201d')
+    // A DAY YOU MISSED IS STILL LOGGABLE, AND NOBODY KNEW (Yusuf, 1 Sep, from
+    // Ali: "how do I log meals I already ate in the past"). The path has
+    // worked for a while; it was never written down anywhere a client looks.
+    +c('<b>Missed a day?</b> - say when.')
+    +x('\u201cLunch yesterday, 2 palms of chicken.\u201d')
     +h('Log training the same way.',1)
     +x('\u201cLegs today. 4 sets squats, 4 sets leg press, 3 sets leg extension, great connection on all.\u201d')
     +x('\u201c30 minutes stairmaster.\u201d')
@@ -47012,6 +47017,16 @@ function _tlDaySectionHtml(cur, ctx){
     // The DAY RULE IS jimBarHtml's, not this line's — it already allows a client
     // today and yesterday and returns '' for anything older, so gating here as well
     // meant two rules for one question and only one of them was being read.
+    // A PAST DAY WITH NOTHING ON IT SAID NOTHING AT ALL (Yusuf, 1 Sep, from
+    // Ali). jimBarHtml returns '' for a client on any day but today and
+    // yesterday, so an older empty day drew a date and then blank space — no
+    // record, no door, no words. It reads as a day that cannot be filled in.
+    // The line is not a control; it is the day telling the truth about itself
+    // and naming the way in. Today and tomorrow already have their own cards
+    // and are left alone.
+    if(!rows.length && !isToday && !isAhead){
+      html+='<div style="font-size:13px;color:rgba(240,236,228,0.5);padding:2px 2px 12px;line-height:1.5;">Nothing logged. Tell Jim what you ate and when.</div>';
+    }
     if(!window._tlRO) html+=jimBarHtml(ds);
     // PROGRESS STACKS UNDER THE DAY (Yusuf, ruling (b), 30 Aug). Today only —
     // one strip on the page, at the foot of the day you are standing in, in the
@@ -75269,6 +75284,9 @@ var _JIM_SCAFFOLD=[
   // who and the verb
   new RegExp('^\\s*(?:and\\s+)?(?:i|we)\\s+(?:just\\s+|already\\s+)?(?:ate|had|got|grabbed|made|took|did|finished|demolished|smashed)\\b','i'),
   new RegExp('^\\s*(?:log|logging|add|put\\s+in|record)\\s+(?:me\\s+)?','i'),
+  // "my usual chicken and rice" names a food. The words in front of it are a
+  // way of saying "the one you already have", not part of the dish.
+  new RegExp('^\\s*(?:the|my)\\s+usual\\s+(?=\\S)','i'),
   new RegExp('\\b(?:for|to)\\s+(?:me|myself)\\b','ig'),
   // when — the clock and the day
   new RegExp('\\bat\\s+\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?\\b','ig'),
@@ -75398,6 +75416,234 @@ function _jimQuickFoodMatch(raw, mem){
   // this function — so without this, "2 donuts" reached it as "donuts" and came
   // back as one. Same portion rule as every other branch: from his sentence.
   return _scale({name:names.join(', '), emoji:'', calories:Math.round(cal), protein:Math.round(pro), carbs:Math.round(carb), fat:Math.round(fat), sugar:Math.round(sugar), rating:rating});
+}
+
+// ===== "THE USUAL" AND "SAME AS YESTERDAY" (Yusuf, 1 Sep, from Ali) =======
+// Ali: "how do I log meals I already ate in the past and spamming", and Yusuf:
+// "There used to be an option to pull up a saved food and for some reason that
+// option to pull up that same food isn't available in Jim."
+//
+// NAMING a saved food already works — that is _jimQuickFoodMatch above, and it
+// is the path a repeat should end up on. What did NOT work is REFERRING to a
+// meal instead of naming it. "Same breakfast as yesterday" and "the usual"
+// contain no food word at all, so every matcher in this file — all of which
+// match words against a name — returned nothing and the sentence went to the
+// model, which cannot see his rows and so asked him to describe it again. That
+// is the re-describing the whole saved-food idea exists to stop.
+//
+// This resolves the reference to rows the client ACTUALLY LOGGED and hands the
+// result to the same synthetic [FOOD_LOG] path the quick matcher uses, so it
+// inherits write-verify, the duplicate guard and the words law for free.
+// It never estimates. No rows to point at means it returns nothing and the turn
+// falls through to the model exactly as it did before.
+//
+// THE GUARD IS THE WHOLE DESIGN. Spencer's "I had the same protein coffee as
+// yesterday along with three Kirkland beef sticks" must NOT take this path — it
+// names real foods and belongs to the model. So a sentence only qualifies when
+// EVERY word in it is a reference word: same, usual, as, yesterday, breakfast,
+// and so on. One food word anywhere and this stops applying.
+var _JIM_REPEAT_WORD=new RegExp('^(?:log|logged|logging|repeat|add|put|in|the|my|me|i|had|have|has|ate|eat|eating|get|make|same|usual|thing|things|meal|meals|as|like|for|it|again|just|please|thanks|thank|you|can|could|would|do|breakfast|lunch|dinner|supper|snack|yesterday|yesterdays|last|night|nights|evening|morning|mornings|today|todays|this|that|day|days|before|ago|and|a|an|of|to|at|on|s|\\d+)$','i');
+function _jimRepeatOnly(t){
+  var w=String(t||'').toLowerCase().replace(/[’']/g,'').split(/[^a-z0-9]+/).filter(Boolean);
+  if(!w.length) return false;
+  for(var i=0;i<w.length;i++){ if(!_JIM_REPEAT_WORD.test(w[i])) return false; }
+  return true;
+}
+// The three shapes. Anchored to yesterday / last night / the day before on
+// purpose: those are the ones _JIM_FOOD_CMP_RE already blanks before the day
+// anchor reads the sentence, so a repeat can never be back-dated onto the day
+// it is copying FROM. A weekday reference is not claimed here and still goes to
+// the model.
+var _JIM_REPEAT_RE=new RegExp('\\b(?:the\\s+|my\\s+)?same\\s*(breakfast|lunch|dinner|supper|snack|thing|meal)?\\s*(?:as|like)\\s+(?:i\\s+(?:had|ate)\\s+)?(?:on\\s+)?(yesterday|last\\s+night|the\\s+day\\s+before)\\b','i');
+var _JIM_REPEAT_AGAIN_RE=new RegExp('\\b(yesterday|last\\s+night)(?:\u2019s|\u0027s|s)?\\s+(breakfast|lunch|dinner|supper|snack|meal)\\s+again\\b','i');
+var _JIM_USUAL_RE=new RegExp('^\\s*(?:log\\s+)?(?:the\\s+|my\\s+)?usual\\s*(breakfast|lunch|dinner|supper|snack)?\\s*(?:please|thanks)?\\s*[.!]?\\s*$','i');
+function _jimSlotNowKey(){
+  var h=new Date().getHours();
+  return h<11?'breakfast':(h<16?'lunch':(h<21?'dinner':'snack'));
+}
+function _jimSlotKey(w){
+  var t=String(w||'').toLowerCase();
+  if(t.indexOf('break')>=0) return 'breakfast';
+  if(t.indexOf('lunch')>=0) return 'lunch';
+  if(t.indexOf('dinner')>=0||t.indexOf('supper')>=0) return 'dinner';
+  if(t.indexOf('snack')>=0) return 'snack';
+  return null;
+}
+function _jimSlotLabel(k){ return String(k||'').charAt(0).toUpperCase()+String(k||'').slice(1); }
+// WHOSE ROWS. The one-engine law: whatever Jim does for a client, Jarvis does
+// for a named client, so this reads the named account's own rows and never his.
+// The client's own page has the fortnight in memory already, so an ordinary
+// repeat costs no request at all; anything the cache cannot answer is read.
+async function _jimFoodRowsFor(code, ds){
+  var c=null; try{ c=(typeof _codeAsStored==='function')?_codeAsStored(code):code; }catch(e){ c=code; }
+  var mine=!c || (window.cl && String(c).toLowerCase()===String(cl.code||'').toLowerCase());
+  if(mine){
+    var src=[];
+    try{ src=(window._tlCache&&window._tlCache.foods)||[]; }catch(e){ src=[]; }
+    if(!src.length){ try{ src=(typeof allFood!=='undefined'&&allFood)?allFood:[]; }catch(e){ src=[]; } }
+    var hit=(src||[]).filter(function(f){ return String(f.date_str||'')===ds; });
+    if(hit.length) return hit;
+  }
+  var who=c||((window.cl&&cl.code)||''); if(!who) return [];
+  try{
+    var rows=await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(who)+'&date_str=eq.'+encodeURIComponent(ds)+'&limit=60');
+    return rows||[];
+  }catch(e){ return []; }
+}
+async function _jimAllFoodRowsFor(code){
+  var c=null; try{ c=(typeof _codeAsStored==='function')?_codeAsStored(code):code; }catch(e){ c=code; }
+  var mine=!c || (window.cl && String(c).toLowerCase()===String(cl.code||'').toLowerCase());
+  if(mine){
+    var src=[];
+    try{ src=(window._tlCache&&window._tlCache.foods)||[]; }catch(e){ src=[]; }
+    if(src.length) return src;
+    try{ if(typeof allFood!=='undefined'&&allFood&&allFood.length) return allFood; }catch(e){}
+  }
+  var who=c||((window.cl&&cl.code)||''); if(!who) return [];
+  try{ return (await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(who)+'&order=logged_at.desc&limit=200'))||[]; }catch(e){ return []; }
+}
+// A SITTING, NOT A SHOPPING LIST (his standing law). Eggs and potatoes at
+// breakfast is one breakfast, so a repeated slot comes back as ONE entry with
+// its macros summed — the same shape the plate builds and the same shape the
+// day card reads. A slot whose rows carry no calories is a bad row, not
+// history: it returns nothing rather than logging a zero.
+function _jimRollUpSlot(rows){
+  var names=[], cal=0, pro=0, carb=0, fat=0, sug=0, rating=null;
+  (rows||[]).forEach(function(r){
+    var n=String((r&&r.name)||'').trim();
+    if(n) names.push((typeof _tcase==='function')?_tcase(n):n);
+    cal+=(+r.calories||0); pro+=(+r.protein||0); carb+=(+r.carbs||0); fat+=(+r.fat||0); sug+=(+r.sugar||0);
+    if(!rating && r.rating && r.rating!=='unknown') rating=r.rating;
+  });
+  if(!names.length || !(cal>0)) return null;
+  var nm=names[0];
+  if(names.length>1){
+    try{ nm=(typeof mbShapeLine==='function')?mbShapeLine(names,4):names.join(', '); }catch(e){ nm=names.join(', '); }
+    try{ if(typeof _tcase==='function') nm=_tcase(nm); }catch(e){}
+  }
+  return {name:nm, emoji:'', calories:Math.round(cal), protein:Math.round(pro),
+          carbs:Math.round(carb), fat:Math.round(fat), sugar:Math.round(sug), rating:(rating||'good')};
+}
+// What they eat often enough for "the usual" to mean something. Counted per
+// meal slot, because the usual breakfast and the usual dinner are two different
+// answers to the same two words.
+function _jimUsualCandidates(rows, slotKey){
+  var by={};
+  (rows||[]).forEach(function(r){
+    if(!(+r.calories>0)) return;
+    var k=null; try{ k=_mealSlotFor(r); }catch(e){ k=null; }
+    if(k!==slotKey) return;
+    var nm=String(r.name||'').trim(); if(!nm) return;
+    var key=nm.toLowerCase().replace(/\s*[x×]\s*\d+(?:\.\d+)?\s*$/,'').trim();
+    if(!key) return;
+    if(!by[key]){ by[key]={n:0, row:r, name:((typeof _tcase==='function')?_tcase(nm):nm)}; }
+    by[key].n++;
+  });
+  var list=[]; for(var k in by){ if(Object.prototype.hasOwnProperty.call(by,k)) list.push(by[k]); }
+  list.sort(function(a,b){ return b.n-a.n; });
+  return list.filter(function(x){ return x.n>=2; });
+}
+// ASKED ONCE, AND THE ANSWER LANDS. "The usual" with two equal candidates gets
+// one question listing them by name; the next message is checked against that
+// list first, so answering with the name logs it rather than starting over.
+// Ten minutes, one question — a stale ask must never hijack a later sentence.
+function _jimUsualAskConsume(t){
+  var a=null; try{ a=window._jimUsualAsk||null; }catch(e){ a=null; }
+  if(!a || !a.items || !a.items.length) return null;
+  if(!a.ts || (Date.now()-a.ts) > 600000){ try{ window._jimUsualAsk=null; }catch(e){} return null; }
+  var s=String(t||'').toLowerCase().replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim();
+  if(!s) return null;
+  var pick=null;
+  for(var i=0;i<a.items.length;i++){
+    var nm=String(a.items[i].name||'').toLowerCase().replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim();
+    if(!nm) continue;
+    if(s===nm || s.indexOf(nm)>=0 || nm.indexOf(s)>=0){ pick=a.items[i]; break; }
+  }
+  if(!pick){
+    var m=s.match(/^(?:the\s+)?(?:(first|second|third|1|2|3)|number\s+(1|2|3))\b/);
+    if(m){
+      var w=m[1]||m[2];
+      var idx={first:0,'1':0,second:1,'2':1,third:2,'3':2}[w];
+      if(idx!=null && a.items[idx]) pick=a.items[idx];
+    }
+  }
+  if(!pick) return null;
+  try{ window._jimUsualAsk=null; }catch(e){}
+  // A slot answer arrives pre-rolled (it was several rows); a food answer is one row.
+  var _rolled = pick.roll || _jimRollUpSlot([pick.row]);
+  if(!_rolled) return null;
+  return {log:_rolled, meal:_jimSlotLabel(pick.slot||a.slot)};
+}
+// The resolver. Returns {log:offer, meal:'Breakfast'} to log, {ask:[names]} to
+// ask once, {none:'yesterday'} to say plainly there is nothing there, or null
+// when this is not a reference at all.
+async function _jimRepeatFood(text, forCode){
+  var t0=String(text||'').trim();
+  if(!t0 || t0.length>120) return null;
+  var consumed=null; try{ consumed=_jimUsualAskConsume(t0); }catch(e){ consumed=null; }
+  if(consumed && consumed.log) return consumed;
+  if(/[?]/.test(t0)) return null;
+  if(!_jimRepeatOnly(t0)) return null;
+
+  // "The usual" — no day named, so it is about what they usually eat AT THIS
+  // HOUR, which is the only reading of two words with nothing else in them.
+  var u=_JIM_USUAL_RE.exec(t0);
+  if(u){
+    var uSlot=_jimSlotKey(u[1])||_jimSlotNowKey();
+    var uRows=await _jimAllFoodRowsFor(forCode);
+    var cands=_jimUsualCandidates(uRows, uSlot);
+    if(!cands.length) return null;                       // no usual to speak of
+    if(cands.length===1 || cands[0].n>cands[1].n){
+      return {log:_jimRollUpSlot([cands[0].row]), meal:_jimSlotLabel(uSlot)};
+    }
+    var tied=cands.filter(function(x){ return x.n===cands[0].n; }).slice(0,4);
+    try{ window._jimUsualAsk={items:tied, slot:uSlot, ts:Date.now()}; }catch(e){}
+    return {ask:tied.map(function(x){ return x.name; })};
+  }
+
+  // "Same breakfast as yesterday" / "yesterday's dinner again"
+  var m=_JIM_REPEAT_RE.exec(t0), slotWord=null, dayWord=null;
+  if(m){ slotWord=m[1]; dayWord=m[2]; }
+  else {
+    var m2=_JIM_REPEAT_AGAIN_RE.exec(t0);
+    if(m2){ dayWord=m2[1]; slotWord=m2[2]; }
+  }
+  if(!dayWord) return null;
+  var back=/day\s+before/i.test(dayWord)?2:1;
+  var ds=_dateStrDaysAgo(back);
+  var label=/day\s+before/i.test(dayWord)?'the day before yesterday':'yesterday';
+  var rows=await _jimFoodRowsFor(forCode, ds);
+  if(!rows.length) return {none:label};
+  var byslot={};
+  rows.forEach(function(r){
+    var k=null; try{ k=_mealSlotFor(r); }catch(e){ k=null; }
+    if(!k) return; (byslot[k]=byslot[k]||[]).push(r);
+  });
+  var want=_jimSlotKey(slotWord);
+  if(!want){
+    // No slot named. The hour they are speaking in is the meal they mean; if
+    // that slot is empty on the day being copied and only one slot has anything
+    // on it, that is the one they mean instead. Two or more and it is a
+    // question, not a guess.
+    var now=_jimSlotNowKey();
+    if((byslot[now]||[]).length) want=now;
+    else {
+      var have=['breakfast','lunch','dinner','snack'].filter(function(k){ return (byslot[k]||[]).length; });
+      if(have.length===1) want=have[0];
+      else if(have.length>1){
+        var items=have.map(function(k){ var o=_jimRollUpSlot(byslot[k]); return o?{name:_jimSlotLabel(k)+' — '+o.name, row:null, slot:k, roll:o}:null; }).filter(Boolean);
+        if(!items.length) return {none:label};
+        try{ window._jimUsualAsk={items:items.map(function(x){ return {name:x.name, row:null, roll:x.roll, slot:x.slot}; }), slot:_jimSlotNowKey(), ts:Date.now()}; }catch(e){}
+        return {ask:items.map(function(x){ return x.name; })};
+      }
+      else return {none:label};
+    }
+  }
+  var pick=byslot[want]||[];
+  if(!pick.length) return {none:label+' for '+want};
+  var roll=_jimRollUpSlot(pick);
+  if(!roll) return null;
+  return {log:roll, meal:_jimSlotLabel(want)};
 }
 // DICTATION MANGLES NUMBERS, AND A MANGLED NUMBER IS STILL A NUMBER HE SAID
 // (Yusuf, live, 20 Aug). He dictated a filet with "775 calories" and it arrived
@@ -75772,7 +76018,28 @@ async function jimTurn(text, photos, opts){
       try{ _quickMatch=_jimQuickFoodMatch(text, _jimMem||undefined); }catch(e){ _quickMatch=null; }
     }
   }
-  if(_quickMatch){
+  // A REFERENCE TO A MEAL IS NOT A DESCRIPTION OF ONE (Yusuf, 1 Sep, from Ali).
+  // Naming a saved food is handled above. Pointing at one — "same breakfast as
+  // yesterday", "the usual" — is handled here, off rows they actually logged.
+  // It runs only when the matcher above found nothing, so no existing sentence
+  // changes path; a reference it cannot resolve returns null and the turn goes
+  // to the model exactly as it did before.
+  var _preReply=null, _repMeal=null;
+  if(!_quickMatch && !hasPhoto){
+    var _rep=null;
+    try{ _rep=await _jimRepeatFood(text, _forCode||null); }catch(e){ _rep=null; }
+    if(_rep && _rep.log){ _quickMatch=_rep.log; _repMeal=_rep.meal||null; }
+    else if(_rep && _rep.ask && _rep.ask.length){
+      // Asked ONCE, by name, one per line. The answer is caught on the next turn.
+      _preReply='Which one?\n'+_rep.ask.join('\n');
+    }
+    else if(_rep && _rep.none){
+      _preReply='Nothing logged '+_rep.none+', so there is nothing to copy. Tell me what you ate and I will put it on.';
+    }
+  }
+  if(_preReply){
+    reply=_preReply;
+  } else if(_quickMatch){
     // She may have named the slot herself ("...for dinner") — that beats the
     // clock. Caught this live: a repeat logged "for dinner" landed as Lunch
     // because the shortcut only ever asked the clock, never her own words.
@@ -75797,6 +76064,9 @@ async function jimTurn(text, photos, opts){
         _qmMeal = _h<11 ? 'Breakfast' : (_h<16 ? 'Lunch' : (_h<21 ? 'Dinner' : 'Snack'));
       }
     }
+    // A repeat resolved its own slot off the rows it copied — that beats the
+    // clock when the sentence named no slot itself.
+    if(!_qmMeal && _repMeal) _qmMeal=_repMeal;
     if(!_qmMeal) _qmMeal=((typeof _mealSlotNow==='function') ? _mealSlotNow() : 'Meal');
     var _qmPayload={name:_quickMatch.name, emoji:_quickMatch.emoji,
       calories:_quickMatch.calories, protein:_quickMatch.protein, carbs:_quickMatch.carbs, fat:_quickMatch.fat,
