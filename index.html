@@ -23615,6 +23615,7 @@ async function _jvCommitPending(p){
     var spent=got.spent||got.will_spend||'none';
     try{ jvActRecord('Booked '+p.name+', '+when, {kind:'booking', code:p.code, id:(got.id!=null?got.id:null), starts_at:(got.starts_at||iso)}); }catch(e){}
     try{ if(typeof loadBookings==='function') loadBookings(true); }catch(e){}
+    try{ schRefresh(); }catch(e){}
     try{ jvPaneRender(); }catch(e){}
     // NO RECEIPT-SPEAK. "Booked Carly for Wednesday at noon." Nothing after it.
     return '✓ Booked '+p.name+' for '+when;
@@ -24412,9 +24413,26 @@ function schGo(dayTs){
 // grid actually shows the new row can await it — everything else can keep
 // calling it fire-and-forget exactly as before.
 function schRefresh(){
+  // EVERY SURFACE SHOWING IT, NOT WHICHEVER ONE IS ON TOP (Yusuf, 1 Sep:
+  // "when an event is created, edited or deleted, every surface showing it
+  // updates at once. The week grid, the day, the client's own view, any
+  // count. No reload, no waiting for the next fetch.")
+  // It used to RETURN on the mobile overlay, so with the overlay open the
+  // week grid mounted behind it kept the old picture until something else
+  // happened to rebuild it — and the calls bar across the top, which counts
+  // the same rows, was never told by anything at all.
+  // Nothing here blanks: _wkKeepWhileLoading leaves whatever is already drawn
+  // up until the new grid is ready, so refreshing two surfaces costs two
+  // reads and no flicker.
+  var out=null;
   var mw=document.getElementById('mwOverlay');
-  if(mw && mw.classList.contains('on')){ try{ return _mwRefresh(); }catch(e){ return; } }
-  return schLoad(window._schDayTs||_schTodayTs(), (window._schHostId?document.getElementById(window._schHostId):null)||document.getElementById('jvWall'), true);
+  if(mw && mw.classList.contains('on')){ try{ out=_mwRefresh(); }catch(e){} }
+  var host=(window._schHostId?document.getElementById(window._schHostId):null)||document.getElementById('jvWall');
+  if(host){
+    try{ var r=schLoad(window._schDayTs||_schTodayTs(), host, true); if(out==null) out=r; }catch(e){}
+  }
+  try{ if(typeof callsBarRender==='function') callsBarRender(true); }catch(e){}
+  return out;
 }
 // The client path: the booking sheet that already exists, opened on this day.
 function schAddCall(dayTs){
@@ -24999,7 +25017,7 @@ async function wkApptClick(ev, key){
   p.classList.remove('wkPanelSlot'); p.classList.remove('wkPanelDay'); p.classList.add('wkPanelWide');
   p.innerHTML=_wkDetailApptHtml(r, key);
   s.classList.add('on'); p.classList.add('on');
-  if(!alreadyOpen) _wkPanelPosition(ev.clientX, ev.clientY);
+  if(!alreadyOpen) _wkPanelPosition(ev.clientX, ev.clientY, _wkEvEl(ev));
   if(r.code && (r.kind==='booking'||r.kind==='vip')){
     var target = r.kind==='booking' ? {source:'booking', booking_id:r.booking_id}
       : {source:'vip', vip_call_id:r.vip_call_id, occurrence_date:r.occurrence_date};
@@ -25790,7 +25808,7 @@ function wkBlockOpen(ev, key, kind){
   p.innerHTML='<button class="wkDetBack" onclick="wkPanelClose()">‹ Close</button>'
     + '<div class="wkBlkWait">Opening…</div>';
   s.classList.add('on'); p.classList.add('on');
-  if(!already) _wkPanelPosition(ev.clientX, ev.clientY);
+  if(!already) _wkPanelPosition(ev.clientX, ev.clientY, _wkEvEl(ev));
   _wkBlockLoad(e);
 }
 async function _wkBlockLoad(e){
@@ -26020,7 +26038,7 @@ function wkBlockOptions(ev, key, kind){
     +   '<button class="wkDetBtn" onclick="wkOptOpenDay()">Open the day</button>'
     + '</div>';
   s.classList.add('on'); p.classList.add('on');
-  if(!already) _wkPanelPosition(ev.clientX, ev.clientY);
+  if(!already) _wkPanelPosition(ev.clientX, ev.clientY, _wkEvEl(ev));
 }
 // The route the tap used to take, kept and named rather than removed. Reads the
 // real entry out of _wkLogIndex (every logged block is indexed now, not only the
@@ -26259,7 +26277,24 @@ function _wkFlowCol(col){
     items.push({el:el, top:natural, timeH:timeH});
   }
   // Every height read after every write, so this costs one reflow, not one per block.
-  for(i=0;i<items.length;i++) items[i].need=Math.max(items[i].timeH, items[i].el.offsetHeight, WK_FLOW_MIN);
+  // MEASURED IN REAL PIXELS, NOT WHOLE ONES (Yusuf, 1 Sep - "8am is cut off, the
+  // top half of the characters shows and the bottom is sliced", on three of seven
+  // cards). offsetHeight is an INTEGER. A card whose content genuinely needs
+  // 41.289px reported 41, the box was set to 41, and the last line lost the
+  // bottom 0.289px of every glyph - which is a sliced descender, not a missing
+  // line, so nothing looked wrong enough to name. Whether it happened at all came
+  // down to the fraction: 41.719 rounds UP to 42 and is safe, 41.289 rounds DOWN
+  // and is cut. Same card, same code, different day of the week - which is
+  // exactly "three of the seven do it".
+  // getBoundingClientRect().height is fractional and Math.ceil can only ever give
+  // the line MORE room than it asked for, never less. The cost is at most one
+  // pixel of slack per box; the alternative is a sliced word.
+  for(i=0;i<items.length;i++){
+    var _mh=0;
+    try{ _mh=items[i].el.getBoundingClientRect().height; }catch(e){}
+    if(!isFinite(_mh) || _mh<=0) _mh=items[i].el.offsetHeight;
+    items[i].need=Math.max(items[i].timeH, Math.ceil(_mh), WK_FLOW_MIN);
+  }
   items.sort(function(a,b){ return (a.top-b.top) || (a.timeH-b.timeH); });
   // SAME SLOT, SAME HEIGHT (Yusuf, 31 Aug: "Two events in a slot share it
   // evenly, same height, same gap, aligned"). Each box used to take exactly the
@@ -26387,8 +26422,31 @@ function _wkFlowAll(pass){
   var n=(pass||0);
   if(n>=3) return;
   var es=document.querySelectorAll('.wkDayCol .wkBlock,.wkDayCol .wkCal,.wkDayCol .wkMark'), cut=0;
-  for(var q=0;q<es.length;q++){ if(es[q].scrollHeight>es[q].clientHeight+0.5){ cut=1; break; } }
+  for(var q=0;q<es.length;q++){ if(_wkIsCut(es[q])){ cut=1; break; } }
   if(cut) setTimeout(function(){ try{ _wkFlowAll(n+1); }catch(e){} }, 160);
+}
+// IS A LINE ACTUALLY BEING SLICED. scrollHeight and clientHeight are both
+// INTEGERS, so a line cut by a third of a pixel reads back as scrollHeight ===
+// clientHeight and the pass congratulated itself. That is the whole reason the
+// self-check above never caught the fault it exists to catch. The honest
+// question is fractional on both sides: where does the lowest line of content
+// actually end, against where the card's content box actually ends.
+// Absolutely-positioned children (the resize handle) are furniture, not text,
+// and are skipped - one of them sits ON the bottom edge by design.
+function _wkIsCut(el){
+  try{
+    var cs=getComputedStyle(el), r=el.getBoundingClientRect();
+    var floor=r.bottom - (parseFloat(cs.borderBottomWidth)||0) - (parseFloat(cs.paddingBottom)||0);
+    var kids=el.children, low=null;
+    for(var i=0;i<kids.length;i++){
+      var k=kids[i], ks=getComputedStyle(k);
+      if(ks.display==='none' || ks.position==='absolute' || ks.position==='fixed') continue;
+      var kb=k.getBoundingClientRect().bottom;
+      if(low===null || kb>low) low=kb;
+    }
+    if(low===null) return false;
+    return (low-floor)>0.05;
+  }catch(e){ return false; }
 }
 function _wkBandPack(html){
   // Scheduled from here because every calendar surface builds its columns
@@ -26457,7 +26515,7 @@ function wkBandOpen(ev, key){
   p.innerHTML='<button class="wkDetBack" onclick="wkPanelClose()">‹ Close</button>'
     + '<h4>'+band.length+' in this slot</h4>' + rows;
   s.classList.add('on'); p.classList.add('on');
-  if(!already) _wkPanelPosition(ev.clientX, ev.clientY);
+  if(!already) _wkPanelPosition(ev.clientX, ev.clientY, _wkEvEl(ev));
 }
 // A WEEK IS NOT A MONTH (the nightly sweep, 31 Aug). Both week headers named the
 // whole week after the month its FIRST day happens to fall in, so the week of
@@ -26906,17 +26964,58 @@ function wkColClick(ev, dayStart){
   var mins=Math.round((_wkMinsFromPx(y))/15)*15;    // snapped to the quarter-hour
   // THE SHEET, NOT THE FLOAT (Yusuf, ruling, 22 Aug). A card positioned at the
   // tap can always land clipped; this one is centred and capped by construction.
-  cevOpenAdd(dayStart, mins);
+  // ANCHORED TO THE SLOT NOW (Yusuf, 1 Sep) — still capped and still on screen
+  // by construction, but beside the day it belongs to rather than over four of
+  // them. The rect is the width of the column and the height of the slot he
+  // actually clicked, so the sheet has a real thing to stand next to before
+  // anything has been created to stand next to.
+  var _cr=ev.currentTarget.getBoundingClientRect();
+  var _ay=Math.max(_cr.top, Math.min(ev.clientY-17, _cr.bottom-34));
+  cevOpenAdd(dayStart, mins, {left:_cr.left, right:_cr.right, top:_ay, bottom:_ay+34,
+                              width:_cr.width, height:34});
 }
-function _wkPanelPosition(x, y){
+// ANCHORED TO THE EVENT, NEVER FLOATING IN THE MIDDLE OF THE WEEK
+// (Yusuf, 1 Sep: "it floats in the middle of the week and covers four days
+// including the one being edited. It is anchored to nothing.")
+// The card the editor is editing is the one thing on screen it must not
+// cover, so the card's own rectangle is what it is placed against - not the
+// pixel he happened to click, which is INSIDE the card and put the editor
+// straight on top of it.
+// The order of preference is fixed and every branch of it ends on screen:
+// beside it on the right, else beside it on the left, else under it, else
+// over it, else clamped to the window. Nothing here can run off an edge,
+// because every candidate is clamped before it is written.
+// Falls back to the old click-point placement whenever there is no anchor
+// (the add sheet from an empty slot, a panel opened from a menu) or when the
+// anchor has since been redrawn out of the document.
+function _wkPanelAnchorRect(el){
+  try{
+    if(!el || !el.getBoundingClientRect) return null;
+    if(el.isConnected===false) return null;
+    var r=el.getBoundingClientRect();
+    if(!(r.width>0) || !(r.height>0)) return null;
+    if(r.bottom<0 || r.top>window.innerHeight) return null;   // scrolled out of sight
+    return r;
+  }catch(e){ return null; }
+}
+function _wkPanelPosition(x, y, anchorEl){
   _cevEnsureNodes();
   var p=document.getElementById('wkPanel'); if(!p) return;
+  if(anchorEl!==undefined) window._wkPanelAnchorEl=anchorEl||null;
+  var a=_wkPanelAnchorRect(window._wkPanelAnchorEl);
   // REAL width too, not just height below — the wide variant (day/
   // appointment detail, see wkPanelWide) is wider than the 300px this used
   // to assume unconditionally.
   var pw=p.offsetWidth||300, vw=window.innerWidth, vh=window.innerHeight;
-  var left=Math.min(Math.max(8, x-pw/2), vw-pw-8);
-  p.style.left=Math.max(8, left)+'px';
+  var GAP=10, EDGE=8, side='none', left;
+  if(a){
+    if(a.right+GAP+pw <= vw-EDGE){ side='right'; left=a.right+GAP; }
+    else if(a.left-GAP-pw >= EDGE){ side='left'; left=a.left-GAP-pw; }
+    else { side='stack'; left=Math.min(Math.max(EDGE, a.left+a.width/2-pw/2), vw-pw-EDGE); }
+  } else {
+    left=Math.min(Math.max(EDGE, x-pw/2), vw-pw-EDGE);
+  }
+  p.style.left=Math.max(EDGE, left)+'px';
   // OPENS FULLY ON SCREEN BY CONSTRUCTION (Yusuf, ruling, 23 Aug). The clamp
   // below was already here and was already right — for the height the card
   // had AT THE MOMENT IT WAS POSITIONED. His photo was Carlyl's noon
@@ -26947,9 +27046,22 @@ function _wkPanelPosition(x, y){
   var borders=p.offsetHeight-p.clientHeight;
   var natural=(p.scrollHeight+borders)||320;
   var ph=Math.min(natural, vh-16);
-  var top=Math.max(8, Math.min(y+8, vh-ph-8));
+  var top;
+  if(a && side!=='stack'){
+    // Beside it means level with it: centred on the card, so the eye goes
+    // straight from the box to the thing it belongs to.
+    top=Math.max(EDGE, Math.min(a.top+a.height/2-ph/2, vh-ph-EDGE));
+  } else if(a){
+    // No room either side. Under the card if it fits under it, over it if it
+    // does not - and still never covering it while there is any room at all.
+    if(a.bottom+GAP+ph <= vh-EDGE) top=a.bottom+GAP;
+    else if(a.top-GAP-ph >= EDGE) top=a.top-GAP-ph;
+    else top=Math.max(EDGE, Math.min(a.bottom+GAP, vh-ph-EDGE));
+  } else {
+    top=Math.max(EDGE, Math.min(y+8, vh-ph-EDGE));
+  }
   p.style.top=top+'px';
-  p.style.maxHeight=(vh-top-8)+'px';
+  p.style.maxHeight=(vh-top-EDGE)+'px';
   p._wkLastClampH=p.offsetHeight;
   _wkPanelObserve(p);
   // A FAILURE THAT SAYS SO BEATS A DEAD TAP — but only the LAST clamp in a
@@ -27151,6 +27263,31 @@ function _cevEnsureNodes(){
   }
   if(made) document.body.appendChild(f);
 }
+// BESIDE THE DAY, NOT OVER THE WEEK (Yusuf, 1 Sep). Only ever runs when a
+// caller handed the sheet something to stand beside; every other door still
+// gets the centred sheet the stylesheet draws, and the phone keeps its
+// full-height sheet at every width the media query owns. Left, top and
+// transform are written and cleared as one set, so a centred open after an
+// anchored one cannot inherit half of the anchored placement.
+function _cevAnchorPlace(){
+  var sh=document.getElementById('cevSheet');
+  if(!sh) return;
+  var a=window._cevAnchorRect;
+  if(!a || window.innerWidth<768){ sh.style.left=''; sh.style.top=''; sh.style.transform=''; return; }
+  try{
+    var vw=window.innerWidth, vh=window.innerHeight, GAP=10, EDGE=8;
+    var w=sh.offsetWidth||480;
+    var h=Math.min(sh.offsetHeight||360, vh-16);
+    var left;
+    if(a.right+GAP+w <= vw-EDGE) left=a.right+GAP;
+    else if(a.left-GAP-w >= EDGE) left=a.left-GAP-w;
+    else left=Math.min(Math.max(EDGE, a.left+a.width/2-w/2), vw-w-EDGE);
+    var top=Math.max(EDGE, Math.min(a.top+a.height/2-h/2, vh-h-EDGE));
+    sh.style.transform='none';
+    sh.style.left=Math.max(EDGE, left)+'px';
+    sh.style.top=top+'px';
+  }catch(e){ sh.style.left=''; sh.style.top=''; sh.style.transform=''; }
+}
 function cevOpen(st){
   _cevEnsureNodes();
   window._cevState=st;
@@ -27159,6 +27296,10 @@ function cevOpen(st){
   sc.classList.add('on'); sh.classList.add('on');
   try{ document.body.classList.add('cev-on'); }catch(e){}
   cevRender();
+  // Placed after the render, because the sheet's real height is what decides
+  // where it fits, and a sheet with no content in it yet has no real height.
+  _cevAnchorPlace();
+  try{ if(window.requestAnimationFrame) requestAnimationFrame(_cevAnchorPlace); }catch(e){}
   // After layout, never before — a rect read in the same tick as the class
   // change is measured against the old frame.
   setTimeout(_cevAssertVisible, 40);
@@ -27222,6 +27363,9 @@ function _cevAssertVisible(){
 }
 function cevClose(){
   window._cevState=null;
+  window._cevAnchorRect=null;
+  try{ var _sh0=document.getElementById('cevSheet');
+       if(_sh0){ _sh0.style.left=''; _sh0.style.top=''; _sh0.style.transform=''; } }catch(e){}
   try{ cevPopClose(); }catch(e){}
   try{ cevStopMic(); }catch(e){}
   try{ document.body.classList.remove('cev-on'); }catch(e){}
@@ -27245,7 +27389,8 @@ function cevClose(){
   }
 }
 // A NEW EVENT ON A TAPPED SLOT.
-function cevOpenAdd(dayStart, mins){
+function cevOpenAdd(dayStart, mins, anchorRect){
+  window._cevAnchorRect=anchorRect||null;
   cevOpen({
     mode:'add', title:'', body:'', notes:'',
     dateStr:_tlDateStr(new Date(dayStart)),
@@ -27603,6 +27748,10 @@ function cevRender(){
     +   '<button type="button" class="cevSave" id="cevSave" onclick="cevSave()">'+(st.mode==='edit'?'Save':(_cevIsPast(st)?'Save':'Schedule'))+'</button>'
     + '</div>';
   _cevGrow('cevTitle', 130); _cevGrow('cevBody', 190);
+  // The drawer opening makes the sheet taller, and a sheet placed against its
+  // old height can hang off the bottom. Re-placed after every render, which is
+  // cheap and is the only thing that keeps an anchored sheet honest as it grows.
+  try{ _cevAnchorPlace(); }catch(e){}
 }
 // What the sheet will DO on save, said in one quiet line before he taps it —
 // so a session that is about to be parsed and a title that is about to be
@@ -28292,7 +28441,28 @@ function _cbMaybeOpen(occKey, x, y){
   _wkRenderPanel();
   var s=document.getElementById('wkPanelScrim'), p=document.getElementById('wkPanel');
   if(s) s.classList.add('on'); if(p) p.classList.add('on');
-  if(!alreadyOpen) _wkPanelPosition(x, y);
+  // THE CARD ITSELF, not the pixel inside it that was clicked.
+  if(!alreadyOpen) _wkPanelPosition(x, y, _wkOccEl(occKey));
+}
+// The drawn box for one occurrence, found by the same key the editor was
+// opened with. Scoped to a real day column so a match inside the panel that
+// is about to open cannot be picked up as the anchor.
+// The drawn box a tap actually landed on. Every panel that opens FROM
+// something on the grid anchors to that something, so none of them can open
+// on top of what they are about to talk about.
+function _wkEvEl(ev){
+  try{
+    var t=ev && (ev.target||ev.srcElement);
+    if(!t || !t.closest) return null;
+    return t.closest('.wkBlock,.wkCal,.wkMark,.wkMore');
+  }catch(e){ return null; }
+}
+function _wkOccEl(occKey){
+  try{
+    var els=document.querySelectorAll('.wkDayCol [data-occ]');
+    for(var i=0;i<els.length;i++){ if(els[i].getAttribute('data-occ')===occKey) return els[i]; }
+  }catch(e){}
+  return null;
 }
 function wkPanelClose(){
   window._wkUndoId=null; window._wkWhenTarget=null; window._wkBlockState=null;
@@ -28306,6 +28476,7 @@ function wkPanelClose(){
   }
   window._wkPanelState=null;
   window._wkPanelToldOnce=false;
+  window._wkPanelAnchorEl=null;
   // A LOG REDRAWS THE WEEK ON DISMISS, NOT BEFORE IT. Refreshing while the
   // panel is still up would delete the very sentence telling him where his
   // entry went. The flag defers that redraw to the moment he closes it —
@@ -28579,8 +28750,16 @@ function _wkInferredWords(st){
   var kindLbl=(_CB_KINDS.filter(function(k){ return k.k===st.kind; })[0]||{}).label||st.kind;
   if(!st.recurring) return kindLbl;
   var dayLbl={1:'Mon',2:'Tue',3:'Wed',4:'Thu',5:'Fri',6:'Sat',7:'Sun'};
-  var ds=(st.days||[]).slice().sort(function(a,b){ return a-b; }).map(function(n){ return dayLbl[n]; }).filter(Boolean);
-  return kindLbl+' \u00b7 repeats'+(ds.length?(' '+ds.join(', ')):'');
+  var ns=(st.days||[]).slice().sort(function(a,b){ return a-b; });
+  var ds=ns.map(function(n){ return dayLbl[n]; }).filter(Boolean);
+  // SAY IT THE SHORT WAY (Yusuf, 1 Sep). All seven is "every day"; Monday to
+  // Friday is "weekdays"; anything else is still the list, because there is no
+  // shorter true way to say Tuesday and Saturday.
+  var when='';
+  if(ns.length===7) when=' every day';
+  else if(ns.length===5 && ns.join(',')==='1,2,3,4,5') when=' weekdays';
+  else if(ds.length) when=' '+ds.join(', ');
+  return kindLbl+' \u00b7 repeats'+when;
 }
 // TAP THE TIME, CHANGE THE TIME. The native picker, because the OS keyboard for
 // a clock is better than anything drawn here — and a hand correction locks
@@ -28881,6 +29060,9 @@ function _wkPanelLogLanded(btn0, st, whoPossessive){
 // One reclamp, same cached anchor every time — never a fresh click point.
 function _wkPanelReclamp(){
   try{
+    // The anchor is deliberately NOT passed again here: _wkPanelPosition reads
+    // the one already stored, so a re-clamp caused by content arriving keeps
+    // the card it was opened against instead of losing it.
     if(window._wkPanelOpenXY) _wkPanelPosition(window._wkPanelOpenXY.x, window._wkPanelOpenXY.y);
   }catch(e){}
 }
@@ -33559,6 +33741,7 @@ async function _jvCancelBooking(code, name, booking_id){
   var row=(w.rows&&w.rows[0])||{};
   if(row.already_cancelled) return _escHtml(name)+'’s call was already cancelled — nothing to do.';
   try{ jvActRecord('Cancelled '+name+'’s call today', {kind:'booking', code:code, id:booking_id}); }catch(e){}
+  try{ schRefresh(); }catch(e){}
   var refund=row.refund;
   return '✓ Cancelled '+_escHtml(name)+'’s call today'
     + (refund && refund!=='none' ? (' — '+_escHtml(refund)+' credit returned.') : '.');
@@ -33567,6 +33750,7 @@ async function _jvCancelConsult(who, consult_id){
   var w=await trainerWrite('consultSetStatus',{id:consult_id, status:'cancelled'});
   if(!w.ok) return 'That did not cancel — nothing changed for the consult with '+_escHtml(who)+'. '+_jvDoorFailReason(w);
   try{ jvActRecord('Cancelled the consult with '+who, {kind:'consult', id:consult_id, name:who}); }catch(e){}
+  try{ schRefresh(); }catch(e){}
   return '✓ Cancelled the consult with '+_escHtml(who)+'.';
 }
 async function _jvCancelCommand(t){
@@ -52055,6 +52239,8 @@ async function consultCancel(id){
   if(!w || !w.ok || !w.rows[0] || w.rows[0].status!=='cancelled'){ showToast('Could not cancel — try again'); return; }
   showToast('Consult cancelled');
   loadConsults();
+  // The call was on the week and in the count too, and neither was being told.
+  try{ schRefresh(); }catch(e){}
 }
 
 function toggleInactiveClients(){
@@ -68591,6 +68777,7 @@ async function onCancelBooking(id){
   var ok=await cancelBooking(id);
   try{ showToast(ok?'Cancelled':'Could not cancel'); }catch(e){}
   try{ window._tlCache=null; renderDayTimeline(); }catch(e){}
+  if(ok){ try{ schRefresh(); }catch(e){} }
   var avail=await loadAvailability(); var booked=await loadBookings(true); try{ await loadTrainerBlocks(); }catch(e){}
   var safety=await _loadPickerSafetyBusy(21, true);
   renderBookingSlots(avail, booked, safety);
@@ -79141,6 +79328,9 @@ async function tbkBook(force){
   }
   _tbkLast=w.rows[0]; _tbkPreview=null;
   try{ _bookCache=null; _safetyBusyCache=null; }catch(e){}
+  // A booked call is an event on his week and a number in his calls bar.
+  // Clearing the caches only made the NEXT read right; nothing re-read.
+  try{ schRefresh(); }catch(e){}
   _tbkRenderBooked();
 }
 function _tbkRenderBooked(){
