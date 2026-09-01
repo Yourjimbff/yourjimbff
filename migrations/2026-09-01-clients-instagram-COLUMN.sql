@@ -1,0 +1,41 @@
+-- ============================================================================
+-- INSTAGRAM ON THE CLIENT ROW — the promotion, recorded now so it is not
+-- re-derived later. Same shape, and the same reason, as
+-- 2026-08-30-client-files-TABLE.sql.
+--
+-- WHAT SHIPPED TODAY (1 Sep 2026) does NOT need this file. The handle rides
+-- client_notes as an [IG] row, because this lane has no DDL: PostgREST cannot
+-- ALTER TABLE with any key, the service_role key lives in Netlify's
+-- environment, and the standing law is that Yusuf never runs SQL. So the
+-- choice was a shelf on an existing table or no field at all, and the shelf
+-- shipped.
+--
+-- WHY client_notes IS THE HONEST INTERIM AND NOT MERELY THE CONVENIENT ONE:
+--   · [MEMORY], [Jarvis] and [FILE] rows have carried tagged payloads in its
+--     `note` column for months — this is that convention, not a new one;
+--   · it is dark to anon, so a handle is never readable by a client;
+--   · it is in JV_CLIENT_TABLES, so a removed client takes their handle with
+--     them rather than leaving it behind forever.
+--
+-- WHEN THIS RUNS, exactly two functions in index.html change: igOf and igSet.
+-- Every other caller goes through them. Nothing else in the file moves.
+--
+-- Safe to run twice.
+-- ============================================================================
+
+alter table clients add column if not exists instagram text;
+
+-- The backfill out of the shelf, newest [IG] row per client wins. Run it in
+-- the same session as the alter, before the two functions are switched over.
+--
+-- update clients c
+--    set instagram = x.handle
+--   from (
+--     select distinct on (client_code) client_code,
+--            btrim(replace(note, '[IG] ', '')) as handle
+--       from client_notes
+--      where note like '[IG] %'
+--      order by client_code, logged_at desc
+--   ) x
+--  where x.client_code = c.code
+--    and c.instagram is null;
