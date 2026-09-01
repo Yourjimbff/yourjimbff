@@ -28309,7 +28309,7 @@ async function _cevSchedule(st, btn, title, body){
   if(st.withName && t0.toLowerCase().indexOf(String(st.withName).toLowerCase())<0) t0=t0+' — '+st.withName;
   var row={owner_code:owner, trainer_code:(window.cl||{}).code||'',
     kind:_CEV_TO_KIND[st.type]||'block', title:t0,
-    notes:body||null, start_local:st.startLocal+':00', duration_minutes:st.durationMinutes||60,
+    notes:body||null, start_local:_cbHMS(st.startLocal), duration_minutes:st.durationMinutes||60,
     days:[], date_str:st.dateStr, recurring:false, active:true};
   var ok=await sbInsert('calendar_blocks', row);
   if(!ok){ _cevFail(btn,'That did not go on the calendar — nothing was lost, try again.'); return; }
@@ -29304,7 +29304,7 @@ async function wkPanelSave(){
   var owner=window._wkOwner||((window.cl||{}).code||'');
   if(st.mode==='add'){
     var row={owner_code:owner, trainer_code:(window.cl||{}).code||'', kind:st.kind, title:cleanTitle,
-      notes:st.notes||null, start_local:st.startLocal+':00', duration_minutes:st.durationMinutes,
+      notes:st.notes||null, start_local:_cbHMS(st.startLocal), duration_minutes:st.durationMinutes,
       days:st.recurring?st.days:[], date_str:st.recurring?null:st.dateStr, recurring:!!st.recurring, active:true};
     var ok=await sbInsert('calendar_blocks', row);
     if(!ok){ try{ showToast('Could not save — try again'); }catch(e){} return; }
@@ -29316,13 +29316,30 @@ async function wkPanelSave(){
     // single occurrence's time (dragged, or edited from an open block on
     // one specific date) becomes an exception instead, so the rest of the
     // series is untouched — same shape as moving one standing-call date.
-    if(!st.recurring) patch.start_local=st.startLocal+':00';
+    if(!st.recurring) patch.start_local=_cbHMS(st.startLocal);
+    // THE ANSWER IS READ NOW. This was a bare await with the result thrown
+    // away, so a refused write and a good one looked identical and the card
+    // closed on both. His own law: nothing says it saved without the save's
+    // own result in hand.
+    var _pok=false;
     try{
-      await fetch(SB_URL+'/rest/v1/calendar_blocks?id=eq.'+st.id,
+      var _pres=await fetch(SB_URL+'/rest/v1/calendar_blocks?id=eq.'+st.id,
         {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal','Content-Type':'application/json'}), body:JSON.stringify(patch)});
-    }catch(e){}
+      _pok=!!(_pres && _pres.ok);
+    }catch(e){ _pok=false; }
+    if(!_pok){
+      // His words stay on screen, the card stays open, and it says what
+      // happened. A change that did not land must never look like one that did.
+      try{
+        var _pel=document.getElementById('wkPanelStatus');
+        if(_pel){ _pel.textContent='That did not save \u2014 nothing was changed. Try again.';
+                  _pel.style.display=''; _pel.className='wkPanelStatus err'; }
+      }catch(e2){}
+      try{ showToast('That did not save \u2014 nothing was changed'); }catch(e2){}
+      return;
+    }
     if(st.recurring && st.startLocal){
-      await _cbSaveException(st.id, st.dateStr, {start_local:st.startLocal+':00', done:st.done});
+      await _cbSaveException(st.id, st.dateStr, {start_local:_cbHMS(st.startLocal), done:st.done});
     } else if(st.mode==='edit'){
       await _cbSaveException(st.id, st.dateStr, {done:st.done});
     }
@@ -29356,6 +29373,21 @@ async function wkUndoDelete(){
   }catch(e){}
   window._wkLastDeleted=null;
   try{ schRefresh(); }catch(e){}
+}
+// HH:MM:SS, ONCE, WHATEVER SHAPE THE TIME ARRIVED IN.
+// start_local comes out of the table as "09:15:00" and out of a clicked slot
+// as "09:15", and every write site appended ":00" to both without asking which
+// it had. On an EDIT that made "09:15:00:00", which PostgREST answers 400 to -
+// and the answer was never read, so editing a non-repeating event wrote
+// NOTHING and the card closed as though it had saved. Adding worked, which is
+// why this survived: the only broken shape was the one that came back out of
+// the table. Found by watching the request go out, not by reading the code.
+// Idempotent on purpose, so every site can call it and none of them has to
+// know which shape it was handed.
+function _cbHMS(v){
+  var m=/^(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(String(v==null?'':v).trim());
+  if(!m) return String(v==null?'':v).trim();
+  return (m[1].length<2?('0'+m[1]):m[1])+':'+m[2]+':'+(m[3]||'00');
 }
 async function _cbSaveException(blockId, dateStr, fields){
   try{
@@ -31555,7 +31587,7 @@ async function _mwPanelSave(){
   var owner=(window.cl||{}).code||'', coach=(window.cl||{}).coach_code||'';
   if(st.mode==='add'){
     var row={owner_code:owner, trainer_code:coach, kind:st.kind, title:cleanTitle,
-      notes:st.notes||null, start_local:st.startLocal+':00', duration_minutes:st.durationMinutes,
+      notes:st.notes||null, start_local:_cbHMS(st.startLocal), duration_minutes:st.durationMinutes,
       days:st.recurring?st.days:[], date_str:st.recurring?null:st.dateStr, recurring:!!st.recurring, active:true};
     var ok=await sbInsert('calendar_blocks', row);
     if(!ok){ try{ showToast('Could not save — try again'); }catch(e){} return; }
@@ -31563,13 +31595,30 @@ async function _mwPanelSave(){
     var patch={kind:st.kind, title:cleanTitle, notes:st.notes||null, duration_minutes:st.durationMinutes,
       recurring:!!st.recurring, days:st.recurring?st.days:[], date_str:st.recurring?null:st.dateStr,
       updated_at:new Date().toISOString()};
-    if(!st.recurring) patch.start_local=st.startLocal+':00';
+    if(!st.recurring) patch.start_local=_cbHMS(st.startLocal);
+    // THE ANSWER IS READ NOW. This was a bare await with the result thrown
+    // away, so a refused write and a good one looked identical and the card
+    // closed on both. His own law: nothing says it saved without the save's
+    // own result in hand.
+    var _pok=false;
     try{
-      await fetch(SB_URL+'/rest/v1/calendar_blocks?id=eq.'+st.id,
+      var _pres=await fetch(SB_URL+'/rest/v1/calendar_blocks?id=eq.'+st.id,
         {method:'PATCH', headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal','Content-Type':'application/json'}), body:JSON.stringify(patch)});
-    }catch(e){}
+      _pok=!!(_pres && _pres.ok);
+    }catch(e){ _pok=false; }
+    if(!_pok){
+      // His words stay on screen, the card stays open, and it says what
+      // happened. A change that did not land must never look like one that did.
+      try{
+        var _pel=document.getElementById('wkPanelStatus');
+        if(_pel){ _pel.textContent='That did not save \u2014 nothing was changed. Try again.';
+                  _pel.style.display=''; _pel.className='wkPanelStatus err'; }
+      }catch(e2){}
+      try{ showToast('That did not save \u2014 nothing was changed'); }catch(e2){}
+      return;
+    }
     if(st.recurring && st.startLocal){
-      await _cbSaveException(st.id, st.dateStr, {start_local:st.startLocal+':00', done:st.done});
+      await _cbSaveException(st.id, st.dateStr, {start_local:_cbHMS(st.startLocal), done:st.done});
     } else if(st.mode==='edit'){
       await _cbSaveException(st.id, st.dateStr, {done:st.done});
     }
