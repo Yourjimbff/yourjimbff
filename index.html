@@ -53360,10 +53360,25 @@ async function _jvDebriefData(code){
       var m=_dbMedian(vals);
       return {value:(m==null?null:Math.round(m)), days:vals.length};
     };
+    // ===== ONE STRETCH IS NOT A HIGH AND A LOW (Ben Plimpton, 1 Sep) =====
+    // Ben had five logged days. At a four-day roll that is ONE stretch, so the
+    // loop above set hi and lo to the same object and the debrief printed
+    // "high 1,410, low 1,410, Aug 26 to Aug 29" on all four macros - the same
+    // window in both fields, four times over. Worse downstream: _dbIsTight got
+    // 1410/1410, read a ratio of exactly 1, and concluded the man was locked
+    // in. A confident paragraph out of a sample too small to have a spread.
+    //
+    // So a high and a low only exist when there are two stretches to compare.
+    // Below that the figures are withheld rather than duplicated, and the
+    // script says how many stretches there were instead of inventing a range.
+    var _twoWays = rolls.length >= 2 && hi && lo && hi !== lo;
     nutrition.per[key]={
       unit:n[2], label:n[1],
-      high:hi?{value:Math.round(hi.avg), from:hi.from, to:hi.to, minMeals:hi.minMeals}:null,
-      low: lo?{value:Math.round(lo.avg), from:lo.from, to:lo.to, minMeals:lo.minMeals}:null,
+      high:_twoWays?{value:Math.round(hi.avg), from:hi.from, to:hi.to, minMeals:hi.minMeals}:null,
+      low: _twoWays?{value:Math.round(lo.avg), from:lo.from, to:lo.to, minMeals:lo.minMeals}:null,
+      // The single stretch is still worth naming - it is the only reading there
+      // is - but it is named as one stretch, never as a range.
+      only:(!_twoWays && hi)?{value:Math.round(hi.avg), from:hi.from, to:hi.to}:null,
       stretches:rolls.length,
       lives:{ roll:livesIn(_JV_DEBRIEF_ROLL), w2:livesIn(14), w4:livesIn(28) }
     };
@@ -53566,6 +53581,10 @@ function _jvDebriefFigures(d){
     var p=n.per[k]; if(!p) return;
     if(p.high) add(p.high.value);
     if(p.low) add(p.low.value);
+    // The single-stretch figure is a computed number like any other, and
+    // without it here the verifier would reject the one sentence that is
+    // allowed to say it and withhold the whole script.
+    if(p.only) add(p.only.value);
     ['roll','w2','w4'].forEach(function(w){ if(p.lives&&p.lives[w]){ add(p.lives[w].value); add(p.lives[w].days); } });
   });
   var w=d.words||{};
@@ -53671,6 +53690,10 @@ var _DB_TIGHT=0.7;
 function _dbIsTight(hi, lo){
   var h=Number(hi), l=Number(lo);
   if(!isFinite(h) || !isFinite(l) || h<=0) return false;
+  // TWO IDENTICAL FIGURES ARE NOT CONSISTENCY, they are one figure printed
+  // twice (Ben Plimpton, 1 Sep). The data layer no longer produces that pair,
+  // and this refuses it a second time so no future caller can resurrect it.
+  if(h===l) return false;
   return (l/h)>=_DB_TIGHT;
 }
 
@@ -53717,21 +53740,35 @@ function _jvDebriefScript(d, name){
   } else {
     var c=n.per.calories, p=n.per.protein;
     var now=c.lives.roll.value, month=c.lives.w4.value;
+    // ===== HOW MANY DAYS THIS IS BUILT ON, BEFORE ANY READING OF IT =======
+    // (his order, 1 Sep: "when the window has fewer days than it claims, say
+    // so in the prose, first, before any reading"). Ben had five logged days
+    // and the page called it a four-week typical day. The window is four
+    // weeks; the evidence was five days; only one of those was on screen.
+    var _fewDays = (n.days!=null && n.days < 10);
     // THE DIRECTION, NOT A VERDICT ON IT. Whether eating more is the right way
     // depends on what they are training FOR, and this app does not hold that -
     // so the script says which way it is moving and stops. See the note in the
     // report: his sample said "moving the right way", which is a judgement about
     // a goal, and his own rule is that a judgement must be earned by the data.
-    var food;
-    if(now>month) food="Food's been climbing.";
-    else if(now<month) food="Food's come down this month.";
-    else food="Food's held steady.";
+    var food='';
+    if(_fewDays){
+      food = _dbCap(_dbSayCount(n.days))+' logged day'+(n.days===1?'':'s')+' so far, so this is early and every figure below is built on that. ';
+    }
+    if(now>month) food+="Food's been climbing.";
+    else if(now<month) food+="Food's come down this month.";
+    else food+="Food's held steady.";
     food+=' They are eating around '+_jvNum(_dbAboutCal(now))+' a day lately';
     if(now!==month) food+=', '+(now>month?'up from ':'down from ')+'about '+_jvNum(_dbAboutCal(month))+' earlier in the month';
     food+='.';
     if(p && p.lives && p.lives.roll.value!=null) food+=' Protein is holding in the '+_dbBand(p.lives.roll.value)+'.';
     // Consistency, measured.
-    if(c.high && c.low){
+    if(!c.high && !c.low && c.only && c.only.value!=null){
+      // ONE STRETCH, SAID AS ONE STRETCH. No best, no worst, no verdict on the
+      // gap between them, because there is no gap yet to have a view about.
+      food+=' There is only one four-day stretch with enough logged in it so far, around '
+          + _jvNum(_dbAboutCal(c.only.value))+' a day, so there is no best and worst to compare yet.';
+    } else if(c.high && c.low){
       if(_dbIsTight(c.high.value, c.low.value)){
         food+=' And they are consistent. Even their biggest stretch was only around '+_jvNum(_dbAboutCal(c.high.value))
             + ' a day, and their lightest was around '+_jvNum(_dbAboutCal(c.low.value))
@@ -53798,6 +53835,34 @@ function _jvDebriefScript(d, name){
   } else {
     push('Weight', 'No weigh-ins this month, so there is no trend to read.');
   }
+
+  // ===== NOTHING, SAID ONCE (his order, 1 Sep) ==========================
+  // Ben's debrief said nothing three times over - no training, no weigh-ins,
+  // no words - each with its own heading and its own sentence, and then a page
+  // of empty tables underneath. Three headings announcing absence is padding,
+  // and padding is what makes a two-minute read take five.
+  //
+  // Only collapses when the section is genuinely EMPTY, never when a read
+  // FAILED. "Their workouts did not read just now" is a different fact from
+  // "they did not train", and merging those two would hide a broken query
+  // behind a quiet month - the exact trade this file refuses everywhere else.
+  try{
+    var _emptyHeads={'Training':1,'Weight':1,'Their own words':1};
+    var _isEmpty=function(b2){
+      if(!_emptyHeads[b2.head]) return false;
+      if(/did not read just now/i.test(b2.text)) return false;   // a failure, not an absence
+      return /^(Nothing logged|No weigh-ins this month|Nothing written)/i.test(b2.text);
+    };
+    var _blank=B.filter(_isEmpty);
+    if(_blank.length>=2){
+      var _names=_blank.map(function(b2){
+        return b2.head==='Training' ? 'training' : (b2.head==='Weight' ? 'weigh-ins' : 'notes');
+      });
+      B=B.filter(function(b2){ return !_isEmpty(b2); });
+      var _last=_names.pop();
+      B.push({head:'Nothing logged', text:'No '+_names.join(', ')+(_names.length?' or ':'')+_last+' logged in this period.'});
+    }
+  }catch(e){ console.error('collapse empties', e); }
   return B;
 }
 // ===== THE SPOKEN DEBRIEF ==============================================
@@ -53925,6 +53990,9 @@ function _jvDebriefHtml(d, name){
   };
   var rate=function(n){ return (Math.round(n*100)/100)+' a week'; };
   if(f.workouts) H+='<div class="dbrfFail">Their workouts did not read just now. This is a failed read, not an empty month.</div>';
+  // THREE ROWS OF ZERO SAY NOTHING THREE TIMES (his order, 1 Sep). A month
+  // with no sessions in it gets one line, not a table of "no sessions".
+  else if(!t.last28.sessions) H+='<div class="dbrfGap">Nothing logged for training in this period.</div>';
   else H+='<div class="dbrfRows">'
    + '<div class="dbrfRow"><span>Last week</span><b>'+e(splitTxt(t.last7))+'</b></div>'
    + '<div class="dbrfRow"><span>Last 2 weeks</span><b>'+rate(t.last14.perWeek)+'</b><i>'+e(splitTxt(t.last14))+'</i></div>'
@@ -53946,7 +54014,11 @@ function _jvDebriefHtml(d, name){
        + '<div class="dbrfRow"><span>Typical day · 4 weeks</span><b>'+f(p.lives.w4.value)+'</b><i>'+p.lives.w4.days+' days</i></div>'
        + (p.high?('<div class="dbrfRow"><span>High</span><b>'+f(p.high.value)+' a day</b><i>'+e(p.high.from)+' to '+e(p.high.to)+'</i></div>'):'')
        + (p.low ?('<div class="dbrfRow"><span>Low</span><b>'+f(p.low.value)+' a day</b><i>'+e(p.low.from)+' to '+e(p.low.to)+'</i></div>'):'')
-       + (!p.high&&!p.low?('<div class="dbrfGap">No run of '+n.roll+' days in a row logged, so there is no stretch to read.</div>'):'')
+       + (!p.high&&!p.low?('<div class="dbrfGap">'
+           + (p.only
+              ? ('Only one run of '+n.roll+' days logged so far, around '+f(p.only.value)+' a day ('+e(p.only.from)+' to '+e(p.only.to)+'). One stretch is not a high and a low, so neither is shown.')
+              : ('No run of '+n.roll+' days in a row logged, so there is no stretch to read.'))
+           + '</div>'):'')
        + '</div></div>';
     });
     if(n.thin && n.thin.length){
