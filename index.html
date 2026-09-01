@@ -76708,6 +76708,90 @@ async function jimTurn(text, photos, opts){
     }
     reply += (reply?'\n\n':'') + _jimSaveFailLine("One of those didn't actually save — can you tell me again?");
   }
+
+  // ===== A CHANGE IS A CLAIM TOO (Spencer R, 31 Aug) =====================
+  // Yesterday's law covered CREATING a row: Jim never says "logged" unless a
+  // row landed. It did not cover CHANGING one, and the same lie walked
+  // straight through the gap. On Spencer's account:
+  //   he:  "The Greek yogurt alone is 18g per serving... re-calculate?"
+  //   Jim: "Let me fix that: 380 cal, 38g protein."
+  //   he:  "can you update that for my lunch log"
+  //   Jim: "Done - lunch updated to 380 cal, 38g protein."
+  // No [FOOD_EDIT] was ever emitted. foodEdits.items.length was 0, so there was
+  // nothing to verify and nothing to fail, and the sentence stood. His row still
+  // reads 448 cal / 11g protein a day later.
+  //
+  // applyFoodEdit itself is honest - it reads the row back with
+  // return=representation and checks it field by field before returning true.
+  // The writer was never the problem. The SPEAKER was: nothing downstream ever
+  // asked whether the change the words describe actually happened.
+  //
+  // So the same shape as the add guard, on the change verbs. Deliberately NOT
+  // the add verbs: "logged" and "saved" have their own net above, and catching
+  // them twice would strip an honest new-meal confirmation.
+  try{
+    var _chVerified = _edVerified + _delVerified;
+    var _CH_VERB = "(?:updated|corrected|changed|fixed|adjusted|amended|revised|edited|moved|re-?logged|swapped|bumped)";
+    var _chClaim = new RegExp("\\b" + _CH_VERB
+      + "\\b[^.!?\\n]{0,60}\\b(?:meal|breakfast|lunch|dinner|snack|log|entry|macros?|calories|protein|carbs?|fat)\\b", "i");
+    var _chClaim2 = new RegExp("\\b(?:meal|breakfast|lunch|dinner|snack|log|entry|macros?)\\b[^.!?\\n]{0,40}\\b"
+      + _CH_VERB + "\\b", "i");
+    // "Done - lunch updated to 380 cal" leads with the done-word, and the noun
+    // sits between it and the verb. Measured against Spencer's exact sentence.
+    var _chDone = new RegExp("^\\s*(?:done|all set|sorted|there we go)\\b[^\\n]{0,80}\\b" + _CH_VERB + "\\b", "i");
+    var _saidChange = _chClaim.test(reply) || _chClaim2.test(reply) || _chDone.test(reply);
+    if(_saidChange && _chVerified===0 && !_jimAlreadySaidFail(reply)){
+      console.error('CHANGE claimed with nothing verified - refusing to let it stand', reply);
+      var _cSeg = String(reply).match(/[^.!?\n]+[.!?]*[ \t]*|\n+/g) || [];
+      var _cKeep = [];
+      for(var _cx=0; _cx<_cSeg.length; _cx++){
+        var _seg=_cSeg[_cx];
+        if(_chClaim.test(_seg) || _chClaim2.test(_seg) || _chDone.test(_seg)) continue;
+        // The running total that hangs off a change that never happened is as
+        // false as the change. It goes with it.
+        if(/\b(?:you(?:'re| are|’re)\s+now\s+at|running total|for the day|left before|still in the tank)\b/i.test(_seg)) continue;
+        _cKeep.push(_seg);
+      }
+      reply = _cKeep.join('').replace(/\n{3,}/g,'\n\n').trim();
+      reply += (reply?'\n\n':'') + _jimSaveFailLine("I did not actually change that one — it is still on your log the way it was. Want me to try again?");
+    }
+  }catch(e){ console.error('change-claim guard', e); }
+
+  // ===== THE DAY'S TOTAL IS READ, NOT WRITTEN (Spencer R, 31 Aug) ========
+  // Jim told Spencer he was "at 1671 cal and 176g protein for the day". His two
+  // rows for 31 August hold 643 + 448 = 1091 cal and 67 + 11 = 78g protein.
+  // Neither number is any arithmetic on his day - they were written by the
+  // model, the way the running total on 27 Aug was ("1550 cal and 138g" against
+  // one logged meal of 420/28). On 26 Aug the same sentence was exactly right.
+  // A number that is right two days in three is a number nobody can trust.
+  //
+  // So the sentence is checked against the rows and corrected in place. Only on
+  // the person's own thread - when this engine runs FOR a named client,
+  // todayFood holds the TRAINER's rows and would answer the wrong question.
+  // When the total cannot be computed the sentence is left alone rather than
+  // stripped: removing a total that happened to be right is its own damage.
+  try{
+    if(!_mealFor && typeof todayFood!=='undefined' && todayFood && todayFood.length){
+      var _tCal=0, _tPro=0;
+      for(var _ti=0; _ti<todayFood.length; _ti++){
+        _tCal += Number(todayFood[_ti].calories)||0;
+        _tPro += Number(todayFood[_ti].protein)||0;
+      }
+      _tCal=Math.round(_tCal); _tPro=Math.round(_tPro);
+      var _totRe=/((?:you(?:'re| are|’re)\s+(?:now\s+)?at|running total(?:\s+is)?)\D{0,12})(\d{2,5})(\s*(?:cal|calories|kcal)\b\D{0,14})(\d{1,4})(\s*g\s*(?:of\s+)?protein)/i;
+      var _tm=_totRe.exec(reply);
+      if(_tm){
+        var _saidCal=parseInt(_tm[2],10), _saidPro=parseInt(_tm[4],10);
+        if(Math.abs(_saidCal-_tCal)>25 || Math.abs(_saidPro-_tPro)>3){
+          console.error('day total did not match the rows', {said:[_saidCal,_saidPro], rows:[_tCal,_tPro]});
+          reply = reply.replace(_totRe, _tm[1]+_tCal+_tm[3]+_tPro+_tm[5]);
+          // Anything downstream of a wrong total is arithmetic on a wrong total.
+          reply = reply.replace(/\s*(?:You(?:'ve| have|’ve)\s+got|That leaves you|Leaving)\s+\d{2,5}\s*(?:cal|calories|kcal)\b[^.!?\n]*[.!?]?/ig,'');
+          reply = reply.replace(/\n{3,}/g,'\n\n').trim();
+        }
+      }
+    }
+  }catch(e){ console.error('day-total guard', e); }
   // Scrub any leftover or partial marker text so raw JSON / tags never reach the screen.
   reply = reply
     .replace(/\[FOOD_LOG\][\s\S]*?\[\/FOOD_LOG\]/g,'')
