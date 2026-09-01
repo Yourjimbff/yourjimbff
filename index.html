@@ -26443,9 +26443,27 @@ function wkBandOpen(ev, key){
   s.classList.add('on'); p.classList.add('on');
   if(!already) _wkPanelPosition(ev.clientX, ev.clientY);
 }
+// A WEEK IS NOT A MONTH (the nightly sweep, 31 Aug). Both week headers named the
+// whole week after the month its FIRST day happens to fall in, so the week of
+// Sun 30 Aug - Sat 5 Sep read "August 2026" with four of its seven days in
+// September, above a day strip that just says "TUE 1" with no month on it. A
+// header that names the wrong month is worse than no header: it is the one place
+// on the screen a person checks when they are not sure what week they are looking
+// at. Name the span instead - one month when the week sits inside one, both when
+// it crosses, both years when it crosses a year.
+function _wkMonthSpanLbl(ws){
+  try{
+    var a=new Date(ws), b=new Date(ws); b.setDate(b.getDate()+6);
+    if(a.getMonth()===b.getMonth() && a.getFullYear()===b.getFullYear())
+      return a.toLocaleDateString('en-US',{month:'long',year:'numeric'});
+    if(a.getFullYear()===b.getFullYear())
+      return a.toLocaleDateString('en-US',{month:'short'})+' - '+b.toLocaleDateString('en-US',{month:'short',year:'numeric'});
+    return a.toLocaleDateString('en-US',{month:'short',year:'numeric'})+' - '+b.toLocaleDateString('en-US',{month:'short',year:'numeric'});
+  }catch(e){ return new Date(ws).toLocaleDateString('en-US',{month:'long',year:'numeric'}); }
+}
 function _wkGridHtml(wk){
   var ws=wk.weekStart, todayKey=_schTodayTs();
-  var monthLbl=new Date(ws).toLocaleDateString('en-US',{month:'long',year:'numeric'});
+  var monthLbl=_wkMonthSpanLbl(ws);
   // THE OWNER PICKER (Job 1, 19 Aug ruling) — replaces the old Me/Everyone
   // subject switch. "Me" by default; any named client's week besides —
   // same subject-filtered grid, just an explicit person instead of a
@@ -31154,7 +31172,7 @@ function _mwRender(){
   var wk=window._mwData; if(!wk) return;
   _mwApplyZoom();
   sheet.classList.toggle('mwDesktop', _mwIsDesktop());
-  var monthLbl=new Date(wk.weekStart).toLocaleDateString('en-US',{month:'long',year:'numeric'});
+  var monthLbl=_wkMonthSpanLbl(wk.weekStart);
   // ONE ROW OF CHROME ON A PHONE, not three. The month, the week arrows,
   // week-or-day and the zoom all sit on a single line — 237px of header
   // above the first hour was the "small box floating in an empty screen".
@@ -35697,13 +35715,30 @@ function _jvFeedBootWatch(attempt){
     // logs showed for genuine client accounts (kellyg1, tonia1) — coachReposts and
     // coachMoments firing ~2.5s after every one of their desktop-width loads.
     if(!jvIsTrainerDesktop()) return;
+    // ONE LOOK WAS NOT ENOUGH (the nightly sweep, 31 Aug, watched it happen).
+    // On a cold load the Feed sat on "Loading clients…" for over a minute:
+    // #jvWall still held its boot markup and carried no mode class, every
+    // trainer-door request had returned 200, and nothing was on fire. This
+    // watchdog had already run its single check by then. Both branches below
+    // used to end the watch for good — the jvInit() one returned, and the feed
+    // one fired a repair it never checked the result of — so whenever the second
+    // attempt lost the same race as the first, the first screen of the app was
+    // silently dead until he reloaded it. Keep looking until real content is in
+    // the wall, capped so nothing polls forever.
     if(!document.body.classList.contains('jv-on')){
       jvInit();
+      if(attempt<10) setTimeout(function(){ _jvFeedBootWatch(attempt+1); }, 1500);
       return;
     }
     if(jvMode==='feed'){
       var wall=document.getElementById('jvWall');
-      if(wall && !wall.classList.contains('jvFeedMode')) jvSetMode('feed');
+      // The mode class alone was the test, and it is not sufficient: the wall can
+      // carry jvFeedMode and still be showing the placeholder. The placeholder
+      // itself is the honest signal that nothing has loaded.
+      if(wall && (!wall.classList.contains('jvFeedMode') || wall.querySelector('.jvLoading'))){
+        jvSetMode('feed');
+        if(attempt<10) setTimeout(function(){ _jvFeedBootWatch(attempt+1); }, 1500);
+      }
     }
   }catch(e){}
 }
