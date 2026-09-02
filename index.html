@@ -53002,13 +53002,20 @@ var _dashAutoPicked = false; // once we auto-jump to the most recent active day,
 // `body` is an optional opening line. It is only ever PRE-FILLED into the phone's own
 // messaging app — the app has never sent a message and does not start now. Nothing
 // leaves the handset until Yusuf presses send, and he can rewrite it first.
-function textClient(code, body){
+function textClient(code, body, opts){
+  opts = opts || {};
   _jvHydratePhones();
   var info = CLIENTS[code] || {};
   var phone = info.phone || '';
   if(!phone){
     showToast('No number saved for '+(_jvShareName(code, info.name)||'this client')+' yet');
-    return;
+    /* IT SAYS WHETHER IT DID ANYTHING (Yusuf, 2 Sep). This used to fall out of
+       the function with no return value at all, so a caller could not tell
+       "I opened their thread" from "there was no number and nothing happened".
+       That is exactly how a CRM row marked itself sent with nothing behind it:
+       crmSend called this inside a try/catch, read nothing back, and stamped
+       the row anyway. Every exit now reports. */
+    return {ok:false, reason:'nophone'};
   }
   // The stored shape, not this function's own idea of one. _phoneNorm is what
   // every write produces, so what gets dialled is what got saved.
@@ -53058,7 +53065,12 @@ function textClient(code, body){
   try{
     var last=_ccLast(code);
     var fresh=(last && last.k==='text' && (Date.now()-last.t) < 120000);
-    if(!fresh){
+    /* opts.noLog: the CALLER is keeping the record instead. The board passes
+       it, because on the board a handed-off composer is not an answer and
+       must not reset his clock or count toward touched today until the sweep
+       proves a message actually went. Texting from a client's record is
+       unchanged and still logs, per the 16 Aug generous ruling. */
+    if(!fresh && !opts.noLog){
       // TRUE, not false — and the argument is about the REPLY, not the send.
       // Passing false here is what made every tap on Text claim "no reply yet"
       // about someone who may well have answered within the minute. This records
@@ -53072,6 +53084,11 @@ function textClient(code, body){
     }
   }catch(e){}
   window.location.href = 'sms:' + clean + tail;
+  /* HANDED OFF IS NOT SENT. All this did was open Messages with the text in
+     the box; the person still has to press send, and nothing in a browser can
+     watch that happen. So it reports what it actually did and the caller
+     decides what that is worth. Nothing here may ever claim delivery. */
+  return {ok:true, opened:true, at:new Date().toISOString()};
 }
 // ===== CITE (Yusuf, ruling, 20 Aug) ======================================
 // CITE REPLACES COMMENT, EVERYWHERE. A comment posted into the app, where the
@@ -87058,7 +87075,7 @@ window._dfBypass  = false;
 
 var _crm = {rows:null, loading:false, err:null, q:'', watch:false, at:0,
             sales:null, testims:[], beltI:0, beltT:null, host:'tCRM',
-            contacts:{}, sweepAt:null, sig:'', poll:null,
+            contacts:{}, sweepAt:null, sig:'', poll:null, settling:false,
             /* HIS VIEW OF THE BOARD, KEPT (his addendum, rule 6: reaching for
                the CRM twice in a minute must not mean setting it up twice).
                It lives on _crm, which outlives every paint and every trip to
@@ -87081,7 +87098,12 @@ function _dfRowNote(d){
   return _DF_MARK+JSON.stringify({
     schema:_DF_SCHEMA, id:d.id, text:String(d.text||''),
     at:d.at||new Date().toISOString(), re:String(d.re||''),
-    status:d.status||'pending', by:d.by||'jarvis'
+    status:d.status||'pending', by:d.by||'jarvis',
+    /* WHEN THE COMPOSER WAS OPENED. Only set on an 'opened' row. The sweep
+       needs a timestamp to settle against - "did a message to this person
+       exist AFTER this moment" is the whole question - and a status that
+       loses its own timestamp on reload cannot be settled at all. */
+    openedAt:(d.openedAt||null)
   });
 }
 function _dfFromNote(note){
@@ -87091,7 +87113,7 @@ function _dfFromNote(note){
   if(!o || typeof o!=='object' || !o.id) return null;
   return {id:String(o.id), text:String(o.text||''), at:o.at||null,
           re:String(o.re||''), status:String(o.status||'pending'),
-          by:String(o.by||'')};
+          by:String(o.by||''), openedAt:(o.openedAt||null)};
 }
 function _dfDayKey(iso){
   try{ var d=new Date(iso); if(isNaN(d.getTime())) return ''; 
@@ -87146,7 +87168,10 @@ async function dfLoadAll(){
   var pend={};
   for(var j=0;j<out.length;j++){
     var x=out[j];
-    if(x.status==='pending' && x.code && !pend[x.code]) pend[x.code]=x;
+    /* An opened draft is still unfinished business, so the compose-box guard
+       must keep protecting it - it is precisely the draft most likely to be
+       sitting in Messages right now. */
+    if((x.status==='pending' || x.status==='opened') && x.code && !pend[x.code]) pend[x.code]=x;
   }
   window._dfPending=pend; window._dfLoaded=true;
   return _crm;
@@ -87167,9 +87192,11 @@ async function dfWrite(code, d){
 /* A STATUS CHANGE IS A NEW ROW, not an edit. The board reads the newest and
    the history stays whole. Nothing here reports success until the row is
    back - the boolean says the request did not error, never that it landed. */
-async function dfSetStatus(code, d, status, text){
+async function dfSetStatus(code, d, status, text, extra){
   var next={id:d.id, text:(text!=null?text:d.text), at:d.at, re:d.re,
-            status:status, by:d.by||'jarvis'};
+            status:status, by:d.by||'jarvis',
+            openedAt:(d.openedAt||null)};
+  if(extra){ for(var k in extra){ if(Object.prototype.hasOwnProperty.call(extra,k)) next[k]=extra[k]; } }
   var w=await dfWrite(code, next);
   if(!w.ok) return w;
   await dfLoadAll();
@@ -87210,13 +87237,29 @@ function _crmRoster(){
    he opened Messages, the sweep knows whether he actually answered. If he
    spoke last, nobody is waiting and the clock is zero. No sweep row for that
    client and it falls back to the app's clock, exactly as before. */
+/* THE SWEEP'S CLOCK IS UTC AND THE STRING DOES NOT SAY SO.
+   push.py builds these out of the thread export, which stamps
+   "YYYY-MM-DD HH:MM" from chat.db's Apple epoch - and that epoch is UTC. The
+   string it writes carries no Z and no offset, so `new Date(that)` in a
+   browser parses it as LOCAL time. On his Mac that is four hours off, which
+   is enough to move a message sent late afternoon into the next day and make
+   a wait read one day SHORTER than it really is - understating the one number
+   this whole board exists to keep down. Read as UTC unless the string already
+   says otherwise. */
+function _crmSweepTime(v){
+  if(!v) return null;
+  var t=String(v).trim();
+  if(!/(Z|[+-]\d{2}:?\d{2})$/.test(t)) t = t.replace(' ','T') + 'Z';
+  var d=new Date(t);
+  return isNaN(d.getTime()) ? null : d;
+}
 function _crmWaiting(code){
   var c=(_crm.contacts||{})[code];
   if(!c || (!c.them && !c.him)) return null;
   if(c.last==='him' || !c.them) return {days:0, waiting:false, text:''};
   var d=null;
   try{
-    var a=new Date(c.them); if(isNaN(a.getTime())) return null;
+    var a=_crmSweepTime(c.them); if(!a) return null;
     a.setHours(0,0,0,0);
     var b=new Date(); b.setHours(0,0,0,0);
     d=Math.max(0, Math.round((b-a)/86400000));
@@ -87229,6 +87272,18 @@ function _crmDays(code){
   try{ var d=_ccDaysSince(code); return (d==null?null:d); }catch(e){ return null; }
 }
 /* WHEN THE TEXTS WERE LAST READ, in his words, off the sweep's own stamp. */
+/* One time format on this board. _crmSweepWhen prints the sweep's clock; an
+   opened row prints its own, and they must not be two different shapes on the
+   same screen. */
+function _crmClock(iso){
+  if(!iso) return 'just now';
+  try{
+    var d=new Date(iso); if(isNaN(d.getTime())) return 'just now';
+    var h=d.getHours(), m=('0'+d.getMinutes()).slice(-2);
+    var ap=(h<12?'am':'pm'); h=h%12; if(h===0) h=12;
+    return h+':'+m+ap;
+  }catch(e){ return 'just now'; }
+}
 function _crmSweepWhen(){
   if(!_crm.sweepAt) return '';
   try{
@@ -87316,7 +87371,11 @@ function _crmBoardRows(){
      (nothing is ever deleted) and is simply not a second row to work. */
   var pend=[], seen={};
   (_crm.rows||[]).forEach(function(d){
-    if(d.status!=='pending' || !d.code) return;
+    /* AN OPENED ROW STAYS ON THE BOARD (his 6:00pm ruling). Opening the
+       composer is not sending, so the row is neither pending nor sent - it
+       sits here, visibly different, until the sweep settles it off his real
+       Messages. Dropping it here is what would hide the person. */
+    if((d.status!=='pending' && d.status!=='opened') || !d.code) return;
     if(seen[d.code]) return;
     seen[d.code]=1; pend.push(d);
   });
@@ -87347,7 +87406,7 @@ function _crmPeople(){
     if(!d.code) return;
     /* newest-first per id, so the FIRST pending row seen for a client is
        their current draft - the same rule _crmBoardRows works to. */
-    if(d.status==='pending'){ if(!pendingBy[d.code]) pendingBy[d.code]=d; return; }
+    if(d.status==='pending' || d.status==='opened'){ if(!pendingBy[d.code]) pendingBy[d.code]=d; return; }
     if(d.status==='sent' && _dfDayKey(d.at||d.rowAt)===t) sentBy[d.code]=d;
   });
   /* "Already handled" is the SAME union the score tile uses - a draft he sent
@@ -87482,6 +87541,13 @@ function _crmStyle(){
   +'.crmRow{background:radial-gradient(120% 140% at 0% 0%,rgba(36,36,36,0.90) 0%,rgba(23,23,23,0.86) 46%,rgba(17,17,17,0.84) 100%);position:relative;overflow:hidden;-webkit-backdrop-filter:blur(24px) saturate(1.3);backdrop-filter:blur(24px) saturate(1.3);border:1px solid rgba(245,197,24,0.10);border-radius:13px;padding:11px 12px;margin-bottom:8px;box-shadow:0 10px 30px rgba(0,0,0,0.45),0 1px 0 rgba(245,197,24,0.05) inset;}'
   +'.crmRow.next{border-color:var(--gold);}'
   +'.crmRow.done{opacity:0.5;}'
+  /* THE THIRD STATE'S LOOK. It must not read as pending (untouched) or as
+     done (finished). Same glass body as every other row so it stays in the
+     family, with an amber left edge and an amber note - the app's existing
+     "waiting on something" colour, and deliberately NOT gold, because gold on
+     these surfaces is now-and-next only. */
+  +'.crmRow.opened{border-color:rgba(224,150,52,0.34);box-shadow:0 10px 30px rgba(0,0,0,0.45),0 1px 0 rgba(224,150,52,0.07) inset,inset 3px 0 0 rgba(224,150,52,0.72);}'
+  +'.crmOpenedN{font-size:11px;line-height:1.35;color:rgba(224,150,52,0.92);margin:2px 0 7px;}'
   +'.crmRowTop{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin-bottom:5px;}'
   +'.crmName{font-size:14px;font-weight:800;color:var(--text);cursor:pointer;overflow-wrap:anywhere;}'
   +'.crmRow.next .crmName{color:var(--gold);}'
@@ -87494,6 +87560,11 @@ function _crmStyle(){
   +'.crmNote{font-size:11px;color:rgba(240,236,228,0.55);margin-top:6px;}'
   +'.crmSecT{font-size:10px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:rgba(240,236,228,0.62);margin:18px 0 8px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px;}'
   +'.crmSearch{width:100%;box-sizing:border-box;background:rgba(0,0,0,0.34);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:inherit;font-size:13px;padding:9px 11px;margin-bottom:8px;}'
+  /* THE BOARD'S OWN SEARCH BOX. Glass, per the 2 Sep law, so it belongs to
+     the same family as the chips and rows under it rather than reading as a
+     flat form field dropped on top of them. */
+  +'.crmSearchTop{background:radial-gradient(120% 140% at 0% 0%,rgba(36,36,36,0.72) 0%,rgba(23,23,23,0.66) 46%,rgba(17,17,17,0.62) 100%);-webkit-backdrop-filter:blur(20px) saturate(1.25);backdrop-filter:blur(20px) saturate(1.25);border:1px solid rgba(245,197,24,0.10);margin:10px 0 9px;}'
+  +'.crmSearchTop:focus{outline:none;border-color:rgba(245,197,24,0.30);}'
   +'.crmWatch{background:radial-gradient(120% 140% at 0% 0%,rgba(36,36,36,0.72) 0%,rgba(23,23,23,0.66) 46%,rgba(17,17,17,0.62) 100%);position:relative;overflow:hidden;-webkit-backdrop-filter:blur(20px) saturate(1.25);backdrop-filter:blur(20px) saturate(1.25);border:1px solid rgba(245,197,24,0.10);border-radius:12px;overflow:hidden;}'
   +'.crmWRow{display:flex;align-items:baseline;gap:9px;padding:9px 12px;border-bottom:1px solid rgba(255,255,255,0.05);cursor:pointer;}'
   +'.crmWRow:last-child{border-bottom:none;}'
@@ -87565,6 +87636,10 @@ async function crmRender(force){
       try{ var s=await trainerOpChecked('sales',{}); _crm.sales=(s&&s.ok)?(s.rows||[]):[]; }catch(e){ _crm.sales=[]; }
     }
     await dfLoadAll();
+    /* Settle anything left in 'opened' against what the sweep has since seen
+       in his real Messages, then re-read so the board paints the settled
+       truth rather than the state it was in a second ago. */
+    try{ if(await _crmSettleOpened()) await dfLoadAll(); }catch(e){}
   }
   crmPaint();
   _crmWatchForWrites();
@@ -87673,9 +87748,28 @@ function crmPaint(){
      is the point: the shape of his day without touching it. */
   var people=_crmPeople();
   var fdef=_crmFilterDef(_crm.filter);
+  /* THE SEARCH BOX IS ON THE BOARD NOW, and this is why he said it does not
+     work: it was only ever rendered INSIDE the collapsed "Everyone else · the
+     full watch" section, and _crm.watch starts false. On a fresh load there
+     was no search box on the screen to type into. It also searched a second,
+     separate list, so it could never agree with a chip.
+     One box, above the chips, filtering the SAME _crmPeople() list every chip
+     count and every row is built from - so the count on a chip is the number
+     of rows that chip draws, searched or not. */
+  h+='<input class="crmSearch crmSearchTop" id="crmQ" placeholder="Search '+people.length+' people" value="'+_escHtml(_crm.q)+'" oninput="crmQuery(this.value)">';
+  var q=String(_crm.q||'').toLowerCase().trim();
+  function _crmMatch(pp){
+    if(!q) return true;
+    return String(pp.name||'').toLowerCase().indexOf(q)>=0
+        || String(pp.code||'').toLowerCase().indexOf(q)>=0;
+  }
+  /* SEARCH NARROWS THE WHOLE BOARD, chips included (his order: searching
+     inside "Waiting on me" searches within that chip). So the search is
+     applied FIRST and every chip count is recomputed against it. */
+  var searched=people.filter(_crmMatch);
   h+='<div class="crmChips">';
   _CRM_FILTERS.forEach(function(f){
-    var n=people.filter(f.test).length;
+    var n=searched.filter(f.test).length;
     h+='<span class="crmChip'+(f.k===fdef.k?' on':'')+'" onclick="crmSetFilter(\''+f.k+'\')">'
       +'<span>'+f.label+'</span><span class="crmChipN">'+n+'</span></span>';
   });
@@ -87690,7 +87784,7 @@ function crmPaint(){
      anyway, because "the whole roster is reachable" cannot mean a name in a
      list - it means he can get to the person. Nothing hides behind a count
      and there is no "+N more": every row the chip matched is drawn. */
-  var shown=_crmSortPeople(people.filter(fdef.test), _crm.sort);
+  var shown=_crmSortPeople(searched.filter(fdef.test), _crm.sort);
   if(!shown.length){
     /* THE EMPTY CASE IN WORDS. Never an empty box, never a zero. */
     var emptyWord={
@@ -87700,6 +87794,7 @@ function crmPaint(){
       nodraft:'Everyone on the roster has something written for them.',
       all:'There is nobody active on the roster.'
     }[fdef.k] || 'Nobody here.';
+    if(q) emptyWord='Nobody matching “'+_escHtml(_crm.q)+'” in '+fdef.label.toLowerCase()+'.';
     h+='<div class="crmEmpty">'+emptyWord+'</div>';
   } else {
     for(var i=0;i<shown.length;i++){
@@ -87708,13 +87803,19 @@ function crmPaint(){
       var nm=_escHtml(p.name);
       if(p.draft){
         var d=p.draft;
-        h+='<div class="crmRow'+((i===0 && _crm.sort==='wait' && fdef.k==='waiting')?' next':'')+'" id="crmRow_'+d.id+'">'
+        /* THE THIRD STATE, ON SCREEN. An opened row is not pending and not
+           sent, so it must not look like either. It keeps its place on the
+           board, says when the composer was opened, and says plainly that
+           nothing counts it as sent until the sweep reads his Messages. */
+        var isOpen=(d.status==='opened');
+        h+='<div class="crmRow'+(isOpen?' opened':'')+((!isOpen && i===0 && _crm.sort==='wait' && fdef.k==='waiting')?' next':'')+'" id="crmRow_'+d.id+'">'
           +'<div class="crmRowTop"><span class="crmName" onclick="covOpen(\''+p.code+'\')">'+nm+'</span>'
           +'<span class="crmDays">'+days+'</span></div>'
+          +(isOpen?('<div class="crmOpenedN">text opened '+_escHtml(_crmClock(d.openedAt||d.at))+' · not counted as sent until your texts are read</div>'):'')
           +(d.re?('<div class="crmRe">'+_escHtml(d.re)+'</div>'):'')
           +'<textarea class="crmTa" id="crmTa_'+d.id+'" oninput="_crmFit(this)">'+_escHtml(d.text)+'</textarea>'
           +'<div class="crmActs">'
-            +'<button class="crmSend" onclick="crmSend(\''+d.id+'\')">SEND</button>'
+            +'<button class="crmSend" onclick="crmSend(\''+d.id+'\')">'+(isOpen?'OPEN AGAIN':'SEND')+'</button>'
             +'<button class="crmSkip" onclick="crmSkip(\''+d.id+'\')">Skip</button>'
           +'</div>'
         +'</div>';
@@ -87745,11 +87846,12 @@ function crmPaint(){
        source. The roster is 74 today; it will not be 74 next month, and a
        number printed on his screen that nothing computes is the same fault as
        a stale total stated confidently. Same list the Everyone chip counts. */
-    h+='<input class="crmSearch" id="crmQ" placeholder="Search '+_crmRoster().length+' people" value="'+_escHtml(_crm.q)+'" oninput="crmQuery(this.value)">';
+    /* No second search box. There is one on the board now and it drives this
+       list too - two inputs bound to one value is how a screen starts
+       disagreeing with itself, and only one of them can hold the caret. */
     var list=_crmRoster();
     list.forEach(function(r){ r.days=_crmDays(r.code); });
     list.sort(function(a,b){ var x=(a.days==null?9999:a.days), y=(b.days==null?9999:b.days); if(x!==y) return y-x; return String(a.name).localeCompare(String(b.name)); });
-    var q=String(_crm.q||'').toLowerCase().trim();
     if(q) list=list.filter(function(r){ return String(r.name).toLowerCase().indexOf(q)>=0 || String(r.code).toLowerCase().indexOf(q)>=0; });
     h+='<div class="crmWatch">';
     if(!list.length) h+='<div class="crmWRow"><span class="crmWName">Nobody by that name.</span></div>';
@@ -87791,6 +87893,20 @@ function _crmFind(id){
   for(var i=0;i<rows.length;i++){ if(rows[i].id===id) return rows[i]; }
   return null;
 }
+/* A ROW NEVER SAYS SENT UNLESS SOMETHING WENT (Yusuf, 2 Sep ~6:00pm).
+   What this used to do, and why it was the worst fault the board can have:
+   textClient was called inside a try/catch that swallowed everything, its
+   answer was never read, and the row was then marked 'sent' unconditionally.
+   Two ways that lied. If the client had no number, textClient showed a toast
+   and did nothing - and the row said sent. If the composer opened and he
+   closed it without pressing send, the row still said sent. Either way the
+   person dropped off the board, their clock reset, and they were invisible
+   until somebody noticed by hand.
+   Now: no number means the row does not move at all. A composer that opened
+   means the row goes to a THIRD state, 'opened', which stays on the board and
+   is settled later by the sweep reading his actual Messages. THE SWEEP IS
+   TRUTH FOR CONTACT - the board is never the authority on whether a text
+   was sent. */
 function crmSend(id){
   var d=_crmFind(id); if(!d) return;
   var ta=document.getElementById('crmTa_'+id);
@@ -87799,12 +87915,74 @@ function crmSend(id){
   /* The draft IS the body here, so the compose-box guard must not put it in
      twice. This is the only place that flag is ever set. */
   window._dfBypass=true;
-  try{ textClient(d.code, text); }catch(e){}
+  var r=null;
+  try{ r=textClient(d.code, text, {noLog:true}); }
+  catch(e){ r={ok:false, reason:'the text handoff threw'}; }
   window._dfBypass=false;
-  dfSetStatus(d.code, d, 'sent', text).then(function(res){
+  /* NOTHING WENT, SO NOTHING MOVES. The toast textClient already showed is
+     the only thing that happens. The row stays exactly where it was, which
+     is the whole point: he sees it again. */
+  if(!r || !r.ok){
+    if(r && r.reason && r.reason!=='nophone'){ try{ showToast('That did not open: '+r.reason); }catch(e){} }
+    try{ crmPaint(); }catch(e){}
+    return;
+  }
+  dfSetStatus(d.code, d, 'opened', text, {openedAt:(r.at||new Date().toISOString())}).then(function(res){
     if(!res.ok){ try{ showToast('Opened the text, but I could not mark the row: '+res.reason); }catch(e){} }
     crmPaint();
   });
+}
+/* ---------- THE SWEEP SETTLES AN OPENED ROW ----------------------------
+   His standing law, applied here: the Messages database decides whether a
+   text was sent, never the board. The hourly sweep writes a [CONTACT] row per
+   client carrying when they last spoke and when HE last spoke. So for every
+   row sitting in 'opened':
+
+     he spoke after it was opened  -> it really went. Mark it sent.
+     the sweep has run since, and he did not -> nothing went. Back to pending,
+                                                 and he sees the person again.
+     the sweep has not run since   -> leave it alone. Unsettled is honest;
+                                      guessing either way is not.
+
+   Runs once per load, after the read, before the paint. Never touches a row
+   for a client the sweep has no clock for, because "no evidence" is not
+   evidence of absence. */
+async function _crmSettleOpened(){
+  if(_crm.settling) return 0;
+  _crm.settling=true;
+  var moved=0;
+  try{
+    var open=[], seen={};
+    (_crm.rows||[]).forEach(function(d){
+      if(d.status!=='opened' || !d.code) return;
+      if(seen[d.id]) return; seen[d.id]=1;
+      open.push(d);
+    });
+    for(var i=0;i<open.length;i++){
+      var d=open[i];
+      var when=d.openedAt||d.at;
+      if(!when) continue;
+      var c=(_crm.contacts||{})[d.code];
+      if(!c) continue;                                   /* no sweep clock for them */
+      /* INSTANTS, NOT STRINGS. openedAt is a browser ISO in UTC with a Z; the
+         sweep's him/runAt are UTC without one. Comparing them as text would
+         be comparing two different clocks and getting a confident wrong
+         answer, which is the whole family of fault this order is about. */
+      var openedT=_crmSweepTime(when); if(!openedT) continue;
+      var himT=_crmSweepTime(c.him);
+      var sweptT=_crmSweepTime(_crm.sweepAt);
+      var himAfter = himT && himT.getTime() > openedT.getTime();
+      if(himAfter){
+        await dfSetStatus(d.code, d, 'sent', d.text, {openedAt:d.openedAt||null});
+        moved++;
+      } else if(sweptT && sweptT.getTime() > openedT.getTime()){
+        await dfSetStatus(d.code, d, 'pending', d.text, {openedAt:null});
+        moved++;
+      }
+    }
+  }catch(e){}
+  _crm.settling=false;
+  return moved;
 }
 function crmSkip(id){
   var d=_crmFind(id); if(!d) return;
