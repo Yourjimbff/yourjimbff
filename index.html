@@ -11053,6 +11053,36 @@ var CLIENTS = {};
 // own queries stay untouched rather than asking about blocked directly).
 window._blockedCodes = {};
 
+/* =====================================================================
+   THE SCRATCH CLIENT IS NOT A CLIENT (Yusuf, 2 Sep).
+   It turned up on his own CRM board with three test drafts, a fake
+   testimonial in the belt, "Touched today 1 of 1" and "$25 earned" - all
+   of it written by a lane proving the tab. His words: "What the actual
+   fuck is this." It exists so a lane can prove a write without touching a
+   real person. It does not exist to the trainer.
+   ONE PREDICATE, ONE GATE. isScratchCode() is the only place a scratch
+   code is named. getHiddenClientSet() is the gate: 43 trainer-facing
+   readers already ask it who is off the board, so putting the scratch
+   code in there hides it from all of them at once. The handful of reads
+   that do not pass through CLIENTS - the blocked cross-checks, the CRM's
+   own read of client_notes, and the contact log - call scratchHidden()
+   directly, and each is marked below.
+   THE ONE EXCEPTION. When the scratch client is itself the code signed in
+   on this device, it is not hidden - stripping the account that is
+   currently signed in would lock the test instrument out of the app it
+   exists to test. Nobody signed in as the trainer ever sees it.
+   ===================================================================== */
+window._SCRATCH_CODES = {'zzscratchnotaclient':1};
+function isScratchCode(c){
+  try{ return !!window._SCRATCH_CODES[String(c||'').toLowerCase()]; }catch(e){ return false; }
+}
+function scratchHidden(c){
+  var code=String(c||'').toLowerCase();
+  if(!isScratchCode(code)) return false;
+  var self=''; try{ self=String(localStorage.getItem('yjb_logged_in')||'').toLowerCase(); }catch(e){}
+  return self!==code;
+}
+
 // ===== ROSTER LOADER (Stage B) =====
 // Pulls the clients table from Supabase and merges it INTO the hardcoded CLIENTS
 // object. The hardcoded list stays as a fallback: if this fetch ever fails, the
@@ -17606,7 +17636,7 @@ async function jvLoadRoster(force, target){
     // query is deliberately untouched (a missing blocked column there would 400
     // this whole fetch, taking phone/money/term dates down with it for
     // everyone). Cross-referenced against the anon-tier pass's own set instead.
-    var clients=r[0].filter(function(c){ return !(window._blockedCodes && window._blockedCodes[c.code]); }), plans=await r[1].json();
+    var clients=r[0].filter(function(c){ return !(window._blockedCodes && window._blockedCodes[c.code]) && !scratchHidden(c.code); }), plans=await r[1].json();
     var logs=await Promise.all([
       _rsPaged('food_logs','client_code,logged_at'),
       _rsPaged('workout_logs','client_code,logged_at'),
@@ -18064,7 +18094,7 @@ async function jvLoadTraining(force, target){
   // Blocked, filtered client-side — this fetch's own select= is left alone so a
   // not-yet-migrated blocked column can never 400 the whole board, same reason
   // jvLoadRoster's door read stays untouched and is filtered after the fact.
-  roster = roster.filter(function(c){ return !(window._blockedCodes && window._blockedCodes[c.code]); });
+  roster = roster.filter(function(c){ return !(window._blockedCodes && window._blockedCodes[c.code]) && !scratchHidden(c.code); });
   jvTrainData={plans:plans, wos:wos, roster:roster, at:Date.now()};
   jvRenderTraining(wall);
 }
@@ -35186,6 +35216,10 @@ function getHiddenClientSet(){
   try{ Object.keys(CLIENTS).forEach(function(c){ if(CLIENTS[c] && CLIENTS[c].active===false) s[c]=true; }); }catch(e){}
   for(var pk in PERMA_HIDE){ s[pk]=true; }
   for(var hk in JV_HIDE_CLIENTS){ s[hk]=true; }
+  // THE SCRATCH CLIENT (2 Sep). This is the gate - see isScratchCode above.
+  // Last, and unconditional, so no hide-list edit or reactivation can put it
+  // back on a trainer surface by accident.
+  try{ for(var _sk in window._SCRATCH_CODES){ if(scratchHidden(_sk)) s[_sk]=true; } }catch(e){}
   return s;
 }
 // Why someone isn't on the board — so the roster view can say, rather than just hide.
@@ -51954,7 +51988,7 @@ async function loadSales(){
     // would not have touched this one. Same money law elsewhere in this file:
     // payment records are never deleted, so the row itself stays; only its
     // appearance in this trainer-facing read is filtered.
-    rows=rows.filter(function(r){ return !(window._blockedCodes && r.client_code && window._blockedCodes[r.client_code]); });
+    rows=rows.filter(function(r){ return !(window._blockedCodes && r.client_code && window._blockedCodes[r.client_code]) && !scratchHidden(r.client_code); });
     _salesRows=rows;
     // Three periods, computed once. The toggle only repaints — it never refetches, so
     // moving between 7 days and all time costs nothing and can't disagree with itself.
@@ -86526,6 +86560,10 @@ async function dfLoadAll(){
   var rows=res.rows||[];
   for(var i=0;i<rows.length;i++){
     var r=rows[i], note=String(r.note||'');
+    // THE SCRATCH CLIENT IS NOT A CLIENT (2 Sep). client_notes is read straight
+    // off the table, so the hide gate never sees these rows. Dropped here, which
+    // takes the board row, the belt quote, the streak and done-today with it.
+    if(scratchHidden(r.client_code)) continue;
     if(note.indexOf(_DF_MARK)===0){
       var d=_dfFromNote(note);
       if(!d) continue;
@@ -86603,6 +86641,7 @@ function _crmTouchedToday(){
     var t0=new Date(); t0.setHours(0,0,0,0); var ms=t0.getTime();
     for(var code in all){
       if(!Object.prototype.hasOwnProperty.call(all,code)) continue;
+      if(scratchHidden(code)) continue;   // not a client - see isScratchCode
       var list=all[code]||[];
       for(var i=0;i<list.length;i++){ if((list[i].t||0)>=ms){ set[code]=1; break; } }
     }
@@ -86822,7 +86861,7 @@ function crmPaint(){
   h+='<div id="crmBelt"></div>';
   /* THE BOARD */
   if(!board.length){
-    h+='<div class="crmEmpty">No drafts waiting. When the Composer writes the board, it lands here and in each thread in Messages at the same time.</div>';
+    h+='<div class="crmEmpty">Nothing here yet. The Composer writes here at 6am, and into each thread in Messages at the same time.</div>';
   } else {
     for(var i=0;i<board.length;i++){
       var d=board[i], c=CLIENTS[d.code]||{};
