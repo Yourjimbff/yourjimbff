@@ -63587,6 +63587,14 @@ function _toSingleUnit(name, macros){
 }
 async function _rememberFood(it){
   if(!it || !cl) return;
+  // A FOOD WITH NO CALORIES IS A BAD ROW, NOT HISTORY (Yusuf, 1 Sep, from Ali's
+  // library). _matchHistory and _jimQuickFoodMatch both refuse a zero-calorie
+  // candidate — correctly — so remembering one writes a row that can never
+  // match anything and only sits in the way. Ali's library carries "Barbell's
+  // Protein Bar (0)" from exactly this: one bad estimate, saved forever, and
+  // the next time he asks for his usual protein bar it cannot be found.
+  // The meal itself still logs; this only declines to file it as a saved food.
+  if(!(+it.calories > 0)) return;
   var nm=_tcase(it.name||''); if(!nm.trim()) return;
   var one=_toSingleUnit(nm, {calories:it.calories, protein:it.protein, carbs:it.carbs, fat:it.fat});
   nm=_tcase(one.name); if(!nm.trim()) return;
@@ -75574,6 +75582,86 @@ function _jimUsualAskConsume(t){
   if(!_rolled) return null;
   return {log:_rolled, meal:_jimSlotLabel(pick.slot||a.slot)};
 }
+// ===== "FROM MY MEALS" IS AN INSTRUCTION, NOT AN INGREDIENT ==============
+// Ali asked for one dinner three times in two minutes: "log chili and rice from
+// my meals", then "log chili and rice for dinner; from my meals", then finally
+// "log lean veal chili and quarter cup of rice". That third sentence is him
+// giving up and describing the food again — the exact re-describing the saved
+// library exists to stop, and the "spamming" he named.
+//
+// Two things beat him. "from my meals" was read as part of the food name. And
+// the matcher above requires EVERY word of a candidate to appear in the message
+// — "Lean Veal Chili & Rice" needs "lean" and "veal", which he never typed.
+//
+// THAT THRESHOLD IS NOT RELAXED. It is what stops "steamed broccoli" logging a
+// saved "steamed carrots", and its own note says so. What changes is only this:
+// when a client SAYS they are pointing at their own library, the match may run
+// the other way — every word THEY typed has to appear in the candidate — and
+// anything short of exactly one answer becomes a question rather than a guess.
+// The strictness existed to stop a silent wrong match; naming the ask removes
+// the silence, so nothing is being traded away.
+var _JIM_FROM_LIB_RE=new RegExp('\\bfrom\\s+(?:my|the)\\s+(?:own\\s+)?(?:saved\\s+)?(?:meals?|foods?|library|list|usuals?)\\b|\\bfrom\\s+my\\s+saved\\b','i');
+var _JIM_LIB_STOP={and:1,with:1,of:1,the:1,a:1,an:1,my:1,some:1,plus:1,'&':1,for:1,to:1,on:1,at:1,in:1,it:1,log:1,logged:1,add:1,put:1,please:1,dinner:1,lunch:1,breakfast:1,supper:1,snack:1,today:1,yesterday:1,now:1};
+function _jimLibWords(s){
+  return String(s||'').toLowerCase().replace(/[^a-z0-9\s]/g,' ').split(/\s+/)
+    .filter(function(w){ return w && !_JIM_LIB_STOP[w] && w.length>1; });
+}
+function _jimLibraryPick(raw, mem){
+  var t0=String(raw||'').trim();
+  if(!t0 || t0.length>140) return null;
+  if(!_JIM_FROM_LIB_RE.test(t0)) return null;
+  var rest=t0.replace(new RegExp(_JIM_FROM_LIB_RE.source,'ig'),' ');
+  rest=_jimStripScaffold(rest).replace(/[;,]\s*$/,'').trim();
+  var q=(typeof _qtyParse==='function') ? _qtyParse(rest) : {qty:1, name:rest};
+  var mult=(q && +q.qty>0) ? +q.qty : 1;
+  var words=_jimLibWords((q && q.name) ? q.name : rest);
+  if(!words.length) return null;
+  var pool=[];
+  try{
+    ((mem?mem.foods:_savedFoods)||[]).forEach(function(f){
+      if(!(+f.calories>0)) return;
+      pool.push({name:_jimStripNameQty(f.name), calories:+f.calories, protein:+f.protein||0,
+                 carbs:+f.carbs||0, fat:+f.fat||0, sugar:+f.sugar||0, rating:(f.rating||'good')});
+    });
+  }catch(e){}
+  try{
+    var mp = mem ? _mlibPoolFor(mem.meals, mem.code)
+                 : ((typeof _mlibMatchPool==='function') ? _mlibMatchPool() : []);
+    (mp||[]).forEach(function(m){
+      if(!(+m.calories>0)) return;
+      pool.push({name:_jimStripNameQty(m.name), calories:+m.calories, protein:+m.protein_g||0,
+                 carbs:+m.carbs_g||0, fat:+m.fat_g||0, sugar:0, rating:'good'});
+    });
+  }catch(e){}
+  if(!pool.length) return null;
+  var hits=[];
+  pool.forEach(function(c){
+    var cw=_jimLibWords(c.name);
+    if(!cw.length) return;
+    for(var i=0;i<words.length;i++){ if(cw.indexOf(words[i])<0) return; }
+    hits.push({c:c, extra:cw.length-words.length});
+  });
+  if(!hits.length) return null;
+  // The closest fit is the one with the least of its own name left over.
+  hits.sort(function(a,b){ return a.extra-b.extra; });
+  var top=hits.filter(function(h){ return h.extra===hits[0].extra; });
+  var seen={}, uniq=[];
+  top.forEach(function(h){ var k=h.c.name.toLowerCase(); if(seen[k]) return; seen[k]=1; uniq.push(h.c); });
+  function _mk(c){
+    var o={name:((typeof _tcase==='function')?_tcase(c.name):c.name), emoji:'',
+           calories:Math.round(c.calories), protein:Math.round(c.protein), carbs:Math.round(c.carbs),
+           fat:Math.round(c.fat), sugar:Math.round(c.sugar), rating:c.rating};
+    if(mult!==1){
+      ['calories','protein','carbs','fat','sugar'].forEach(function(k){ o[k]=Math.round(o[k]*mult); });
+      o.name=o.name+' ×'+mult;
+    }
+    return o;
+  }
+  if(uniq.length===1) return {log:_mk(uniq[0])};
+  var picks=uniq.slice(0,4).map(function(c){ return {name:((typeof _tcase==='function')?_tcase(c.name):c.name), row:null, roll:_mk(c)}; });
+  try{ window._jimUsualAsk={items:picks, slot:_jimSlotNowKey(), ts:Date.now()}; }catch(e){}
+  return {ask:picks.map(function(x){ return x.name; })};
+}
 // The resolver. Returns {log:offer, meal:'Breakfast'} to log, {ask:[names]} to
 // ask once, {none:'yesterday'} to say plainly there is nothing there, or null
 // when this is not a reference at all.
@@ -75583,6 +75671,11 @@ async function _jimRepeatFood(text, forCode){
   var consumed=null; try{ consumed=_jimUsualAskConsume(t0); }catch(e){ consumed=null; }
   if(consumed && consumed.log) return consumed;
   if(/[?]/.test(t0)) return null;
+  // An explicit "from my meals" is its own door and does not need the
+  // reference-only guard below — the client has already said where to look.
+  var lib=null;
+  try{ lib=_jimLibraryPick(t0, (forCode ? await _foodMemoryFor(forCode) : undefined)); }catch(e){ lib=null; }
+  if(lib) return lib;
   if(!_jimRepeatOnly(t0)) return null;
 
   // "The usual" — no day named, so it is about what they usually eat AT THIS
