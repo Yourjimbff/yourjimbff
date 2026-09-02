@@ -10781,7 +10781,32 @@ async function _sbPageRest(table, filter, orderTail, first){
     return (all.length>want) ? all.slice(0,want) : all;
   }catch(e){ console.error('[sbSelect] '+table+' paging failed',e); return first; }
 }
+/* ================= date_str IS NOT A DATE (Yusuf, 2 Sep) =================
+   It is the FORMATTED string the screen prints - "Sep 2, 2026", not
+   "2026-09-02" - on food_logs, workout_logs, step_logs and progress_photos.
+   So a range filter on it is a string comparison, and it does not fail
+   loudly. It answers.
+   The order said such a query comes back empty. It does not, and the truth is
+   worse: "Aug 12, 2026" IS greater than "2026-08-20" to a string, because
+   letters sort after digits. date_str=gte.2026-08-20 returns EVERY row, not
+   none, and whatever asked gets a confident wrong answer over the whole table.
+   Nothing in this app filters a range on it - every one of its 34 uses is an
+   exact match or an exact list, which is correct and stays. This guard is here
+   so the next thing that reaches for it, in the app or from a console, is told
+   rather than quietly misled. logged_at is a real timestamp and is the column
+   any span query must use. */
+function _sbGuardDateStrRange(table, filter){
+  try{
+    var f=String(filter||'');
+    var m=f.match(/date_str=(gte|lte|gt|lt)\./);
+    if(!m) return;
+    console.error('[sbSelect] date_str is a formatted string, not a date - '
+      + 'a "'+m[1]+'" on it compares text and returns nonsense (usually the whole table). '
+      + 'Use logged_at for any range. table='+table+' filter='+f);
+  }catch(e){}
+}
 async function sbSelect(table, filter){
+  _sbGuardDateStrRange(table, filter);
   try{
     // Pick the right order column per table — not every table has logged_at
     var orderColMap = {
@@ -58147,8 +58172,72 @@ function _askLogDay(ds){
     o.onclick=function(e){ if(e.target===o) done(false); };
   });
 }
+/* ================= NO ROW WITHOUT FOOD IN IT (Yusuf, 2 Sep) ==============
+   Six rows across four clients were written at zero calories, zero protein
+   and zero carbs. The worst was an In-N-Out cheeseburger, fries and a shake
+   logged as nothing at all - a day total badly under, with no way for her to
+   see it. A meal whose macros all came back zero is not a meal that was
+   measured; it is a meal that was not read.
+
+   BUT ZERO IS SOMETIMES THE TRUTH. A Coke Zero really is zero, and one of the
+   six was exactly that. So this does not ban the number - it bans the GUESS.
+   A row whose macros are all zero is written only when the thing named is a
+   genuinely zero-calorie item. Anything else stops, and Jim asks, because
+   uncertain is an allowed answer and inventing a row is not. */
+var _ZERO_CAL_OK=/\b(water|sparkling water|seltzer|club soda|soda water|black coffee|coffee, black|americano|espresso|plain tea|black tea|green tea|herbal tea|coke zero|diet coke|coke no sugar|pepsi max|diet pepsi|zero sugar|sugar free|diet soda|zevia|gum|ice)\b/i;
+function _foodMacrosAllZero(row){
+  if(!row) return false;
+  var n=function(v){ return (v==null||v==='')?0:(Number(v)||0); };
+  return n(row.calories)===0 && n(row.protein)===0 && n(row.carbs)===0 && n(row.fat)===0;
+}
+function _foodZeroIsPlausible(row){
+  var t=String((row&&row.name)||'')+' '+String((row&&row.meal_text)||'');
+  return _ZERO_CAL_OK.test(t);
+}
+/* ================= THE INSIGHT READS THE FIELD IT NAMES ==================
+   The model returns macros and a sentence in one answer, then the macros get
+   corrected downstream - off the items array, off the macro table - and the
+   sentence does not. So a client was told "Strong protein anchor - 57g" about
+   a meal holding 31g of protein. The 57 was his CARBS. Eight of these were
+   live on the roster.
+   Every number followed by g that a sentence attributes to protein, carbs or
+   fat is checked against that field and rewritten to the true value. A number
+   that names no macro (a food weight, "150g rice") is left alone, and so is a
+   target or a remainder ("your 165g floor", "49g to land before bed") because
+   those are not claims about this meal. If a claim cannot be tied to a field,
+   the whole insight is dropped - his rule: say nothing rather than something
+   wrong. */
+function _insightMacroSafe(insight, row){
+  var ins=String(insight||'').trim();
+  if(!ins || !row) return ins;
+  var vals={protein:Number(row.protein)||0, carbs:Number(row.carbs)||0, fat:Number(row.fat)||0};
+  var TARGET=/(target|floor|goal|left|remain|still|before bed|to land|to go|daily|per day|a day)/i;
+  var bad=false;
+  var out=ins.replace(/(\d+(?:\.\d+)?)\s*g\b/gi, function(m, num, off, whole){
+    var around=String(whole).slice(Math.max(0,off-46), off+46);
+    if(TARGET.test(around)) return m;                 /* a goal, not this meal */
+    var which=null;
+    if(/protein/i.test(around)) which='protein';
+    else if(/carb/i.test(around)) which='carbs';
+    else if(/\bfat\b/i.test(around)) which='fat';
+    if(!which) return m;                              /* names no macro - leave it */
+    var truth=vals[which];
+    if(!truth){ bad=true; return m; }                 /* nothing to source it to */
+    if(Math.abs(Number(num)-truth) < 0.5) return m;   /* already right */
+    return String(Math.round(truth))+'g';
+  });
+  return bad ? '' : out;
+}
 async function insertFoodLog(row, photo){
   if(!(await _confirmLogTarget())) return {ok:false, cancelled:true};
+  /* Both gates run before anything is written, on the ONE door every food row
+     goes through, so no caller can route around them. */
+  if(_foodMacrosAllZero(row) && !_foodZeroIsPlausible(row)){
+    try{ console.error('[food] refused a zero-macro row:', (row&&row.name)||'(no name)'); }catch(e){}
+    return {ok:false, id:null, zeroMacros:true,
+            reason:'macros came back empty, so nothing was written'};
+  }
+  try{ if(row && row.insight) row.insight=_insightMacroSafe(row.insight, row); }catch(e){}
   try{ if(row && !row.logged_at) row.logged_at = new Date().toISOString(); }catch(e){}
   // --- duplicate / double-tap guard: block identical meal re-inserts within a short window ---
   try{
@@ -64028,7 +64117,11 @@ async function _gradePlateMeal(entry, foodsText){
     var obj=JSON.parse(txt);
     var rating=(['nutrient_dense','good','okay','bad'].indexOf(obj.rating)>=0)?obj.rating:'good';
     rating=_wholeFoodFloor((typeof name!=='undefined'?name:''), rating);
-    entry.rating=rating; entry.insight=(obj.insight&&String(obj.insight).trim())?String(obj.insight).trim():'';
+    entry.rating=rating;
+    /* The grading pass writes its own sentence AFTER the macros are settled,
+       so it gets the same check as the first one - otherwise the bug just
+       moves one step later. */
+    entry.insight=(obj.insight&&String(obj.insight).trim())?_insightMacroSafe(String(obj.insight).trim(), entry):'';
     if(entry.id!=null){ try{ await fetch(SB_URL+'/rest/v1/food_logs?id=eq.'+entry.id,{method:'PATCH',headers:Object.assign({},sbHeaders(),{'Prefer':'return=minimal'}),body:JSON.stringify({rating:rating,insight:entry.insight})}); }catch(e){} }
     if(typeof rendTodayFood==='function') rendTodayFood();
   }catch(e){ /* leaving a rating as 'unknown' is the truthful outcome; it is not upgraded to 'good' */ }
@@ -67950,6 +68043,15 @@ async function commitMeal(r,graced){
   var foodRow={client_code:cl.code,name:r.name,emoji:r.emoji,calories:r.calories,protein:r.protein,carbs:r.carbs,fat:r.fat,sugar:Math.round(r.sugar||0),rating:r.rating,insight:r.insight,meal:meal,eat_time:eatTime,graced:graced,date_str:targetDS,note:(r.note||null),raw_text:(r.raw_text||null)};
   if(!onToday){ try{ foodRow.logged_at=_isoForDateStr(targetDS, eatTime); }catch(e){} }
   var _ins=await insertFoodLog(foodRow, photoData);
+  /* A REFUSED ROW IS NOT A LOGGED ROW. Nothing below this line may run for one
+     - it pushes the meal into today's list, moves the totals and the score,
+     and says "logged". That is the false confirmation his 31 Aug law bans,
+     and adding a gate above without this would have created a new one. */
+  if(_ins && _ins.zeroMacros){
+    try{ window._mealCommitBusy=false; }catch(e){}
+    try{ showToast('I could not read the amounts, so I did not log it. Tell me again with rough sizes.'); }catch(e){}
+    return;
+  }
   if(_ins && _ins.id!=null) entry.id=_ins.id;
   // Track for My Menu (don't await — fire and forget, runs in background)
   if(!graced) trackMealForMenu({name:r.name, emoji:r.emoji, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, meal:meal, insight:r.insight, rating:r.rating});
@@ -68201,7 +68303,7 @@ async function clarifyMeal(i){
     // remember what they told us, appended to the name context
     if(e.id!=null){
       var _cr=await sbWrite('PATCH','food_logs?id=eq.'+encodeURIComponent(e.id),
-        {rating:newRating,insight:(newInsight||e.insight||null),note:((e.note?e.note+' · ':'')+'Ingredients: '+ing)});
+        {rating:newRating,insight:(_insightMacroSafe(newInsight||e.insight||'', e)||null),note:((e.note?e.note+' · ':'')+'Ingredients: '+ing)});
       if(!_cr.ok){ _sbFailToast('re-grade that'); return; }
     }
     if(!e.note) e.note='Ingredients: '+ing;
