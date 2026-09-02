@@ -12768,25 +12768,25 @@ async function addClientToDb(){
     var _saleTracked=true;
     try{ if(_paid) _saleTracked=await _ensureSaleFor(code, _paid, new Date().toISOString().slice(0,10)); }catch(e){ _saleTracked=false; }
     _closeAddClient();
+    // PHONE, BEFORE THE TICK (Yusuf, 2 Sep - Scott, day two). clientInsert takes
+    // no phone argument, so the number goes in a SECOND write. That second write
+    // used to run AFTER the success toast, and its only failure signal was
+    // another toast 1.8 seconds later, underneath the tick - so a number that
+    // never landed looked exactly like a number that did. It runs first now, it
+    // is awaited, and _phoneStore reads it back off the door's own answer, so
+    // the one toast he sees is telling the truth about the whole thing.
+    // _phInput, NOT the field - the field is gone by now, see above.
+    var _phRes=null;
+    try{ if(_phInput) _phRes=await _phoneStore(code, _phInput); }
+    catch(e){ _phRes={ok:false, phone:_phInput, why:String((e&&e.message)||e)}; }
+    var _phWord = !_phInput ? ''
+      : ((_phRes && _phRes.ok) ? ' \u00b7 number saved'
+                               : ' \u00b7 NUMBER DID NOT SAVE, add it on their card');
     showToast('\u2713 '+_jvSafeName(code, name)+' added \u00b7 '+code+' \u00b7 '
-      +(_tier==='vip' ? 'VIP, books anytime' : '1:1, 2 calls')+' \u00b7 '+_term+' mo');
+      +(_tier==='vip' ? 'VIP, books anytime' : '1:1, 2 calls')+' \u00b7 '+_term+' mo'+_phWord);
     if(_paid && !_saleTracked){
       setTimeout(function(){ try{ showToast('\u26a0\ufe0f Client added, but the '+_sMoney(_paid)+' fee did not reach the sales tracker \u2014 log it by hand'); }catch(e){} }, 2600);
     }
-    // PHONE. clientInsert takes no phone argument, so a client created through
-    // this dialog has never had one — textClient then says "no number on file"
-    // for someone just added. Written straight after the row lands, through
-    // clientPatch, which does accept it, and reported if it does not stick:
-    // the client is real either way, only the number is missing.
-    // _phInput, NOT the field — the field is gone by now, see above.
-    try{
-      var _ph=_phInput;
-      if(_ph){
-        var _pw=await trainerWrite('clientPatch',{code:code, phone:_ph});
-        if(_pw && _pw.ok){ CLIENTS[code].phone=_ph; }
-        else setTimeout(function(){ try{ showToast('Added, but the phone number did not save \u2014 add it on their card'); }catch(e){} }, 1800);
-      }
-    }catch(e){}
     // INSTAGRAM. Written after the row lands, and only if he typed one — an
     // empty field is not a handle and must not leave a row behind. igSet reads
     // it back before it answers, so a failure here is a real failure and says
@@ -12810,6 +12810,13 @@ async function addClientToDb(){
     }catch(e){ console.warn('profile seed', e); }
     _rosterLoadPromise=null;
     try{ await loadRosterFromDB(); }catch(e){}
+    // AND AGAIN AFTER THE RELOAD. loadRosterFromDB refills CLIENTS wholesale
+    // from the table, which is the step that used to erase the number in memory
+    // one line after it was set - so nothing was left to see anywhere, in the
+    // row or out of it. The row itself is safe (_phoneStore read it back); this
+    // is putting it back in front of the Text button and the share sheet without
+    // waiting for the next boot.
+    if(_phRes && _phRes.ok) _phoneReapply(code, _phRes.phone);
     if(typeof loadTrainerDashboard==='function') loadTrainerDashboard();
   } else {
     console.error('addClient', _err);
@@ -16156,6 +16163,15 @@ function _pfSlotCap(key){ return {breakfast:'Breakfast', lunch:'Lunch', dinner:'
 function _pfTotalsHtml(evs){
   var t=_dayFoodTotals(evs);
   if(!t.meals) return '';
+  // ONE LINE, ONE FORMAT (Yusuf, 2 Sep, off Scott's card). On a day holding
+  // exactly ONE meal, this totals line is not a total of anything - it is the
+  // row above it, printed a second time in a different format. That is what he
+  // was looking at:
+  //     34750 cal - 1305g P - 5686g C - 754g F      (the meal row)
+  //     34,750 cal - 1,305g P - 5,686g C - 754g F   (this line)
+  // Same figures, twice, on one card. A day is worth totalling from two meals
+  // up; below that the row has already said it.
+  if(t.meals<2) return '';
   var line=_mealMacLine({calories:t.cal, protein:t.protein, carbs:t.carbs, fat:t.fat},
                         'short', {time:false, group:true});
   return line ? ('<div class="pfTot">'+line+'</div>') : '';
@@ -40783,23 +40799,11 @@ async function _jvJarvisAddClient(nc){
   // same number and the door is free to store either.
   var _phSaid=String((nc&&nc.phone)||'').trim(), _phLanded=null;
   if(_phSaid){
-    var _pw=null;
-    try{ _pw=await trainerWrite('clientPatch', {code:code, phone:_phSaid}); }catch(e){}
-    var _pwRow=(_pw && _pw.rows && _pw.rows[0]) || null;
-    if(_pw && _pw.ok && _pwRow && String(_pwRow.phone||'').replace(/\D/g,'')===_phSaid.replace(/\D/g,'')){
-      _phLanded=String(_pwRow.phone||_phSaid);
-      // Set in memory too, so the Text button and the share sheet see it now
-      // rather than after whatever reload happens to come next. Both read
-      // CLIENTS[code].phone.
-      try{ CLIENTS[code].phone=_phLanded; }catch(e){}
-      // AND INTO THE SAME LOCAL CACHE _jvHydratePhones READS. textClient and
-      // callClient both hydrate from yjb_phones before looking at CLIENTS, so a
-      // number kept here survives a boot where the trainer-only roster tier does
-      // not populate — the failure mode that leaves every phone blank for a
-      // whole session. Same key and shape _jvSavePhone writes.
-      try{ var _pm=JSON.parse(localStorage.getItem('yjb_phones')||'{}'); _pm[code]=_phLanded;
-           localStorage.setItem('yjb_phones', JSON.stringify(_pm)); }catch(e){}
-    }
+    // ONE DOOR (Yusuf, 2 Sep). This path already did the read-back properly and
+    // is where the pattern came from; it just did it inline. _phoneStore is that
+    // same logic, shared, so the four ways a number can be stored cannot drift.
+    var _pr=await _phoneStore(code, _phSaid);
+    if(_pr.ok) _phLanded=_pr.phone;
   }
   try{
     var pd=(typeof PHASES!=='undefined') && PHASES.comp;
@@ -40948,26 +40952,16 @@ async function _jtPhoneTurn(t){
     if(window._jtPhoneDone && window._jtPhoneDone[_pk]) return {ok:true, line:''};
     if(window._jtPhoneDone) window._jtPhoneDone[_pk]=1;
   }catch(e){}
-  var w=null;
-  // Stored in the one shape, same as the card and the new-client field.
+  // ONE DOOR (Yusuf, 2 Sep). This turn used to do its own write, its own
+  // read-back and its own CLIENTS assignment, and it never touched
+  // localStorage or profiles - so a number saved by asking Jarvis was stored
+  // in fewer places than the same number typed on the card. Everything it did
+  // by hand, _phoneStore does, in the one shape, in all three places.
   num=_phoneNorm(num)||num;
-  try{ w=await trainerWrite('clientPatch',{code:code, phone:num}); }catch(e){}
-  if(!w || !w.ok) return {ok:false, line:name+'’s number didn’t save — the door refused it. Try again in a moment.'};
-  // Read back, never trusted (CLAUDE.md landmine register) — a boolean says the
-  // request didn't error, not that the digits landed the way they were sent.
-  // NOT a fresh sbSelect: phone is walled off from the anon key entirely (see
-  // doLogin — "phone/calls_enabled/call_credits went dark to the anon key"),
-  // so that call would always come back [] and read as a landmine failure
-  // regardless of whether the write actually worked (caught live, 19 Aug — a
-  // real write to Hayden Hauser reported "didn't read back correctly" when it
-  // had). trainer.js's WRITE_OPS answer every write with
-  // Prefer: return=representation — the response body IS the row PostgREST
-  // just wrote, under the SERVICE key, so that's the read-back.
-  var landed=!!(w.rows && w.rows[0] && String(w.rows[0].phone||'').replace(/\D/g,'')===num.replace(/\D/g,''));
-  if(!landed) return {ok:false, line:name+'’s number was sent but didn’t read back correctly — check their card before trusting it.'};
-  try{ CLIENTS[code].phone=num; }catch(e){}
+  var _r=await _phoneStore(code, num);
+  if(!_r.ok) return {ok:false, line:name+'\u2019s number didn\u2019t save \u2014 '+_r.why+'. Check their card before trusting it.'};
   // Same rule. Decoration, not signal: the caller reads .ok and .wait.
-  return {ok:true, line:'Saved '+name+'’s number to their phone field — you can text '+name+' from their card now.'};
+  return {ok:true, line:'Saved '+name+'\u2019s number to their phone field \u2014 you can text '+name+' from their card now.'};
 }
 // Anything program-shaped goes to the cockpit chat rather than to the generic
 // model, because that is where [PROGRAM]/[PROGRAM_PATCH] are understood and
@@ -43211,26 +43205,77 @@ function _woCommentBlock(w){
 // COMMENT IS DEAD (Yusuf, ruling, 20 Aug). The writers that posted into coach_comment and into `reviews` from a note field are deleted, not just unhooked — an orphaned writer to a field he has retired is an invitation to re-wire it. Cite replaces all of it: citeClient / citeCached / citeFeedItem. Comments ALREADY WRITTEN still render everywhere they did.
 // --- Add/edit a client's phone number from the deep-dive. Persists on-device (localStorage),
 // best-effort cross-device (profiles.phone), and sets it live so the Text button works now. ---
+// ===== ONE DOOR FOR A CLIENT'S NUMBER (Yusuf, 2 Sep - Scott, day two) =====
+// Scott's number was typed into the new-client dialog on 1 Sep and was gone by
+// the next morning. The CAPTURE was not the fault this time - that was the
+// 31 Aug bug, it is fixed and it stayed fixed. THE WRITE was, and the shape of
+// it is the asymmetry: two paths stored a number and they did not store it in
+// the same places.
+//
+//   the card path   -> localStorage yjb_phones, profiles.phone, clients.phone
+//   the dialog path -> clients.phone, once, unchecked
+//
+// So _jvHydratePhones, the local fallback that quietly rescues the card path on
+// a boot where the roster read comes back thin, never covered anyone added
+// through the dialog. And a few lines after that single write, addClient does
+// `_rosterLoadPromise=null; await loadRosterFromDB()`, which refills CLIENTS
+// from the database over the top of the value it had just set - so a patch that
+// did not persist left nothing behind anywhere, and the only sign was a toast
+// 1.8 seconds later underneath the success tick. That is exactly what "it
+// looked like it saved" looks like.
+//
+// One function now, and every path uses it. It writes all three places and it
+// READS THE NUMBER BACK off the door's own answer before it reports anything:
+// trainer.js sends Prefer: return=representation, so rows[0] IS the row the
+// service key just wrote. Digits only, because "678-733-5618" and
+// "+16787335618" are one number. Never answers "stored" without that row in
+// hand - the 31 Aug law, no confirmation without the write's own result.
+async function _phoneStore(code, num){
+  code=String(code==null?'':code).trim();
+  if(!code) return {ok:false, phone:'', why:'no client code'};
+  var want=_phoneNorm(num==null?'':num)||'';
+  var w=null;
+  try{ w=await trainerWrite('clientPatch', {code:code, phone:(want||null)}); }catch(e){ w=null; }
+  var row=(w && w.rows && w.rows[0]) || null;
+  var got=row?String(row.phone==null?'':row.phone):'';
+  var landed=!!(w && w.ok && row && got.replace(/\D/g,'')===want.replace(/\D/g,''));
+  if(!landed){
+    var why;
+    if(!w || !w.ok) why=(w && (w.err || (w.status?('status '+w.status):''))) || 'the door did not answer';
+    else if(!row)   why='the door saved nothing back to read';
+    else            why='it read back as '+(got||'empty');
+    try{ console.warn('_phoneStore: '+code+' did not store -', why); }catch(e){}
+    return {ok:false, phone:want, why:why};
+  }
+  var stored=got||want;
+  try{ if(CLIENTS[code]) CLIENTS[code].phone=stored; }catch(e){}
+  try{ var m=JSON.parse(localStorage.getItem('yjb_phones')||'{}');
+       if(stored){ m[code]=stored; } else { delete m[code]; }
+       localStorage.setItem('yjb_phones', JSON.stringify(m)); }catch(e){}
+  // profiles.name is NOT NULL with no default - see the note that used to live
+  // on _jvSavePhone. A name-less payload 400s even on a row that exists.
+  try{ if(typeof sbUpsert==='function'){
+    await sbUpsert('profiles',{client_code:code, name:((CLIENTS[code]&&CLIENTS[code].name)||code), phone:stored},'client_code');
+  } }catch(e){}
+  return {ok:true, phone:stored, why:''};
+}
+// Re-apply after a roster reload. loadRosterFromDB refills CLIENTS wholesale, so
+// a number verified moments earlier has to be put back or it is gone from memory
+// even though it is safely in the table.
+function _phoneReapply(code, num){
+  try{ if(num && CLIENTS[code]) CLIENTS[code].phone=num; }catch(e){}
+}
 var _jvPhonesHydrated=false;
 function _jvHydratePhones(){
   if(_jvPhonesHydrated) return; _jvPhonesHydrated=true;
   try{ var m=JSON.parse(localStorage.getItem('yjb_phones')||'{}'); Object.keys(m).forEach(function(c){ if(CLIENTS[c]&&m[c]) CLIENTS[c].phone=m[c]; }); }catch(e){}
 }
+// THE CARD PATH, now the same code path as the dialog (Yusuf, 2 Sep: "one code
+// path for storing a number, not two"). Everything this used to do by hand -
+// localStorage, profiles, clients - _phoneStore does, plus the read-back this
+// never had. Kept as a function because it is the card's name for the job.
 function _jvSavePhone(code,num){
-  // Same shape as every other write, so the card, the feed and the roster loop
-  // are never holding three spellings of one person.
-  num=_phoneNorm(num);
-  try{ var m=JSON.parse(localStorage.getItem('yjb_phones')||'{}'); if(num){ m[code]=num; } else { delete m[code]; } localStorage.setItem('yjb_phones',JSON.stringify(m)); }catch(e){}
-  if(CLIENTS[code]) CLIENTS[code].phone=num;
-  // profiles.name is NOT NULL with no default — PostgREST upsert is INSERT ... ON
-  // CONFLICT DO UPDATE, and Postgres checks NOT NULL against the INSERT values before
-  // it ever reaches the conflict clause, so a name-less payload 400s even on a row
-  // that already exists. Same defect found and fixed on movement_prefs, 11 Aug.
-  try{ if(typeof sbUpsert==='function') sbUpsert('profiles',{client_code:code,name:((CLIENTS[code]&&CLIENTS[code].name)||code),phone:num},'client_code'); }catch(e){}
-  // Write to the clients roster table too — that's where the feed/Text button now
-  // reads phones from. Through the door now, not the public key; still fire-and-forget
-  // exactly as before, nothing here ever awaited or surfaced a failure.
-  try{ trainerWrite('clientPatch', {code:code, phone:num||null}); }catch(e){}
+  return _phoneStore(code, num);
 }
 // What this client has paid, and what they still owe. Reads the same sales rows the
 // revenue card does, so the two can never disagree.
@@ -59890,36 +59935,36 @@ var MT_ROWS=[
  {k:'pork loin',u:'oz',p:8.0,c:0,f:2.5,a:['pork']},
  {k:'shrimp',u:'oz',p:6.0,c:0,f:0.3,a:['prawns']},
  {k:'greek yogurt',u:'oz',p:2.8,c:1.1,f:0,a:['yoghurt','greek yoghurt']},
- {k:'egg',u:'each',p:6.0,c:0.5,f:5.0,a:['eggs','whole egg']},
- {k:'egg white',u:'each',p:3.6,c:0.2,f:0,a:['egg whites']},
- {k:'whey protein',u:'scoop',p:24,c:2,f:1.5,a:['protein powder','protein shake']},
- {k:'salad mix',u:'handful',p:0.5,c:2,f:0,a:['salad','mixed greens','greens','leafy greens','lettuce']},
- {k:'spinach',u:'handful',p:2.5,c:1,f:0,a:[]},
- {k:'broccoli',u:'handful',p:2.2,c:4,f:0.3,a:[]},
- {k:'cherry tomatoes',u:'handful',p:0.7,c:3,f:0.2,a:['tomatoes','cherry tomato']},
- {k:'peppers',u:'handful',p:0.8,c:4,f:0.2,a:['bell peppers','capsicum']},
- {k:'cucumber',u:'handful',p:0.5,c:2,f:0,a:[]},
- {k:'mixed vegetables',u:'handful',p:1.5,c:4,f:0.2,a:['veg','vegetables','mixed veg']},
- {k:'white rice',u:'handful',p:2.7,c:35,f:0.4,a:['rice','jasmine rice','basmati']},
- {k:'brown rice',u:'handful',p:3.2,c:32,f:1.0,a:[]},
- {k:'potato',u:'handful',p:2.5,c:21,f:0.1,a:['potatoes','white potato']},
- {k:'sweet potato',u:'handful',p:2.0,c:25,f:0.1,a:['sweet potatoes','yam']},
- {k:'pasta',u:'handful',p:5.0,c:31,f:0.9,a:['spaghetti','penne','noodles']},
- {k:'oats',u:'handful',p:8.5,c:33,f:3.5,a:['oatmeal','porridge']},
- {k:'bread',u:'slice',p:3.5,c:15,f:1.0,a:['toast']},
- {k:'tortilla',u:'each',p:4.0,c:22,f:3.0,a:['wrap']},
- {k:'blueberries',u:'handful',p:0.6,c:11,f:0.3,a:['blueberry']},
- {k:'strawberries',u:'handful',p:0.5,c:6,f:0.2,a:['strawberry']},
- {k:'raspberries',u:'handful',p:0.9,c:9,f:0.5,a:[]},
- {k:'grapes',u:'handful',p:0.5,c:13,f:0.1,a:[]},
- {k:'banana',u:'each',p:1.3,c:27,f:0.4,a:['bananas']},
- {k:'apple',u:'each',p:0.5,c:25,f:0.3,a:['apples']},
- {k:'olive oil',u:'tbsp',p:0,c:0,f:14,a:['oil','evoo']},
- {k:'butter',u:'tbsp',p:0.1,c:0,f:11.5,a:[]},
- {k:'nuts',u:'handful',p:5.0,c:5,f:15,a:['almonds','cashews','walnuts','mixed nuts']},
- {k:'peanut butter',u:'tbsp',p:3.5,c:3,f:8,a:['pb','almond butter']},
- {k:'sesame seeds',u:'tbsp',p:1.6,c:2,f:4.5,a:['sesame seed','sesame']},
- {k:'avocado',u:'half',p:2.0,c:9,f:15,a:['avo']}
+ {k:'egg',u:'each',p:6.0,c:0.5,f:5.0,g:50,a:['eggs','whole egg']},
+ {k:'egg white',u:'each',p:3.6,c:0.2,f:0,g:33,a:['egg whites']},
+ {k:'whey protein',u:'scoop',p:24,c:2,f:1.5,g:31,a:['protein powder','protein shake']},
+ {k:'salad mix',u:'handful',p:0.5,c:2,f:0,g:40,a:['salad','mixed greens','greens','leafy greens','lettuce']},
+ {k:'spinach',u:'handful',p:2.5,c:1,f:0,g:85,a:[]},
+ {k:'broccoli',u:'handful',p:2.2,c:4,f:0.3,g:85,a:[]},
+ {k:'cherry tomatoes',u:'handful',p:0.7,c:3,f:0.2,g:90,a:['tomatoes','cherry tomato']},
+ {k:'peppers',u:'handful',p:0.8,c:4,f:0.2,g:85,a:['bell peppers','capsicum']},
+ {k:'cucumber',u:'handful',p:0.5,c:2,f:0,g:80,a:[]},
+ {k:'mixed vegetables',u:'handful',p:1.5,c:4,f:0.2,g:85,a:['veg','vegetables','mixed veg']},
+ {k:'white rice',u:'handful',p:2.7,c:35,f:0.4,g:125,a:['rice','jasmine rice','basmati']},
+ {k:'brown rice',u:'handful',p:3.2,c:32,f:1.0,g:130,a:[]},
+ {k:'potato',u:'handful',p:2.5,c:21,f:0.1,g:125,a:['potatoes','white potato']},
+ {k:'sweet potato',u:'handful',p:2.0,c:25,f:0.1,g:135,a:['sweet potatoes','yam']},
+ {k:'pasta',u:'handful',p:5.0,c:31,f:0.9,g:110,a:['spaghetti','penne','noodles']},
+ {k:'oats',u:'handful',p:8.5,c:33,f:3.5,g:55,a:['oatmeal','porridge']},
+ {k:'bread',u:'slice',p:3.5,c:15,f:1.0,g:38,a:['toast']},
+ {k:'tortilla',u:'each',p:4.0,c:22,f:3.0,g:45,a:['wrap']},
+ {k:'blueberries',u:'handful',p:0.6,c:11,f:0.3,g:90,a:['blueberry']},
+ {k:'strawberries',u:'handful',p:0.5,c:6,f:0.2,g:100,a:['strawberry']},
+ {k:'raspberries',u:'handful',p:0.9,c:9,f:0.5,g:80,a:[]},
+ {k:'grapes',u:'handful',p:0.5,c:13,f:0.1,g:80,a:[]},
+ {k:'banana',u:'each',p:1.3,c:27,f:0.4,g:120,a:['bananas']},
+ {k:'apple',u:'each',p:0.5,c:25,f:0.3,g:190,a:['apples']},
+ {k:'olive oil',u:'tbsp',p:0,c:0,f:14,g:14,a:['oil','evoo']},
+ {k:'butter',u:'tbsp',p:0.1,c:0,f:11.5,g:14,a:[]},
+ {k:'nuts',u:'handful',p:5.0,c:5,f:15,g:28,a:['almonds','cashews','walnuts','mixed nuts']},
+ {k:'peanut butter',u:'tbsp',p:3.5,c:3,f:8,g:16,a:['pb','almond butter']},
+ {k:'sesame seeds',u:'tbsp',p:1.6,c:2,f:4.5,g:9,a:['sesame seed','sesame']},
+ {k:'avocado',u:'half',p:2.0,c:9,f:15,g:100,a:['avo']}
 ];
 var _MT_BY=null;
 function _mtIndex(){
@@ -59950,24 +59995,98 @@ function _mtRow(name){
 // fractions behind them.
 function _mtRound(n){ var v=Math.round(+n||0); return v<0?0:v; }
 function _mtCal(p,c,f){ return _mtRound(p)*4 + _mtRound(c)*4 + _mtRound(f)*9; }
-// Quantity in the ROW's own unit. A palm is 3.5oz of a protein; anything else
-// is taken as already being in the row's unit.
+// ===== GRAMS ARE A WEIGHT, NOT A COUNT =================================
+// (Yusuf, 2 Sep - Scott's breakfast logged at 34,750 calories.)
+//
+// This function understood grams on the eleven rows priced in OUNCES and
+// nowhere else. Every other row is priced per handful, per each, per slice,
+// per tbsp, per scoop or per half, and the last line handed the client's
+// number straight back as a COUNT of those - so "105g blueberries" was priced
+// as 105 HANDFULS and "banana 104g" as 104 BANANAS. And an ounce row was no
+// safer: it only recognised the three literal spellings g/gram/grams, so a
+// weight arriving under any other unit fell through the same last line and
+// "greek yogurt 205g" was priced as 205 OUNCES - 574g of protein from one
+// tub of yogurt.
+//
+// RECONSTRUCTED OFF SCOTT'S OWN ROW, in his own words, to the unit:
+//   blueberries 105g -> 105 handfuls   63P  1155C   32F
+//   greek yogurt 205g -> 205 ounces   574P   226C    0F
+//   almonds 15g      ->  15 handfuls   75P    75C  225F
+//   walnuts 20g      ->  20 handfuls  100P   100C  300F
+//   oats 40g         ->  40 handfuls  340P  1320C  140F
+//   banana 104g      -> 104 bananas   135P  2808C   42F
+//   3 eggs           ->   3 eggs       18P     2C   15F   (the only one right)
+//                                     ----  -----  -----
+//                                     1305  5686    754
+//   1305*4 + 5686*4 + 754*9 = 34,750. Every figure on his screen, exactly.
+//
+// It was never a missing divide-by-100. There was no gram conversion at all
+// outside the ounce rows, because the table never said what one handful, one
+// each or one scoop WEIGHS. It says now: every row that is not priced by
+// weight carries `g`, the grams in one of its units, chosen to agree with
+// that row's own macros. A weight is converted into the row's unit instead of
+// being read as a count of them.
+//
+// AND WHERE IT CANNOT CONVERT, IT REFUSES. An unknown unit, or a weight on a
+// row with no gram weight declared, returns null: _mtItem then leaves the
+// model's own estimate in place, which for Scott is the 869 calories he typed
+// out himself. Refusing is not clamping - no number is capped, hidden or
+// invented. The table simply stops answering for a food it cannot price, and
+// says so in the console.
+var MT_G_PER_OZ = 28.3495;
+// Every spelling of a weight a client or the model might send, in grams.
+var MT_WEIGHT_G = {g:1, gr:1, gm:1, gms:1, gram:1, grams:1, gramme:1, grammes:1,
+  kg:1000, kgs:1000, kilo:1000, kilos:1000, kilogram:1000, kilograms:1000,
+  mg:0.001,
+  oz:MT_G_PER_OZ, ozs:MT_G_PER_OZ, ounce:MT_G_PER_OZ, ounces:MT_G_PER_OZ,
+  lb:453.592, lbs:453.592, pound:453.592, pounds:453.592};
+// A unit word, resolved to the row unit it means. Anything not in here is a
+// unit this table does not understand, and an unknown unit is a refusal now
+// rather than a silent "call it one of whatever this row is priced in".
+var MT_UNIT_ALIAS = {palm:'palm', palms:'palm',
+  handful:'handful', handfuls:'handful', handfull:'handful',
+  each:'each', ea:'each', whole:'each', piece:'each', pieces:'each',
+  unit:'each', units:'each', item:'each', items:'each',
+  slice:'slice', slices:'slice',
+  tbsp:'tbsp', tbs:'tbsp', tablespoon:'tbsp', tablespoons:'tbsp',
+  thumb:'tbsp', thumbs:'tbsp',
+  scoop:'scoop', scoops:'scoop',
+  half:'half', halves:'half'};
+// Quantity in the ROW's own unit, or null when the table cannot say.
 function _mtQty(qty, unit, row){
   var q=parseFloat(qty), stated=(isFinite(q) && q>0);
   if(!stated) q=1;
-  var u=String(unit==null?'':unit).toLowerCase().trim();
-  if(row.u==='oz'){
-    if(/^palms?$/.test(u)) return q*MB_PALM_OZ;
-    if(/^(g|gram|grams)$/.test(u)) return q/28.35;
+  var u=String(unit==null?'':unit).toLowerCase().trim().replace(/\.$/,'');
+  var isOz=(row.u==='oz');
+  // What one of this row's units weighs. Ounce rows know it by definition.
+  var gPer = isOz ? MT_G_PER_OZ : (+row.g||0);
+
+  if(!u){
     // AN UNQUANTIFIED PROTEIN IS ONE PALM, which is the rule the prompt states
     // and the rule this has to mean. It defaulted to one OUNCE, so a bare
-    // "tuna" priced at 7g of protein instead of 25 — the code and the stated
+    // "tuna" priced at 7g of protein instead of 25 - the code and the stated
     // rule disagreeing, which is exactly what a table is for.
-    if(!stated && !u) return MB_PALM_OZ;
-    return q;
+    if(isOz && !stated) return MB_PALM_OZ;
+    return q;                       // "3 eggs", "2 handfuls" - a bare count
   }
-  if(/^thumbs?$/.test(u) && row.u==='tbsp') return q;
-  return q;
+  // A palm is a weight of protein, so it converts like one.
+  if(MT_UNIT_ALIAS[u]==='palm'){
+    if(isOz) return q*MB_PALM_OZ;
+    if(gPer>0) return (q*MB_PALM_OZ*MT_G_PER_OZ)/gPer;
+    return null;
+  }
+  // A weight, in any spelling. THIS is the line Scott's breakfast needed.
+  if(MT_WEIGHT_G[u]!==undefined){
+    if(!(gPer>0)) return null;      // the table cannot price this food by weight
+    // Ounces on an ounce row are the same unit, so they are handed straight
+    // back. Multiplying by 28.3495 and dividing by it again is not free: it
+    // turns 12oz into 11.999999999999998, and the suite is right to mind.
+    if(MT_WEIGHT_G[u]===gPer) return q;
+    return (q*MT_WEIGHT_G[u])/gPer;
+  }
+  // The row's own unit, or a word meaning the same thing.
+  if(MT_UNIT_ALIAS[u]===row.u) return q;
+  return null;                      // a unit this row does not understand
 }
 // ONE ITEM, BY THE LAW. Returns null when the table does not cover this food,
 // so the caller can leave the model's own estimate in place.
@@ -59976,6 +60095,18 @@ function _mtItem(item){
   var row=_mtRow(item.table_key) || _mtRow(item.name);
   if(!row) return null;
   var q=_mtQty(item.qty!=null?item.qty:item.quantity, item.unit, row);
+  // A REFUSAL IS AN ANSWER. null means the table cannot turn what the client
+  // said into an amount of this row - an unknown unit, or a weight for a food
+  // it has no weight for. Returning null hands the item back to the model's
+  // own estimate, which is what happens for every food not in the table at
+  // all. Reading the number as a count instead is what put 5,686g of carbs on
+  // a client's screen.
+  if(q===null || !isFinite(q) || q<0){
+    try{ console.warn('_mtItem: table cannot price "'+(item.name||'')+'" as '
+      +(item.qty!=null?item.qty:item.quantity)+' '+(item.unit||'(no unit)')
+      +' against a row priced per '+row.u+' - leaving the estimate alone'); }catch(e){}
+    return null;
+  }
   var p=_mtRound(row.p*q), c=_mtRound(row.c*q), f=_mtRound(row.f*q);
   return {name:String(item.name||row.k), protein:p, carbs:c, fat:f,
           calories:_mtCal(p,c,f), mt:row.k};
@@ -60068,6 +60199,16 @@ function _mtPromptBlock(){
   return 'MACRO TABLE (authoritative). For ANY food below, give the ROW and the QUANTITY and NOTHING ELSE — '
     +'do not compute its macros or calories, the app does that and will overwrite whatever you put. '
     +'Set "table_key" to the exact key, "qty" to the number, and "unit" to one of oz/palm/handful/each/slice/tbsp/scoop/half. '
+    // NOT CHANGED, ON PURPOSE (2 Sep). The obvious next line here is to tell the
+    // model it may send a weight - "unit":"g" with the number the client read
+    // off the label - now that the app converts grams into every row's own unit.
+    // It is not written, because this string is inside buildCoachVoice and
+    // buildCoachVoice is what all 82 clients hear. tidentity.cjs compares this
+    // prompt byte for byte against main for exactly that reason, and a lane
+    // changing what every client is told, unannounced, inside a bug fix, is the
+    // thing that guard exists to stop. The fix does not need it: the conversion
+    // and the refusal below both work on whatever unit arrives. Ordered as its
+    // own line for Yusuf rather than taken here.
     +'An unquantified protein is 1 palm; an unquantified vegetable, starch or fruit is 1 handful; an unquantified fat or seed is 1 tbsp. '
     +'1 palm = '+MB_PALM_OZ+'oz cooked. For a food NOT in this list leave table_key null and estimate its macros as usual.\n'
     +lines.join('\n')+'\n';
@@ -80460,7 +80601,15 @@ function _mealMacLine(f, style, opts){
   // they have always printed. One builder either way — the card cannot drift
   // from the rows it sits under, which is the only reason it is an option here
   // rather than a second function.
-  var num=opts.group ? function(v){ return _jvNum(v); } : function(v){ return Math.round(+v); };
+  // ONE FORMAT (Yusuf, 2 Sep: "One line, one format"). Grouping used to be
+  // opt-in, on the grounds that a day runs to four figures where one meal does
+  // not. Meals do: a 2,625 calorie plate is an ordinary row on this roster, and
+  // it was printing as 2625 next to a day total printing as 2,625. Grouped
+  // everywhere now. opts.group is kept so the existing call sites still read
+  // true, and opts.group:false is there for a surface that ever needs the bare
+  // number back.
+  var num=(opts.group===false) ? function(v){ return Math.round(+v); }
+                               : function(v){ return _jvNum(v); };
   var mm=[];
   if(+f.calories) mm.push(num(f.calories)+' cal');
   if(+f.protein)  mm.push(num(f.protein)+(longUnits?'g protein':'g P'));

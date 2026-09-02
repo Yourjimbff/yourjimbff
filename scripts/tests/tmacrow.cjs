@@ -17,8 +17,12 @@ function fnAt(n){ const a=L.findIndex(l=>l.indexOf('function '+n+'(')===0); if(a
   let b=a; while(b<L.length && L[b]!=='}') b++; return L.slice(a,b+1).join('\n'); }
 let bad=0;
 const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  FAIL  ')+label+(extra?('  '+extra):'')); };
+// _mealMacLine groups by default since 2 Sep ("one line, one format"), so it
+// needs the app's own number formatter lifted with it.
+function lineAt(p){ const l=L.find(x=>x.indexOf(p)===0); if(l==null) throw new Error('SEAM MOVED: '+p); return l; }
+eval(lineAt('function _jvNum('));
 eval(fnAt('_mealMacLine'));
-guard(['_mealMacLine'], n=>eval(n));
+guard(['_mealMacLine','_jvNum'], n=>eval(n));
 
 const FULL={calories:520, protein:52, carbs:3, fat:30, eat_time:'7:30 AM'};
 
