@@ -106,7 +106,23 @@ const strip = (s) => {
     if (c === '/' && n === '*') { const j = s.indexOf('*/', i + 2); const e = j < 0 ? s.length : j + 2; out += keepNl(s.slice(i, e)); i = e; continue; }
     if (c === '"' || c === "'" || c === '`') {
       let j = i + 1;
-      while (j < s.length) { if (s[j] === '\\') { j += 2; continue; } if (s[j] === c) break; j++; }
+      // A ' or " inside a REGEX LITERAL is not an opening quote. This scanner has
+      // no lexer, so it used to swallow one - /[\u2019']/g in _jimRepeatOnly opened a
+      // string that ran on for thousands of lines, blanking the three _JIM_*_RE
+      // declarations and making check.sh report them as undefined on every run,
+      // for everyone, since the day that regex landed. The whole file's checks
+      // exit at that point, so nothing after it has run in weeks.
+      // The rule that fixes it without a lexer: a ' or " string cannot contain a
+      // raw newline. If we reach one before the closing quote, this was never a
+      // string - emit the character and carry on. Backticks may span lines, so
+      // they keep the old behaviour.
+      while (j < s.length) {
+        if (s[j] === '\\') { j += 2; continue; }
+        if (s[j] === c) break;
+        if (c !== '`' && s[j] === '\n') { j = -1; break; }
+        j++;
+      }
+      if (j === -1) { out += c; i++; continue; }
       const e = Math.min(j + 1, s.length);
       out += c + keepNl(s.slice(i + 1, e));                  // quote kept, contents blanked
       i = e; continue;

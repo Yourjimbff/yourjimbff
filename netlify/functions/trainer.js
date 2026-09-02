@@ -39,7 +39,7 @@ const OPS = {
   // instead so those columns can go dark to anon. limit matches what the anon
   // call used (2000), not the old banked 500 — nothing that used to fit should
   // now silently truncate.
-  roster: () => 'clients?select=code,name,initials,phone,email,active,coach_code,is_trainer,is_primary,hidden,tier,term_months,paid,started_at,term_ends,created_at,calls_enabled,call_credits,weekly_calls,weekly_call_spent_at,review_date&order=code.asc&limit=2000',
+  roster: () => 'clients?select=code,name,initials,phone,email,active,coach_code,is_trainer,is_primary,hidden,tier,term_months,paid,started_at,term_ends,created_at,last_seen,calls_enabled,call_credits,weekly_calls,weekly_call_spent_at,review_date&order=code.asc&limit=2000',
 
   // One client, deeply. The only place `code` is interpolated, and it is encoded.
   // Not yet called from anywhere — banked, same as roster.

@@ -115,6 +115,27 @@ exports.handler = async (event) => {
   // which is the one thing this rollout must never do.
   if (!row) return json(401, { error: 'unknown_code' });
 
+  // WHO HAS ACTUALLY OPENED THE APP (Yusuf, 2 Sep: "he should never again have
+  // to guess who has actually opened the app"). Nothing in this system recorded a
+  // sign-in, so "inactive" could only ever be inferred from logs — which reads a
+  // client who opens it every day and logs nothing as though they had never
+  // arrived. This is the one place every account passes through to get a token,
+  // and it runs with the service key, so it is the honest place to stamp it.
+  //
+  // FIRE AND FORGET, ON PURPOSE. Nothing about this may delay or fail a login:
+  // no await on the response, every error swallowed, and a missing column (the
+  // migration has not landed) is a warning once, never a 400 anyone sees.
+  try {
+    fetch(`${URL}/rest/v1/clients?code=eq.${encodeURIComponent(row.code)}`, {
+      method: 'PATCH',
+      headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE,
+                 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+      body: JSON.stringify({ last_seen: new Date().toISOString() }),
+    }).then((sr) => {
+      if (!sr.ok) console.warn('session: last_seen not stamped', sr.status);
+    }).catch((e) => console.warn('session: last_seen threw', e && e.message));
+  } catch (e) { console.warn('session: last_seen threw', e && e.message); }
+
   const now = Math.floor(Date.now() / 1000);
   const claims = {
     // Supabase reads `role` to decide which Postgres role runs the query, and `aud`

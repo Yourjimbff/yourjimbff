@@ -1,0 +1,13 @@
+-- 2 September 2026 - WHO HAS ACTUALLY OPENED THE APP
+--
+-- Nothing in this system recorded a sign-in. "Inactive" could only be guessed
+-- from food, workout and weight rows, which reads a client who opens the app
+-- every day and logs nothing as though they had never arrived at all.
+--
+-- session.js stamps this on every token it issues (fire and forget, never
+-- blocks a login) and trainer.js reads it onto the roster. Both already
+-- degrade cleanly while this column does not exist, so the code is safe to
+-- ship before this runs - it simply records nothing until it does.
+--
+-- Run once:
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS last_seen timestamptz;
