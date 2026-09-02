@@ -86843,7 +86843,13 @@ window._dfBypass  = false;
 
 var _crm = {rows:null, loading:false, err:null, q:'', watch:false, at:0,
             sales:null, testims:[], beltI:0, beltT:null, host:'tCRM',
-            contacts:{}, sweepAt:null, sig:'', poll:null};
+            contacts:{}, sweepAt:null, sig:'', poll:null,
+            /* HIS VIEW OF THE BOARD, KEPT (his addendum, rule 6: reaching for
+               the CRM twice in a minute must not mean setting it up twice).
+               It lives on _crm, which outlives every paint and every trip to
+               another tab, so it survives for the session and resets on a
+               reload - a view, never a stored preference, and never a write. */
+            filter:'waiting', sort:'wait'};
 /* ONE PAINTER, TWO SURFACES. The phone gets a tab, the cockpit gets a mode,
    and both are handed the same html by the same function - two painters is
    how the two of them start disagreeing about what is on the board. */
@@ -87098,6 +87104,85 @@ function _crmBoardRows(){
   });
   return pend;
 }
+/* ================= THE BOARD IS BROWSABLE (Yusuf, addendum, 2 Sep) =========
+   His words: "crm should also filter clients easily. whole roster available.,
+   most recent messages drafted, ect."
+
+   Before this the tab answered exactly one question - who is waiting - and the
+   only way to reach anyone else was to type a name into a search box inside a
+   collapsed section, which means he could only find someone he had already
+   thought of. Every active client is reachable from the board now without
+   typing, and the board can be asked more than one question.
+
+   ONE LIST, built once per paint, and every chip count and every sort reads
+   THAT list. Two lists is how a count starts disagreeing with the rows under
+   it, which is the same class of fault as the $25 over "0 of 0". */
+function _crmPeople(){
+  var pendingBy={}, sentBy={}, t=_dfToday();
+  (_crm.rows||[]).forEach(function(d){
+    if(!d.code) return;
+    /* newest-first per id, so the FIRST pending row seen for a client is
+       their current draft - the same rule _crmBoardRows works to. */
+    if(d.status==='pending'){ if(!pendingBy[d.code]) pendingBy[d.code]=d; return; }
+    if(d.status==='sent' && _dfDayKey(d.at||d.rowAt)===t) sentBy[d.code]=d;
+  });
+  /* "Already handled" is the SAME union the score tile uses - a draft he sent
+     off the board, or a text he sent from their record. Both are him. */
+  var touched=_crmTouchedToday();
+  return _crmRoster().map(function(r){
+    var w=_crmWaiting(r.code);
+    var draft=pendingBy[r.code]||null;
+    var con=(_crm.contacts||{})[r.code]||null;
+    return {code:r.code, name:r.name, draft:draft,
+            days:_crmDays(r.code),
+            waiting:!!(w && w.waiting),
+            sentToday:!!(sentBy[r.code] || touched[r.code]),
+            draftAt:draft?String(draft.at||draft.rowAt||''):'',
+            theirLast:con?String(con.them||''):''};
+  });
+}
+/* THE CHIPS, in his order, with his words. A chip is a QUESTION, not a state
+   of the world: nothing here marks, clears or restatuses anybody. */
+var _CRM_FILTERS=[
+  {k:'waiting', label:'Waiting on me', test:function(p){ return !!p.draft || p.waiting; }},
+  {k:'drafted', label:'Drafted',       test:function(p){ return !!p.draft; }},
+  {k:'sent',    label:'Sent today',    test:function(p){ return p.sentToday; }},
+  {k:'nodraft', label:'No draft',      test:function(p){ return !p.draft && !p.sentToday; }},
+  {k:'all',     label:'Everyone',      test:function(p){ return true; }}
+];
+var _CRM_SORTS=[
+  {k:'wait',  label:'Longest waiting'},
+  {k:'draft', label:'Newest drafted'},
+  {k:'msg',   label:'Newest message'}
+];
+function _crmFilterDef(k){
+  for(var i=0;i<_CRM_FILTERS.length;i++) if(_CRM_FILTERS[i].k===k) return _CRM_FILTERS[i];
+  return _CRM_FILTERS[0];
+}
+/* Anyone the sort key knows nothing about goes to the BOTTOM, never to the
+   top by accident of an empty string sorting first. Name breaks every tie, so
+   the same board twice in a row is the same board. */
+function _crmSortPeople(list, k){
+  var by=String(k||'wait');
+  return list.slice().sort(function(a,b){
+    if(by==='draft'){
+      if(!!a.draftAt !== !!b.draftAt) return a.draftAt?-1:1;
+      if(a.draftAt!==b.draftAt) return a.draftAt<b.draftAt?1:-1;
+    } else if(by==='msg'){
+      if(!!a.theirLast !== !!b.theirLast) return a.theirLast?-1:1;
+      if(a.theirLast!==b.theirLast) return a.theirLast<b.theirLast?1:-1;
+    } else {
+      var x=(a.days==null?-1:a.days), y=(b.days==null?-1:b.days);
+      if(x!==y) return y-x;
+    }
+    return String(a.name).localeCompare(String(b.name));
+  });
+}
+function crmSetFilter(k){
+  _crm.filter=(_crm.filter===k && k!=='waiting')?'waiting':k;   /* tap again to clear */
+  crmPaint();
+}
+function crmSetSort(k){ _crm.sort=k; crmPaint(); }
 function _crmDoneTodaySet(){
   /* PEOPLE, NOT DRAFTS. The other half of this fraction counts clients on
      today's board, so counting drafts here made "1 of 1" sit above "1 still
@@ -87208,7 +87293,41 @@ function _crmStyle(){
       REPLACES the flat fill; it is not a second glass rule laid over the first.
       Gold hairline border, inset highlight and shadow are untouched. */
   +'.crmSc::after,.crmRow::after,.crmBelt::after,.crmWatch::after{content:\'\';position:absolute;inset:0;pointer-events:none;background:radial-gradient(90% 120% at 100% 0%,rgba(245,197,24,0.10),transparent 58%);}'
-  +'.crmSc>*,.crmRow>*,.crmBelt>*,.crmWatch>*{position:relative;}';
+  +'.crmSc>*,.crmRow>*,.crmBelt>*,.crmWatch>*{position:relative;}'
+   /* THE CHIPS (his addendum, 2 Sep). New surface, so GLASS by the standing
+      law of the same day - the same translucent panel, blur and gold hairline
+      the cards wear, never flat grey. The ACTIVE chip carries gold because
+      gold is now and next: it is the current state of the board, not
+      something earned. A count is never gold.
+      One row, and at 375 it SCROLLS SIDEWAYS rather than stacking into a
+      wall - no invented breakpoint, the row simply scrolls at every width it
+      does not fit. -webkit-overflow-scrolling for the phone's momentum.
+      The scrollbar is hidden because a visible one under one line of chips is
+      the eyesore, not the feature; the row still scrolls by drag and wheel. */
+  +'.crmChips{display:flex;gap:7px;align-items:center;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:1px 0 3px;margin-bottom:9px;}'
+  +'.crmChips::-webkit-scrollbar{display:none;}'
+  +'.crmChip{flex:0 0 auto;display:inline-flex;align-items:baseline;gap:6px;cursor:pointer;white-space:nowrap;'
+    +'background:radial-gradient(120% 140% at 0% 0%,rgba(36,36,36,0.72) 0%,rgba(23,23,23,0.66) 46%,rgba(17,17,17,0.62) 100%);'
+    +'position:relative;overflow:hidden;-webkit-backdrop-filter:blur(20px) saturate(1.25);backdrop-filter:blur(20px) saturate(1.25);'
+    +'border:1px solid rgba(245,197,24,0.10);border-radius:999px;padding:7px 13px;'
+    +'font-family:inherit;font-size:12px;font-weight:800;color:rgba(240,236,228,0.78);'
+    +'box-shadow:0 1px 0 rgba(245,197,24,0.05) inset;}'
+  +'.crmChip::after{content:\'\';position:absolute;inset:0;pointer-events:none;background:radial-gradient(90% 120% at 100% 0%,rgba(245,197,24,0.10),transparent 58%);}'
+  +'.crmChip>*{position:relative;}'
+  +'.crmChip.on{border-color:var(--gold);color:var(--gold);}'
+  +'.crmChipN{font-size:11px;font-weight:800;color:rgba(240,236,228,0.55);font-variant-numeric:tabular-nums;}'
+  +'.crmChip.on .crmChipN{color:rgba(245,197,24,0.72);}'
+  +'.crmSortRow{display:flex;gap:7px;align-items:baseline;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;margin:-3px 0 11px;}'
+  +'.crmSortRow::-webkit-scrollbar{display:none;}'
+  +'.crmSortL{flex:0 0 auto;font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:rgba(240,236,228,0.42);}'
+  +'.crmSort{flex:0 0 auto;cursor:pointer;white-space:nowrap;font-size:11.5px;font-weight:700;color:rgba(240,236,228,0.55);}'
+  +'.crmSort.on{color:var(--gold);font-weight:800;}'
+   /* A PERSON WITH NOTHING WRITTEN FOR THEM is still a person he coaches, so
+      they get a real row he can open - not a line in a list. Same card, no
+      draft box, and it says plainly that nothing is written rather than
+      showing an empty text box that looks like a draft he forgot. */
+  +'.crmRow.bare{padding:10px 12px;cursor:pointer;}'
+  +'.crmBareN{font-size:11.5px;color:rgba(240,236,228,0.5);}';
   document.head.appendChild(s);
 }
 
@@ -87322,24 +87441,66 @@ function crmPaint(){
   else goal=board.length+' to go.';
   h+='<div class="crmGoal">'+goal+'</div>';
   h+='<div id="crmBelt"></div>';
-  /* THE BOARD */
-  if(!board.length){
-    h+='<div class="crmEmpty">Nothing here yet. The Composer writes here at 6am, and into each thread in Messages at the same time.</div>';
+  /* ===== THE CHIPS AND THE SORT (his addendum, 2 Sep) ====================
+     Counts are computed off the ONE list every row below is drawn from, so a
+     number on a chip and the number of rows it produces cannot drift apart -
+     the same class of fault as the $25 sitting over "0 of 0", and the same
+     cure. The counts sit on the chips whether or not he taps anything, which
+     is the point: the shape of his day without touching it. */
+  var people=_crmPeople();
+  var fdef=_crmFilterDef(_crm.filter);
+  h+='<div class="crmChips">';
+  _CRM_FILTERS.forEach(function(f){
+    var n=people.filter(f.test).length;
+    h+='<span class="crmChip'+(f.k===fdef.k?' on':'')+'" onclick="crmSetFilter(\''+f.k+'\')">'
+      +'<span>'+f.label+'</span><span class="crmChipN">'+n+'</span></span>';
+  });
+  h+='</div>';
+  h+='<div class="crmSortRow"><span class="crmSortL">sort</span>';
+  _CRM_SORTS.forEach(function(so){
+    h+='<span class="crmSort'+(so.k===_crm.sort?' on':'')+'" onclick="crmSetSort(\''+so.k+'\')">'+so.label+'</span>';
+  });
+  h+='</div>';
+  /* THE BOARD, filtered and sorted. A person WITH a draft gets the draft row
+     he has always had, untouched. A person without one gets a row he can open
+     anyway, because "the whole roster is reachable" cannot mean a name in a
+     list - it means he can get to the person. Nothing hides behind a count
+     and there is no "+N more": every row the chip matched is drawn. */
+  var shown=_crmSortPeople(people.filter(fdef.test), _crm.sort);
+  if(!shown.length){
+    /* THE EMPTY CASE IN WORDS. Never an empty box, never a zero. */
+    var emptyWord={
+      waiting:'Nobody is waiting on you. That is the whole point of this board.',
+      drafted:'Nothing is drafted right now. The Composer writes here every hour.',
+      sent:'You have not spoken to anyone yet today.',
+      nodraft:'Everyone on the roster has something written for them.',
+      all:'There is nobody active on the roster.'
+    }[fdef.k] || 'Nobody here.';
+    h+='<div class="crmEmpty">'+emptyWord+'</div>';
   } else {
-    for(var i=0;i<board.length;i++){
-      var d=board[i], c=CLIENTS[d.code]||{};
-      var nm=(c.name||d.code);
-      var days=(d.days==null?'never replied':(d.days===0?'today':d.days+(d.days===1?' day':' days')));
-      h+='<div class="crmRow'+(i===0?' next':'')+'" id="crmRow_'+d.id+'">'
-        +'<div class="crmRowTop"><span class="crmName" onclick="covOpen(\''+d.code+'\')">'+_escHtml(nm)+'</span>'
-        +'<span class="crmDays">'+days+'</span></div>'
-        +(d.re?('<div class="crmRe">'+_escHtml(d.re)+'</div>'):'')
-        +'<textarea class="crmTa" id="crmTa_'+d.id+'" oninput="_crmFit(this)">'+_escHtml(d.text)+'</textarea>'
-        +'<div class="crmActs">'
-          +'<button class="crmSend" onclick="crmSend(\''+d.id+'\')">SEND</button>'
-          +'<button class="crmSkip" onclick="crmSkip(\''+d.id+'\')">Skip</button>'
-        +'</div>'
-      +'</div>';
+    for(var i=0;i<shown.length;i++){
+      var p=shown[i];
+      var days=(p.days==null?'never replied':(p.days===0?'today':p.days+(p.days===1?' day':' days')));
+      var nm=_escHtml(p.name);
+      if(p.draft){
+        var d=p.draft;
+        h+='<div class="crmRow'+((i===0 && _crm.sort==='wait' && fdef.k==='waiting')?' next':'')+'" id="crmRow_'+d.id+'">'
+          +'<div class="crmRowTop"><span class="crmName" onclick="covOpen(\''+p.code+'\')">'+nm+'</span>'
+          +'<span class="crmDays">'+days+'</span></div>'
+          +(d.re?('<div class="crmRe">'+_escHtml(d.re)+'</div>'):'')
+          +'<textarea class="crmTa" id="crmTa_'+d.id+'" oninput="_crmFit(this)">'+_escHtml(d.text)+'</textarea>'
+          +'<div class="crmActs">'
+            +'<button class="crmSend" onclick="crmSend(\''+d.id+'\')">SEND</button>'
+            +'<button class="crmSkip" onclick="crmSkip(\''+d.id+'\')">Skip</button>'
+          +'</div>'
+        +'</div>';
+      } else {
+        h+='<div class="crmRow bare'+(p.sentToday?' done':'')+'" onclick="covOpen(\''+p.code+'\')">'
+          +'<div class="crmRowTop"><span class="crmName">'+nm+'</span>'
+          +'<span class="crmDays">'+days+'</span></div>'
+          +'<div class="crmBareN">'+(p.sentToday?'you have already spoken to them today':'nothing drafted')+'</div>'
+        +'</div>';
+      }
     }
   }
   /* SENT AND SKIPPED TODAY, grey, at the bottom */
@@ -87356,7 +87517,11 @@ function crmPaint(){
   /* THE FULL WATCH */
   h+='<div class="crmSecT" onclick="crmToggleWatch()"><span>Everyone else · the full watch</span><span>'+(_crm.watch?'–':'+')+'</span></div>';
   if(_crm.watch){
-    h+='<input class="crmSearch" id="crmQ" placeholder="Search 74 people" value="'+_escHtml(_crm.q)+'" oninput="crmQuery(this.value)">';
+    /* THE COUNT IS READ, NOT TYPED. "Search 74 people" was a literal 74 in the
+       source. The roster is 74 today; it will not be 74 next month, and a
+       number printed on his screen that nothing computes is the same fault as
+       a stale total stated confidently. Same list the Everyone chip counts. */
+    h+='<input class="crmSearch" id="crmQ" placeholder="Search '+_crmRoster().length+' people" value="'+_escHtml(_crm.q)+'" oninput="crmQuery(this.value)">';
     var list=_crmRoster();
     list.forEach(function(r){ r.days=_crmDays(r.code); });
     list.sort(function(a,b){ var x=(a.days==null?9999:a.days), y=(b.days==null?9999:b.days); if(x!==y) return y-x; return String(a.name).localeCompare(String(b.name)); });
