@@ -87957,35 +87957,51 @@ async function _yfPutAnswer(code, section, value, extraCols){
    grade and never a comparison to anyone else. A read that fails says so. ---- */
 async function _yfMoved(code){
   var out={weight:null, best:null, run:null, failed:[]};
-  var W=null, WT=null, F=null;
-  try{ WT=await sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(code)+'&select=weight,logged_at&order=logged_at.asc&limit=500'); }catch(e){}
-  try{ W=await sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(code)+'&select=id,logged_at,date_str&order=logged_at.asc&limit=500'); }catch(e){}
-  try{ F=await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(code)+'&select=id,logged_at,date_str&order=logged_at.asc&limit=1500'); }catch(e){}
-  if(!WT) out.failed.push('weigh-ins');
-  if(!W) out.failed.push('sessions');
-  if(!F) out.failed.push('meals');
-  var pts=(WT||[]).map(function(w){ return {v:parseFloat(w.weight), at:w.logged_at}; })
-                  .filter(function(x){ return isFinite(x.v); });
+  var enc=encodeURIComponent(code);
+  /* A FAILED READ IS NOT AN EMPTY RECORD. sbSelect answers [] for a refusal,
+     which on this page would tell a client their whole history is nothing.
+     _sbFailMark/_sbFailedSince is the witness this file already keeps for
+     exactly that, marked per table so one refusal costs one line. */
+  var WT=[], W=[], F=[];
+  var m1=_sbFailMark();
+  try{ WT=await sbSelect('weight_logs','client_code=eq.'+enc+'&select=weight,logged_at&order=logged_at.asc&limit=500')||[]; }catch(e){}
+  if(_sbFailedSince(m1)){ out.failed.push('weigh-ins'); WT=[]; }
+  var m2=_sbFailMark();
+  try{ W=await sbSelect('workout_logs','client_code=eq.'+enc+'&select=id,logged_at,date_str&order=logged_at.asc&limit=500')||[]; }catch(e){}
+  if(_sbFailedSince(m2)){ out.failed.push('sessions'); W=[]; }
+  var m3=_sbFailMark();
+  try{ F=await sbSelect('food_logs','client_code=eq.'+enc+'&select=id,logged_at,date_str&order=logged_at.asc&limit=1500')||[]; }catch(e){}
+  if(_sbFailedSince(m3)){ out.failed.push('meals'); F=[]; }
+
+  var pts=WT.map(function(w){ return {v:parseFloat(w.weight), at:w.logged_at}; })
+            .filter(function(x){ return isFinite(x.v); });
   if(pts.length>=2) out.weight={from:pts[0], to:pts[pts.length-1], delta:Math.round((pts[pts.length-1].v-pts[0].v)*10)/10};
   else if(pts.length===1) out.weight={only:pts[0]};
-  var dayOf=function(r){ return r.date_str || _dfDayKey(r.logged_at); };
-  var wDays={}; (W||[]).forEach(function(r){ var d=dayOf(r); if(d) wDays[d]=1; });
-  var wl=Object.keys(wDays).sort();
+
+  /* date_str IS NOT AN ISO DAY. It is "Aug 30, 2026", written that way by the
+     logger, so building a key out of it directly gives NaN in every date sum
+     that follows - which is how the best week silently never appeared. _dbDay
+     is the reader the debrief already uses for the same column. */
+  var dayOf=function(r){ var d=_dbDay(r.date_str, r.logged_at); return d ? d.getTime() : null; };
+  var wDays={};
+  W.forEach(function(r){ var t=dayOf(r); if(t!=null) wDays[t]=1; });
   var byWk={};
-  wl.forEach(function(d){
-    var dt=new Date(d+'T00:00:00'); if(isNaN(dt.getTime())) return;
-    var mon=new Date(dt); mon.setDate(mon.getDate()-((dt.getDay()+6)%7));
-    var k=_dfDayKey(mon.toISOString()); byWk[k]=(byWk[k]||0)+1;
+  Object.keys(wDays).forEach(function(t){
+    var dt=new Date(+t);
+    var mon=new Date(dt); mon.setDate(mon.getDate()-((dt.getDay()+6)%7)); mon.setHours(0,0,0,0);
+    var k=mon.getTime(); byWk[k]=(byWk[k]||0)+1;
   });
-  Object.keys(byWk).forEach(function(k){ if(!out.best || byWk[k]>out.best.n) out.best={week:k, n:byWk[k]}; });
-  var any={}; wl.forEach(function(d){ any[d]=1; });
-  (F||[]).forEach(function(r){ var d=dayOf(r); if(d) any[d]=1; });
-  var days=Object.keys(any).sort(), run=0, best=0, prev=null;
-  days.forEach(function(d){
-    var dt=new Date(d+'T00:00:00').getTime();
-    run = (prev!==null && Math.round((dt-prev)/86400000)===1) ? run+1 : 1;
+  Object.keys(byWk).forEach(function(k){ if(!out.best || byWk[k]>out.best.n) out.best={week:+k, n:byWk[k]}; });
+
+  var any={};
+  Object.keys(wDays).forEach(function(t){ any[t]=1; });
+  F.forEach(function(r){ var t=dayOf(r); if(t!=null) any[t]=1; });
+  var days=Object.keys(any).map(Number).sort(function(a,b){ return a-b; });
+  var run=0, best=0, prev=null;
+  days.forEach(function(t){
+    run = (prev!==null && Math.round((t-prev)/86400000)===1) ? run+1 : 1;
     if(run>best) best=run;
-    prev=dt;
+    prev=t;
   });
   out.run={days:best, total:days.length};
   return out;
@@ -88081,7 +88097,7 @@ function _yfMovedHtml(m){
   } else if(w && w.only){
     L.push('One weigh-in on file, '+(Math.round(w.only.v*10)/10)+' lb.');
   }
-  if(m.best) L.push('Your best week was '+m.best.n+' session'+(m.best.n===1?'':'s')+', week of '+_pbSayDate(m.best.week)+'.');
+  if(m.best) L.push('Your best week was '+m.best.n+' session'+(m.best.n===1?'':'s')+', week of '+_pbSayDate(_dfDayKey(new Date(m.best.week).toISOString()))+'.');
   if(m.run && m.run.days>1) L.push('Longest run of days logged in a row: '+m.run.days+'.');
   if(m.run && m.run.total) L.push(m.run.total+' day'+(m.run.total===1?'':'s')+' logged in total.');
   var body = L.length
@@ -88243,6 +88259,13 @@ async function _yfDayLine(){
     if(!_yfEmpty(prof, j).length){ host.style.display='none'; host.innerHTML=''; return; }
     var last=(j.asks && j.asks.line) || null;
     if(last && (Date.now()-new Date(last).getTime()) < 7*86400000){ host.style.display='none'; return; }
+    /* ONCE PER SESSION WHATEVER HAPPENS TO THE STAMP. The week counter lives on
+       their row so a second phone does not restart it, but if that write is
+       refused the line would come back on every single visit to the Day tab -
+       a client being nagged all day by a save that failed. The session flag is
+       the floor under it. */
+    if(window._yfLineShown) { host.style.display='none'; return; }
+    window._yfLineShown=1;
     host.style.display='';
     host.innerHTML='<div onclick="_yfGoToFile()" role="button" style="'+_yfS.card+'cursor:pointer;">'
       +'<div style="'+_yfS.body+'">Your file’s half empty. Two minutes and I know you better.</div></div>';
