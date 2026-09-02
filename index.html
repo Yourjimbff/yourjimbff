@@ -10342,7 +10342,15 @@ function sbHeaders(){
 // dead function, and the one whose only failure mode was a permanently empty cockpit the
 // moment a session merely needed renewing, with nothing to trigger sessOnDenied() the
 // way the SB_URL fetch wrapper already does for every other request in the app.
+var _TRAINER_READ_OPS=['roster','sales','contacts','handled','clientNotes','clientNotesAll',
+  'coachNotes','coachMoments','coachReposts','engineMoments','bookingsAll','bookingsBusy',
+  'consultList','blockLabels','myBookings','myCallNotes','myVipCalls','vipCallList',
+  'vipCallExceptions'];
 async function trainerOp(op, args, _retried){
+  // The door's write ops land on somebody's row exactly like a direct POST does.
+  // Reads stay open - refusing those would blank his screen rather than protect
+  // anyone. _TRAINER_READ_OPS is the list this file already only ever reads with.
+  try{ if(_TRAINER_READ_OPS.indexOf(String(op))===-1 && _flipRefuse('door '+op)) return []; }catch(e){}
   try{
     var t=_sessToken();
     if(!t) return [];   // no session minted yet — nothing to ask the door with
@@ -10541,7 +10549,94 @@ function _sbWriteFailed(table, status, body, row, method, matchCol){
     try{ sqPush(table, row, method||'POST', matchCol||null); }catch(e){}
   }
 }
+/* ==========================================================================
+   THE SESSION FLIP GUARD (Yusuf, order, 2 Sep).
+   His words: if the app becomes a client, everything he does next is written
+   as them. It never silently writes as the wrong person.
+
+   WHAT DECIDES. yjb_owner_code is stamped once, when a trainer signs in on a
+   device, and is never cleared by signing in as somebody else - it is the only
+   thing in the app that knows whose hands are on the screen. When it names a
+   trainer and the live session names somebody else, this device is a trainer's
+   and the session is not his. Every write refuses, out loud, until he is
+   signed back in.
+
+   THREE THINGS IT DOES NOT FIRE ON, each deliberate:
+   - a client's own phone, where yjb_owner_code was never set. Clients write to
+     their own rows all day and this must never touch them.
+   - view-as-client, which already refuses every write on its own and says so
+     in its own words. Two refusals for one write is one confusing screen.
+   - the scratch client, which exists to be written to.
+   ========================================================================== */
+function _sessionFlipped(){
+  try{
+    if(window.VIEWAS) return null;
+    var owner=''; try{ owner=String(localStorage.getItem('yjb_owner_code')||''); }catch(e){}
+    if(!owner) return null;
+    var here=(typeof cl!=='undefined' && cl && cl.code) ? String(cl.code) : '';
+    if(!here || here===owner) return null;
+    if(typeof isTrainer==='function' && isTrainer(here)) return null;
+    if(typeof isScratchCode==='function' && isScratchCode(here)) return null;
+    return {owner:owner, here:here, name:((cl&&cl.name)||here)};
+  }catch(e){ return null; }
+}
+window._flipRefused=[];
+function _flipRefuse(what){
+  var f=_sessionFlipped(); if(!f) return false;
+  try{ window._flipRefused.push({what:String(what||''), at:Date.now(), as:f.here}); }catch(e){}
+  try{ console.error('[session] REFUSED '+what+' - the session is '+f.here+' and this device is '+f.owner+'. Nothing was written.'); }catch(e){}
+  try{ _flipPaint(f); }catch(e){}
+  return true;
+}
+/* THE PLAIN LINE. Same gutter and the same shape as the view-as marker, so the
+   two never fight for the same strip of screen, and one button that puts him
+   back rather than a sentence telling him to do it himself. */
+function _flipPaint(f){
+  try{
+    if(!document.body) return;
+    if(!document.getElementById('flipMarkCss')){
+      var st=document.createElement('style'); st.id='flipMarkCss';
+      st.textContent='#flipMark{position:fixed;left:50%;transform:translateX(-50%);'
+        +'bottom:calc(12px + env(safe-area-inset-bottom));z-index:2147483001;'
+        +'display:flex;align-items:center;gap:9px;max-width:94vw;'
+        +'background:rgba(64,32,32,0.96);border:1px solid rgba(226,138,138,0.55);'
+        +'border-radius:999px;padding:6px 7px 6px 14px;'
+        +'font-family:\'Plus Jakarta Sans\',sans-serif;font-size:11.5px;font-weight:700;'
+        +'color:#ffe7e7;letter-spacing:0.1px;white-space:nowrap;overflow:hidden;'
+        +'text-overflow:ellipsis;box-shadow:0 6px 20px rgba(0,0,0,0.5);}'
+        +'#flipMark button{background:#5a2b2b;border:1px solid rgba(226,138,138,0.6);'
+        +'color:#fff;border-radius:999px;padding:5px 11px;font-size:11px;font-weight:800;'
+        +'cursor:pointer;font-family:inherit;flex-shrink:0;}'
+        +'@media (max-width:1023px){#flipMark{bottom:calc(76px + env(safe-area-inset-bottom));}}';
+      document.head.appendChild(st);
+    }
+    var el=document.getElementById('flipMark');
+    if(!el){
+      el=document.createElement('div'); el.id='flipMark';
+      el.innerHTML='<span id="flipMarkTxt"></span><button type="button" id="flipMarkX">Sign back in as you</button>';
+      document.body.appendChild(el);
+      var b=document.getElementById('flipMarkX');
+      if(b) b.onclick=function(){ _flipRestore(); };
+    }
+    var n=0; try{ n=window._flipRefused.length; }catch(e){}
+    var t=document.getElementById('flipMarkTxt');
+    if(t) t.textContent='The session flipped - you are signed in as '+f.name
+      +', not you. '+n+' write'+(n===1?'':'s')+' refused, nothing was saved.';
+  }catch(e){}
+}
+function _flipRestore(){
+  try{
+    var owner=localStorage.getItem('yjb_owner_code')||'';
+    if(!owner) return;
+    localStorage.setItem('yjb_logged_in', owner);
+    try{ localStorage.removeItem('yjb_session'); }catch(e){}
+    window._navigatingAway=true;
+    window.location.replace(window.location.pathname);
+  }catch(e){}
+}
+
 async function sbInsert(table, data){
+  if(_flipRefuse('POST '+table)) return false;
   try{
     var row=data, b='', res=null;
     // Up to three unknown columns get dropped before we give up. A row that's mostly
@@ -10564,6 +10659,7 @@ async function sbInsert(table, data){
 // sbInsert returns a boolean and swallows the reason. For anything where a silent
 // failure would lie to the user, use this instead — it throws with the server's message.
 async function sbInsertStrict(table, data){
+  if(_flipRefuse('POST '+table)){ var _fe=new Error('The session flipped - nothing was written.'); _fe.status=423; throw _fe; }
   var res = await fetch(SB_URL+'/rest/v1/'+table, {
     method:'POST', headers:sbHeaders(), body:JSON.stringify(data)
   });
@@ -10584,6 +10680,7 @@ async function sbInsertStrict(table, data){
 // table whose private column the public key may not read would be refused on the
 // way out. Callers that only need the id say so.
 async function sbInsertReturning(table, data, sel){
+  if(_flipRefuse('POST '+table)) return null;
   try{
     var h = sbHeaders(); h['Prefer'] = 'return=representation';
     var q = sel ? ('?select='+encodeURIComponent(sel)) : '';
@@ -10755,6 +10852,7 @@ function _sbFailMark(){ try{ return window._sbFailN||0; }catch(e){ return 0; } }
 function _sbFailedSince(mark){ try{ return (window._sbFailN||0)!==mark; }catch(e){ return false; } }
 
 async function sbUpsert(table, data, onConflict){
+  if(_flipRefuse('UPSERT '+table)) return false;
   try{
     var headers = Object.assign({}, sbHeaders(), {'Prefer':'resolution=merge-duplicates,return=minimal','Content-Type':'application/json'});
     // PostgREST needs ?on_conflict=col1,col2 to know which constraint to merge on
@@ -11628,6 +11726,9 @@ function _sqWrite(a){ try{ localStorage.setItem(_SQ_KEY, JSON.stringify(a.slice(
 function sqPush(table, row, method, matchCol){
   // A refusal that replays later is not a refusal. See the VIEW AS CLIENT block.
   if(window.VIEWAS){ try{ _vaRefused('queued '+(method||'POST')+' '+table); }catch(e){} return; }
+  // Same reason, for the session flip: a write refused now must not be waiting
+  // on the queue to land on the wrong person's row an hour from now.
+  if(_flipRefuse('queued '+(method||'POST')+' '+table)) return;
   var q=_sqAll();
   // While the breaker is open every attempt queues, so five taps on a dead
   // server used to become five identical rows — and the replay path is a raw
@@ -49030,6 +49131,9 @@ function _edReadTag(){ var t=document.getElementById('edTagInput'); return t?Str
 // actually landed. Callers do BOTH halves off that answer — the message AND the
 // optimistic screen update — so the page can never contradict the toast.
 async function sbWrite(method, path, body, prefer){
+  if(String(method||'GET').toUpperCase()!=='GET' && _flipRefuse(method+' '+String(path||'').split('?')[0])){
+    return {ok:false, status:423, body:'session flipped - nothing was written'};
+  }
   try{
     var opt={method:method, headers:sbHeaders()};
     if(body!==undefined && body!==null){
