@@ -88,10 +88,31 @@ function asyncAt(n){ const a=L.findIndex(l=>l.indexOf('async function '+n+'(')==
   let b=a; while(b<L.length && L[b]!=='}') b++; return L.slice(a,b+1).join('\n'); }
 const turn=asyncAt('_jtPhoneTurn');
 t(!!turn, 'the phone command still exists');
-t(/trainerWrite\('clientPatch',\{code:code, phone:num\}\)/.test(turn), 'it saves through the door that has always taken a phone');
-t(/String\(w\.rows\[0\]\.phone\|\|''\)\.replace\(\/\\D\/g,''\)===num\.replace\(\/\\D\/g,''\)/.test(turn),
+// ===== ONE CODE PATH FOR STORING A NUMBER (Yusuf, 2 Sep - Scott, day two) =====
+// Four paths could store a client's number and they stored it in different
+// places: the card wrote localStorage + profiles + clients, the new-client
+// dialog wrote clients ONCE and unchecked, the voice add wrote clients with a
+// read-back, and this turn wrote clients with a read-back and nothing else. So
+// a number typed in the dialog missed the local cache that quietly rescues the
+// card path, and Scott's number was gone by the next morning.
+// _phoneStore is the one door now. These assertions moved onto it; every
+// guarantee they made is still made, of the one place that makes it.
+const door1=asyncAt('_phoneStore');
+t(!!door1, 'there is one door for storing a number');
+t(/trainerWrite\('clientPatch', \{code:code, phone:\(want\|\|null\)\}\)/.test(door1),
+  'it saves through the door that has always taken a phone');
+t(/String\(row\.phone==null\?'':row\.phone\)/.test(door1) && /got\.replace\(\/\\D\/g,''\)===want\.replace\(\/\\D\/g,''\)/.test(door1),
   'and it reads the digits back off the row the server wrote');
-t(/didn.t read back correctly/.test(turn), 'and says so plainly when they do not match');
+t(/CLIENTS\[code\]\.phone=stored/.test(door1), 'sets it where the Text button reads it');
+t(/localStorage\.setItem\('yjb_phones'/.test(door1), 'and into the local cache the card path always had');
+t(/sbUpsert\('profiles'/.test(door1), 'and profiles, so all three places move together');
+t(/return \{ok:false, phone:want, why:why\}/.test(door1), 'a failure comes back with its reason, never as a shrug');
+// and every caller goes through it, so the four cannot drift apart again
+const phoneWriters=(src.match(/trainerWrite\((?:'|\")clientPatch(?:'|\"),?\s*\{[^}]*phone:/g)||[]);
+t(phoneWriters.length===1, 'and it is the ONLY place a phone is patched', phoneWriters.length+' found');
+t(/_phoneStore\(code, num\)/.test(turn), 'the Jarvis turn goes through it');
+t(/if\(!_r\.ok\) return \{ok:false/.test(turn) && /_r\.why/.test(turn),
+  'and says so plainly, carrying the door\'s own reason, when they do not match');
 
 console.log('\n  ONE SENTENCE SAVES ONCE AND SAYS SO ONCE:');
 // Both halves can now see the whole sentence, so both resolve the same client
@@ -142,22 +163,30 @@ console.log('\n  EVERY ADD PATH VERIFIES THE NUMBER IT WAS GIVEN:');
 // The voice path, which is the one that ran for Benjamin.
 const va=src.slice(src.indexOf('async function _jvJarvisAddClient('), src.indexOf('async function _jtNewClientTurn('));
 t(va.length>500, 'the voice add path is findable');
-t(/trainerWrite\('clientPatch', \{code:code, phone:_phSaid\}\)/.test(va), 'it patches the number it was given');
-t(/_pw && _pw\.ok && _pwRow/.test(va), 'and looks at the answer instead of discarding it');
-t(/String\(_pwRow\.phone\|\|''\)\.replace\(\/\\D\/g,''\)===_phSaid\.replace\(\/\\D\/g,''\)/.test(va),
-  'compared on digits, off the row the door wrote back');
+t(/_phoneStore\(code, _phSaid\)/.test(va), 'it patches the number it was given, through the one door');
+t(/if\(_pr\.ok\) _phLanded=_pr\.phone;/.test(va), 'and looks at the answer instead of discarding it');
 t(/CLIENTS\[code\]\.phone=_phLanded/.test(va), 'sets it where the share sheet and the Text button read it');
-t(/_pm\[code\]=_phLanded;/.test(va) && /localStorage\.setItem\('yjb_phones'/.test(va),
-  'and into the cache those two hydrate from, by the same key _jvSavePhone uses');
 t(/number saved/.test(va), 'the spoken line says so when it landed');
 t(/I could not save that number/.test(va), 'and says so plainly when it did not');
 t(va.indexOf('I could not save that number')>va.indexOf('_pwRow'), 'the failure line is decided by the read-back, not guessed');
 
 // The form path, which was already correct — asserted so it stays that way.
 const fa=src.slice(src.indexOf('async function addClientToDb('), src.indexOf('async function addClientToDb(')+9000);
-t(/trainerWrite\('clientPatch',\{code:code, phone:_ph\}\)/.test(fa), 'the form patches its number too');
-t(/if\(_pw && _pw\.ok\)\{ CLIENTS\[code\]\.phone=_ph; \}/.test(fa), 'and only claims it on a good answer');
-t(/did not save/.test(fa), 'and tells him when it did not');
+t(/_phoneStore\(code, _phInput\)/.test(fa), 'the form patches its number too, through the same door');
+t(/_phRes && _phRes\.ok/.test(fa), 'and only claims it on a good answer');
+t(/NUMBER DID NOT SAVE/.test(fa), 'and tells him when it did not');
+// ===== AND IT TELLS HIM IN THE TOAST HE IS ALREADY READING ==============
+// The failure used to arrive as a SECOND toast 1.8 seconds later, underneath
+// the success tick, which is why "it looked like it saved".
+t(fa.indexOf('_phoneStore(code, _phInput)') < fa.indexOf("showToast('\\u2713 '"),
+  'the number is verified BEFORE the tick, not after it');
+t(!/}, 1800\)/.test(fa), 'and there is no 1.8-second afterthought toast left');
+t(/_phWord/.test(fa), 'the one toast carries the number\'s fate');
+// ===== AND SURVIVES THE ROSTER RELOAD ===================================
+// loadRosterFromDB refills CLIENTS wholesale, one line after the number was
+// set. That is what erased it in memory with nothing left to see.
+t(fa.indexOf('_phoneReapply(code, _phRes.phone)') > fa.indexOf('await loadRosterFromDB()'),
+  'and it is put back AFTER the roster reload that used to wipe it');
 
 // The quick-add path CANNOT carry one, and must not pretend to.
 console.log('\n  and the bare quick-add cannot silently swallow a number:');

@@ -92,8 +92,22 @@ t('a day of meals with no macros recorded grows no line',
 t('the totals line uses the meal rows own builder', ()=>{
   const one=O._mealMacLine({calories:2040,protein:144,carbs:232,fat:48},'short',{time:false,group:true});
   return line.indexOf(one)>=0; });
-t('and a MEAL row keeps its ungrouped number', ()=>
-  O._mealMacLine({calories:2040,protein:10,carbs:0,fat:0},'short',{time:false})==='2040 cal · 10g P');
+// ONE LINE, ONE FORMAT (Yusuf, 2 Sep, off Scott's card). The meal row used to
+// keep the bare number on the grounds that a day runs to four figures where one
+// meal does not. Meals do - a 2,625 calorie plate is an ordinary row on this
+// roster - so his card printed 2625 on the row and 2,625 underneath it. Grouped
+// on both now.
+t('and a MEAL row is grouped the same way, so the card speaks one dialect', ()=>
+  O._mealMacLine({calories:2040,protein:10,carbs:0,fat:0},'short',{time:false})==='2,040 cal · 10g P');
+t('...and opts.group:false is still there for a surface that wants the bare number', ()=>
+  O._mealMacLine({calories:2040,protein:10,carbs:0,fat:0},'short',{time:false,group:false})==='2040 cal · 10g P');
+// AND A ONE-MEAL DAY DOES NOT RESTATE ITSELF. This is the doubled line he
+// pasted off Scott's card: the meal row, then the same figures again, grouped.
+t('a day of exactly one meal grows no totals line - the row above already said it', ()=>
+  O._pfTotalsHtml([food('Breakfast','9:48 AM','13:48:00',853,53,77,37)])==='');
+t('and two meals still total', ()=>
+  O._pfTotalsHtml([food('Breakfast','9:48 AM','13:48:00',853,53,77,37),
+                   food('Lunch','1 PM','18:00:00',700,50,70,12)])!=='');
 
 // ---- MORNING TO NIGHT ------------------------------------------------------
 t('eat time wins over the log stamp', ()=>O._citeDayMins(CHRIS[0])===9*60+14);
