@@ -76238,6 +76238,48 @@ var _JIM_CLAIM_FOOD_RE=new RegExp("\\b"+_JIM_CLAIM_VERB
 // demands — a food turn can never be corrected by the workout net — holds.
 var _JIM_CLAIM_FOOD2_RE=new RegExp("\\b"+_JIM_CLAIM_VERB
   + "\\b[^\\n]{0,70}?\\b\\d+\\s*(?:cal\\b|calories\\b|g\\s*(?:of\\s*)?(?:protein|carbs|carbohydrates|fat)\\b)", "i");
+// ===== A NET MAY ONLY SPEAK WHEN THE TURN OFFERED A NEW ENTRY ============
+// (Yusuf, ruling, 2 Sep, from a client conversation where all three of these
+// went out in one sitting.) The three food nets were gated ASYMMETRICALLY:
+// _JIM_CLAIM_EXISTS_RE asked whether the CLIENT had described a meal, and the
+// other two asked nothing at all -- they read Jim's reply alone. So any reply
+// ABOUT a stored entry -- a recap, an answer to "did you log it", a
+// confirmation of yesterday -- tripped the net, found no NEW marker (correctly,
+// because nothing new was meant to be written), and a true sentence was
+// replaced with "I do not think that actually saved". His:
+//   he:  "Did you log it for yesterday, Aug 31st on Monday for dinner?"
+//   Jim: (an honest yes, thrown away)
+// That is the exact harm the net exists to prevent, pointed the other way: it
+// told a client a good log failed and invited them to log it twice.
+//
+// ONE CONDITION, ALL THREE NETS. The intent was already written into the EXISTS
+// net gate and never applied to the other two. The regexes are not touched --
+// they are measured and they are right. The bug was the missing gate.
+//
+// A QUESTION IS NOT AN OFFER, AND _jimLooksLikeMeal CANNOT ANSWER THAT ALONE.
+// It returns true on `ate` BEFORE it consults its own question veto, so
+// "Did you log the tofu I had yesterday?" carries "I had" and reads as a meal.
+// _jimSaysDidSession, the workout twin, stands down for a question on its first
+// line; food deliberately does not, and that early return is CORRECT WHERE IT
+// LIVES -- "I had chicken and rice, is that ok?" is a real meal with a question
+// attached, and a bare question-mark veto inside _jimLooksLikeMeal would stop
+// it logging. So the veto belongs HERE, at the gate, and it is narrow on
+// purpose: the turn has to OPEN as a question AND carry a question mark. That
+// keeps "I had chicken and rice, is that ok?" an offer (so a phantom claim
+// about it is still caught) and makes "Did you log it...?" not one.
+var _JIM_ASKS_FIRST_RE=new RegExp(
+    "^\\s*(?:so|and|but|hey|ok|okay|wait|hi|yo)?[\\s,]*"
+  + "(?:what|why|when|where|who|whom|which|how|did|do|does|is|are|was|were"
+  + "|can|could|should|shall|will|would|any|anything)\\b", "i");
+// A PHOTO IS AN OFFER WITH NO WORDS IN IT. Gating on the text alone would take
+// the net off every photo log, which is a phantom hole -- so the photo counts
+// as the offer and the guard keeps working there exactly as it did.
+function _jimTurnOffersFood(text, hasPhoto){
+  if(hasPhoto) return true;
+  var s=String(text||''); if(!s.trim()) return false;
+  try{ if(/\?/.test(s) && _JIM_ASKS_FIRST_RE.test(s.trim())) return false; }catch(e){}
+  try{ return !!_jimLooksLikeMeal(s); }catch(e){ return false; }
+}
 // HIS SPLIT NAME IS THE TITLE (Yusuf, R2). "push and pull" is a Push Pull, not a
 // "Workout" — the generic default is the app forgetting what he called it.
 // CONSUMES THE ONE LIST, so a part added for the session readers is a part this
@@ -77729,10 +77771,16 @@ async function jimTurn(text, photos, opts){
         + '.';
     }
   }catch(e){ console.error('speak-the-row', e); }
-  var _foodConfirmMatch = _JIM_CLAIM_FOOD_RE.exec(reply) || _JIM_CLAIM_FOOD2_RE.exec(reply);
-  // The verb-free claim, gated on his sentence being a meal in the first place.
-  if(!_foodConfirmMatch){
-    try{ if(_jimLooksLikeMeal(text)) _foodConfirmMatch=_JIM_CLAIM_EXISTS_RE.exec(reply); }catch(e){}
+  // ONE GATE, ALL THREE NETS (Yusuf, 2 Sep). See _jimTurnOffersFood. A reply
+  // about an entry that already exists is never corrected, because nothing new
+  // was offered and so nothing new was meant to be written.
+  var _foodTurnOffered=false;
+  try{ _foodTurnOffered=_jimTurnOffersFood(text, hasPhoto); }catch(e){}
+  var _foodConfirmMatch = null;
+  if(_foodTurnOffered){
+    _foodConfirmMatch = _JIM_CLAIM_FOOD_RE.exec(reply)
+                     || _JIM_CLAIM_FOOD2_RE.exec(reply)
+                     || _JIM_CLAIM_EXISTS_RE.exec(reply);
   }
   if(!_foodExpected && !_rawReplyHadFoodTag && _foodConfirmMatch){
     console.error('FOOD confirmation with no marker at all — refusing to let it stand', reply);
