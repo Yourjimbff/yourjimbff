@@ -2818,6 +2818,7 @@ body.cl1 .ah{margin-left:0;}
 body.cl1 #pgSegs,
 body.cl1 #pgPaneTraining,
 body.cl1 #pgPaneFood,
+body.cl1 #yfHost,
 body.cl1 #prgStatusHost,
 body.cl1 #prgTiles{display:none !important;}
 
@@ -8737,6 +8738,12 @@ body.hasnav #tToday{padding-bottom:96px;}
          read as a page that had lost something. Status + weight on one side,
          photos + the detail on the other. On a phone the grid is not applied and
          they simply stack in this order. -->
+    <!-- YOUR FILE leads the Progress page. It is not behind a tap: "the client
+         has a profile that they can always see" is the whole order. Hidden for
+         the trainer by renderYourFile, and hidden on the desktop calendar's
+         right pane (body.cl1) the same way #prgStatusHost is, so the calendar
+         page keeps the shape it had. -->
+    <div id="yfHost"></div>
     <div class="prgGrid">
       <div>
         <!-- The week she RECEIVES leads the page: it is a record that arrived,
@@ -8760,6 +8767,10 @@ body.hasnav #tToday{padding-bottom:96px;}
            the DOM before that runs, so a hardcoded "Feed" flashed on every sign-in. -->
       <div id="feedTabHeading" style="display:none;font-family:'Plus Jakarta Sans',sans-serif;font-size:22px;font-weight:800;letter-spacing:-0.3px;line-height:1;"></div>
     </div>
+    <!-- The quiet once-a-week line asking a client to fill their file in. A card
+         in the flow of the page, never a modal, covering nothing, and gone the
+         moment the file is full. -->
+    <div id="yfDayLine" style="display:none;margin:0 0 14px;"></div>
     <div id="feedTabBody"><div style="text-align:center;padding:40px 0;color:var(--muted);font-size:13px;">Loading…</div></div>
   </div>
 
@@ -19371,7 +19382,7 @@ function _covShellHtml(code){
       + '<button class="covX" onclick="covClose()" title="Close">×</button>'
     + '</div>'
     + '<div class="covCols">'
-      + '<div class="covPerson">'+_covPersonHtml(code, open)+_crmThreadCardHtml(code)+'</div>'
+      + '<div class="covPerson">'+_covPersonHtml(code, open)+_yfCoachCardHtml(code)+_crmThreadCardHtml(code)+'</div>'
       + '<div class="covDay">'
         + '<div id="covDayHead">'+_covDayHeadHtml()+'</div>'
         + '<div id="covDayBody"><div class="covLoad">Reading their day…</div></div>'
@@ -49849,6 +49860,10 @@ async function tlComplete(dateStr, title){
 
 async function loadFeedTab(){
   var body=document.getElementById('feedTabBody'); if(!body) return;
+  // ONCE PER SESSION, and only for a client whose file is empty and who is new.
+  // Everyone already on the roster meets the quiet line above instead.
+  try{ if(!window._yfAsked){ window._yfAsked=1; setTimeout(function(){ try{ _yfFirstAsk(); }catch(e){} }, 900); } }catch(e){}
+  try{ _yfDayLine(); }catch(e){}
   var head=document.getElementById('feedTabHeading');
   if(cl && typeof hasDayTimeline==='function' && hasDayTimeline(cl.code)){
     // Calendar view (trainers + the clients on the calendar list)
@@ -56813,8 +56828,9 @@ function switchTab(t){
   // Every tab, not just this one: leaving the calendar is what takes the
   // right pane back down again.
   try{ _clPaneApply(); }catch(e){}
-  if(t==='Progress'){ try{ renderProgressTab(); }catch(e){} }
+  if(t==='Progress'){ try{ renderProgressTab(); }catch(e){} try{ renderYourFile(false); }catch(e){} }
   if(t==='Feed'){ if(typeof loadFeedTab==='function') loadFeedTab();
+    try{ _yfDayLine(); }catch(e){}
     if(_wasFeed){ try{ tlScrollToToday(); }catch(e){} }
     setTimeout(function(){ try{ _tlWatchToday(); }catch(e){} }, 120); }
   // Jim's pinned bar belongs to the Day tab only — every other tab has its own way in.
@@ -79591,6 +79607,9 @@ function _gpSecAccount(){
 }
 async function renderProgressTab(){
   var page=document.getElementById('tProgress'); if(!page || !cl) return;
+  // Their own file leads this page. Not awaited: the rest of the page must not
+  // wait on a profiles read, and renderYourFile draws its own loading line.
+  try{ renderYourFile(false); }catch(e){}
   // FIRST, and before any of the moves below: this is what fills #prgStatusHost
   // with the current-status card, and it is also what claims #bodyWeight for its
   // own drawer. Running it here means the moves that follow always get the last
@@ -86480,7 +86499,7 @@ async function callsBarRender(force){
      opens the list instead. */
   bar._next = (!today.failed && left && left.length) ? left[0] : null;
   bar.onclick = function(){
-    if(bar._next){ try{ _pcFromRow(bar._next); return; }catch(e){} }
+    if(bar._next){ try{ _pbFromRow(bar._next); return; }catch(e){} }
     try{ openCallsView(); }catch(e){}
   };
   bar.setAttribute('aria-label', bar._next ? ('Open the brief for '+_callsWho(bar._next)) : 'Your calls');
@@ -87501,17 +87520,17 @@ async function crmThreadLoad(code){
    brief needs the file AND the thread, so it reads that table once and parses
    both markers out of the same rows.
    ========================================================================= */
-var _PC_BUSY=false;
+var _PB_BUSY=false;
 
-function _pcField(file, key){
+function _pbField(file, key){
   if(!file || !file.fields || !file.fields[key]) return '';
   return String(file.fields[key].text||'').trim();
 }
-function _pcLines(s, cap){
+function _pbLines(s, cap){
   return String(s||'').split(/\n+/).map(function(l){ return l.replace(/^[\-•\*\s]+/,'').trim(); })
     .filter(function(l){ return l && (!cap || l.length<=cap); });
 }
-async function _pcNotes(code){
+async function _pbNotes(code){
   var res=null;
   try{ res=await trainerOpChecked('clientNotes',{code:code}); }catch(e){ res=null; }
   if(!res || !res.ok) return {ok:false, file:null, msgs:[]};
@@ -87530,7 +87549,7 @@ async function _pcNotes(code){
   msgs.sort(function(a,b){ return String(a.at||'').localeCompare(String(b.at||'')); });
   return {ok:true, file:file, msgs:msgs};
 }
-function _pcDaysBetween(a,b){
+function _pbDaysBetween(a,b){
   try{ var x=new Date(a), y=new Date(b);
        if(isNaN(x.getTime())||isNaN(y.getTime())) return null;
        return Math.round((y-x)/86400000); }catch(e){ return null; }
@@ -87539,10 +87558,10 @@ function _pcDaysBetween(a,b){
    on their row. Age and height are read out of the file's own PERSONAL
    DETAILS and only when the file says them outright - nothing here guesses a
    number about a person. */
-function _pcWhoBits(code, file, deb){
+function _pbWhoBits(code, file, deb){
   var c=(window.CLIENTS && CLIENTS[code]) || {};
   var bits=[];
-  var pd=_pcField(file,'personal_details');
+  var pd=_pbField(file,'personal_details');
   var m;
   if((m=/\bage[^0-9]{0,4}(\d{2})\b/i.exec(pd))) bits.push(m[1]);
   /* the quote characters are escaped rather than typed: a bare apostrophe
@@ -87551,18 +87570,18 @@ function _pcWhoBits(code, file, deb){
      as missing. */
   if((m=/\b(\d)\s*[\x27\u2019]\s*(\d{1,2})\b/.exec(pd))) bits.push(m[1]+'\x27'+m[2]);
   else if((m=/\bheight[^0-9]{0,4}(\d{3})\s*cm\b/i.exec(pd))) bits.push(m[1]+'cm');
-  var w=_pcLatestWeight(deb);
+  var w=_pbLatestWeight(deb);
   /* "180 lb on today" is not English. _dbOnDate is the rule the debrief
      already uses: a day word that places itself takes no preposition, a dated
      one does. */
   if(w && w.v!=null) bits.push(Math.round(w.v*10)/10+' lb'+(w.ds?(' '+_dbOnDate(w.ds)):''));
   if(c.started_at){
-    var n=_pcDaysBetween(c.started_at, new Date());
+    var n=_pbDaysBetween(c.started_at, new Date());
     if(n!=null && n>=0) bits.push(n<14 ? (n+' day'+(n===1?'':'s')+' in') : (Math.floor(n/7)+' weeks in'));
   }
   var term='';
   if(c.started_at && c.term_ends){
-    var t=_pcDaysBetween(c.started_at, c.term_ends);
+    var t=_pbDaysBetween(c.started_at, c.term_ends);
     if(t!=null && t>0) term=Math.round(t/30.44)+' month term';
   } else if(c.term_months!=null){
     var mm=parseFloat(c.term_months);
@@ -87571,11 +87590,11 @@ function _pcWhoBits(code, file, deb){
   if(term) bits.push(term);
   return bits;
 }
-function _pcSayDate(ds){
+function _pbSayDate(ds){
   try{ var s=_jvSpokenDateStr(ds); if(s) return s; }catch(e){}
   return ds;
 }
-function _pcLatestWeight(deb){
+function _pbLatestWeight(deb){
   if(!deb) return null;
   if(deb.failed && deb.failed.weight) return {failed:true};
   var w=deb.weight||{};
@@ -87589,16 +87608,16 @@ function _pcLatestWeight(deb){
    last text when the last word in the thread is theirs, and any line in his
    file that names something owed. A line is only pulled when it says so in
    words - this does not decide on his behalf that something is unresolved. */
-var _PC_OPEN_RE=/\b(asked|asking|promised|owes?|owed|waiting|unresolved|open loop|follow ?up|to send|will send|said (?:he|i|she|they) would|needs? (?:a |an )?(?:answer|reply|programme|program))\b/i;
-function _pcOpenItems(file, msgs){
+var _PB_OPEN_RE=/\b(asked|asking|promised|owes?|owed|waiting|unresolved|open loop|follow ?up|to send|will send|said (?:he|i|she|they) would|needs? (?:a |an )?(?:answer|reply|programme|program))\b/i;
+function _pbOpenItems(file, msgs){
   var out=[];
   if(msgs.length){
     var last=msgs[msgs.length-1];
     if(last.who==='them') out.push({src:'their last text', text:last.text, at:last.at});
   }
   ['relationship_state','push_points','last_touch','tracked_progress','goal'].forEach(function(k){
-    _pcLines(_pcField(file,k), 220).forEach(function(l){
-      if(_PC_OPEN_RE.test(l)) out.push({src:'their file', text:l});
+    _pbLines(_pbField(file,k), 220).forEach(function(l){
+      if(_PB_OPEN_RE.test(l)) out.push({src:'their file', text:l});
     });
   });
   var seen={}, uniq=[];
@@ -87609,14 +87628,14 @@ function _pcOpenItems(file, msgs){
    on the screen above it and carrying where it came from. Where there is not
    enough on file to make three, it makes fewer and says so - three invented
    questions before a call is worse than one real one. */
-function _pcAsk(file, msgs, deb){
+function _pbAsk(file, msgs, deb){
   var qs=[];
   if(msgs.length){
     var last=msgs[msgs.length-1];
     if(last.who==='them' && last.text.indexOf('?')>=0)
       qs.push({q:'They asked: “'+last.text+'” Answer that first.', from:'their last text'});
   }
-  _pcLines(_pcField(file,'push_points'), 160).forEach(function(l){
+  _pbLines(_pbField(file,'push_points'), 160).forEach(function(l){
     if(qs.length>=3) return;
     qs.push({q:'“'+l+'” Where is that at?', from:'push points, their file'});
   });
@@ -87633,33 +87652,33 @@ function _pcAsk(file, msgs, deb){
     qs.push({q:'Weight is '+w.dir+' '+Math.abs(w.delta)+' over four weeks. Is that what they were after?', from:'their weigh-ins'});
   }
   if(qs.length<3){
-    var why=_pcLines(_pcField(file,'why_words'), 200)[0];
+    var why=_pbLines(_pbField(file,'why_words'), 200)[0];
     if(why) qs.push({q:'They said they were here for: “'+why+'” Does that still hold?', from:'their why, their file'});
   }
   return qs.slice(0,3);
 }
 
 /* ---- THE SHEET --------------------------------------------------------- */
-var _PC_S={
+var _PB_S={
   lbl:'font-size:9.5px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:rgba(240,236,228,0.48);margin:0 0 6px;',
   body:'font-size:13px;line-height:1.55;color:rgba(240,236,228,0.9);overflow-wrap:anywhere;',
   quiet:'font-size:12.5px;line-height:1.5;color:rgba(240,236,228,0.6);overflow-wrap:anywhere;',
   src:'font-size:10px;color:rgba(240,236,228,0.42);margin-top:3px;',
   sec:'padding:13px 0;border-top:1px solid rgba(255,255,255,0.07);'
 };
-function _pcSec(label, inner){
-  return '<div style="'+_PC_S.sec+'"><div style="'+_PC_S.lbl+'">'+_escHtml(label)+'</div>'+inner+'</div>';
+function _pbSec(label, inner){
+  return '<div style="'+_PB_S.sec+'"><div style="'+_PB_S.lbl+'">'+_escHtml(label)+'</div>'+inner+'</div>';
 }
-function _pcNone(what){
-  return '<div style="'+_PC_S.quiet+'">'+_escHtml(what)+'</div>';
+function _pbNone(what){
+  return '<div style="'+_PB_S.quiet+'">'+_escHtml(what)+'</div>';
 }
-function _pcQuote(t){
-  return '<div style="'+_PC_S.body+'font-style:normal;padding-left:11px;border-left:2px solid rgba(245,197,24,0.35);">“'+_escHtml(t)+'”</div>';
+function _pbQuote(t){
+  return '<div style="'+_PB_S.body+'font-style:normal;padding-left:11px;border-left:2px solid rgba(245,197,24,0.35);">“'+_escHtml(t)+'”</div>';
 }
 
 async function openPreCallBrief(code, whoLabel){
   if(!code){ return; }
-  if(_PC_BUSY) return; _PC_BUSY=true;
+  if(_PB_BUSY) return; _PB_BUSY=true;
   try{
     closePreCallBrief();
     var name=whoLabel || ((window.CLIENTS && CLIENTS[code] && CLIENTS[code].name) || code);
@@ -87676,7 +87695,7 @@ async function openPreCallBrief(code, whoLabel){
       +'<button type="button" aria-label="Close" onclick="closePreCallBrief()" style="position:absolute;top:9px;right:9px;width:44px;height:44px;border-radius:50%;background:#1f1f1f;border:1px solid var(--border);color:var(--m2);font-size:20px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;font-family:inherit;">×</button>'
       +'<div style="font-size:19px;font-weight:800;color:#f0ece4;padding-right:46px;letter-spacing:-0.3px;">'+_escHtml(name)+'</div>'
       +'<div style="font-size:10.5px;color:rgba(240,236,228,0.5);margin-top:3px;">Before the call</div>'
-      +'<div id="pcBody" style="margin-top:10px;"><div style="'+_PC_S.quiet+'">Reading their file…</div></div>'
+      +'<div id="pcBody" style="margin-top:10px;"><div style="'+_PB_S.quiet+'">Reading their file…</div></div>'
       +'</div>';
     document.body.appendChild(ov);
     ov._esc=function(e){ if(e.key==='Escape'){ e.preventDefault(); closePreCallBrief(); } };
@@ -87691,56 +87710,79 @@ async function openPreCallBrief(code, whoLabel){
       y0=null;
     }, {passive:true});
 
-    var n=await _pcNotes(code);
+    var n=await _pbNotes(code);
     var deb=null;
     try{ deb=await _jvDebriefData(code); }catch(e){ deb=null; }
+    /* THE CLIENT'S OWN WORDS, from the file they fill in themselves. This is
+       what makes "I read this before every call" true rather than a pitch. */
+    var own=null;
+    try{ var g=await _yfProfile(code, true); if(g && g.ok) own=_yfIntake(g.prof||{}); }catch(e){ own=null; }
     var body=document.getElementById('pcBody');
     if(!body) return;
-    body.innerHTML=_pcRender(code, name, n, deb);
+    body.innerHTML=_pbRender(code, name, n, deb, own);
   }catch(e){
     console.error('preCallBrief', e);
     var b=document.getElementById('pcBody');
-    if(b) b.innerHTML='<div style="'+_PC_S.quiet+'color:#ffb4bc;">I could not build their brief. That is a read that failed, not an empty client.</div>';
-  } finally { _PC_BUSY=false; }
+    if(b) b.innerHTML='<div style="'+_PB_S.quiet+'color:#ffb4bc;">I could not build their brief. That is a read that failed, not an empty client.</div>';
+  } finally { _PB_BUSY=false; }
 }
-function _pcRender(code, name, n, deb){
+function _pbRender(code, name, n, deb, own){
   var file=n.file, msgs=n.msgs||[], h='';
+  own=own||{};
   if(!n.ok){
-    h+='<div style="'+_PC_S.sec+'"><div style="'+_PC_S.body+'color:#ffb4bc;">I could not read their record just now. Everything below would be blanks, so there is nothing below. That is a failed read, not an empty client.</div></div>';
+    h+='<div style="'+_PB_S.sec+'"><div style="'+_PB_S.body+'color:#ffb4bc;">I could not read their record just now. Everything below would be blanks, so there is nothing below. That is a failed read, not an empty client.</div></div>';
     return h;
   }
   if(!file){
+    var haveOwn = !!(String(own.why||'').trim() || String(own.training||'').trim() || (own.profile && Object.keys(own.profile).some(function(k){ return String(own.profile[k]||'').trim(); })));
     h+='<div style="margin:8px 0 2px;padding:9px 12px;border-radius:11px;background:rgba(255,180,188,0.08);border:1px solid rgba(255,180,188,0.22);'
-      + _PC_S.body+'">No file yet. Everything here is built from their rows and their thread.</div>';
+      + _PB_S.body+'">No file from you yet. '
+      + (haveOwn ? 'What is here is what they filled in themselves, plus their rows and their thread.'
+                 : 'Everything here is built from their rows and their thread.')
+      + '</div>';
   }
   /* 1. WHO THEY ARE */
-  var bits=_pcWhoBits(code, file, deb);
-  h+=_pcSec('Who they are', bits.length
-      ? '<div style="'+_PC_S.body+'">'+_escHtml(bits.join(' · '))+'</div>'
-      : _pcNone('Not on file, and no weigh-in on their rows.'));
+  var bits=_pbWhoBits(code, file, deb);
+  if(own.profile){
+    var op=own.profile;
+    ['where','days','when','week','cooks'].forEach(function(k){
+      var v=String(op[k]||'').trim(); if(v) bits.push(v);
+    });
+    if(!bits.length){ var a=String(op.age||'').trim(), ht=String(op.height||'').trim();
+      if(a) bits.push(a); if(ht) bits.push(ht); }
+  }
+  h+=_pbSec('Who they are', bits.length
+      ? '<div style="'+_PB_S.body+'">'+_escHtml(bits.join(' · '))+'</div>'
+      : _pbNone('Not on file, and no weigh-in on their rows.'));
   /* 2. THEIR WHY - first, because it is what he opens with */
-  var why=_pcField(file,'why_words');
-  h+=_pcSec('Their why, their words', why
-      ? _pcQuote(why)
-      : _pcNone('Not on file. He has it from the call that closed them; it has not been written down.'));
+  /* THEIRS FIRST. When the client has written their own why it is the one that
+     goes on the screen, verbatim, because they wrote it - his file's version is
+     his note of it. Both are shown when both exist and they differ. */
+  var why=_pbField(file,'why_words');
+  var ownWhy=String(own.why||'').trim();
+  var whyHtml='';
+  if(ownWhy) whyHtml=_pbQuote(ownWhy)+'<div style="'+_PB_S.src+'">they wrote this themselves</div>';
+  if(why && why!==ownWhy) whyHtml+=(whyHtml?'<div style="height:9px;"></div>':'')+_pbQuote(why)+'<div style="'+_PB_S.src+'">your file</div>';
+  h+=_pbSec('Their why, their words', whyHtml
+      || _pbNone('Not on file. He has it from the call that closed them; it has not been written down.'));
   /* 3. WHERE IT STANDS */
   var stands='';
-  if(!deb) stands=_pcNone('Their numbers did not read just now. That is a read that failed, not an empty month.');
+  if(!deb) stands=_pbNone('Their numbers did not read just now. That is a read that failed, not an empty month.');
   else {
     var txt='';
     try{ txt=_jvDebriefSpokenPlain(deb, name); }catch(e){ txt=''; }
     stands = txt
-      ? '<div style="'+_PC_S.body+'white-space:pre-wrap;">'+_escHtml(txt)+'</div>'
-      : _pcNone('Nothing on their rows for the last four weeks.');
+      ? '<div style="'+_PB_S.body+'white-space:pre-wrap;">'+_escHtml(txt)+'</div>'
+      : _pbNone('Nothing on their rows for the last four weeks.');
   }
-  h+=_pcSec('Where it stands', stands);
+  h+=_pbSec('Where it stands', stands);
   /* 4. WHAT IS OPEN */
-  var open=_pcOpenItems(file, msgs);
-  h+=_pcSec('What is open', open.length
+  var open=_pbOpenItems(file, msgs);
+  h+=_pbSec('What is open', open.length
       ? open.map(function(o){
-          return '<div style="margin-bottom:9px;">'+_pcQuote(o.text)
-            +'<div style="'+_PC_S.src+'">'+_escHtml(o.src)+(o.at?(' · '+_escHtml(_pcSayDate(_dfDayKey(o.at)))):'')+'</div></div>'; }).join('')
-      : _pcNone('Nothing open on file, and their thread does not end on them.'));
+          return '<div style="margin-bottom:9px;">'+_pbQuote(o.text)
+            +'<div style="'+_PB_S.src+'">'+_escHtml(o.src)+(o.at?(' · '+_escHtml(_pbSayDate(_dfDayKey(o.at)))):'')+'</div></div>'; }).join('')
+      : _pbNone('Nothing open on file, and their thread does not end on them.'));
   /* 5. THE LAST EXCHANGE */
   var lastHim=null, lastThem=null;
   for(var i=msgs.length-1;i>=0;i--){
@@ -87750,29 +87792,34 @@ function _pcRender(code, name, n, deb){
   }
   var ex='';
   if(!msgs.length){
-    ex=_pcNone('Nothing on file. This reads what the hourly text sweep writes back; it has not written a conversation for them.');
+    ex=_pbNone('Nothing on file. This reads what the hourly text sweep writes back; it has not written a conversation for them.');
   } else {
     [[lastThem,'Them'],[lastHim,'Him']].forEach(function(p){
       if(!p[0]) return;
       ex+='<div style="margin-bottom:10px;">'
-        +'<div style="'+_PC_S.src+'margin:0 0 3px;">'+p[1]+' · '+_escHtml(_pcSayDate(_dfDayKey(p[0].at)))+'</div>'
-        +_pcQuote(p[0].text)+'</div>';
+        +'<div style="'+_PB_S.src+'margin:0 0 3px;">'+p[1]+' · '+_escHtml(_pbSayDate(_dfDayKey(p[0].at)))+'</div>'
+        +_pbQuote(p[0].text)+'</div>';
     });
   }
-  h+=_pcSec('The last exchange', ex);
+  h+=_pbSec('The last exchange', ex);
   /* 6. WHAT TO ASK */
-  var qs=_pcAsk(file, msgs, deb);
-  h+=_pcSec('What to ask', qs.length
-      ? qs.map(function(q){ return '<div style="margin-bottom:10px;"><div style="'+_PC_S.body+'">'+_escHtml(q.q)+'</div>'
-          +'<div style="'+_PC_S.src+'">from '+_escHtml(q.from)+'</div></div>'; }).join('')
-        + (qs.length<3 ? '<div style="'+_PC_S.src+'">Only '+qs.length+' here. There is not enough on file to make three without inventing one.</div>' : '')
-      : _pcNone('Nothing on file to build a question from. Ask them how the week went and write down what they say.'));
+  var qs=_pbAsk(file, msgs, deb);
+  if(qs.length<3 && String(own.why||'').trim())
+    qs.push({q:'They wrote: \u201c'+String(own.why).trim().split(/\n/)[0]+'\u201d Does that still hold?', from:'their own file'});
+  if(qs.length<3 && String(own.training||'').trim())
+    qs.push({q:'On their training they said: \u201c'+String(own.training).trim().split(/\n/)[0]+'\u201d Still true?', from:'their own file'});
+  qs=qs.slice(0,3);
+  h+=_pbSec('What to ask', qs.length
+      ? qs.map(function(q){ return '<div style="margin-bottom:10px;"><div style="'+_PB_S.body+'">'+_escHtml(q.q)+'</div>'
+          +'<div style="'+_PB_S.src+'">from '+_escHtml(q.from)+'</div></div>'; }).join('')
+        + (qs.length<3 ? '<div style="'+_PB_S.src+'">Only '+qs.length+' here. There is not enough on file to make three without inventing one.</div>' : '')
+      : _pbNone('Nothing on file to build a question from. Ask them how the week went and write down what they say.'));
   /* 7. RED LINES - quietly, at the bottom, so he does not step on one */
-  var red=_pcField(file,'red_lines');
+  var red=_pbField(file,'red_lines');
   if(red){
     h+='<div style="margin-top:14px;padding:11px 13px;border-radius:12px;background:rgba(255,180,188,0.06);border:1px solid rgba(255,180,188,0.18);">'
-      +'<div style="'+_PC_S.lbl+'color:rgba(255,180,188,0.72);">Red lines</div>'
-      +'<div style="'+_PC_S.quiet+'white-space:pre-wrap;color:rgba(240,236,228,0.82);">'+_escHtml(red)+'</div></div>';
+      +'<div style="'+_PB_S.lbl+'color:rgba(255,180,188,0.72);">Red lines</div>'
+      +'<div style="'+_PB_S.quiet+'white-space:pre-wrap;color:rgba(240,236,228,0.82);">'+_escHtml(red)+'</div></div>';
   }
   return h;
 }
@@ -87784,10 +87831,544 @@ function closePreCallBrief(){
 /* The band's own tap. A consult is a lead with no client row and therefore no
    file, no thread and no rows - there is no brief to open for them, so that
    tap still opens the calls list rather than a sheet of blanks. */
-function _pcFromRow(r){
+function _pbFromRow(r){
   if(!r) return;
   if(r.kind==='consult' || !r.code){ try{ openCallsView(); }catch(e){} return; }
   try{ openPreCallBrief(String(r.code), _callsWho(r)); }catch(e){}
+}
+
+
+/* =========================================================================
+   YOUR FILE - THE CLIENT'S OWN RECORD (Yusuf, orders, 1 Sep ~10:25 and ~10:40pm)
+
+   His words: "The client has a profile that they can always see. I feel like
+   that helps them with knowing what I see that they need to work on. It builds
+   value."
+   And the pitch, in his voice, at the top of it: "I read this before every
+   call we have. What you put here is what I know about you." That sentence is
+   true as of v7.980.906, when the pre-call brief shipped.
+
+   WHERE IT LIVES, and why: at the top of the Progress tab. Progress is where
+   a client already goes to see how they are doing, and everything on this page
+   answers that same question. The Profile tab is settings - targets, macros,
+   the waiver - which is a different job. It is not behind a tap, because the
+   whole point is that they can always see it.
+
+   WHERE IT WRITES, and the constraint that decided it:
+   client_notes is service-role only since 20 Aug. A client's browser CANNOT
+   read that table at all - checked live, not assumed. So the Client File and
+   its push points, which live there, can never be read by the client, and no
+   amount of care on this page changes that. That is the private/shared split
+   the safety rule already asks for, enforced by the database rather than by
+   remembering.
+   So the client's own answers go to profiles.intake_json, and the one thing
+   Yusuf wants them to see goes to profiles.status_note. Both columns already
+   exist and are read and written with the same anon key the client's browser
+   uses. No new table, no DDL, nothing to migrate.
+
+   WHAT IT NEVER SHOWS: his private read, his judgment section, their red lines
+   as a list, any comparison to another client, any score, percentage or rank.
+   The test for every line is his: would he say this to their face on a call.
+   Nothing on this page is read from client_notes, which is what makes that
+   structural rather than careful.
+   ========================================================================= */
+var _YF_SCHEMA=1;
+var _YF_BUSY=false;
+var _YF_CACHE={code:null, prof:null, at:0};
+
+function _yfIsClient(){
+  try{ return !!(window.cl && cl.code && !(typeof isTrainer==='function' && isTrainer(cl.code))); }
+  catch(e){ return false; }
+}
+/* THE ROW. Read fresh on demand and cached for a minute, because this page
+   repaints every time renderProgressTab runs and that is more often than the
+   row changes. A failed read is NOT an empty row - the landmine this file
+   keeps re-learning - so it reports which of the two happened. */
+async function _yfProfile(code, force){
+  if(!force && _YF_CACHE.code===code && _YF_CACHE.prof && (Date.now()-_YF_CACHE.at)<60000)
+    return {ok:true, prof:_YF_CACHE.prof};
+  try{
+    var r=await fetch(SB_URL+'/rest/v1/profiles?client_code=eq.'+encodeURIComponent(code)
+      +'&select=client_code,age,height,weight,goal,intake_json,intake_date,status_note&limit=1',
+      {headers:sbHeaders(), signal:_sbTimeout(SB_READ_MS)});
+    if(!r.ok) return {ok:false, prof:null};
+    var rows=await r.json();
+    var prof=(rows && rows.length) ? rows[0] : {client_code:code};
+    _YF_CACHE={code:code, prof:prof, at:Date.now()};
+    return {ok:true, prof:prof};
+  }catch(e){ return {ok:false, prof:null}; }
+}
+function _yfIntake(prof){
+  var j=prof && prof.intake_json;
+  if(!j) return {};
+  if(typeof j==='string'){ try{ j=JSON.parse(j); }catch(e){ return {}; } }
+  return (j && typeof j==='object') ? j : {};
+}
+/* WRITE, THEN READ IT BACK AND COMPARE. Standing law in this repo: a 200 says
+   the request did not error, never that the row landed carrying what was sent.
+   A PATCH that matched no row returns 200 with an empty body and looks exactly
+   like a save, which is why the row is created when it is missing. */
+async function _yfSave(code, patch){
+  if(!code) return {ok:false, why:'no code'};
+  try{
+    var q='client_code=eq.'+encodeURIComponent(code);
+    var have=null;
+    try{ have=await sbSelect('profiles','select=client_code&'+q+'&limit=1'); }catch(e){ have=null; }
+    var r;
+    if(have && have.length){
+      r=await fetch(SB_URL+'/rest/v1/profiles?'+q, {method:'PATCH',
+        headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=representation'}),
+        body:JSON.stringify(patch)});
+    } else {
+      r=await fetch(SB_URL+'/rest/v1/profiles', {method:'POST',
+        headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=representation'}),
+        body:JSON.stringify(Object.assign({client_code:code}, patch))});
+    }
+    if(!r.ok) return {ok:false, why:'the save was refused'};
+    var rows=await r.json();
+    if(!rows || !rows.length) return {ok:false, why:'it saved to nothing'};
+    _YF_CACHE={code:code, prof:rows[0], at:Date.now()};
+    return {ok:true, prof:rows[0]};
+  }catch(e){ return {ok:false, why:'the save did not go through'}; }
+}
+/* THEIR ANSWERS. Tagged as theirs, with the date, so the file knows who said
+   what - and never edited, never summarised, which is his instruction and also
+   the only reason quoting them back is worth anything. */
+async function _yfPutAnswer(code, section, value, extraCols){
+  var got=await _yfProfile(code, true);
+  var j=_yfIntake(got.prof||{});
+  j.schema=_YF_SCHEMA;
+  j.said=j.said||{};
+  if(section==='profile'){ j.profile=value; }
+  else { j[section]=String(value==null?'':value); }
+  j.said[section]={by:'client', at:new Date().toISOString()};
+  var patch=Object.assign({intake_json:j}, extraCols||{});
+  if(!got.prof || !got.prof.intake_date) patch.intake_date=new Date().toISOString().slice(0,10);
+  var res=await _yfSave(code, patch);
+  if(!res.ok) return res;
+  var back=_yfIntake(res.prof);
+  var landed = (section==='profile')
+    ? JSON.stringify(back.profile||{})===JSON.stringify(value||{})
+    : String(back[section]||'')===String(value==null?'':value);
+  if(!landed) return {ok:false, why:'it saved but did not read back the same'};
+  return {ok:true, prof:res.prof};
+}
+/* ---- WHAT MOVED. Facts off their own rows, against their own goal, never a
+   grade and never a comparison to anyone else. A read that fails says so. ---- */
+async function _yfMoved(code){
+  var out={weight:null, best:null, run:null, failed:[]};
+  var W=null, WT=null, F=null;
+  try{ WT=await sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(code)+'&select=weight,logged_at&order=logged_at.asc&limit=500'); }catch(e){}
+  try{ W=await sbSelect('workout_logs','client_code=eq.'+encodeURIComponent(code)+'&select=id,logged_at,date_str&order=logged_at.asc&limit=500'); }catch(e){}
+  try{ F=await sbSelect('food_logs','client_code=eq.'+encodeURIComponent(code)+'&select=id,logged_at,date_str&order=logged_at.asc&limit=1500'); }catch(e){}
+  if(!WT) out.failed.push('weigh-ins');
+  if(!W) out.failed.push('sessions');
+  if(!F) out.failed.push('meals');
+  var pts=(WT||[]).map(function(w){ return {v:parseFloat(w.weight), at:w.logged_at}; })
+                  .filter(function(x){ return isFinite(x.v); });
+  if(pts.length>=2) out.weight={from:pts[0], to:pts[pts.length-1], delta:Math.round((pts[pts.length-1].v-pts[0].v)*10)/10};
+  else if(pts.length===1) out.weight={only:pts[0]};
+  var dayOf=function(r){ return r.date_str || _dfDayKey(r.logged_at); };
+  var wDays={}; (W||[]).forEach(function(r){ var d=dayOf(r); if(d) wDays[d]=1; });
+  var wl=Object.keys(wDays).sort();
+  var byWk={};
+  wl.forEach(function(d){
+    var dt=new Date(d+'T00:00:00'); if(isNaN(dt.getTime())) return;
+    var mon=new Date(dt); mon.setDate(mon.getDate()-((dt.getDay()+6)%7));
+    var k=_dfDayKey(mon.toISOString()); byWk[k]=(byWk[k]||0)+1;
+  });
+  Object.keys(byWk).forEach(function(k){ if(!out.best || byWk[k]>out.best.n) out.best={week:k, n:byWk[k]}; });
+  var any={}; wl.forEach(function(d){ any[d]=1; });
+  (F||[]).forEach(function(r){ var d=dayOf(r); if(d) any[d]=1; });
+  var days=Object.keys(any).sort(), run=0, best=0, prev=null;
+  days.forEach(function(d){
+    var dt=new Date(d+'T00:00:00').getTime();
+    run = (prev!==null && Math.round((dt-prev)/86400000)===1) ? run+1 : 1;
+    if(run>best) best=run;
+    prev=dt;
+  });
+  out.run={days:best, total:days.length};
+  return out;
+}
+/* ---- THE SCREEN ---- */
+var _yfS={
+  card:'background:#141414;border:1px solid #202020;border-radius:16px;padding:16px 17px;margin-bottom:14px;',
+  lbl:'font-size:9.5px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:rgba(240,236,228,0.48);margin:0 0 7px;',
+  body:'font-size:13.5px;line-height:1.55;color:rgba(240,236,228,0.9);overflow-wrap:anywhere;',
+  quiet:'font-size:12.5px;line-height:1.5;color:rgba(240,236,228,0.6);overflow-wrap:anywhere;',
+  ta:'width:100%;box-sizing:border-box;background:#101010;border:1px solid #2a2a2a;border-radius:12px;padding:11px 12px;font-family:inherit;font-size:14px;line-height:1.5;color:#f0ece4;resize:vertical;min-height:88px;',
+  inp:'width:100%;box-sizing:border-box;background:#101010;border:1px solid #2a2a2a;border-radius:11px;padding:10px 12px;font-family:inherit;font-size:14px;color:#f0ece4;',
+  btn:'appearance:none;border:none;border-radius:12px;background:var(--gold);color:#141007;font-family:inherit;font-size:14px;font-weight:800;padding:12px 20px;cursor:pointer;min-height:44px;',
+  edit:'font-size:11.5px;font-weight:700;color:rgba(240,236,228,0.6);text-decoration:underline;text-underline-offset:3px;cursor:pointer;padding:6px 0;display:inline-block;'
+};
+var _YF_PROFILE_Q=[
+  ['age',    'How old are you?'],
+  ['height', 'How tall are you?'],
+  ['weight', 'What do you weigh right now?'],
+  ['where',  'Where do you train?'],
+  ['days',   'What days do you train?'],
+  ['when',   'What time of day?'],
+  ['week',   'What does your week look like?'],
+  ['cooks',  'Who cooks?']
+];
+function _yfEsc(s){ return _escHtml(String(s==null?'':s)); }
+function _yfWhyHtml(j){
+  var why=String(j.why||'').trim();
+  if(why){
+    return '<div style="'+_yfS.card+'">'
+      +'<div style="'+_yfS.lbl+'">Your why</div>'
+      +'<div style="'+_yfS.body+'padding-left:11px;border-left:2px solid rgba(245,197,24,0.4);white-space:pre-wrap;">“'+_yfEsc(why)+'”</div>'
+      +'<div style="margin-top:9px;"><span onclick="_yfEdit(\'why\')" style="'+_yfS.edit+'">Change it</span></div>'
+      +'</div>';
+  }
+  return '<div style="'+_yfS.card+'" id="yfWhyBox">'
+    +'<div style="'+_yfS.lbl+'">Your why</div>'
+    +'<div style="'+_yfS.body+'margin-bottom:10px;">Why are you actually doing this? Say it how you’d say it to a friend.</div>'
+    +'<textarea id="yfWhyIn" aria-label="Your why" style="'+_yfS.ta+'"></textarea>'
+    +'<div style="margin-top:11px;"><button type="button" style="'+_yfS.btn+'" onclick="_yfSaveWhy()">Save</button></div>'
+    +'</div>';
+}
+function _yfTrainingHtml(j){
+  var t=String(j.training||'').trim();
+  if(t){
+    return '<div style="'+_yfS.card+'">'
+      +'<div style="'+_yfS.lbl+'">Your training</div>'
+      +'<div style="'+_yfS.body+'white-space:pre-wrap;">'+_yfEsc(t)+'</div>'
+      +'<div style="margin-top:9px;"><span onclick="_yfEdit(\'training\')" style="'+_yfS.edit+'">Change it</span></div>'
+      +'</div>';
+  }
+  return '<div style="'+_yfS.card+'" id="yfTrainBox">'
+    +'<div style="'+_yfS.lbl+'">Your training</div>'
+    +'<div style="'+_yfS.body+'margin-bottom:10px;">Tell me what’s worked and what hasn’t. What you like, what you hate, anything that hurts, what kit you’ve got. Be honest, I’ve heard it all.</div>'
+    +'<textarea id="yfTrainIn" aria-label="Your training" style="'+_yfS.ta+'"></textarea>'
+    +'<div style="margin-top:11px;"><button type="button" style="'+_yfS.btn+'" onclick="_yfSaveTraining()">Save</button></div>'
+    +'</div>';
+}
+function _yfProfVal(prof, j, key){
+  var p=j.profile||{};
+  var v=String(p[key]||'').trim();
+  if(v) return v;
+  if(key==='age' && prof.age) return String(prof.age);
+  if(key==='height' && prof.height) return String(prof.height);
+  return '';
+}
+function _yfProfileHtml(prof, j){
+  var missing=_YF_PROFILE_Q.filter(function(q){ return !_yfProfVal(prof,j,q[0]); });
+  if(!missing.length){
+    var rows=_YF_PROFILE_Q.map(function(q){
+      return '<div style="display:flex;gap:12px;margin-bottom:6px;"><div style="'+_yfS.quiet+'flex:0 0 46%;">'+_yfEsc(q[1])+'</div>'
+        +'<div style="'+_yfS.body+'flex:1;min-width:0;">'+_yfEsc(_yfProfVal(prof,j,q[0]))+'</div></div>';
+    }).join('');
+    return '<div style="'+_yfS.card+'"><div style="'+_yfS.lbl+'">Your profile</div>'+rows
+      +'<div style="margin-top:9px;"><span onclick="_yfEdit(\'profile\')" style="'+_yfS.edit+'">Change it</span></div></div>';
+  }
+  var inputs=_YF_PROFILE_Q.map(function(q){
+    return '<div style="margin-bottom:10px;"><label for="yfP_'+q[0]+'" style="'+_yfS.quiet+'display:block;margin-bottom:4px;">'+_yfEsc(q[1])+'</label>'
+      +'<input id="yfP_'+q[0]+'" type="text" style="'+_yfS.inp+'" value="'+_yfEsc(_yfProfVal(prof,j,q[0]))+'"></div>';
+  }).join('');
+  return '<div style="'+_yfS.card+'" id="yfProfBox"><div style="'+_yfS.lbl+'">Your profile</div>'+inputs
+    +'<div style="margin-top:4px;"><button type="button" style="'+_yfS.btn+'" onclick="_yfSaveProfile()">Save</button></div></div>';
+}
+function _yfMovedHtml(m){
+  if(!m) return '';
+  var L=[];
+  var w=m.weight;
+  if(w && w.from && w.to){
+    var d=w.delta;
+    var a=Math.round(w.from.v*10)/10, b=Math.round(w.to.v*10)/10;
+    if(d===0) L.push('Weight level at '+b+' lb since '+_pbSayDate(_dfDayKey(w.from.at))+'.');
+    else L.push((d>0?'Up ':'Down ')+Math.abs(d)+' lb since '+_pbSayDate(_dfDayKey(w.from.at))+', '+a+' to '+b+'.');
+  } else if(w && w.only){
+    L.push('One weigh-in on file, '+(Math.round(w.only.v*10)/10)+' lb.');
+  }
+  if(m.best) L.push('Your best week was '+m.best.n+' session'+(m.best.n===1?'':'s')+', week of '+_pbSayDate(m.best.week)+'.');
+  if(m.run && m.run.days>1) L.push('Longest run of days logged in a row: '+m.run.days+'.');
+  if(m.run && m.run.total) L.push(m.run.total+' day'+(m.run.total===1?'':'s')+' logged in total.');
+  var body = L.length
+    ? L.map(function(l){ return '<div style="'+_yfS.body+'margin-bottom:5px;">'+_yfEsc(l)+'</div>'; }).join('')
+    : '<div style="'+_yfS.quiet+'">Nothing to show yet. It fills up as you log.</div>';
+  if(m.failed && m.failed.length)
+    body+='<div style="'+_yfS.quiet+'margin-top:8px;color:#ffb4bc;">Your '+_yfEsc(m.failed.join(' and '))+' did not load just now. That is a read that failed, not an empty record.</div>';
+  return '<div style="'+_yfS.card+'"><div style="'+_yfS.lbl+'">What moved</div>'+body+'</div>';
+}
+function _yfWorkingHtml(prof){
+  var s=String((prof&&prof.status_note)||'').trim();
+  return '<div style="'+_yfS.card+'"><div style="'+_yfS.lbl+'">What you’re working on</div>'
+    + (s ? '<div style="'+_yfS.body+'white-space:pre-wrap;">'+_yfEsc(s)+'</div>'
+         : '<div style="'+_yfS.quiet+'">Nothing here yet. Yusuf writes this.</div>')
+    + '</div>';
+}
+async function renderYourFile(force){
+  var host=document.getElementById('yfHost');
+  if(!host) return;
+  if(!_yfIsClient()){ host.innerHTML=''; host.style.display='none'; return; }
+  host.style.display='';
+  if(!host.getAttribute('data-drawn')) host.innerHTML='<div style="'+_yfS.quiet+'padding:8px 2px;">Loading your file…</div>';
+  var code=cl.code;
+  var got=await _yfProfile(code, !!force);
+  host.setAttribute('data-drawn','1');
+  if(!got.ok){
+    host.innerHTML='<div style="'+_yfS.card+'"><div style="'+_yfS.lbl+'">Your file</div>'
+      +'<div style="'+_yfS.body+'color:#ffb4bc;">Your file did not load just now. That is a read that failed, not an empty file.</div></div>';
+    return;
+  }
+  var prof=got.prof||{}, j=_yfIntake(prof);
+  var m=null; try{ m=await _yfMoved(code); }catch(e){ m=null; }
+  var head='<div style="margin:0 0 12px;">'
+    +'<div style="font-size:20px;font-weight:800;letter-spacing:-0.3px;color:#f0ece4;">Your file</div>'
+    +'<div style="'+_yfS.quiet+'margin-top:5px;">I read this before every call we have. What you put here is what I know about you.</div>'
+    +'</div>';
+  var foot='<div onclick="_yfTellMe()" role="button" style="'+_yfS.card+'cursor:pointer;">'
+    +'<div style="'+_yfS.body+'">This is what I see. If something’s wrong, tell me.</div></div>';
+  host.innerHTML = head
+    + _yfWhyHtml(j)
+    + _yfMovedHtml(m)
+    + _yfWorkingHtml(prof)
+    + _yfProfileHtml(prof, j)
+    + _yfTrainingHtml(j)
+    + foot;
+}
+/* "Change it" puts one section back into its box without touching what is
+   stored. Nothing is deleted until they save something over it. */
+function _yfEdit(section){
+  var code=(window.cl&&cl.code)||null; if(!code) return;
+  var got=_YF_CACHE.prof||{};
+  var j=JSON.parse(JSON.stringify(_yfIntake(got)));
+  if(section==='why') j.why='';
+  else if(section==='training') j.training='';
+  else if(section==='profile') j.profile={};
+  _YF_CACHE={code:code, prof:Object.assign({}, got, {intake_json:j}), at:Date.now()};
+  renderYourFile(false);
+}
+function _yfTellMe(){
+  try{ if(typeof jimOvlOpen==='function'){ jimOvlOpen(); return; } }catch(e){}
+  try{ switchTab('Ask'); }catch(e){}
+}
+function _yfWriting(btn, on){
+  try{ if(btn){ btn.disabled=!!on; btn.style.opacity=on?'0.6':''; btn.textContent=on?'Saving…':'Save'; } }catch(e){}
+}
+async function _yfSaveWhy(){
+  if(_YF_BUSY) return; _YF_BUSY=true;
+  var el=document.getElementById('yfWhyIn');
+  var btn=null; try{ btn=document.querySelector('#yfWhyBox button'); }catch(e){}
+  try{
+    var v=String((el&&el.value)||'').trim();
+    if(!v){ showToast('Nothing typed — it is still in the box'); return; }
+    v=v.slice(0,4000);
+    _yfWriting(btn,true);
+    var res=await _yfPutAnswer(cl.code,'why',v);
+    if(!res.ok){ showToast('Could not save that — '+res.why+'. It is still in the box'); return; }
+    showToast('Saved. That is what I read before every call.');
+    await renderYourFile(true);
+  } finally { _YF_BUSY=false; _yfWriting(btn,false); }
+}
+async function _yfSaveTraining(){
+  if(_YF_BUSY) return; _YF_BUSY=true;
+  var el=document.getElementById('yfTrainIn');
+  var btn=null; try{ btn=document.querySelector('#yfTrainBox button'); }catch(e){}
+  try{
+    var v=String((el&&el.value)||'').trim();
+    if(!v){ showToast('Nothing typed — it is still in the box'); return; }
+    v=v.slice(0,4000);
+    _yfWriting(btn,true);
+    var res=await _yfPutAnswer(cl.code,'training',v);
+    if(!res.ok){ showToast('Could not save that — '+res.why+'. It is still in the box'); return; }
+    showToast('Saved.');
+    await renderYourFile(true);
+  } finally { _YF_BUSY=false; _yfWriting(btn,false); }
+}
+async function _yfSaveProfile(){
+  if(_YF_BUSY) return; _YF_BUSY=true;
+  var btn=null; try{ btn=document.querySelector('#yfProfBox button'); }catch(e){}
+  try{
+    var p={}, any=false;
+    _YF_PROFILE_Q.forEach(function(q){
+      var el=document.getElementById('yfP_'+q[0]);
+      var v=String((el&&el.value)||'').trim().slice(0,240);
+      p[q[0]]=v; if(v) any=true;
+    });
+    if(!any){ showToast('Nothing typed — it is still in the box'); return; }
+    _yfWriting(btn,true);
+    /* AGE AND HEIGHT ALSO GO ON THEIR ROW, because those two columns already
+       exist, are what the rest of the app reads, and are already written by
+       clients themselves. Everything else stays in intake_json rather than
+       being coerced into a column that means something slightly different -
+       train_days is a COUNT the split builder reads, so "Mon Wed Fri" must
+       never be written to it. */
+    var extra={};
+    var ageN=parseInt(String(p.age).replace(/[^0-9]/g,''),10);
+    if(!isNaN(ageN) && ageN>0 && ageN<120) extra.age=ageN;
+    if(p.height) extra.height=String(p.height).slice(0,24);
+    var res=await _yfPutAnswer(cl.code,'profile',p,extra);
+    if(!res.ok){ showToast('Could not save that — '+res.why+'. It is still in the box'); return; }
+    showToast('Saved.');
+    await renderYourFile(true);
+  } finally { _YF_BUSY=false; _yfWriting(btn,false); }
+}
+/* ---- THE ASK, AND ITS LIMIT ----------------------------------------------
+   His rule: a new client is asked once on first sign-in and once more after
+   their first week, and never a third time. An existing client with empty
+   fields gets a quiet line on the Day tab once a week until it is filled, and
+   the line goes away when it is filled. Never a modal, never blocks anything,
+   no badge, no reward, nothing gated. Nothing on this app is earned.
+
+   THE COUNT LIVES IN intake_json BESIDE THE ANSWERS, not in localStorage: a
+   client who signs in on a second phone would otherwise be asked all over
+   again, which is the fourth ask his rule exists to prevent. */
+function _yfEmpty(prof, j){
+  var n=[];
+  if(!String(j.why||'').trim()) n.push('why');
+  if(!String(j.training||'').trim()) n.push('training');
+  var missing=_YF_PROFILE_Q.filter(function(q){ return !_yfProfVal(prof,j,q[0]); }).length;
+  if(missing) n.push('profile');
+  return n;
+}
+function _yfGoToFile(){
+  try{ switchTab('Progress'); }catch(e){}
+  setTimeout(function(){
+    try{ var h=document.getElementById('yfHost'); if(h) h.scrollIntoView({behavior:'smooth', block:'start'}); }catch(e){}
+  }, 280);
+}
+/* THE DAY TAB LINE. One line, tappable, in his voice, once a week, and gone
+   the moment the file is full. It is a card in the flow of the page, not an
+   overlay, so it covers nothing and blocks nothing. */
+async function _yfDayLine(){
+  try{
+    var host=document.getElementById('yfDayLine');
+    if(!host) return;
+    if(!_yfIsClient()){ host.style.display='none'; host.innerHTML=''; return; }
+    var got=await _yfProfile(cl.code, false);
+    if(!got.ok){ host.style.display='none'; return; }
+    var prof=got.prof||{}, j=_yfIntake(prof);
+    if(!_yfEmpty(prof, j).length){ host.style.display='none'; host.innerHTML=''; return; }
+    var last=(j.asks && j.asks.line) || null;
+    if(last && (Date.now()-new Date(last).getTime()) < 7*86400000){ host.style.display='none'; return; }
+    host.style.display='';
+    host.innerHTML='<div onclick="_yfGoToFile()" role="button" style="'+_yfS.card+'cursor:pointer;">'
+      +'<div style="'+_yfS.body+'">Your file’s half empty. Two minutes and I know you better.</div></div>';
+    j.asks=j.asks||{}; j.asks.line=new Date().toISOString();
+    _yfSave(cl.code, {intake_json:j});
+  }catch(e){}
+}
+/* THE FIRST SIGN-IN ASK, for a new client only, and ONLY twice, ever.
+   asks.first counts them. Two and it never appears again, whatever they
+   filled in. There is always a Skip, it never covers the tab bar, and it is
+   a page rather than a modal so the back gesture works. */
+async function _yfFirstAsk(){
+  try{
+    if(!_yfIsClient()) return;
+    if(document.getElementById('yfFirstOv')) return;
+    var got=await _yfProfile(cl.code, false);
+    if(!got.ok) return;
+    var prof=got.prof||{}, j=_yfIntake(prof);
+    if(!_yfEmpty(prof, j).length) return;
+    var asks=(j.asks && j.asks.first) || [];
+    if(asks.length>=2) return;
+    /* the second ask waits out their first week; the first one is on sign-in */
+    if(asks.length===1 && (Date.now()-new Date(asks[0]).getTime()) < 7*86400000) return;
+    /* only a NEW client gets interrupted at all. Everyone already on the
+       roster meets the quiet Day tab line instead, which is his rule. */
+    /* FAIL CLOSED. A client whose start date cannot be read is treated as an
+       existing client and is NEVER interrupted - they meet the quiet Day tab
+       line instead, which is his rule. Getting this the other way round would
+       have put a full screen in front of everyone already on the roster, which
+       is exactly what "never a modal, never blocks anything" forbids. */
+    if(!asks.length){
+      var startedAt=null;
+      try{ startedAt=(window.cl&&cl.started_at)||((window.CLIENTS&&CLIENTS[cl.code]||{}).started_at)||null; }catch(e){}
+      if(!startedAt) return;
+      var age=Date.now()-new Date(startedAt).getTime();
+      if(!isFinite(age) || age > 14*86400000) return;
+    }
+    var ov=document.createElement('div');
+    ov.id='yfFirstOv';
+    ov.style.cssText='position:fixed;inset:0;z-index:99996;background:#0b0b0d;overflow-y:auto;'
+      +'-webkit-overflow-scrolling:touch;padding:26px 16px calc(40px + env(safe-area-inset-bottom, 0px));'
+      +'font-family:\'Plus Jakarta Sans\',sans-serif;';
+    ov.innerHTML='<div style="max-width:460px;margin:0 auto;">'
+      +'<div style="font-size:22px;font-weight:800;color:#f0ece4;letter-spacing:-0.3px;">Tell me about you</div>'
+      +'<div style="'+_yfS.quiet+'margin:7px 0 18px;">I read this before every call we have. What you put here is what I know about you.</div>'
+      +'<div id="yfFirstHost"></div>'
+      +'<div style="margin-top:6px;"><span onclick="_yfFirstClose()" style="'+_yfS.edit+'">Skip for now</span></div>'
+      +'</div>';
+    document.body.appendChild(ov);
+    var host=document.getElementById('yfFirstHost');
+    host.innerHTML=_yfWhyHtml(j)+_yfProfileHtml(prof, j)+_yfTrainingHtml(j);
+    j.asks=j.asks||{}; j.asks.first=asks.concat([new Date().toISOString()]);
+    _yfSave(cl.code, {intake_json:j});
+  }catch(e){ console.error('_yfFirstAsk', e); }
+}
+function _yfFirstClose(){
+  var ov=document.getElementById('yfFirstOv');
+  if(ov && ov.parentNode) ov.parentNode.removeChild(ov);
+  try{ renderYourFile(true); }catch(e){}
+}
+/* ---- THE TRAINER'S SIDE OF THE SAME PAGE ---------------------------------
+   His file's PUSH POINTS are his private read and stay private - they live in
+   client_notes, which a client's browser cannot read at all, so they could not
+   reach a client even by mistake. What the client sees is a separate, short,
+   deliberately-written line: "Protein on weekends." "Getting the workout
+   logged, not just done."
+   TWO FIELDS, NOT ONE, and that is the whole design. The test on this box is
+   his own: would he say this to their face on a call. The box says so on the
+   screen, because a box that is client-visible and does not say it is how
+   something private gets typed into it. */
+function _yfCoachCardHtml(code){
+  var c=String(code).replace(/[^a-z0-9_]/gi,'');
+  return '<div class="covCard yfCoachCard" style="background:#141414;border:1px solid #202020;border-radius:14px;padding:14px 16px;margin-bottom:18px;">'
+    + '<div onclick="yfCoachToggle(\''+c+'\')" style="display:flex;justify-content:space-between;align-items:center;gap:10px;cursor:pointer;">'
+      + '<div style="font-size:10px;font-weight:800;letter-spacing:1.4px;text-transform:uppercase;color:rgba(240,236,228,0.78);">What they’re working on</div>'
+      + '<div id="yfCoachCaret_'+c+'" style="font-size:13px;color:rgba(240,236,228,0.6);">+</div>'
+    + '</div>'
+    + '<div id="yfCoach_'+c+'" style="display:none;margin-top:11px;"></div>'
+  + '</div>';
+}
+function yfCoachToggle(code){
+  var el=document.getElementById('yfCoach_'+code);
+  var ca=document.getElementById('yfCoachCaret_'+code);
+  if(!el) return;
+  var openNow=(el.style.display==='none');
+  el.style.display=openNow?'block':'none';
+  if(ca) ca.textContent=openNow?'–':'+';
+  if(openNow && !el.getAttribute('data-loaded')){
+    el.setAttribute('data-loaded','1');
+    el.innerHTML='<div style="'+_yfS.quiet+'">Reading…</div>';
+    yfCoachLoad(code);
+  }
+}
+async function yfCoachLoad(code){
+  var host=document.getElementById('yfCoach_'+code); if(!host) return;
+  var got=await _yfProfile(code, true);
+  if(!got.ok){
+    host.innerHTML='<div style="'+_yfS.quiet+'color:#ffb4bc;">I could not read their row just now. That is an unread box, not an empty one.</div>';
+    return;
+  }
+  var prof=got.prof||{}, j=_yfIntake(prof);
+  var cur=String(prof.status_note||'');
+  var said=[];
+  if(String(j.why||'').trim()) said.push(['Their why, their words', String(j.why)]);
+  if(String(j.training||'').trim()) said.push(['Their training, their words', String(j.training)]);
+  var p=j.profile||{};
+  var pl=_YF_PROFILE_Q.map(function(q){ var v=String(p[q[0]]||'').trim(); return v?(q[1]+' '+v):''; }).filter(Boolean);
+  if(pl.length) said.push(['What they filled in', pl.join('\n')]);
+  host.innerHTML=
+      '<div style="'+_yfS.quiet+'margin-bottom:8px;">They can see this, word for word, on their own Progress page. Your file and your push points stay private and are not readable from a client’s app at all.</div>'
+    + '<textarea id="yfCoachIn_'+code+'" aria-label="What they are working on" style="'+_yfS.ta+'min-height:74px;">'+_yfEsc(cur)+'</textarea>'
+    + '<div style="margin-top:10px;"><button type="button" style="'+_yfS.btn+'" onclick="yfCoachSave(\''+code+'\')">Save</button></div>'
+    + (said.length
+        ? '<div style="margin-top:16px;border-top:1px solid rgba(255,255,255,0.07);padding-top:12px;">'
+          + said.map(function(s){ return '<div style="margin-bottom:10px;"><div style="'+_yfS.lbl+'">'+_yfEsc(s[0])+'</div>'
+              + '<div style="'+_yfS.body+'white-space:pre-wrap;">'+_yfEsc(s[1])+'</div></div>'; }).join('')
+          + '</div>'
+        : '<div style="'+_yfS.quiet+'margin-top:14px;">They have not filled anything in yet.</div>');
+}
+async function yfCoachSave(code){
+  var el=document.getElementById('yfCoachIn_'+code); if(!el) return;
+  var v=String(el.value||'').trim().slice(0,2000);
+  var res=await _yfSave(code, {status_note:v});
+  if(!res.ok){ try{ showToast('Could not save that — '+res.why); }catch(e){} return; }
+  if(String((res.prof||{}).status_note||'')!==v){ try{ showToast('It saved but did not read back the same'); }catch(e){} return; }
+  try{ showToast(v?'Saved. They can see it now.':'Cleared.'); }catch(e){}
 }
 
 </script>
