@@ -9123,6 +9123,14 @@ body.hasnav #tToday{padding-bottom:96px;}
     <input type="hidden" id="editFoodInsight">
     <input type="hidden" id="editFoodDate">
 
+    <!-- MICAELA, 3 Sep: "could look up the meal, it wouldnt log for the day.
+         save edit or cancel were the only options. NO Option to add for the day."
+         She had it exactly right. This sheet only ever EDITED a row that already
+         existed, so finding an old meal and wanting it again today was a dead
+         end - Save would have rewritten the original, and moving the date would
+         have taken it off the day it actually happened. Her last log was 13
+         August; she was trying to start again and the button was not there. -->
+    <button class="sbtn" id="edLogTodayBtn" onclick="logEditedFoodToday()">Log this for today</button>
     <button class="sbtn" onclick="saveEditedFood()">Save</button>
     <button class="obtn" onclick="closeM('mEditFood')">Cancel</button>
   </div>
@@ -70462,6 +70470,90 @@ function editFoodEntry(i){
   openM('mEditFood');
 }
 
+/* LOG AN OLD MEAL AGAIN, TODAY (Micaela, 3 Sep).
+   Her words: "could look up the meal, it wouldnt log for the day... save edit
+   or cancel were the only options. NO Option to add for the day."
+   mEditFood was built to edit ONE existing row, and both of its buttons act on
+   that row: Save rewrites it, and the date picker MOVES it, which takes the
+   meal off the day she actually ate it. Neither is "I ate this again."
+   So this writes a NEW row for today and does not touch the original by even
+   one field. It goes through insertFoodLog like every other add, so it inherits
+   the zero-macro refusal, the double-tap guard and the read-back - a row is
+   only claimed here because the database handed one back.
+   The slot and the clock come from the meal she opened, not from now: an old
+   breakfast logged again is still a breakfast, and stamping it 4pm because that
+   is when she tapped is the same bug the capture sheet was already fixed for. */
+async function logEditedFoodToday(){
+  var btn=null;
+  try{ btn=document.getElementById('edLogTodayBtn'); }catch(e){}
+  if(window._edLogBusy) return;
+  window._edLogBusy=1;
+  try{ if(btn){ btn.disabled=true; btn.textContent='Logging\u2026'; } }catch(e){}
+  try{
+    if(!cl || !cl.code){ showToast('Sign in first'); return; }
+    var gv=function(id){ try{ var el=document.getElementById(id); return el?String(el.value||'').trim():''; }catch(e){ return ''; } };
+    var num=function(v){ var n=parseInt(v,10); return isNaN(n)?0:n; };
+    var name=gv('editFoodName');
+    if(!name){ showToast('Give it a name first'); return; }
+    /* The slot it was eaten in, then the clock it was eaten at. Falls back to
+       the slot for now only when the row carried neither. */
+    var slot=window._edMeal||'';
+    var time=gv('editFoodTime');
+    if(!slot){ try{ slot=_mealSlotNow(); }catch(e){ slot='Snack'; } }
+    if(!time){ try{ time=_defaultMealTime(slot, todayDateStr); }catch(e){ time=''; } }
+    var row={
+      client_code: cl.code,
+      name: name,
+      calories: num(gv('editFoodCal')),
+      protein: num(gv('editFoodProt')),
+      carbs: num(gv('editFoodCarb')),
+      fat: num(gv('editFoodFat')),
+      meal: slot,
+      eat_time: time,
+      date_str: todayDateStr,
+      graced: false,
+      note: (gv('editFoodNote')||null)
+    };
+    var photo=null; try{ photo=window._tlEditPhoto||null; }catch(e){}
+    var ins=await insertFoodLog(row, photo);
+    if(!ins || !ins.ok){
+      /* Every refusal says which one it was. "It did not save" over a row that
+         is already on today would send her looking for a fault that is not
+         there. */
+      if(ins && ins.duplicate){ showToast('That one is already on today'); }
+      else if(ins && ins.zeroMacros){ showToast('No macros on it \u2014 open it and put the numbers in first'); }
+      else if(ins && ins.unconfirmed){ showToast('Saved \u2014 could not read it back to check. Do not log it twice.'); }
+      else if(ins && ins.cancelled){ /* the target guard already spoke */ }
+      else { showToast('That did not log \u2014 nothing was written. Try again?'); }
+      return;
+    }
+    /* On today's screen it has to APPEAR, not wait for a reload. */
+    try{
+      var e2={ id:(ins.id!=null?ins.id:null), name:row.name, calories:row.calories,
+               protein:row.protein, carbs:row.carbs, fat:row.fat, meal:row.meal,
+               eat_time:row.eat_time, eatTime:row.eat_time, date_str:todayDateStr,
+               note:row.note, photo:photo||null };
+      if(typeof todayFood!=='undefined' && todayFood) todayFood.push(e2);
+      if(typeof allFood!=='undefined' && allFood) allFood.push(e2);
+      if(typeof tots!=='undefined' && tots){
+        tots.cal=(tots.cal||0)+row.calories; tots.protein=(tots.protein||0)+row.protein;
+        tots.carbs=(tots.carbs||0)+row.carbs; tots.fat=(tots.fat||0)+row.fat;
+      }
+    }catch(e){}
+    try{ updTots(); }catch(e){}
+    try{ rendTodayFood(); }catch(e){}
+    try{ updHalo(); }catch(e){}
+    try{ updStats(); }catch(e){}
+    try{ _tlInvalidate(); }catch(e){}
+    try{ if(typeof rememberFood==='function') rememberFood(row); }catch(e){}
+    closeM('mEditFood');
+    try{ window._tlEditId=null; editingFoodIdx=null; }catch(e){}
+    showToast('\u2713 ' + row.name + ' \u2014 on today');
+  } finally {
+    window._edLogBusy=0;
+    try{ if(btn){ btn.disabled=false; btn.textContent='Log this for today'; } }catch(e){}
+  }
+}
 async function saveEditedFood(){
   if(window._tlEditId){ await tlSaveFoodEdit(); return; }
   if(editingFoodIdx === null) return;
