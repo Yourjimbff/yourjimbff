@@ -87792,6 +87792,34 @@ function _crmStyle(){
   +'.crmBelt{background:radial-gradient(120% 140% at 0% 0%,rgba(36,36,36,0.72) 0%,rgba(23,23,23,0.66) 46%,rgba(17,17,17,0.62) 100%);position:relative;overflow:hidden;-webkit-backdrop-filter:blur(20px) saturate(1.25);backdrop-filter:blur(20px) saturate(1.25);border:1px solid rgba(245,197,24,0.10);border-radius:12px;padding:9px 12px;margin-bottom:13px;font-size:12px;color:rgba(240,236,228,0.86);line-height:1.5;}'
   +'.crmBeltW{font-size:9.5px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:rgba(240,236,228,0.5);margin-bottom:4px;}'
   +'.crmRow{background:radial-gradient(120% 140% at 0% 0%,rgba(36,36,36,0.90) 0%,rgba(23,23,23,0.86) 46%,rgba(17,17,17,0.84) 100%);position:relative;overflow:hidden;-webkit-backdrop-filter:blur(24px) saturate(1.3);backdrop-filter:blur(24px) saturate(1.3);border:1px solid rgba(245,197,24,0.10);border-radius:13px;padding:11px 12px;margin-bottom:8px;box-shadow:0 10px 30px rgba(0,0,0,0.45),0 1px 0 rgba(245,197,24,0.05) inset;}'
+  /* THE TWO COLUMNS. One gate, 760, the same number _mwIsDesktop uses - no
+     invented breakpoint. Below it the panel goes UNDER the draft, because he
+     works this board on his phone after the gym and the draft comes first. */
+  +'.crmSplit{display:block;}'
+  +'.crmLeft{min-width:0;}'
+  +'.crmLog{min-width:0;margin-top:11px;padding-top:11px;border-top:1px solid rgba(255,255,255,0.09);}'
+  +'@media (min-width:760px){'
+    +'.crmSplit{display:grid;grid-template-columns:minmax(0,60fr) minmax(0,40fr);gap:18px;align-items:start;}'
+    +'.crmLog{margin-top:0;padding-top:0;border-top:none;border-left:1px solid rgba(255,255,255,0.09);padding-left:18px;}'
+  +'}'
+  /* THE STRIP. Fourteen days, oldest left, today right. A day with any log is
+     filled, a day with nothing is an outline, and nothing here is gold - a
+     logged day is earned and gold is never earned. */
+  +'.crmStrip{display:flex;gap:4px;align-items:center;margin-bottom:9px;}'
+  +'.crmTick{width:9px;height:16px;border-radius:3px;border:1px solid rgba(255,255,255,0.30);background:transparent;flex:0 0 auto;}'
+  +'.crmTick.on{background:#f2f4f7;border-color:#f2f4f7;}'
+  +'.crmLogSum{font-size:12px;font-weight:800;color:var(--m2);letter-spacing:0.2px;margin-bottom:10px;}'
+  +'.crmLogNote{font-size:12px;color:var(--m2);line-height:1.5;}'
+  +'.crmLogDay{margin-bottom:10px;}'
+  +'.crmLogWhen{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.6px;color:var(--m2);margin-bottom:3px;}'
+  +'.crmLogWhen span{font-weight:600;text-transform:none;letter-spacing:0.1px;opacity:0.8;}'
+  /* NOTHING HIDES AND NOTHING IS CUT. Food is never truncated in this house,
+     so a long meal name wraps and the panel grows with it. */
+  +'.crmLogLine{font-size:12.5px;color:var(--text);line-height:1.5;overflow-wrap:anywhere;}'
+  +'.crmLogLine b{font-weight:800;}'
+  +'.crmLogMeals{display:block;color:var(--m2);font-size:12px;}'
+  +'.crmLogTrain{color:var(--m2);}'
+  +'.crmLogXtra{color:var(--m2);font-size:12px;}'
   +'.crmRow.next{border-color:var(--gold);}'
   +'.crmRow.done{opacity:0.5;}'
   /* THE THIRD STATE'S LOOK. It must not read as pending (untouched) or as
@@ -87889,6 +87917,9 @@ async function crmRender(force){
       try{ var s=await trainerOpChecked('sales',{}); _crm.sales=(s&&s.ok)?(s.rows||[]):[]; }catch(e){ _crm.sales=[]; }
     }
     await dfLoadAll();
+    /* The right half of every row. Four batched requests for the whole board,
+       fired alongside the board read rather than after it. */
+    try{ await _crmLoadLogs(); }catch(e){ _crm.logsErr=true; }
     /* Settle anything left in 'opened' against what the sweep has since seen
        in his real Messages, then re-read so the board paints the settled
        truth rather than the state it was in a second ago. */
@@ -87929,6 +87960,201 @@ function _crmWatchForWrites(){
     _crm.sig=sig;
     crmPaint();
   }, 45000);
+}
+/* ===== THE RIGHT HALF OF THE ROW (Yusuf, 2 Sep ~5pm) ====================
+   "It should also show me their most recent log session... And if it's kind of
+   sparse or scattered, I know like, hey, okay, we need to know what you're
+   doing. And I don't know what you're doing. So that's what matters."
+
+   This panel answers ONE question per row: do I know what this person is
+   doing, or do I not. Everything in it earns its place against that question
+   and nothing else is in it - no score, no streak, no percentage, no grade.
+   He asked to see what is there, not to be told what to think about it.
+
+   NO GOLD. Gold is now and next, never earned, so a logged day is white and a
+   missed one is an outline. Nothing in this panel is gold.
+
+   ONE READER. It reads food_logs, workout_logs, weight_logs and step_logs the
+   same way the trainer's own surfaces do - four batched requests for the whole
+   board, not four per row. Two readers on one screen is how the earned number
+   and the touched number disagreed last night. */
+var _CRM_STRIP_DAYS=14;
+var _CRM_LOG_WINDOW=60;
+function _crmLogDayKey(r){
+  /* date_str is the client's OWN local day ("Sep 2, 2026") and is the truth
+     about which day they logged. logged_at is the fallback, and it is a naive
+     timestamp on some rows, so it needs the Z the way every other reader in
+     this file adds it. */
+  try{
+    if(r && r.date_str){ var d=new Date(r.date_str); if(!isNaN(d.getTime())) return _dfDayKey(d.toISOString()); }
+  }catch(e){}
+  try{
+    var t=String((r&&(r.logged_at||r.updated_at))||''); if(!t) return '';
+    return _dfDayKey(/[Z+]/.test(t)?t:(t+'Z'));
+  }catch(e){ return ''; }
+}
+function _crmLogBucket(code){
+  var L=_crm.logs[code];
+  if(!L) L=_crm.logs[code]={days:{}, byDay:{}, ever:false};
+  return L;
+}
+function _crmLogFile(kind, rows){
+  (rows||[]).forEach(function(r){
+    var c=r.client_code; if(!c) return;
+    var k=_crmLogDayKey(r); if(!k) return;
+    var L=_crmLogBucket(c);
+    /* ONLY FOOD AND TRAINING FILL A DAY. His question is "do I know what this
+       person is doing", and a weigh-in or a step count answers a different
+       one - steps in particular can arrive from a phone without the client
+       doing anything. Both still SHOW on a day that has something; neither
+       makes a day look lived-in on its own. */
+    L.ever=true;
+    if(kind==='food' || kind==='work') L.days[k]=1;
+    var d=(L.byDay[k]=L.byDay[k]||{food:[], work:[], weight:null, steps:null});
+    if(kind==='food') d.food.push(r);
+    else if(kind==='work') d.work.push(r);
+    else if(kind==='weight'){ if(d.weight==null) d.weight=r; }
+    else if(kind==='steps'){ if(d.steps==null) d.steps=r; }
+  });
+}
+async function _crmLoadLogs(){
+  _crm.logs={}; _crm.logsErr=false; _crm.logReqs=0;
+  var since=new Date(Date.now()-_CRM_LOG_WINDOW*86400000).toISOString();
+  var q='&logged_at=gte.'+encodeURIComponent(since)+'&order=logged_at.desc';
+  var mark=null; try{ mark=_sbFailMark(); }catch(e){}
+  var res=[];
+  try{
+    res=await Promise.all([
+      sbSelect('food_logs','select=client_code,name,calories,protein,carbs,fat,meal,logged_at,date_str'+q+'&limit=2500'),
+      sbSelect('workout_logs','select=client_code,title,logged_at,date_str'+q+'&limit=1500'),
+      /* weight_logs carries no date_str, and step_logs carries no logged_at -
+         it stamps updated_at. Asking either for a column it does not have is
+         a 400 and a silently empty panel. */
+      sbSelect('weight_logs','select=client_code,weight,logged_at'+q+'&limit=1200'),
+      sbSelect('step_logs','select=client_code,steps,date_str,updated_at&updated_at=gte.'
+               +encodeURIComponent(since)+'&order=updated_at.desc&limit=1200')
+    ]);
+    _crm.logReqs=4;
+  }catch(e){ _crm.logsErr=true; return; }
+  try{ if(mark!=null && _sbFailedSince(mark)) _crm.logsErr=true; }catch(e){}
+  /* A read that failed is not an empty record. Same landmine as the board. */
+  if(_crm.logsErr) return;
+  _crmLogFile('food', res[0]); _crmLogFile('work', res[1]);
+  _crmLogFile('weight', res[2]); _crmLogFile('steps', res[3]);
+  /* THE ONES WHO FELL OFF THE BACK OF THE WINDOW. Someone quiet for 80 days
+     has nothing in a 60 day read, and "nothing in 60 days" is a worse answer
+     than the real one. This is ONE more pair of requests for all of them
+     together, addressed by code - never one request per person. */
+  try{
+    var missing=[];
+    _crmRoster().forEach(function(r){ if(!_crm.logs[r.code]) missing.push(r.code); });
+    if(missing.length){
+      var inq='&client_code=in.('+missing.join(',')+')&order=logged_at.desc';
+      var old=await Promise.all([
+        sbSelect('food_logs','select=client_code,name,calories,protein,carbs,fat,meal,logged_at,date_str'+inq+'&limit=400'),
+        sbSelect('workout_logs','select=client_code,title,logged_at,date_str'+inq+'&limit=400')
+      ]);
+      _crm.logReqs+=2;
+      _crmLogFile('food', old[0]); _crmLogFile('work', old[1]);
+    }
+  }catch(e){}
+}
+function _crmAgoWords(k){
+  try{
+    var a=new Date(k+'T12:00:00'), b=new Date(_dfToday()+'T12:00:00');
+    var n=Math.round((b.getTime()-a.getTime())/86400000);
+    if(n<=0) return 'today';
+    if(n===1) return 'yesterday';
+    return n+' days ago';
+  }catch(e){ return ''; }
+}
+function _crmDaysSince(k){
+  try{
+    var a=new Date(k+'T12:00:00'), b=new Date(_dfToday()+'T12:00:00');
+    return Math.round((b.getTime()-a.getTime())/86400000);
+  }catch(e){ return null; }
+}
+function _crmNiceDate(k){
+  try{ var d=new Date(k+'T12:00:00');
+       return d.toLocaleDateString('en-US',{day:'numeric',month:'short'}); }
+  catch(e){ return k; }
+}
+function _crmLogPanel(code){
+  if(_crm.logsErr){
+    return '<div class="crmLog"><div class="crmLogNote">I could not read the logs just now. '
+         + 'That is an unread record, not an empty one.</div></div>';
+  }
+  var L=(_crm.logs||{})[code];
+  if(!_crm.logs) return '<div class="crmLog"><div class="crmLogNote">Reading their logs…</div></div>';
+  /* THE EMPTY CASE, IN A SENTENCE. Not an empty panel and not a row of zeros -
+     "never" is a real and important answer, especially now there is a week
+     waiting for these people. */
+  if(!L || !L.ever){
+    return '<div class="crmLog">'+_crmStripHtml(null)
+         + '<div class="crmLogSum">Nothing logged, ever.</div></div>';
+  }
+  /* The strip counts food and training. The written days below list any day
+     that has ANYTHING on it, so a lone weigh-in is still shown rather than
+     silently dropped. */
+  var keys=Object.keys(L.byDay).sort();         // oldest first
+  var newest=keys[keys.length-1];
+  var since=_crmDaysSince(newest);
+  /* ONE LINE ON TOP, the shape of it. A number and nothing else - no
+     adjectives, no judgement, no encouragement. He reads it and decides. */
+  var inStrip=0;
+  var stripKeys=_crmStripKeys();
+  stripKeys.forEach(function(k){ if(L.days[k]) inStrip++; });
+  var sum = (since!=null && since>=_CRM_STRIP_DAYS)
+    ? ('nothing in '+since+' days')
+    : (inStrip+' of the last '+_CRM_STRIP_DAYS+' days');
+  var h='<div class="crmLog">'+_crmStripHtml(L)+'<div class="crmLogSum">'+_escHtml(sum)+'</div>';
+  /* THE LAST TWO OR THREE DAYS THEY ACTUALLY LOGGED. Not the last three
+     calendar days - the last three that HAVE something, however far back. If
+     that is 19 days ago the line says 19 days ago, and that IS the
+     information. */
+  var last=keys.slice(-3).reverse();
+  last.forEach(function(k){
+    var d=L.byDay[k]||{food:[],work:[]};
+    h+='<div class="crmLogDay">'
+      +'<div class="crmLogWhen">'+_escHtml(_crmNiceDate(k))+' <span>'+_escHtml(_crmAgoWords(k))+'</span></div>';
+    if(d.food && d.food.length){
+      var cal=0, pro=0, names=[];
+      d.food.forEach(function(f){ cal+=(+f.calories||0); pro+=(+f.protein||0);
+        var nm=String(f.name||'').trim(); if(nm) names.push(nm); });
+      h+='<div class="crmLogLine"><b>'+Math.round(cal)+' cal · '+Math.round(pro)+'g protein</b>'
+       + (names.length?('<span class="crmLogMeals">'+_escHtml(names.join(', '))+'</span>'):'')
+       + '</div>';
+    }
+    if(d.work && d.work.length){
+      var ts=d.work.map(function(w){ return String(w.title||'').trim()||'a session'; });
+      h+='<div class="crmLogLine crmLogTrain">'+_escHtml(ts.join(', '))+'</div>';
+    }
+    var extra=[];
+    if(d.weight && d.weight.weight!=null) extra.push(d.weight.weight+' lb');
+    if(d.steps && d.steps.steps!=null) extra.push(Number(d.steps.steps).toLocaleString()+' steps');
+    if(extra.length) h+='<div class="crmLogLine crmLogXtra">'+_escHtml(extra.join(' · '))+'</div>';
+    if(!(d.food&&d.food.length) && !(d.work&&d.work.length) && !extra.length){
+      h+='<div class="crmLogLine crmLogXtra">logged, nothing recorded</div>';
+    }
+    h+='</div>';
+  });
+  return h+'</div>';
+}
+function _crmStripKeys(){
+  var out=[], now=new Date(_dfToday()+'T12:00:00');
+  for(var i=_CRM_STRIP_DAYS-1;i>=0;i--){
+    var d=new Date(now.getTime()-i*86400000);
+    out.push(_dfDayKey(d.toISOString()));
+  }
+  return out;                                   // oldest left, today right
+}
+function _crmStripHtml(L){
+  var h='<div class="crmStrip" aria-label="the last '+_CRM_STRIP_DAYS+' days">';
+  _crmStripKeys().forEach(function(k){
+    var on=!!(L && L.days && L.days[k]);
+    h+='<i class="crmTick'+(on?' on':'')+'"></i>';
+  });
+  return h+'</div>';
 }
 function crmPaint(){
   var host=_crmHost(); if(!host) return;
@@ -88062,6 +88288,8 @@ function crmPaint(){
            nothing counts it as sent until the sweep reads his Messages. */
         var isOpen=(d.status==='opened');
         h+='<div class="crmRow'+(isOpen?' opened':'')+((!isOpen && i===0 && _crm.sort==='wait' && fdef.k==='waiting')?' next':'')+'" id="crmRow_'+d.id+'">'
+          +'<div class="crmSplit">'
+          +'<div class="crmLeft">'
           +'<div class="crmRowTop"><span class="crmName" onclick="covOpen(\''+p.code+'\')">'+nm+'</span>'
           +'<span class="crmDays">'+days+'</span></div>'
           +(isOpen?('<div class="crmOpenedN">text opened '+_escHtml(_crmClock(d.openedAt||d.at))+' · not counted as sent until your texts are read</div>'):'')
@@ -88071,12 +88299,28 @@ function crmPaint(){
             +'<button class="crmSend" onclick="crmSend(\''+d.id+'\')">'+(isOpen?'OPEN AGAIN':'SEND')+'</button>'
             +'<button class="crmSkip" onclick="crmSkip(\''+d.id+'\')">Skip</button>'
           +'</div>'
+          +'</div>'
+          + _crmLogPanel(p.code)
+          +'</div>'
         +'</div>';
       } else {
+        /* A ROW HE HAS ALREADY SPOKEN TO STAYS AS IT WAS. His DO NOT list names
+           the collapsed "already spoken to them today" rows and says they are
+           right. Only an undrafted row he still has to decide about gets the
+           evidence beside it. */
         h+='<div class="crmRow bare'+(p.sentToday?' done':'')+'" onclick="covOpen(\''+p.code+'\')">'
-          +'<div class="crmRowTop"><span class="crmName">'+nm+'</span>'
-          +'<span class="crmDays">'+days+'</span></div>'
-          +'<div class="crmBareN">'+(p.sentToday?'you have already spoken to them today':'nothing drafted')+'</div>'
+          +(p.sentToday
+            ? ('<div class="crmRowTop"><span class="crmName">'+nm+'</span>'
+               +'<span class="crmDays">'+days+'</span></div>'
+               +'<div class="crmBareN">you have already spoken to them today</div>')
+            : ('<div class="crmSplit">'
+               +'<div class="crmLeft">'
+               +'<div class="crmRowTop"><span class="crmName">'+nm+'</span>'
+               +'<span class="crmDays">'+days+'</span></div>'
+               +'<div class="crmBareN">nothing drafted</div>'
+               +'</div>'
+               + _crmLogPanel(p.code)
+               +'</div>'))
         +'</div>';
       }
     }
