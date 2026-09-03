@@ -35126,9 +35126,16 @@ async function logPlannedWorkout(dateStr, dow){
   // insertWorkoutLog drops any column the schema is missing (title/exercises) and retries.
   var attempt = await insertWorkoutLog(fullRow);
   if(attempt.duplicate) return;
-  if(!attempt.ok){ showToast('Could not log — try again'); return; }
+  // LANDED BUT UNVERIFIED IS NOT "COULD NOT LOG" (LeAndra M, 12 Aug). The chat
+  // door keeps this distinction now and the tap-to-done board has to keep it
+  // too, because it writes through the very same insert. Telling someone to try
+  // again over a row already in the table is how one session becomes two.
+  var _tapUnsure = (!attempt.ok && attempt.unconfirmed);
+  if(!attempt.ok && !_tapUnsure){ showToast('Could not log — try again'); return; }
 
-  showToast('✓ ' + (plan.title || 'Workout') + ' logged');
+  showToast(_tapUnsure
+    ? ('Logged — ' + (plan.title || 'Workout') + '. I could not double-check it just now, so do not log it again.')
+    : ('✓ ' + (plan.title || 'Workout') + ' logged'));
   await loadTrainingHistory(); // refreshes the board (green ✓) + the list
   // If it was today, refresh the Today tab too
   if(dateStr === isoDateStr(new Date()) && typeof loadTodayWorkouts === 'function'){
@@ -58605,13 +58612,24 @@ async function insertWeightLog(row){
     attempt = await tryInsert(payload);
     guard++;
   }
+  // THE POST'S OWN ANSWER, KEPT (LeAndra M, 12-14 Aug). Food and workouts both
+  // hold on to whether the INSERT landed before the read-back is allowed to
+  // overwrite it; this one did not, so a weigh-in that reached the table and
+  // could not be read back a moment later came back as a flat failure. Same
+  // three outcomes as the other two now: landed, never landed, or landed and
+  // unverified - which is a different sentence, not a quieter one.
+  var _wtPosted = attempt.ok;
   try{ window.__wtInsertBusy=false; if(!attempt.ok){ window.__lastWtSig=null; } }catch(e){}
   if(attempt.ok){
     if(attempt.id==null){
       attempt = {ok:false, body:'insert reported success but returned no id'};
     } else {
       try{
-        if(!(await _sbRowLanded('weight_logs', attempt.id))){
+        var _rbwt = await _sbRowLanded('weight_logs', attempt.id);
+        if(_rbwt===null){
+          console.warn('weight insert read-back could not be reached for id', attempt.id);
+          attempt = {ok:false, body:'read-back unreachable'};
+        } else if(!_rbwt){
           console.error('weight insert read-back came up empty for id', attempt.id);
           attempt = {ok:false, body:'read-back found no row'};
         }
@@ -58621,6 +58639,7 @@ async function insertWeightLog(row){
       }
     }
   }
+  if(!attempt.ok && _wtPosted) return {ok:false, id:(attempt.id!=null?attempt.id:null), dropped:dropped, unconfirmed:true};
   return {ok: attempt.ok, id: (attempt.id!=null?attempt.id:null), dropped: dropped};
 }
 
@@ -75865,7 +75884,26 @@ async function logWorkoutFromOffer(offer, forCode){
   // (title/exercises) and retries, and swallows a re-log of the same workout.
   var attempt = await insertWorkoutLog(fullRow);
   if(attempt.duplicate) return 'dup';   // already on its way in — not a failure to report
-  if(!attempt.ok) return null;
+  // THE SAME FLATTENING, ON THE WORKOUT SIDE (LeAndra M, 12 Aug). The food half
+  // of this was fixed for Carly on 1 Sep: insertWorkoutLog deliberately answers
+  // THREE things - it never landed, or it landed and could not be read back
+  // (unconfirmed), or it is a duplicate - and this line turned the middle one
+  // into a plain null, which jimTurn speaks as "that didn't actually save."
+  // LeAndra's record is what that costs: two Stairmaster rows 55 seconds apart
+  // on 12 Aug, two Cardio & Legs on 25 Jun, two Upper Pull on 14 Jun - a
+  // session logged, called lost, and logged again. She told him on 14 Aug the
+  // app was not saving her workouts and stopped using it.
+  // Still null - nothing here may claim a verified save - but the reason rides
+  // out on the turn so the reply can say the true thing.
+  if(!attempt.ok){
+    try{
+      if(attempt.unconfirmed){
+        window.__jimWoUnsure = window.__jimWoUnsure || [];
+        window.__jimWoUnsure.push({name:String(offer.title||row.description||'that session'), why:'unconfirmed'});
+      }
+    }catch(e){}
+    return null;
+  }
 
   var savedId = attempt.id;
   // ===== THE SAME GAP THE MEAL PATH HAD (Yusuf, ruling, 27 Aug — P1) =====
@@ -75945,7 +75983,17 @@ async function logWeightFromChat(offer, forCode){
   // did not, it is exactly the success-without-a-row this file exists to refuse,
   // and it is invisible: the tally says one, the table says none.
   if(attempt.duplicate) return await _wtRowExists(_wtTarget, wt);
-  if(!attempt.ok) return false;
+  // Landed but unread-back is not a failed weigh-in. Same carry as the food and
+  // workout doors, and still false, because false here means "not verified."
+  if(!attempt.ok){
+    try{
+      if(attempt.unconfirmed){
+        window.__jimWtUnsure = window.__jimWtUnsure || [];
+        window.__jimWtUnsure.push({name:(wt+' lb'), why:'unconfirmed'});
+      }
+    }catch(e){}
+    return false;
+  }
   try{ _tlCacheAdd('weights', row); renderDayTimeline(true); }catch(e){}
   return true;
 }
@@ -77775,7 +77823,14 @@ async function jimTurn(text, photos, opts){
     _wtExpected = 1;
   }
   if(_wtVerified < _wtExpected && !_jimAlreadySaidFail(reply)){
-    reply += (reply?'\n\n':'') + _jimSaveFailLine("That didn't actually save — can you tell me your weight again?");
+    var _wtUnsure=[]; try{ _wtUnsure=window.__jimWtUnsure||[]; }catch(e){}
+    var _wtAllUnsure = _wtUnsure.length>0 && _wtUnsure.length >= (_wtExpected-_wtVerified);
+    if(_wtAllUnsure){
+      reply += (reply?'\n\n':'') + ('Saved \u2014 ' + String((_wtUnsure[0]||{}).name||'your weigh-in') + '. I could not read it back to double-check just now, so give your day a look if it matters. Do not log it again, it is there.');
+      try{ console.warn('JIM: weigh-in landed but unverified \u2014 spoke the uncertain line, not the failure line', _wtUnsure); }catch(e){}
+    } else {
+      reply += (reply?'\n\n':'') + _jimSaveFailLine("That didn't actually save — can you tell me your weight again?");
+    }
   }
 
   // A CLIENT ON A REST DAY SAID "add a 30 minute morning walk." Jim replied "Logged
@@ -77941,7 +77996,20 @@ async function jimTurn(text, photos, opts){
     }
   }catch(e){ console.error('follow-up rename', e); }
   if(_woVerified < _woExpected && !_jimAlreadySaidFail(reply)){
-    reply += (reply?'\n\n':'') + _jimSaveFailLine("That didn't actually save — can you tell me again?");
+    // A FALSE FAILURE IS NOT THE SMALLER SIN (Carly L 1 Sep, carried to the
+    // workout side for LeAndra M 12 Aug). Only when EVERY shortfall this turn
+    // is a write that POSTED and could not be read back. One genuinely lost
+    // session and the honest failure line still leads, unchanged.
+    var _woUnsure=[]; try{ _woUnsure=window.__jimWoUnsure||[]; }catch(e){}
+    var _woAllUnsure = _woUnsure.length>0 && _woUnsure.length >= (_woExpected-_woVerified);
+    if(_woAllUnsure){
+      var _wun=_woUnsure.map(function(u){ return String(u.name||'that session'); });
+      var _wunName=_wun.length===1 ? _wun[0] : (_wun.length+' of those');
+      reply += (reply?'\n\n':'') + ('Saved \u2014 ' + _wunName + '. I could not read it back to double-check just now, so give your day a look if it matters. Do not log it again, it is there.');
+      try{ console.warn('JIM: workout landed but unverified \u2014 spoke the uncertain line, not the failure line', _woUnsure); }catch(e){}
+    } else {
+      reply += (reply?'\n\n':'') + _jimSaveFailLine("That didn't actually save — can you tell me again?");
+    }
   }
   // ===== AND THE MIRROR: A ROW THAT LANDED MUST BE SAID ===================
   // (Yusuf, live, 24 Aug — CLIENT: "the reply read as if nothing new was logged
@@ -78025,7 +78093,7 @@ async function jimTurn(text, photos, opts){
   var _foodExpected=0, _foodVerified=0;
   // This turn's landed rows only. Read back further down to correct the numbers
   // and the day in the reply against what the database actually took.
-  try{ window.__jimFoodLanded=[]; window.__jimFoodUnsure=[]; }catch(e){}
+  try{ window.__jimFoodLanded=[]; window.__jimFoodUnsure=[]; window.__jimWoUnsure=[]; window.__jimWtUnsure=[]; }catch(e){}
   if(foodAdds.items.length){
     // Attach the chat photo only when there's exactly one add (a single meal being logged with a pic).
     for(var fa=0; fa<foodAdds.items.length; fa++){
