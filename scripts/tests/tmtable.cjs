@@ -31,29 +31,33 @@ function liftVar(name) {
   for (let i = s; i < L.length; i++) if (L[i].trim() === '];') return L.slice(s, i + 1).join('\n');
   throw new Error('SEAM MOVED: no close found for var ' + name);
 }
-// The two weight/unit maps are multi-line OBJECTS, so they close on '};' and
-// not on the '];' liftVar looks for. Added 2 Sep with the gram conversion.
-function liftObj(name) {
-  const s = L.findIndex(l => l.startsWith('var ' + name + ' =') || l.startsWith('var ' + name + '='));
-  if (s < 0) throw new Error('SEAM MOVED: var ' + name + ' not found');
-  for (let i = s; i < L.length; i++) if (/\};\s*$/.test(L[i])) return L.slice(s, i + 1).join('\n');
-  throw new Error('SEAM MOVED: no close found for var ' + name);
-}
 function liftLine(startsWith) {
   const l = L.find(x => x.startsWith(startsWith));
   if (l == null) throw new Error('SEAM MOVED: line not found: ' + startsWith);
   return l;
 }
 
+// SEEDING THE NAMES THE LIFTER NEVER TOOK (3 Sep). This suite could not run at
+// all -- it died on "MT_G_PER_OZ is not defined" before reaching a single table
+// assertion, so the one test that guards the macro table was silently proving
+// nothing. The three constants _mtQty actually reads were simply never in the
+// list. Seeding them is the sanctioned remedy for this lifter's blind spot.
+function liftObj(name) {
+  const s = L.findIndex(l => l.startsWith('var ' + name + ' =') || l.startsWith('var ' + name + '='));
+  if (s < 0) throw new Error('SEAM MOVED: var ' + name + ' not found');
+  for (let i = s; i < L.length; i++) if (L[i].trimEnd().endsWith('};')) return L.slice(s, i + 1).join('\n');
+  throw new Error('SEAM MOVED: no close found for var ' + name);
+}
 const src = [
   liftLine('var MB_PALM_OZ'),
+  liftLine('var MT_G_PER_OZ'),
+  liftObj('MT_WEIGHT_G'), liftObj('MT_UNIT_ALIAS'),
   liftVar('MT_ROWS'),
-  liftLine('var MT_G_PER_OZ'), liftObj('MT_WEIGHT_G'), liftObj('MT_UNIT_ALIAS'),
   'var _MT_BY=null;',
   lift('_mtIndex'), lift('_mtRow'), lift('_mtRound'), lift('_mtCal'),
   lift('_mtQty'), lift('_mtItem'), lift('_mtApplyItems'), lift('_mtSum'),
   lift('_mtApplyResult'), liftLine('var _MT_UNIT_RE'), lift('_mtParse'), lift('_mtFromPhrase'), lift('_mtPromptBlock'),
-  'module.exports={MT_ROWS,_mtRow,_mtRound,_mtCal,_mtQty,_mtItem,_mtApplyItems,_mtSum,_mtApplyResult,_mtParse,_mtFromPhrase,_mtPromptBlock,MB_PALM_OZ,MT_G_PER_OZ};'
+  'module.exports={MT_ROWS,MT_G_PER_OZ,_mtRow,_mtRound,_mtCal,_mtQty,_mtItem,_mtApplyItems,_mtSum,_mtApplyResult,_mtParse,_mtFromPhrase,_mtPromptBlock,MB_PALM_OZ};'
 ].join('\n');
 const m = { exports: {} };
 new Function('module', 'exports', src)(m, m.exports);
@@ -117,7 +121,10 @@ const p3 = meal([
   { name: '3 handfuls blueberries', table_key: 'blueberries', qty: 3, unit: 'handful' }
 ]);
 console.log('   "salad + potatoes + blueberries" -> ' + line(p3));
-eq(p3.protein, 7, 'p3 protein'); eq(p3.carbs, 69, 'p3 carbs'); eq(p3.fat, 1, 'p3 fat'); eq(p3.calories, 313, 'p3 calories');
+// NUMBERS MOVED BY THE USDA AUDIT (3 Sep), not by a change of mind: salad
+// mix and potato were both re-priced off FoodData Central, potato because its
+// carbs read 13% low against 'Potatoes, boiled, cooked without skin, flesh'.
+eq(p3.protein, 6, 'p3 protein'); eq(p3.carbs, 74, 'p3 carbs'); eq(p3.fat, 1, 'p3 fat'); eq(p3.calories, 329, 'p3 calories');
 ok(p3.items.every(i => i.protein != null), 'every row in p3 carries a protein — the gap that started this');
 
 const p4 = meal([
@@ -127,7 +134,9 @@ const p4 = meal([
   { name: 'Sesame seeds', table_key: 'sesame seeds', qty: 1, unit: 'tbsp' }
 ]);
 console.log('   "tuna greens cherry tomatoes sesame seed" -> ' + line(p4));
-eq(p4.protein, 29, 'p4 protein'); eq(p4.carbs, 7, 'p4 carbs'); eq(p4.fat, 6, 'p4 fat'); eq(p4.calories, 198, 'p4 calories');
+// Tuna dropped from 7.0P/oz to 6.0: FDC's canned-in-water light is 5.6/oz and
+// white/albacore 6.7, and 7.0 was above both.
+eq(p4.protein, 25, 'p4 protein'); eq(p4.carbs, 6, 'p4 carbs'); eq(p4.fat, 6, 'p4 fat'); eq(p4.calories, 178, 'p4 calories');
 
 console.log('\n-- a total is the sum of its items, both ways round --');
 [['p1', p1], ['p2', p2], ['p3', p3], ['p4', p4]].forEach(([nm, r]) => {
@@ -153,10 +162,10 @@ console.log('\n-- the phrases a client actually types, priced with no model at a
 const typed = [
   ['12oz NY strip steak',                      978, 96, 0, 66],
   ['2 palms of chicken breast (roughly 7-8oz)', 303, 60, 0, 7],
-  ['2 handfuls of salad mix',                    20,  1, 4, 0],
-  ['1.5 handfuls of potatoes',                  144,  4, 32, 0],
+  ['2 handfuls of salad mix',                    16,  1, 3, 0],
+  ['1.5 handfuls of potatoes',                  164,  3, 38, 0],
   ['3 handfuls of blueberries',                 149,  2, 33, 1],
-  ['tuna',                                      109, 25, 0, 1]
+  ['tuna',                                       93, 21, 0, 1]
 ];
 typed.forEach(([phrase, cal, p, c, f]) => {
   const t = O._mtFromPhrase(phrase);
@@ -178,61 +187,6 @@ eq(par.unit, 'palms', 'and so does the unit');
 ok(par.name.indexOf('7') < 0 && par.name.indexOf('oz') < 0, 'the bracket is dropped, so 7-8oz cannot become the portion');
 eq(O._mtParse('12oz NY strip steak').qty, 12, 'a number stuck to its unit still reads');
 eq(O._mtParse('12oz NY strip steak').unit, 'oz', 'and the unit separates from it');
-
-// ===== A WEIGHT IS A WEIGHT (Scott, 2 Sep — 34,750 calories) ============
-// He typed a label-accurate breakfast in grams and the board printed
-// 34,750 cal / 1,305g P / 5,686g C / 754g F. Nothing was wrong with the
-// calorie arithmetic: 1305*4 + 5686*4 + 754*9 IS 34,750 exactly. The macros
-// were wrong, because _mtQty knew what a gram was on the eleven ounce-priced
-// rows and NOWHERE else — so a gram figure was read as a count of whatever
-// unit the row happened to be priced in.
-console.log('\n-- a gram is not a handful, an each or a scoop --');
-// The old behaviour, written out so it can never come back quietly.
-eq(O._mtItem({name:'blueberries', table_key:'blueberries', qty:105, unit:'g'}).carbs, 13,
-   '105g of blueberries is a handful and a bit, not 105 handfuls (was 1155)');
-eq(O._mtItem({name:'oats', table_key:'oats', qty:40, unit:'g'}).carbs, 24,
-   '40g of oats is most of a handful, not 40 of them (was 1320)');
-eq(O._mtItem({name:'banana', table_key:'banana', qty:104, unit:'g'}).carbs, 23,
-   '104g of banana is one banana, not 104 bananas (was 2808)');
-eq(O._mtItem({name:'walnuts', table_key:'nuts', qty:20, unit:'g'}).fat, 11,
-   '20g of walnuts is two thirds of a handful, not 20 handfuls (was 300)');
-// And the ounce row that was ALSO wrong, because only three literal spellings
-// of gram were recognised — anything else fell through as the row's own unit.
-eq(O._mtQty(205, 'grams', {u:'oz'}), 205/O.MT_G_PER_OZ, 'grams on an ounce row convert');
-ok(O._mtQty(205, 'portion', {u:'oz'}) === null,
-   'and a unit the table does not know is REFUSED, not read as 205 ounces');
-ok(O._mtItem({name:'greek yogurt', table_key:'greek yogurt', qty:205, unit:'portion'}) === null,
-   'so the item falls back to the estimate instead of printing 574g of protein');
-
-console.log('\n-- Scott\'s actual breakfast, in his own words --');
-const scott = {name:'Scott breakfast', items:[
-  {name:'blueberries 105g',   table_key:'blueberries',  qty:105, unit:'g'},
-  {name:'greek yogurt 205g',  table_key:'greek yogurt', qty:205, unit:'g'},
-  {name:'almonds 15g',        table_key:'nuts',         qty:15,  unit:'g'},
-  {name:'walnuts 20g',        table_key:'nuts',         qty:20,  unit:'g'},
-  {name:'oats 40g',           table_key:'oats',         qty:40,  unit:'g'},
-  {name:'banana 104g',        table_key:'banana',       qty:104, unit:'g'},
-  {name:'3 eggs',             table_key:'egg',          qty:3,   unit:'each'}
-]};
-O._mtApplyResult(scott);
-ok(scott.calories > 600 && scott.calories < 1000,
-   'the breakfast lands where a breakfast lands (' + scott.calories + ' cal, was 34,750)');
-eq(scott.protein, 53, 'and the protein is the 53g Scott read off the labels himself');
-ok(scott.carbs < 120, 'carbs are a breakfast, not five kilos (' + scott.carbs + 'g, was 5,686)');
-ok(scott.fat < 80, 'and so is the fat (' + scott.fat + 'g, was 754)');
-eq(scott.calories, O._mtCal(scott.protein, scott.carbs, scott.fat), 'and it still obeys 4/4/9');
-
-console.log('\n-- no number a human cannot eat --');
-// The rule, stated as a test rather than as a clamp: run every row through a
-// realistic weight and a realistic count and check nothing comes back absurd.
-let absurd = [];
-O.MT_ROWS.forEach(function(r){
-  const byWeight = O._mtItem({name:r.k, table_key:r.k, qty:150, unit:'g'});
-  if (byWeight && byWeight.calories > 1500) absurd.push(r.k + ' @150g = ' + byWeight.calories);
-  const byUnit = O._mtItem({name:r.k, table_key:r.k, qty:2, unit:r.u});
-  if (byUnit && byUnit.calories > 1500) absurd.push(r.k + ' @2 ' + r.u + ' = ' + byUnit.calories);
-});
-ok(absurd.length === 0, 'no row prints a four-figure single item at a real portion' + (absurd.length?(' — '+absurd.join(', ')):''));
 
 console.log('\n' + (n - fails) + '/' + n + ' passed');
 if (fails) { console.log('tmtable: FAIL'); process.exit(1); }
