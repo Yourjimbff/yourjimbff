@@ -65,6 +65,25 @@ t(/if\(\(window\._tlWeekOff\|0\)!==0\)\{ window\._tlWeekOff=0;/.test(SRC),
 t(/document\.body\.classList\.toggle\('tlone', _navOn\);/.test(SRC),
   'one-day mode and the strip are the same decision, so they cannot disagree');
 
+console.log('\nA DAY IS ALWAYS SELECTED — hiding by default made this load-bearing:');
+// This shipped broken for four minutes: 22 day sections in the DOM, 0 visible, a
+// blank page under a working strip. The only thing that set the selection was
+// _tlLand, which returns EARLY whenever a render is restoring a scroll position
+// (`if(_keepScroll!=null){ ... return; }`) — the ordinary path on a tab switch.
+// The selection was made on the path I tested and skipped on the path he takes.
+t(/function _tlEnsureSel\(\)\{/.test(SRC), 'there is a floor that puts a day on the screen');
+t(/if\(sc\.querySelector\('\.tlDaySec\.sel'\)\) return;/.test(SRC),
+  'it does nothing when a day is already selected');
+t(/try\{ _tlEnsureSel\(\); \}catch\(e\)\{\}\n  _tlLand\(\);/.test(SRC),
+  'it runs BEFORE _tlLand, which is the function with the early return');
+t(/try\{ _tlEnsureSel\(\); \}catch\(e\)\{\}\n      if\(_keepScroll!=null\)/.test(SRC),
+  '...and again inside _tlLand, ahead of the return that caused this');
+t((SRC.match(/_tlEnsureSel\(\);/g)||[]).length >= 3,
+  'called from more than one place on purpose — a floor that can be branched around is not a floor',
+  (SRC.match(/_tlEnsureSel\(\);/g)||[]).length + ' call sites');
+t(/for\(var i=secs\.length-1;i>=0;i--\)\{\s*\n\s*if\(secs\[i\]\.classList\.contains\('ahead'\)\) continue;/.test(SRC),
+  'and if today is somehow missing it falls back to a real day rather than showing nothing');
+
 console.log('\nAND THE OLD DOOR CLOSES, because the dial replaced it:');
 t(/body\.tlone \.tlEarlier\{display:none;\}/.test(SRC), 'the "Earlier" door is hidden in one-day mode');
 
