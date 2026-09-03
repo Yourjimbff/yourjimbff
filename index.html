@@ -81638,6 +81638,58 @@ function _nlEchoParse(frag){
   if(!t) return null;
   return {name:t, qty:qty, unit:unit};
 }
+/* IS THE TABLE ROW ACTUALLY THIS FOOD, or did it just find its name inside a
+   longer one? (Caught on the live build before this shipped: "MyFitFoods
+   Protein Banana Bread" priced as 112 cal / 1g protein, because _mtRow does a
+   SUBSTRING match and found "banana" in it. A branded protein loaf costed as a
+   piece of fruit, shown at full confidence - the precise failure this echo was
+   built to avoid, committed by the echo.)
+
+   _mtRow is not touched. It is right where it is used: the model hands it a
+   clean table_key, and loosening or tightening it would move macros across the
+   whole app. The ECHO is the caller with no model in front of it, so the echo
+   carries its own stricter gate.
+
+   THE RULE: take the row's key away from what they typed, and whatever is left
+   must be words that do not change what the food IS. "ny strip steak" leaves
+   "steak" - fine. "greek yogurt" leaves nothing - fine. "protein banana bread"
+   leaves "protein" and "bread", which are a different food entirely - refused,
+   and it falls to the model like anything else the table does not know.
+
+   THE ASYMMETRY IS DELIBERATE. A wrong confident number is the expensive
+   mistake; a real food that quietly waits for the model is barely a cost. So
+   this refuses when unsure. */
+var _NL_HARMLESS = ('raw cooked grilled baked roasted fried steamed boiled air '
+  +'lean extra virgin organic fresh frozen plain plain nonfat non fat free low '
+  +'reduced skinless boneless breast breasts thigh thighs steak steaks fillet '
+  +'filet meat mince minced ground sliced diced chopped shredded whole halved '
+  +'of and with a an the my some large small medium jumbo big little '
+  +'cup cups bowl plate side serving servings portion mixed white brown red '
+  +'green yellow leaf leaves floret florets stick sticks').split(/\s+/);
+function _nlSameFood(typedName, row){
+  if(!row) return false;
+  var norm=function(x){ return String(x==null?'':x).toLowerCase()
+    .replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim(); };
+  var n=norm(typedName);
+  if(!n) return false;
+  /* Every spelling this row answers to, longest first, so "chicken breast" is
+     removed before the bare "chicken" can be. */
+  var keys=[row.k].concat(Array.isArray(row.a)?row.a:[]).map(norm)
+             .filter(Boolean).sort(function(a,b){ return b.length-a.length; });
+  var hit=false;
+  for(var i=0;i<keys.length;i++){
+    if(n.indexOf(keys[i])>-1){ n=(' '+n+' ').split(' '+keys[i]+' ').join(' ').trim(); hit=true; break; }
+  }
+  if(!hit) return false;
+  var left=n.split(' ').filter(Boolean);
+  for(var j=0;j<left.length;j++){
+    var w=left[j];
+    if(w.length<3) continue;                       // "0%", "2", "lb" leftovers
+    if(_NL_HARMLESS.indexOf(w)>-1) continue;
+    return false;                                  // a word that changes the food
+  }
+  return true;
+}
 /* Price the line. Returns {lines:[...], total:{...}, unpriced:n} and never
    throws - it runs on every keystroke. */
 function _nlEcho(line){
@@ -81647,8 +81699,13 @@ function _nlEcho(line){
     var it = null;
     try{ it = _nlEchoParse(frags[i]); }catch(e){ it = null; }
     if(!it){ continue; }
-    var priced = null;
-    try{ priced = _mtItem({name:it.name, qty:it.qty, unit:it.unit}); }catch(e){ priced = null; }
+    var priced = null, row = null;
+    try{ row = _mtRow(it.name); }catch(e){ row = null; }
+    /* The gate runs BEFORE the pricing, so a wrong row never produces a number
+       at all rather than producing one and having it thrown away. */
+    if(row && _nlSameFood(it.name, row)){
+      try{ priced = _mtItem({name:it.name, qty:it.qty, unit:it.unit}); }catch(e){ priced = null; }
+    }
     if(priced){
       out.lines.push({said:frags[i], name:priced.name, calories:priced.calories,
                       protein:priced.protein, carbs:priced.carbs, fat:priced.fat, known:true});
