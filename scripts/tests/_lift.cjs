@@ -75,6 +75,17 @@ function definedIn(code){
     if(m){ (l.slice(m[0].length).match(/([A-Za-z_$][\w$]*)\s*=/g)||[])
              .forEach(d=>out.add(d.replace(/\s*=$/,''))); }
     m=/^\s+(?:var|const|let|function) ([A-Za-z_$][\w$]*)/.exec(l); if(m) out.add(m[1]);
+    // AND EVERY DECLARATOR ON AN INDENTED ONE TOO. The line above was fixed for
+    // column-0 vars and not for indented ones, so a local like
+    //   var nmr=null, _sc=/…/g, _cand=null;
+    // inside _jimDateSaid declared three and counted one. _sc and _cand then came
+    // back as unresolved names — reported to the caller as holes in the lifted
+    // chain, which is what turned tphantom red over locals that are right there
+    // on the line. Anchored to the var or to a comma, so `b === c` further along
+    // the line is not mistaken for a fourth declarator.
+    m=/^\s+(?:var|const|let) /.exec(l);
+    if(m){ let d, dre=/(?:^|,)\s*([A-Za-z_$][\w$]*)\s*=/g, rest=l.slice(m[0].length);
+           while((d=dre.exec(rest))) out.add(d[1]); }
     // for(var _si=0; ...) declares _si and does not start with var.
     (l.match(/for\s*\(\s*(?:var|let)\s+([A-Za-z_$][\w$]*)/g)||[])
       .forEach(d=>out.add(d.replace(/^for\s*\(\s*(?:var|let)\s+/,'')));

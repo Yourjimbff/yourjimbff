@@ -131,7 +131,18 @@ let D=null;
   ['Calories','Protein','Carbs','Fat'].forEach(m=>t(new RegExp('>'+m+'<').test(hy), m+' is on the panel'));
   const c=D.nutrition.per.calories;
   t(c.lives.w4.value===2000, 'four identical days put the middle at 2,000', String(c.lives.w4.value));
-  t(c.high && c.high.value===2000, 'and the heaviest stretch is 2,000 a day');
+  // ONE STRETCH IS NOT A HIGH AND A LOW (Ben Plimpton, 1 Sep). This fixture is
+  // four days in a row, which is exactly ONE stretch, so high and low are
+  // deliberately withheld now and `only` carries the reading instead. This line
+  // still asked for c.high and had gone red for two days over a change that was
+  // correct and intended — the pair law, missed: what the ruling changed the
+  // DEFAULT of, nothing re-read. The claim is unchanged, it is just asked of the
+  // field that now holds it, and the withholding itself is pinned underneath so
+  // a revert cannot pass quietly.
+  t(c.only && c.only.value===2000, 'and the one stretch reads 2,000 a day', String(c.only&&c.only.value));
+  t(c.stretches===1 && c.high===null && c.low===null,
+    'and with a single stretch there is no high and no low to state',
+    c.stretches+' stretch(es)');
   t(D.weight.w4.ok && D.weight.w4.delta===-2 && D.weight.w4.dir==='down', 'weight down 2 over four weeks', JSON.stringify(D.weight.w4.delta));
   t(D.weight.w2.ok===false && D.weight.w2.count===1, 'and two weeks holds ONE weigh-in, so it states no trend');
   const sp=_jvDebriefSpoken(D,'Test Client');

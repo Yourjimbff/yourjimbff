@@ -85,7 +85,21 @@ const OWNERS=[];
 // Everything left must be something OTHER than a logged meal row: a spoken
 // confirmation, a prompt example, a MENU item (a meal proposed, never logged),
 // or a function whose own name says it is unused.
-const ALLOWED=['_jvCommitPending','buildDayContext','buildCoachVoice','rendCoachMenu','rendMenuItems','openMenuShare','_openShareCardDayLegacy_UNUSED'];
+// _nlEchoHtml and _crmDaysBlock both shipped on 3 Sep and both were caught by
+// the sweep, correctly — the sweep is deliberately wider than the assertion. But
+// neither is a logged meal ROW, which is what _mealMacLine builds and what this
+// suite protects:
+//   _nlEchoHtml  is the capture sheet's echo — what you typed, priced BEFORE it
+//                is logged, one line per item plus a running "so far" total. It
+//                deliberately shows protein only when there is any, because a
+//                guessed zero in front of somebody mid-sentence is the thing it
+//                was built to avoid.
+//   _crmDaysBlock is a DAY's total on the CRM row (cal and protein, then the
+//                food names), three days at a glance behind "why" — a summary of
+//                many meals, never one meal's row.
+// Named here rather than exempted quietly, so the next name to appear in this
+// list has to be read the same way before it is added.
+const ALLOWED=['_jvCommitPending','buildDayContext','buildCoachVoice','rendCoachMenu','rendMenuItems','openMenuShare','_openShareCardDayLegacy_UNUSED','_nlEchoHtml','_crmDaysBlock'];
 const stray=OWNERS.filter(function(o){ return ALLOWED.indexOf(o)<0; });
 t(stray.length===0, 'no meal-row renderer builds its own macro line any more', stray.length?('still hand-built in: '+stray.join(', ')):'');
 t((src.match(/_mealMacLine\(/g)||[]).length>=11, 'and every one of them calls the shared builder',
