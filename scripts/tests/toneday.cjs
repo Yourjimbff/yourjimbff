@@ -98,18 +98,36 @@ t(/Nothing logged\.'\+\(window\._tlRO\?''/.test(SRC),
 t(/Nothing here yet\. That day/.test(SRC),
   'and an AHEAD day still explains itself rather than looking broken');
 
-console.log('\nAND THE ASK\'S PLUS IS CENTRED BY LAYOUT, not by luck:');
-// It had TWO font-size declarations and leaned on the glyph's own line box,
-// which does not centre a "+" -- the character carries uneven space above and
-// below in most faces, so it sat low in its ring.
-const ring = /\.tlMealAskP\{([^}]*)\}/.exec(SRC);
-t(!!ring, 'the ring rule is still there');
-if (ring) {
-  t((ring[1].match(/font-size:/g)||[]).length === 1, 'exactly one font-size, not two',
-    (ring[1].match(/font-size:/g)||[]).length + ' found');
-  t(/place-items:center/.test(ring[1]), 'the glyph is placed by the box, not by its line height');
-  t(/box-sizing:border-box/.test(ring[1]), 'and the border is inside the circle, so it stays round');
-}
+console.log('\nTHE PLUS IS DRAWN, NOT TYPED — twice was enough:');
+// Two attempts centred the BOX and neither centred the ink. Grid and
+// place-items already put the text's line box dead centre; the glyph inside
+// that box is not centred in it, because a "+" is drawn on the font's math
+// axis, above the middle of the em square, and the slack lands underneath. No
+// flex, grid or line-height moves ink inside its own em box. Strokes have no
+// em box, so they cannot hang low.
+t(/<path d="M6 1\.9v8\.2M1\.9 6h8\.2"/.test(SRC), 'the plus is two SVG strokes');
+t(/viewBox="0 0 12 12"/.test(SRC), 'in a square viewBox, so the crossing point IS the middle');
+t(!/class="tlMealAskP">\+</.test(SRC), 'and the typed "+" character is gone');
+const ring2 = /\.tlMealAskP\{([^}]*)\}/.exec(SRC);
+t(!!ring2 && !/font-size/.test(ring2[1]),
+  'the ring no longer sets a font size, because nothing in it is text');
+t(!!ring2 && /place-items:center/.test(ring2[1]),
+  'grid still centres the 10px drawing inside the 20px ring');
+
+console.log('\nTHE RULE SEPARATES THE SECTION, NOT THE LABEL FROM ITS OWN CONTENT:');
+// "the meal section should be separated vice versa" — under the header it cut
+// MEALS off from the meals. Above it, it marks where the section starts.
+t(/\.tlMeals\{[^}]*border-top:1px solid/.test(SRC), 'the rule is on top of the section');
+const head2 = /\.tlMealsHead\{([^}]*)\}/.exec(SRC);
+t(!!head2 && !/border-bottom/.test(head2[1]), 'and no longer under the header');
+
+console.log('\nGOLD IS SPENT, NOT SPRINKLED:');
+// "be careful with the gold". The ask was a gold word beside a gold ring, a few
+// pixels above a gold-bordered composer with a gold send button, under a gold
+// date, under a gold ring in the strip, above a gold nav pill.
+const askT = /\.tlMealAskT\{([^}]*)\}/.exec(SRC);
+t(!!askT && !/var\(--gold\)/.test(askT[1]), 'the ask\'s label is not gold any more', askT?askT[1].trim():'');
+t(!!ring2 && /var\(--gold\)/.test(ring2[1]), '...but the plus still carries the brand, so the action is still marked');
 
 console.log('\nAND THE OLD DOOR CLOSES, because the dial replaced it:');
 t(/body\.tlone \.tlEarlier\{display:none;\}/.test(SRC), 'the "Earlier" door is hidden in one-day mode');
