@@ -24071,6 +24071,16 @@ function _jvStripBookWords(t){
 // longest run of words that resolves to exactly one person wins. Two different
 // people in one sentence is ambiguity and stops, which is the honest answer to
 // "book Kelly and Blake" — that is two bookings and he should say which.
+// The comparable core of a token: its trailing possessive removed, then every
+// non-alphanumeric. A possessive N comes back as bare N, which is what lets a
+// surname initial be recognised in the form he actually types it. No literal
+// apostrophe appears above, in the regex or in this comment: a lone one reads
+// as an opening quote to the string-stripper in check.sh and in the test
+// lifter, and blanks every line down to the next one. That is not a theory --
+// it hid _jvDepossess from three tests when this fix was first written.
+function _jvTokBase(x){
+  return String(x||'').replace(/[\u2019\u0027]s?$/i,'').replace(/[^a-z0-9]/ig,'');
+}
 function _jvFindClientIn(text){
   // HIS OWN NAME AND CODE ARE NOT A CLIENT. Stripped before the roster is even
   // consulted, so "book me and Blake" can never resolve him onto the roster and
@@ -24085,7 +24095,7 @@ function _jvFindClientIn(text){
     });
   }catch(e){}
   var stripped=_jvStripBookWords(_pre);
-  var toks=stripped.split(/\s+/).filter(Boolean)
+  var _cand=stripped.split(/\s+/).filter(Boolean)
     // ELEVEN STOPWORDS WAS NOT A LIST, IT WAS A SAMPLE. "has", "this", "guy",
     // "logged" and "anything" were all offered to the roster matcher as
     // candidate names out of one short question. A word this ordinary is never
@@ -24100,11 +24110,51 @@ function _jvFindClientIn(text){
     // at all, so the fuzzy pass had nothing else to reach for.
     // Units, numbers and one/two-letter fragments can never name anyone. The
     // three-character bar is the same one the self-name matcher already uses.
-    .filter(function(w){
-      var b=String(w).replace(/[^a-z0-9]/ig,'');
-      if(!b || b.length<3 || /^\d+$/.test(b)) return false;
-      return !/^(gs|mgs?|kgs?|ozs?|lbs?|cals?|kcal|grams?|calories|calorie|protein|carb|carbs|carbohydrates?|fats?|sugar|steps?)$/i.test(b);
-    });
+    ;
+  // A DICTATED MACRO IS NOT A NAME, BUT A SURNAME INITIAL IS ONE.
+  //
+  // The three-character bar below exists because "28 g of protein" handed this
+  // resolver a bare "g" and it came back with George Tremoulis — a real client,
+  // on a real roster, out of a unit. That bar is right and it stays.
+  //
+  // It also ate the N in "Andrew N" (2 Sep). He asked for the past 14 days of
+  // Andrew N, in the possessive, and the matcher was offered Andrew alone,
+  // which is TWO people — andrew1 and andrewn1. _jvResolveStep blanks the client
+  // on a tie, and a debrief with no client falls through to the board snapshot,
+  // whose own system prompt says it reports "what each person logged today."
+  // That is word for word the answer he got, and it was never a read failure:
+  // the row read never ran, because nobody had been identified.
+  //
+  // _jvNameMatch has always accepted a single letter against an initial and says
+  // so in its own comment — "Kelly G" and "Anthony D" are how he names half the
+  // roster. Nothing downstream needed changing. The letter only had to survive
+  // long enough to reach it. Measured on the live roster of 87, five ACTIVE
+  // clients could not be named to the router by the name stored for them:
+  // Andrew N, Anthony C, Anthony P, Joseph I, Joseph P. Kelly G worked by luck,
+  // because Kelly is unique.
+  //
+  // So a lone letter is kept ONLY when the token in front of it is an ordinary
+  // word of three letters or more. In "28 g" that neighbour is a number and the
+  // g is still dropped; in "Andrew N" it is a name and the N lives. The
+  // possessive counts too, because that is the form he actually typed.
+  //
+  // WRITTEN AS A LOOP, NOT A FILTER. The index and array arguments of
+  // Array.filter read as undefined free variables to the test lifter, which
+  // stubs them and silently breaks every test that lifts this function —
+  // caught by troute2 and tshadow going red before this shipped.
+  var toks=[];
+  for(var _ci=0; _ci<_cand.length; _ci++){
+    var _w=_cand[_ci], _b=_jvTokBase(_w);
+    if(!_b || /^\d+$/.test(_b)) continue;
+    if(_b.length<3){
+      if(_b.length!==1 || !/^[a-z]$/i.test(_b)) continue;
+      var _prev=_jvTokBase(_cand[_ci-1]);
+      if(_prev.length<3 || /^\d+$/.test(_prev) || !/[a-z]/i.test(_prev)) continue;
+      toks.push(_w); continue;
+    }
+    if(/^(gs|mgs?|kgs?|ozs?|lbs?|cals?|kcal|grams?|calories|calorie|protein|carb|carbs|carbohydrates?|fats?|sugar|steps?)$/i.test(_b)) continue;
+    toks.push(_w);
+  }
   if(!toks.length) return {hits:[], tried:stripped};
   // exact code first
   for(var i=0;i<toks.length;i++){
