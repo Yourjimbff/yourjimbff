@@ -58367,7 +58367,13 @@ async function insertFoodLog(row, photo){
       attempt = {ok:false, body:'insert reported success but returned no id'};
     } else {
       try{
-        if(!(await _sbRowLanded('food_logs', attempt.id))){
+        var _rb = await _sbRowLanded('food_logs', attempt.id);
+        // null = the read never answered. The POST did. Calling that "no row"
+        // is how a saved meal gets spoken as a lost one.
+        if(_rb===null){
+          console.warn('food insert read-back could not be reached for id', attempt.id);
+          attempt = {ok:false, body:'read-back unreachable'};
+        } else if(!_rb){
           console.error('food insert read-back came up empty for id', attempt.id);
           attempt = {ok:false, body:'read-back found no row'};
         }
@@ -58437,17 +58443,33 @@ async function _wtRowExists(code, wt){
   }
   return false;
 }
+// UNKNOWN IS NOT ABSENT, AND THE RETURN HAS TO SAY SO (Carly L, 1 Sep).
+// The comment on the old `continue` was right and the return value threw the
+// distinction away: a refused read, a thrown read and an honestly empty table
+// all left here as plain `false`, which the callers speak as "that did not
+// save." Three of Carly's logs on 31 Aug / 1 Sep were answered "I don't think
+// that actually saved" and ALL THREE ARE IN THE TABLE - the salami, the tofu
+// dinner and the oatmeal cranberry muffin, read back off her own day. She was
+// told to type her food again three times in one morning over rows that were
+// already there, and said she was going back to manual logging because of it.
+// Now: true = seen. false = the read answered, and the row is not there.
+// null = nobody knows, which is a different sentence upstream and never the
+// failure line. The window widens too - 3 x 180ms is inside the lag it is
+// trying to see past.
 async function _sbRowLanded(table, id){
-  for(var i=0;i<3;i++){
-    if(i) await new Promise(function(r){ setTimeout(r,180); });
+  var answered=false;                              // did any attempt actually get a reply
+  var waits=[0,200,450,900,1500];
+  for(var i=0;i<waits.length;i++){
+    if(waits[i]) await new Promise(function(r){ setTimeout(r,waits[i]); });
     try{
       var res=await fetch(SB_URL+'/rest/v1/'+table+'?id=eq.'+encodeURIComponent(id)+'&select=id',{headers:sbHeaders()});
       if(!res.ok) continue;                       // a refused read is unknown, not absent
       var rows=await res.json();
+      answered=true;
       if(rows && rows.length) return true;
     }catch(e){}
   }
-  return false;
+  return answered ? false : null;
 }
 async function insertWorkoutLog(row){
   if(!(await _confirmLogTarget())) return {ok:false, cancelled:true};
@@ -58506,7 +58528,11 @@ async function insertWorkoutLog(row){
       attempt = {ok:false, body:'insert reported success but returned no id'};
     } else {
       try{
-        if(!(await _sbRowLanded('workout_logs', attempt.id))){
+        var _rbw = await _sbRowLanded('workout_logs', attempt.id);
+        if(_rbw===null){
+          console.warn('workout insert read-back could not be reached for id', attempt.id);
+          attempt = {ok:false, body:'read-back unreachable'};
+        } else if(!_rbw){
           console.error('workout insert read-back came up empty for id', attempt.id);
           attempt = {ok:false, body:'read-back found no row'};
         }
@@ -75270,7 +75296,26 @@ async function logFoodFromChat(offer, photo, targetCode){
   var foodRow = {client_code:_code, name:r.name, emoji:r.emoji, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, sugar:r.sugar, rating:r.rating, insight:r.insight, meal:meal, eat_time:eatTime, graced:false, date_str:_targetDate, meal_text:(offer.meal_text||null)};
   if(_daysAgo>0) foodRow.logged_at = _isoForDateStr(_targetDate, eatTime);
   var _ins = await insertFoodLog(foodRow, savedPhoto);
-  if(!_ins || !_ins.ok) return false;
+  // THE WRITER ALREADY KNEW; THE SPEAKER THREW IT AWAY (Carly L, 1 Sep).
+  // insertFoodLog deliberately answers three different things - it never
+  // landed, it landed but could not be read back (unconfirmed), or a row for
+  // this exact meal already exists (duplicate) - and the comment inside it
+  // says in as many words that unconfirmed "is a different sentence, not a
+  // quieter one." This line was the only caller, and it flattened all three
+  // into `false`. So a meal sitting in her table was announced to her as a
+  // meal that did not save, and a meal that saved TWICE was announced the same
+  // way. Both wrong, and both told her to type it in again.
+  // Still false - nothing here may claim a verified save - but the reason
+  // rides out on the turn so the reply can say the true thing.
+  if(!_ins || !_ins.ok){
+    try{
+      if(_ins && (_ins.unconfirmed || _ins.duplicate)){
+        window.__jimFoodUnsure = window.__jimFoodUnsure || [];
+        window.__jimFoodUnsure.push({name:r.name, why:(_ins.duplicate?'duplicate':'unconfirmed')});
+      }
+    }catch(e){}
+    return false;
+  }
   // WHAT THIS TURN WROTE, WITH ITS ID. "Wipe that" has to be able to take back
   // the thing just logged, and it cannot do that from prose — it needs the row.
   // Collected here because this is the one place a food row's id is known.
@@ -77980,7 +78025,7 @@ async function jimTurn(text, photos, opts){
   var _foodExpected=0, _foodVerified=0;
   // This turn's landed rows only. Read back further down to correct the numbers
   // and the day in the reply against what the database actually took.
-  try{ window.__jimFoodLanded=[]; }catch(e){}
+  try{ window.__jimFoodLanded=[]; window.__jimFoodUnsure=[]; }catch(e){}
   if(foodAdds.items.length){
     // Attach the chat photo only when there's exactly one add (a single meal being logged with a pic).
     for(var fa=0; fa<foodAdds.items.length; fa++){
@@ -78263,7 +78308,42 @@ async function jimTurn(text, photos, opts){
         reply=_fKeep.join('').replace(/\n{3,}/g,'\n\n').trim();
       }catch(e){ console.error('strip false confirm', e); }
     }
-    reply += (reply?'\n\n':'') + _jimSaveFailLine("One of those didn't actually save — can you tell me again?");
+    // ===== AND THE SENTENCE HAS TO BE THE TRUE ONE (Carly L, 1 Sep) =====
+    // Everything above is right when the row is genuinely not there. It was
+    // being spoken over rows that ARE there. Her salami, her tofu dinner and
+    // her oatmeal cranberry muffin all sit on her days; all three were
+    // answered "I don't think that actually saved - can you tell me again
+    // what you ate?", and she replied that she was going back to manual
+    // logging "cuz it keeps not saying this." Nothing was broken about her
+    // logging. The only broken thing was this line.
+    //
+    // A write that POSTED and could not be read back, and a write refused
+    // because that meal is ALREADY on the day, are not failures - they are
+    // the two cases where the food is on her log and the app is the only
+    // one unsure. "Uncertain is an allowed answer, a false confirmation is
+    // not" (31 Aug) cuts both ways: a false FAILURE is not allowed either,
+    // and it is the more expensive lie, because it asks her to do the work
+    // twice and it is what makes her stop using the thing.
+    //
+    // Only when EVERY shortfall this turn is one of those two. One genuinely
+    // lost row and the honest failure line still leads, unchanged.
+    var _unsure=[]; try{ _unsure=window.__jimFoodUnsure||[]; }catch(e){}
+    var _allUnsure = _unsure.length>0 && _unsure.length >= (_foodExpected-_foodVerified);
+    var _dupOnly = _allUnsure && _unsure.every(function(u){ return u.why==='duplicate'; });
+    if(_allUnsure){
+      // The stripping above already removed the confirmation, on the
+      // assumption nothing landed. Here something did, so it is put back in
+      // the app's own words rather than the model's - from the row's name,
+      // which is the one thing known to be true.
+      var _un=_unsure.map(function(u){ return String(u.name||'that'); });
+      var _unName=_un.length===1 ? _un[0] : (_un.length+' of those');
+      reply += (reply?'\n\n':'') + (_dupOnly
+        ? ('That one is already on your log \u2014 ' + _unName + '. I have not put it down twice.')
+        : ('Saved \u2014 ' + _unName + '. I could not read it back to double-check just now, so give your day a look if it matters. Do not log it again, it is there.'));
+      try{ console.warn('JIM: write landed but unverified \u2014 spoke the uncertain line, not the failure line', _unsure); }catch(e){}
+    } else {
+      reply += (reply?'\n\n':'') + _jimSaveFailLine("One of those didn't actually save \u2014 can you tell me again?");
+    }
   }
 
   // ===== A CHANGE IS A CLAIM TOO (Spencer R, 31 Aug) =====================
