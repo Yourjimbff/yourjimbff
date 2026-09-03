@@ -101,6 +101,28 @@ t(item('ny strip',12,'oz').calories === 978, '12oz of NY strip is still 978', St
 t(item('chicken breast',1,'palm').calories > 0, 'a palm still prices');
 t(item('rice',1,'fistful') === null, 'and an invented unit is still refused');
 
+console.log('\nAND THE WAY PEOPLE ACTUALLY SAY IT PARSES:');
+// Caught on the served build within the hour cups shipped: "half a cup of rice"
+// read the amount, hit the article, found no unit, and priced half a HANDFUL --
+// 80 cal against a true 96. 'cup' is in _NL_HARMLESS, so the row still matched
+// and the wrong number still looked certain.
+const P = require('./_nlparse_probe.cjs');
+[['half a cup of rice', 0.5, 'cup'],
+ ['a cup of rice',      1,   'cup'],
+ ['1 cup of rice',      1,   'cup'],
+ ['two cups of rice',   2,   'cups'],
+ ['half cup of rice',   0.5, 'cup']].forEach(([said, q, u]) => {
+  const got = P(said);
+  t(got && got.qty === q && got.unit === u, '"'+said+'" is '+q+' '+u,
+    got ? (got.qty+' '+(got.unit||'(no unit)')+' of "'+got.name+'"') : 'unparsed');
+});
+// The article skip must not eat words that are not units.
+[['a banana', 1, ''], ['an apple', 1, '']].forEach(([said, q, u]) => {
+  const got = P(said);
+  t(got && got.qty === q && got.unit === u && /^(banana|apple)$/.test(got.name),
+    '"'+said+'" keeps its food', got ? (got.qty+' '+(got.unit||'(no unit)')+' of "'+got.name+'"') : 'unparsed');
+});
+
 console.log('\n' + (n-bad) + '/' + n + ' passed');
 console.log('tcup: ' + (bad ? 'FAIL' : 'ok'));
 process.exit(bad ? 1 : 0);
