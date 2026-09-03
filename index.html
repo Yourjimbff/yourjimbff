@@ -82006,17 +82006,151 @@ function _nlFromLabel(_lab){
       : 'Straight off the label.'
   };
 }
+/* ONE COPY OF THE MEAL PROMPT. The fast path and the old path must ask the
+   model exactly the same question, or the same plate gets two different
+   answers depending on which road it took. Lifted out of nlSubmit
+   unchanged, character for character. */
+var _NL_SYS='You are reading one meal for a fitness coach whose clients measure in ounces for meat and handfuls or palms for everything else. '
+    +'Reply with ONLY compact JSON, no markdown: {"name":"short name of the meal","calories":n,"protein":n,"carbs":n,"fat":n,"rating":"nutrient_dense|good|okay|unknown|bad","tidbit":"one line"}. '
+    +'The tidbit is either a short genuinely interesting food fact about something on the plate, or — only when the plate has earned it — one genuine specific compliment on the protein, vegetable or carb choice. '
+    +'Neutral or processed food gets a fact, never a judgment. Never scold, never mention what is missing. Sentence case, no emoji, under 110 characters. '
+    +'If a printed nutrition label is visible, read it exactly. If you cannot read the image at all, reply {"error":true}.';
+/* ===== THE LOG COMMITS ON THE WORDS (Yusuf, 3 Sep) ======================
+   His words: "the old meal logging flow was: photo, then describe what it was.
+   which is and was the best. once you log it based on photo and describing what
+   it was, that CONSTITUTES A LOG. then best next step is calculate calories and
+   macros for them based on their description, but dont make them wait for it,
+   and dont be inaccurate after making them wait."
+
+   The old order was: type, tap Log it, WAIT for a model, look at numbers, tap
+   Log it AGAIN. Two taps and a wait, and the row did not exist until the end of
+   it - so a client who put their phone away mid-wait logged nothing at all.
+
+   This inverts it. The row is written from what they SAID, immediately, with
+   whatever the macro table already knows. The model then improves it in the
+   background and the row is patched in place. Nobody waits for a number, and no
+   meal is ever lost to a timeout.
+
+   GATED. _nlFastOn() is true for the trainer only, or for anyone he flips the
+   localStorage key on for. 89 clients do not get a re-ordered logging flow
+   because one window thought it was better. */
+function _nlFastOn(){
+  try{ if(localStorage.getItem('yjb_fastlog')==='off') return false; }catch(e){}
+  try{ if(localStorage.getItem('yjb_fastlog')==='on') return true; }catch(e){}
+  try{ return !!(window.cl && typeof isTrainer==='function' && isTrainer(cl.code)); }catch(e){}
+  return false;
+}
+/* A name off their own words, so the row reads like a meal the moment it lands.
+   The model usually improves on it a second later; this is what stands until
+   then, and it is their sentence rather than a placeholder. */
+function _nlFastName(echo, line){
+  var parts=[];
+  try{
+    (echo.lines||[]).forEach(function(L){
+      var n=String(L.known ? L.name : L.said).replace(/^\s*[\d.\/]+\s*/,'').trim();
+      n=n.replace(/^(?:oz|g|kg|lb|lbs|handfuls?|scoops?|slices?|tbsp|cups?|of|a|an|the)\s+/i,'').trim();
+      if(n) parts.push(n);
+    });
+  }catch(e){}
+  var name=parts.slice(0,4).join(', ');
+  if(!name) name=String(line||'').slice(0,60);
+  try{ name=_titleCap(name); }catch(e){}
+  return name.slice(0,80) || 'Meal';
+}
+/* The fast path. Returns true when it handled the turn. */
+async function nlSubmitFast(st, line){
+  var echo=null;
+  try{ echo=_nlEcho(line); }catch(e){ echo=null; }
+  /* NOTHING THE TABLE RECOGNISES MEANS NOTHING TO COMMIT ON. A line of pure
+     brand names has no numbers and no reliable name, so it takes the old road
+     and waits for the model - which is the right trade when there is genuinely
+     nothing to show yet. */
+  if(!echo || !echo.lines.length) return false;
+  var priced=echo.lines.filter(function(L){ return L.known; });
+  if(!priced.length) return false;
+
+  var name=_nlFastName(echo, line);
+  var t=echo.total;
+  st.est={ name:name, calories:t.calories, protein:t.protein, carbs:t.carbs, fat:t.fat,
+           rating:'unknown', tidbit:'', partial:(echo.unpriced>0) };
+  st.stage='res'; nlRender();
+
+  var ok=false;
+  try{
+    ok=await logFoodFromChat({
+      name:name, calories:t.calories, protein:t.protein, carbs:t.carbs, fat:t.fat,
+      rating:'unknown', meal:st.slot, eat_time:(st.at||_tlNowClock()),
+      dateStr:st.ds, meal_text:(line||'')
+    }, st.photo||null);
+  }catch(e){ ok=false; }
+
+  if(!ok){
+    /* The honest failure, and the screen keeps their line so nothing is lost. */
+    st.stage='cap'; st.est=null; nlRender();
+    try{ showToast('Could not save — it is NOT logged. Try again.'); }catch(e){}
+    return true;
+  }
+  st.logged=true; nlRender();
+  try{ _tlRefreshDay(st.ds); }catch(e){}
+
+  /* THE ROW EXISTS. Everything after this only makes it better, and every one
+     of these steps is allowed to fail without costing the meal. */
+  var rowId=null;
+  try{
+    var w=window._jimWrote||[];
+    for(var i=w.length-1;i>=0;i--){ if(w[i] && w[i].table==='food_logs'){ rowId=w[i].id; break; } }
+  }catch(e){}
+  if(echo.unpriced>0 && rowId!=null){ _nlEnrich(st, line, rowId, name); }
+  return true;
+}
+/* Fills in what the table could not price, after the fact, on a row that is
+   already on their day. Never blocks anything and never speaks unless it
+   actually improved something. */
+async function _nlEnrich(st, line, rowId, hadName){
+  var est=null;
+  try{
+    var content=[{type:'text', text:_NL_SYS+'\n\nThe client says: "'+String(line||'')+'"'}];
+    est=await _nlEstimate(content, null);
+  }catch(e){ est=null; }
+  if(!est || est.error) return;
+  var cal=Math.round(+est.calories||0);
+  if(!cal) return;
+  /* ONLY UPWARDS, and only when the model actually saw more than the table did.
+     A model figure BELOW the table's is the model failing to see an item the
+     table already priced, and overwriting a known number with a smaller guess
+     is how a real meal shrinks on someone's day. */
+  try{ if(cal <= Math.round(+((st.est||{}).calories)||0)) return; }catch(e){}
+  var fields={ calories:cal, protein:Math.round(+est.protein||0),
+               carbs:Math.round(+est.carbs||0), fat:Math.round(+est.fat||0) };
+  if(est.name && String(est.name).trim()) fields.name=String(est.name).trim();
+  var ok=false;
+  try{ ok=await applyFoodEdit(rowId, fields); }catch(e){ ok=false; }
+  if(!ok) return;
+  try{
+    if(window._nl===st && st.est){
+      st.est.calories=fields.calories; st.est.protein=fields.protein;
+      st.est.carbs=fields.carbs; st.est.fat=fields.fat;
+      if(fields.name) st.est.name=fields.name;
+      st.est.partial=false; nlRender();
+    }
+  }catch(e){}
+  try{ _tlRefreshDay(st.ds); }catch(e){}
+}
 async function nlSubmit(){
   var st=window._nl; if(!st) return;
   var line=String((document.getElementById('nlLine')||{}).value||'').trim();
   st.line=line;
   if(!line && !st.photo){ try{ showToast('A photo or one line — either works'); }catch(e){} return; }
+  /* THE WORDS ARE THE LOG, when he has this on. A photo-only capture still
+     takes the old road: there is nothing to commit on until something has
+     read the picture. */
+  if(line && _nlFastOn()){
+    var handled=false;
+    try{ handled=await nlSubmitFast(st, line); }catch(e){ handled=false; }
+    if(handled) return;
+  }
   st.stage='busy'; _nlBusyStart(st); nlRender();
-  var sys='You are reading one meal for a fitness coach whose clients measure in ounces for meat and handfuls or palms for everything else. '
-    +'Reply with ONLY compact JSON, no markdown: {"name":"short name of the meal","calories":n,"protein":n,"carbs":n,"fat":n,"rating":"nutrient_dense|good|okay|unknown|bad","tidbit":"one line"}. '
-    +'The tidbit is either a short genuinely interesting food fact about something on the plate, or — only when the plate has earned it — one genuine specific compliment on the protein, vegetable or carb choice. '
-    +'Neutral or processed food gets a fact, never a judgment. Never scold, never mention what is missing. Sentence case, no emoji, under 110 characters. '
-    +'If a printed nutrition label is visible, read it exactly. If you cannot read the image at all, reply {"error":true}.';
+  var sys=_NL_SYS;
   var content=[];
   try{
     if(st.photo){
