@@ -88394,6 +88394,53 @@ function _crmStripHtml(L){
   });
   return h+'</div>';
 }
+/* PAINT AROUND THE SEARCH BOX INSTEAD OF THROUGH IT (Yusuf, 3 Sep).
+   The board rebuilds its whole host on every repaint, and crmQuery repaints on
+   every keystroke, so the input he was typing into was replaced four times
+   while he typed "Carl". The filter was never wrong. The node was.
+   This splits the painted string at the <!--CRMQ--> sentinel and keeps three
+   children under the host: everything before the box, the box itself, and
+   everything after. Only the first and third are ever rewritten. The input is
+   created once and, from then on, is never detached, never re-created and
+   never re-valued while he is typing - so the keyboard stays up and the caret
+   stays where he left it.
+   A pass with no sentinel (the error card, which returns early) falls back to
+   the old wholesale paint, which is correct: there is no search box on it. */
+function _crmPaintSplit(host, h, nPeople){
+  var parts=String(h).split('<!--CRMQ-->');
+  if(parts.length!==2){ host.innerHTML=h; return; }
+  var a=host.querySelector('#crmA'), qh=host.querySelector('#crmQHold'), b=host.querySelector('#crmB');
+  if(!a || !qh || !b){
+    host.innerHTML='<div id="crmA"></div><div id="crmQHold"></div><div id="crmB"></div>';
+    a=host.querySelector('#crmA'); qh=host.querySelector('#crmQHold'); b=host.querySelector('#crmB');
+  }
+  if(!a || !qh || !b){ host.innerHTML=h; return; }   // never leave the board blank
+  a.innerHTML=parts[0];
+  b.innerHTML=parts[1];
+  var inp=qh.querySelector('#crmQ');
+  if(!inp){
+    inp=document.createElement('input');
+    inp.className='crmSearch crmSearchTop';
+    inp.id='crmQ';
+    inp.type='search';
+    /* A ROSTER IS NAMES. Autocorrect turning "Bekim" into "Begin" mid-search,
+       and the capital the keyboard adds on its own, both cost him a match. */
+    inp.setAttribute('autocomplete','off');
+    inp.setAttribute('autocorrect','off');
+    inp.setAttribute('autocapitalize','off');
+    inp.setAttribute('spellcheck','false');
+    inp.addEventListener('input', function(){ crmQuery(inp.value); });
+    inp.value=String((typeof _crm!=='undefined' && _crm.q)||'');
+    qh.appendChild(inp);
+  }
+  inp.placeholder='Search '+nPeople+' people';
+  /* NEVER WRITE THE VALUE HE IS TYPING. Setting .value on a focused input
+     moves the caret to the end, which is the same fault in a smaller coat. */
+  if(document.activeElement!==inp){
+    var want=String((typeof _crm!=='undefined' && _crm.q)||'');
+    if(inp.value!==want) inp.value=want;
+  }
+}
 function crmPaint(){
   var host=_crmHost(); if(!host) return;
   var h='<div class="crmHead">CRM</div>'
@@ -88473,7 +88520,20 @@ function crmPaint(){
      One box, above the chips, filtering the SAME _crmPeople() list every chip
      count and every row is built from - so the count on a chip is the number
      of rows that chip draws, searched or not. */
-  h+='<input class="crmSearch crmSearchTop" id="crmQ" placeholder="Search '+people.length+' people" value="'+_escHtml(_crm.q)+'" oninput="crmQuery(this.value)">';
+  /* THE SEARCH BOX IS NO LONGER PART OF THIS STRING. (Yusuf, 3 Sep: "the
+     search button does not work, which is really stupid.") It was rendered
+     here, inside the same string that host.innerHTML replaces wholesale on
+     every repaint - and crmQuery repaints on every keystroke. So the input he
+     was typing into was DESTROYED AND REBUILT on each character. Measured on
+     the live phone renderer: type C-a-r-l and the node identity changes four
+     times; the filter itself was always right, 42 rows down to 1.
+     On a desktop the refocus hack below it hid the damage. On iOS it cannot:
+     detaching a focused input closes the keyboard, and a programmatic focus
+     outside a user gesture does not reopen it. First letter in, keyboard gone.
+     That is the whole bug - not the filter, the node.
+     A sentinel goes here instead and _crmPaintSplit paints around a search box
+     that is created ONCE and never detached again. */
+  h+='<!--CRMQ-->';
   var q=String(_crm.q||'').toLowerCase().trim();
   function _crmMatch(pp){
     if(!q) return true;
@@ -88608,7 +88668,7 @@ function crmPaint(){
     });
     h+='</div>';
   }
-  host.innerHTML=h;
+  _crmPaintSplit(host, h, people.length);
   /* THE DRAFT IS NEVER CUT (his law, 31 Aug: no name cut, the box grows).
      A textarea at a fixed height hides the end of a long draft behind a
      scrollbar, which is exactly "hidden behind a count" wearing a different
@@ -88624,18 +88684,13 @@ function crmToggleWatch(){ _crm.watch=!_crm.watch; crmPaint(); }
 function crmQuery(v){
   _crm.q=v||'';
   crmPaint();
-  /* SCOPED TO THE HOST THAT IS ACTUALLY ON SCREEN. Both hosts exist in the
-     document at once - the phone tab #tCRM keeps its last painted copy while
-     the cockpit host is the visible one - so two elements carry id "crmQ" and
-     getElementById returns whichever comes first in the document, not the one
-     he is typing into. That would put the caret in an invisible box and drop
-     his next keystroke. It mattered less when this box only existed inside the
-     collapsed watch section; it is always on the board now. */
-  try{
-    var host=_crmHost();
-    var el=(host && host.querySelector('#crmQ')) || document.getElementById('crmQ');
-    if(el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
-  }catch(e){}
+  /* NOTHING IS REFOCUSED HERE ANY MORE, and that is the fix rather than an
+     omission. This used to re-find #crmQ after every repaint and force the
+     caret to the end, because the repaint had just thrown his input away and
+     built a new one. _crmPaintSplit keeps the original node alive across every
+     repaint, so focus was never lost and the caret is wherever he put it -
+     which is what lets him fix a typo in the middle of a name instead of
+     having the cursor yanked to the end on the next keystroke. */
 }
 
 /* ---------- SEND. THE APP NEVER PRESSES SEND. ----------
