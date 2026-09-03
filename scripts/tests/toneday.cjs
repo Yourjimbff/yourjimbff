@@ -84,6 +84,33 @@ t((SRC.match(/_tlEnsureSel\(\);/g)||[]).length >= 3,
 t(/for\(var i=secs\.length-1;i>=0;i--\)\{\s*\n\s*if\(secs\[i\]\.classList\.contains\('ahead'\)\) continue;/.test(SRC),
   'and if today is somehow missing it falls back to a real day rather than showing nothing');
 
+console.log('\nAN EMPTY TODAY SAYS NOTHING, because it no longer has to:');
+// "get rid of nothing here yet. the pens yours" (3 Sep). That line was written
+// when it was the only thing on an empty day. The Meals header asks for the
+// meal whose hour it is now, and the gold bar sits under it -- so the sentence
+// was just telling him his day was empty, which he could see.
+t(!/Nothing here yet\. The pen/.test(SRC), 'the line is gone from the file entirely');
+t(/if\(_dst!=='past' && _dst!=='ahead'\) return '';/.test(SRC),
+  'and today returns nothing at all rather than a different sentence');
+// The other two earn their place and must survive.
+t(/Nothing logged\.'\+\(window\._tlRO\?''/.test(SRC),
+  'a PAST day still names the gap');
+t(/Nothing here yet\. That day/.test(SRC),
+  'and an AHEAD day still explains itself rather than looking broken');
+
+console.log('\nAND THE ASK\'S PLUS IS CENTRED BY LAYOUT, not by luck:');
+// It had TWO font-size declarations and leaned on the glyph's own line box,
+// which does not centre a "+" -- the character carries uneven space above and
+// below in most faces, so it sat low in its ring.
+const ring = /\.tlMealAskP\{([^}]*)\}/.exec(SRC);
+t(!!ring, 'the ring rule is still there');
+if (ring) {
+  t((ring[1].match(/font-size:/g)||[]).length === 1, 'exactly one font-size, not two',
+    (ring[1].match(/font-size:/g)||[]).length + ' found');
+  t(/place-items:center/.test(ring[1]), 'the glyph is placed by the box, not by its line height');
+  t(/box-sizing:border-box/.test(ring[1]), 'and the border is inside the circle, so it stays round');
+}
+
 console.log('\nAND THE OLD DOOR CLOSES, because the dial replaced it:');
 t(/body\.tlone \.tlEarlier\{display:none;\}/.test(SRC), 'the "Earlier" door is hidden in one-day mode');
 
