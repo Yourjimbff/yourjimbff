@@ -6178,6 +6178,22 @@ body.bfEditingToday .tlDaySec.ahead{display:none;}
 .nlLine::placeholder{color:rgba(240,236,228,0.45);}
 .nlLine:focus{border-color:rgba(245,197,24,0.5);}
 .nlChips{display:flex;gap:8px;overflow-x:auto;margin-bottom:14px;padding-bottom:2px;-webkit-overflow-scrolling:touch;}
+/* ===== THE ECHO, under the line they are typing (Yusuf, 3 Sep) ==========
+   A number the TABLE computed and a number a MODEL guessed must never look
+   alike here. The computed ones are full strength and tabular so a column of
+   them lines up; an item the table cannot price carries no figure at all and is
+   dimmed and italic. Spencer's Greek yogurt bowl came back at 11g of protein
+   against a real 38 and looked exactly as confident as a right answer. */
+.nlEcho{margin:8px 0 2px;display:flex;flex-direction:column;gap:5px;}
+.nlEchoRow{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font-size:12px;line-height:1.35;}
+.nlEchoN{color:var(--text);overflow-wrap:anywhere;}
+.nlEchoV{color:rgba(240,236,228,0.92);font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.nlEchoRow.dim .nlEchoN{color:rgba(240,236,228,0.5);}
+.nlEchoRow.dim .nlEchoV{color:rgba(240,236,228,0.42);font-weight:600;font-style:italic;}
+.nlEchoRow.tot{border-top:1px solid rgba(255,255,255,0.10);padding-top:6px;margin-top:2px;}
+.nlEchoRow.tot .nlEchoN{font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:rgba(240,236,228,0.62);}
+.nlEchoRow.tot .nlEchoV{white-space:normal;text-align:right;}
+
 .nlChip{flex-shrink:0;font-size:12.5px;font-weight:700;color:var(--m2);cursor:pointer;
   border:1px solid rgba(255,255,255,0.13);background:rgba(255,255,255,0.04);border-radius:99px;padding:9px 14px;white-space:nowrap;}
 .nlGo{width:100%;background:var(--gold);color:var(--onaccent);border:none;border-radius:13px;
@@ -81537,6 +81553,140 @@ function nlClose(){
   // The day already refreshed in place when the log landed; closing costs nothing.
   try{ if(was && was.logged) _tlPatchDay(was.ds); }catch(e){}
 }
+/* ===== THE ECHO (Yusuf, 3 Sep) ==========================================
+   His words: "as I type, 12oz ny strip steak - it echoes below it saying that
+   and what the protein, calories is... 1 handful of broccoli - and it echoes
+   below saying that its 50 something calories... perhaps it breaks it down
+   into a line below per item they add."
+
+   AND THE REASON IT CAN BE INSTANT: the units he coaches in - palms, handfuls,
+   thumbs, ounces - are MT_ROWS, which is code, not a model. So for every food
+   the table covers the numbers appear on the keystroke with no round trip and
+   no estimate to be wrong about. That is the wait he has been objecting to
+   ("dont make them wait for it, and dont be inaccurate after making them wait")
+   removed rather than shortened.
+
+   WHAT THE TABLE CANNOT PRICE IS SAID SO, NOT GUESSED AT. A line the table
+   misses shows with no numbers and a quiet "worked out when you log it". A
+   figure the table computed and a figure a model estimated must never look
+   alike on this screen - that is the 11g-of-protein-on-a-Greek-yogurt-bowl
+   failure (Spencer, 31 Aug) wearing a nicer coat.
+
+   Nothing here writes anything. It reads the textarea and paints. */
+/* BUILT ON FIRST USE, NOT AT LOAD. As a top-level IIFE this read MT_UNIT_ALIAS
+   and MT_WEIGHT_G while the file was still evaluating, which coupled it to
+   declaration order AND dragged the whole macro table into the closure of any
+   test that lifts these functions - tphoto went red on a missing MT_G_PER_OZ
+   the moment this was added. Cached after the first call, so it costs one pass. */
+var _NL_UW_CACHE = null;
+function _nlUnitWords(){
+  if(_NL_UW_CACHE) return _NL_UW_CACHE;
+  var out = {};
+  try{ Object.keys(MT_UNIT_ALIAS).forEach(function(k){ out[k]=1; }); }catch(e){}
+  try{ Object.keys(MT_WEIGHT_G).forEach(function(k){ out[k]=1; }); }catch(e){}
+  ['cup','cups','can','cans','bowl','bowls','bar','bars','packet','packets'].forEach(function(k){ out[k]=1; });
+  _NL_UW_CACHE = out;
+  return out;
+}
+/* Words that carry an amount without a digit in front of them. */
+var _NL_WORD_QTY = {a:1, an:1, one:1, two:2, three:3, four:4, five:5, six:6,
+  seven:7, eight:8, nine:9, ten:10, twelve:12, half:0.5, couple:2};
+
+/* Split what they typed into the things they ate. Commas, "and", "+" and new
+   lines all mean "next item", because all four are how people actually type a
+   plate out. */
+function _nlEchoSplit(line){
+  return String(line||'')
+    .replace(/\r/g,'')
+    .split(/\n|,|;|\s+\+\s+|\s+and\s+|\s+with\s+/i)
+    .map(function(x){ return x.trim(); })
+    .filter(function(x){ return x.length>0; });
+}
+/* One fragment into {qty, unit, name}. The unit string is handed on RAW so
+   _mtQty owns every unit question - palms, weights, bare counts and the
+   refusals all stay in the one place that already gets them right. */
+function _nlEchoParse(frag){
+  var t = String(frag||'').toLowerCase().trim();
+  if(!t) return null;
+  var qty = null, unit = '';
+  /* A glued weight is how everyone types it: 12oz, 200g, 6oz. */
+  var glue = /^(\d+(?:\.\d+)?)\s*([a-z]+)\b/.exec(t);
+  if(glue && _nlUnitWords()[glue[2]]){
+    qty = parseFloat(glue[1]); unit = glue[2];
+    t = t.slice(glue[0].length).trim();
+  } else {
+    /* A number, a fraction, or a word that means a number. */
+    var num = /^(\d+\s*\/\s*\d+|\d+(?:\.\d+)?)\s*/.exec(t);
+    if(num){
+      var raw = num[1].replace(/\s+/g,'');
+      if(raw.indexOf('/')>-1){
+        var pr = raw.split('/');
+        qty = (parseFloat(pr[1])!==0) ? (parseFloat(pr[0])/parseFloat(pr[1])) : null;
+      } else { qty = parseFloat(raw); }
+      t = t.slice(num[0].length).trim();
+    } else {
+      var w = /^([a-z]+)\b/.exec(t);
+      if(w && _NL_WORD_QTY[w[1]]!==undefined){
+        qty = _NL_WORD_QTY[w[1]];
+        t = t.slice(w[0].length).trim();
+      }
+    }
+    var uw = /^([a-z]+)\b/.exec(t);
+    if(uw && _nlUnitWords()[uw[1]]){ unit = uw[1]; t = t.slice(uw[0].length).trim(); }
+  }
+  t = t.replace(/^of\s+/,'').replace(/^(?:my|some|the)\s+/,'').trim();
+  if(!t) return null;
+  return {name:t, qty:qty, unit:unit};
+}
+/* Price the line. Returns {lines:[...], total:{...}, unpriced:n} and never
+   throws - it runs on every keystroke. */
+function _nlEcho(line){
+  var out = {lines:[], total:{calories:0,protein:0,carbs:0,fat:0}, unpriced:0};
+  var frags = _nlEchoSplit(line);
+  for(var i=0;i<frags.length && i<12;i++){
+    var it = null;
+    try{ it = _nlEchoParse(frags[i]); }catch(e){ it = null; }
+    if(!it){ continue; }
+    var priced = null;
+    try{ priced = _mtItem({name:it.name, qty:it.qty, unit:it.unit}); }catch(e){ priced = null; }
+    if(priced){
+      out.lines.push({said:frags[i], name:priced.name, calories:priced.calories,
+                      protein:priced.protein, carbs:priced.carbs, fat:priced.fat, known:true});
+      out.total.calories += priced.calories; out.total.protein += priced.protein;
+      out.total.carbs += priced.carbs;       out.total.fat += priced.fat;
+    } else {
+      out.lines.push({said:frags[i], name:it.name, known:false});
+      out.unpriced++;
+    }
+  }
+  return out;
+}
+function _nlEchoHtml(st){
+  var line = String((st&&st.line)||'').trim();
+  if(!line) return '';
+  var e = null;
+  try{ e = _nlEcho(line); }catch(err){ return ''; }
+  if(!e.lines.length) return '';
+  var h = '<div class="nlEcho">';
+  e.lines.forEach(function(L){
+    if(L.known){
+      h += '<div class="nlEchoRow"><span class="nlEchoN">'+_escHtml(L.said)+'</span>'
+         + '<span class="nlEchoV">'+L.calories+' cal'
+         + (L.protein>0 ? (' · '+L.protein+'g protein') : '')
+         + '</span></div>';
+    } else {
+      /* NO NUMBER RATHER THAN A GUESSED ONE. */
+      h += '<div class="nlEchoRow dim"><span class="nlEchoN">'+_escHtml(L.said)+'</span>'
+         + '<span class="nlEchoV">worked out when you log it</span></div>';
+    }
+  });
+  if(e.lines.filter(function(L){return L.known;}).length > 1){
+    h += '<div class="nlEchoRow tot"><span class="nlEchoN">so far</span>'
+       + '<span class="nlEchoV">'+e.total.calories+' cal · '+e.total.protein+'g protein'
+       + ' · '+e.total.carbs+'g carbs · '+e.total.fat+'g fat</span></div>';
+  }
+  return h + '</div>';
+}
 function nlRender(){
   var st=window._nl, sh=document.getElementById('nlSheet');
   if(!st||!sh) return;
@@ -81550,6 +81700,7 @@ function nlRender(){
                     +'<span>Take a photo of the plate</span>'))
       +'</div>'
       +'<textarea class="nlLine" id="nlLine" rows="2" placeholder="12 oz steak, a handful of rice, a handful of peppers">'+_escHtml(st.line||'')+'</textarea>'
+      +'<div id="nlEchoWrap">'+_nlEchoHtml(st)+'</div>'
       +'<div class="nlChips" id="nlChips">'+_nlChipsHtml(st)+'</div>'
       +'<button class="nlGo" onclick="nlSubmit()">Log it</button>';
   }
@@ -81585,6 +81736,11 @@ function nlRender(){
       // here would recreate the textarea and drop focus mid-type.
       var ch=document.getElementById('nlChips');
       if(ch) ch.innerHTML=_nlChipsHtml(st);
+      /* The echo repaints on the same terms and for the same reason: its own
+         container only, never the sheet, or the textarea is rebuilt under his
+         thumb and the keyboard goes - the fault the CRM search box just had. */
+      var ec=document.getElementById('nlEchoWrap');
+      if(ec){ try{ ec.innerHTML=_nlEchoHtml(st); }catch(e2){} }
     });
   }
 }
