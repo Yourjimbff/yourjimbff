@@ -47,6 +47,8 @@ t(/localStorage\.getItem\('yjb_tab'\)/.test(rem),'and read back at load');
 t(/_TAB_IDS\.indexOf\(t\)<0/.test(rem),          'an unknown stored value is refused');
 t(/if\(!el \|\| !bn\) return ''/.test(rem),      'a tab this account cannot reach is refused');
 t(src.indexOf('var _want=_tabRemembered();') > 0, 'the remembered tab is restored at load');
+t(/if\(_rem\)\{\s*switchTab\(_rem\);/.test(src),
+  'and the BOOT LANDING honours it too — it runs later and used to overwrite it');
 t(/if\(_want\)\{ _tabOnly\(_want\); \}[\s\S]{0,80}else if/.test(src),
   'and it wins over the first-run Feed landing');
 
