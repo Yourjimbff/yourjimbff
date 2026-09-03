@@ -41,18 +41,25 @@ console.log('\n  nothing the table knows means nothing to commit on:');
 t(/if\(!echo \|\| !echo\.lines\.length\) return false/.test(f), 'no items, old road');
 t(/if\(!priced\.length\) return false/.test(f),                 'nothing priced, old road');
 
-console.log('\n  the enrich can only improve the row, never shrink it:');
-const e = src.slice(src.indexOf('async function _nlEnrich'), src.indexOf('async function nlSubmit(){'));
-t(/cal <= Math\.round/.test(e),        'a model figure at or below the table figure is ignored');
-t(/ONLY UPWARDS/.test(e),              'and the reason is stated');
-t(/applyFoodEdit\(rowId, fields\)/.test(e), 'it patches the existing row, not a new one');
-t(/if\(!est \|\| est\.error\) return;/.test(e), 'a failed estimate costs nothing');
-t(/if\(!ok\) return;/.test(e),         'and a failed patch costs nothing either');
+console.log('\n  the enrich prices ONLY the leftovers and ADDS them:');
+const e = src.slice(src.indexOf('/* Fills in ONLY what the table'), src.indexOf('async function nlSubmit(){'));
+t(/filter\(function\(L\)\{ return !L\.known; \}\)/.test(e), 'only the items the table could not price are sent');
+t(/Price ONLY these items, nothing else/.test(e),   'and the prompt says so');
+t(/base\.calories \+ addCal/.test(e),               'the answer is ADDED to the table total');
+t(/base\.protein  \+ Math\.round/.test(e),          'macros too');
+t(!/cal <= Math\.round\(\+\(\(st\.est/.test(e),      'the whole-meal comparison is gone');
+t(/THE FIRST VERSION OF THIS WAS WRONG AND THE SCRATCH CLIENT CAUGHT IT/.test(e),
+  'and why it changed is written down');
+t(/_NL_ENRICH_MAX_CAL/.test(e),                     'absurd leftovers are refused');
+t(/applyFoodEdit\(rowId, fields\)/.test(e),         'it patches the existing row, not a new one');
+t(/if\(!est \|\| est\.error\) return;/.test(e),     'a failed estimate costs nothing');
+t(/if\(!ok\) return;/.test(e),                      'and a failed patch costs nothing either');
+t(/if\(!left\.length\) return;/.test(e),            'nothing left over means no call at all');
 
 console.log('\n  both roads ask the model the SAME question:');
 t(/var _NL_SYS=/.test(src),      'the prompt is one constant');
 t(/var sys=_NL_SYS;/.test(src),  'the old path uses it');
-t(/_NL_SYS\+/.test(e),           'the enrich uses it too');
+t(/_NL_SYS/.test(e),             'the enrich builds on the same prompt');
 t((src.match(/You are reading one meal for a fitness coach whose clients measure in ounces for meat and handfuls/g)||[]).length===1,
   'and there is exactly one copy of it');
 

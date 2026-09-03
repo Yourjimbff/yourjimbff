@@ -82100,29 +82100,50 @@ async function nlSubmitFast(st, line){
     var w=window._jimWrote||[];
     for(var i=w.length-1;i>=0;i--){ if(w[i] && w[i].table==='food_logs'){ rowId=w[i].id; break; } }
   }catch(e){}
-  if(echo.unpriced>0 && rowId!=null){ _nlEnrich(st, line, rowId, name); }
+  if(echo.unpriced>0 && rowId!=null){ _nlEnrich(st, echo, rowId); }
   return true;
 }
-/* Fills in what the table could not price, after the fact, on a row that is
-   already on their day. Never blocks anything and never speaks unless it
-   actually improved something. */
-async function _nlEnrich(st, line, rowId, hadName){
+/* Fills in ONLY what the table could not price, and ADDS it to what the table
+   already knew. Never blocks anything, never speaks, and cannot shrink a meal.
+
+   THE FIRST VERSION OF THIS WAS WRONG AND THE SCRATCH CLIENT CAUGHT IT.
+   It asked the model to price the WHOLE meal and then refused any answer at or
+   below the table's total, on the reasoning that a lower figure meant the model
+   had missed an item the table already had. Measured end to end on
+   "12 oz steak, a handful of rice, cottage cheese": the table said 1130 and the
+   model said 720 for the whole plate — because it was picturing a smaller steak
+   than 12oz at table rates. So the guard did exactly what it was written to do,
+   refused the patch, and the cottage cheese was never counted at all. The row
+   sat at 1130 forever with a third of the meal missing.
+
+   The guard was not the mistake. Comparing whole-meal totals was. The model is
+   now shown ONLY the items the table could not price, and its answer is ADDED.
+   The table's own numbers are never overwritten by an estimate, the missing item
+   always lands, and a smaller answer is arithmetically incapable of shrinking
+   the meal. It is a shorter prompt and a cheaper call too. */
+var _NL_ENRICH_MAX_CAL = 2500;      // a sanity ceiling on leftovers, not a clamp on a meal
+async function _nlEnrich(st, echo, rowId){
+  var left=(echo.lines||[]).filter(function(L){ return !L.known; })
+             .map(function(L){ return L.said; }).filter(Boolean);
+  if(!left.length) return;
   var est=null;
   try{
-    var content=[{type:'text', text:_NL_SYS+'\n\nThe client says: "'+String(line||'')+'"'}];
+    var content=[{type:'text', text:_NL_SYS
+      +'\n\nPrice ONLY these items, nothing else. They are part of a larger meal '
+      +'whose other items are already counted, so do not add anything they do not name.'
+      +'\n\nThe client says: "'+left.join(', ')+'"'}];
     est=await _nlEstimate(content, null);
   }catch(e){ est=null; }
   if(!est || est.error) return;
-  var cal=Math.round(+est.calories||0);
-  if(!cal) return;
-  /* ONLY UPWARDS, and only when the model actually saw more than the table did.
-     A model figure BELOW the table's is the model failing to see an item the
-     table already priced, and overwriting a known number with a smaller guess
-     is how a real meal shrinks on someone's day. */
-  try{ if(cal <= Math.round(+((st.est||{}).calories)||0)) return; }catch(e){}
-  var fields={ calories:cal, protein:Math.round(+est.protein||0),
-               carbs:Math.round(+est.carbs||0), fat:Math.round(+est.fat||0) };
-  if(est.name && String(est.name).trim()) fields.name=String(est.name).trim();
+  var addCal=Math.round(+est.calories||0);
+  if(!addCal || addCal>_NL_ENRICH_MAX_CAL) return;
+  var base=echo.total||{calories:0,protein:0,carbs:0,fat:0};
+  var fields={
+    calories: base.calories + addCal,
+    protein:  base.protein  + Math.round(+est.protein||0),
+    carbs:    base.carbs    + Math.round(+est.carbs||0),
+    fat:      base.fat      + Math.round(+est.fat||0)
+  };
   var ok=false;
   try{ ok=await applyFoodEdit(rowId, fields); }catch(e){ ok=false; }
   if(!ok) return;
@@ -82130,8 +82151,9 @@ async function _nlEnrich(st, line, rowId, hadName){
     if(window._nl===st && st.est){
       st.est.calories=fields.calories; st.est.protein=fields.protein;
       st.est.carbs=fields.carbs; st.est.fat=fields.fat;
-      if(fields.name) st.est.name=fields.name;
-      st.est.partial=false; nlRender();
+      st.est.partial=false;
+      if(est.tidbit && !st.est.tidbit) st.est.tidbit=est.tidbit;
+      nlRender();
     }
   }catch(e){}
   try{ _tlRefreshDay(st.ds); }catch(e){}
