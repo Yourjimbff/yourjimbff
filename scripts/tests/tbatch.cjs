@@ -73,5 +73,29 @@ t((src.match(/\.filter\(_crmMatch\)/g)||[]).length===2,
   'the board and the batch queue both narrow through it',
   (src.match(/\.filter\(_crmMatch\)/g)||[]).length+' call site(s)');
 
+console.log('\n  the run never hangs on one event:');
+// visibilitychange fires when the PAGE is hidden. On a desktop, handing off to
+// Messages only moves the window FOCUS - the page can stay visible the whole
+// time, so the event may never arrive. If the advance depended on it alone the
+// run would sit on one client forever, which is exactly the failure a batch mode
+// exists to remove.
+const sendFn=src.slice(src.indexOf('function crmBatchSend(){'), src.indexOf('function crmBatchNext(){'));
+t(/b\.awaiting=true;/.test(sendFn),        'a send marks the run as handed off');
+t(/_crmBatchPaint\(\);/.test(sendFn),       'and repaints, so he sees the handoff screen');
+t(/function crmBatchNext\(\)/.test(src),    'there is an explicit Next');
+t(/onclick="crmBatchNext\(\)"/.test(src),   'on a button he can actually press');
+const listen=src.slice(src.indexOf("if(!b || !b.awaiting) return;")-320,
+                       src.indexOf("if(!b || !b.awaiting) return;")+200);
+t(/crmBatchNext\(\)/.test(listen),          'and the event advances through that SAME function');
+t(!/b\.i\+\+/.test(listen),                'the listener does not step the index itself, so the two cannot double-advance');
+
+console.log('\n  and it never claims a text was sent:');
+const hand=src.slice(src.indexOf('if(b.awaiting){'), src.indexOf('if(b.awaiting){')+900);
+t(/Opened in Messages/.test(hand),          'the handoff screen says opened, not sent');
+t(!/\bSent\b/.test(hand),                   'the word Sent is not on it');
+t(/function crmBatchBack\(\)/.test(src),    'and there is a way back if he thought better of it');
+const back=src.slice(src.indexOf('function crmBatchBack(){'), src.indexOf('function crmBatchBack(){')+420);
+t(!/dfSetStatus/.test(back),                'Back rewrites no row - the sweep already handles an opened row he never sent');
+
 console.log(bad? ('\n'+bad+' FAILED') : '\n  all pass');
 process.exit(bad?1:0);
