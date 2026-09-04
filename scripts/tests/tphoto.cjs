@@ -33,16 +33,9 @@ global.localStorage={getItem:function(){return null;}, setItem:function(){}, rem
 // on a name that does not exist yet. It only shows up when the closure happens
 // to shrink and stops including the real one by another route, which is what a
 // change on my side did. Seeding it puts the definition first, where it belongs.
-// SAME FAULT AGAIN, SAME REMEDY (3 Sep). _JIM_CLAIM_VERB is a plain string and
-// _JIM_CLAIM_WT_RE is `new RegExp("\\b"+_JIM_CLAIM_VERB ...)`, so the regex has
-// to be emitted after it. The chase joins bodies in DISCOVERY order, and the
-// moment an unrelated function gained a reference to _mtRow this closure widened
-// enough to meet the regex first — "_JIM_CLAIM_VERB is not defined", at load,
-// with nothing wrong in index.html. Seeded for the reason written above: it puts
-// the definition first, where it belongs.
-const CL=closure(['_JV_LEAD','_JIM_CLAIM_VERB',
-                  '_jimProgressPhotoAsked','_JIM_PROGRESS_RE','_jimProgressPhotoDay','_jimDataUrlToBlob',
-                  '_JIM_MEAL_CTX_RE','_jimAnchorDay','_dateStrDaysAgo','_tlDateStr','saveProgramDay']);
+const CL=closure(['_jimProgressPhotoAsked','_JIM_PROGRESS_RE','_jimProgressPhotoDay','_jimDataUrlToBlob',
+                  '_JIM_MEAL_CTX_RE','_jimAnchorDay','_dateStrDaysAgo','_tlDateStr','saveProgramDay',
+                  '_JIM_CLAIM_VERB']);
 eval(CL.code);
 guard(['_JIM_PROGRESS_RE','_jimProgressPhotoAsked','_jimProgressPhotoDay','_jimAnchorDay','_dateStrDaysAgo'],
   n=>eval(n));

@@ -10,20 +10,12 @@ class FakeDate extends REAL {
   static now(){ return new REAL(2026,7,24,9,0,0).getTime(); }
 }
 global.Date=FakeDate;
-// _JIM_FOOD_UNIT_RE is _jimDateSaid's own, added 31 Aug so "a 1/4 cup of rice"
-// stops reading as January 4. It was never added here, so the lifted body threw
-// a ReferenceError on the first slash date, _jimDateSaid's outer catch returned
-// null, and "8/12 I had a burger" came back as no day at all — from the harness,
-// never from the app. This suite reported a broken slash-date resolver for three
-// days over code that was correct. _guard below is what turns the next one of
-// these RED instead of silently wrong, so the name goes in both lists.
 eval([ one('var _JIM_DAY_BACK_RE='), one('var _JIM_DAY_NAGO_RE='), one('var _JIM_DOW='),
        one('var _JIM_WORDNUM='), one('var _JIM_DAY_MAX='), one('var _JIM_WEEKS_AGO_RE='),
-       one('var _JIM_MONTHS='), one('var _JIM_FOOD_UNIT_RE='),
-       grab(l=>l.startsWith('function _jimDateSaid(')),
-       one('var _JIM_FOOD_CMP_RE='), grab(l=>l.startsWith('function _jimStripFoodCompare(')),
+       one('var _JIM_MONTHS='), grab(l=>l.startsWith('function _jimDateSaid(')),
+       one('var _JIM_FOOD_CMP_RE='), one('var _JIM_FOOD_UNIT_RE='), grab(l=>l.startsWith('function _jimStripFoodCompare(')), 
        grab(l=>l.startsWith('function _jimAnchorDay(')) ].join('\n'));
-require('./_guard.cjs')(['_JIM_DAY_BACK_RE','_JIM_DAY_MAX','_JIM_DAY_NAGO_RE','_JIM_DOW','_JIM_MONTHS','_JIM_WEEKS_AGO_RE','_JIM_WORDNUM','_JIM_FOOD_UNIT_RE','_jimAnchorDay','_jimDateSaid','_jimStripFoodCompare','_JIM_FOOD_CMP_RE'], function(n){ return eval(n); });
+require('./_guard.cjs')(['_JIM_DAY_BACK_RE','_JIM_DAY_MAX','_JIM_DAY_NAGO_RE','_JIM_DOW','_JIM_MONTHS','_JIM_WEEKS_AGO_RE','_JIM_WORDNUM','_jimAnchorDay','_jimDateSaid','_jimStripFoodCompare','_JIM_FOOD_CMP_RE','_JIM_FOOD_UNIT_RE'], function(n){ return eval(n); });
 const fmt=(n)=>{ if(n==null) return 'null'; const d=new REAL(2026,7,24); d.setDate(d.getDate()-n); return d.toDateString().slice(0,10); };
 const C=[
   ['I had two buffet muffins yesterday', 1],

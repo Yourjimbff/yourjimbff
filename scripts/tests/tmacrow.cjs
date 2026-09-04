@@ -17,12 +17,11 @@ function fnAt(n){ const a=L.findIndex(l=>l.indexOf('function '+n+'(')===0); if(a
   let b=a; while(b<L.length && L[b]!=='}') b++; return L.slice(a,b+1).join('\n'); }
 let bad=0;
 const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  FAIL  ')+label+(extra?('  '+extra):'')); };
-// _mealMacLine groups by default since 2 Sep ("one line, one format"), so it
-// needs the app's own number formatter lifted with it.
-function lineAt(p){ const l=L.find(x=>x.indexOf(p)===0); if(l==null) throw new Error('SEAM MOVED: '+p); return l; }
-eval(lineAt('function _jvNum('));
-eval(fnAt('_mealMacLine'));
-guard(['_mealMacLine','_jvNum'], n=>eval(n));
+// _jvNum is the grouping formatter _mealMacLine routes every figure through since
+// the 2 Sep "one line, one format" ruling. Unlifted, this suite threw inside its
+// first call and measured NOTHING while the summary line stayed quiet.
+eval([fnAt('_jvNum'), fnAt('_mealMacLine')].join('\n'));
+guard(['_jvNum','_mealMacLine'], n=>eval(n));
 
 const FULL={calories:520, protein:52, carbs:3, fat:30, eat_time:'7:30 AM'};
 
@@ -85,21 +84,7 @@ const OWNERS=[];
 // Everything left must be something OTHER than a logged meal row: a spoken
 // confirmation, a prompt example, a MENU item (a meal proposed, never logged),
 // or a function whose own name says it is unused.
-// _nlEchoHtml and _crmDaysBlock both shipped on 3 Sep and both were caught by
-// the sweep, correctly — the sweep is deliberately wider than the assertion. But
-// neither is a logged meal ROW, which is what _mealMacLine builds and what this
-// suite protects:
-//   _nlEchoHtml  is the capture sheet's echo — what you typed, priced BEFORE it
-//                is logged, one line per item plus a running "so far" total. It
-//                deliberately shows protein only when there is any, because a
-//                guessed zero in front of somebody mid-sentence is the thing it
-//                was built to avoid.
-//   _crmDaysBlock is a DAY's total on the CRM row (cal and protein, then the
-//                food names), three days at a glance behind "why" — a summary of
-//                many meals, never one meal's row.
-// Named here rather than exempted quietly, so the next name to appear in this
-// list has to be read the same way before it is added.
-const ALLOWED=['_jvCommitPending','buildDayContext','buildCoachVoice','rendCoachMenu','rendMenuItems','openMenuShare','_openShareCardDayLegacy_UNUSED','_nlEchoHtml','_crmDaysBlock'];
+const ALLOWED=['_jvCommitPending','buildDayContext','buildCoachVoice','rendCoachMenu','rendMenuItems','openMenuShare','_openShareCardDayLegacy_UNUSED'];
 const stray=OWNERS.filter(function(o){ return ALLOWED.indexOf(o)<0; });
 t(stray.length===0, 'no meal-row renderer builds its own macro line any more', stray.length?('still hand-built in: '+stray.join(', ')):'');
 t((src.match(/_mealMacLine\(/g)||[]).length>=11, 'and every one of them calls the shared builder',

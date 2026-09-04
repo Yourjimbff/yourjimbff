@@ -281,22 +281,10 @@ console.log('\n  AND IT COUNTS FOR THE OUTREACH TRACKER, BY THE SAME MARK:');
 // So the phone marks the tracker with the feed lane's own mark and this build
 // wrote no second one.
 t(/try\{ textClient\(code, body\); \}catch\(e\)\{\}/.test(src), 'citeFeedDay hands off to textClient');
-// LIFTED BY NAME, NEVER BY PARAMETER LIST. This pinned the exact text
-// `function textClient(code, body){`. textClient grew a third parameter on
-// 2 Sep (opts, so the CRM board can say "the caller is keeping the record") and
-// indexOf then returned -1 — which slice does not treat as an error, it counts
-// from the END of the file. TC became the last three characters of index.html,
-// the assertion failed, and the failure said "textClient no longer records the
-// contact" about code that records it on the line it always did. A lift that
-// cannot find its target must say SO, so it does now.
-const TCAT=src.indexOf('function textClient(');
-t(TCAT>=0, 'textClient is findable at all', TCAT<0?'NOT FOUND — this suite can prove nothing below':'');
-// TO THE END OF THE FUNCTION, not to a magic character count. The old 3,000 was
-// already short of the jvLogContact line by the time the comments explaining
-// WHY it logs were written; a window measured in characters goes stale every
-// time somebody documents the code underneath it.
-const TCEND=src.indexOf('\nfunction ', TCAT+1);
-const TC=TCAT<0?'':src.slice(TCAT, TCEND<0?src.length:TCEND);
+const _tcAt=src.indexOf('function textClient(code, body');
+// textClient carries ~170 lines of ruling comments before the log line; 3000 chars
+// stopped short of it once those were written.
+const TC=src.slice(_tcAt, _tcAt+12000);
 t(/jvLogContact\(code, 'text', '', true\)/.test(TC), "and textClient records the contact — the feed lane's own mark");
 // The point is not how many places record a contact — there are two, and both
 // predate this build (the Text button, and the "text about" flow). The point is

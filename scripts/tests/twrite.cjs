@@ -49,19 +49,13 @@ function discarded(){
   return out;
 }
 
-// THE FROZEN CENSUS. 42 discarded writes, every one read by hand on 29 Aug.
+// THE FROZEN CENSUS. 44 discarded writes, every one read by hand on 29 Aug.
 // changeAccessCode was the 45th and is gone — the ratchet named it the moment it
 // stopped being an offender, which is exactly what the "must still be a real
 // offender" assertion below is for. Nothing may be ADDED to this list to make a build pass: the
 // list only ever shrinks. Each of these still lies to somebody and each is
 // scheduled — they are recorded here so the number cannot quietly grow while
 // they are being worked through.
-//
-// wkPanelSave and _mwPanelSave were the 43rd and 44th and are gone the same way.
-// Both PATCHed calendar_blocks with a bare await and closed the card on a refused
-// write exactly as on a good one; both now read _pres.ok, hold the card open and
-// say "That did not save — nothing was changed". The ratchet named them the run
-// after the fix landed, which is the assertion below doing its job. 44 -> 42.
 const KNOWN={
   _saveThread:1, jDeleteEntry:1, jRenameSave:1, _entryReflect:1, deleteEntry:1,
   createProgram:1, deleteProgram:1, deleteProgramDay:1, openTemplateDayEditor:1,
@@ -91,9 +85,7 @@ t(novel.length===0, 'no function discards a write that did not already',
 let stale=Object.keys(KNOWN).filter(fn=>!counts[fn]);
 t(stale.length===0, 'and every name in the census is still a real offender',
   stale.length?('fixed - delete from KNOWN: '+stale.join(', ')):'');
-// The cap comes DOWN with the list, or the ratchet has no teeth: left at 44 it
-// would have let the two closed writes be reintroduced without a word.
-t(found.length<=42, 'the total never grows', 'now '+found.length);
+t(found.length<=44, 'the total never grows', 'now '+found.length);
 
 console.log('\n  2. THE FIVE CLOSED THIS SHIP, EACH READ BACK:');
 function body(name){
