@@ -11087,6 +11087,18 @@ async function checkForUpdate(){
     // written yjb_logged_in and yjb_self_client but before the app finished coming
     // up on them. The update is not lost: it is simply taken on the next launch,
     // which is exactly what the draft guard already does.
+    /* DEFERRED, AND SOMETHING ACTUALLY PICKS IT UP NOW (4 Sep). This line
+       wrote window._updateDeferred and NOTHING in the file ever read it. One
+       write, zero reads. So "the update is not lost: it is simply taken on the
+       next launch" was not true - it was dropped, silently, and the next launch
+       hit the identical race and dropped it again.
+       HOW THE RACE IS LOST: boot runs Promise.race([checkForUpdate(), 1500ms]).
+       On a slow phone the nine-byte /VERSION fetch loses that race, boot carries
+       on and sets _authBusy, and the awaited checkForUpdate then resumes into
+       this branch. Every launch. Forever.
+       That is why he was on .966 while .986 was live, and why he can be told a
+       thing is fixed and still be looking at the build where it is not. Every
+       fix in this file is invisible to a phone that never updates. */
     if(window._authBusy){ window._updateDeferred = true; return; }
     sessionStorage.setItem('yjb_just_updated','1');
     // Anything still deciding whether to start work needs to know the page is going.
@@ -11315,6 +11327,14 @@ window.addEventListener('load', function(){
       window._authBusy = true;
       try{ await doLogin(savedCode); }
       finally{ window._authBusy = false; }
+      /* THE PICK-UP. checkForUpdate refuses to navigate through a sign-in, and
+         it is right to - that guard exists because it once booted the wrong
+         person. But refusing has to mean LATER, not never. Sign-in is done
+         here, so the deferred check is run for real. */
+      if(window._updateDeferred){
+        window._updateDeferred = false;
+        try{ await checkForUpdate(); }catch(e){}
+      }
     }
   }, 200);
 });
