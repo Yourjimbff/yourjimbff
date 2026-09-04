@@ -54456,10 +54456,27 @@ async function _jvCatchUpData(code, span){
              cal:0, pro:0, car:0, fat:0, any:false};
     days.push(row); byDs[row.ds]=row;
   }
+  /* A DOUBLE TAP IS NOT TWO MEALS (Yusuf, 4 Sep, off a real catch up to Ben
+     Plimpton). His Sep 4 read back as five food rows and 1,608 cal, and the
+     message was about to tell him so. The table really did hold five rows - but
+     "Eggs, Sausage & Blueberries" and "Yogurt, Blueberries & Strawberries" were
+     each in there TWICE, same meal, same calories, logged SEVENTEEN SECONDS
+     apart. He ate one breakfast. His real day is 1,014 cal and 116g protein.
+     The arithmetic was right and the answer was wrong by 594 calories, which is
+     the same shape as the salmon row in the macro table: a confident number,
+     to a client, off data nobody questioned.
+     Collapsed on the read, and ONLY inside a two minute window. The same meal
+     logged again hours later is a person who genuinely ate it twice, and that
+     still counts. Seventeen seconds is a finger. */
+  var _seen={};
   F.forEach(function(f){
     var dd=_dbDay(f.date_str, f.logged_at); if(!dd) return;
     var slot=byDs[_dbDs(dd)]; if(!slot) return;
     var nm=String(f.name||'').replace(/\s+/g,' ').trim();
+    var _k=[_dbDs(dd), String(f.meal||''), nm.toLowerCase(), (+f.calories||0)].join('|');
+    var _t=Date.parse(f.logged_at||'')||0;
+    if(_seen[_k]!=null && _t && Math.abs(_t-_seen[_k])<=120000) return;   /* the same tap, twice */
+    if(_t) _seen[_k]=_t;
     if(nm) slot.meals.push(nm);
     slot.cal+=(+f.calories||0); slot.pro+=(+f.protein||0);
     slot.car+=(+f.carbs||0);    slot.fat+=(+f.fat||0);
@@ -54552,7 +54569,12 @@ function _cuDayLines(day){
 // deliberately NOT bold and that reasoning stands where it stands — this is his
 // explicit ruling for this line, and the label is one word, so a phone that
 // cannot render the face degrades to a readable word and not to a wall.
-var _CU_FEEDBACK_LABEL='\uD835\uDDD9\uD835\uDDF2\uD835\uDDF2\uD835\uDDF1\uD835\uDDEF\uD835\uDDEE\uD835\uDDF0\uD835\uDDF8';
+/* THE LABEL IS GONE (Yusuf, 4 Sep: "notice its a little odd and too clunky").
+   It rendered as a bolded Feedback: in the middle of a text message. Nobody
+   types a section header to a friend. The paragraph still goes last, where he
+   rewrites it; it just stops announcing itself. Kept as an empty string rather
+   than deleted so nothing downstream has to change shape. */
+var _CU_FEEDBACK_LABEL='';
 function _cuFeedback(D){
   var days=(D&&D.days)||[], span=(D&&D.span)||days.length||0;
   var lived=days.filter(function(x){ return x.any; });
@@ -54569,9 +54591,20 @@ function _cuFeedback(D){
   }
   var s=[];
   if(fed.length){
-    s.push('You logged food on '+fed.length+' of the '+span+(span===1?' day':' days')
-      + (avgCal>0 ? (', averaging '+_jvNum(avgCal)+' cal'+(avgPro>0?(' and '+avgPro+'g protein'):'')+' on those days') : '')
-      + '.');
+    /* AN AVERAGE OF ONE DAY IS NOT AN AVERAGE (Yusuf, 4 Sep). "You logged food
+       on 1 of the 2 days, averaging 1,608 cal on those days" is a sentence about
+       a single day dressed as statistics, and it reads like a dashboard because
+       it is one. One day gets said as that day. Several days get the average,
+       because then it means something. */
+    if(fed.length===1){
+      s.push('One day logged out of '+span
+        + (avgCal>0 ? (', '+_jvNum(avgCal)+' cal'+(avgPro>0?(' and '+avgPro+'g protein'):'')) : '')
+        + '.');
+    } else {
+      s.push('You logged food on '+fed.length+' of the '+span+(span===1?' day':' days')
+        + (avgCal>0 ? (', averaging '+_jvNum(avgCal)+' cal'+(avgPro>0?(' and '+avgPro+'g protein'):'')) : '')
+        + '.');
+    }
   } else {
     s.push('No food logged across the '+span+(span===1?' day':' days')+'.');
   }
@@ -54597,7 +54630,18 @@ function _cuBody(D){
   if(!blocks.length) return '';
   var head='On your last '+span+(span===1?' day':' days')+':';
   var fb=''; try{ fb=_cuFeedback(D); }catch(e){}
-  return head+'\n\n'+blocks.join('\n\n')+(fb?('\n\n'+_CU_FEEDBACK_LABEL+': '+fb):'');
+  return head+'\n\n'+blocks.join('\n\n')+(fb?('\n\n'+fb):'');
+}
+/* The day blocks with nothing around them. Used when his own draft is already
+   staged and is going to lead the message. */
+function _cuDaysOnly(D){
+  if(!D) return '';
+  var blocks=[];
+  (D.days||[]).forEach(function(day){
+    var ls=_cuDayLines(day);
+    if(ls.length) blocks.push(ls.join('\n'));
+  });
+  return blocks.length ? blocks.join('\n\n') : '';
 }
 // The button. Reads, drafts, and hands off through textClient — which is what
 // stamps the contact clock, so "completing it stamps the clock, same as Share
@@ -54618,9 +54662,26 @@ async function jvCatchUp(code){
     }
     var body=''; try{ body=_cuBody(D); }catch(e){}
     if(!body){ try{ showToast('Could not draft the catch up'); }catch(e){} return; }
-    // AFTER the refusal above, never before it. A greeting must never be the
-    // thing that turns a failed read into a message worth sending.
-    try{ body=_jvGreet(body); }catch(e){}
+    /* TWO WHOLE MESSAGES MUST NOT BE STAPLED TOGETHER (Yusuf, 4 Sep, off the
+       real one to Ben Plimpton). He had a staged draft, he tapped Catch up, and
+       textClient did what it is told to do with a pending draft: it put the
+       draft ON TOP and this underneath. What came out opened twice - his own
+       "Whats up handsome" and then "Good evening!" eight lines later - and the
+       two halves contradicted each other, because his line said "your food stops
+       Aug 31st, thats all ive got to read" directly above a list of today's food.
+       The draft-is-not-disposable rule is right and stays. What was wrong is
+       gluing two COMPLETE messages. When a draft is already staged, the catch up
+       adds its DAYS ONLY: no second greeting, no "On your last N days" opener,
+       no closing paragraph. His words lead and the numbers sit under them. */
+    var _staged=''; try{ _staged=((window._dfPending||{})[code]||{}).text||''; }catch(e){}
+    if(_staged){
+      var _daysOnly=''; try{ _daysOnly=_cuDaysOnly(D); }catch(e){}
+      if(_daysOnly) body=_daysOnly;                 /* textClient puts his draft above it */
+    } else {
+      // AFTER the refusal above, never before it. A greeting must never be the
+      // thing that turns a failed read into a message worth sending.
+      try{ body=_jvGreet(body); }catch(e){}
+    }
     try{ textClient(code, body); }catch(e){}
   } finally { window._cuBusy=0; }
 }
