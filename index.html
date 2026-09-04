@@ -16178,7 +16178,9 @@ async function _loadTrainerFeedRun(targetId){
         // Ordered by when they ATE, not when they typed, so "first food" really is the
         // one they started with — the old sort used the log time, which on a day typed
         // up in one sitting is just whichever they happened to enter first.
-        var g=groups[k].sort(_mealDayOrder);
+        /* COLLAPSED BEFORE THE PLATE IS BUILT, so the joined name and the
+           summed macros are both fixed by one rule and cannot disagree. */
+        var g=_dedupeTaps(groups[k].sort(_mealDayOrder));
         if(g.length===1){
           items.push({ts:_feedTs(g[0]),kind:'food',code:g[0].client_code,data:g[0]});
           return;
@@ -54468,15 +54470,14 @@ async function _jvCatchUpData(code, span){
      Collapsed on the read, and ONLY inside a two minute window. The same meal
      logged again hours later is a person who genuinely ate it twice, and that
      still counts. Seventeen seconds is a finger. */
-  var _seen={};
-  F.forEach(function(f){
+  /* THE SAME RULE THE FEED USES, and now literally the same function. This
+     used to carry its own copy with an extra test on calories, which caught
+     Ben Plimpton's identical double tap and missed Chris McCarthy's corrected
+     one. Two copies of a rule are two rules. */
+  _dedupeTaps(F).forEach(function(f){
     var dd=_dbDay(f.date_str, f.logged_at); if(!dd) return;
     var slot=byDs[_dbDs(dd)]; if(!slot) return;
     var nm=String(f.name||'').replace(/\s+/g,' ').trim();
-    var _k=[_dbDs(dd), String(f.meal||''), nm.toLowerCase(), (+f.calories||0)].join('|');
-    var _t=Date.parse(f.logged_at||'')||0;
-    if(_seen[_k]!=null && _t && Math.abs(_t-_seen[_k])<=120000) return;   /* the same tap, twice */
-    if(_t) _seen[_k]=_t;
     if(nm) slot.meals.push(nm);
     slot.cal+=(+f.calories||0); slot.pro+=(+f.protein||0);
     slot.car+=(+f.carbs||0);    slot.fat+=(+f.fat||0);
@@ -82267,6 +82268,47 @@ async function consumeWeeklyCall(code){
 // contributes what it does have rather than being dropped, so a day of meals
 // that never recorded fat still totals its calories and protein honestly.
 // Same shape as the summary already used, so nothing about that text moves.
+/* ONE TAP, ONE MEAL (Yusuf, 4 Sep, off his own Share day message to Chris
+   McCarthy). It read "Breakfast: Eggs, sourdough & yogurt bowl · Eggs,
+   sourdough & yogurt bowl (808 cal, 61g protein)" - one breakfast, named twice,
+   and the two sets of calories added together. The table really did hold two
+   rows, FIFTY ONE SECONDS apart, same meal, same name, and DIFFERENT numbers:
+   380 cal / 22g, then 428 cal / 39g. Nobody eats the same bowl twice in fifty
+   one seconds. It is one breakfast logged twice, and his client was told 808.
+   The catch up already collapsed the identical-value case (Ben Plimpton, two
+   rows seventeen seconds apart). This is the SAME fault with the second entry
+   corrected rather than repeated, so the value test had to go: same day, same
+   meal, same name, inside two minutes is one thing. The LAST row wins, because
+   a second entry that close is the correction and not a second plate.
+   Two minutes and not five: the same meal logged again hours later is a person
+   who genuinely ate it twice, and that still counts.
+   This runs where MESSAGES are built, never on the raw read. The client's own
+   Day page still shows both rows, because that is the page where one of them
+   gets deleted. */
+var _TAP_MS=120000;
+function _tapKey(f){
+  return [String((f&&f.date_str)||'').trim(),
+          String((f&&f.meal)||'').trim().toLowerCase(),
+          String((f&&f.name)||'').replace(/\s+/g,' ').trim().toLowerCase()].join('|');
+}
+function _dedupeTaps(rows){
+  var out=[], last={};
+  (rows||[]).forEach(function(f){
+    /* NO NAME, NO COLLAPSE. An unnamed row would key on the meal alone and
+       swallow every other unnamed food in it. */
+    if(!String((f&&f.name)||'').trim()){ out.push(f); return; }
+    var k=_tapKey(f), t=Date.parse((f&&f.logged_at)||'')||0;
+    var prev=last[k];
+    if(prev && t && prev.t && Math.abs(t-prev.t)<=_TAP_MS){
+      out[prev.i]=f;
+      last[k]={t:t, i:prev.i};
+      return;
+    }
+    last[k]={t:t, i:out.length};
+    out.push(f);
+  });
+  return out;
+}
 function _dayFoodTotals(items){
   var t={cal:0, protein:0, carbs:0, fat:0, meals:0};
   (items||[]).forEach(function(it){

@@ -51,8 +51,10 @@ const MINE=['_CU_DUE_DAYS','_CU_MAX_DAYS','_CU_WO_LIMIT','_CU_FOOD_LIMIT','_CU_L
 // The real contact clock, the real day-namer, the real date parser. Every one of
 // these is the shipped answer and not a fixture: the span is computed by the
 // same _ccDaysSince the chip on the card reads.
+// _dedupeTaps is shared with the feed's plate builder (4 Sep) - the catch up
+// used to carry its own narrower copy, which is exactly why it is shared now.
 const SHARED=['_ccDaysSince','_jvSpokenDay','_dbDay','_dbDs','_JV_DB_SAYS_RE','_jvNum',
-  '_sbFailMark','_sbFailedSince','_sbAtCap'];
+  '_sbFailMark','_sbFailedSince','_sbAtCap','_TAP_MS','_tapKey','_dedupeTaps'];
 eval(closure(SHARED).code);
 eval(MINE.map(defOf).join('\n'));
 guard(MINE.concat(SHARED), n=>eval(n));

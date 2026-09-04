@@ -29,13 +29,26 @@ const t=(ok,label,extra)=>{ if(!ok) bad++;
   console.log((ok?'  ok    ':'  FAIL  ')+label+(extra?('  '+extra):'')); };
 
 console.log('  a double tap is not two meals:');
-const loop=src.slice(src.indexOf('var _seen={};'), src.indexOf('var _seen={};')+900);
-t(loop.length>200,                          'the food loop de-dupes on the read');
-t(/Math\.abs\(_t-_seen\[_k\]\)<=120000/.test(loop),
+// THE RULE MOVED OUT (Yusuf, 4 Sep, off his own Share day message to Chris
+// McCarthy: "Eggs, sourdough & yogurt bowl · Eggs, sourdough & yogurt bowl
+// (808 cal, 61g protein)"). The catch up used to carry its own copy that also
+// tested calories, so it caught Ben's identical double tap and missed Chris's
+// CORRECTED one - two rows 51 seconds apart with different numbers. There is
+// one function now, _dedupeTaps, and tdedupe.cjs runs both real cases through
+// it. What is left to assert here is that the catch up goes through that door
+// and no longer carries a second, narrower rule of its own.
+//
+// AND THE SLICE ITSELF WAS THE BUG IN THIS SUITE. indexOf returned -1 once the
+// anchor was gone, `loop` came back empty, and the fourth assertion below
+// passed on an empty string while the three above it failed honestly.
+const _i=src.indexOf('function _dedupeTaps(');
+const helper=_i<0?'':src.slice(_i, _i+900);
+t(_i>0,                                     'the shared de-dupe helper is in the file');
+t(/_dedupeTaps\(F\)\.forEach\(/.test(src), 'and the catch up reads its food through it');
+t(!/var _seen=\{\};/.test(src),             'the catch up no longer carries its own copy of the rule');
+t(/Math\.abs\(t-prev\.t\)<=_TAP_MS/.test(helper) && /var _TAP_MS=120000;/.test(src),
                                             'inside a two minute window only');
-t(/String\(f\.meal\|\|''\)/.test(loop) && /\+f\.calories/.test(loop),
-                                            'keyed on day, meal, name AND calories');
-t(!/<=\s*(3600000|86400000)/.test(loop),    'not a whole hour or a whole day - the same meal hours later is real');
+t(!/<=\s*(3600000|86400000)/.test(helper),  'not a whole hour or a whole day - the same meal hours later is real');
 
 console.log('\n  no report header in a text message:');
 t(/var _CU_FEEDBACK_LABEL='';/.test(src),   'the bolded Feedback: label is gone');
