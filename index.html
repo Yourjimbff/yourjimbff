@@ -11419,6 +11419,60 @@ var PERMA_HIDE = {};
 // roster load lands. Flip the column in the database to hide or unhide someone.
 // The map stays keyed on CODE, never display name.
 var JV_HIDE_CLIENTS = {};
+// A MISSING NUMBER IS USUALLY A STALE ONE (Yusuf, 4 Sep, live on Gabriel's card).
+// loadRosterFromDB caches its promise for the LIFE OF THE PAGE - one read at boot
+// and never again. So a client added after the app opened, or a number written to
+// a row after it opened, is not in this tab's CLIENTS at all. The door has it. The
+// tab has an old copy and no way to ask twice. That is what "No number saved for
+// X yet" has been saying: not "the table is empty" but "I looked once, hours ago".
+// Gabriel signed at 9:32am with his number on the row and Share day still said no.
+//
+// This is the way to ask again. It clears BOTH latches - the promise and the
+// phone-overlay one-shot - because leaving _jvPhonesHydrated set makes the reload
+// drop every number that lives only in localStorage, which is the failure the note
+// above _phoneReapply describes one client at a time.
+function rosterRefresh(force){
+  try{
+    var now=Date.now();
+    if(!force && window._rosterRefreshAt && (now-window._rosterRefreshAt)<45000){
+      return _rosterLoadPromise || Promise.resolve(false);
+    }
+    window._rosterRefreshAt=now;
+    _rosterLoadPromise=null;
+    try{ _jvPhonesHydrated=false; }catch(e){}
+    return loadRosterFromDB();
+  }catch(e){ return Promise.resolve(false); }
+}
+// THE MISS GOES AND LOOKS. It cannot finish the job for him: iOS refuses to open
+// sms: outside a real tap, so an auto-retry from a promise would be a dead button
+// that claims it worked. It re-reads, repaints, and says tap again - which is true.
+function _phoneChase(code){
+  try{
+    if(!code) return;
+    window._phChasing = window._phChasing || {};
+    if(window._phChasing[code]) return;
+    window._phChasing[code]=true;
+    var nm='them';
+    try{ nm=_jvShareName(code,(CLIENTS[code]||{}).name)||'them'; }catch(e){}
+    try{ showToast('Checking for '+nm+"'s number..."); }catch(e){}
+    rosterRefresh(true).then(function(){
+      window._phChasing[code]=false;
+      var got='';
+      try{ _jvHydratePhones(); got=(CLIENTS[code]||{}).phone||''; }catch(e){}
+      try{ showToast(got ? (nm+"'s number is here now - tap again")
+                         : ('The roster has no number for '+nm+' either')); }catch(e){}
+      try{ if(typeof _feedRerenderPeopleOnly==='function') _feedRerenderPeopleOnly(); }catch(e){}
+    }).catch(function(){ window._phChasing[code]=false; });
+  }catch(e){}
+}
+// A TAB LEFT OPEN ALL DAY IS THE NORMAL CASE, not the edge one. He opens the app in
+// the morning and it stays open. Without this, everything the trainer tier carries -
+// phone, tier, term, credits - is frozen at whatever it was at breakfast.
+try{
+  document.addEventListener('visibilitychange', function(){
+    if(document.visibilityState==='visible'){ try{ rosterRefresh(false); }catch(e){} }
+  });
+}catch(e){}
 async function loadRosterFromDB(){
   if(_rosterLoadPromise) return _rosterLoadPromise;
   _rosterLoadPromise = (async function(){
@@ -37807,7 +37861,7 @@ function callClient(code){
   try{ _jvHydratePhones(); }catch(e){}
   var info=CLIENTS[code]||{};
   var phone=info.phone||'';
-  if(!phone){ showToast('No number saved for '+(_jvShareName(code, info.name)||'this client')+' yet'); return; }
+  if(!phone){ _phoneChase(code); return; }
   try{ window.location.href='tel:'+String(phone).replace(/[^0-9+]/g,''); }catch(e){}
 }
 // Opens off the contact line itself — no standing panel. Text or call, a few words,
@@ -53467,7 +53521,11 @@ function textClient(code, body, opts){
   var info = CLIENTS[code] || {};
   var phone = info.phone || '';
   if(!phone){
-    showToast('No number saved for '+(_jvShareName(code, info.name)||'this client')+' yet');
+    /* IT NO LONGER ENDS THE ROAD (Yusuf, 4 Sep). This used to toast "no number
+       saved" and stop, on a client whose number was sitting in the table the
+       whole time - see rosterRefresh. The toast is _phoneChase's now, because
+       only it knows which of the two things is actually true. */
+    _phoneChase(code);
     /* IT SAYS WHETHER IT DID ANYTHING (Yusuf, 2 Sep). This used to fall out of
        the function with no return value at all, so a caller could not tell
        "I opened their thread" from "there was no number and nothing happened".
