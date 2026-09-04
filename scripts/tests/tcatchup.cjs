@@ -89,10 +89,12 @@ STORE['yjb_client_contacts']=JSON.stringify({});
 t(_cuDaysNever(), 'never contacted at all is due, and gets the full week');
 function _cuDaysNever(){ return _ccDaysSince('chrism1')===null && _cuDue('chrism1')===true && _cuSpan('chrism1')===7; }
 
-// ===== HIS LABEL, BYTE FOR BYTE =======================================
-// Copied out of the order itself. A lookalike bold face is not his bold face.
-t(_CU_FEEDBACK_LABEL==='\u{1D5D9}\u{1D5F2}\u{1D5F2}\u{1D5F1}\u{1D5EF}\u{1D5EE}\u{1D5F0}\u{1D5F8}',
-  'the Feedback label is the unicode bold he wrote', JSON.stringify(_CU_FEEDBACK_LABEL));
+// ===== NO LABEL AT ALL (Yusuf, 4 Sep) =================================
+// It used to be a unicode-bold "Feedback:" leading the last paragraph. He read
+// a real draft and said "notice its a little odd and too clunky" — nobody types
+// a section header into a text message. The paragraph stays last; it stops
+// announcing itself. Held as an empty string so nothing downstream changes shape.
+t(_CU_FEEDBACK_LABEL==='', 'there is no Feedback label any more', JSON.stringify(_CU_FEEDBACK_LABEL));
 
 // ===== CHRIS McCARTHY, UNANSWERED SINCE FRIDAY =========================
 // Rows in the shape the two tables actually hand back — a chat-logged workout
@@ -149,17 +151,26 @@ let D=null;
     'the meal note is quoted too — ANY note they wrote');
 
   console.log('  THE LINE BUDGET (3-4 a day, his rule):');
-  const blocks=body.split('\n\n').slice(1).filter(b=>b.indexOf(_CU_FEEDBACK_LABEL)!==0);
+  // THE LAST PARAGRAPH IS THE FEEDBACK. With the label gone there is no marker
+  // to look for, and the old filter (indexOf('') === 0) silently matched every
+  // block and left this loop asserting nothing while the summary read green.
+  const _paras=body.split('\n\n');
+  const blocks=_paras.slice(1,-1);
+  t(blocks.length>=1, 'there are day blocks between the head and the feedback', String(blocks.length));
   blocks.forEach((b,i)=>{
     const n=b.split('\n').length;
     t(n>=1 && n<=4, 'day block '+(i+1)+' is '+n+' line'+(n===1?'':'s'));
   });
 
   console.log('  THE FEEDBACK:');
-  const fb=body.slice(body.indexOf(_CU_FEEDBACK_LABEL));
-  t(fb.indexOf(_CU_FEEDBACK_LABEL+': ')===0, 'the label leads it, bold, with a colon');
-  t(/logged food on 1 of the 2 days/.test(fb), 'it counts the days off the same frame');
-  t(/averaging 1,230 cal and 80g protein/.test(fb), 'and every figure in it is one this file computed');
+  const fb=_paras[_paras.length-1];
+  t(!/^[\u{1D400}-\u{1D7FF}]/u.test(fb), 'it opens with an ordinary word, not a bold header', fb.slice(0,24));
+  // ONE DAY IS NOT AN AVERAGE (Yusuf, 4 Sep). "You logged food on 1 of the 2
+  // days, averaging 1,608 cal on those days" is a sentence about a single day
+  // dressed as statistics. One day is now said as that day.
+  t(/^One day logged out of 2, /.test(fb), 'one fed day is said as that day, not as an average', fb.slice(0,40));
+  t(!/averaging/.test(fb), 'and the word averaging is not used for a single day');
+  t(/1,230 cal and 80g protein/.test(fb), 'and every figure in it is one this file computed');
   t(/1 session/.test(fb), 'the session count is there');
   t(/The 1 day with nothing on it is what I want to close/.test(fb),
     'and the hole is named, because the hole is the point');
@@ -167,8 +178,32 @@ let D=null;
   // the arithmetic above produced — the lane's founding law, asserted rather
   // than promised, the way _jvDebriefVerify asserts it for the debrief.
   const figures=new Set(['1','2','1,230','80']);
-  const inFb=(fb.match(/\d[\d,]*/g)||[]);
+  // A trailing comma is punctuation, not part of the number: "out of 2, 1,230"
+  // must read as 2 and 1,230, not as "2," and 1,230.
+  const inFb=(fb.match(/\d[\d,]*/g)||[]).map(n=>n.replace(/,+$/,''));
   t(inFb.every(n=>figures.has(n)), 'no figure in the feedback that the data did not produce', inFb.join(' '));
+
+  // ===== AND SEVERAL FED DAYS DO GET THE AVERAGE ========================
+  // The other side of the 4 Sep ruling, and the branch most of the roster lands
+  // in. He did not ask for the average to go; he asked for one day to stop
+  // pretending to be one. Two days is a real average and says so.
+  console.log('\n  SEVERAL DAYS IS AN AVERAGE:');
+  ROWS={workout_logs:[], food_logs:[
+    {id:31, name:'Oats', meal:'Breakfast', calories:500, protein:40, carbs:60, fat:12, felt:null,
+     date_str:'Aug 29, 2026', logged_at:'2026-08-29T13:00:00+00:00'},
+    {id:32, name:'Steak and potatoes', meal:'Dinner', calories:700, protein:60, carbs:50, fat:24, felt:null,
+     date_str:'Aug 30, 2026', logged_at:'2026-08-30T23:00:00+00:00'}
+  ]};
+  const Da=await _jvCatchUpData('chrism1', 2);
+  const _pa=_cuBody(Da).split('\n\n');
+  const fa=_pa[_pa.length-1];
+  console.log('    | '+fa);
+  t(/^You logged food on 2 of the 2 days, averaging 600 cal and 50g protein\./.test(fa),
+    'two fed days average, and the arithmetic is this file\u2019s', fa.slice(0,64));
+  t(!/One day logged/.test(fa), 'and the single-day wording does not leak into it');
+  const inFa=(fa.match(/\d[\d,]*/g)||[]).map(n=>n.replace(/,+$/,''));
+  const figA=new Set(['0','2','600','50']);
+  t(inFa.every(n=>figA.has(n)), 'no invented figure here either', inFa.join(' '));
 
   // ===== A DAY IN PROGRESS IS NOT A DAY THEY MISSED =====================
   // Found live at 09:05 on a Sunday: a real draft to Chris McCarthy said
