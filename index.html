@@ -88870,7 +88870,12 @@ var _crm = {rows:null, loading:false, err:null, q:'', watch:false, at:0,
                "Waiting on me" is still one tap away and still the honest view
                of the debt. It is just not the view to open on when there is
                work sitting there ready to go. */
-            filter:'drafted', sort:'wait'};
+            /* IT OPENS ON THE CONVERSATIONS (4 Sep). It opened on Drafted
+               sorted by longest wait, which answered "what can I send" and
+               never "who was I just talking to" - and a thread he had replied
+               to five minutes earlier was nowhere near the top. Everyone, newest
+               conversation first. Drafted and Longest waiting are both one tap. */
+            filter:'all', sort:'recent'};
 /* ONE PAINTER, TWO SURFACES. The phone gets a tab, the cockpit gets a mode,
    and both are handed the same html by the same function - two painters is
    how the two of them start disagreeing about what is on the board. */
@@ -89348,10 +89353,80 @@ var _CRM_FILTERS=[
   {k:'nodraft', label:'No draft',      test:function(p){ return !p.draft && !p.sentToday; }},
   {k:'all',     label:'Everyone',      test:function(p){ return true; }}
 ];
+/* ===== THE BOARD READS LIKE A THREAD LIST NOW (Yusuf, 4 Sep) ============
+   "Most recent conversations should be in there ... Most recently had
+   conversations should remain at the top ... And i should choose to be able to
+   look at whos been waiting the longest."
+
+   The board had three sorts and none of them was "the conversation I was just
+   having". `msg` came closest and it only reads THEIR last message, so a thread
+   where he spoke last - which is most of them, right after he sends - sorted as
+   though nothing had happened in it. _crm.contacts has carried both sides all
+   along ({them, him, last, text}); nothing was reading the pair.
+
+   So `recent` is the newest message in the thread WHOEVER SENT IT, and it is
+   what the board opens on. Longest-waiting is not gone and is not buried - it
+   is one tap along the same row, which is the choice he asked for. */
+function _crmLastPair(code){
+  try{
+    var c=(_crm.contacts||{})[String(code||'')];
+    if(!c) return null;
+    var them=c.them||null, him=c.him||null;
+    if(!them && !him) return null;
+    var at = (!him || (them && String(them)>String(him))) ? them : him;
+    var who = (!him || (them && String(them)>String(him))) ? 'them' : 'you';
+    return {at:at, who:who, text:c.text||''};
+  }catch(e){ return null; }
+}
+/* The sort key. Their-last-message is the fallback so a person the contacts
+   sweep has never seen still orders sensibly instead of dropping to the floor. */
+function _crmRecentKey(p){
+  try{
+    var pr=_crmLastPair(p.code);
+    if(pr && pr.at) return String(pr.at);
+    if(p.theirLast) return String(p.theirLast);
+    if(p.draftAt) return String(p.draftAt).slice(0,16);
+    return '';
+  }catch(e){ return ''; }
+}
+/* Short and readable at a glance: 4m, 3h, 2d, 5w. */
+function _crmAgoShort(iso){
+  try{
+    if(!iso) return '';
+    var t=Date.parse(String(iso).length<=16 ? (String(iso)+':00Z') : iso);
+    if(isNaN(t)) return '';
+    var m=Math.max(0, Math.round((Date.now()-t)/60000));
+    if(m<1) return 'now';
+    if(m<60) return m+'m';
+    var h=Math.round(m/60); if(h<24) return h+'h';
+    var d=Math.round(h/24); if(d<14) return d+'d';
+    return Math.round(d/7)+'w';
+  }catch(e){ return ''; }
+}
+/* One line under the name: who spoke last, when, and what they said. This is
+   the thing that was missing - the board named people and never showed the
+   conversation, so he could not tell a live thread from a dead one without
+   opening it. Their words are quoted, never rewritten. */
+function _crmConvLine(code){
+  try{
+    var pr=_crmLastPair(code);
+    if(!pr || !pr.at) return '';
+    var ago=_crmAgoShort(pr.at);
+    var who=(pr.who==='them')?'them':'you';
+    var txt=String(pr.text||'').replace(/\s+/g,' ').trim();
+    if(txt.length>90) txt=txt.slice(0,89)+'\u2026';
+    return '<div class="crmConv'+(pr.who==='them'?' theirs':'')+'">'
+      +'<span class="crmConvWho">'+who+'</span>'
+      +(ago?('<span class="crmConvAgo">'+_escHtml(ago)+'</span>'):'')
+      +(txt?('<span class="crmConvTxt">'+_escHtml(txt)+'</span>'):'')
+      +'</div>';
+  }catch(e){ return ''; }
+}
 var _CRM_SORTS=[
-  {k:'wait',  label:'Longest waiting'},
-  {k:'draft', label:'Newest drafted'},
-  {k:'msg',   label:'Newest message'}
+  {k:'recent', label:'Recent'},
+  {k:'wait',   label:'Longest waiting'},
+  {k:'draft',  label:'Newest drafted'},
+  {k:'msg',    label:'Newest message'}
 ];
 function _crmFilterDef(k){
   for(var i=0;i<_CRM_FILTERS.length;i++) if(_CRM_FILTERS[i].k===k) return _CRM_FILTERS[i];
@@ -89361,9 +89436,16 @@ function _crmFilterDef(k){
    top by accident of an empty string sorting first. Name breaks every tie, so
    the same board twice in a row is the same board. */
 function _crmSortPeople(list, k){
-  var by=String(k||'wait');
+  var by=String(k||'recent');
   return list.slice().sort(function(a,b){
-    if(by==='draft'){
+    if(by==='recent'){
+      /* Newest conversation first, either side. A person with no thread at all
+         sorts to the bottom rather than to the top, which is what an empty
+         string would do on a plain descending compare. */
+      var ra=_crmRecentKey(a), rb=_crmRecentKey(b);
+      if(!!ra !== !!rb) return ra?-1:1;
+      if(ra!==rb) return ra<rb?1:-1;
+    } else if(by==='draft'){
       if(!!a.draftAt !== !!b.draftAt) return a.draftAt?-1:1;
       if(a.draftAt!==b.draftAt) return a.draftAt<b.draftAt?1:-1;
     } else if(by==='msg'){
@@ -89507,6 +89589,11 @@ function _crmStyle(){
      these surfaces is now-and-next only. */
   +'.crmRow.opened{border-color:rgba(224,150,52,0.34);box-shadow:0 10px 30px rgba(0,0,0,0.45),0 1px 0 rgba(224,150,52,0.07) inset,inset 3px 0 0 rgba(224,150,52,0.72);}'
   +'.crmOpenedN{font-size:11px;line-height:1.35;color:rgba(224,150,52,0.92);margin:2px 0 7px;}'
+  +'.crmConv{display:flex;align-items:baseline;gap:7px;margin:5px 0 2px;font-size:12px;min-width:0;}'
+  +'.crmConv .crmConvWho{flex:0 0 auto;font-weight:800;font-size:10px;letter-spacing:0.7px;text-transform:uppercase;color:rgba(240,236,228,0.42);}'
+  +'.crmConv.theirs .crmConvWho{color:var(--gold);}'
+  +'.crmConv .crmConvAgo{flex:0 0 auto;color:rgba(240,236,228,0.42);font-size:11px;font-weight:700;}'
+  +'.crmConv .crmConvTxt{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:rgba(240,236,228,0.68);}'
   +'.crmRowTop{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin-bottom:5px;}'
   +'.crmName{font-size:14px;font-weight:800;color:var(--text);cursor:pointer;overflow-wrap:anywhere;}'
   +'.crmRow.next .crmName{color:var(--gold);}'
@@ -90168,6 +90255,7 @@ function crmPaint(){
         h+='<div class="crmRow'+(isOpen?' opened':'')+((!isOpen && i===0 && _crm.sort==='wait' && fdef.k==='waiting')?' next':'')+'" id="crmRow_'+d.id+'">'
           +'<div class="crmRowTop"><span class="crmName" onclick="covOpen(\''+p.code+'\')">'+nm+'</span>'
           +'<span class="crmDays">'+days+'</span></div>'
+          + _crmConvLine(p.code)
           +(isOpen?('<div class="crmOpenedN">text opened '+_escHtml(_crmClock(d.openedAt||d.at))+' · not counted as sent until your texts are read</div>'):'')
           +'<div class="crmHl">'+_escHtml(_crmHeadline(p.code,p.days))+'</div>'
           + _crmStripBlock(p.code)
@@ -90187,9 +90275,11 @@ function crmPaint(){
           +(p.sentToday
             ? ('<div class="crmRowTop"><span class="crmName">'+nm+'</span>'
                +'<span class="crmDays">'+days+'</span></div>'
+               + _crmConvLine(p.code)
                +'<div class="crmBareN">you have already spoken to them today</div>')
             : ('<div class="crmRowTop"><span class="crmName">'+nm+'</span>'
                +'<span class="crmDays">'+days+'</span></div>'
+               + _crmConvLine(p.code)
                +'<div class="crmHl">'+_escHtml(_crmHeadline(p.code,p.days))+'</div>'
                + _crmStripBlock(p.code)
                + _crmWhy(p.code,'')))
