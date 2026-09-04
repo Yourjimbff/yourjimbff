@@ -2295,6 +2295,86 @@ async function handleCallNotesRead(URL, SERVICE, code) {
 // just be trusting the caller about its own name. forCode is null for a
 // trainer (any client's call) and the session's own code for a client (only
 // their own).
+// ---- myPhoneSet -------------------------------------------------------------
+// THE REASON A CLIENT'S NUMBER SAVED NOWHERE USEFUL (Yusuf, 4 Sep: "it saves it
+// no where useful ... make it actually save where i can text them directly").
+//
+// There was no client-side path into clients.phone AT ALL. clientPatch is behind
+// the is_trainer gate, so anything a client typed could only ever land in
+// profiles - and the Text button, the share sheet and the whole roster read
+// clients.phone. The number was saved. It was saved somewhere nothing reads.
+//
+// THE CODE COMES FROM THE SESSION, NEVER FROM args. Same rule as every my* op
+// above: a client can write exactly one row, their own, and there is no argument
+// that can point this at somebody else.
+//
+// READ BACK, because a write that is not read back is a claim. The row the
+// service key just wrote comes back and the digits are compared; anything else
+// is reported as unconfirmed rather than answered with a cheerful ok.
+// ---- myPhoneHas -------------------------------------------------------------
+// A CLIENT CANNOT SEE ANY PHONE, INCLUDING THEIR OWN. The anon-tier roster read
+// selects code, name, initials, coach_code, is_trainer, is_primary, active,
+// hidden and blocked, and phone is deliberately not in it. So the card that asks
+// for a number had no way to know whether it was already answered, and would
+// have asked every client on the roster forever.
+//
+// This answers the ONE bit it needs and hands back no number at all: whether the
+// caller's own row has one. Nothing else leaves the door.
+async function handleMyPhoneHas(URL, SERVICE, myCode) {
+  if (!myCode) return json(403, { error: 'no_session' });
+  try {
+    const r = await fetch(`${URL}/rest/v1/clients?select=phone&code=eq.${enc(myCode)}&limit=1`, { headers: svc(SERVICE) });
+    const text = await r.text();
+    if (!r.ok) {
+      console.error('trainer: myPhoneHas read failed', r.status, text.slice(0, 200));
+      return json(502, { error: 'query_failed', op: 'myPhoneHas' });
+    }
+    let rows = []; try { rows = JSON.parse(text); } catch (e) {}
+    // NO ROW IS NOT "NO PHONE". Answering false there would put the card in front
+    // of somebody whose record simply could not be read, so it says so instead.
+    if (!rows.length) return json(200, [{ known: false, has_phone: null }]);
+    const p = rows[0] && rows[0].phone;
+    return json(200, [{ known: true, has_phone: !!(p && String(p).replace(/\D/g, '').length >= 10) }]);
+  } catch (e) {
+    console.error('trainer: myPhoneHas threw', e && e.message);
+    return json(502, { error: 'query_failed', op: 'myPhoneHas' });
+  }
+}
+
+async function handleMyPhoneSet(URL, SERVICE, args, myCode) {
+  if (!myCode) return json(403, { error: 'no_session' });
+  let want;
+  try {
+    want = nullableStr(args.phone, 40);
+    const digits = String(want || '').replace(/\D/g, '');
+    // 10 is a bare US number, 11 with the country code. Below that it is a typo,
+    // and refusing is kinder than storing something that will never dial.
+    if (digits.length < 10 || digits.length > 15) throw new Error('bad_arg');
+  } catch (e) { return json(400, { error: 'bad_phone' }); }
+
+  try {
+    const w = await fetch(`${URL}/rest/v1/clients?code=eq.${enc(myCode)}`, {
+      method: 'PATCH',
+      headers: Object.assign({}, svc(SERVICE), { 'Content-Type': 'application/json', Prefer: 'return=representation' }),
+      body: JSON.stringify({ phone: want }),
+    });
+    const text = await w.text();
+    if (!w.ok) {
+      console.error('trainer: myPhoneSet write failed', w.status, text.slice(0, 300));
+      return json(502, { error: 'write_failed', op: 'myPhoneSet' });
+    }
+    let rows = []; try { rows = JSON.parse(text); } catch (e) {}
+    const got = rows[0] ? String(rows[0].phone == null ? '' : rows[0].phone) : '';
+    if (got.replace(/\D/g, '') !== String(want).replace(/\D/g, '')) {
+      return json(502, { error: 'unconfirmed', op: 'myPhoneSet' });
+    }
+    return json(200, [{ client_code: myCode, phone: got }]);
+  } catch (e) {
+    console.error('trainer: myPhoneSet threw', e && e.message);
+    return json(502, { error: 'write_failed', op: 'myPhoneSet' });
+  }
+}
+
 async function handleCallNoteAdd(URL, SERVICE, args, authorCode, asTrainer, forCode) {
   let body;
   try {
@@ -2874,6 +2954,12 @@ exports.handler = async (event) => {
   }
   if (op === 'myCallNoteDelete') {
     return handleCallNoteDelete(URL, SERVICE, args, claims.client_code);
+  }
+  if (op === 'myPhoneSet') {
+    return handleMyPhoneSet(URL, SERVICE, args, claims.client_code);
+  }
+  if (op === 'myPhoneHas') {
+    return handleMyPhoneHas(URL, SERVICE, claims.client_code);
   }
 
   if (claims.is_trainer !== true) {
