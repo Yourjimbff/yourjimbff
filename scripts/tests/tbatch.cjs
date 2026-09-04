@@ -57,5 +57,21 @@ t(/Send all '\+qn/.test(src),            'the button carries the real count');
 t(/if\(qn\)/.test(src),                  'and is not drawn at all when there is nothing to send');
 t(/your thumb still sends/.test(src),    'and it says so on the button row');
 
+console.log('\n  and the matcher it narrows with is the board\'s own, not a copy:');
+// MEASURED, not assumed: _crmMatch lived inside crmPaint as a closure over a
+// local q, so calling it from _crmBatchQueue threw into that function's own catch
+// and the queue came back EMPTY - the button never drew, over 56 sendable drafts.
+// A second copy of the search rule was the other option and it is worse: two
+// matchers drift, and the day they disagree he sends a run that is not the list
+// he was looking at.
+t(/^function _crmMatch\(pp\)\{/m.test(src),   '_crmMatch is a top-level function');
+t((src.match(/function _crmMatch\(/g)||[]).length===1, 'and there is exactly ONE of it',
+  (src.match(/function _crmMatch\(/g)||[]).length+' definition(s)');
+const mt=src.slice(src.indexOf('function _crmMatch(pp){'), src.indexOf('function _crmMatch(pp){')+400);
+t(/_crm\.q/.test(mt),                          'it reads the search box off _crm.q itself');
+t((src.match(/\.filter\(_crmMatch\)/g)||[]).length===2,
+  'the board and the batch queue both narrow through it',
+  (src.match(/\.filter\(_crmMatch\)/g)||[]).length+' call site(s)');
+
 console.log(bad? ('\n'+bad+' FAILED') : '\n  all pass');
 process.exit(bad?1:0);
