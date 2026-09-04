@@ -44,13 +44,16 @@ t(!/Breakfast/.test(sec({dinner:[meal('steak',900,90)]}, true)),
 t(!/Lunch/.test(sec({dinner:[meal('steak',900,90)]}, true)), '...nor an empty Lunch');
 t(!/Snack/.test(sec({dinner:[meal('steak',900,90)]}, true)), '...nor an empty Snack');
 
-console.log('\nWHAT WAS EATEN IS THERE, WITH ITS OWN NUMBERS:');
+// SUPERSEDED 4 Sep, by him, off his own screen: "if hes logged breakfast, which
+// he has, we can remove that under the meals category below. its redundant. just
+// have it say lunch & dinner next." A logged meal already has its own card at the
+// top of the day carrying the food, the clock and the macros. This printed it a
+// second time in smaller type. These assertions guarded the duplication.
+console.log('\nWHAT WAS EATEN IS NOT PRINTED TWICE — its card is already above:');
 const three = sec({breakfast:[meal('eggs',300,25)], dinner:[meal('ny strip',978,96), meal('rice',152,3)]}, true);
-t(/Breakfast/.test(three) && /Dinner/.test(three), 'both logged meals get a row');
-t(/300 cal/.test(three), 'breakfast carries its own calories');
-t(/1,130 cal/.test(three), 'dinner sums its own items', (/(\d[\d,]*) cal[^<]*<\/span><\/div>/.exec(three)||[])[1]);
-t(/eggs/.test(three), 'and the row shows the food in their own words');
-t(/ny strip, rice/.test(three), '...all of them, in the order they were logged');
+t(!/tlMealRow/.test(three), 'a logged meal grows no row down here');
+t(!/eggs/.test(three), 'and its food is not repeated either');
+t(!/ny strip/.test(three), '...nor the second meal');
 
 console.log('\nTHE HEADER CARRIES THE DAY, and it is the sum of the rows under it:');
 t(/tlMealsEy">Meals</.test(three), 'the section is headed "Meals"');
@@ -61,21 +64,32 @@ if (tot) {
   t(tot[2] === '124', 'protein is 25 + 96 + 3', tot[2]);
 }
 
-console.log('\nA MEAL SAID WITHOUT NUMBERS IS NOT A ZERO:');
+console.log('\nA MEAL SAID WITHOUT NUMBERS IS NOT A ZERO — read-only, where rows live:');
 // _tlTotLine directly above already refuses to count these as zero. This must
-// not disagree with the line it sits under.
+// not disagree with the line it sits under. Read-only is where the rows are now,
+// so that is where this is measured.
+global.window = { _tlRO: true };
 const bare = sec({lunch:[meal('leftovers',0,0)]}, true);
 t(/no numbers yet/.test(bare), 'it says so in words rather than printing 0 cal');
 t(/tlMealRow bare/.test(bare), 'and it is marked so the styling can hold it back');
 t(!/0 cal/.test(bare), 'the string "0 cal" never appears');
 t(!/tlMealsTot/.test(bare), 'and a day whose only meal has no numbers grows no total');
+global.window = {};
 
-console.log('\nIT ASKS FOR EXACTLY ONE MEAL — the one whose hour it is:');
+// SUPERSEDED 4 Sep: "just have it say lunch & dinner next". _duePrompt still
+// decides WHETHER the section opens - that gate is untouched and the walk case
+// below still proves it - but once it is open it lists everything still to come
+// rather than the single slot whose hour it happens to be.
+console.log('\nIT ASKS FOR EVERY MEAL STILL TO COME:');
 DUE = 'lunch';
 const ask = sec({breakfast:[meal('eggs',300,25)]}, true);
-t((ask.match(/tlMealAsk"/g)||[]).length === 1, 'one ask, never four');
-t(/data-key="lunch"/.test(ask), 'and it is the slot _duePrompt named, not one this file chose');
+t((ask.match(/tlMealAsk"/g)||[]).length === 2, 'lunch and dinner, both',
+  (ask.match(/data-key="([a-z]+)"/g)||[]).join(' '));
+t(/data-key="lunch"/.test(ask) && /data-key="dinner"/.test(ask), 'named as themselves');
+t(!/data-key="breakfast"/.test(ask), 'and breakfast is not asked for again, he ate it');
+t(!/data-key="snack"/.test(ask), 'snack is never listed unasked');
 t(/Add lunch/.test(ask), 'worded as an addition when the day has already started');
+t(ask.indexOf('data-key="lunch"') < ask.indexOf('data-key="dinner"'), 'in the order they are eaten');
 DUE = 'breakfast';
 t(/Breakfast<\/span>/.test(sec({}, true)), 'and named plainly when nothing is logged yet');
 t(sec({}, true) !== '', 'a due meal is reason enough to draw the section on an empty day');
