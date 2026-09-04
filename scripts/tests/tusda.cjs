@@ -109,4 +109,33 @@ PER100.forEach(([k, g, up, uc, uf, src]) => {
 
 console.log('\n' + (n - fails) + '/' + n + ' passed');
 console.log('tusda: ' + (fails ? 'FAIL' : 'ok'));
+// ===== "JUST SAY ESTIMATED" (Yusuf, ruling, 4 Sep) =========================
+// 'mixed vegetables' was the one row the audit refused to settle by itself: a
+// frozen corn/peas/carrots bag is 65 cal per 100g and a non-starchy mix is about
+// half that, and only the client knows which is in the bowl. His ruling was not
+// to pick - it was to stop pretending. The numbers stay where the audit put
+// them and the row says the word.
+{
+  const fs2=require('fs');
+  const src2=fs2.readFileSync('index.html','utf8');
+  let b2=0;
+  const t2=(ok,label)=>{ if(!ok) b2++; console.log((ok?'  ok    ':'  FAIL  ')+label); };
+  console.log('\n  the estimated flag:');
+  t2(/\{k:'mixed vegetables',u:'handful',p:1\.8,c:5\.0,f:0\.2,g:85,est:1,/.test(src2),
+     'mixed vegetables carries est:1 and its numbers are unchanged');
+  t2(/est:!!\(row && row\.est\)/.test(src2),
+     'the echo reads the flag off the ROW, it does not decide it');
+  t2(/L\.est\?'<span class="nlEchoEst">estimated<\/span>':''/.test(src2),
+     'and says it beside the food, not instead of the number');
+  t2(/\.nlEchoEst\{/.test(src2), 'it has a style of its own');
+  // Matched INSIDE the row, between its own commas. A naive comment-stripper is
+  // what check.sh got caught by - a stray /* pairing with a */ far below ate the
+  // whole table - so this does not strip anything, it just asks a question prose
+  // cannot accidentally answer.
+  t2((src2.match(/,est:1,/g)||[]).length===1,
+     'exactly one row claims it, so the flag still means something');
+  if(b2){ console.log('\n'+b2+' FAILED'); process.exit(1); }
+  console.log('\n  all pass');
+}
+
 process.exit(fails ? 1 : 0);
