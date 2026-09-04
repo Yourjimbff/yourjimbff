@@ -88497,6 +88497,27 @@ var _DF_THREAD_MARK='[THREAD] ';
    [DRAFT] and [TESTIMONIAL]: newest row wins, nothing is ever edited.
    {them:iso, him:iso, last:'them'|'him', text:'their last words', runAt:iso} */
 var _DF_CONTACT_MARK='[CONTACT] ';
+/* A CALL IN FLIGHT (Yusuf, 4 Sep: "im especially talking about time sensitive
+   replies for instance pending / scheduled appointments ... the people we're
+   working on adding to the calendar right now").
+   The board could only ever answer "who waited longest". It could not see that
+   George had asked a direct question about TOMORROW, or that an hour was being
+   held for somebody who never agreed to it. Three people were waiting on a time
+   with slots held the next day and nothing on the screen said so.
+   THE STATE IS WRITTEN, NEVER GUESSED. Whoever reads the thread records what
+   actually happened; nothing here decides from wording whether "lets do it"
+   meant yes. Same no-DDL convention as [DRAFT]/[CONTACT]/[FILE], and the newest
+   row per client wins. */
+var _DF_CALL_MARK='[CALL] ';
+/* The five states a call can be in, in the order they happen. `ball` is whose
+   move it is, and that is the whole point of the triage. */
+var _CW_STATES={
+  offered:  {ball:'them', label:'offered, no reply yet'},
+  yes:      {ball:'you',  label:'said yes, no time set'},
+  named:    {ball:'them', label:'time named, not confirmed'},
+  booked:   {ball:'none', label:'booked'},
+  done:     {ball:'none', label:'done'}
+};
 var _DF_SCHEMA=1;
 
 /* The guard's cache. textClient runs inside a user gesture and hands off to
@@ -88569,7 +88590,7 @@ async function dfLoadAll(){
   _crm.loading=false;
   if(!res || !res.ok){ _crm.err='read failed'; return _crm; }
   _crm.err=null;
-  var seen={}, out=[], tst=[], con={}, sweepAt=null;
+  var seen={}, out=[], tst=[], con={}, cal={}, sweepAt=null;
   var rows=res.rows||[];
   for(var i=0;i<rows.length;i++){
     var r=rows[i], note=String(r.note||'');
@@ -88596,9 +88617,18 @@ async function dfLoadAll(){
                             last:String(cc.last||''), text:String(cc.text||'')};
       }
       if(cc && cc.runAt && (!sweepAt || String(cc.runAt)>String(sweepAt))) sweepAt=cc.runAt;
+    } else if(note.indexOf(_DF_CALL_MARK)===0){
+      /* Newest per client wins, same rule as [CONTACT] above - rows arrive
+         logged_at.desc, so the first seen is where that call stands now and
+         every older one is history, not a second opinion. */
+      var kk=null; try{ kk=JSON.parse(note.slice(_DF_CALL_MARK.length)); }catch(e){ kk=null; }
+      if(kk && r.client_code && !cal[r.client_code]){
+        cal[r.client_code]={state:String(kk.state||''), slot:kk.slot||null,
+                            since:kk.since||r.logged_at||null, note:String(kk.note||'')};
+      }
     }
   }
-  _crm.rows=out; _crm.testims=tst; _crm.contacts=con; _crm.sweepAt=sweepAt; _crm.at=Date.now();
+  _crm.rows=out; _crm.testims=tst; _crm.contacts=con; _crm.calls=cal; _crm.sweepAt=sweepAt; _crm.at=Date.now();
   var pend={};
   for(var j=0;j<out.length;j++){
     var x=out[j];
@@ -88622,6 +88652,116 @@ async function dfWrite(code, d){
   catch(e){ saved=null; }
   if(!saved) return {ok:false, reason:'write refused'};
   return {ok:true, id:d.id};
+}
+/* RECORD WHERE A CALL STANDS. Written by whoever actually read the thread, so
+   the board never has to infer consent from wording. `slot` is an ISO time when
+   one exists and null when nobody has named one - and null is the whole reason
+   this exists, because a held hour with no agreed time is exactly the thing
+   that was invisible. */
+async function cwWrite(code, c){
+  if(!code || !c || !c.state) return {ok:false, reason:'nothing to write'};
+  if(!_CW_STATES[c.state]) return {ok:false, reason:'unknown state '+c.state};
+  var row={state:c.state, slot:c.slot||null,
+           since:c.since||new Date().toISOString(), note:String(c.note||'')};
+  var saved=null;
+  try{ saved=await sbInsertReturning('client_notes',
+        {client_code:code, note:_DF_CALL_MARK+JSON.stringify(row), logged_at:new Date().toISOString()}, 'id'); }
+  catch(e){ saved=null; }
+  if(!saved) return {ok:false, reason:'write refused'};
+  return {ok:true, state:c.state};
+}
+/* THE PIPELINE, RANKED. Two things decide the order and both are printed on the
+   row itself, because a priority nobody can explain is a priority nobody
+   trusts:
+     1. an unconfirmed slot that is nearly here - soonest first
+     2. otherwise whoever has been waiting on HIM longest
+   Anything settled leaves the strip. A booked call needs nothing, and a list
+   that shows finished work buries the unfinished. */
+function _crmCallPipeline(){
+  var out=[];
+  try{
+    var calls=(_crm&&_crm.calls)||{};
+    var names={}; try{ _crmRoster().forEach(function(r){ names[r.code]=r.name; }); }catch(e){}
+    var bookedBy={};
+    try{
+      (window._bookCacheAll||[]).forEach(function(b){
+        if(!b||!b.client_code||!b.starts_at) return;
+        if(new Date(b.starts_at).getTime() < Date.now()) return;
+        if(!bookedBy[b.client_code] || b.starts_at < bookedBy[b.client_code]) bookedBy[b.client_code]=b.starts_at;
+      });
+    }catch(e){}
+    Object.keys(calls).forEach(function(code){
+      var c=calls[code]||{};
+      var st=_CW_STATES[c.state]; if(!st) return;
+      /* A REAL BOOKING OUTRANKS A WRITTEN STATE. The bookings table is the app's
+         own record; a [CALL] row is somebody's note about a conversation. If the
+         call is really on the books it is settled, whatever the note says. */
+      if(bookedBy[code]) return;
+      if(c.state==='booked' || c.state==='done') return;
+      var slotMs=null; try{ if(c.slot) slotMs=new Date(c.slot).getTime(); }catch(e){}
+      var hrsToSlot=(slotMs!=null && isFinite(slotMs)) ? (slotMs-Date.now())/36e5 : null;
+      var waitedH=null;
+      try{ if(c.since) waitedH=(Date.now()-new Date(c.since).getTime())/36e5; }catch(e){}
+      out.push({code:code, name:names[code]||code, state:c.state, ball:st.ball,
+                label:st.label, slot:c.slot||null, hrsToSlot:hrsToSlot,
+                waitedH:(waitedH!=null&&isFinite(waitedH))?waitedH:null, note:c.note||''});
+    });
+    out.sort(function(a,b){
+      /* A slot inside 24 hours that nobody has confirmed is the only genuinely
+         time-critical thing here: once it passes it cannot be recovered. */
+      var au=(a.hrsToSlot!=null && a.hrsToSlot>-2 && a.hrsToSlot<24);
+      var bu=(b.hrsToSlot!=null && b.hrsToSlot>-2 && b.hrsToSlot<24);
+      if(au!==bu) return au?-1:1;
+      if(au && bu) return a.hrsToSlot-b.hrsToSlot;
+      /* Then whoever is waiting on HIM. Their move is not his problem yet. */
+      if((a.ball==='you')!==(b.ball==='you')) return a.ball==='you'?-1:1;
+      var aw=(a.waitedH==null?-1:a.waitedH), bw=(b.waitedH==null?-1:b.waitedH);
+      if(aw!==bw) return bw-aw;
+      return String(a.name).localeCompare(String(b.name));
+    });
+  }catch(e){}
+  return out;
+}
+function _cwAgo(h){
+  if(h==null) return '';
+  if(h<1) return Math.max(1,Math.round(h*60))+' min';
+  if(h<48) return Math.round(h)+(Math.round(h)===1?' hour':' hours');
+  return Math.round(h/24)+' days';
+}
+function _cwWhen(iso){
+  try{
+    var d=new Date(iso), n=new Date();
+    var tm=new Date(n.getTime()+864e5);
+    var hh=d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}).replace(' ','').toLowerCase();
+    if(d.toDateString()===n.toDateString()) return 'today '+hh;
+    if(d.toDateString()===tm.toDateString()) return 'tomorrow '+hh;
+    return d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})+' '+hh;
+  }catch(e){ return ''; }
+}
+function _crmCallsHtml(){
+  var list=_crmCallPipeline();
+  if(!list.length) return '';
+  var rows=list.map(function(c){
+    /* THE REASON IS ON THE ROW. He should never have to work out why somebody
+       is at the top of a list. */
+    var why;
+    if(c.ball==='you' && c.slot)      why='waiting on you to confirm \u00b7 '+_cwWhen(c.slot);
+    else if(c.ball==='you')           why='waiting on you'+(c.waitedH!=null?(' '+_cwAgo(c.waitedH)):'');
+    else if(c.slot)                   why='held '+_cwWhen(c.slot)+', not confirmed';
+    else                              why='no reply yet'+(c.waitedH!=null?(' \u00b7 '+_cwAgo(c.waitedH)):'');
+    var hot=(c.hrsToSlot!=null && c.hrsToSlot>-2 && c.hrsToSlot<24);
+    return '<div class="cwRow'+(hot?' hot':'')+(c.ball==='you'?' yours':'')+'" data-crm="open" data-code="'+_escHtml(c.code)+'">'
+      +'<div class="cwL"><span class="cwName">'+_escHtml(c.name)+'</span>'
+        +'<span class="cwWhy">'+_escHtml(why)+'</span></div>'
+      +'<span class="cwState">'+_escHtml(c.label)+'</span>'
+    +'</div>';
+  }).join('');
+  var yours=list.filter(function(c){ return c.ball==='you'; }).length;
+  return '<div class="cwWrap">'
+    +'<div class="cwHead"><span class="cwEy">Calls in flight</span>'
+      +'<span class="cwCount">'+(yours?(yours+' waiting on you'):'nothing on you')+'</span></div>'
+    +rows
+  +'</div>';
 }
 /* A STATUS CHANGE IS A NEW ROW, not an edit. The board reads the newest and
    the history stays whole. Nothing here reports success until the row is
@@ -88964,6 +89104,26 @@ function _crmStyle(){
   +'#jvWall.jvCrmMode{display:block;max-width:none;overflow-y:auto;}'
   +'.crmHead{font-size:19px;font-weight:800;letter-spacing:-0.3px;color:var(--text);margin:2px 0 3px;}'
   +'.crmSub{font-size:11.5px;color:rgba(240,236,228,0.6);margin-bottom:13px;}'
+  /* CALLS IN FLIGHT. Above the score, because a held slot that passes tonight
+     cannot be recovered tomorrow and a wait clock can. Gold lands on exactly
+     ONE thing in here, the left edge of a row that is nearly here, so it still
+     means act now rather than decorating a list.
+     THIS BLOCK IS A JAVASCRIPT STRING, not the stylesheet. Pasting real CSS in
+     here broke the file once already - every line is a quoted concatenation. */
+  +'.cwWrap{border:1px solid rgba(255,255,255,0.08);border-radius:16px;background:rgba(255,255,255,0.028);padding:13px 14px 6px;margin:0 0 14px;}'
+  +'.cwHead{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding-bottom:10px;margin-bottom:4px;border-bottom:1px solid rgba(255,255,255,0.07);}'
+  +'.cwEy{font-size:10px;font-weight:800;letter-spacing:1.4px;text-transform:uppercase;color:rgba(240,236,228,0.5);}'
+  +'.cwCount{font-size:12px;font-weight:700;color:rgba(240,236,228,0.6);white-space:nowrap;}'
+  +'.cwRow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0 11px 11px;min-height:44px;box-sizing:border-box;cursor:pointer;border-left:2px solid transparent;-webkit-tap-highlight-color:transparent;}'
+  +'.cwRow + .cwRow{border-top:1px solid rgba(255,255,255,0.05);}'
+  +'.cwRow:active{background:rgba(255,255,255,0.04);}'
+  +'.cwRow.yours{border-left-color:rgba(240,236,228,0.3);}'
+  +'.cwRow.hot{border-left-color:var(--gold);}'
+  +'.cwL{min-width:0;display:flex;flex-direction:column;gap:3px;}'
+  +'.cwName{font-size:14px;font-weight:800;color:var(--text);line-height:1.2;}'
+  +'.cwWhy{font-size:11.5px;color:rgba(240,236,228,0.5);line-height:1.35;}'
+  +'.cwRow.hot .cwWhy{color:rgba(245,197,24,0.8);}'
+  +'.cwState{font-size:11px;font-weight:700;color:rgba(240,236,228,0.42);white-space:nowrap;flex-shrink:0;text-align:right;}'
   +'.crmScore{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:9px;margin-bottom:11px;}'
   +'.crmSc{background:radial-gradient(120% 140% at 0% 0%,rgba(36,36,36,0.90) 0%,rgba(23,23,23,0.86) 46%,rgba(17,17,17,0.84) 100%);position:relative;overflow:hidden;-webkit-backdrop-filter:blur(24px) saturate(1.3);backdrop-filter:blur(24px) saturate(1.3);border:1px solid rgba(245,197,24,0.10);border-radius:14px;padding:12px 13px;min-width:0;box-shadow:0 10px 30px rgba(0,0,0,0.45),0 1px 0 rgba(245,197,24,0.05) inset;}'
   +'.crmScL{font-size:11px;font-weight:800;letter-spacing:0.2px;color:rgba(240,236,228,0.62);margin-bottom:5px;}'
@@ -89513,6 +89673,9 @@ function crmPaint(){
       +'<span style="text-decoration:underline;cursor:pointer;" onclick="crmRender(true)">Try again</span>.</div>';
     host.innerHTML=h; return;
   }
+  /* ABOVE THE SCORE, because a slot that passes tonight cannot be recovered
+     tomorrow and a wait clock can. */
+  try{ h+=_crmCallsHtml(); }catch(e){}
   var board=_crmBoardRows();
   var longest=_crmLongest();
   /* ONE SET, ONE TRUTH (his 9:05pm order). The fraction and the money are
