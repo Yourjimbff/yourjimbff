@@ -111,6 +111,44 @@ DUE = 'walk';
 t(sec({}, true) === '', 'a due walk does not open a meal section');
 t(!/tlMealAsk/.test(sec({dinner:[meal('steak',900,90)]}, true)), '...nor add a meal ask');
 
+// ===== SKIPPED IS AN ANSWER (Yusuf, 4 Sep) ================================
+// "should be an option to hit 'skipped' if its past breakfast time."
+// Until now the only way to stop the app asking for a meal was to log one, so a
+// client who genuinely did not eat breakfast carried "Add breakfast" all day
+// with no way to say the true thing.
+console.log('\nSKIPPED IS AN ANSWER, BUT ONLY ONCE THE HOUR HAS GONE:');
+global._PROMPT_LADDER = [
+  {k:'walk', from:0, to:9*60}, {k:'breakfast', from:0, to:11*60},
+  {k:'lunch', from:10*60, to:16*60}, {k:'dinner', from:15*60, to:21*60}
+];
+let HOUR_GONE = {};
+global._mealHourGone = k => !!HOUR_GONE[k];
+let OFF = {};
+global._promptOff = (ds,k) => !!OFF[k];
+
+DUE = 'lunch';
+HOUR_GONE = {}; OFF = {};
+t(!/tlMealSkip/.test(sec({breakfast:[meal('eggs',300,25)]}, true)),
+  'no Skipped offered while the meal still has its hour');
+
+HOUR_GONE = {lunch:true};
+const gone = sec({breakfast:[meal('eggs',300,25)]}, true);
+t(/data-tl="mealskip"/.test(gone), 'once lunch time has passed, Skipped appears');
+t(/data-key="lunch"/.test(gone),   'on the meal whose hour went, not another');
+t((gone.match(/tlMealSkip/g)||[]).length === 1,
+  'and dinner, whose hour has not, is not offered it',
+  (gone.match(/data-tl="meal[a-z]+" data-key="([a-z]+)"/g)||[]).join(' '));
+
+console.log('\nA SKIPPED MEAL IS SAID, NOT SILENTLY DROPPED:');
+OFF = {breakfast:true}; HOUR_GONE = {breakfast:true};
+const sk = sec({}, true);
+t(/Breakfast skipped/.test(sk),        'it stays on the list, said plainly');
+t(/data-tl="mealunskip"/.test(sk),     'with an undo, so a mis-tap is not a one-way door');
+t(/tlMealAsk done/.test(sk),           'and marked so the styling can hold it back');
+t(!/data-tl="add" data-key="breakfast"/.test(sk),
+  'and it is no longer asking him to log it');
+OFF = {}; HOUR_GONE = {};
+
 console.log('\n' + (n-bad) + '/' + n + ' passed');
 console.log('tmealsec: ' + (bad ? 'FAIL' : 'ok'));
 process.exit(bad ? 1 : 0);

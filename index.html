@@ -207,6 +207,13 @@ html{overscroll-behavior-y:none;}
   border-radius:50%;border:1.5px solid rgba(245,197,24,0.55);
   display:grid;place-items:center;color:var(--gold);}
 .tlMealAskP svg{display:block;}
+.tlMealSkip{margin-left:auto;flex-shrink:0;font-size:11px;font-weight:800;letter-spacing:0.4px;
+  color:rgba(240,236,228,0.5);border:1px solid rgba(255,255,255,0.13);border-radius:999px;
+  padding:4px 11px;cursor:pointer;}
+.tlMealSkip:active{opacity:0.6;}
+.tlMealSkip.undo{color:var(--gold);border-color:rgba(224,196,152,0.34);}
+.tlMealAsk.done{opacity:0.62;}
+.tlMealAsk.done .tlMealAskT{text-decoration:line-through;text-decoration-color:rgba(240,236,228,0.3);}
 .tlMealAskT{font-size:13.5px;font-weight:700;letter-spacing:0.2px;color:rgba(240,236,228,0.82);}
 .tlm{display:inline-flex;align-items:baseline;gap:8px;font-size:13px;font-weight:700;color:rgba(240,236,228,0.78);cursor:pointer;}
 .tlm b{font-size:10px;letter-spacing:1px;font-weight:800;letter-spacing:0.9px;text-transform:uppercase;color:rgba(240,236,228,0.78);}
@@ -45799,14 +45806,17 @@ function _tlMealSection(ds, slots, isToday, isAhead){
        every remaining meal is listed, in the order they are eaten. A meal he has
        switched off stays off, and snack is never listed unasked: it is the one
        slot that is not a fixed part of a day. */
-    var left=[];
+    var left=[], skipped=[];
     if(isToday && !ro && !isAhead && due){
       _TL_MEAL_ORDER.forEach(function(pair){
         var k=pair[0];
         if(k==='snack' && due!==k) return;
         if(((slots&&slots[k])||[]).length) return;
         var off=false; try{ off=_promptOff(ds,k); }catch(e){}
-        if(off && due!==k) return;
+        /* A MEAL THEY SAID THEY SKIPPED IS NOT NOTHING. Dropping it silently
+           reads as "the app forgot", and there would be no way back from a
+           mis-tap. It stays on the list, said plainly, with the undo on it. */
+        if(off && due!==k){ skipped.push(pair); return; }
         left.push(pair);
       });
     }
@@ -45839,6 +45849,18 @@ function _tlMealSection(ds, slots, isToday, isAhead){
           +'</svg>'
         +'</span>'
         +'<span class="tlMealAskT">'+_escHtml(any?('Add '+lbl.toLowerCase()):(lbl))+'</span>'
+        /* Only once its hour is over. Before that he still has time to eat it. */
+        +((function(){ var gone=false; try{ gone=_mealHourGone(due); }catch(e){}
+            return gone ? ('<span class="tlMealSkip" data-tl="mealskip" data-key="'+_escHtml(due)
+              +'" data-ds="'+_escHtml(ds)+'" role="button" tabindex="0">Skipped</span>') : ''; })())
+      +'</div>';
+    });
+    skipped.forEach(function(pair){
+      ask+='<div class="tlMealAsk done">'
+        +'<span class="tlMealAskP" aria-hidden="true"></span>'
+        +'<span class="tlMealAskT">'+_escHtml(pair[1])+' skipped</span>'
+        +'<span class="tlMealSkip undo" data-tl="mealunskip" data-key="'+_escHtml(pair[0])
+          +'" data-ds="'+_escHtml(ds)+'" role="button" tabindex="0">Undo</span>'
       +'</div>';
     });
     return '<div class="tlMeals">'+head+rows.join('')+ask+'</div>';
@@ -45885,11 +45907,56 @@ var _PROMPT_LADDER=[
 ];
 function _promptKey(ds){ return 'yjb_prompt_off_'+((cl&&cl.code)||'x')+'_'+ds; }
 // Historic dismissals still count (a client who waved off breakfast before the
-// redesign shouldn't have the "usual meal" proposal below reopen on them) —
-// nothing writes new ones any more, since the card that wrote them is gone.
+// redesign shouldn't have the "usual meal" proposal below reopen on them).
+// AND THEY ARE WRITTEN AGAIN as of 4 Sep: the Skipped action on the meal list
+// writes this same key through _promptSkip, and _promptUnskip clears it. The
+// line that used to sit here said nothing writes new ones any more, which stopped
+// being true the moment that shipped.
 function _promptOff(ds, key){
   try{ return !!JSON.parse(localStorage.getItem(_promptKey(ds))||'{}')[key]; }
   catch(e){ return false; }
+}
+/* SKIPPED IS AN ANSWER (Yusuf, 4 Sep: "should be an option to hit 'skipped' if
+   its past breakfast time").
+   Until now the only way to make the app stop asking for a meal was to log one,
+   so a client who genuinely did not eat breakfast carried "Add breakfast" all
+   day with no way to say the true thing. The ladder already knows when a meal's
+   hour is over; this lets them say so.
+   IT ONLY APPEARS ONCE THE HOUR HAS PASSED. Offering "skipped" at 8am is
+   offering somebody a way out of a meal they still have three hours to eat.
+   THE COMMENT ABOVE _promptOff SAID NOTHING WRITES THESE ANY MORE. That is no
+   longer true and the comment is corrected rather than left to mislead: this
+   writes them, under the same key, in the same shape the reader already reads. */
+function _mealHourGone(key){
+  try{
+    var n=new Date(), m=n.getHours()*60+n.getMinutes();
+    for(var i=0;i<_PROMPT_LADDER.length;i++){
+      if(_PROMPT_LADDER[i].k===key) return m >= _PROMPT_LADDER[i].to;
+    }
+  }catch(e){}
+  return false;
+}
+/* Local to this device, deliberately and for now: _promptOff has always been a
+   localStorage key and this writes the same one rather than inventing a column.
+   It stops the asking. It does NOT reach the trainer's side - said out loud here
+   so nobody reads a quiet day as a reported one. */
+function _promptSkip(ds, key){
+  try{
+    var m={}; try{ m=JSON.parse(localStorage.getItem(_promptKey(ds))||'{}'); }catch(e){ m={}; }
+    m[key]=1;
+    localStorage.setItem(_promptKey(ds), JSON.stringify(m));
+  }catch(e){}
+  try{ showToast('Marked skipped'); }catch(e){}
+  try{ _tlPatchDay(ds); }catch(e){ try{ renderDayTimeline(true); }catch(_){} }
+}
+/* Undo, because a mis-tap on a meal you did eat must not be a one-way door. */
+function _promptUnskip(ds, key){
+  try{
+    var m={}; try{ m=JSON.parse(localStorage.getItem(_promptKey(ds))||'{}'); }catch(e){ m={}; }
+    delete m[key];
+    localStorage.setItem(_promptKey(ds), JSON.stringify(m));
+  }catch(e){}
+  try{ _tlPatchDay(ds); }catch(e){ try{ renderDayTimeline(true); }catch(_){} }
 }
 // Which slot, if any, is worth asking about right now. Today only — yesterday is
 // a record you can still add to, not a day anyone should be prompted through.
@@ -50155,6 +50222,8 @@ function _tlBindTaps(){
     if(a==='planretry'){ ev.stopPropagation(); try{ tlRetryPlan(); }catch(e){} return; }
     if(a==='xmedit'){ ev.stopPropagation(); try{ tlMacroEditOpen(el); }catch(e){} return; }
     if(a==='wnday'){ ev.stopPropagation(); tlWnDismiss(el.getAttribute('data-ds')); return; }
+    if(a==='mealskip'){ ev.stopPropagation(); _promptSkip(el.getAttribute('data-ds'), el.getAttribute('data-key')); return; }
+    if(a==='mealunskip'){ ev.stopPropagation(); _promptUnskip(el.getAttribute('data-ds'), el.getAttribute('data-key')); return; }
     if(a==='bfset'){ ev.stopPropagation(); try{ bfSetTap(el); }catch(e){} return; }
     if(a==='bfadd'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfAddSet(el.getAttribute('data-day'), +el.getAttribute('data-i'), el.getAttribute('data-ds')); return; }
     if(a==='bfrm'){ ev.stopPropagation(); if(!_bfEditableDs(el.getAttribute('data-ds'))) return; bfRemoveSet(el.getAttribute('data-day'), +el.getAttribute('data-i'), +el.getAttribute('data-k'), el.getAttribute('data-ds')); return; }
