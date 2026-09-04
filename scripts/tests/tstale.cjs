@@ -62,9 +62,16 @@ const cc = src.slice(src.indexOf('function callClient(code){'),
 t(/_phoneChase\(code\)/.test(cc),             'Call chases too');
 t(!/No number saved for/.test(cc),            'and no longer writes the toast it cannot justify');
 
-console.log('\n  a tab left open all day re-reads:');
-t(/visibilitychange/.test(src),               'coming back to the app triggers a refresh');
-t(/visibilityState==='visible'/.test(src),    'on becoming visible, not on leaving');
+console.log('\n  a tab left open all day re-reads, and ONLY on his own screen:');
+const vh = src.slice(src.indexOf("document.addEventListener('visibilitychange'"),
+                     src.indexOf("document.addEventListener('visibilitychange'")+520);
+t(vh.length>50,                               'the visibility hook exists');
+t(/visibilityState!=='visible'/.test(vh),     'it acts on becoming visible, not on leaving');
+t(/isTrainer/.test(vh) && /return/.test(vh),  'and a client session returns before it refreshes anything');
+t(/rosterRefresh\(false\)/.test(vh),          'the trainer gets the throttled refresh');
+
+console.log('\n  and the chase is his job too, never a client phone:');
+t(/isTrainer/.test(pc),                       '_phoneChase returns early on a client session');
 
 console.log(bad? ('\n'+bad+' FAILED') : '\n  all '+'pass');
 process.exit(bad?1:0);
