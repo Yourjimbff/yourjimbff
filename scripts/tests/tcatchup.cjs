@@ -147,10 +147,18 @@ let D=null;
   t(/Eggs and avocado toast · Chicken and rice bowl/.test(body), 'meal names, brief, in the order eaten');
   t(/\n1,230 cal · 80g protein \/ 116g carbs \/ 43g fat\n/.test(body),
     'total calories, then protein\/carbs\/fat, on their own line');
-  t(/Trained: Pull — “Shoulder felt better today, kept the rows light”/.test(body),
-    'training brief, with their note quoted verbatim beside it');
-  t(/Chicken and rice bowl — “Was still hungry after this one”/.test(body),
-    'the meal note is quoted too — ANY note they wrote');
+  /* NO QUOTING THEM BACK AT THEMSELVES (Yusuf, ruling, 5 Sep). This used to
+     assert the opposite - that ANY note they wrote got quoted into the message.
+     His ruling reverses it: "quoting more than like a word or two or three
+     words is forbidden... its the EFFORT of trying to make the human feel
+     heard thats the dead giveaway of AI." The note is still READ (it is in
+     D.days[1].sessions[0].note, asserted above, and it shows on his own card);
+     it is simply not repeated to the person who wrote it. */
+  t(/Trained: Pull\n/.test(body) || /Trained: Pull$/m.test(body),
+    'the session is named and their words are not read back to them', body);
+  t(!/“Shoulder felt better today/.test(body), 'no training note quoted into the message');
+  t(!/“Was still hungry after this one”/.test(body), 'and no meal note either');
+  t(!/“|”/.test(body), 'NOTHING in the message is a quote of them at all');
 
   console.log('  THE LINE BUDGET (3-4 a day, his rule):');
   // THE LAST PARAGRAPH IS THE FEEDBACK. With the label gone there is no marker
@@ -282,9 +290,12 @@ let D=null;
   t(D2.days[1].sessions.length===1 && D2.days[1].sessions[0].title==='Bike',
     'the bike ride counts as training — cardio is training');
   t(/Trained: Bike/.test(b2), 'and the cardio session is named in the message');
-  t(/Trained: Legs — “Felt strong, best squat session in weeks”/.test(b2),
-    'a sign-off mined out of a multi-line description is quoted; the lifts are not',
-    JSON.stringify(D2.days[4].sessions[0].note));
+  /* The sign-off is still MINED - _cuWoNote finds it and it is on the row, which
+     is what the card shows him. It just no longer goes into the message. */
+  t(D2.days[4].sessions[0].note==='Felt strong, best squat session in weeks',
+    'the sign-off is still found in a multi-line description', JSON.stringify(D2.days[4].sessions[0].note));
+  t(/Trained: Legs/.test(b2) && !/“Felt strong/.test(b2),
+    'the session is named in the message and the sign-off is not quoted into it');
   t(!/225/.test(b2) && !/Romanian/.test(b2), 'no set, rep or load leaks into the message');
   // THE LINE THAT WOULD HAVE LEAKED. The debrief treats anything over ninety
   // characters as speech; that squat line is 104 and is pure exercise list, so

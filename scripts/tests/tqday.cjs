@@ -268,11 +268,17 @@ const ALIVE_QUIET=[
   // ===== THE BUTTON IS ON THE BOARD ====================================
   console.log('\n  IT IS REACHABLE:');
   t(/onclick="dqQueueYesterday\(\)"/.test(src), 'the board carries the button');
-  t((src.match(/\+ _dqCtxHtml\(d\)/g)||[]).length===2,
-    'and the day is drawn above the box on BOTH surfaces, the board row and the batch card',
-    String((src.match(/\+ _dqCtxHtml\(d\)/g)||[]).length));
-  t(/_dqCtxHtml\(d\)\n\s*\+'<textarea class="crmTa"/.test(src), 'above the board’s box, not below it');
-  t(/_dqCtxHtml\(d\)\n\s*\+'<textarea class="cbTa"/.test(src), 'and above the batch box');
+  /* YESTERDAY IS A TAB, NOT A BULK WRITE (Yusuf, 5 Sep). The card no longer
+     draws a copy stored on the draft; it draws the LIVE day off _crm.logs,
+     which is already loaded for the whole roster. A view, not a write. */
+  t((src.match(/\+ _crmYdayHtml\(/g)||[]).length===3,
+    'the day is drawn above the box on all three surfaces — drafted row, bare row, batch card',
+    String((src.match(/\+ _crmYdayHtml\(/g)||[]).length));
+  t(/_crmYdayHtml\(p\.code\)\n\s*\+'<textarea class="crmTa"/.test(src), 'above the board’s box, not below it');
+  t(/_crmYdayHtml\(it\.code\)\n\s*\+'<textarea class="cbTa"/.test(src), 'and above the batch box');
+  t(!/_dqCtxHtml/.test(src), 'and the stored-copy renderer is gone, not left beside it');
+  t(/\{k:'yday',\s+label:'Yesterday'/.test(src), 'Yesterday is the first tab on the board');
+  t(/_crm\.filter==='yday'/.test(src), 'and the drafting button only exists inside it');
   t(/ctx:\(o\.ctx\?String\(o\.ctx\):''\)/.test(src), 'the row stores and reads it back');
   t(/\.dqCtx\{/.test(src) && !/\+'\.dqCtx\{[^']*\n/.test(src), 'styled, one quoted line per rule');
   t(/\.crmDayBtn\{/.test(src), 'and it has a style');
