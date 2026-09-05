@@ -28,7 +28,7 @@ global.window={ _sbFailN:0 };
 global.document={ getElementById:()=>null };
 global.navigator={ language:'en-US' };
 
-const MINE=['_DQ_SRC','_DQ_LIMIT','_dqCloser','_dqBody','dqQueueYesterday'];
+const MINE=['_DQ_SRC','_DQ_LIMIT','_dqCloser','_dqCtx','_dqBody','dqQueueYesterday'];
 const SHARED=['_cuDayLines','_cuCut','_cuClip','_cuQuote','_cuWoNote','_cuDayLabel','_CU_NAME_MAX',
   '_CU_LINE_MAX','_jvNum','_dbDay','_dbDs','_jvSpokenDay','_JV_DB_SAYS_RE',
   '_sbFailMark','_sbFailedSince','_sbAtCap','_TAP_MS','_tapKey','_dedupeTaps'];
@@ -45,9 +45,10 @@ global.sbSelect=async function(table, filter){
   if(CAPTABLE===table) return Array.from({length:4000},(_,i)=>({client_code:'x', logged_at:'2026-09-04T12:00:00Z'}));
   return (ROWS[table]||[]).slice();
 };
-global.dfWrite=async function(code,d){ WROTE.push({code:code, id:d.id, text:d.text, re:d.re, src:d.src, day:d.day}); return {ok:true, id:d.id||('n'+WROTE.length)}; };
+global.dfWrite=async function(code,d){ WROTE.push({code:code, id:d.id, text:d.text, re:d.re, src:d.src, day:d.day, ctx:d.ctx}); return {ok:true, id:d.id||('n'+WROTE.length)}; };
 global.dfLoadAll=async function(){};
 global.crmPaint=function(){};
+global._escHtml=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 global.showToast=function(m){ TOASTS.push(String(m)); };
 global.rosterRefresh=async function(){};
 global._jvHydratePhones=function(){};
@@ -105,15 +106,30 @@ const ALIVE_QUIET=[
   t(/client_code=in\.\(/.test(ASKED[0]), 'and to the roster in one request, not one per client');
   t(ASKED.length===2, 'two reads for the whole roster, not a hundred and fifty', String(ASKED.length));
   const kelly=WROTE.find(w=>w.code==='kellyg1');
-  console.log('\n    KELLY:');
+  console.log('\n    ABOVE THE BOX (what he reads):');
+  (kelly?kelly.ctx:'(nothing)').split('\n').forEach(l=>console.log('    | '+l));
+  console.log('    IN THE BOX (what she receives):');
   (kelly?kelly.text:'(nothing)').split('\n').forEach(l=>console.log('    | '+l));
   t(!!kelly, 'she gets one');
-  t(/^Yesterday\n/.test(kelly.text), 'it opens on the day itself, no announcement');
-  t(/Eggs and toast · Sirloin and salad/.test(kelly.text), 'both meals named, in the order eaten');
-  t(/1,180 cal · 92g protein/.test(kelly.text), 'the totals are the arithmetic of her rows', kelly.text);
-  t(/Trained: Push/.test(kelly.text), 'and the session is named');
-  t(/“Felt full for once”/.test(kelly.text), 'a note she wrote is quoted back');
-  t(/Same again today\?$/.test(kelly.text), 'and it closes on a push, not a compliment nobody earned');
+
+  // THE DAY IS NOT THE MESSAGE (Yusuf, 5 Sep, off a screenshot of Gabriel's
+  // card): "instead of replying to him like a bot with information inside the
+  // text, you should put information above the text box. thats even where his
+  // day should appear." Nobody texts somebody a recap of their own day.
+  t(!/Eggs and toast/.test(kelly.text), 'her meals are NOT pasted into the text she receives');
+  t(!/1,180|92g/.test(kelly.text),      'and neither are her macros');
+  t(!/Trained/.test(kelly.text),        'nor her session');
+  t(!/“|”/.test(kelly.text),            'and she is never quoted back at herself');
+  t(kelly.text==='Thats the shape I want. Same again today?',
+    'the box holds his line and nothing else', JSON.stringify(kelly.text));
+
+  // ...and all of it is above the box instead, where he decides.
+  t(/^Yesterday\n/.test(kelly.ctx), 'the day sits above the box, headed by the day itself');
+  t(/Eggs and toast · Sirloin and salad/.test(kelly.ctx), 'both meals, in the order eaten');
+  t(/1,180 cal · 92g protein/.test(kelly.ctx), 'the totals are the arithmetic of her rows');
+  t(/Trained: Push/.test(kelly.ctx), 'and the session is named');
+  t(!/“Felt full for once”/.test(kelly.ctx) && !/“Shoulder held up fine”/.test(kelly.ctx),
+    'their own words are cut off it — context, not speech', kelly.ctx);
   t(kelly.src==='day', 'stamped as this button’s work', String(kelly.src));
   t(kelly.day==='Sep 4, 2026', 'and stamped with the day it is about', String(kelly.day));
   t(/read in one pass/.test(kelly.re) && /Sep 4, 2026/.test(kelly.re), 'the evidence rides with it');
@@ -127,8 +143,8 @@ const ALIVE_QUIET=[
   ]), workout_logs:WO_KELLY};
   await dqQueueYesterday();
   const k2=WROTE.find(w=>w.code==='kellyg1');
-  t(!/Coffee and an apple/.test(k2.text), 'a meal logged TODAY never reaches yesterday’s message');
-  t(/1,180 cal/.test(k2.text), 'and it does not move yesterday’s numbers either', k2.text.split('\n')[2]);
+  t(!/Coffee and an apple/.test(k2.ctx), 'a meal logged TODAY never reaches yesterday’s block');
+  t(/1,180 cal/.test(k2.ctx), 'and it does not move yesterday’s numbers either', k2.ctx.split('\n')[2]);
 
   // ===== A BLANK DAY IS NOT IN THIS QUEUE AT ALL =======================
   // Yusuf, 5 Sep: "que yesterday should basically only be for people who have
@@ -145,6 +161,9 @@ const ALIVE_QUIET=[
   t(/logged nothing/.test(String(rep0)), 'the report says how many had nothing', String(rep0));
   t(_dqBody({any:false, meals:[], sessions:[], notes:[], label:'Yesterday'})==='',
     'and the writer itself refuses a blank day, whatever calls it');
+  t(_dqCtx({any:false, meals:[], sessions:[], notes:[], label:'Yesterday', isToday:false})
+      .indexOf('nothing logged')>=0,
+    'the context block can still say a day was empty — it is just never sent as a message');
 
   // ===== THE SWEEP GETS A VOTE =========================================
   // Yusuf, 5 Sep: "did you factor in the text message sweep into the queued
@@ -224,9 +243,16 @@ const ALIVE_QUIET=[
   await dqQueueYesterday();
   const first=WROTE.find(w=>w.code==='kellyg1');
   reset(); ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY};
-  _crm.rows=[{code:'kellyg1', id:'d9', status:'pending', text:first.text, src:'day', at:'2026-09-05T06:00:00Z'}];
+  // The guard compares the CONTEXT as well as the line, so a day that CHANGED
+  // still refreshes even though the closing sentence is identical.
+  _crm.rows=[{code:'kellyg1', id:'d9', status:'pending', text:first.text, ctx:first.ctx, src:'day', at:'2026-09-05T06:00:00Z'}];
   await dqQueueYesterday();
   t(!WROTE.some(w=>w.code==='kellyg1'), 'running it twice writes nothing the second time');
+  reset(); ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY};
+  _crm.rows=[{code:'kellyg1', id:'d9', status:'pending', text:first.text, ctx:'Yesterday\nsomething else', src:'day', at:'2026-09-05T06:00:00Z'}];
+  await dqQueueYesterday();
+  t(WROTE.some(w=>w.code==='kellyg1'),
+    'but a day that changed under the same closing line DOES refresh — the line alone is not the check');
 
   // ===== THE MARK HAS TO SURVIVE =======================================
   // If src were dropped on a status change, the next morning would read its own
@@ -242,6 +268,13 @@ const ALIVE_QUIET=[
   // ===== THE BUTTON IS ON THE BOARD ====================================
   console.log('\n  IT IS REACHABLE:');
   t(/onclick="dqQueueYesterday\(\)"/.test(src), 'the board carries the button');
+  t((src.match(/\+ _dqCtxHtml\(d\)/g)||[]).length===2,
+    'and the day is drawn above the box on BOTH surfaces, the board row and the batch card',
+    String((src.match(/\+ _dqCtxHtml\(d\)/g)||[]).length));
+  t(/_dqCtxHtml\(d\)\n\s*\+'<textarea class="crmTa"/.test(src), 'above the board’s box, not below it');
+  t(/_dqCtxHtml\(d\)\n\s*\+'<textarea class="cbTa"/.test(src), 'and above the batch box');
+  t(/ctx:\(o\.ctx\?String\(o\.ctx\):''\)/.test(src), 'the row stores and reads it back');
+  t(/\.dqCtx\{/.test(src) && !/\+'\.dqCtx\{[^']*\n/.test(src), 'styled, one quoted line per rule');
   t(/\.crmDayBtn\{/.test(src), 'and it has a style');
   t(!/\+'\.crmDayBtn\{[^']*\n/.test(src), 'written one quoted line per rule, not pasted as a block');
   t(/if\(window\._dqBusy\) return; window\._dqBusy=1;/.test(src), 'and a double tap cannot start it twice');
