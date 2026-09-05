@@ -89316,6 +89316,12 @@ function _dfRowNote(d){
     schema:_DF_SCHEMA, id:d.id, text:String(d.text||''),
     at:d.at||new Date().toISOString(), re:String(d.re||''),
     status:d.status||'pending', by:d.by||'jarvis',
+    /* WHO WROTE IT AND WHAT DAY IT IS ABOUT (5 Sep). Only the bulk yesterday
+       button sets src:'day', and that is the whole reason it can refresh its
+       own drafts every morning without ever writing over one he wrote or
+       edited himself. Both are dropped rather than defaulted, so an older row
+       stays exactly the shape it was written in. */
+    src:(d.src||undefined), day:(d.day||undefined),
     /* WHEN THE COMPOSER WAS OPENED. Only set on an 'opened' row. The sweep
        needs a timestamp to settle against - "did a message to this person
        exist AFTER this moment" is the whole question - and a status that
@@ -89330,7 +89336,8 @@ function _dfFromNote(note){
   if(!o || typeof o!=='object' || !o.id) return null;
   return {id:String(o.id), text:String(o.text||''), at:o.at||null,
           re:String(o.re||''), status:String(o.status||'pending'),
-          by:String(o.by||''), openedAt:(o.openedAt||null)};
+          by:String(o.by||''), openedAt:(o.openedAt||null),
+          src:(o.src?String(o.src):''), day:(o.day?String(o.day):'')};
 }
 function _dfDayKey(iso){
   try{ var d=new Date(iso); if(isNaN(d.getTime())) return ''; 
@@ -89536,8 +89543,13 @@ function _crmCallsHtml(){
    the history stays whole. Nothing here reports success until the row is
    back - the boolean says the request did not error, never that it landed. */
 async function dfSetStatus(code, d, status, text, extra){
+  /* src and day RIDE THROUGH a status change (5 Sep). Without them, opening or
+     skipping a draft the bulk yesterday button wrote would strip its mark, and
+     the next morning's run would treat it as hand written and refuse to touch
+     it - a draft that quietly freezes forever. */
   var next={id:d.id, text:(text!=null?text:d.text), at:d.at, re:d.re,
             status:status, by:d.by||'jarvis',
+            src:(d.src||undefined), day:(d.day||undefined),
             openedAt:(d.openedAt||null)};
   if(extra){ for(var k in extra){ if(Object.prototype.hasOwnProperty.call(extra,k)) next[k]=extra[k]; } }
   var w=await dfWrite(code, next);
@@ -90088,6 +90100,7 @@ function _crmStyle(){
   +'.crmChipN{font-size:11px;font-weight:800;color:rgba(240,236,228,0.55);font-variant-numeric:tabular-nums;}'
   +'.crmChip.on .crmChipN{color:rgba(245,197,24,0.72);}'
   +'.crmBatchRow{display:flex;align-items:center;gap:11px;margin:2px 0 12px;flex-wrap:wrap;}'
+  +'.crmDayBtn{background:transparent;color:var(--gold);border:1px solid rgba(224,196,152,0.42);border-radius:11px;padding:10px 18px;font-family:inherit;font-size:13.5px;font-weight:800;cursor:pointer;}'
   +'.crmBatchBtn{background:var(--gold);color:#000;border:none;border-radius:11px;padding:11px 20px;font-family:inherit;font-size:13.5px;font-weight:800;cursor:pointer;}'
   +'.crmBatchN{font-size:11.5px;color:rgba(240,236,228,0.55);}'
   +'#crmBatchOv{position:fixed;inset:0;z-index:99998;display:none;background:#0b0b0c;}'
@@ -90664,8 +90677,14 @@ function crmPaint(){
      send - an empty button that toasts at you is worse than no button. */
   (function(){
     var qn=0; try{ qn=_crmBatchQueue().length; }catch(e){}
-    if(qn) h+='<div class="crmBatchRow"><button class="crmBatchBtn" onclick="crmBatchOpen()">'
-      +'Send all '+qn+'</button><span class="crmBatchN">one at a time, your thumb still sends</span></div>';
+    /* QUEUE YESTERDAY IS ALWAYS THERE, and Send all only when there is a run to
+       start. The two sit on one row because they are one motion: fill the
+       board, then walk it. */
+    h+='<div class="crmBatchRow">';
+    if(qn) h+='<button class="crmBatchBtn" onclick="crmBatchOpen()">Send all '+qn+'</button>';
+    h+='<button class="crmDayBtn" onclick="dqQueueYesterday()">Queue yesterday</button>';
+    h+='<span class="crmBatchN">'+(qn?'one at a time, your thumb still sends':'nothing queued yet')+'</span>';
+    h+='</div>';
   })();
   h+='<div class="crmSortRow"><span class="crmSortL">sort</span>';
   _CRM_SORTS.forEach(function(so){
@@ -90972,6 +90991,164 @@ function _cbEarBar(){
     + '<button class="cbEarB'+(on?' on':'')+'" onclick="cbEarToggle()">'
       + (on?'<span class="cbSpk" id="cbSpk"></span>Reading':'Read aloud')
     + '</button></span>';
+}
+/* ===== QUEUE YESTERDAY FOR EVERYONE (Yusuf, 5 Sep) =====================
+   "why isnt the bulk send for yesterdays logs built out?"
+
+   Fair. It had been built as a task that runs in the cloud at 5:30am - and the
+   cloud cannot reach the database, so it had never run once. The app already
+   knows how to read a person's day and write it up; what it had no button for
+   was doing that to the whole roster. This is that button.
+
+   ONE READ, NOT SEVENTY FIVE. Every active client with a number, both tables,
+   one request each, and then the rows are dealt into days here. Seventy five
+   clients through _jvCatchUpData would be a hundred and fifty round trips and
+   a minute of waiting.
+
+   YESTERDAY ONLY (his rule). Nothing from today: "Today has barely happened
+   and quoting it makes the message about you watching rather than about their
+   day."
+
+   THE ABSENCE LAW DECIDES WHETHER IT WRITES ANYTHING AT ALL. sbSelect answers
+   [] for a refused read exactly as it does for a clean empty day. If either
+   read fails or comes back at its cap, this writes NOTHING for anybody and
+   says so - because a false "you logged nothing yesterday" to seventy five
+   people at once is the worst thing this button could ever do.
+
+   IT NEVER WRITES OVER A REAL DRAFT. A draft carries src:'day' when this wrote
+   it, and only those are refreshed. Anything hand written, edited, sent or
+   skipped is left exactly where it is. */
+var _DQ_SRC='day';
+var _DQ_LIMIT=4000;
+/* The closing line is DECIDED, never invented: it is picked by what is actually
+   on the record, so it can be positive without being a compliment nobody
+   earned. A day with nothing on it gets the honest line and no recap. */
+function _dqCloser(day){
+  if(!day.any) return 'Nothing came through from you yesterday. What did the day actually look like?';
+  var fed=day.meals.length>0, trained=day.sessions.length>0;
+  if(fed && trained) return 'Thats the shape I want. Same again today?';
+  if(fed) return 'Whats training looking like today?';
+  return 'Training went in and the food didnt. Whats today looking like?';
+}
+function _dqBody(day){
+  var lines=[];
+  try{ lines=_cuDayLines(day)||[]; }catch(e){ lines=[]; }
+  if(!lines.length) return '';
+  return lines.join('\n')+'\n\n'+_dqCloser(day);
+}
+/* THE WHOLE ROSTER, ONE PASS. Returns a plain report and writes nothing it was
+   not sure about. */
+async function dqQueueYesterday(){
+  if(window._dqBusy) return; window._dqBusy=1;
+  try{
+    try{ showToast('Reading yesterday for everyone…'); }catch(e){}
+    /* THE DAY, BEFORE ANY ROW IS READ - the frame is the calendar, not the data. */
+    var today=new Date(); today.setHours(0,0,0,0);
+    var y=new Date(today); y.setDate(y.getDate()-1);
+    var ds=_dbDs(y), label=_cuDayLabel(y);
+    /* Everyone who could actually receive one. */
+    try{ await rosterRefresh(true); }catch(e){}
+    try{ _jvHydratePhones(); }catch(e){}
+    var codes=[];
+    for(var k in CLIENTS){
+      if(!Object.prototype.hasOwnProperty.call(CLIENTS,k)) continue;
+      var c=CLIENTS[k]||{};
+      if(c.active===false) continue;
+      if(typeof isTrainer==='function' && isTrainer(k)) continue;
+      if(k==='zzscratchnotaclient') continue;
+      if(!c.phone) continue;
+      codes.push(k);
+    }
+    if(!codes.length){ try{ showToast('No clients with a number'); }catch(e){} return; }
+    /* Two reads, bounded to the one day on the server. The pad is two days wide
+       because date_str and logged_at disagree across a timezone. */
+    var from=new Date(y); from.setDate(from.getDate()-1);
+    var to=new Date(y);   to.setDate(to.getDate()+2);
+    var win='&logged_at=gte.'+encodeURIComponent(from.toISOString())
+          + '&logged_at=lt.'+encodeURIComponent(to.toISOString());
+    var inq='client_code=in.('+codes.join(',')+')';
+    var m1=_sbFailMark(), F=[];
+    try{ F=await sbSelect('food_logs', inq+'&select=client_code,name,meal,calories,protein,carbs,fat,felt,date_str,logged_at'+win+'&order=logged_at.asc&limit='+_DQ_LIMIT)||[]; }catch(e){}
+    var foodBad=_sbFailedSince(m1)||_sbAtCap(F,_DQ_LIMIT);
+    var m2=_sbFailMark(), W=[];
+    try{ W=await sbSelect('workout_logs', inq+'&select=client_code,title,description,exercises,notes,date_str,logged_at'+win+'&order=logged_at.asc&limit='+_DQ_LIMIT)||[]; }catch(e){}
+    var woBad=_sbFailedSince(m2)||_sbAtCap(W,_DQ_LIMIT);
+    if(foodBad||woBad){
+      /* NOTHING IS WRITTEN. Not a partial pass, not "most of them" - one bad
+         read and the whole run is void, because there is no way to tell an
+         empty client from an unread one. */
+      try{ showToast('Could not read '+(foodBad&&woBad?'either table':(foodBad?'the food':'the training'))+' — nothing queued'); }catch(e){}
+      return;
+    }
+    /* Every client gets a day BEFORE any row lands in it, so a person with
+       nothing on the record still has a day to be empty. */
+    var byC={};
+    codes.forEach(function(c){
+      byC[c]={label:label, isToday:false, meals:[], notes:[], sessions:[],
+              cal:0, pro:0, car:0, fat:0, any:false};
+    });
+    _dedupeTaps(F).forEach(function(f){
+      var d=_dbDay(f.date_str, f.logged_at); if(!d || _dbDs(d)!==ds) return;
+      var slot=byC[f.client_code]; if(!slot) return;
+      var nm=String(f.name||'').replace(/\s+/g,' ').trim();
+      if(nm) slot.meals.push(nm);
+      slot.cal+=(+f.calories||0); slot.pro+=(+f.protein||0);
+      slot.car+=(+f.carbs||0);    slot.fat+=(+f.fat||0);
+      var felt=String(f.felt||'').replace(/\s+/g,' ').trim();
+      if(felt) slot.notes.push(felt);
+      slot.any=true;
+    });
+    W.forEach(function(w){
+      var d=_dbDay(w.date_str, w.logged_at); if(!d || _dbDs(d)!==ds) return;
+      var slot=byC[w.client_code]; if(!slot) return;
+      slot.sessions.push({title:(String(w.title||'').replace(/\s+/g,' ').trim()||'Training'),
+                          note:_cuWoNote(w)});
+      slot.any=true;
+    });
+    /* What is already on the board decides who gets touched. The rows are the
+       CRM's own, newest first, which is the same rule the board reads by - so
+       this can never disagree with what he is looking at. */
+    try{ await dfLoadAll(); }catch(e){}
+    var newest={}, doneToday={}, _tk='';
+    try{ _tk=_dfToday(); }catch(e){}
+    (_crm.rows||[]).forEach(function(d){
+      if(!d.code) return;
+      if(!newest[d.code]) newest[d.code]=d;
+      if((d.status==='sent'||d.status==='skipped')){
+        var k=''; try{ k=_dfDayKey(d.at||d.rowAt); }catch(e){}
+        if(k===_tk) doneToday[d.code]=d;
+      }
+    });
+    var wrote=0, filled=0, empty=0, kept=0, done=0, failed=0;
+    for(var i=0;i<codes.length;i++){
+      var code=codes[i], day=byC[code];
+      var body=_dqBody(day);
+      if(!body){ continue; }
+      /* HE HAS ALREADY ANSWERED THEM TODAY. Sent or deliberately skipped, off
+         the board or out of a batch run - either way it is not this button's
+         business to put a new one in front of him. */
+      if(doneToday[code]){ done++; continue; }
+      var cur=newest[code]||null;
+      if(cur && cur.status && cur.status!=='pending' && cur.status!=='opened'){ done++; continue; }
+      if(cur && cur.src!==_DQ_SRC){ kept++; continue; }                      /* his, or hand written */
+      if(cur && cur.text===body){ kept++; continue; }                        /* already says this */
+      var re='YESTERDAY ONLY ('+ds+'), read in one pass off food_logs and workout_logs with the fail marks clean and neither read at its cap. '
+        + (day.any ? ('Logged: '+(day.meals.length?(day.meals.length+' meal'+(day.meals.length===1?'':'s')+(day.cal>0?(', '+Math.round(day.cal)+' cal'):'')):'no food')
+            + (day.sessions.length?(', '+day.sessions.length+' session'+(day.sessions.length===1?'':'s')):', no training'))+'.'
+          : 'NOTHING on the record for that day, and the read is proved good - so this says so and does not recap a day that did not happen.');
+      var w=null;
+      try{ w=await dfWrite(code, {id:(cur&&cur.id)||undefined, text:body, re:re, src:_DQ_SRC, day:ds}); }catch(e){ w=null; }
+      if(w && w.ok){ wrote++; if(day.any) filled++; else empty++; } else { failed++; }
+    }
+    try{ await dfLoadAll(); crmPaint(); }catch(e){}
+    var msg=wrote+' queued for '+label.toLowerCase()
+      + ' · '+filled+' logged, '+empty+' blank'
+      + (kept?(' · '+kept+' left alone'):'')
+      + (done?(' · '+done+' already answered'):'')
+      + (failed?(' · '+failed+' would not write'):'');
+    try{ showToast(msg); }catch(e){}
+    return msg;
+  } finally { window._dqBusy=0; }
 }
 var _crmBatch=null;
 function _crmBatchQueue(){
