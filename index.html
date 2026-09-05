@@ -50329,7 +50329,7 @@ function _tlBindTaps(){
 // double-taps, and it had no idea the first one had just been removed — so the
 // re-add was silently refused and the macros appeared to vanish.
 function _foodDupReset(){
-  try{ window.__lastFoodSig=null; window.__lastFoodAt=0; window.__foodInsertBusy=false; }catch(e){}
+  try{ window.__foodSigs={}; window.__foodInsertBusy=false; }catch(e){}
   try{ if(window.__chatFoodSig) window.__chatFoodSig={}; }catch(e){}
 }
 async function tlDelFood(id){
@@ -59427,11 +59427,21 @@ async function insertFoodLog(row, photo){
   try{
     var _sig=(row && (row.name||"")+"|"+(row.meal||"")+"|"+Math.round(row.calories||0)).toLowerCase();
     var _now=Date.now();
-    if(window.__lastFoodSig && window.__lastFoodSig===_sig && (_now-(window.__lastFoodAt||0))<10000){
-      return {ok:false, duplicate:true};
-    }
+    // ONE SLOT COULD NOT GUARD A BATCH (nightly sweep, 4 Sep, Ben Plimpton).
+    // This held a SINGLE signature, so in any turn that logs several meals -
+    // which is the ordinary shape of "here's my whole day" - each item
+    // overwrote the one before it and only the LAST item was ever protected.
+    // A three-meal turn that got written twice therefore had no guard at all on
+    // the first two, and his breakfast landed on the day twice: 458 cal counted
+    // as 916. Keyed per signature now, so every item in a batch carries its own
+    // guard for the same 10 seconds the single slot promised.
+    window.__foodSigs = window.__foodSigs || {};
+    var _seen = window.__foodSigs[_sig];
+    if(_seen && (_now-_seen)<10000){ return {ok:false, duplicate:true}; }
     if(window.__foodInsertBusy){ return {ok:false, duplicate:true}; }
-    window.__foodInsertBusy=true; window.__lastFoodSig=_sig; window.__lastFoodAt=_now; setTimeout(function(){window.__foodInsertBusy=false;},9000);
+    // Keep the map from growing for the life of the tab.
+    try{ Object.keys(window.__foodSigs).forEach(function(k){ if((_now-window.__foodSigs[k])>60000) delete window.__foodSigs[k]; }); }catch(e){}
+    window.__foodInsertBusy=true; window.__foodSigs[_sig]=_now; setTimeout(function(){window.__foodInsertBusy=false;},9000);
   }catch(e){}
   async function tryInsert(payload){
     try{
@@ -59471,7 +59481,11 @@ async function insertFoodLog(row, photo){
     }
   }
   var _posted = attempt.ok;   // did the POST itself land, before read-back can overwrite it
-  try{ window.__foodInsertBusy=false; if(!attempt.ok){ window.__lastFoodSig=null; } }catch(e){}
+  // ONLY A WRITE THAT NEVER LANDED MAY CLEAR ITS GUARD (the Carly law, 3 Sep).
+  // This cleared on any !ok, and !ok includes "the POST landed but the read-back
+  // could not be reached" - clearing there arms the app to write the same row a
+  // second time. _posted is the honest test.
+  try{ window.__foodInsertBusy=false; if(!attempt.ok && !_posted && window.__foodSigs){ delete window.__foodSigs[_sig]; } }catch(e){}
   // VERIFY BY READING IT BACK — never by trusting the POST response alone (the
   // standing law, and the exact fix insertWorkoutLog already carries: a
   // response with ok:true but no real row behind it is precisely the shape
@@ -76549,6 +76563,13 @@ async function logFoodFromChat(offer, photo, targetCode){
   var foodRow = {client_code:_code, name:r.name, emoji:r.emoji, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, sugar:r.sugar, rating:r.rating, insight:r.insight, meal:meal, eat_time:eatTime, graced:false, date_str:_targetDate, meal_text:(offer.meal_text||null)};
   if(_daysAgo>0) foodRow.logged_at = _isoForDateStr(_targetDate, eatTime);
   var _ins = await insertFoodLog(foodRow, savedPhoto);
+  // WHAT THE WRITE ACTUALLY ANSWERED, for the caller's dedupe map. This function
+  // returns a bare false for "never landed", "landed but unconfirmed" and
+  // "already there", and the chat loop above only remembers a meal it saw
+  // return true - so a row that WAS written and merely could not be read back
+  // was written again on the next turn. The caller needs the distinction this
+  // function already has in hand.
+  try{ window.__jimLastFoodIns = _ins || null; }catch(e){}
   // THE WRITER ALREADY KNEW; THE SPEAKER THREW IT AWAY (Carly L, 1 Sep).
   // insertFoodLog deliberately answers three different things - it never
   // landed, it landed but could not be read back (unconfirmed), or a row for
@@ -79351,7 +79372,15 @@ async function jimTurn(text, photos, opts){
         var _clause=_one ? text : String(addOffer.words||'').trim();
         var _anchored=_clause ? _pinStatedTime(addOffer, _clause) : addOffer;
         var aOk = await logFoodFromChat(_pinTitle(_pinVoice(_pinClock(_pinDay(_anchored)), 'meal_text')), addPhoto, _forCode);
-        if(aOk){ _foodToasts++; _foodVerified++; window.__chatFoodSig[_sig]=_nowFa; }
+        // A ROW THAT MAY ALREADY BE THERE MUST NOT BE WRITTEN AGAIN (nightly
+        // sweep, 4 Sep). This stamped the ten-minute dedupe map ONLY on a
+        // verified landing. logFoodFromChat answers false for three different
+        // things - never landed, landed but could not be read back, and already
+        // there - so two of the three left this meal unguarded and the next turn
+        // logged it a second time. Only the first of the three may be retried.
+        var _li=null; try{ _li=window.__jimLastFoodIns; }catch(e){}
+        if(aOk || (_li && (_li.unconfirmed || _li.duplicate))) window.__chatFoodSig[_sig]=_nowFa;
+        if(aOk){ _foodToasts++; _foodVerified++; }
         else console.error('food save failed for offer', addOffer);
       }
     }
