@@ -28,7 +28,7 @@ global.window={ _sbFailN:0 };
 global.document={ getElementById:()=>null };
 global.navigator={ language:'en-US' };
 
-const MINE=['_DQ_SRC','_DQ_LIMIT','_dqCloser','_dqBody','dqQueueYesterday'];
+const MINE=['_DQ_SRC','_DQ_LIMIT','_DQ_QUIET_DAYS','_dqCloser','_dqBody','dqQueueYesterday'];
 const SHARED=['_cuDayLines','_cuCut','_cuClip','_cuQuote','_cuWoNote','_cuDayLabel','_CU_NAME_MAX',
   '_CU_LINE_MAX','_jvNum','_dbDay','_dbDs','_jvSpokenDay','_JV_DB_SAYS_RE',
   '_sbFailMark','_sbFailedSince','_sbAtCap','_TAP_MS','_tapKey','_dedupeTaps'];
@@ -77,12 +77,23 @@ const FOOD_KELLY=[
 ];
 const WO_KELLY=[{client_code:'kellyg1', title:'Push', description:'Bench, incline, dips', exercises:null,
   notes:'Shoulder held up fine', date_str:YDS, logged_at:'2026-09-04T15:00:00+00:00'}];
+// GONE QUIET IS NOT A MISSED DAY. Quiet Q logged three days ago and not
+// yesterday — that is a person who missed a day and gets the honest line.
+// Dormant D has nothing in the fortnight at all and gets nothing written,
+// because "nothing came through from you yesterday" is a daily nudge pointed
+// at somebody who left in June.
+const ALIVE_QUIET=[
+  {client_code:'quiet1', name:'Chicken', meal:'Dinner', calories:500, protein:45,
+   carbs:20, fat:18, felt:null, date_str:'Sep 2, 2026', logged_at:'2026-09-02T22:00:00+00:00'},
+  {client_code:'omar1',  name:'Oats', meal:'Breakfast', calories:400, protein:30,
+   carbs:55, fat:9, felt:null, date_str:'Aug 30, 2026', logged_at:'2026-08-30T13:00:00+00:00'}
+];
 
 (async()=>{
   // ===== THE HAPPY PATH ================================================
   console.log('\n  A DAY THAT HAPPENED:');
   reset();
-  ROWS={food_logs:FOOD_KELLY, workout_logs:WO_KELLY};
+  ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY};
   await dqQueueYesterday();
   t(/logged_at=gte\./.test(ASKED[0]) && /logged_at=lt\./.test(ASKED[0]),
     'the read is bounded to the day on the SERVER, both ends', (ASKED[0]||'').slice(0,60));
@@ -105,7 +116,7 @@ const WO_KELLY=[{client_code:'kellyg1', title:'Push', description:'Bench, inclin
   // ===== NOTHING FROM TODAY (his rule) =================================
   console.log('\n  TODAY IS NOT IN IT:');
   reset();
-  ROWS={food_logs:FOOD_KELLY.concat([
+  ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET).concat([
     {client_code:'kellyg1', name:'Coffee and an apple', meal:'Breakfast', calories:149, protein:0, carbs:34, fat:1,
      felt:null, date_str:'Sep 5, 2026', logged_at:'2026-09-05T12:00:00+00:00'}
   ]), workout_logs:WO_KELLY};
@@ -117,7 +128,7 @@ const WO_KELLY=[{client_code:'kellyg1', title:'Push', description:'Bench, inclin
   // ===== A BLANK DAY IS SAID, NEVER RECAPPED ===========================
   console.log('\n  A DAY THAT DID NOT:');
   reset();
-  ROWS={food_logs:FOOD_KELLY, workout_logs:WO_KELLY};
+  ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY};
   await dqQueueYesterday();
   const q=WROTE.find(w=>w.code==='quiet1');
   console.log('    | '+(q?q.text.replace(/\n/g,' | '):'(nothing)'));
@@ -129,8 +140,28 @@ const WO_KELLY=[{client_code:'kellyg1', title:'Push', description:'Bench, inclin
   t(/NOTHING on the record/.test(q.re) && /read is proved good/.test(q.re),
     'the note says the read was proved before the absence was claimed');
 
+  // ===== GONE QUIET IS NOT A MISSED DAY ================================
+  // The flaw the button showed the first time it ran for real: fourteen people
+  // who had not logged since June each got "Nothing came through from you
+  // yesterday". Yesterday is the wrong story to tell somebody who left.
+  console.log('\n  SOMEBODY WHO LEFT IS NOT SOMEBODY WHO MISSED A DAY:');
+  reset();
+  CLIENTS.dormant1={name:'Dormant D', phone:'+15550009999', active:true};
+  ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY};
+  const rep=await dqQueueYesterday();
+  t(!WROTE.some(w=>w.code==='dormant1'),
+    'nothing in a fortnight means nothing is written to them at all');
+  t(WROTE.some(w=>w.code==='quiet1'),
+    'but somebody who logged three days ago and not yesterday still gets the honest line');
+  t(/gone quiet, left for you/.test(String(rep)), 'and the report NAMES the ones it left', String(rep));
+  t((window._dqQuiet||[]).indexOf('dormant1')>=0, 'they are handed back, not silently dropped');
+  t(_DQ_QUIET_DAYS===14, 'a fortnight is the line', String(_DQ_QUIET_DAYS));
+  delete CLIENTS.dormant1;
+
   // ===== WHO IS EVEN IN IT =============================================
   console.log('\n  WHO IT WRITES TO:');
+  reset(); ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY};
+  await dqQueueYesterday();
   const codes=WROTE.map(w=>w.code).sort().join(',');
   t(codes==='kellyg1,omar1,quiet1', 'active clients with a number, and nobody else', codes);
   t(!WROTE.some(w=>w.code==='nonum1'), 'no number, no draft — it could never be sent');
@@ -142,20 +173,20 @@ const WO_KELLY=[{client_code:'kellyg1', title:'Push', description:'Bench, inclin
   // A refused read answers [] exactly as an empty day does. Getting this wrong
   // sends "you logged nothing yesterday" to seventy five people at once.
   console.log('\n  A READ THAT FAILED IS NOT AN EMPTY ROSTER:');
-  reset(); ROWS={food_logs:FOOD_KELLY, workout_logs:WO_KELLY}; FAILTABLE='food_logs';
+  reset(); ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY}; FAILTABLE='food_logs';
   await dqQueueYesterday();
   t(WROTE.length===0, 'the food read failed, so NOT ONE draft is written', String(WROTE.length));
   t(TOASTS.some(m=>/Could not read/.test(m)), 'and he is told why', TOASTS.join(' / '));
-  reset(); ROWS={food_logs:FOOD_KELLY, workout_logs:WO_KELLY}; FAILTABLE='workout_logs';
+  reset(); ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY}; FAILTABLE='workout_logs';
   await dqQueueYesterday();
   t(WROTE.length===0, 'the training read failing voids the run too');
-  reset(); ROWS={food_logs:FOOD_KELLY, workout_logs:WO_KELLY}; CAPTABLE='food_logs';
+  reset(); ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY}; CAPTABLE='food_logs';
   await dqQueueYesterday();
   t(WROTE.length===0, 'a read that came back at its exact cap is unread, never complete');
 
   // ===== IT NEVER WRITES OVER A REAL DRAFT =============================
   console.log('\n  WHAT IT LEAVES ALONE:');
-  reset(); ROWS={food_logs:FOOD_KELLY, workout_logs:WO_KELLY};
+  reset(); ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY};
   _crm.rows=[
     {code:'kellyg1', id:'h1', status:'pending', text:'Something I wrote by hand', src:'', at:'2026-09-05T02:00:00Z'},
     {code:'omar1',   id:'d1', status:'pending', text:'an old auto one', src:'day', at:'2026-09-04T09:00:00Z'}
@@ -166,7 +197,7 @@ const WO_KELLY=[{client_code:'kellyg1', title:'Push', description:'Bench, inclin
   t(!!om && om.id==='d1', 'but its OWN draft is refreshed IN PLACE, never stacked as a second row', om?String(om.id):'none');
 
   console.log('\n  WHAT IT SKIPS:');
-  reset(); ROWS={food_logs:FOOD_KELLY, workout_logs:WO_KELLY};
+  reset(); ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY};
   _crm.rows=[
     {code:'kellyg1', id:'s1', status:'sent',    text:'x', src:'day', at:'2026-09-05T02:00:00Z'},
     {code:'omar1',   id:'k1', status:'skipped', text:'x', src:'day', at:'2026-09-05T02:00:00Z'}
@@ -176,10 +207,10 @@ const WO_KELLY=[{client_code:'kellyg1', title:'Push', description:'Bench, inclin
   t(!WROTE.some(w=>w.code==='omar1'),   'and someone he deliberately skipped today stays skipped');
 
   console.log('\n  AND IT DOES NOT CHURN:');
-  reset(); ROWS={food_logs:FOOD_KELLY, workout_logs:WO_KELLY};
+  reset(); ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY};
   await dqQueueYesterday();
   const first=WROTE.find(w=>w.code==='kellyg1');
-  reset(); ROWS={food_logs:FOOD_KELLY, workout_logs:WO_KELLY};
+  reset(); ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY};
   _crm.rows=[{code:'kellyg1', id:'d9', status:'pending', text:first.text, src:'day', at:'2026-09-05T06:00:00Z'}];
   await dqQueueYesterday();
   t(!WROTE.some(w=>w.code==='kellyg1'), 'running it twice writes nothing the second time');

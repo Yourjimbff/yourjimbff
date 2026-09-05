@@ -91020,6 +91020,11 @@ function _cbEarBar(){
    skipped is left exactly where it is. */
 var _DQ_SRC='day';
 var _DQ_LIMIT=4000;
+/* HOW LONG SOMEBODY CAN BE QUIET AND STILL BE A DAILY. Past this they are not
+   somebody who missed a day, they are somebody who left - and the message they
+   need is about that, not about yesterday. Those are named in the report and
+   left for him to write to properly. */
+var _DQ_QUIET_DAYS=14;
 /* The closing line is DECIDED, never invented: it is picked by what is actually
    on the record, so it can be positive without being a compliment nobody
    earned. A day with nothing on it gets the honest line and no recap. */
@@ -91062,7 +91067,12 @@ async function dqQueueYesterday(){
     if(!codes.length){ try{ showToast('No clients with a number'); }catch(e){} return; }
     /* Two reads, bounded to the one day on the server. The pad is two days wide
        because date_str and logged_at disagree across a timezone. */
-    var from=new Date(y); from.setDate(from.getDate()-1);
+    /* THE WINDOW REACHES BACK A FORTNIGHT, not one day, and the extra rows are
+       not for the message - they answer a different question: is this person
+       IN the loop at all. Yesterday is the wrong story to tell somebody who
+       has not logged since June, and "nothing came through from you yesterday"
+       is a daily nudge aimed at a re-engagement case. Same read, both answers. */
+    var from=new Date(y); from.setDate(from.getDate()-_DQ_QUIET_DAYS);
     var to=new Date(y);   to.setDate(to.getDate()+2);
     var win='&logged_at=gte.'+encodeURIComponent(from.toISOString())
           + '&logged_at=lt.'+encodeURIComponent(to.toISOString());
@@ -91082,11 +91092,14 @@ async function dqQueueYesterday(){
     }
     /* Every client gets a day BEFORE any row lands in it, so a person with
        nothing on the record still has a day to be empty. */
-    var byC={};
+    var byC={}, alive={};
     codes.forEach(function(c){
       byC[c]={label:label, isToday:false, meals:[], notes:[], sessions:[],
               cal:0, pro:0, car:0, fat:0, any:false};
     });
+    /* ANY row in the fortnight marks them alive, whatever day it fell on. */
+    F.forEach(function(f){ if(f && f.client_code) alive[f.client_code]=1; });
+    W.forEach(function(w){ if(w && w.client_code) alive[w.client_code]=1; });
     _dedupeTaps(F).forEach(function(f){
       var d=_dbDay(f.date_str, f.logged_at); if(!d || _dbDs(d)!==ds) return;
       var slot=byC[f.client_code]; if(!slot) return;
@@ -91119,9 +91132,13 @@ async function dqQueueYesterday(){
         if(k===_tk) doneToday[d.code]=d;
       }
     });
-    var wrote=0, filled=0, empty=0, kept=0, done=0, failed=0;
+    var wrote=0, filled=0, empty=0, kept=0, done=0, failed=0, quiet=[];
     for(var i=0;i<codes.length;i++){
       var code=codes[i], day=byC[code];
+      /* GONE QUIET IS NOT A MISSED DAY. Nothing in a fortnight and nothing
+         yesterday means yesterday is not the thing to write to them about, so
+         this writes nothing and names them instead. */
+      if(!day.any && !alive[code]){ quiet.push(code); continue; }
       var body=_dqBody(day);
       if(!body){ continue; }
       /* HE HAS ALREADY ANSWERED THEM TODAY. Sent or deliberately skipped, off
@@ -91145,8 +91162,10 @@ async function dqQueueYesterday(){
       + ' · '+filled+' logged, '+empty+' blank'
       + (kept?(' · '+kept+' left alone'):'')
       + (done?(' · '+done+' already answered'):'')
+      + (quiet.length?(' · '+quiet.length+' gone quiet, left for you'):'')
       + (failed?(' · '+failed+' would not write'):'');
     try{ showToast(msg); }catch(e){}
+    try{ window._dqQuiet=quiet; }catch(e){}
     return msg;
   } finally { window._dqBusy=0; }
 }
