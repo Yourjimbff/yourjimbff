@@ -20,7 +20,7 @@ const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  F
 global.window={}; global.document={getElementById:()=>null};
 global.localStorage={ getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
 
-const MINE=['_crmOvertaken','crmRefresh'];
+const MINE=['_crmOvertaken','_crmStaleDraft','crmRefresh'];
 const SHARED=['_crmSweepTime'];
 eval(closure(SHARED).code);
 eval(MINE.map(defOf).join('\n'));
@@ -40,6 +40,23 @@ t(_crmOvertaken('haydenh1', HAYDEN)===true,
 console.log('\n  THE SWEEP’S CLOCK IS UTC:');
 t(_crmSweepTime('2026-09-05T00:26').toISOString().slice(0,16)==='2026-09-05T00:26',
   'a naive sweep time is read as UTC, not as local', _crmSweepTime('2026-09-05T00:26').toISOString());
+
+// ===== THEY TALKED PAST IT: A DIFFERENT FAULT ==========================
+// Yusuf, 5 Sep: "none of these replies are up to date or current." Overtaken
+// means HE answered them since. STALE means THEY spoke since - the draft was a
+// good reply to a conversation that has moved on. Blake: draft 21:02, Yusuf
+// 23:53 (so overtaken), Blake back at 00:15 with "No my feet are in pain".
+console.log('\n  A DRAFT THEY HAVE TALKED PAST:');
+const BLAKE={id:'b1', status:'pending', at:'2026-09-04T21:02:11Z', text:'Not ignoring the matcha'};
+_crm.contacts={blakeb1:{him:'2026-09-04T23:53', them:'2026-09-05T00:15', last:'them', text:'No my feet are in pain'}};
+t(_crmStaleDraft('blakeb1', BLAKE)===true, 'they spoke after it was written, so the draft is stale');
+t(_crmOvertaken('blakeb1', BLAKE)===true, 'and he answered after it too — both are true at once');
+_crm.contacts={blakeb1:{him:null, them:'2026-09-04T20:00', last:'them', text:''}};
+t(_crmStaleDraft('blakeb1', BLAKE)===false, 'a message from BEFORE the draft does not make it stale — it is what it answers');
+_crm.contacts={blakeb1:{him:null, them:null, last:null, text:''}};
+t(_crmStaleDraft('blakeb1', BLAKE)===false, 'and silence from them never does');
+t(_crmStaleDraft('blakeb1', {id:'x', status:'sent', at:'2026-09-04T21:02:11Z', text:'y'})===false,
+  'a draft already answered is not stale, it is done');
 
 // ===== AND WHAT MUST STILL QUEUE =======================================
 console.log('\n  WHAT IS STILL HIS TO SEND:');
@@ -75,6 +92,10 @@ t(/if\(_crmOvertaken\(p\.code, p\.draft\)\) return false;/.test(q),
   'the batch queue drops it — he is never handed a message he already sent');
 t(/crmOverN/.test(src) && /you texted them '/.test(src),
   'the row SAYS he texted them, with the time');
+t(/they have spoken since this was written/.test(src),
+  'and a stale one says THAT instead, with the time they spoke');
+t(/_stale=\(!_over && _crmStaleDraft/.test(src),
+  'one line or the other, never both — overtaken is the louder fact');
 t(/SEND ANYWAY/.test(src), 'and keeps a Send anyway, because a draft about something else is still real');
 t(/_over\?'Clear':'Skip'/.test(src), 'with Clear instead of Skip, which is what it actually is');
 t(/\.crmRow\.overtaken\{/.test(src) && !/\+'\.crmRow\.overtaken\{[^']*\n/.test(src),
