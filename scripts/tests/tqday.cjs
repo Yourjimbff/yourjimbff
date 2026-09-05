@@ -28,7 +28,7 @@ global.window={ _sbFailN:0 };
 global.document={ getElementById:()=>null };
 global.navigator={ language:'en-US' };
 
-const MINE=['_DQ_SRC','_DQ_LIMIT','_DQ_QUIET_DAYS','_dqCloser','_dqBody','dqQueueYesterday'];
+const MINE=['_DQ_SRC','_DQ_LIMIT','_dqCloser','_dqBody','dqQueueYesterday'];
 const SHARED=['_cuDayLines','_cuCut','_cuClip','_cuQuote','_cuWoNote','_cuDayLabel','_CU_NAME_MAX',
   '_CU_LINE_MAX','_jvNum','_dbDay','_dbDs','_jvSpokenDay','_JV_DB_SAYS_RE',
   '_sbFailMark','_sbFailedSince','_sbAtCap','_TAP_MS','_tapKey','_dedupeTaps'];
@@ -54,6 +54,11 @@ global._jvHydratePhones=function(){};
 global.isTrainer=function(c){ return c==='thegoat'; };
 global.scratchHidden=function(){ return false; };
 global._dfToday=function(){ return '2026-09-05'; };
+/* THE SWEEP. _crmWaiting is the app's own read of who is owed a reply; this
+   suite drives it through a plain map so a client can be put on either side of
+   it without faking the sweep's internals. */
+let OWED={};
+global._crmWaiting=function(code){ return OWED[code] ? {days:OWED[code], waiting:true, text:'their last message'} : {days:0, waiting:false, text:''}; };
 global._dfDayKey=function(iso){ try{ const d=new RealDate(iso); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }catch(e){ return ''; } };
 global.CLIENTS={
   kellyg1:{name:'Kelly G', phone:'+19034450693', active:true},
@@ -65,7 +70,7 @@ global.CLIENTS={
   zzscratchnotaclient:{name:'Scratch', phone:'+15550004444', active:true}
 };
 global._crm={rows:[]};
-const reset=()=>{ ASKED=[]; WROTE=[]; TOASTS=[]; window._sbFailN=0; window._dqBusy=0; FAILTABLE=null; CAPTABLE=null; _crm.rows=[]; };
+const reset=()=>{ ASKED=[]; WROTE=[]; TOASTS=[]; window._sbFailN=0; window._dqBusy=0; FAILTABLE=null; CAPTABLE=null; _crm.rows=[]; OWED={}; };
 
 // Yesterday is Friday 4 September 2026.
 const YDS='Sep 4, 2026';
@@ -125,45 +130,49 @@ const ALIVE_QUIET=[
   t(!/Coffee and an apple/.test(k2.text), 'a meal logged TODAY never reaches yesterday’s message');
   t(/1,180 cal/.test(k2.text), 'and it does not move yesterday’s numbers either', k2.text.split('\n')[2]);
 
-  // ===== A BLANK DAY IS SAID, NEVER RECAPPED ===========================
-  console.log('\n  A DAY THAT DID NOT:');
+  // ===== A BLANK DAY IS NOT IN THIS QUEUE AT ALL =======================
+  // Yusuf, 5 Sep: "que yesterday should basically only be for people who have
+  // logged yesterday. thats what that means." The first build wrote an honest
+  // "nothing came through from you yesterday" line for everybody else. That is
+  // a different job and it is not this button's.
+  console.log('\n  NOTHING LOGGED, NOTHING QUEUED:');
+  reset();
+  ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY};
+  const rep0=await dqQueueYesterday();
+  t(!WROTE.some(w=>w.code==='quiet1'), 'somebody with nothing on yesterday gets NO draft');
+  t(!WROTE.some(w=>w.code==='omar1'),  'and neither does somebody who last logged days ago');
+  t(WROTE.length===1 && WROTE[0].code==='kellyg1', 'only the person who actually logged', String(WROTE.length));
+  t(/logged nothing/.test(String(rep0)), 'the report says how many had nothing', String(rep0));
+  t(_dqBody({any:false, meals:[], sessions:[], notes:[], label:'Yesterday'})==='',
+    'and the writer itself refuses a blank day, whatever calls it');
+
+  // ===== THE SWEEP GETS A VOTE =========================================
+  // Yusuf, 5 Sep: "did you factor in the text message sweep into the queued
+  // responses?" It had not been. A person whose own message is still sitting
+  // unanswered would have received a cheerful recap of their macros instead of
+  // a reply - which is the exact thing that got him "Thanks for ignoring my
+  // message" from a client two days ago.
+  console.log('\n  A RECAP NEVER LANDS ON AN UNANSWERED MESSAGE:');
+  reset();
+  ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY};
+  OWED={kellyg1:2};
+  const rep1=await dqQueueYesterday();
+  t(!WROTE.some(w=>w.code==='kellyg1'),
+    'she logged a full day AND is waiting on him - so nothing is queued at her');
+  t(/waiting on a reply, left for you/.test(String(rep1)), 'the report says so', String(rep1));
+  t((window._dqOwed||[]).indexOf('kellyg1')>=0, 'and hands her back by name, for him to answer');
   reset();
   ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY};
   await dqQueueYesterday();
-  const q=WROTE.find(w=>w.code==='quiet1');
-  console.log('    | '+(q?q.text.replace(/\n/g,' | '):'(nothing)'));
-  t(!!q, 'the person with nothing still gets a message');
-  t(/nothing logged/.test(q.text), 'and it says so plainly');
-  t(!/nothing logged yet/.test(q.text), 'without "yet" — yesterday is over');
-  t(/Nothing came through from you yesterday/.test(q.text), 'the close is honest, not a lecture');
-  t(!/cal|protein|Trained/.test(q.text), 'AND THERE IS NO RECAP OF A DAY THAT DID NOT HAPPEN');
-  t(/NOTHING on the record/.test(q.re) && /read is proved good/.test(q.re),
-    'the note says the read was proved before the absence was claimed');
-
-  // ===== GONE QUIET IS NOT A MISSED DAY ================================
-  // The flaw the button showed the first time it ran for real: fourteen people
-  // who had not logged since June each got "Nothing came through from you
-  // yesterday". Yesterday is the wrong story to tell somebody who left.
-  console.log('\n  SOMEBODY WHO LEFT IS NOT SOMEBODY WHO MISSED A DAY:');
-  reset();
-  CLIENTS.dormant1={name:'Dormant D', phone:'+15550009999', active:true};
-  ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY};
-  const rep=await dqQueueYesterday();
-  t(!WROTE.some(w=>w.code==='dormant1'),
-    'nothing in a fortnight means nothing is written to them at all');
-  t(WROTE.some(w=>w.code==='quiet1'),
-    'but somebody who logged three days ago and not yesterday still gets the honest line');
-  t(/gone quiet, left for you/.test(String(rep)), 'and the report NAMES the ones it left', String(rep));
-  t((window._dqQuiet||[]).indexOf('dormant1')>=0, 'they are handed back, not silently dropped');
-  t(_DQ_QUIET_DAYS===14, 'a fortnight is the line', String(_DQ_QUIET_DAYS));
-  delete CLIENTS.dormant1;
+  t(WROTE.some(w=>w.code==='kellyg1'), 'with nothing owed her, the same day queues normally');
 
   // ===== WHO IS EVEN IN IT =============================================
   console.log('\n  WHO IT WRITES TO:');
   reset(); ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY};
   await dqQueueYesterday();
   const codes=WROTE.map(w=>w.code).sort().join(',');
-  t(codes==='kellyg1,omar1,quiet1', 'active clients with a number, and nobody else', codes);
+  t(codes==='kellyg1', 'only the active, numbered client who actually logged yesterday', codes);
+  // nonum1 is given a logged day so the phone gate is what excludes her, not the blank-day gate.
   t(!WROTE.some(w=>w.code==='nonum1'), 'no number, no draft — it could never be sent');
   t(!WROTE.some(w=>w.code==='gone1'),  'a dropped client is not messaged');
   t(!WROTE.some(w=>w.code==='thegoat'), 'and it does not text him');
@@ -186,7 +195,11 @@ const ALIVE_QUIET=[
 
   // ===== IT NEVER WRITES OVER A REAL DRAFT =============================
   console.log('\n  WHAT IT LEAVES ALONE:');
-  reset(); ROWS={food_logs:FOOD_KELLY.concat(ALIVE_QUIET), workout_logs:WO_KELLY};
+  // Both of these logged yesterday, so the only thing deciding their fate is
+  // whose draft is already on the board.
+  const OMAR_YDAY=[{client_code:'omar1', name:'Rice and beans', meal:'Lunch', calories:600, protein:28,
+    carbs:88, fat:12, felt:null, date_str:YDS, logged_at:'2026-09-04T17:00:00+00:00'}];
+  reset(); ROWS={food_logs:FOOD_KELLY.concat(OMAR_YDAY), workout_logs:WO_KELLY};
   _crm.rows=[
     {code:'kellyg1', id:'h1', status:'pending', text:'Something I wrote by hand', src:'', at:'2026-09-05T02:00:00Z'},
     {code:'omar1',   id:'d1', status:'pending', text:'an old auto one', src:'day', at:'2026-09-04T09:00:00Z'}
