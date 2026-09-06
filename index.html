@@ -69961,6 +69961,17 @@ async function cancelBooking(id){
   var w=await trainerWrite('myBookingCancel', {id:id});
   if(!w.ok || !w.rows[0] || w.rows[0].status!=='cancelled') return false;
   _bookCache = (_bookCache||[]).filter(function(b){ return String(b.id)!==String(id); });
+  /* THE CREDIT CAME BACK (6 Sep). The door refunds the week's check-in call
+     when a client cancels one that has not happened yet, and says so. Without
+     mirroring it here the picker would keep saying "your next call opens
+     Sunday" until a reload - which is the exact wall Leandra hit when she
+     tried to move her Sunday call and ended up with no booking at all. */
+  try{
+    if(w.rows[0].weekly_refunded===true){
+      if(cl) cl.weekly_call_spent_at=null;
+      if(cl && CLIENTS[cl.code]) CLIENTS[cl.code].weekly_call_spent_at=null;
+    }
+  }catch(e){}
   return true;
 }
 
@@ -70710,7 +70721,22 @@ function renderBookingSlots(avail, booked, safety){
   var tz=(avail[0] && avail[0].tz) || _myTz();
   var mine=(booked||[]).filter(function(b){ return b.client_code===cl.code; });
 
-  var html='';
+  /* HOW THE CALL ACTUALLY WORKS NOW (Yusuf, 6 Sep). Check-ins run on Riverside
+     and they are recorded. Said here, on the screen where they book, in plain
+     words and as a feature list rather than a waiver - because it IS a feature:
+     they get the recording, and their camera is theirs to leave off.
+
+     "Never without your ok first" is a promise, not decoration. The moment a
+     clip goes out without that ok, this line has cost him more than it bought. */
+  var html='<div style="background:rgba(245,197,24,0.07);border:1px solid rgba(245,197,24,0.28);border-radius:10px;padding:11px 13px;margin-bottom:12px;">'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:#f5c518;margin-bottom:6px;">How check ins work now</div>'
+    +'<div style="font-size:12.5px;line-height:1.55;color:rgba(240,236,228,0.86);">'
+      +'We meet on Riverside. Just a link, nothing to download.<br>'
+      +'Your camera off is fine. Im on, youre just a voice.<br>'
+      +'Its recorded and you get the recording.<br>'
+      +'Sometimes a piece becomes content, never without your ok first.'
+    +'</div>'
+  +'</div>';
   if(mine.length){
     mine.forEach(function(b){
       var d=new Date(b.starts_at);
@@ -70846,8 +70872,13 @@ async function confirmBooking(){
 }
 async function onCancelBooking(id){
   if(!id) return;
+  var _hadCredit=false; try{ _hadCredit=hasWeeklyCreditNow(cl&&cl.weekly_call_spent_at, new Date()); }catch(e){}
   var ok=await cancelBooking(id);
-  try{ showToast(ok?'Cancelled':'Could not cancel'); }catch(e){}
+  /* Tells them the call is theirs again, so moving one reads as moving one
+     rather than as spending it twice. */
+  var _gotBack=false;
+  try{ _gotBack = ok && !_hadCredit && hasWeeklyCreditNow(cl&&cl.weekly_call_spent_at, new Date()); }catch(e){}
+  try{ showToast(ok?(_gotBack?'Cancelled \u00b7 your call is back':'Cancelled'):'Could not cancel'); }catch(e){}
   try{ window._tlCache=null; renderDayTimeline(); }catch(e){}
   if(ok){ try{ schRefresh(); }catch(e){} }
   var avail=await loadAvailability(); var booked=await loadBookings(true); try{ await loadTrainerBlocks(); }catch(e){}

@@ -1384,11 +1384,71 @@ async function handleMyBookingCancel(URL, SERVICE, args, code) {
     let rows = []; try { rows = JSON.parse(text); } catch (e) {}
     if (!rows.length) return json(404, { error: 'not_yours_or_missing', id: id });
     if (rows[0].status !== 'cancelled') return json(502, { error: 'unconfirmed', op: 'myBookingCancel' });
-    return json(200, [{ id: rows[0].id, status: 'cancelled' }]);
+    // GIVE THE CREDIT BACK (6 Sep, off a real client being locked out).
+    //
+    // Leandra booked her weekly check-in, then tried to MOVE it. Moving is
+    // cancel-then-rebook, and cancelling never refunded the week's credit, so
+    // the rebook was refused with "your next check-in call opens Sunday" and
+    // she ended up with no booking at all and had to text him to sort it out.
+    // Her booking row is simply absent from the app, which is how it surfaced.
+    //
+    // THE INVARIANT IS UNCHANGED: at most one weekly credit per week. The
+    // refund only ever clears a stamp that is still inside the current week,
+    // so it hands back the ONE credit this cancellation just freed and can
+    // never mint a second. A client who books and cancels in a loop returns to
+    // exactly where they started, which is the correct answer.
+    //
+    // Tied to the cancellation ON THE SERVER on purpose. There is no separate
+    // refund op a session could call on its own, and a past booking refunds
+    // nothing - the call already happened.
+    let refunded = false;
+    try { refunded = await maybeRefundWeeklyCall(URL, SERVICE, code, rows[0].starts_at); }
+    catch (e) { refunded = false; }
+    return json(200, [{ id: rows[0].id, status: 'cancelled', weekly_refunded: refunded }]);
   } catch (e) {
     console.error('trainer: myBookingCancel threw', e && e.message);
     return json(502, { error: 'write_failed', op: 'myBookingCancel' });
   }
+}
+
+// Returns the week's check-in credit when a client cancels a booking that has
+// not happened yet. Answers true only when a credit was actually handed back.
+//
+// REFUSES IN FOUR CASES, each on purpose:
+//   - the booking already started, so the call was had and nothing is owed
+//   - the account is not on the weekly tier
+//   - they already have a credit, so there is nothing to return
+//   - the stamp moved under us between the read and the write
+async function maybeRefundWeeklyCall(URL, SERVICE, code, startsAt) {
+  const when = startsAt ? new Date(startsAt) : null;
+  if (!when || isNaN(when.getTime()) || when.getTime() <= Date.now()) return false;
+  const readRes = await fetch(
+    `${URL}/rest/v1/clients?code=eq.${encodeURIComponent(code)}&select=weekly_calls,weekly_call_spent_at`,
+    { headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE } }
+  );
+  if (!readRes.ok) return false;
+  const rows = await readRes.json();
+  const row = rows && rows[0];
+  if (!row || row.weekly_calls !== true) return false;
+  if (!row.weekly_call_spent_at) return false;
+  const now = new Date();
+  if (hasWeeklyCreditNow(row.weekly_call_spent_at, now)) return false;   // nothing spent this week
+  const writeRes = await fetch(
+    `${URL}/rest/v1/clients?code=eq.${encodeURIComponent(code)}`
+      + `&weekly_call_spent_at=eq.${encodeURIComponent(row.weekly_call_spent_at)}`,
+    {
+      method: 'PATCH',
+      headers: { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE, 'Content-Type': 'application/json', Prefer: 'return=representation' },
+      body: JSON.stringify({ weekly_call_spent_at: null }),
+    }
+  );
+  if (!writeRes.ok) {
+    console.error('trainer: weekly refund write failed', writeRes.status);
+    return false;
+  }
+  let back = [];
+  try { back = JSON.parse(await writeRes.text()); } catch (e) {}
+  return back.length > 0;
 }
 
 // ---- logPhoto ---------------------------------------------------------------
