@@ -63,10 +63,27 @@ t((late.match(/class="tlMealAsk"/g)||[]).length===3,
   'all three in the SAME row shape as cardio and the meals - one design, not four');
 t(/data-tl="steps"/.test(late) && /data-tl="weighview"/.test(late) && /data-tl="progphoto"/.test(late),
   'each wired to the door that already existed, nothing new invented');
+t(/aria-label="Weigh in"/.test(late) && !/aria-label="Log Weigh in"/.test(late),
+  'the aria label is the label alone - role=button already says it is a button');
 t(_tlLateAsks('2026-09-07', false, true, {weigh:[]})==='', 'a day that has not happened asks nothing');
 const weighed=_tlLateAsks('2026-09-06', true, false, {weigh:[{weight:181}]});
 t(!/Weigh in/.test(weighed), 'once they have weighed in it stops asking - optional, not owed');
 t(/Progress photo/.test(weighed), 'the photo never stops asking, because there is no wrong number of them');
+
+// ===== THE HEADER HE WANTED EMPTIED =====================================
+// "remove top header all together? today, sep 6, steps? or it should just say
+//  today."  All three things were in that row. Two of them are gone.
+console.log('\n  THE DAY TITLE:');
+const title=src.slice(src.indexOf("var _mwOn = isToday && !_mwCalendarOff();"),
+                      src.indexOf("// Directly under \"Today\", and only there."));
+t(/isToday \? '' : \('<span style="font-size:13px/.test(title),
+  'today drops its date - "Today Sep 6" says one thing twice');
+t(/month:'short',day:'numeric'/.test(title),
+  'every other day keeps its date, because a weekday alone does not say which Monday');
+t(/if\(!window\._tlRO\) return '';/.test(title),
+  'the steps chip is off the header - Steps has its own row under the food now');
+t(/_dayStepsForRow/.test(title),
+  'and it survives in the trainer read-only view, which draws no ask rows at all');
 
 // ===== THE TRAINER'S COPY GETS NO CONTROLS =============================
 console.log('\n  READ-ONLY SURFACES:');
