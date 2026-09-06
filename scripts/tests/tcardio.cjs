@@ -61,6 +61,12 @@ t(/Weigh in/.test(late), 'the weigh-in is down there with it, optional');
 t(/Progress photo/.test(late), 'and the progress photo, which he asked for in the same breath');
 t((late.match(/class="tlMealAsk"/g)||[]).length===3,
   'all three in the SAME row shape as cardio and the meals - one design, not four');
+// openProgressPhotoModal stamps todayDateStr and has no date field at all.
+const past=_tlLateAsks('2026-09-03', false, false, {weigh:[]});
+t(!/Progress photo/.test(past),
+  'a past day offers NO photo door - that modal can only write today, and a row that lies about its date is worse than no row');
+t(/Steps/.test(past) && /Weigh in/.test(past),
+  'but steps and the weigh-in stay, because both of those doors take the day they were tapped on');
 t(/data-tl="steps"/.test(late) && /data-tl="weighview"/.test(late) && /data-tl="progphoto"/.test(late),
   'each wired to the door that already existed, nothing new invented');
 t(/aria-label="Weigh in"/.test(late) && !/aria-label="Log Weigh in"/.test(late),
