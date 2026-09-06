@@ -19,7 +19,7 @@ const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  F
 global.window={}; global.document={getElementById:()=>null};
 global._escHtml=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const MINE=['_dfTells','_dfTellsHtml'];
-eval(closure([]).code||'');
+eval(closure(['_DF_HARD','_dfLet']).code||'');
 eval(MINE.map(defOf).join('\n'));
 guard(MINE, n=>eval(n));
 
@@ -89,14 +89,20 @@ t(has('your words were “get my act together”','quotes them back'), 'four quo
 t(has('you told me “i really need to get my act together this month”','quotes them back'),
   'but a whole sentence of theirs is the tell');
 
-// ===== IT MARKS, IT NEVER BLOCKS =======================================
-console.log('\n  IT MARKS, IT NEVER BLOCKS:');
+// ===== IT USED TO ONLY MARK. HE OVERRULED THAT =========================
+// 6 Sep: "why is its not x its x even allowed at all? what is the point of even
+// having the standard there if were not going to enforce it?"
+// The hard ones stop the send now. The enforcement itself is proved in
+// tban.cjs; what stays here is that the marking is still drawn on both
+// surfaces, because a block he cannot see the reason for is just a broken
+// button.
+console.log('\n  IT MARKS ON BOTH SURFACES:');
 const src=fs.readFileSync('index.html','utf8');
-t(!/_dfTells\([^)]*\)[^;]*return false/.test(src), 'nothing gates a send on it');
-const q=src.slice(src.indexOf('function _crmBatchQueue(){'), src.indexOf('function crmBatchOpen('));
-t(!/_dfTells/.test(q), 'the batch queue does not drop a flagged draft - his thumb is still the decision');
-t((src.match(/\+ _dfTellsHtml\(d\.text\)/g)||[]).length===2, 'and it is drawn on BOTH surfaces',
-  String((src.match(/\+ _dfTellsHtml\(d\.text\)/g)||[]).length));
+t((src.match(/\+ _dfTellsHtml\(d\.text, d\.id\)/g)||[]).length===2, 'and it is drawn on BOTH surfaces',
+  String((src.match(/\+ _dfTellsHtml\(d\.text, d\.id\)/g)||[]).length));
+t((src.match(/\+ _dfBlockHtml\(d\.id, d\.text\)/g)||[]).length===2, 'and so is the reason the send is held');
+t(_dfTells("Hows the gym? Whats today? Free friday?").length>0 && _DF_HARD.indexOf('question stack')<0,
+  'the soft ones still only mark - he writes those himself');
 t(_dfTellsHtml('')==='' && _dfTellsHtml("Thats what im talking about")==='', 'a clean draft draws nothing at all');
 t(/dfTells span\{/.test(src) && !/\+'\.dfTells span\{[^']*\n/.test(src), 'styled, one quoted line per rule');
 
