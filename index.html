@@ -170,6 +170,20 @@ html{overscroll-behavior-y:none;}
    it labels. Above it, it does the job a divider is for: marking where this
    section starts and the session card above it ends. */
 .tlMeals{margin:22px 0 14px;padding:16px 2px 0;border-top:1px solid rgba(255,255,255,0.09);}
+/* CARDIO (6 Sep). Glass, quiet, and it is a reminder more than a button - it
+   sits under the session asking, and disappears the moment cardio is logged. */
+.tlCardioRow{display:flex;align-items:center;gap:10px;margin:10px 0 2px;padding:13px 15px;
+  border:1px solid rgba(255,255,255,0.10);border-radius:14px;cursor:pointer;
+  background:rgba(255,255,255,0.035);backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px);
+  transition:border-color .16s ease,background .16s ease;}
+.tlCardioRow:active{background:rgba(255,255,255,0.06);border-color:rgba(212,175,55,0.4);}
+.tlCardioIco{font-size:8px;color:var(--gold);opacity:0.85;}
+.tlCardioTx{flex:1;font-size:14.5px;font-weight:700;color:rgba(240,236,228,0.9);letter-spacing:-0.2px;}
+.tlCardioAdd{font-size:19px;font-weight:400;color:rgba(240,236,228,0.42);line-height:1;}
+.cdIcoBtn{display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;
+  border:1px solid rgba(255,255,255,0.14);border-radius:12px;cursor:pointer;font-size:17px;
+  background:rgba(255,255,255,0.04);-webkit-tap-highlight-color:transparent;}
+.cdIcoBtn.on{border-color:var(--gold);background:rgba(212,175,55,0.14);}
 .tlMealsHead{display:flex;align-items:baseline;justify-content:space-between;gap:10px;
   margin-bottom:12px;}
 .tlMealsEy{font-size:10.5px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;
@@ -9654,6 +9668,24 @@ body.hasnav #tToday{padding-bottom:96px;}
   </div>
 </div>
 
+<div class="mbg" id="mCardio">
+  <div class="msheet">
+    <div class="mhead"><span class="mtitle">Cardio</span><span class="mx" onclick="closeM('mCardio')">&times;</span></div>
+    <div style="padding:0 2px 6px;">
+      <textarea class="ifield" id="cdText" rows="3" placeholder="30 minutes on the stairmaster" style="width:100%;box-sizing:border-box;font-size:15px;line-height:1.5;resize:none;"></textarea>
+      <div style="display:flex;align-items:center;gap:9px;margin-top:9px;">
+        <span id="cdMic" class="cdIcoBtn" onclick="cardioMic()" role="button" tabindex="0" aria-label="Dictate">&#127908;</span>
+        <label class="cdIcoBtn" aria-label="Add a photo">&#128247;
+          <input type="file" accept="image/*" onchange="cardioPhotoPicked(this)" style="display:none;">
+        </label>
+        <span style="font-size:11.5px;color:rgba(240,236,228,0.42);">optional</span>
+      </div>
+      <div id="cdPhotoWrap" style="margin-top:10px;"></div>
+      <input class="ifield" id="cdNote" type="text" placeholder="and it kicked my ass" style="width:100%;box-sizing:border-box;margin-top:10px;font-size:14px;">
+      <button class="sbtn" id="cdSave" onclick="cardioSave()" style="width:100%;margin-top:14px;">Log it</button>
+    </div>
+  </div>
+</div>
 <div class="mbg" id="mWorkout">
   <div class="msh">
     <div class="mhnd"></div>
@@ -47753,6 +47785,115 @@ function _tpEffectiveWeek(weekKey){
 // JUST the day it touched. Rebuilding the full fortnight on every save is what
 // made the page reshuffle under your thumb: bedtime blinking in, breakfast
 // vanishing and returning. Now the loop and the patch both call this.
+/* ===== CARDIO (Yusuf, order, 6 Sep) ====================================
+   His spec, in his words: a button that "actually is a toggle for something
+   useful. it acts as a reminder that they should in fact be doing cardio."
+   Opening it gives "an open type screen with the echo as well" - they say
+   "30 minutes on the stairmaster", they can dictate it, they can put a photo
+   on it, and sentiment is welcome: "30 minutes of stairs and it kicked my ass.
+   thats a great log."
+
+   NO PLACEHOLDER BOX FOR THE PHOTO. His rule: "uploading a photo is useful
+   because of proof and memory. no placeholder needed." So the camera is a small
+   control that only becomes an image once there is one.
+
+   WHAT IT WRITES: workout_logs, titled Cardio, through insertWorkoutLog - the
+   same proven path the workout sheet uses, including its missing-photo-column
+   retry. Nothing new to break, and it shows on his end the moment it saves. */
+function _tlHasCardio(slots){
+  try{
+    return (slots.workout||[]).some(function(w){ return /^\s*cardio\b/i.test(String((w&&w.title)||'')); });
+  }catch(e){ return false; }
+}
+function _tlCardioRow(ds, isToday, isAhead, slots){
+  if(isAhead) return '';                       /* a day that has not happened asks nothing */
+  if(window._tlRO) return '';                  /* the trainer's read-only copy gets no controls */
+  if(_tlHasCardio(slots)) return '';           /* already done today, stop asking */
+  return '<div class="tlCardioRow" data-tl="cardio" data-ds="'+_escHtml(ds)+'" role="button" tabindex="0">'
+    + '<span class="tlCardioIco" aria-hidden="true">\u25CF</span>'
+    + '<span class="tlCardioTx">Cardio</span>'
+    + '<span class="tlCardioAdd">+</span>'
+  + '</div>';
+}
+var _cdPhoto=null, _cdDs=null;
+function cardioOpen(ds){
+  _cdDs = ds || _tlDateStr(new Date());
+  _cdPhoto = null;
+  try{ openM('mCardio'); }catch(e){}
+  try{
+    var t=document.getElementById('cdText'); if(t){ t.value=''; setTimeout(function(){ try{ t.focus(); }catch(e){} }, 60); }
+    var n=document.getElementById('cdNote'); if(n) n.value='';
+    _cdPaintPhoto();
+  }catch(e){}
+}
+function _cdPaintPhoto(){
+  var h=document.getElementById('cdPhotoWrap'); if(!h) return;
+  h.innerHTML = _cdPhoto
+    ? '<img src="'+_cdPhoto+'" alt="" style="width:100%;border-radius:12px;display:block;">'
+      + '<span onclick="cardioDropPhoto()" style="display:inline-block;margin-top:7px;font-size:11.5px;color:rgba(240,236,228,0.55);cursor:pointer;">Remove</span>'
+    : '';
+}
+function cardioDropPhoto(){ _cdPhoto=null; _cdPaintPhoto(); }
+function cardioPhotoPicked(input){
+  try{
+    var f=input && input.files && input.files[0]; if(!f) return;
+    var rd=new FileReader();
+    rd.onload=function(e){ _cdPhoto=String(e.target.result||''); _cdPaintPhoto(); };
+    rd.readAsDataURL(f);
+  }catch(e){}
+  try{ input.value=''; }catch(e){}
+}
+/* The echo, same shape as everywhere else on this app. Understated on purpose -
+   it appends to whatever is already typed rather than replacing it. */
+function cardioMic(){
+  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  var btn=document.getElementById('cdMic');
+  if(!SR){ try{ showToast('Dictation is not available on this browser'); }catch(e){} return; }
+  if(window._cdRec){ try{ window._cdRec.stop(); }catch(e){} window._cdRec=null; return; }
+  try{
+    var r=new SR(); window._cdRec=r;
+    r.lang='en-US'; r.interimResults=false; r.continuous=false;
+    if(btn) btn.classList.add('on');
+    r.onresult=function(ev){
+      var said=''; try{ said=ev.results[0][0].transcript||''; }catch(e){}
+      var t=document.getElementById('cdText'); if(!t || !said) return;
+      t.value = t.value.trim() ? (t.value.replace(/\s+$/,'')+' '+said) : said;
+    };
+    r.onerror=function(){ if(btn) btn.classList.remove('on'); window._cdRec=null; };
+    r.onend=function(){ if(btn) btn.classList.remove('on'); window._cdRec=null; };
+    r.start();
+  }catch(e){ if(btn) btn.classList.remove('on'); window._cdRec=null; }
+}
+async function cardioSave(){
+  var t=document.getElementById('cdText');
+  var said = t ? String(t.value||'').trim() : '';
+  if(!said){ try{ showToast('What did you do?'); }catch(e){} return; }
+  var n=document.getElementById('cdNote');
+  var note = n ? String(n.value||'').trim() : '';
+  var btn=document.getElementById('cdSave'); var old=btn?btn.textContent:'';
+  if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='Saving\u2026'; }
+  var row = {
+    client_code: cl.code,
+    title: 'Cardio',
+    description: said,
+    notes: note || null,
+    photo: _cdPhoto || null,
+    date_str: _cdDs || _tlDateStr(new Date())
+  };
+  var saved=null;
+  try{ saved = await insertWorkoutLog(row); }catch(e){ saved=null; }
+  if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.textContent=old||'Log it'; }
+  /* SAYS WHAT ACTUALLY HAPPENED. A cardio row that did not save must not close
+     the sheet looking like it did - that is how a client loses a log and never
+     knows. */
+  if(!saved || saved.ok===false){ try{ showToast('That did not save. Try once more.'); }catch(e){} return; }
+  if((saved.dropped||[]).indexOf('photo')>=0){ try{ showToast('Saved, but the photo needs the DB column'); }catch(e){} }
+  else { try{ showToast('\u2713 Cardio logged'); }catch(e){} }
+  try{ closeM('mCardio'); }catch(e){}
+  _cdPhoto=null;
+  try{ _tlInvalidate(); }catch(e){}
+  try{ await renderDayTimeline(true); }catch(e){}
+}
 function _tlDaySectionHtml(cur, ctx){
   var html='';
   var today=ctx.today, start=ctx.start;
@@ -48049,6 +48190,19 @@ function _tlDaySectionHtml(cur, ctx){
       }
     }
     rows.forEach(function(r){ html+=_drawRow(r); });
+    /* CARDIO (Yusuf, order, 6 Sep). "we should add a cardio button there. that
+       actually is a toggle for something useful. it acts as a reminder that they
+       should in fact be doing cardio."
+
+       It sits under the session because that is where activity goes, and it is a
+       REMINDER first: on a day with no cardio logged it stands there asking. Once
+       something is logged it stops asking, because a prompt that keeps prompting
+       after you have done the thing is how people learn to ignore a screen.
+
+       A logged cardio is an ordinary workout_logs row titled Cardio, so it draws
+       through the same rows above with no new rendering, and it lands on Yusuf's
+       feed with no new plumbing. */
+    try{ html+=_tlCardioRow(ds, isToday, isAhead, slots); }catch(e){}
     // MEALS SIT UNDER THE DAY, NOT ON TOP OF IT (Yusuf, 3 Sep, from his screen:
     // "Dinner should not be up top"). It shipped directly under the day's
     // numbers, which put an empty "Dinner +" above his call and his session --
@@ -50226,6 +50380,7 @@ function _tlBindTaps(){
     if(a==='move'){ tlMoveMeal(el.getAttribute('data-id'), el.getAttribute('data-ds')); return; }
     if(a==='slottime'){ ev.stopPropagation(); openSlotTime(el.getAttribute('data-key')); return; }
     if(a==='steps'){ ev.stopPropagation(); openSteps(el.getAttribute('data-ds')); return; }
+    if(a==='cardio'){ ev.stopPropagation(); cardioOpen(el.getAttribute('data-ds')); return; }
     if(a==='confirm'){ ev.stopPropagation(); tlConfirmPlanned(el.getAttribute('data-mid'), el.getAttribute('data-key'), el.getAttribute('data-ds')); return; }
     if(a==='add'){
       var _ak=el.getAttribute('data-key'), _ads=el.getAttribute('data-ds');
