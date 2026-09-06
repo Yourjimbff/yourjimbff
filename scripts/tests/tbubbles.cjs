@@ -61,15 +61,18 @@ console.log('\n  MESSAGES HE ACTUALLY SENT TODAY:');
   t(!/dfBub long/.test(_dfBubblesHtml(p[0])), '  and none of them runs long');
 });
 
-// ===== IT IS A PREVIEW, NOT AN EDITOR ==================================
-console.log('\n  IT PREVIEWS, IT NEVER CHANGES THE MESSAGE:');
+// ===== IT USED TO BE A PREVIEW. NOW IT IS THE BOX ======================
+// Yusuf, 6 Sep: "why cant we just have the imessage box? get rid of the rest".
+// The split itself is still exactly this, and _dfEdHtml builds the editor on
+// top of it, so these assertions moved to tedit.cjs rather than being deleted.
+console.log('\n  THE SPLIT IS STILL THE SPLIT:');
 const src=fs.readFileSync('index.html','utf8');
-t((src.match(/\+ _dfBubblesHtml\(d\.text\)/g)||[]).length===2, 'drawn on both surfaces',
-  String((src.match(/\+ _dfBubblesHtml\(d\.text\)/g)||[]).length));
-t(/<\/textarea>'\n\s*\+ _dfBubblesHtml\(d\.text\)/.test(src), 'and UNDER the box, not replacing it');
+t(/_dfBubbles\(text\)/.test(src.slice(src.indexOf('function _dfEdHtml('), src.indexOf('function _dfEdFit('))),
+  'the editor splits with this same function - one rule for what a text is');
+t(!/\+ _dfBubblesHtml\(/.test(src), 'and the read-only copy under the box is gone');
 const q=src.slice(src.indexOf('function _crmBatchQueue(){'), src.indexOf('function crmBatchOpen('));
 t(!/_dfBubbles/.test(q), 'the queue does not use it - nothing is dropped for being long');
-t(!/_dfBubbles[^;]*\.value\s*=/.test(src), 'and it never writes back into the textarea');
+t(!/_dfBubbles[^;]*\.value\s*=/.test(src), 'and the split itself never writes back into a box');
 t(/\.dfBub\{/.test(src) && !/\+'\.dfBub\{[^']*\n/.test(src), 'styled, one quoted line per rule');
 
 console.log();

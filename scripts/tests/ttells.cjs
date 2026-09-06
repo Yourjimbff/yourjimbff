@@ -34,6 +34,25 @@ t(has("a sugar craving is your body asking for the calories you took out. Its no
 t(has('Trained: Pull — “The delt flies were so much harder than j thought”','quotes them back'),
   'the catch up quoting a client back at themselves');
 
+// ===== THE ONE THAT GOT THROUGH ON 6 SEP ===============================
+// Chris McCarthy's card, drawn by the batch screen with the linter running on
+// it, and the linter said nothing. He did: "chris mcarthy has an ai dead
+// giveaway and its not mentioned in the thing."
+console.log('\n  THE BARE X-NOT-Y, NO COMMA AND NO "ITS":');
+t(has("1,352 and 114g average, thats a real cut not a crash one",'x-is-not-y'),
+  'Chris: "a real cut not a crash one"');
+t(has("i want the honest version not the polite one",'x-is-not-y'),
+  'Chris: "the honest version not the polite one"');
+t(has("thats a food thing not a math thing",'x-is-not-y'), 'a food thing not a math thing');
+t(has("thats the whole job not just a number",'x-is-not-y'), '"not just" counts too');
+// AND THE GUARD. Ordinary negation is not the tell, and flagging it would
+// teach him to ignore the flags.
+t(!has("the answer is not a big deal",'x-is-not-y'), 'HOLDS: "the answer is not a big deal" is ordinary speech');
+t(!has("hows the week been? the gym was not a priority i guess",'x-is-not-y'), 'HOLDS: "was not a priority"');
+t(!has("your protein has not been a problem lately",'x-is-not-y'), 'HOLDS: "has not been"');
+t(!has("thats the plan",'x-is-not-y'), 'HOLDS: no negation at all');
+t(!has("nice work this week",'x-is-not-y'), 'HOLDS: a clean short text');
+
 // ===== AND THE REST OF HIS RULES =======================================
 console.log('\n  THE REST OF THE RULES:');
 t(has("Locked — sunday 11am",'em dash'), 'an em dash, which appears zero times in 1,545 of his texts');

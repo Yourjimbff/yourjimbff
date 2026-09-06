@@ -27,7 +27,7 @@ global.navigator={ language:'en-US' };
 const EL={};
 global.document={ getElementById:id=>EL[id]||null };
 
-const MINE=['_CB_EAR_KEY','_cbEarAble','_cbEarOn','_cbEarSet','_cbStop','_cbSpeakText','_cbSay','_cbSayCurrent','cbEarToggle','cbEarReplay','_cbEarBar'];
+const MINE=['_dfReadDraft','_CB_EAR_KEY','_cbEarAble','_cbEarOn','_cbEarSet','_cbStop','_cbSpeakText','_cbSay','_cbSayCurrent','cbEarToggle','cbEarReplay','_cbEarBar'];
 eval(closure([]).code || '');
 eval(require('./_lift.cjs').defOf ? MINE.map(require('./_lift.cjs').defOf).join('\n') : '');
 guard(MINE, n=>eval(n));
@@ -84,12 +84,13 @@ t(CANCELS===1, 'and anything already talking is cancelled first, never stacked')
 console.log('\n  IT READS WHAT IS ON SCREEN:');
 CUR={id:'d1', text:'the stored row'};
 global._crmBatch={q:[{id:'d1', code:'kellyg1', name:'Kelly G'}], i:0, awaiting:false};
-EL['crmTa_d1']={value:'the edited box'};
+// The box is the bubbles now, so this is what a bubble editor looks like to it.
+EL['dfEd_d1']={querySelectorAll:()=>[{value:'the edited box'}]};
 SPOKEN=[];
 _cbSayCurrent();
 t(SPOKEN.length===1 && /the edited box/.test(SPOKEN[0].text),
   'his edit is what gets read back, not the row it came from', SPOKEN[0]&&SPOKEN[0].text);
-delete EL['crmTa_d1'];
+delete EL['dfEd_d1'];
 SPOKEN=[];
 _cbSayCurrent();
 t(SPOKEN.length===1 && /the stored row/.test(SPOKEN[0].text), 'and with no box on screen it falls back to the row');

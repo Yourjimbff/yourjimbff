@@ -274,8 +274,8 @@ const ALIVE_QUIET=[
   t((src.match(/\+ _crmYdayHtml\(/g)||[]).length===3,
     'the day is drawn above the box on all three surfaces — drafted row, bare row, batch card',
     String((src.match(/\+ _crmYdayHtml\(/g)||[]).length));
-  t(/_crmYdayHtml\(p\.code\)\n\s*\+'<textarea class="crmTa"/.test(src), 'above the board’s box, not below it');
-  t(/_crmYdayHtml\(it\.code\)\n\s*\+'<textarea class="cbTa"/.test(src), 'and above the batch box');
+  t(/_crmYdayHtml\(p\.code\)\n\s*\+ _dfEdHtml\(/.test(src), 'above the board’s box, not below it');
+  t(/_crmYdayHtml\(it\.code\)\n\s*\+ _dfEdHtml\(/.test(src), 'and above the batch box');
   t(!/_dqCtxHtml/.test(src), 'and the stored-copy renderer is gone, not left beside it');
   t(/\{k:'yday',\s+label:'Yesterday'/.test(src), 'Yesterday is the first tab on the board');
   t(/_crm\.filter==='yday'/.test(src), 'and the drafting button only exists inside it');

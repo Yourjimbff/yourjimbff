@@ -38,7 +38,7 @@ t(/String\(p\.draft\.text\|\|''\)\.trim\(\)/.test(q), 'an empty draft is not a s
 const paint=src.slice(src.indexOf('function _crmBatchPaint(){'), src.indexOf('function crmBatchSend(){'));
 console.log('\n  one at a time, and it says where he is:');
 t(/of '\+b\.q\.length/.test(paint),      'the count is out of the real queue length');
-t(/crmTa_'\+d\.id/.test(paint),          'the textarea keeps the id crmSend reads, so his edits go');
+t(/_dfEdHtml\(d\.id, d\.text\)/.test(paint), 'the bubbles carry the draft id crmSend reads, so his edits go');
 t(/_crmWhy\(it\.code, d\.re\)/.test(paint), 'the reason for the message rides along');
 t(/if\(!d\)\{ b\.i\+\+; _crmBatchPaint\(\); return; \}/.test(paint),
                                          'a row that moved under him is stepped over, never crashed on');
