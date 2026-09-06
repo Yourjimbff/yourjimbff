@@ -23,7 +23,7 @@ const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  F
 
 global.window={}; global.document={getElementById:()=>null};
 global._escHtml=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-const MINE=['_tlHasCardio','_tlAskRow','_tlCardioRow','_tlLateAsks',
+const MINE=['_tlHasCardio','_tlAskRow','_tlCardioRow','_tlLateAsks','_tlStatsBlock','_dayWeightHtml',
             '_cdActivity','_cdMinutes','_cdDistance','_cdEchoHtml'];
 const CL=closure(MINE);
 eval(CL.code||'');
@@ -55,26 +55,38 @@ t(!/\.tlCardioRow\{/.test(src), 'and its CSS went with it, so nothing can drift 
 t(/<svg viewBox="0 0 12 12"/.test(cardio),
   'the plus is the DRAWN one - a typed + sits on the font math axis and no CSS moves ink in its own em box');
 
-const late=_tlLateAsks('2026-09-06', true, false, {weigh:[]});
-t(/Steps/.test(late), 'steps sits below the food - his order, the final tally of the day');
-t(/Weigh in/.test(late), 'the weigh-in is down there with it, optional');
-t(/Progress photo/.test(late), 'and the progress photo, which he asked for in the same breath');
-t((late.match(/class="tlMealAsk"/g)||[]).length===3,
-  'all three in the SAME row shape as cardio and the meals - one design, not four');
+// TODAY IS THE STATS BLOCK NOW (Yusuf, 6 Sep, after picking Three Blocks):
+// the weight card off Progress, then Steps and Photo as two cells. The late
+// asks below the food are for PAST days only, where steps and a weigh-in can
+// still be backfilled.
+global.profile=null; global.wUnit=()=>'lbs'; global.wToDisp=(v)=>Math.round(v*10)/10;
+global._pgStartWeight=(p,first)=>({ok:false,val:first,source:'first'});
+global._tlDateStr=(d)=>'2026-09-06';
+const stats=_tlStatsBlock('2026-09-06', true, false, {weigh:[]});
+t(/tlMealsEy">Stats</.test(stats), 'today has a Stats block, headed like the Food block is');
+t(/id="dayWeightHost"/.test(stats), 'and the weight card sits in it');
+t(/data-tl="steps"/.test(stats) && /data-tl="progphoto"/.test(stats), 'steps and the photo are cells under the card');
+t(/data-tl="weighview"/.test(stats), 'the weigh-in door is INSIDE the weight card, not a row of its own');
+t((stats.match(/tlStatCell"/g)||[]).length===2, 'two cells, not three - the weight has the card');
+t(_tlLateAsks('2026-09-06', true, false, {weigh:[]})==='', 'so today draws no late asks - one set of doors, not two');
+const late=_tlLateAsks('2026-09-03', false, false, {weigh:[]});
+t(/Steps/.test(late) && /Weigh in/.test(late), 'a past day still offers steps and a weigh-in, to backfill');
+t(/aria-label="Weigh in"/.test(late) && !/aria-label="Log Weigh in"/.test(late),
+  'the aria label is the label alone - role=button already says it is a button');
 // openProgressPhotoModal stamps todayDateStr and has no date field at all.
 const past=_tlLateAsks('2026-09-03', false, false, {weigh:[]});
 t(!/Progress photo/.test(past),
   'a past day offers NO photo door - that modal can only write today, and a row that lies about its date is worse than no row');
 t(/Steps/.test(past) && /Weigh in/.test(past),
   'but steps and the weigh-in stay, because both of those doors take the day they were tapped on');
-t(/data-tl="steps"/.test(late) && /data-tl="weighview"/.test(late) && /data-tl="progphoto"/.test(late),
+t(/data-tl="steps"/.test(late) && /data-tl="weighview"/.test(late),
   'each wired to the door that already existed, nothing new invented');
 t(/aria-label="Weigh in"/.test(late) && !/aria-label="Log Weigh in"/.test(late),
   'the aria label is the label alone - role=button already says it is a button');
 t(_tlLateAsks('2026-09-07', false, true, {weigh:[]})==='', 'a day that has not happened asks nothing');
-const weighed=_tlLateAsks('2026-09-06', true, false, {weigh:[{weight:181}]});
+t(_tlStatsBlock('2026-09-07', false, true, {weigh:[]})==='', 'and gets no stats block either');
+const weighed=_tlLateAsks('2026-09-03', false, false, {weigh:[{weight:181}]});
 t(!/Weigh in/.test(weighed), 'once they have weighed in it stops asking - optional, not owed');
-t(/Progress photo/.test(weighed), 'the photo never stops asking, because there is no wrong number of them');
 
 // ===== THE HEADER HE WANTED EMPTIED =====================================
 // "remove top header all together? today, sep 6, steps? or it should just say
@@ -96,7 +108,7 @@ console.log('\n  READ-ONLY SURFACES:');
 global.window._tlRO=true;
 t(_tlCardioRow('2026-09-06', true, false, {workout:[]})==='',
   'the trainer read-only view draws no cardio button - his copy of a client day is not a control panel');
-t(_tlLateAsks('2026-09-06', true, false, {weigh:[]})==='',
+t(_tlLateAsks('2026-09-03', false, false, {weigh:[]})==='' && _tlStatsBlock('2026-09-06', true, false, {weigh:[]})==='',
   'and no steps, weigh-in or photo door either - never a write into somebody else\'s account');
 global.window._tlRO=false;
 
@@ -179,12 +191,13 @@ t(/if\(a==='progphoto'\)/.test(src), 'so is the progress photo');
 t(/if\(a==='steps'\)/.test(src) && /if\(a==='weighview'\)/.test(src), 'steps and the weigh-in were already wired, and still are');
 t(/try\{ html\+=_tlCardioRow\(ds, isToday, isAhead, slots\); \}catch\(e\)\{\}/.test(src),
   'cardio is drawn inside a guard, so it can never take the day down with it');
-t(/try\{ html\+=_tlLateAsks\(ds, isToday, isAhead, slots\); \}catch\(e\)\{\}/.test(src),
-  'and so are the three below it');
+t(/try\{ html\+=_tlStatsBlock\(ds, isToday, isAhead, slots\); \}catch\(e\)\{\}/.test(src)
+  && /try\{ html\+=_tlLateAsks\(ds, isToday, isAhead, slots\); \}catch\(e\)\{\}/.test(src),
+  'and so are the stats block and the late asks below it');
 const day=src.slice(src.indexOf('rows.forEach(function(r){ html+=_drawRow(r); });'), src.indexOf('html+=_tlMealSection('));
 t(/_tlCardioRow/.test(day), 'cardio sits under the session and above the food, where activity goes');
 const after=src.slice(src.indexOf('html+=_tlMealSection('), src.indexOf('html+=_tlMealSection(')+600);
-t(/_tlLateAsks/.test(after), 'steps, weigh-in and photo sit UNDER the food - "the final tally for the day"');
+t(/_tlStatsBlock/.test(after) && /_tlLateAsks/.test(after), 'stats sit UNDER the food - "the final tally for the day"');
 // A name that only ever appears as window.X is a property on the window object,
 // not a top-level declaration - the static chase reports it because it strips
 // the "window." off, and it is not a hole. Anything else unresolved IS a hole,
@@ -192,7 +205,7 @@ t(/_tlLateAsks/.test(after), 'steps, weigh-in and photo sit UNDER the food - "th
 // suite can go green over a chain with a gap in it.
 const holes=CL.unresolved.filter(function(n){
   // Comments out first: a name mentioned in prose is not a reference to it.
-  const stripped=src.replace(/\/\/[^\n]*/g,'').split('window.'+n).join('window.__WINPROP__');
+  const stripped=src.replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/[^\n]*/g,'').split('window.'+n).join('window.__WINPROP__');
   return new RegExp('(^|[^.A-Za-z0-9_$])'+n+'(?![A-Za-z0-9_$])').test(stripped);
 });
 t(holes.length===0, 'the lifted closure has no holes', holes.join(','));

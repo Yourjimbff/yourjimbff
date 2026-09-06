@@ -56,7 +56,8 @@ t(!/eggs/.test(three), 'and its food is not repeated either');
 t(!/ny strip/.test(three), '...nor the second meal');
 
 console.log('\nTHE HEADER CARRIES THE DAY, and it is the sum of the rows under it:');
-t(/tlMealsEy">Meals</.test(three), 'the section is headed "Meals"');
+// "nutrition / food instead of meals" (Yusuf, 6 Sep)
+t(/tlMealsEy">Food</.test(three), 'the section is headed "Food" - his word, 6 Sep');
 const tot = /tlMealsTot"><b>([\d,]+)<\/b> cal · <b>(\d+)<\/b>P/.exec(three);
 t(!!tot, 'the header carries the day total');
 if (tot) {
