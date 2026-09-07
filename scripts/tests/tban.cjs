@@ -93,6 +93,15 @@ t(/\.dfTells span\.hard\{/.test(src) && /\.dfBlock\{/.test(src), 'styled, and th
   t(i>0 && src.slice(0,i).lastIndexOf("+'")>src.slice(0,i).lastIndexOf('\n'), sel+' is one quoted line');
 });
 
+// THE DOOR RUNS THE CHECK (Yusuf, 7 Sep: "why would it flag it and not correct it?")
+console.log('\n  THE DOOR REFUSES WHAT THE CARD WOULD FLAG:');
+eval(closure(['_dfRefuse','_BUB_LONG']).code||'');
+t(typeof _dfRefuse==='function' && /var _no=_dfRefuse\(d\);\s*if\(_no\)/.test(src.slice(src.indexOf('async function dfWrite('), src.indexOf('async function dfWrite(')+600)), 'dfWrite asks _dfRefuse before writing anything');
+t(/voice check/.test(_dfRefuse({text:'nothing in from you yesterday\n\nyou still lifting?'})||''), 'a banned construction is refused at the door');
+t(/1 text over 25 words/.test(_dfRefuse({text:'Whats up dude! '+Array(30).fill('word').join(' ')})||''), 'so is a bubble over 25 words - the same line the card paints red');
+t(_dfRefuse({text:'Whats up dude! Hows the incline walking treating you - did lowering it help?'})===null, 'a clean draft goes through');
+t(_dfRefuse({text:'nothing in from you yesterday', status:'sent'})===null, 'his own sent text is never refused - that is his thumb, not the machine');
+
 console.log();
 if(bad){ console.log('  '+bad+' FAILED'); process.exit(1); }
 console.log('  all ban-enforcement assertions pass');
