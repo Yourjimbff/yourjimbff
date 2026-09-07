@@ -5,7 +5,7 @@ const fs=require('fs');
 const {closure}=require('./_lift.cjs');
 let bad=0;
 const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  FAIL  ')+label+(extra?('  '+extra):'')); };
-global.window={}; global.CLIENTS={}; global._crm={logs:{}};
+global.window={addEventListener(){}, location:{search:''}}; global.document={addEventListener(){},querySelector(){return null},getElementById(){return null}}; global.localStorage={getItem(){return null},setItem(){}}; global.CLIENTS={}; global._crm={logs:{}};
 eval(closure(['_crmStripKeysFor','_crmStripHtml','_crmLogStreak','_crmLogSumWords','_CRM_STRIP_DAYS']).code||'');
 global._escHtml=global._escHtml||(s=>String(s));
 const today=_dfToday();

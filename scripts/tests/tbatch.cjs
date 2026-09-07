@@ -53,8 +53,8 @@ t(/b\.awaiting/.test(adv),               'and only when a send is actually in fl
 t(/b\.awaiting=true;/.test(send),        'which crmBatchSend is what sets');
 
 console.log('\n  the way in does not lie about the size of the run:');
-t(/Send all '\+qn/.test(src),            'the button carries the real count');
-t(/if\(qn\)/.test(src),                  'and is not drawn at all when there is nothing to send');
+t(!/Send all '\+qn/.test(src),           'the Send all button is gone - ticking is how a send starts (Yusuf, 7 Sep 8am)');
+t(/Send '\+n\+' selected/.test(src) && /crmPickAll\(\)/.test(src), 'Select all and Send N selected are the way in');
 t(!/your thumb still sends/.test(src.slice(src.indexOf('function crmPaint(){'), src.indexOf('function crmPaint(){')+9000)),    'and the hint under the buttons is gone (7 Sep clean-up) - the sheet itself still walks one at a time');
 
 console.log('\n  and the matcher it narrows with is the board\'s own, not a copy:');
