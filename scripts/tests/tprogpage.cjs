@@ -41,6 +41,22 @@ t(/#dayCallsCard:empty\{display:none;\}/.test(src), 'and it takes no room until 
 const sb=src.slice(src.indexOf('function _tlStatsBlock('), src.indexOf('function _tlLateAsks('));
 t(/isTrainer\(cl\.code\)/.test(sb) && /if\(!_isTr\)/.test(sb), 'the trainer never sees a Book-a-call on his own day');
 
+console.log('\n  THE BUILDER EXTRAS (Yusuf, 7 Sep: "they can edit create their own exercise program"):');
+t(/id="pgSetsMove"/.test(src) && /pgMove\(-1\)/.test(src) && /pgMove\(1\)/.test(src), 'Move up / Move down live in the sets sheet - the row you are already editing');
+const mv=src.slice(src.indexOf('async function pgMove('), src.indexOf('var _pgRestAsk'));
+t(/if\(j<0 \|\| j>=ex\.length\) return;/.test(mv), 'a move off either end does nothing');
+t(/await pgSavePlan\('Moving that exercise'/.test(mv), 'and it saves through the same verified path as a swap');
+t(/pgRestStart\(\\''\+dk\+'\\'\)">Make this a rest day/.test(src), 'an open training day offers Make this a rest day');
+t(/Make '\+PG_WEEKDAY_FULL\[i\]\+' a rest day\? Its exercises come off\./.test(src), 'asked once, inline, saying what it costs');
+t(/_tpPlan\[dk\]=\{type:'Rest', ex:\[\]\};/.test(src), 'a rest day is type Rest with nothing in it');
+t(/pgWakeStart\(\\''\+dk\+'\\'\)">Add a session/.test(src), 'a rest day offers Add a session');
+t(/var _PG_WAKE=\['Push','Pull','Legs','Upper','Lower','Full body','Arms','Cardio'\];/.test(src), 'and asks what kind, from eight');
+t(/_pgDayOpen=WEEKDAYS\.indexOf\(dk\);/.test(src), 'the woken day opens so they can put movements in it');
+t(/\(rest && !_ro\)/.test(src) && /_ro \? '' : \(_pgRestAsk===dk/.test(src), 'none of it on a programme Yusuf built - his call stays his');
+t(/id="pgJimIn"/.test(src) && /window\._pgProgPlan \? '' : \('<div class="pgJim">/.test(src), 'a Tell Jim box at the foot of the program, not on a programme he built');
+const tj=src.slice(src.indexOf('function pgTellJim('), src.indexOf('function pgSetsNudge('));
+t(/switchTab\('Jim'\)/.test(tj) && /ci\.value='Change my program: '\+txt/.test(tj) && !/sendChatMessage|jimSend/.test(tj), 'it carries the sentence to Jim and the SEND stays theirs - they see what they are asking before it goes');
+
 console.log();
 if(bad){ console.log('  '+bad+' FAILED'); process.exit(1); }
 console.log('  all program-page assertions pass');
