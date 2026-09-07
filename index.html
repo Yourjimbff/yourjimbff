@@ -66124,7 +66124,7 @@ function _parseInlineMacros(q){
   grab(/(\d+(?:\.\d+)?)\s*g?\s*(?:of\s+)?protein\b/i,'protein');
   grab(/(\d+(?:\.\d+)?)\s*g?\s*(?:of\s+)?carb(?:s|ohydrates)?\b/i,'carbs');
   grab(/(\d+(?:\.\d+)?)\s*g?\s*(?:of\s+)?fat\b/i,'fat');
-  grab(/(\d+(?:\.\d+)?)\s*(?:kcal|cal(?:ories)?)\b/i,'cal');
+  grab(/(\d+(?:\.\d+)?)\s*(?:kcal|cal(?:ories|s)?)\b/i,'cal');   /* "250 cals" counts too (LeAndra M, 6 Sep) */
   if(out.protein==null){ var mp=s.match(/protein\s*[:=]?\s*(\d+(?:\.\d+)?)/i); if(mp){ out.protein=parseFloat(mp[1]); s=s.replace(mp[0],' , '); } }
   if(out.carbs==null){ var mc=s.match(/carb(?:s)?\s*[:=]?\s*(\d+(?:\.\d+)?)/i); if(mc){ out.carbs=parseFloat(mc[1]); s=s.replace(mc[0],' , '); } }
   if(out.fat==null){ var mf=s.match(/fat\s*[:=]?\s*(\d+(?:\.\d+)?)/i); if(mf){ out.fat=parseFloat(mf[1]); s=s.replace(mf[0],' , '); } }
@@ -77746,6 +77746,71 @@ function _codeAsStored(code){
   }
   return '';                                        // no such client
 }
+// THE NUMBERS A FOOD ARRIVES WITHOUT (Yusuf, order, 7 Sep: just log it, find
+// the stats and estimate). Three doors, in order, each one honest about where
+// its numbers came from:
+//   said     - a calorie count in her own words ("250 cals", "about 300").
+//   history  - a food she has logged before with numbers on it, by name.
+//   estimate - the model, asked for numbers alone, with the size she gave.
+// Returns null when every door fails; the caller then keeps the old gate.
+// Never returns zeros - a zero row is the thing this exists to prevent.
+async function _jimEstimateFood(offer, code){
+  var name=String((offer&&offer.name)||'').trim();
+  if(!name) return null;
+  var said=String((offer&&(offer.meal_text||offer.words||offer.description))||'');
+  function _num(v){ var n=Math.round(+v||0); return n>0?n:0; }
+  function _ok(o){ return o && (_num(o.calories)>0 || _num(o.protein)>0 || _num(o.carbs)>0 || _num(o.fat)>0); }
+  // said
+  try{
+    var _pm=(typeof _parseInlineMacros==='function') ? _parseInlineMacros(said) : null;
+    var _m=_pm&&_pm.macros?_pm.macros:_pm;
+    if(_m && (_num(_m.cal)>0 || _num(_m.protein)>0 || _num(_m.carbs)>0 || _num(_m.fat)>0)){
+      var _cal=_num(_m.cal); if(!_cal) _cal=_num(_m.protein)*4+_num(_m.carbs)*4+_num(_m.fat)*9;
+      var _o1={how:'said', calories:_cal, protein:_num(_m.protein), carbs:_num(_m.carbs), fat:_num(_m.fat)};
+      if(_ok(_o1)) return _o1;
+    }
+  }catch(e){}
+  // history - hers, by name, calories required
+  try{
+    var mem=null;
+    if(typeof _foodMemoryFor==='function') mem=await _foodMemoryFor(code);
+    var hit=null;
+    // Her memory only. With no memory for this code the matchers fall back to
+    // the signed-in account's own saved foods, which is the wrong person when
+    // the trainer logs for a client - so they are skipped, not defaulted.
+    if(mem && !mem.failed){
+      if(typeof _matchHistory==='function') hit=_matchHistory(name, mem);
+      if(!hit && typeof _jimQuickFoodMatch==='function') hit=_jimQuickFoodMatch(name, mem);
+    }
+    if(!hit && typeof sbSelect==='function'){
+      // a past logged row is history too, even when it never reached saved_foods
+      var _key=name.toLowerCase().replace(/\b(iced|hot|large|small|medium|grande|venti|tall|with|a|an|the|of)\b/g,' ').replace(/[^a-z ]+/g,' ').trim().split(/\s+/).filter(function(w){ return w.length>2; }).slice(0,3);
+      if(_key.length && code){
+        var q='client_code=eq.'+encodeURIComponent(String(code).toLowerCase())+'&calories=gt.0&order=logged_at.desc&limit=25&select=name,calories,protein,carbs,fat,sugar';
+        _key.forEach(function(w){ q+='&name=ilike.'+encodeURIComponent('*'+w+'*'); });
+        var rows=await sbSelect('food_logs', q);
+        if(Array.isArray(rows) && rows.length) hit=rows[0];
+      }
+    }
+    if(hit && _num(hit.calories)>0){
+      var _o2={how:'history', calories:_num(hit.calories), protein:_num(hit.protein!=null?hit.protein:hit.protein_g), carbs:_num(hit.carbs!=null?hit.carbs:hit.carbs_g), fat:_num(hit.fat!=null?hit.fat:hit.fat_g), sugar:_num(hit.sugar)};
+      if(_ok(_o2)) return _o2;
+    }
+  }catch(e){}
+  // estimate - numbers only, with what she said about the size
+  try{
+    if(typeof _nlEstimate==='function'){
+      var _t=(typeof _nlAbortable==='function') ? _nlAbortable(12000) : null;
+      var _prompt='Estimate the nutrition of ONE serving of this food or drink as eaten. Food: '+name+(said?('. What the person said: '+said):'')+'. If a size was given use it, else assume a normal single serving. Return ONLY JSON: {"calories":number,"protein":number,"carbs":number,"fat":number,"sugar":number}. Whole numbers. Never all zeros.';
+      var _got=await _nlEstimate(_prompt, _t?_t.signal:null);
+      if(_t) _t.done();
+      var _o3={how:'estimate', calories:_num(_got&&_got.calories), protein:_num(_got&&_got.protein), carbs:_num(_got&&_got.carbs), fat:_num(_got&&_got.fat), sugar:_num(_got&&_got.sugar)};
+      if(!_o3.calories) _o3.calories=_o3.protein*4+_o3.carbs*4+_o3.fat*9;
+      if(_ok(_o3)) return _o3;
+    }
+  }catch(e){}
+  return null;
+}
 async function logFoodFromChat(offer, photo, targetCode){
   var _tc=_codeAsStored(targetCode);
   // Named somebody the roster does not have: write nothing rather than file it under nobody.
@@ -77762,9 +77827,25 @@ async function logFoodFromChat(offer, photo, targetCode){
   try{
     if(Array.isArray(offer.items) && offer.items.length){
       var _mi=offer.items.map(function(x){ return Object.assign({}, x); });
+      // A ROW THE TABLE DOES NOT KNOW, WITH NO NUMBERS OF ITS OWN, IS NOT A ZERO
+      // (LeAndra M, 6 Sep, four turns in a row). The prompt example shows rows
+      // with no macros on them, so the model sends an iced latte as a bare row,
+      // the table finds no key, the row is rounded to 0/0/0, the sum is 0, and
+      // the meal total she typed - 250 - is overwritten by that 0 and refused
+      // at the gate. Counted before the table touches the rows; when such a row
+      // exists and the meal total said more than the table can account for, the
+      // meal total stands.
+      var _blank=0;
+      try{ _blank=_mi.filter(function(x){ return !_mtItem(x) && !((+x.calories)||(+x.protein)||(+x.carbs)||(+x.fat)); }).length; }catch(e){ _blank=0; }
       _mtApplyItems(_mi);
       var _mt=_mtSum(_mi);
-      offer=Object.assign({}, offer, {items:_mi, protein:_mt.protein, carbs:_mt.carbs, fat:_mt.fat, calories:_mt.calories});
+      var _top=Math.round(+offer.calories||0);
+      if(_blank && _top>_mt.calories){
+        try{ console.warn('FOOD_LOG: '+_blank+' row(s) the table cannot price and carry no numbers - keeping the meal total as sent', offer.name); }catch(e){}
+        offer=Object.assign({}, offer, {items:_mi});
+      } else {
+        offer=Object.assign({}, offer, {items:_mi, protein:_mt.protein, carbs:_mt.carbs, fat:_mt.fat, calories:_mt.calories});
+      }
     }
   }catch(e){ console.error('macro table (chat)', e); }
   // A DISAGREEMENT IS NOT A REASON TO THROW AWAY WHAT HE SAID (Yusuf, ruling,
@@ -77793,6 +77874,22 @@ async function logFoodFromChat(offer, photo, targetCode){
       offer=Object.assign({}, offer, {protein:null, carbs:null, fat:null, sugar:null});
     }
   }
+  // JUST LOG IT (Yusuf, order, 7 Sep). A food with no numbers on it used to be
+  // refused and the client asked for the calories. She answered, twice, and
+  // was asked again each time - the same gate, the same question, four times.
+  // Now the app finds the numbers itself: her own history first, then an
+  // estimate, and the row lands marked as an estimate she can fix on her day.
+  var _estimated=false;
+  try{
+    if(_foodMacrosAllZero(offer) && !_foodZeroIsPlausible({name:offer.name, meal_text:offer.meal_text||offer.description||''})){
+      var _est=await _jimEstimateFood(offer, _code);
+      if(_est){
+        offer=Object.assign({}, offer, {calories:_est.calories, protein:_est.protein, carbs:_est.carbs, fat:_est.fat, sugar:(_est.sugar!=null?_est.sugar:offer.sugar)});
+        _estimated=String(_est.how||'estimate');
+        try{ console.warn('FOOD_LOG: no numbers on '+offer.name+' - filled by '+_estimated, _est); }catch(e){}
+      }
+    }
+  }catch(e){ console.error('food estimate', e); }
   var meal = offer.meal || guessMealByTime();
   var _daysAgo = Math.max(0, Math.min(_JIM_DAY_MAX, parseInt(offer.daysAgo||offer.days_ago||0,10)||0));
   // A per-day bar states its day outright; that beats an inferred daysAgo.
@@ -77890,7 +77987,7 @@ async function logFoodFromChat(offer, photo, targetCode){
     // the number the model spoke is stale BY DESIGN. Jim said "552 cal, 49g
     // protein" over a row that stored 402 and 43 (Yusuf, live, 31 Aug). The
     // stored values are kept here so the reply can be corrected from the write.
-    try{ window.__jimFoodLanded=window.__jimFoodLanded||[]; window.__jimFoodLanded.push({id:(_ins.id!=null?_ins.id:null), name:r.name, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, meal:meal, eat_time:eatTime, date_str:_targetDate}); }catch(e){}
+    try{ window.__jimFoodLanded=window.__jimFoodLanded||[]; window.__jimFoodLanded.push({id:(_ins.id!=null?_ins.id:null), name:r.name, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, meal:meal, eat_time:eatTime, date_str:_targetDate, estimated:(_estimated||false)}); }catch(e){}
   }catch(e){}
   // Remember it — this is the other half of matching her own history before
   // the AI round trip (see _jimQuickFoodMatch): a food logged only through
@@ -80959,7 +81056,7 @@ async function jimTurn(text, photos, opts){
     if(_noMac.length){
       var _nm=_noMac.map(function(u){ return String(u.name||'that'); });
       var _nmName=_nm.length===1 ? _nm[0] : _nm.join(' and ');
-      reply += (reply?'\n\n':'') + ('I could not put numbers on ' + _nmName + ', so it is not on your day yet. About how many calories was it, or tell me the size and where it was from, and I will log it.');
+      reply += (reply?'\n\n':'') + ('I could not put numbers on ' + _nmName + ' just now, so it is not on your day yet. Tell me about how many calories it was and I will log it, or add it from your day.');
       try{ console.warn('JIM: zero-macro refusal \u2014 asked for the numbers, did not say it failed', _noMac); }catch(e){}
     }
     var _allUnsure = _unsure.length>0 && (_unsure.length + _noMac.length) >= _short;
@@ -80981,6 +81078,16 @@ async function jimTurn(text, photos, opts){
       reply += (reply?'\n\n':'') + _jimSaveFailLine("One of those didn't actually save \u2014 can you tell me again?");
     }
   }
+
+  // AN ESTIMATE SAYS IT IS ONE. When the numbers on a landed row came from the
+  // app and not from her or the table, one line says so and where to fix it.
+  try{
+    var _estd=(window.__jimFoodLanded||[]).filter(function(x){ return x && x.estimated; });
+    if(_estd.length){
+      var _en=_estd.map(function(x){ return String(x.name||'that')+' at about '+Math.round(+x.calories||0)+' cal'; });
+      reply += (reply?'\n\n':'') + 'I put '+_en.join(' and ')+' on your day' + (_estd.every(function(x){ return x.estimated==='history'; }) ? ' from what you logged before.' : ' as an estimate. Tap it on your day if you know the real numbers.');
+    }
+  }catch(e){}
 
   // ===== A CHANGE IS A CLAIM TOO (Spencer R, 31 Aug) =====================
   // Yesterday's law covered CREATING a row: Jim never says "logged" unless a
