@@ -56,4 +56,12 @@ t(lines.every(l=>/^\s*\+'/.test(l) && /'$/.test(l.trim())),
   'every rule opens and closes its own quotes', lines.length+' rule line(s)');
 
 console.log(bad? ('\n'+bad+' FAILED') : '\n  all pass');
+// ONE LINE, NOT FOUR TILES (Yusuf, 7 Sep: "find a way to clean this up")
+const paint=src.slice(src.indexOf('function crmPaint(){'), src.indexOf('function crmPaint(){')+9000);
+t(!/crmScore/.test(paint) && !/earned today/.test(paint) && !/days the board ended clear/.test(paint), 'the four score tiles, the money and the streak are gone from the board head');
+t(/<div class="crmLine">/.test(paint) && /' to go<\/b>'/.test(paint) && /touched today'/.test(paint) && /longest wait <b>/.test(paint), 'one line says to go, touched today, longest wait');
+t(!/one at a time, your thumb still sends/.test(paint), 'and the hint under the buttons is gone');
+
+
+
 process.exit(bad?1:0);

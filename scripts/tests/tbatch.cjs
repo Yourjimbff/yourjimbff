@@ -55,7 +55,7 @@ t(/b\.awaiting=true;/.test(send),        'which crmBatchSend is what sets');
 console.log('\n  the way in does not lie about the size of the run:');
 t(/Send all '\+qn/.test(src),            'the button carries the real count');
 t(/if\(qn\)/.test(src),                  'and is not drawn at all when there is nothing to send');
-t(/your thumb still sends/.test(src),    'and it says so on the button row');
+t(!/your thumb still sends/.test(src.slice(src.indexOf('function crmPaint(){'), src.indexOf('function crmPaint(){')+9000)),    'and the hint under the buttons is gone (7 Sep clean-up) - the sheet itself still walks one at a time');
 
 console.log('\n  and the matcher it narrows with is the board\'s own, not a copy:');
 // MEASURED, not assumed: _crmMatch lived inside crmPaint as a closure over a

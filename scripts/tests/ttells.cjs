@@ -122,6 +122,11 @@ t(_dfHardTells("Whats up dude! Haven't seen anything logged past few days in the
 t(_dfHardTells('Just checking in!').indexOf('phrase he never uses')>=0, '"just checking in" alone is still the tell');
 t(_dfHardTells('179.7 friday, nothing since').indexOf('lowercase start')<0, 'a number is not a lowercase letter');
 
+// LEAD WITH CURIOSITY (Yusuf, 7 Sep)
+t(_dfTells("Whats up! Didnt see anything from you yesterday - you still lifting?").indexOf('sounds like blame')>=0, 'reporting what they did not do is marked');
+t(_dfHardTells("Whats up! Didnt see anything from you yesterday - you still lifting?").indexOf('sounds like blame')<0, 'marked, not blocked - he kept two like it inside a joke');
+t(_dfTells("Whats up dude! Hows the incline walking treating you - did lowering it help?").length===0, 'curiosity about their thing is clean');
+
 console.log();
 if(bad){ console.log('  '+bad+' FAILED'); process.exit(1); }
 console.log('  all tells assertions pass');
