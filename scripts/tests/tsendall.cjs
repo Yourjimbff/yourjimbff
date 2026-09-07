@@ -32,6 +32,13 @@ t(/return 'Nothing in the queue to send\.'/.test(cmd), 'an empty queue says so')
 t(/if\(!w\) return 'I could not write the send order\. Nothing went\.';/.test(cmd), 'a refused order write says nothing went - never a count that did not happen');
 t(/try\{ var _sa=await _jvSendAllCommand\(t\); if\(_sa\) return _sa; \}/.test(src), 'routed first in _jvBookCommand, so every Jarvis box gets it');
 
+// A MACHINE ROW IS NOT A JOURNAL ENTRY (Yusuf, 7 Sep, screenshot)
+console.log('\n  THE ORDER STAYS OFF HIS DAY:');
+const je=src.slice(src.indexOf('function _jeMachine('), src.indexOf('function _jeMachine(')+400);
+t(/entry_type==='sendall'/.test(je) && /\^\\\[SENDALL\\\]/.test(je), 'a send-all row is known by its type or its [SENDALL] body');
+t((src.match(/_jeMachine\(/g)||[]).length>=7, 'and every journal surface skips it - day card, timeline, journal list, entry cache, today entry, check-in', String((src.match(/_jeMachine\(/g)||[]).length));
+t(/rowDs\(j\)===ds && !_jeMachine\(j\)/.test(src), 'the Day page journal card specifically');
+
 console.log();
 if(bad){ console.log('  '+bad+' FAILED'); process.exit(1); }
 console.log('  all send-all assertions pass');
