@@ -78,7 +78,7 @@ set({});
 t(pipe().length===0, 'and no calls at all is an empty list, not a crash');
 
 console.log('\nTHE STRIP DISAPPEARS WHEN THERE IS NOTHING TO SAY:');
-t(/function _crmCallsHtml\(\)\{[\s\S]{0,120}if\(!list\.length\) return '';/.test(SRC),
+t(/function _crmCallsHtml\(\)\{[\s\S]{0,900}if\(!list\.length\) return '';/.test(SRC),
   'no rows means no card at all');
 
 console.log('\nAND THE WRITE REFUSES WHAT IT CANNOT MEAN:');

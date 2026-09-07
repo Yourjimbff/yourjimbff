@@ -91037,7 +91037,18 @@ function _cwDraftFor(c){
   return 'Lets get a time down - what day works for you?';
 }
 function _crmCallsHtml(){
-  var list=_crmCallPipeline().filter(function(c){ return c.ball==='you'; });
+  /* HIS OWN TEXT MOVES THE BALL (Yusuf, 7 Sep 9:24am: "it should wipe him
+     from the queue because it sees that I respond to him"). If the sweep
+     shows him speaking after them, it is not his move any more, whatever
+     the call pipeline last decided. */
+  var list=_crmCallPipeline().filter(function(c){
+    if(c.ball!=='you') return false;
+    try{
+      var k=(_crm.contacts||{})[c.code];
+      if(k && k.him && k.them && _crmSweepTime(k.him) && _crmSweepTime(k.them) && _crmSweepTime(k.him).getTime()>_crmSweepTime(k.them).getTime()) return false;
+    }catch(e){}
+    return true;
+  });
   if(!list.length) return '';
   var rows=list.map(function(c){
     var why=(c.slot) ? ('said yes to '+_cwWhen(c.slot)+', not confirmed') : ('said yes'+(c.waitedH!=null?(', '+_cwAgo(c.waitedH)):'')+', no time set');
@@ -91799,6 +91810,7 @@ async function crmRender(force){
        truth rather than the state it was in a second ago. */
     try{ if(await _crmSettleOpened()) await dfLoadAll(); }catch(e){}
     try{ if(await _jvSendAllReconcile()) await dfLoadAll(); }catch(e){}
+    try{ if(await _crmSettleOvertaken()) await dfLoadAll(); }catch(e){}
   }
   crmPaint();
   _crmWatchForWrites();
@@ -93789,6 +93801,28 @@ async function _crmSettleOpened(){
     }
   }catch(e){}
   _crm.settling=false;
+  return moved;
+}
+/* A DRAFT HE HAS TEXTED PAST IS OVER (Yusuf, 7 Sep 9:24am). It used to stay
+   on the board as "you texted them, after this was written" with a Clear
+   button. He texted Gabriel himself and expected the card gone on refresh.
+   So an overtaken pending draft is retired here, with the reason on it. */
+async function _crmSettleOvertaken(){
+  var moved=0;
+  try{
+    var seen={};
+    var ppl=_crmPeople()||[];
+    for(var i=0;i<ppl.length;i++){
+      var p=ppl[i], d=p&&p.draft;
+      if(!d || d.status!=='pending' || seen[d.id]) continue;
+      seen[d.id]=1;
+      var over=false; try{ over=_crmOvertaken(p.code, d); }catch(e){ over=false; }
+      if(!over) continue;
+      var him=''; try{ him=_crmClock(((_crm.contacts||{})[p.code]||{}).him); }catch(e){}
+      await dfSetStatus(p.code, d, 'skipped', d.text, {re:String(d.re||'')+' | retired: you texted them yourself '+him});
+      moved++;
+    }
+  }catch(e){}
   return moved;
 }
 function crmSkip(id){
