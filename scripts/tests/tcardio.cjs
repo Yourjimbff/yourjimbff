@@ -95,10 +95,11 @@ t(!/Weigh in/.test(weighed), 'once they have weighed in it stops asking - option
 // "remove top header all together? today, sep 6, steps? or it should just say
 //  today."  All three things were in that row. Two of them are gone.
 console.log('\n  THE DAY TITLE:');
-const title=src.slice(src.indexOf("var _mwOn = isToday && !_mwCalendarOff();"),
+const title=src.slice(src.indexOf("var _mwOn = false;"),
                       src.indexOf("// Directly under \"Today\", and only there."));
 t(/isToday \? '' : \('<span style="font-size:13px/.test(title),
   'today drops its date - "Today Sep 6" says one thing twice');
+t(/var _mwOn = false;/.test(title), 'and Today is a word, not a door - no chevron, no tap into the week (7 Sep)');
 t(/month:'short',day:'numeric'/.test(title),
   'every other day keeps its date, because a weekday alone does not say which Monday');
 t(/if\(!window\._tlRO\) return '';/.test(title),
