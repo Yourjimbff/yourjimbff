@@ -90924,7 +90924,11 @@ function _dfRowNote(d){
        [SENDALL-RESULT] row can settle exactly that draft and no other. Both
        were being dropped here, so the first send-all could never have been
        settled. Dropped rather than defaulted when absent. */
-    via:(d.via||undefined), order:(d.order||undefined)
+    via:(d.via||undefined), order:(d.order||undefined),
+    /* WHICH OF THEIR TEXTS THIS ANSWERS (7 Sep). Set when the board rewrote the
+       draft from their last message, so the same message is never answered
+       twice. Dropped when absent. */
+    answers:(d.answers||undefined)
   });
 }
 function _dfFromNote(note){
@@ -90937,7 +90941,8 @@ function _dfFromNote(note){
           by:String(o.by||''), openedAt:(o.openedAt||null),
           src:(o.src?String(o.src):''), day:(o.day?String(o.day):''),
           ctx:(o.ctx?String(o.ctx):''),
-          via:(o.via?String(o.via):''), order:(o.order?String(o.order):'')};
+          via:(o.via?String(o.via):''), order:(o.order?String(o.order):''),
+          answers:(o.answers?String(o.answers):'')};
 }
 function _dfDayKey(iso){
   try{ var d=new Date(iso); if(isNaN(d.getTime())) return ''; 
@@ -91211,6 +91216,7 @@ async function dfSetStatus(code, d, status, text, extra){
             status:status, by:d.by||'jarvis',
             src:(d.src||undefined), day:(d.day||undefined), ctx:(d.ctx||undefined),
             via:(d.via||undefined), order:(d.order||undefined),
+            answers:(d.answers||undefined),
             openedAt:(d.openedAt||null)};
   if(extra){ for(var k in extra){ if(Object.prototype.hasOwnProperty.call(extra,k)) next[k]=extra[k]; } }
   var w=await dfWrite(code, next);
@@ -91858,6 +91864,7 @@ function _crmStyle(){
   +'.dqCtxL{font-size:12.5px;line-height:1.55;color:rgba(240,236,228,0.82);overflow-wrap:anywhere;}'
   +'.crmRow.overtaken{opacity:0.72;}'
   +'.crmOverN{font-size:11.5px;font-weight:700;color:#e0a24f;margin:2px 0 8px;}'
+  +'.crmAnsN{font-size:11.5px;font-weight:700;color:rgba(240,236,228,0.62);margin:2px 0 8px;}'
   +'.crmSend.quiet{background:transparent;color:rgba(240,236,228,0.62);border:1px solid var(--border);}'
   +'.crmLeads{border:1px solid rgba(74,222,128,0.42);background:rgba(74,222,128,0.07);border-radius:13px;padding:11px 13px;margin:0 0 13px;}'
   +'.crmLeadsH{font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:#6ee79a;margin-bottom:8px;}'
@@ -91940,6 +91947,9 @@ async function crmRender(force){
   }
   crmPaint();
   _crmWatchForWrites();
+  /* Their replies come in after the board was read. Rewrite in the background
+     and repaint when done, so the read is never held behind a model call. */
+  try{ _crmRedraftStale().then(function(n){ if(n){ dfLoadAll().then(function(){ crmPaint(); }); } }); }catch(e){}
 }
 /* IT FILLS WITHOUT A RELOAD (his immediate-changes ruling, applied here).
    The board is written to from outside this browser - the sweep on his Mac
@@ -91973,6 +91983,7 @@ function _crmWatchForWrites(){
     if(sig===_crm.sig) return;
     _crm.sig=sig;
     crmPaint();
+    try{ _crmRedraftStale().then(function(n){ if(n){ dfLoadAll().then(function(){ _crm.sig=_crmSig(); crmPaint(); }); } }); }catch(e){}
   }, 45000);
 }
 /* ===== THE RIGHT HALF OF THE ROW (Yusuf, 2 Sep ~5pm) ====================
@@ -92730,6 +92741,7 @@ async function crmRefresh(){
     try{ await _crmLoadLogs(); }catch(e){}
     try{ await rosterRefresh(true); }catch(e){}
     try{ crmPaint(); }catch(e){}
+    try{ if(await _crmRedraftStale()){ await dfLoadAll(); crmPaint(); } }catch(e){}
     var when=''; try{ when=_crm.sweepAt?(' \u00b7 your texts read '+_crmClock(_crm.sweepAt)):''; }catch(e){}
     try{ showToast(_crm.err ? 'Could not read the board' : ('Board is current'+when)); }catch(e){}
   } finally { window._crmRefreshing=0; }
@@ -93143,7 +93155,8 @@ function crmPaint(){
              - the 14 day strip, yesterday, the why - folded shut. */
           +(isOpen?('<div class="crmOpenedN">text opened '+_escHtml(_crmClock(d.openedAt||d.at))+' · not counted as sent until your texts are read</div>'):'')
           +(_over?('<div class="crmOverN">you texted them '+_escHtml(_crmClock(((_crm.contacts||{})[p.code]||{}).him))+', after this was written</div>')
-             :(_stale?('<div class="crmOverN">they have spoken since this was written \u00b7 '+_escHtml(_crmClock(((_crm.contacts||{})[p.code]||{}).them))+'</div>'):''))
+             :(_stale?('<div class="crmOverN">they have spoken since this was written \u00b7 '+_escHtml(_crmClock(((_crm.contacts||{})[p.code]||{}).them))+(_crm.rdBusy?' \u00b7 rewriting from their text\u2026':'')+'</div>')
+             :((d.answers && d.answers===String(((_crm.contacts||{})[p.code]||{}).them||''))?('<div class="crmAnsN">answers their '+_escHtml(_crmClock(d.answers))+' text</div>'):'')))
           + _crmMore(p, d)
           + _dfEdHtml(d.id, d.text)
           + _dfTellsHtml(d.text, d.id)
@@ -93957,6 +93970,139 @@ async function _crmSettleOvertaken(){
     }
   }catch(e){}
   return moved;
+}
+/* ===== THE THREAD KEEPS GOING (Yusuf, 7 Sep 5:17pm) =====================
+   "why wouldn't the app import their replies and come up with a reply from
+   their reply and keep the thread going? ... we import the reply and we come
+   up with the response in my voice ... either continuing or finishing the
+   conversation, answer their question, that's it."
+
+   A draft they have spoken past is not a draft any more. It is an answer to a
+   question that is no longer the last one. So on every board read, each
+   pending machine draft where THEY are the last word is rewritten FROM their
+   last text, in place, same id, and the row then says which text it answers.
+
+   What it will not do: touch a draft he wrote or edited himself (by is not
+   jarvis); answer a tapback (Loved "..." is not a turn); answer the same text
+   twice (answers === their time); or put a text on the board that fails the
+   voice gate - a rewrite that fails twice leaves the old label standing so he
+   sees it is stale. Runs in the background, never holds the board. */
+var _RD_MODEL='claude-sonnet-5';
+var _RD_SWEAR={rida:'swears with him freely',
+  hayden:'occasional damn/shit/ass is fine', dhruva:'occasional damn/shit/ass is fine',
+  ali:'occasional damn/shit/ass is fine', dave:'occasional damn/shit/ass is fine',
+  ben:'occasional damn/shit/ass is fine', jordan:'occasional damn/shit/ass is fine'};
+var _RD_SYS='You are writing ONE text message that Yusuf, an online fitness coach (brand YOURJIMBFF), sends to a client from his own phone, inside a thread that is already going. It replies to the client\'s LAST text.\n'
++'Rules, measured from 9,398 of his real texts:\n'
++'- Answer their last text first. If they asked a question, answer it plainly and honestly. If the answer is a fact only Yusuf has (his schedule, a price, something in his life), do not invent it: keep the door open and ask for their side, e.g. what times work for them.\n'
++'- Then either keep the thread going with ONE short question about THEIR thing, or finish it cleanly. Never add a question just to fill.\n'
++'- Inside a live thread there is no opener. No "Whats up dude", no greeting, no name. Just the answer, the way he does: "Sure" / "Call you in 1 min" / "No apology needed" / "Thats it then, done".\n'
++'- Short. One thought. Under 20 words is normal, 25 is the ceiling. If a second text is truly needed, put it on its own line, two lines at most.\n'
++'- Starts with a capital letter. Ends bare, no full stop at the end. A question mark only for a real question.\n'
++'- His dash is " - " with spaces. Never an em dash. Apostrophes kept.\n'
++'- Never quote their words back (three words is the ceiling). Never repeat what they said before answering. Never "not X, its Y".\n'
++'- Never mention what they did not do or did not log. Curiosity about their life, never a ledger.\n'
++'- Never: keep it up, amazing work, you\'ve got this, reach out, circle back, just checking in, hope this finds you, headers, bullets, emoji.\n'
++'- The app is called Jim and Jim is "it", never "he".\n'
++'- If they praise the app or a workout, take it plainly and loud, that is his: "Hell yeah", "Thats what im talking about", "LETS GO". No gushing.\n'
++'- If they are struggling, care first in one line, no advice dump, then one question.\n'
++'- Plain, warm, direct. Sounds like a friend who happens to be their coach.\n';
+function _crmTapback(t){
+  return /^(Reacted|Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\b/i.test(String(t||'').trim());
+}
+async function _crmThreadTail(code, n){
+  var res=null;
+  try{ res=await trainerOpChecked('clientNotes',{code:code}); }catch(e){ res=null; }
+  if(!res || !res.ok) return [];
+  var msgs=[];
+  (res.rows||[]).forEach(function(r){
+    var note=String(r.note||'');
+    if(note.indexOf(_DF_THREAD_MARK)!==0) return;
+    var o=null; try{ o=JSON.parse(note.slice(_DF_THREAD_MARK.length)); }catch(e){ o=null; }
+    if(!o) return;
+    (o.messages||[]).forEach(function(m){
+      if(!m || !m.text) return;
+      msgs.push({who:(m.from==='him'?'him':'them'), text:String(m.text), at:m.at||o.at||r.logged_at});
+    });
+  });
+  msgs.sort(function(a,b){ return String(a.at||'').localeCompare(String(b.at||'')); });
+  /* one [THREAD] row per push, so the same message can sit in several rows */
+  var seen={}, out=[];
+  msgs.forEach(function(m){ var k=m.at+'|'+m.who+'|'+m.text; if(seen[k]) return; seen[k]=1; out.push(m); });
+  return out.slice(-(n||8));
+}
+function _rdClean(t){
+  var s=String(t||'').replace(/```[a-z]*/gi,'').trim();
+  s=s.replace(/^(HIM|YUSUF)\s*:\s*/i,'');
+  s=s.replace(/^["“']+|["”']+$/g,'').trim();
+  s=s.replace(/\n{2,}/g,'\n').split('\n').slice(0,2).join('\n');
+  s=s.replace(/[.]+$/,'').trim();
+  return s;
+}
+async function _rdAsk(prompt){
+  var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({model:_RD_MODEL, max_tokens:200, temperature:0.5,
+      messages:[{role:'user',content:prompt}]})});
+  if(!res.ok) return '';
+  var data=await res.json(), txt='';
+  if(data && data.content) data.content.forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; });
+  return _rdClean(txt);
+}
+async function _crmRedraftOne(code, d){
+  var c=(_crm.contacts||{})[code]||{};
+  var them=String(c.them||''), theirs=String(c.text||'').trim();
+  if(!them || !theirs) return {ok:false, reason:'no text on file'};
+  if(_crmTapback(theirs)) return {ok:false, reason:'tapback'};
+  if(d.answers && d.answers===them) return {ok:false, reason:'already answers this'};
+  if(d.by && d.by!=='jarvis') return {ok:false, reason:'his own words'};
+  var tail=[]; try{ tail=await _crmThreadTail(code, 8); }catch(e){ tail=[]; }
+  var first=String((CLIENTS[code]||{}).name||code).split(' ')[0];
+  var sw=_RD_SWEAR[first.toLowerCase()]||'no swearing with this person';
+  var prompt=_RD_SYS
+    +'\nCLIENT: '+first+' ('+sw+')\n'
+    +(tail.length?('THE THREAD, oldest first (HIM is Yusuf, THEM is the client):\n'+tail.map(function(m){ return (m.who==='him'?'HIM: ':'THEM: ')+m.text.slice(0,400); }).join('\n')+'\n'):'')
+    +'\nTHEIR LAST TEXT, the one to answer:\nTHEM: '+theirs.slice(0,500)+'\n'
+    +'\nThe draft that is now out of date, for context only, do not reuse it:\n'+String(d.text||'').slice(0,300)+'\n'
+    +'\nReply with ONLY the text Yusuf sends, nothing else.';
+  var text='', hard=[];
+  for(var tries=0; tries<2; tries++){
+    try{ text=await _rdAsk(tries?(prompt+'\n\nYour last try was: '+text+'\nIt failed these checks: '+hard.join(', ')+'. Fix them and reply with only the text.'):prompt); }catch(e){ text=''; }
+    if(!text) return {ok:false, reason:'no answer'};
+    hard=_dfHardTells(text);
+    var _no=_dfRefuse({status:'pending', text:text});
+    if(!hard.length && !_no) break;
+    if(!hard.length && _no) hard=[_no];
+  }
+  if(hard.length) return {ok:false, reason:'voice check: '+hard.join(', ')};
+  var w=await dfWrite(code, {id:d.id, text:text, at:new Date().toISOString(),
+    re:'answers their '+_crmClock(them)+' text', status:'pending', by:'jarvis',
+    src:(d.src||undefined), day:(d.day||undefined), ctx:(d.ctx||undefined), answers:them});
+  return w.ok?{ok:true, text:text}:{ok:false, reason:w.reason};
+}
+async function _crmRedraftStale(){
+  if(_crm.rdBusy) return 0;
+  _crm.rdBusy=1; var n=0;
+  try{
+    var ppl=_crmPeople()||[], seen={}, todo=[];
+    for(var i=0;i<ppl.length;i++){
+      var p=ppl[i], d=p&&p.draft;
+      if(!d || d.status!=='pending' || seen[d.id]) continue;
+      seen[d.id]=1;
+      var over=false, stale=false;
+      try{ over=_crmOvertaken(p.code, d); }catch(e){}
+      try{ stale=(!over && _crmStaleDraft(p.code, d)); }catch(e){}
+      if(!stale) continue;
+      var c=(_crm.contacts||{})[p.code]||{};
+      if(_crmTapback(c.text) || (d.answers && d.answers===String(c.them||''))) continue;
+      todo.push({code:p.code, d:d});
+    }
+    for(var j=0;j<todo.length && j<12;j++){
+      var r=null; try{ r=await _crmRedraftOne(todo[j].code, todo[j].d); }catch(e){ r={ok:false, reason:String(e&&e.message||e)}; }
+      if(r && r.ok) n++;
+      else { try{ console.warn('redraft '+todo[j].code+': '+(r&&r.reason)); }catch(e){} }
+    }
+  } finally { _crm.rdBusy=0; }
+  return n;
 }
 function crmSkip(id){
   var d=_crmFind(id); if(!d) return;
