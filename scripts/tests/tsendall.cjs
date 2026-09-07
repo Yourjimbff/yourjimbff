@@ -58,6 +58,9 @@ let sw=''; try{ sw=fs.readFileSync(require('path').join(require('os').homedir(),
 if(sw)
 t(/def post_results\(\)/.test(sw) && /\[SENDALL-RESULT\]/.test(sw) && /entry_type": "sendall-result"/.test(sw) && /RESULTS\.append\(\{"order": str\(item\.get\("order"\)\)/.test(sw), 'send_watch.py writes the result row for every item it handled');
 
+t(/via:\(d\.via\|\|undefined\), order:\(d\.order\|\|undefined\)/.test(src.slice(src.indexOf('function _dfRowNote('), src.indexOf('function _dfFromNote('))) && /via:\(o\.via\?String\(o\.via\):''\), order:\(o\.order\?String\(o\.order\):''\)/.test(src), 'via and order survive the row - written and read back (they were dropped until 7 Sep)');
+t(/via:\(d\.via\|\|undefined\), order:\(d\.order\|\|undefined\),\s*openedAt:\(d\.openedAt\|\|null\)\};/.test(src), 'and ride through a status change');
+
 console.log();
 if(bad){ console.log('  '+bad+' FAILED'); process.exit(1); }
 console.log('  all send-all assertions pass');
