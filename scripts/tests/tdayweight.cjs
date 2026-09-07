@@ -66,21 +66,17 @@ t(!/pgSub/.test(h) && !/dwHist/.test(h), 'no sub line and no list under it - the
 t(/title="185 at your first weigh-in/.test(h), 'the long form survives as the card title, for a long press');
 t(/height="30"/.test(h), 'the line is 30px tall, not 52');
 
-console.log('\n  CONSOLIDATED (Yusuf, 7 Sep, drawn on his own phone):');
-progressPhotos=[{photo:'https://x/a.jpg'},{photo:'https://x/b.jpg'},{photo:'https://x/c.jpg'},{photo:'https://x/d.jpg'}];
+console.log('\n  THREE LINES, ONE SIZE (Yusuf, 7 Sep, 9:35pm: "You fucked this up"):');
 h=_dayWeightHtml(ds);
-t((h.match(/class="dwPh" data-tl="ppview"/g)||[]).length===3, 'the last three photos, as thumbs');
-t(/data-i="0"/.test(h) && /a\.jpg/.test(h), 'newest first, and a thumb opens the viewer on its own index');
-t(/class="dwPh dwPhAdd" data-tl="progphoto"/.test(h), 'and a + that opens the same add sheet as Progress');
-t(/class="dwLine" data-tl="steps"/.test(h) && /Add<span class="dwChev">/.test(h), 'steps is a line in the card, saying Add when there is none');
-progressPhotos=[];
-h=_dayWeightHtml(ds);
-t((h.match(/class="dwPh" data-tl="ppview"/g)||[]).length===0 && /dwPhAdd/.test(h), 'no photos yet: just the +, no empty frames');
-// His phone, 7 Sep 9:18pm: the lone + grew to fill the card. A tile never flexes.
-t(/\.dwPh\{flex:0 0 calc\(\(100% - 21px\) \/ 4\);/.test(src), 'a tile is a fixed quarter of the row - one alone does not grow to fill the card');
+t(!/dwPhotos|dwPh\b|dwPhAdd/.test(h), 'no tile, no strip');
+const L=(h.match(/class="(dwLine|dwLine dwMid|dwTap)"/g)||[]).length;
+t(L===3, 'three lines in the card', String(L));
+t(h.indexOf('data-tl="weighview"')<h.indexOf('data-tl="progphoto"') && h.indexOf('data-tl="progphoto"')<h.indexOf('data-tl="steps"'), 'weight, then photo in the MIDDLE, then steps');
+t(/class="dwLine dwMid" data-tl="progphoto"[^>]*><span>Progress photo<\/span><\/div>/.test(h), 'the photo line is words only - no value, no chevron');
+t(/\.dwMid\{justify-content:center;color:var\(--gold\);\}/.test(src), 'centred, gold, same height as its neighbours');
 window._wtAll=[];
 h=_dayWeightHtml(ds);
-t(/No weigh-ins yet/.test(h) && /dwPhAdd/.test(h) && /data-tl="steps"/.test(h), 'even with no weigh-ins the card carries the photo + and the steps line');
+t(/No weigh-ins yet/.test(h) && /data-tl="progphoto"/.test(h) && /data-tl="steps"/.test(h), 'even with no weigh-ins the card carries all three lines');
 window._wtAll=[{weight:185.0, logged_at:'2026-08-01T12:00:00Z'},{weight:181.4, logged_at:'2026-09-06T12:00:00Z'}];
 
 console.log('\n  ONE PLACE:');

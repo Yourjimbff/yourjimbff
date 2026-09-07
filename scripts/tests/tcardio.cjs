@@ -69,7 +69,7 @@ t(/data-tl="steps"/.test(stats) && /data-tl="progphoto"/.test(stats), 'steps and
 t(/data-tl="weighview"/.test(stats), 'the weigh-in door is INSIDE the weight card, not a row of its own');
 // "Add a place to put progress photos here. Consolidate." (Yusuf, 7 Sep, drawn on his phone)
 t((stats.match(/tlStatCell"/g)||[]).length===0, 'no cells under the card any more - one block');
-t(/class="dwPhotos"/.test(stats) && /dwPhAdd/.test(stats), 'the photo strip lives inside the card, with a +');
+t(/class="dwLine dwMid" data-tl="progphoto"/.test(stats), 'the photo is a line inside the card, words only, in the middle');
 t(/class="dwLine" data-tl="steps"/.test(stats), 'steps is a line inside the card');
 t(_tlLateAsks('2026-09-06', true, false, {weigh:[]})==='', 'so today draws no late asks - one set of doors, not two');
 const late=_tlLateAsks('2026-09-03', false, false, {weigh:[]});
