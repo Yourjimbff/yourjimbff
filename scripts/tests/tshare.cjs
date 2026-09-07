@@ -88,9 +88,9 @@ t('the client’s own note is NOT in his text to them', ()=>out.indexOf(HAYDEN_N
 // lane's wording to pin: what this suite asserts is that the session is still
 // COUNTED once, which is what a change here must never break, and the words are
 // left to the lane that owns them.
-t('the summary still counts the session once', ()=>/Summary:\n1 /.test(out) && !/\n2 /.test(out));
+t('no Summary tally under a list that already names the session (7 Sep)', ()=>!/Summary:/.test(out) && !/\n1 push/.test(out));
 t('a workout with no food carries no food totals line', ()=>!/cal\b/.test(out) && !/protein/.test(out));
-t('a blank line still separates the blocks', ()=>/\n\nSummary:/.test(out));
+t('the opener is On your workout <day> - and a blank line follows it', ()=>/^On your workout[^\n]* - \n\n/.test(out));
 
 // The whole point is the shape he wrote out. Assert it verbatim.
 t('the block reads exactly as ordered', ()=>{
@@ -99,7 +99,7 @@ t('the block reads exactly as ordered', ()=>{
 
 // Not a regression in the surrounding message.
 const both=_citeDayBody([meal, wo]);
-t('with food, the totals line comes back', ()=>/620 cal and 48g protein across 1 meal/.test(both));
+t('with one meal the meal line carries its own numbers and no totals line repeats them', ()=>/620 cal, 48g protein\)/.test(both) && !/across 1 meal/.test(both));
 t('and the exercises are still all there', ()=>EX.every(e=>both.split('\n').indexOf(e)>=0));
 t('a meal and a workout stay separate items', ()=>/Lunch: Chicken and rice/.test(both));
 
@@ -146,7 +146,7 @@ t('REAL ROW: his note, buried in the description, does not reach the client', ()
   real.toLowerCase().indexOf('machine')<0 && real.toLowerCase().indexOf('per leg')<0);
 t('REAL ROW: no loads or rep counts', ()=>!/135|180|\u00d7|\blb\b/.test(real));
 t('REAL ROW: nothing truncated', ()=>real.indexOf('\u2026')<0);
-t('REAL ROW: the session is still counted once', ()=>/Summary:\n1 /.test(real) && !/\n2 /.test(real));
+t('REAL ROW: no Summary tally', ()=>!/Summary:/.test(real));
 
 let bad=0;
 C.forEach(([n,ok,err])=>{ if(!ok) bad++; console.log((ok?'  ok    ':'  FAIL  ')+n+(err?'  ['+err+']':'')); });

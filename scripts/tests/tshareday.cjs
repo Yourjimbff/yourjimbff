@@ -33,6 +33,7 @@ global.wUnit=()=>'lb';
 // hand, because naming them by hand is how three of them went missing in one
 // day and every one was swallowed by a try/catch.
 const {closure}=require('./_lift.cjs');
+const _dsToday=new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
 const CL=closure(['_citeDayBody','_citeSessionNoun','_bfItemsFor','_citeClip','_jvNum','_citeWhen','CITE_MAX']);
 eval(CL.code);
 guard(['CITE_MAX','_jvNum','_citeClip','_citeWhen','_citeDayBody','_citeSessionNoun','_bfItemsFor'], n=>eval(n));
@@ -90,7 +91,7 @@ t(/(^|\n)Walk\n/.test(_citeDayBody([{kind:'wo', data:{title:'Walk', description:
   'it is just the title then, with no dash left dangling');
 t(/Push: 45 min/.test(_citeDayBody([{kind:'wo', data:{title:'Push', duration:45, date_str:'Aug 26, 2026'}}])),
   'and a numeric duration still reads as minutes');
-t(lines.length===9, 'opener, five items, the Summary label and its two lines', lines.length+' lines');
+t(lines.length===7, 'opener, five items, the food totals line - no Summary (7 Sep)', lines.length+' lines');
 
 // ===== ORDERED BY WHEN SHE ATE IT (Yusuf, from his screenshot, 28 Aug) =
 // His draft showed a Snack above a Breakfast. The feed sorts by _feedTs, which
@@ -120,23 +121,22 @@ t(_citeDayMins({kind:'food', data:{eat_time:'9:30 PM'}})===21*60+30, 'a meal is 
 t(_citeDayMins({kind:'wo', ts:Date.parse('2026-08-27T12:00:00Z'), data:{}})>=0, 'and anything else by when it was recorded');
 
 console.log('\n  THE SUMMARY:');
-t(/\nSummary:\n/.test(body), 'it has its own label on its own line');
-t(/Summary:\n1,690 cal and 99g protein across 4 meals\n/.test(body), 'food totals first, and they add up', '80+360+360+890=1,690');
-t(/\n1 walk$/m.test(body), 'then the activity, named the way he would say it');
+t(!/\nSummary:\n/.test(body), 'no Summary label - the list already says what the day was (Yusuf, 7 Sep)');
+t(/\n1,690 cal and 99g protein across 4 meals$/m.test(body), 'the food totals stay, on their own line, and they add up', '80+360+360+890=1,690');
+t(!/\n1 walk$/m.test(body), 'and no tally of sessions under a list that already names them');
 t(!/1690/.test(body), 'the figure carries its comma');
-t(_citeDayBody([DAY[0]]).indexOf('Walk')<0 && _citeDayBody([DAY[0]]).indexOf('\nSummary:\n')>-1,
+t(_citeDayBody([DAY[0]]).indexOf('Walk')<0 && _citeDayBody([DAY[0]]).indexOf('Summary')<0,
   'a day with no activity gets no activity line');
-t(/2 walks/.test(_citeDayBody([DAY[1],DAY[1]])), 'two of the same session pluralise');
+t(!/2 walks/.test(_citeDayBody([DAY[1],DAY[1]])) && (_citeDayBody([DAY[1],DAY[1]]).match(/\nWalk/g)||[]).length===2, 'two of the same session are listed twice, never tallied');
 // The Push carries a ts an hour after the walk, or it would fall back to
 // midnight and sort ahead of it — the fixture trap, one more time.
-t(/\n1 walk\n1 push session/.test(_citeDayBody([DAY[1],
-    {kind:'wo', ts:Date.parse('2026-08-26T16:15:00Z'), data:{title:'Push',description:'Push',date_str:'Aug 26, 2026',logged_at:'2026-08-26T16:15:00+00:00'}}])),
-  'and two different ones each get their OWN line, never a tally on one');
+t((function(){ var b=_citeDayBody([DAY[1], {kind:'wo', ts:Date.parse('2026-08-26T16:15:00Z'), data:{title:'Push',description:'Push',date_str:'Aug 26, 2026',logged_at:'2026-08-26T16:15:00+00:00'}}]); return /\nWalk/.test(b) && /\nPush/.test(b) && !/1 push session/.test(b); })(),
+  'and two different ones are each listed as themselves, never tallied');
 
 console.log('\n  SPACING — a blank line between every item (his feng shui):');
 // Which item comes first depends on the reader's zone once a workout is in the
 // day, so this asserts the blank line under the HEADING, not under a named item.
-t(/^[^\n]+:\n\n[^\n]/.test(body), 'after the opening line');
+t(/^On [^\n]+ - \n\n[^\n]/.test(body), 'after the opening line');
 // Not a fixed pair any more: the walk's place among her meals depends on the
 // reader's zone (see the ordering note above), so this asserts the SHAPE.
 t(/\)\n\nWalk\n/.test(body) || /\n\nWalk\n\n/.test(body), 'and between the items');
@@ -149,11 +149,8 @@ console.log('\n  SAME VOICE AS THE SINGLE CITE:');
 // with a blank paragraph for his comment. Both are gone: the report simply
 // quotes the day, and his comment goes at the BOTTOM where the cursor lands.
 t(!/^\s/.test(body), 'no blank line at the top — it starts with the report');
-t(!/On your day/.test(body), 'and it no longer announces itself');
-t(/^[A-Z][^\n:]*:\n\n/.test(body), 'the first line is the day, as a heading', JSON.stringify(body.split('\n')[0]));
-t(/^(Yesterday|Today|Wednesday|Tuesday|Monday|Thursday|Friday|Saturday|Sunday)\b/.test(body)
-  || /^\w+day, \w+ \d/.test(body),
-  'in the natural style, with no "last" left on the front', JSON.stringify(body.split('\n')[0]));
+t(/^On (your (workout|food|weigh in|day)( today| yesterday)?|[A-Z]\w+day, \w+ \d+\w*) - $/m.test(body.split('\n')[0]), 'the first line is On your <what> <day> - , and his feedback follows the dash (Yusuf, 7 Sep)', JSON.stringify(body.split('\n')[0]));
+t(/^On your workout today - \n\nPush Day:\nDumbbell Lateral Raise/.test(_citeDayBody([{kind:'wo', data:{title:'Push Day', date_str:_dsToday, description:'Dumbbell Lateral Raise: 15 lb \u00d7 12\nBent Over Wide and High Row: 20 lb \u00d7 10'}}])), 'a workout-only day opens On your workout today, then the list', JSON.stringify(_citeDayBody([{kind:'wo', data:{title:'Push Day', date_str:_dsToday, description:'Dumbbell Lateral Raise: 15 lb \u00d7 12'}}]).split('\n').slice(0,3)));
 // The sign-off space: one blank line under the summary, then him.
 t(/\n\n$/.test(body) && !/\n\n\n$/.test(body), 'it ends with exactly one blank line for his comment');
 const signed=body+'Great work Kelly, this is exactly the consistency we want.';
@@ -234,11 +231,11 @@ t(/Glutes:\nBarbell Hip Thrust\nHamstring Curl/.test(kSign) && kSign.indexOf('Ki
   'and a sign-off under the list is not listed as an exercise');
 
 console.log('\n  3. THE SUMMARY SPEAKS:');
-t(/Summary:\n1,320 cal and 58g protein across 3 meals\n1 glute training session\n1 bike ride \(20 minute intense cardio\)/.test(kb),
-  'exactly the three lines he asked for');
+t(/\n1,320 cal and 58g protein across 3 meals\n\n$/.test(kb) && !/Summary/.test(kb) && !/1 glute training session/.test(kb),
+  'the totals line, and no Summary tally (7 Sep)');
 t(!/1 Glutes/.test(kb) && !/1 Bike/.test(kb), 'and never the old tally of titles');
 // THEIR WORDS ONLY. The parenthetical is her description, not a phrase built here.
-t(/\(20 minute intense cardio\)/.test(kb), 'the note in brackets is her own sentence');
+t(/Bike: 20 minute intense cardio/.test(kb), 'her own sentence rides on the bike line, not in a summary bracket');
 t(_citeDayBody([KELLY[3],KELLY[3]]).indexOf('(20 minute intense cardio)')<0,
   'and it is held back when a title appears twice, because it belongs to one of them');
 // The namer, on the shapes this roster actually holds.
