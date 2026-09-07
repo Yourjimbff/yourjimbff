@@ -46,6 +46,15 @@ t(S[2].top.wt===305 && S[2].sets.length===4, 'the Jim day has its four sets');
 t(S[0].top.reps===8, 'the top set carries its reps');
 t(_exhSessions('Squat', setRows, woRows).length===2, 'and a different movement gets only its own rows');
 t(_exhSessions('Hack Squat', setRows, woRows).length===0, 'a movement never logged has no sessions - never a made-up one');
+// Found on the trainer's own Cable Bicep Curls: six rows, weight null, reps 10.
+const repsOnly=[{exercise:'Cable Bicep Curls', weight:null, reps:'10', date_str:'Aug 8, 2026', logged_at:'2026-08-08T22:26:00Z'},
+                {exercise:'Cable Bicep Curls', weight:null, reps:'10', date_str:'Aug 8, 2026', logged_at:'2026-08-08T22:27:00Z'}];
+const RO=_exhSessions('Cable Bicep Curls', repsOnly, []);
+t(RO.length===1 && RO[0].sets.length===2 && RO[0].top===null, 'a set with reps and no weight is still a session - it just has no top set');
+const roH=_exhHtml('Cable Bicep Curls', RO, {felt:0,rated:0}, '');
+t(/1 session logged, no weight on any of them yet/.test(roH) && !/Nothing logged/.test(roH), 'and the sheet says THAT, not "nothing logged"');
+t(!/exhBest/.test(roH) && !/<polyline/.test(roH), 'no best and no line without a weight - never a made-up number');
+t(/exhRowW">—</.test(roH), 'the session row shows a dash where the weight would be');
 
 console.log('\n  FELT IT, FROM THE CONNECTION CHECK-INS THAT ALREADY EXIST:');
 const mi=[
