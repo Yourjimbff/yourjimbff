@@ -106,6 +106,11 @@ t(_dfTells("Hows the gym? Whats today? Free friday?").length>0 && _DF_HARD.index
 t(_dfTellsHtml('')==='' && _dfTellsHtml("Thats what im talking about")==='', 'a clean draft draws nothing at all');
 t(/dfTells span\{/.test(src) && !/\+'\.dfTells span\{[^']*\n/.test(src), 'styled, one quoted line per rule');
 
+// JIM IS "IT" (law, 7 Sep)
+t(_dfTells('Jim couldnt put numbers on it and then he told you it didnt save').indexOf('jim as he')>=0, 'Jim then he, same breath - refused');
+t(_dfTells('The app could not put numbers on it and told you it didnt save').indexOf('jim as he')<0, 'the app, it - fine');
+t(_dfTells('Jim logged it. He is a good client.').indexOf('jim as he')<0, 'a he in the next sentence is a person, not Jim');
+
 console.log();
 if(bad){ console.log('  '+bad+' FAILED'); process.exit(1); }
 console.log('  all tells assertions pass');
