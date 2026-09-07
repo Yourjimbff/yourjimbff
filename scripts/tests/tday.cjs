@@ -73,4 +73,14 @@ console.log((dup===0?'  ok    ':'  FAIL  ')+'no call site repeats one straight a
   +(dup?('  '+where.join(', ')):''));
 
 console.log(bad? '\n'+bad+' FAILED' : '\nall '+C.length+' pass');
+
+// THE SPLIT IS THE DAY (Yusuf, 7 Sep 6am)
+const t=(pass,label)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  FAIL  ')+label); };
+(function(){
+  const src=L.join('\n'); const slot=src.slice(src.indexOf('function _tlSlot('), src.indexOf('function _tlSlot(')+2600);
+  t(/var _onNow=\(_progOn\(\) \|\| _hasPlan\);/.test(slot) && /var _pOn=_onNow;/.test(slot), 'a resolved plan shows on the hero even when a device carries an old freestyle flag');
+  const po=src.slice(src.indexOf('function _progOn(){'), src.indexOf('\n}', src.indexOf('function _progOn(){')));
+  t(/if\(!cl \|\| !cl\.code\) return true;/.test(po) && !/'x'/.test(po), 'and with no account known the programme is on - never the key for nobody');
+})();
+
 process.exit(bad?1:0);
