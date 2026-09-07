@@ -19,7 +19,7 @@ const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  F
 global.window={}; global.document={getElementById:()=>null};
 global._escHtml=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const MINE=['_dfTells','_dfTellsHtml'];
-eval(closure(['_DF_HARD','_dfLet']).code||'');
+eval(closure(['_DF_HARD','_dfLet','_dfHardTells']).code||'');
 eval(MINE.map(defOf).join('\n'));
 guard(MINE, n=>eval(n));
 
@@ -110,6 +110,17 @@ t(/dfTells span\{/.test(src) && !/\+'\.dfTells span\{[^']*\n/.test(src), 'styled
 t(_dfTells('Jim couldnt put numbers on it and then he told you it didnt save').indexOf('jim as he')>=0, 'Jim then he, same breath - refused');
 t(_dfTells('The app could not put numbers on it and told you it didnt save').indexOf('jim as he')<0, 'the app, it - fine');
 t(_dfTells('Jim logged it. He is a good client.').indexOf('jim as he')<0, 'a he in the next sentence is a person, not Jim');
+
+// HOW HE ACTUALLY TEXTS (Yusuf, 7 Sep: "Is that how I write messages?")
+// Measured over 9,398 of his outgoing texts: 91% start with a capital, 1% lowercase.
+t(_dfHardTells('nothing in from you yesterday\n\nyou still lifting?').indexOf('lowercase start')>=0, 'a lowercase opener is refused');
+t(_dfHardTells('nothing in from you yesterday').indexOf('cold open')>=0, 'and leading with the absence is refused - a ledger talking');
+t(_dfHardTells('Quiet weekend on the app\n\nyou good?').indexOf('cold open')>=0, 'quiet weekend too');
+t(_dfHardTells('0 logged yesterday\n\nGym mother fucker?').indexOf('cold open')>=0, 'and a zero');
+t(_dfHardTells("Whats up dude! Just checking in on you - noticed you might not have tracked anything yet").length===0, 'his own line about a quiet client passes: greeting first, the observation inside care');
+t(_dfHardTells("Whats up dude! Haven't seen anything logged past few days in the app - just checking in to make sure progress is still going smooth?").length===0, 'and the other one');
+t(_dfHardTells('Just checking in!').indexOf('phrase he never uses')>=0, '"just checking in" alone is still the tell');
+t(_dfHardTells('179.7 friday, nothing since').indexOf('lowercase start')<0, 'a number is not a lowercase letter');
 
 console.log();
 if(bad){ console.log('  '+bad+' FAILED'); process.exit(1); }

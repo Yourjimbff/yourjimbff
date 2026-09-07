@@ -37,7 +37,7 @@ t(_dfHardTells("keep it up man").length>0, 'a phrase he has never used stops it'
 t(_dfHardTells("So you had a rough week").length>0, 'repeating them back stops it');
 t(_dfHardTells("Hows the gym? Whats today? Free friday?").length===0,
   'a question stack does NOT stop it - he writes those himself, it only marks');
-t(_dfHardTells(Array(50).fill('word').join(' ')).length===0, 'and a long block only marks');
+t(_dfHardTells('Word '+Array(50).fill('word').join(' ')).length===0, 'and a long block only marks');
 t(_dfHardTells(CLEAN).length===0, 'a clean draft stops nothing');
 t(_dfHardTells('').length===0, 'an empty draft is not a ban');
 
