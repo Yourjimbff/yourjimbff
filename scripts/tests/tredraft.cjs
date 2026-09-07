@@ -40,7 +40,7 @@ const AND={id:'a1',code:'andreaa1',status:'pending',at:'2026-09-07T17:00:00Z',by
 _crm.rows=[AND];
 _crm.contacts={andreaa1:{him:'2026-09-07T15:00',them:'2026-09-07T21:19',last:'them',text:'App is definitely a lot better!! Smooth the past couple uses'}};
 t(_crmStaleDraft('andreaa1',AND)===true,'her 5:19pm text is newer than the draft, so it is stale');
-answer='Hell yeah - that is what I want to hear. Whats been the easiest part';
+answer='Thats what I want to hear - whats been the easiest part';
 (async()=>{
   let r=await _crmRedraftOne('andreaa1',AND);
   t(r.ok===true,'the draft is rewritten from her text', r.reason);
@@ -69,6 +69,14 @@ answer='Hell yeah - that is what I want to hear. Whats been the easiest part';
   t(asked.length===2 && /failed these checks/.test(asked[1]),'the second ask names the tells');
   t(written.length===0,'nothing bad reaches the board');
 
+  console.log('\n  SWEARING IS PER PERSON:');
+  written=[]; asked=[]; answer='Holy shit thats incredible - congratulations';
+  r=await _crmRedraftOne('andreaa1',AND);
+  t(r.ok===false && /swearing/.test(r.reason),'Andrea gets none, even when she swore first (the real 5:19pm row)', r.reason);
+  _crm.contacts.dhruvad1={him:'2026-09-07T15:00',them:'2026-09-07T21:06',last:'them',text:'are you free tomorrow?'};
+  written=[]; asked=[]; answer='Hell yeah - what time works for you';
+  r=await _crmRedraftOne('dhruvad1',{id:'d0',code:'dhruvad1',status:'pending',at:'2026-09-07T17:00:00Z',by:'jarvis',text:'x'});
+  t(r.ok===true,'Dhruva can get a hell yeah', r.reason);
   console.log('\n  THE SWEEP OF THE BOARD:');
   written=[]; asked=[]; answer='Sure - what time works for you';
   const DH={id:'d1',code:'dhruvad1',status:'pending',at:'2026-09-07T17:00:00Z',by:'jarvis',text:'Earth to Dhruva - accountability check point. Locked in this week? Hows it going'};
