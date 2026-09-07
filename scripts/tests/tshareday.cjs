@@ -186,7 +186,10 @@ console.log('\n  THE PER-MEAL SHARE IS UNTOUCHED — one meal is its whole job:'
 t(/function citeFeedItem\(idx\)\{/.test(src.replace(/\s+/g,' ').replace(/function citeFeedItem\(idx\)\s*\{/,'function citeFeedItem(idx){')),
   'citeFeedItem still exists');
 const single=fnAt('_citeBody');
-t(/On your '\+_citeClip\(nm\)\+when/.test(single), 'and the single-meal cite still reads exactly as it did');
+t(/Saw the '\+_citeClip\(nm\)\.toLowerCase\(\)\+when/.test(single), 'and the single-meal cite is one line in his voice: saw the <meal> (7 Sep)');
+t(/return 'Saw the '\+title\.toLowerCase\(\)\+when\+'\\n\\n';/.test(single) && !/_bfItemsFor\(row\)/.test(single), 'a workout share names the session and never recites the exercises (7 Sep, Leandra)');
+const tc=src.slice(src.indexOf('function textClient('), src.indexOf('function textClient(')+5000);
+t(/_pdAge>26\*3600\*1000/.test(tc) && /_crmOvertaken\(code, _pd\)/.test(tc) && /_pd\.text && _pdLive/.test(tc), 'a stale or overtaken board draft never rides on top of a share');
 
 console.log('\n  AN EMPTY DAY STILL OPENS A PLAIN TEXT, never a refusal:');
 t(_citeDayBody([])==='', 'nothing to quote gives an empty body');
