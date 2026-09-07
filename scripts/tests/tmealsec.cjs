@@ -34,15 +34,21 @@ const meal = (name,c,p) => ({name:name, calories:c, protein:p});
 const S = o => Object.assign({breakfast:[],lunch:[],dinner:[],snack:[]}, o||{});
 const sec = (slots, isToday, isAhead) => _tlMealSection('Sep 3, 2026', S(slots), !!isToday, !!isAhead);
 
-console.log('\nAN EMPTY DAY DRAWS NOTHING AT ALL — this is the whole point:');
+console.log('\nAN EMPTY PAST DAY DRAWS NOTHING; TODAY ALWAYS HAS ITS DOORS (Yusuf, 7 Sep 6am):');
+// SUPERSEDED 7 Sep, by him, off Ali's screen at 6am: "do you realize youve
+// removed the meal sections on the main day page?" Before 9am the ladder is on
+// the walk, so a client with nothing logged saw no meal row at all. Today now
+// always draws the meal door rows (Breakfast, Lunch, Dinner - the small rows he
+// saw on his own day and kept). A past or future day with nothing on it still
+// draws nothing, and snack is still never listed unasked.
 DUE = null;
-t(sec({}, true) === '', 'today with nothing logged and nothing due is empty');
+t(sec({}, true) !== '' && /data-key="breakfast"/.test(sec({}, true)) && /data-key="lunch"/.test(sec({}, true)) && /data-key="dinner"/.test(sec({}, true)),
+  'today with nothing logged and nothing due still has Breakfast, Lunch and Dinner doors');
 t(sec({}, false) === '', 'a past day with nothing logged is empty');
 t(sec({}, false, true) === '', 'a day still ahead is empty');
-t(!/Breakfast/.test(sec({dinner:[meal('steak',900,90)]}, true)),
-  'and a day with only dinner does NOT draw an empty Breakfast box');
-t(!/Lunch/.test(sec({dinner:[meal('steak',900,90)]}, true)), '...nor an empty Lunch');
-t(!/Snack/.test(sec({dinner:[meal('steak',900,90)]}, true)), '...nor an empty Snack');
+t(/Breakfast/.test(sec({dinner:[meal('steak',900,90)]}, true)),
+  'and a day with only dinner still has the Breakfast door');
+t(!/Snack/.test(sec({dinner:[meal('steak',900,90)]}, true)), '...but never an unasked Snack');
 
 // SUPERSEDED 4 Sep, by him, off his own screen: "if hes logged breakfast, which
 // he has, we can remove that under the meals category below. its redundant. just
@@ -109,8 +115,8 @@ global.window = {};
 console.log('\nTHE WALK IS NOT A MEAL:');
 // _duePrompt's ladder starts with 'walk', which shares the hour with breakfast.
 DUE = 'walk';
-t(sec({}, true) === '', 'a due walk does not open a meal section');
-t(!/tlMealAsk/.test(sec({dinner:[meal('steak',900,90)]}, true)), '...nor add a meal ask');
+t(!/data-key="walk"/.test(sec({}, true)) && /data-key="breakfast"/.test(sec({}, true)), 'a due walk is not a meal row - the meal doors are there on their own');
+t(!/Add walk/.test(sec({dinner:[meal('steak',900,90)]}, true)), '...and never becomes a meal ask');
 
 // ===== SKIPPED IS AN ANSWER (Yusuf, 4 Sep) ================================
 // "should be an option to hit 'skipped' if its past breakfast time."
