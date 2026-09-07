@@ -91,7 +91,7 @@ console.log('\n  WHERE IT SITS AND WHAT IT COSTS:');
 const src=fs.readFileSync('index.html','utf8');
 const paint=src.slice(src.indexOf('function crmPaint(){'), src.indexOf('function _crmFit(ta){'));
 t(paint.indexOf('_crmLeadsHtml()')>0, 'the band is drawn by crmPaint');
-t(paint.indexOf('_crmLeadsHtml()')<paint.indexOf('crmSortRow'), 'above the board, so he never scrolls to find a sale');
+t(paint.indexOf('_crmLeadsHtml()')<paint.indexOf('<div class="crmRows">'), 'above the board, so he never scrolls to find a sale');
 t(/try\{ h\+=_crmLeadsHtml\(\); \}catch\(e\)\{\}/.test(paint), 'and it can never take the board down with it');
 t(!/sbSelect|dfWrite|fetch\(/.test(src.slice(src.indexOf('function _crmLeadHit('), src.indexOf('/* ===== HOW IT ACTUALLY LANDS'))),
   'it reads the sweep already on the board - no read, no write, nothing new to be slow');

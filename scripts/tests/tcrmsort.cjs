@@ -19,7 +19,7 @@ const t=(ok,label,extra)=>{ if(!ok) bad++;
   console.log((ok?'  ok    ':'  FAIL  ')+label+(extra?('  '+extra):'')); };
 
 console.log('  it opens on the conversations:');
-t(/filter:'all', sort:'recent'\}/.test(src), 'everyone, newest conversation first');
+t(/filter:'waiting', sort:'recent'\}/.test(src), 'opens on the queue, newest conversation first (7 Sep: simple is better)');
 const sorts=src.slice(src.indexOf('var _CRM_SORTS=['), src.indexOf('var _CRM_SORTS=[')+320);
 t(/\{k:'recent'/.test(sorts),        'Recent is a sort');
 t(sorts.indexOf("'recent'")<sorts.indexOf("'wait'"), 'and it leads the row');
@@ -44,7 +44,7 @@ console.log('\n  every row says who spoke last, when, and what they said:');
 const cl=src.slice(src.indexOf('function _crmConvLine(code){'), src.indexOf('var _CRM_SORTS=['));
 t(/crmConvWho/.test(cl) && /crmConvAgo/.test(cl) && /crmConvTxt/.test(cl), 'all three parts');
 t(/_escHtml\(txt\)/.test(cl),              'their words are escaped, never rewritten');
-t(/slice\(0,89\)/.test(cl),                'and truncated rather than wrapped');
+t(/slice\(0,109\)/.test(cl),                'and truncated rather than wrapped');
 t((src.match(/_crmConvLine\(p\.code\)/g)||[]).length===1 && /line=_crmConvLine\(code\)/.test(src) && (src.match(/_crmMore\(p, (d|null)\)/g)||[]).length>=2,
   'it is on the drafted row and the bare row (as the one line that opens, 7 Sep) and the already-spoken row',
   (src.match(/_crmConvLine\(p\.code\)/g)||[]).length+' call sites');
