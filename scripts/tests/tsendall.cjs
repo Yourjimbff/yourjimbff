@@ -19,6 +19,8 @@ const fn=src.slice(src.indexOf('function _jvSendAllList('), src.indexOf('async f
 t(/d\.status!=='pending'/.test(fn) && /_crmOvertaken\(p\.code, d\)/.test(fn) && /_dfHardTells\(d\.text\)\.length/.test(fn) && /\.phone\)\)\{ held\.phone\+\+/.test(fn),
   'pending, not overtaken by his own thumb, no banned construction, has a number - same four rules as the Send-all button');
 t(/held\.tell\+\+/.test(fn), 'what is held back for a banned line is counted, not hidden');
+t(/_age>26\*3600\*1000\)\{ held\.stale\+\+; return; \}/.test(fn), 'a draft older than a day is held - a spoken send-all cannot see the text, and 34 three-day-old rows were on the board the night this shipped');
+t(/isNaN\(_age\)/.test(fn) && /!\(d\.at\)/.test(fn), 'a draft with no date is held too - never assumed fresh');
 const cmd=src.slice(src.indexOf('async function _jvSendAllCommand('), src.indexOf('async function _jvBookCommand('));
 t(/isTrainer\(cl\.code\)/.test(cmd) && /if\(!isTr\) return null;/.test(cmd), 'trainer only - a client saying it gets nothing');
 t(/authorised_by:'Yusuf, in Jarvis: "'\+t\+'"'/.test(cmd), 'his exact words ride on the order');
