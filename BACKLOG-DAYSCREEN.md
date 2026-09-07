@@ -121,3 +121,35 @@ no new plumbing:
   notes       their sentiment, if they gave any
   photo       optional
   date_str    the day they are on, not the UTC day
+
+## 7 SEP, SHIPPED (v7.981.090 through .104)
+
+.090  Food label. Start on the session. Stats block: the weight card off
+      Progress (half size, the line, the door), gone from Progress.
+.092  Jim asks for numbers on a food he cannot price instead of saying it
+      did not save (LeAndra M, 3 and 6 Sep).
+.094  Exercise history: tap a movement on Program - best, line, felt-it,
+      last five. Both sources (set_logs + Jim lines).
+.096  Program page is a workout page: calls and food off it, seven-cell
+      week, today open with Start. The call moved to the front page as a
+      third host of the same card. scripts/jarvis/program-edit.js; Chris's
+      pull days changed on Yusuf's order.
+.098  History counts reps-only sets as sessions.
+.100  Photos and steps fold INTO the weight card (his drawing). Test lifter:
+      three real bugs fixed (block comments chased, one-line var with a
+      trailing comment, single-quote-first string stripping).
+.102  The check in: Training / Sleep / Nutrition / Progress under the stats,
+      drop down, stack, Save writes journal_entries shared:true on every
+      rung. The call button sits at the top of the block.
+.104  Builder: move up/down, make a rest day, add a session (eight kinds),
+      Tell Jim box. Not on a programme Yusuf built.
+
+## STILL OPEN
+
+- Jim acting on "Change my program: ..." beyond swaps (reps, sets, add).
+  Needs the confirm-before-write gate the day has.
+- The programs table (Yusuf-built programmes) has no Jarvis edit path yet.
+- The Jim bar on the Day page - still there, "elim jim bar?" was a question.
+- Everything above proven on the served file and in the browser pane; the
+  DAY PAGE is proven on his iPhone (his screenshot, 6 Sep 8:30pm, at .090).
+  .100 to .104 are not.

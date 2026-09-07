@@ -76,6 +76,8 @@ t(/class="dwLine" data-tl="steps"/.test(h) && /Add<span class="dwChev">/.test(h)
 progressPhotos=[];
 h=_dayWeightHtml(ds);
 t((h.match(/class="dwPh" data-tl="ppview"/g)||[]).length===0 && /dwPhAdd/.test(h), 'no photos yet: just the +, no empty frames');
+// His phone, 7 Sep 9:18pm: the lone + grew to fill the card. A tile never flexes.
+t(/\.dwPh\{flex:0 0 calc\(\(100% - 21px\) \/ 4\);/.test(src), 'a tile is a fixed quarter of the row - one alone does not grow to fill the card');
 window._wtAll=[];
 h=_dayWeightHtml(ds);
 t(/No weigh-ins yet/.test(h) && /dwPhAdd/.test(h) && /data-tl="steps"/.test(h), 'even with no weigh-ins the card carries the photo + and the steps line');
