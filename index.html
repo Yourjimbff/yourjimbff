@@ -34771,8 +34771,78 @@ async function _jvCancelCommand(t){
 var _JV_SOLO_EVENT_RE=new RegExp('\\b(?:walk|walks|walking|run|running|jog|jogging|gym|workout|training|train|lift|lifting'
   +'|cardio|stairmaster|treadmill|bike|biking|cycle|cycling|swim|swimming|row|rowing|yoga|pilates|stretch|stretching'
   +'|sauna|steam|class|reminder|remind|block|checkpoint|meditation|meditate|steps)\\b','i');
+/* ===== SEND ALL MESSAGES (Yusuf, order, 7 Sep) ==============================
+   "the CRM queue to be queued up perfectly tomorrow morning for me to be able
+    to basically say send all messages and then Jarvis says send messages to X
+    amount of clients in the queue."
+
+   ONE ORDER, THE WHOLE QUEUE. His spoken sentence is the authorisation, and
+   it rides on every message that goes: the order row carries his exact words,
+   and the Mac's send watch stamps them on each text it sends. The same gate
+   the board's Send-all button uses decides who is in the queue - a pending
+   draft, with text, with a number, not already overtaken by his own thumb,
+   and carrying NO banned construction. What is held back is counted and said.
+
+   HOW IT SENDS. The app cannot send an iMessage. It writes ONE [SENDALL] row
+   to journal_entries on his own code - the order - and moves each draft to opened, the same as a
+   tap on Send does. send_watch.py on the Mac reads the order within a minute,
+   resolves each client's number from its own local map, and sends. The sweep
+   then sees the text in the thread and settles the draft to sent. */
+var _JV_SENDALL_RE=/^\s*(?:(?:send|fire off|push out)\s+(?:all|every|the)\s+(?:messages?|texts?|drafts?|queue)(?:\s+(?:in\s+the\s+queue|to\s+everyone|now))?|send\s+the\s+queue|send\s+all|send\s+everything(?:\s+in\s+the\s+queue)?)\s*[.!]?\s*$/i;
+function _jvSendAllList(){
+  var out=[], held={tell:0, phone:0};
+  try{ _jvHydratePhones(); }catch(e){}
+  var ppl=[]; try{ ppl=_crmPeople()||[]; }catch(e){ ppl=[]; }
+  ppl.forEach(function(p){
+    var d=p&&p.draft; if(!d) return;
+    if(d.status!=='pending') return;
+    if(!String(d.text||'').trim()) return;
+    try{ if(_crmOvertaken(p.code, d)) return; }catch(e){}
+    try{ if(_dfHardTells(d.text).length){ held.tell++; return; } }catch(e){}
+    if(!((CLIENTS[p.code]||{}).phone)){ held.phone++; return; }
+    out.push({draftId:d.id, code:p.code, name:p.name||p.code, text:String(d.text), phone:String((CLIENTS[p.code]||{}).phone||''), draft:d});
+  });
+  return {items:out, held:held};
+}
+async function _jvSendAllCommand(text){
+  var t=String(text||'').trim();
+  if(!_JV_SENDALL_RE.test(t)) return null;
+  var isTr=false; try{ isTr=!!(cl && typeof isTrainer==='function' && isTrainer(cl.code)); }catch(e){}
+  if(!isTr) return null;
+  try{ await dfLoadAll(); }catch(e){}
+  var q=_jvSendAllList();
+  var tail=(q.held.tell?(' '+q.held.tell+' held back for a banned line.'):'')+(q.held.phone?(' '+q.held.phone+' with no number.'):'');
+  if(!q.items.length) return 'Nothing in the queue to send.'+tail;
+  var orderId='sa-'+Date.now().toString(36);
+  var order={orderId:orderId, at:new Date().toISOString(), authorised_by:'Yusuf, in Jarvis: "'+t+'"',
+             count:q.items.length,
+             /* the number rides in the order: the send watch never looks one up */
+             items:q.items.map(function(i){ return {draftId:i.draftId, code:i.code, name:i.name, phone:i.phone, text:i.text}; })};
+  /* journal_entries, not client_notes: the Mac reads with the anon key and
+     client_notes is locked to it (42501). His own journal row, entry_type
+     sendall, shared:false, so it lands on no feed and no client. */
+  var w=null;
+  try{ w=await sbInsertReturning('journal_entries',{client_code:cl.code, body:'[SENDALL] '+JSON.stringify(order), entry_type:'sendall', title:'Send all', shared:false, date_str:_tlDateStr(new Date()), logged_at:new Date().toISOString()},'id'); }catch(e){ w=null; }
+  if(!w){ try{ w=await sbInsertReturning('journal_entries',{client_code:cl.code, body:'[SENDALL] '+JSON.stringify(order), shared:false, logged_at:new Date().toISOString()},'id'); }catch(e){ w=null; } }
+  if(!w) return 'I could not write the send order. Nothing went.';
+  /* Each draft moves to opened, the way a tap on Send moves it; the sweep
+     settles it to sent once the text is in the thread. One reload at the end. */
+  for(var i=0;i<q.items.length;i++){
+    var d=q.items[i].draft;
+    var next={id:d.id, text:d.text, at:d.at, re:d.re, status:'opened', by:d.by||'jarvis',
+              src:(d.src||undefined), day:(d.day||undefined), ctx:(d.ctx||undefined),
+              openedAt:new Date().toISOString(), via:'sendall', order:orderId};
+    try{ await dfWrite(q.items[i].code, next); }catch(e){}
+  }
+  try{ await dfLoadAll(); }catch(e){}
+  try{ if(typeof crmRender==='function') crmRender(); }catch(e){}
+  return 'Sending messages to '+q.items.length+' client'+(q.items.length===1?'':'s')+' in the queue.'+tail;
+}
 async function _jvBookCommand(text){
   var t=String(text||'').trim();
+  /* "send all messages" is answered before anything tries to read a name out
+     of it. Trainer only; a client saying it gets nothing from here. */
+  try{ var _sa=await _jvSendAllCommand(t); if(_sa) return _sa; }catch(e){ console.error('send all', e); }
   // The trigger word routes BEFORE any roster resolution, so a lead's name is
   // never handed to the client resolver in the first place.
   try{ var _cs=await _csConsultCommand(t); if(_cs) return _cs; }catch(e){ console.error('consult command',e); }
