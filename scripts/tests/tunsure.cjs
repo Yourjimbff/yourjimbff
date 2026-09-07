@@ -46,7 +46,11 @@ t(/return false;/.test(lf.slice(0,2600)),                          'still false 
 
 console.log('\n  and the sentence is the true one:');
 t(/_allUnsure/.test(src),                    'the reply asks whether every shortfall was an unsure write');
-t(/_unsure\.length >= \(_foodExpected-_foodVerified\)/.test(src), 'every one of them, not merely one');
+// _short is (_foodExpected-_foodVerified); the no-numbers refusals (LeAndra M,
+// 6 Sep) are counted beside the unsure ones, so a turn of one refusal plus one
+// unconfirmed row speaks both true sentences instead of the failure line.
+t(/var _short=\(_foodExpected-_foodVerified\);/.test(src) && /\(_unsure\.length \+ _noMac\.length\) >= _short/.test(src),
+  'every one of them, not merely one');
 t(/Do not log it again, it is there/.test(src), 'the uncertain line tells her NOT to type it again');
 t(/already on your log/.test(src),           'and a duplicate says the meal is already down');
 const tail=src.slice(src.indexOf('var _allUnsure'), src.indexOf('var _allUnsure')+2200);
