@@ -69,8 +69,8 @@ t((src.match(/function _crmMatch\(/g)||[]).length===1, 'and there is exactly ONE
   (src.match(/function _crmMatch\(/g)||[]).length+' definition(s)');
 const mt=src.slice(src.indexOf('function _crmMatch(pp){'), src.indexOf('function _crmMatch(pp){')+400);
 t(/_crm\.q/.test(mt),                          'it reads the search box off _crm.q itself');
-t((src.match(/\.filter\(_crmMatch\)/g)||[]).length===2,
-  'the board and the batch queue both narrow through it',
+t((src.match(/\.filter\(_crmMatch\)/g)||[]).length===3,
+  'the board, the batch queue and the picker all narrow through it',
   (src.match(/\.filter\(_crmMatch\)/g)||[]).length+' call site(s)');
 
 console.log('\n  the run never hangs on one event:');

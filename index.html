@@ -34819,6 +34819,66 @@ function _jvSendAllList(){
 function _jeMachine(j){
   try{ return !!(j && (j.entry_type==='sendall' || /^\[SENDALL\]/.test(String(j.body||'')))); }catch(e){ return false; }
 }
+/* ONE ORDER, WHOEVER PICKED THE NAMES. The spoken "send all messages" and
+   the checkboxes on the board (Yusuf, 7 Sep: "select all that apply... hit
+   send... then should refresh and be clear and show that that message is
+   sent") both come through here. items are _jvSendAllList() rows. */
+async function _jvSendOrder(items, authorisedBy){
+  if(!items || !items.length) return {ok:false, reason:'nothing to send'};
+  var orderId='sa-'+Date.now().toString(36);
+  var order={orderId:orderId, at:new Date().toISOString(), authorised_by:String(authorisedBy||''),
+             count:items.length,
+             /* the number rides in the order: the send watch never looks one up */
+             items:items.map(function(i){ return {draftId:i.draftId, code:i.code, name:i.name, phone:i.phone, text:i.text}; })};
+  /* journal_entries, not client_notes: the Mac reads with the anon key and
+     client_notes is locked to it (42501). His own journal row, entry_type
+     sendall, shared:false, so it lands on no feed and no client. */
+  var w=null;
+  try{ w=await sbInsertReturning('journal_entries',{client_code:cl.code, body:'[SENDALL] '+JSON.stringify(order), entry_type:'sendall', title:'Send all', shared:false, date_str:_tlDateStr(new Date()), logged_at:new Date().toISOString()},'id'); }catch(e){ w=null; }
+  if(!w){ try{ w=await sbInsertReturning('journal_entries',{client_code:cl.code, body:'[SENDALL] '+JSON.stringify(order), shared:false, logged_at:new Date().toISOString()},'id'); }catch(e){ w=null; } }
+  if(!w) return {ok:false, reason:'the order did not write'};
+  /* Each draft moves to opened, the way a tap on Send moves it. The Mac
+     answers with a [SENDALL-RESULT] row and _jvSendAllReconcile settles each
+     one to sent, or back to pending with the reason. */
+  for(var i=0;i<items.length;i++){
+    var d=items[i].draft;
+    var next={id:d.id, text:d.text, at:d.at, re:d.re, status:'opened', by:d.by||'jarvis',
+              src:(d.src||undefined), day:(d.day||undefined), ctx:(d.ctx||undefined),
+              openedAt:new Date().toISOString(), via:'sendall', order:orderId};
+    try{ await dfWrite(items[i].code, next); }catch(e){}
+  }
+  try{ _crm.picked={}; }catch(e){}
+  try{ await dfLoadAll(); }catch(e){}
+  try{ if(typeof crmRender==='function') crmRender(); }catch(e){}
+  return {ok:true, orderId:orderId, n:items.length};
+}
+/* THE MAC ANSWERS BACK. send_watch.py writes a [SENDALL-RESULT] row on his
+   code for every item it handled. Each opened-via-sendall draft is settled
+   from it: ok -> sent, not ok -> back to pending with the reason on the
+   card. Runs on every board read, so a refresh after the send shows them
+   sent and off the board within a minute of the Mac sending. */
+async function _jvSendAllReconcile(){
+  var moved=0;
+  try{
+    var since=new Date(Date.now()-3*86400000).toISOString();
+    var rows=await sbSelect('journal_entries','client_code=eq.'+encodeURIComponent((cl&&cl.code)||'thegoat')+'&entry_type=eq.sendall-result&logged_at=gte.'+encodeURIComponent(since)+'&select=id,body,logged_at&order=logged_at.asc&limit=50');
+    if(!Array.isArray(rows) || !rows.length) return 0;
+    var open={};
+    (_crm.rows||[]).forEach(function(d){ if(d && d.status==='opened' && d.via==='sendall' && d.id) open[d.id]=d; });
+    for(var r=0;r<rows.length;r++){
+      var res=null; try{ res=JSON.parse(String(rows[r].body||'').replace(/^\[SENDALL-RESULT\]\s*/,'')); }catch(e){ res=null; }
+      if(!res || !Array.isArray(res.items)) continue;
+      for(var i=0;i<res.items.length;i++){
+        var it=res.items[i]; var d=open[it.draftId]; if(!d) continue;
+        if(String(d.order||'')!==String(res.orderId||'')) continue;
+        if(it.ok){ await dfSetStatus(d.code, d, 'sent', d.text, {openedAt:d.openedAt||null}); }
+        else { await dfSetStatus(d.code, d, 'pending', d.text, {openedAt:null, re:String(d.re||'')+' | the Mac could not send it: '+String(it.why||'unknown')}); }
+        delete open[it.draftId]; moved++;
+      }
+    }
+  }catch(e){}
+  return moved;
+}
 async function _jvSendAllCommand(text){
   var t=String(text||'').trim();
   if(!_JV_SENDALL_RE.test(t)) return null;
@@ -34828,29 +34888,8 @@ async function _jvSendAllCommand(text){
   var q=_jvSendAllList();
   var tail=(q.held.tell?(' '+q.held.tell+' held back for a banned line.'):'')+(q.held.stale?(' '+q.held.stale+' held back as older than a day.'):'')+(q.held.phone?(' '+q.held.phone+' with no number.'):'');
   if(!q.items.length) return 'Nothing in the queue to send.'+tail;
-  var orderId='sa-'+Date.now().toString(36);
-  var order={orderId:orderId, at:new Date().toISOString(), authorised_by:'Yusuf, in Jarvis: "'+t+'"',
-             count:q.items.length,
-             /* the number rides in the order: the send watch never looks one up */
-             items:q.items.map(function(i){ return {draftId:i.draftId, code:i.code, name:i.name, phone:i.phone, text:i.text}; })};
-  /* journal_entries, not client_notes: the Mac reads with the anon key and
-     client_notes is locked to it (42501). His own journal row, entry_type
-     sendall, shared:false, so it lands on no feed and no client. */
-  var w=null;
-  try{ w=await sbInsertReturning('journal_entries',{client_code:cl.code, body:'[SENDALL] '+JSON.stringify(order), entry_type:'sendall', title:'Send all', shared:false, date_str:_tlDateStr(new Date()), logged_at:new Date().toISOString()},'id'); }catch(e){ w=null; }
-  if(!w){ try{ w=await sbInsertReturning('journal_entries',{client_code:cl.code, body:'[SENDALL] '+JSON.stringify(order), shared:false, logged_at:new Date().toISOString()},'id'); }catch(e){ w=null; } }
-  if(!w) return 'I could not write the send order. Nothing went.';
-  /* Each draft moves to opened, the way a tap on Send moves it; the sweep
-     settles it to sent once the text is in the thread. One reload at the end. */
-  for(var i=0;i<q.items.length;i++){
-    var d=q.items[i].draft;
-    var next={id:d.id, text:d.text, at:d.at, re:d.re, status:'opened', by:d.by||'jarvis',
-              src:(d.src||undefined), day:(d.day||undefined), ctx:(d.ctx||undefined),
-              openedAt:new Date().toISOString(), via:'sendall', order:orderId};
-    try{ await dfWrite(q.items[i].code, next); }catch(e){}
-  }
-  try{ await dfLoadAll(); }catch(e){}
-  try{ if(typeof crmRender==='function') crmRender(); }catch(e){}
+  var w=await _jvSendOrder(q.items, 'Yusuf, in Jarvis: "'+t+'"');
+  if(!w.ok) return 'I could not write the send order. Nothing went.';
   return 'Sending messages to '+q.items.length+' client'+(q.items.length===1?'':'s')+' in the queue.'+tail;
 }
 async function _jvBookCommand(text){
@@ -90681,7 +90720,7 @@ window._dfPending = window._dfPending || {};
 window._dfLoaded  = false;
 window._dfBypass  = false;
 
-var _crm = {rows:null, loading:false, err:null, q:'', watch:false, at:0,
+var _crm = {rows:null, loading:false, err:null, q:'', watch:false, at:0, picked:{},
             sales:null, testims:[], beltI:0, beltT:null, host:'tCRM',
             contacts:{}, sweepAt:null, sig:'', poll:null, settling:false,
             /* HIS VIEW OF THE BOARD, KEPT (his addendum, rule 6: reaching for
@@ -91539,6 +91578,13 @@ function _crmStyle(){
   +'.crmBatchRow{display:flex;align-items:center;gap:11px;margin:2px 0 12px;flex-wrap:wrap;}'
   +'.crmDayBtn{background:transparent;color:var(--gold);border:1px solid rgba(224,196,152,0.42);border-radius:11px;padding:10px 18px;font-family:inherit;font-size:13.5px;font-weight:800;cursor:pointer;}'
   +'.crmBatchBtn{background:var(--gold);color:#000;border:none;border-radius:11px;padding:11px 20px;font-family:inherit;font-size:13.5px;font-weight:800;cursor:pointer;}'
+  +'.crmPick{flex:0 0 auto;align-self:center;width:18px;height:18px;border-radius:6px;border:1.5px solid rgba(240,236,228,0.35);margin-right:9px;cursor:pointer;position:relative;-webkit-tap-highlight-color:transparent;}'
+  +'.crmPick.on{background:var(--gold);border-color:var(--gold);}'
+  +'.crmPick.on::after{content:"";position:absolute;left:5px;top:1.5px;width:5px;height:9px;border:solid #000;border-width:0 2px 2px 0;transform:rotate(45deg);}'
+  +'.crmRow.picked{border-color:rgba(245,197,24,0.45);}'
+  +'.crmPickBar{position:sticky;bottom:calc(84px + env(safe-area-inset-bottom,0px));z-index:5;display:flex;gap:9px;align-items:center;justify-content:center;padding:10px 12px;margin:10px 0 0;border-radius:14px;background:rgba(17,17,17,0.82);-webkit-backdrop-filter:blur(24px) saturate(1.3);backdrop-filter:blur(24px) saturate(1.3);border:1px solid rgba(245,197,24,0.18);box-shadow:0 10px 30px rgba(0,0,0,0.5);}'
+  +'.crmPickSend{background:var(--gold);color:#000;border:none;border-radius:11px;padding:12px 22px;font-family:inherit;font-size:14px;font-weight:800;cursor:pointer;}'
+  +'.crmPickClr{background:transparent;color:rgba(240,236,228,0.7);border:1px solid var(--border);border-radius:11px;padding:11px 16px;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer;}'
   +'.crmBatchN{font-size:11.5px;color:rgba(240,236,228,0.55);}'
   +'#crmBatchOv{position:fixed;inset:0;z-index:99998;display:none;background:#0b0b0c;}'
   +'#crmBatchOv.on{display:block;}'
@@ -91676,6 +91722,7 @@ async function crmRender(force){
        in his real Messages, then re-read so the board paints the settled
        truth rather than the state it was in a second ago. */
     try{ if(await _crmSettleOpened()) await dfLoadAll(); }catch(e){}
+    try{ if(await _jvSendAllReconcile()) await dfLoadAll(); }catch(e){}
   }
   crmPaint();
   _crmWatchForWrites();
@@ -91707,6 +91754,7 @@ function _crmWatchForWrites(){
     }
     if(_crm.loading) return;
     await dfLoadAll();
+    try{ if(await _jvSendAllReconcile()) await dfLoadAll(); }catch(e){}
     var sig=_crmSig();
     if(sig===_crm.sig) return;
     _crm.sig=sig;
@@ -92715,6 +92763,11 @@ function crmPaint(){
        board, then walk it. */
     h+='<div class="crmBatchRow">';
     if(qn) h+='<button class="crmBatchBtn" onclick="crmBatchOpen()">Send all '+qn+'</button>';
+    /* SELECT ALL THAT APPLY (Yusuf, 7 Sep). Ticks every sendable row on
+       screen; the sticky bar at the bottom sends the ticked ones through
+       the Mac in one order. */
+    var _pk=0; try{ _pk=_crmPickableShown().length; }catch(e){}
+    if(_pk) h+='<button class="crmDayBtn" onclick="crmPickAll()">'+(_crmAllPicked()?'Clear all':'Select all')+'</button>';
     h+='<button class="crmDayBtn" onclick="crmRefresh()">Refresh</button>';
     /* THE OPENERS, ONLY INSIDE THE TAB THEY BELONG TO. It drafts for the people
        this tab is showing and nobody else, so it can never put a message in
@@ -92776,8 +92829,12 @@ function crmPaint(){
         var _over=false; try{ _over=_crmOvertaken(p.code, d); }catch(e){}
         var _stale=false; try{ _stale=(!_over && _crmStaleDraft(p.code, d)); }catch(e){}
         var _dfHeld=false; try{ _dfHeld=(!_dfLet[d.id] && _dfHardTells(d.text).length>0); }catch(e){}
-        h+='<div class="crmRow'+(isOpen?' opened':'')+(_over?' overtaken':'')+((!isOpen && i===0 && _crm.sort==='wait' && fdef.k==='waiting')?' next':'')+'" id="crmRow_'+d.id+'">'
-          +'<div class="crmRowTop"><span class="crmName" onclick="covOpen(\''+p.code+'\')">'+nm+'</span>'
+        var _pickable=false; try{ _pickable=_crmPickable(p); }catch(e){}
+        var _picked=!!(_pickable && _crm.picked && _crm.picked[d.id]);
+        h+='<div class="crmRow'+(isOpen?' opened':'')+(_over?' overtaken':'')+((!isOpen && i===0 && _crm.sort==='wait' && fdef.k==='waiting')?' next':'')+(_picked?' picked':'')+'" id="crmRow_'+d.id+'">'
+          +'<div class="crmRowTop">'
+          +(_pickable?('<span class="crmPick'+(_picked?' on':'')+'" onclick="crmPick(\''+d.id+'\')" role="checkbox" aria-checked="'+(_picked?'true':'false')+'"></span>'):'')
+          +'<span class="crmName" onclick="covOpen(\''+p.code+'\')">'+nm+'</span>'
           +'<span class="crmDays">'+days+'</span></div>'
           + _crmConvLine(p.code)
           +(isOpen?('<div class="crmOpenedN">text opened '+_escHtml(_crmClock(d.openedAt||d.at))+' · not counted as sent until your texts are read</div>'):'')
@@ -92883,6 +92940,7 @@ function crmPaint(){
     });
     h+='</div>';
   }
+  try{ h+=_crmPickBarHtml(); }catch(e){}
   _crmPaintSplit(host, h, people.length);
   /* THE DRAFT IS NEVER CUT (his law, 31 Aug: no name cut, the box grows).
      A textarea at a fixed height hides the end of a long draft behind a
@@ -93423,6 +93481,67 @@ function _crmFind(id){
    is settled later by the sweep reading his actual Messages. THE SWEEP IS
    TRUTH FOR CONTACT - the board is never the authority on whether a text
    was sent. */
+/* ---------- THE PICKER (Yusuf, 7 Sep) ----------------------------------
+   "I should be able to select messages like check them... select all that
+   apply... hit send somewhere... then should refresh and be clear and show
+   that that message is sent and those clients should be knocked off the
+   board." A small box on each sendable row, Select all on the button row, a
+   bar at the bottom that sends the ticked ones as ONE order through the Mac.
+   Sendable means what the spoken send-all means: pending, not overtaken, no
+   banned line, fresh, has a number. */
+function _crmPickable(p){
+  if(!p || !p.draft) return false;
+  var d=p.draft;
+  if(d.status!=='pending' || !String(d.text||'').trim()) return false;
+  try{ if(_crmOvertaken(p.code, d)) return false; }catch(e){}
+  try{ if(_dfHardTells(d.text).length) return false; }catch(e){}
+  try{ var _age=Date.now()-Date.parse(d.at||''); if(!(d.at)||isNaN(_age)||_age>26*3600*1000) return false; }catch(e){ return false; }
+  try{ _jvHydratePhones(); }catch(e){}
+  if(!((CLIENTS[p.code]||{}).phone)) return false;
+  return true;
+}
+function _crmPickableShown(){
+  try{
+    var ppl=_crmPeople()||[];
+    var fdef=_crmFilterDef(_crm.filter)||_CRM_FILTERS[0];
+    var shown=_crmSortPeople(ppl.filter(_crmMatch).filter(fdef.test), _crm.sort);
+    return shown.filter(_crmPickable);
+  }catch(e){ return []; }
+}
+function _crmAllPicked(){
+  var list=_crmPickableShown(); if(!list.length) return false;
+  return list.every(function(p){ return _crm.picked && _crm.picked[p.draft.id]; });
+}
+function crmPick(id){
+  _crm.picked=_crm.picked||{};
+  if(_crm.picked[id]) delete _crm.picked[id]; else _crm.picked[id]=1;
+  try{ crmPaint(); }catch(e){}
+}
+function crmPickAll(){
+  var list=_crmPickableShown();
+  if(_crmAllPicked()){ _crm.picked={}; }
+  else { _crm.picked={}; list.forEach(function(p){ _crm.picked[p.draft.id]=1; }); }
+  try{ crmPaint(); }catch(e){}
+}
+function crmPickClear(){ _crm.picked={}; try{ crmPaint(); }catch(e){} }
+function _crmPickBarHtml(){
+  var n=0; try{ n=Object.keys(_crm.picked||{}).length; }catch(e){}
+  if(!n) return '';
+  return '<div class="crmPickBar"><button class="crmPickSend" onclick="crmSendPicked()">Send '+n+' selected</button>'
+       + '<button class="crmPickClr" onclick="crmPickClear()">Clear</button></div>';
+}
+async function crmSendPicked(){
+  var picked=_crm.picked||{}; var ids=Object.keys(picked);
+  if(!ids.length){ try{ showToast('Nothing selected'); }catch(e){} return; }
+  var q=_jvSendAllList();
+  var items=q.items.filter(function(i){ return picked[i.draftId]; });
+  var dropped=ids.length-items.length;
+  if(!items.length){ try{ showToast('None of those can go right now'); }catch(e){} return; }
+  try{ showToast('Sending to '+items.length+'\u2026'); }catch(e){}
+  var w=await _jvSendOrder(items, 'Yusuf, on the board: ticked '+items.length+' and tapped Send selected');
+  if(!w.ok){ try{ showToast('Could not write the send order: '+w.reason); }catch(e){} return; }
+  try{ showToast('Sending to '+items.length+'. They show as sent once the Mac confirms.'+(dropped?(' '+dropped+' could not go.'):'')); }catch(e){}
+}
 function crmSend(id){
   var d=_crmFind(id); if(!d) return;
   var live=_dfReadDraft(id);

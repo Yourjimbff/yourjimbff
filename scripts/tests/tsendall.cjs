@@ -21,15 +21,15 @@ t(/d\.status!=='pending'/.test(fn) && /_crmOvertaken\(p\.code, d\)/.test(fn) && 
 t(/held\.tell\+\+/.test(fn), 'what is held back for a banned line is counted, not hidden');
 t(/_age>26\*3600\*1000\)\{ held\.stale\+\+; return; \}/.test(fn), 'a draft older than a day is held - a spoken send-all cannot see the text, and 34 three-day-old rows were on the board the night this shipped');
 t(/isNaN\(_age\)/.test(fn) && /!\(d\.at\)/.test(fn), 'a draft with no date is held too - never assumed fresh');
-const cmd=src.slice(src.indexOf('async function _jvSendAllCommand('), src.indexOf('async function _jvBookCommand('));
+const cmd=src.slice(src.indexOf('async function _jvSendOrder('), src.indexOf('async function _jvBookCommand('));  /* the order writer plus the spoken command (7 Sep: one writer, shared with the picker) */
 t(/isTrainer\(cl\.code\)/.test(cmd) && /if\(!isTr\) return null;/.test(cmd), 'trainer only - a client saying it gets nothing');
-t(/authorised_by:'Yusuf, in Jarvis: "'\+t\+'"'/.test(cmd), 'his exact words ride on the order');
+t(/_jvSendOrder\(q\.items, 'Yusuf, in Jarvis: "'\+t\+'"'\)/.test(cmd) && /authorised_by:String\(authorisedBy\|\|''\)/.test(cmd), 'his exact words ride on the order');
 t(/sbInsertReturning\('journal_entries'/.test(cmd) && /entry_type:'sendall'/.test(cmd) && /shared:false/.test(cmd), 'the order is a journal_entries row on his own code, shared false - the Mac can read it, no feed shows it');
 t(/phone:i\.phone/.test(cmd), 'the number rides in the order - the send watch never looks one up');
 t(/status:'opened'/.test(cmd) && /via:'sendall', order:orderId/.test(cmd), 'each draft moves to opened, like a tap on Send, stamped with the order');
 t(/return 'Sending messages to '\+q\.items\.length\+' client'/.test(cmd), 'and Jarvis answers with the count');
 t(/return 'Nothing in the queue to send\.'/.test(cmd), 'an empty queue says so');
-t(/if\(!w\) return 'I could not write the send order\. Nothing went\.';/.test(cmd), 'a refused order write says nothing went - never a count that did not happen');
+t(/if\(!w\.ok\) return 'I could not write the send order\. Nothing went\.';/.test(cmd), 'a refused order write says nothing went - never a count that did not happen');
 t(/try\{ var _sa=await _jvSendAllCommand\(t\); if\(_sa\) return _sa; \}/.test(src), 'routed first in _jvBookCommand, so every Jarvis box gets it');
 
 // A MACHINE ROW IS NOT A JOURNAL ENTRY (Yusuf, 7 Sep, screenshot)
@@ -38,6 +38,25 @@ const je=src.slice(src.indexOf('function _jeMachine('), src.indexOf('function _j
 t(/entry_type==='sendall'/.test(je) && /\^\\\[SENDALL\\\]/.test(je), 'a send-all row is known by its type or its [SENDALL] body');
 t((src.match(/_jeMachine\(/g)||[]).length>=7, 'and every journal surface skips it - day card, timeline, journal list, entry cache, today entry, check-in', String((src.match(/_jeMachine\(/g)||[]).length));
 t(/rowDs\(j\)===ds && !_jeMachine\(j\)/.test(src), 'the Day page journal card specifically');
+
+// THE PICKER (Yusuf, 7 Sep: "select all that apply... hit send... refresh and be clear")
+console.log('\n  THE PICKER:');
+t(/function _crmPickable\(p\)/.test(src) && /function crmPickAll\(\)/.test(src) && /async function crmSendPicked\(\)/.test(src), 'a box per row, select all, and one send for the ticked');
+const pk=src.slice(src.indexOf('function _crmPickable(p){'), src.indexOf('function _crmPickableShown('));
+t(/d\.status!=='pending'/.test(pk) && /_crmOvertaken\(p\.code, d\)/.test(pk) && /_dfHardTells\(d\.text\)\.length/.test(pk) && /26\*3600\*1000/.test(pk) && /\.phone\)\)/.test(pk), 'sendable means exactly what the spoken send-all means');
+const sp=src.slice(src.indexOf('async function crmSendPicked(){'), src.indexOf('function crmSend(id){'));
+t(/_jvSendAllList\(\)/.test(sp) && /picked\[i\.draftId\]/.test(sp) && /_jvSendOrder\(items, 'Yusuf, on the board: ticked '/.test(sp), 'the ticked ones go as ONE order through the Mac, with his action as the authority');
+t(/async function _jvSendOrder\(items, authorisedBy\)/.test(src) && /var w=await _jvSendOrder\(q\.items, 'Yusuf, in Jarvis: "'\+t\+'"'\);/.test(src), 'the spoken command and the picker share the one order writer');
+t(/class="crmPick'/.test(src) && /onclick="crmPick\(/.test(src) && /crmPickBar/.test(src) && /Send '\+n\+' selected/.test(src), 'the box is on the row and the bar says how many');
+console.log('\n  THE MAC ANSWERS BACK:');
+const rc=src.slice(src.indexOf('async function _jvSendAllReconcile(){'), src.indexOf('async function _jvSendAllCommand('));
+t(/entry_type=eq\.sendall-result/.test(rc) && /d\.status==='opened' && d\.via==='sendall'/.test(rc), 'reads the result rows and only touches drafts this order opened');
+t(/if\(it\.ok\)\{ await dfSetStatus\(d\.code, d, 'sent'/.test(rc) && /dfSetStatus\(d\.code, d, 'pending', d\.text, \{openedAt:null, re:/.test(rc), 'ok becomes sent, a failure comes back pending with the reason on the card');
+t(/String\(d\.order\|\|''\)!==String\(res\.orderId\|\|''\)/.test(rc), 'and never across orders');
+t((src.match(/await _jvSendAllReconcile\(\)/g)||[]).length>=2, 'runs on the board read and on the 45 second poll');
+let sw=''; try{ sw=fs.readFileSync(require('path').join(require('os').homedir(),'mnt/Client Files/send_watch.py'),'utf8'); }catch(e){ try{ sw=fs.readFileSync('/Users/yusuf/Documents/Client Files/send_watch.py','utf8'); }catch(e2){ sw=''; } }
+if(sw)
+t(/def post_results\(\)/.test(sw) && /\[SENDALL-RESULT\]/.test(sw) && /entry_type": "sendall-result"/.test(sw) && /RESULTS\.append\(\{"order": str\(item\.get\("order"\)\)/.test(sw), 'send_watch.py writes the result row for every item it handled');
 
 console.log();
 if(bad){ console.log('  '+bad+' FAILED'); process.exit(1); }
