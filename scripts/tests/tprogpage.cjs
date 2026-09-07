@@ -57,6 +57,11 @@ t(/id="pgJimIn"/.test(src) && /window\._pgProgPlan \? '' : \('<div class="pgJim"
 const tj=src.slice(src.indexOf('function pgTellJim('), src.indexOf('function pgSetsNudge('));
 t(/switchTab\('Jim'\)/.test(tj) && /ci\.value='Change my program: '\+txt/.test(tj) && !/sendChatMessage|jimSend/.test(tj), 'it carries the sentence to Jim and the SEND stays theirs - they see what they are asking before it goes');
 
+console.log('\n  CALLS OFF THE TRAINER DAY (Yusuf, 7 Sep):');
+t(/var _mineOnly=false;[\s\S]{0,200}isTrainer\(cl\.code\) && !window\._tlRO/.test(src), 'his own day draws no call cards - they live in the band and its sheet');
+t(/if\(!_mineOnly\) \(\(window\._bookByDay&&window\._bookByDay\[ds\]\)\|\|\[\]\)\.forEach/.test(src), 'a client day, and a view-as of one, still draws the client call');
+t(/function openCallsView\(\)/.test(src) && /Nothing booked for the rest of the week either/.test(src), 'the sheet behind the band already shows today then the week - the place exists');
+
 console.log();
 if(bad){ console.log('  '+bad+' FAILED'); process.exit(1); }
 console.log('  all program-page assertions pass');
