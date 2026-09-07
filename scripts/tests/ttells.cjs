@@ -57,7 +57,7 @@ t(!has("nice work this week",'x-is-not-y'), 'HOLDS: a clean short text');
 console.log('\n  THE REST OF THE RULES:');
 t(has("Locked — sunday 11am",'em dash'), 'an em dash, which appears zero times in 1,545 of his texts');
 t(has("Hows the gym been? Whats today looking like? Free friday?",'question stack'), 'three questions is a stack');
-t(has("Hows the gym been? Whats today looking like?",'question stack'), 'and two in ONE line is a stack too');
+t(!has("Hows the gym been? Whats today looking like?",'question stack'), 'two in one text is his - Routine good? Sleep good? (7 Sep, measured)');
 t(!has("Howve you been?\n\nProgress been looking good? Or has it not",'question stack'),
   'but two across two lines is how he actually writes, and he sent that one');
 t(has("Nine days straight, keep it up",'phrase he never uses'), 'a phrase he has never once used');
