@@ -13,8 +13,8 @@ const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  F
 global.window={addEventListener:()=>{}}; global.document={getElementById:()=>null, addEventListener:()=>{}, querySelectorAll:()=>[]};
 global.localStorage={ getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
 global.CLIENTS={andreaa1:{name:'Andrea Arrants'}, dhruvad1:{name:'Dhruva Daripalli'}, tonyt1:{name:'Tony T'}};
-const MINE=['_crmTapback','_rdClean','_crmRedraftOne','_crmRedraftStale','_crmStaleDraft','_crmOvertaken','_dfRowNote','_dfFromNote','_crmSweepTime','_crmClock','_dfHardTells','_dfTells','_dfRefuse','_dfBubbles'];
-eval(closure(['_DF_HARD','_BUB_LONG','_DF_MARK','_DF_SCHEMA','_RD_SYS','_RD_SWEAR','_RD_MODEL','_dfLet']).code||'');
+const MINE=['_crmTapback','_rdClean','_crmRedraftOne','_crmRedraftStale','_crmBall','_crmSortPeople','_crmAnswered','_crmRecentKey','_crmLastPair','_crmStaleDraft','_crmOvertaken','_dfRowNote','_dfFromNote','_crmSweepTime','_crmClock','_dfHardTells','_dfTells','_dfRefuse','_dfBubbles'];
+eval(closure(['_DF_HARD','_BUB_LONG','_DF_MARK','_DF_SCHEMA','_RD_SYS','_RD_SWEAR','_RD_MODEL','_dfLet','_CRM_BALL_TIER']).code||'');
 eval(MINE.map(defOf).join('\n'));
 guard(MINE, n=>eval(n));
 global._crm={contacts:{}, rows:[]};
@@ -24,7 +24,7 @@ let asked=[], answer='';
 _rdAsk=async(p)=>{ asked.push(p); return answer; };
 let written=[];
 dfWrite=async(code,d)=>{ written.push({code,d}); return {ok:true,id:d.id}; };
-_crmPeople=()=>Object.keys(_crm.contacts).map(code=>({code, draft:(_crm.rows.find(r=>r.code===code)||null)}));
+_crmPeople=()=>Object.keys(_crm.contacts).map(code=>{const p={code, name:CLIENTS[code]?CLIENTS[code].name:code, draft:(_crm.rows.find(r=>r.code===code&&r.status==='pending')||null), sentToday:false, skippedToday:false}; p.ball=_crmBall(p); return p;});
 
 console.log('\n  WHAT COUNTS AS A TURN:');
 t(_crmTapback('Loved “Have a great week dude. time for the push”')===true, 'a tapback is not a turn');
@@ -88,6 +88,35 @@ answer='Thats what I want to hear - whats been the easiest part';
   console.log('    prompts: '+asked.map(p=>(p.match(/CLIENT: [^\n]*/)||[''])[0]).join(' | '));
   t(/occasional damn/.test(asked.find(p=>/CLIENT: Dhruva/.test(p))||''),'Dhruva gets his swearing rule');
   t(/no swearing/.test(asked.find(p=>/CLIENT: Andrea/.test(p))||''),'Andrea gets none');
+
+  console.log('\n  A BARE ROW THEY SPOKE INTO (Andrew, Samantha, Ben):');
+  written=[]; asked=[]; answer='Low 170s by October - thats a real number. Where are you sitting this morning';
+  CLIENTS.andrewz1={name:'Andrew Zamora'}; CLIENTS.tonyt1={name:'Tony T'}; CLIENTS.jordanr1={name:'Jordan R'};
+  _crm.rows=[]; _crm.contacts={
+    andrewz1:{him:'2026-09-07T13:00',them:'2026-09-07T14:10',last:'them',text:"My goal before October 1st is to be in the low 170's"},
+    tonyt1:{him:'2026-09-07T14:00',them:'2026-09-07T16:00',last:'them',text:'Loved “Have a great week dude. time for the push”'},
+    jordanr1:{him:'2026-09-07T14:00',them:'2026-09-07T13:00',last:'him',text:'ok'}};
+  let m=await _crmRedraftStale();
+  t(m===1,'Andrew gets a reply written from his text, Tony (tapback) and Jordan (his turn) do not: '+m);
+  t(written[0] && written[0].code==='andrewz1' && !written[0].d.id && written[0].d.src==='reply' && written[0].d.answers==='2026-09-07T14:10','new id, marked as a reply, records which text');
+  t(asked[0].indexOf('out of date')<0,'and the prompt carries no old draft');
+  _crm.rows=[{id:'z9',code:'andrewz1',status:'skipped',answers:'2026-09-07T14:10',text:'x',by:'jarvis'}];
+  written=[]; m=await _crmRedraftStale();
+  t(m===0 && written.length===0,'once he clears that reply it is not written again');
+
+  console.log('\n  WHOSE TURN IT IS, AND THE ORDER:');
+  const P=(code,extra)=>Object.assign({code,name:code,draft:null,sentToday:false,skippedToday:false},extra||{});
+  _crm.rows=[];
+  t(_crmBall(P('andrewz1'))==='you','Andrew is waiting on him');
+  t(_crmBall(P('tonyt1'))==='them','a tapback is their turn');
+  t(_crmBall(P('jordanr1'))==='them','he spoke last, ball is theirs');
+  t(_crmBall(P('andrewz1',{sentToday:true}))==='them','sent today sinks');
+  t(_crmBall(P('andrewz1',{skippedToday:true}))==='them','cleared today sinks');
+  t(_crmBall(P('andrewz1',{draft:{id:'q'}}))==='you','a card with a draft is his to send');
+  t(_crmBall(P('nobody1'))==='none','no thread at all');
+  const list=[P('jordanr1'),P('tonyt1'),P('andrewz1'),P('nobody1')].map(p=>{p.ball=_crmBall(p); return p;});
+  const order=_crmSortPeople(list,'recent').map(p=>p.code);
+  t(order[0]==='andrewz1' && order[1]==='nobody1' && order.slice(2).sort().join()==='jordanr1,tonyt1','Andrew first, the ones he is done with last: '+order.join(' > '));
 
   console.log('\n  CLEAN:');
   t(_rdClean('"Sure - what time works for you."')==='Sure - what time works for you','quotes and the end stop come off');

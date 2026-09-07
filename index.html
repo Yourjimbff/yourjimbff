@@ -91423,13 +91423,14 @@ function _crmBoardRows(){
    THAT list. Two lists is how a count starts disagreeing with the rows under
    it, which is the same class of fault as the $25 over "0 of 0". */
 function _crmPeople(){
-  var pendingBy={}, sentBy={}, t=_dfToday();
+  var pendingBy={}, sentBy={}, skipBy={}, t=_dfToday();
   (_crm.rows||[]).forEach(function(d){
     if(!d.code) return;
     /* newest-first per id, so the FIRST pending row seen for a client is
        their current draft - the same rule _crmBoardRows works to. */
     if(d.status==='pending' || d.status==='opened'){ if(!pendingBy[d.code]) pendingBy[d.code]=d; return; }
     if(d.status==='sent' && _dfDayKey(d.at||d.rowAt)===t) sentBy[d.code]=d;
+    if(d.status==='skipped' && _dfDayKey(d.rowAt||d.at)===t && !skipBy[d.code]) skipBy[d.code]=d;
   });
   /* "Already handled" is the SAME union the score tile uses - a draft he sent
      off the board, or a text he sent from their record. Both are him. */
@@ -91442,10 +91443,31 @@ function _crmPeople(){
             days:_crmDays(r.code),
             waiting:!!(w && w.waiting),
             sentToday:!!(sentBy[r.code] || touched[r.code]),
+            skippedToday:!!(skipBy[r.code] && !draft),
             draftAt:draft?String(draft.at||draft.rowAt||''):'',
             theirLast:con?String(con.them||''):''};
-  });
+  }).map(function(p){ p.ball=_crmBall(p); return p; });
 }
+/* ===== WHOSE TURN IT IS (Yusuf, 7 Sep 5:40pm) ============================
+   "If I also clear someone from the board, or I send a message, and they
+   dont respond, they could just be cleared to the bottom."
+   'you'  - something for him to send: a draft on the card, or they spoke last
+            with a real text and nobody has answered it.
+   'them' - the ball is theirs: he spoke last, he sent or cleared today, or
+            their last word was a tapback. These sink to the bottom.
+   'none' - no thread on file at all. */
+function _crmBall(p){
+  try{
+    if(p.draft) return 'you';
+    if(p.sentToday || p.skippedToday) return 'them';
+    var c=(_crm.contacts||{})[p.code];
+    if(!c || (!c.them && !c.him)) return 'none';
+    if(c.last==='him' || !c.them) return 'them';
+    if(_crmTapback(c.text)) return 'them';
+    return 'you';
+  }catch(e){ return 'none'; }
+}
+var _CRM_BALL_TIER={you:0, none:1, them:2};
 /* THE CHIPS, in his order, with his words. A chip is a QUESTION, not a state
    of the world: nothing here marks, clears or restatuses anybody. */
 var _CRM_FILTERS=[
@@ -91552,6 +91574,11 @@ function _crmFilterDef(k){
 function _crmSortPeople(list, k){
   var by=String(k||'recent');
   return list.slice().sort(function(a,b){
+    /* Whose turn it is outranks every sort. Anyone he is done with for now
+       sinks under everyone still waiting on him. */
+    var ta=_CRM_BALL_TIER[a.ball||_crmBall(a)], tb=_CRM_BALL_TIER[b.ball||_crmBall(b)];
+    if(ta==null) ta=1; if(tb==null) tb=1;
+    if(ta!==tb) return ta-tb;
     if(by==='recent'){
       /* Newest conversation first, either side. A person with no thread at all
          sorts to the bottom rather than to the top, which is what an empty
@@ -93190,6 +93217,8 @@ function crmPaint(){
             : ('<div class="crmRowTop"><span class="crmName" onclick="covOpen(\''+p.code+'\')">'+nm+'</span>'
                +'<span class="crmDays">'+days+'</span></div>'
                + _crmMore(p, null)
+               + (p.skippedToday?'<div class="crmBareN">you cleared this today</div>':'')
+               + ((p.ball==='you' && _crm.rdBusy)?'<div class="crmAnsN">writing a reply from their text\u2026</div>':'')
                + _bareBox))
         +'</div>';
       }
@@ -94050,10 +94079,12 @@ async function _rdAsk(prompt){
 }
 async function _crmRedraftOne(code, d){
   var c=(_crm.contacts||{})[code]||{};
+  d=d||{};
   var them=String(c.them||''), theirs=String(c.text||'').trim();
   if(!them || !theirs) return {ok:false, reason:'no text on file'};
   if(_crmTapback(theirs)) return {ok:false, reason:'tapback'};
   if(d.answers && d.answers===them) return {ok:false, reason:'already answers this'};
+  if(_crmAnswered(code, them)) return {ok:false, reason:'already answered once, he cleared or sent it'};
   if(d.by && d.by!=='jarvis') return {ok:false, reason:'his own words'};
   var tail=[]; try{ tail=await _crmThreadTail(code, 8); }catch(e){ tail=[]; }
   var first=String((CLIENTS[code]||{}).name||code).split(' ')[0];
@@ -94062,7 +94093,7 @@ async function _crmRedraftOne(code, d){
     +'\nCLIENT: '+first+' ('+sw+')\n'
     +(tail.length?('THE THREAD, oldest first (HIM is Yusuf, THEM is the client):\n'+tail.map(function(m){ return (m.who==='him'?'HIM: ':'THEM: ')+m.text.slice(0,400); }).join('\n')+'\n'):'')
     +'\nTHEIR LAST TEXT, the one to answer:\nTHEM: '+theirs.slice(0,500)+'\n'
-    +'\nThe draft that is now out of date, for context only, do not reuse it:\n'+String(d.text||'').slice(0,300)+'\n'
+    +(d.text?('\nThe draft that is now out of date, for context only, do not reuse it:\n'+String(d.text||'').slice(0,300)+'\n'):'')
     +'\nReply with ONLY the text Yusuf sends, nothing else.';
   var text='', hard=[];
   for(var tries=0; tries<2; tries++){
@@ -94079,10 +94110,20 @@ async function _crmRedraftOne(code, d){
     if(!hard.length && _no) hard=[_no];
   }
   if(hard.length) return {ok:false, reason:'voice check: '+hard.join(', ')};
-  var w=await dfWrite(code, {id:d.id, text:text, at:new Date().toISOString(),
+  var w=await dfWrite(code, {id:(d.id||undefined), text:text, at:new Date().toISOString(),
     re:'answers their '+_crmClock(them)+' text', status:'pending', by:'jarvis',
-    src:(d.src||undefined), day:(d.day||undefined), ctx:(d.ctx||undefined), answers:them});
+    src:(d.src||(d.id?undefined:'reply')), day:(d.day||undefined), ctx:(d.ctx||undefined), answers:them});
   return w.ok?{ok:true, text:text}:{ok:false, reason:w.reason};
+}
+/* Any row for this person, whatever its status, that already answers this
+   exact text. A draft he cleared is a decision, not a gap to refill. */
+function _crmAnswered(code, them){
+  var rows=_crm.rows||[];
+  for(var i=0;i<rows.length;i++){
+    var r=rows[i];
+    if(String(r.code||'')===String(code) && r.answers && r.answers===them) return true;
+  }
+  return false;
 }
 async function _crmRedraftStale(){
   if(_crm.rdBusy) return 0;
@@ -94091,13 +94132,23 @@ async function _crmRedraftStale(){
     var ppl=_crmPeople()||[], seen={}, todo=[];
     for(var i=0;i<ppl.length;i++){
       var p=ppl[i], d=p&&p.draft;
-      if(!d || d.status!=='pending' || seen[d.id]) continue;
+      var c=(_crm.contacts||{})[p.code]||{};
+      /* A BARE ROW THEY SPOKE INTO (7 Sep 5:40pm, "for some reason these dont
+         have responses in them"). They texted, nobody answered, no draft
+         exists: write one from their text, same engine, new id. */
+      if(!d){
+        if(p.sentToday || p.skippedToday || p.ball!=='you') continue;
+        if(!c.them || !c.text || _crmTapback(c.text)) continue;
+        if(_crmAnswered(p.code, String(c.them))) continue;
+        todo.push({code:p.code, d:null});
+        continue;
+      }
+      if(d.status!=='pending' || seen[d.id]) continue;
       seen[d.id]=1;
       var over=false, stale=false;
       try{ over=_crmOvertaken(p.code, d); }catch(e){}
       try{ stale=(!over && _crmStaleDraft(p.code, d)); }catch(e){}
       if(!stale) continue;
-      var c=(_crm.contacts||{})[p.code]||{};
       if(_crmTapback(c.text) || (d.answers && d.answers===String(c.them||''))) continue;
       todo.push({code:p.code, d:d});
     }
