@@ -27,6 +27,7 @@ const L=src.split('\n');
 // suite and four time zones blow a two-minute budget; the answers never change
 // within a run, so they are computed once.
 const _defCache=new Map();
+const _lineOf=new Map();   // name -> line it is defined on, for source-order emission
 function defOf(name){
   if(_defCache.has(name)) return _defCache.get(name);
   const out=_defOf(name);
@@ -38,6 +39,7 @@ function _defOf(name){
   const fnRe=new RegExp('^(?:async )?function '+esc+'\\s*\\(');
   let a=L.findIndex(l=>fnRe.test(l));
   if(a>=0){
+    _lineOf.set(name, a);
     let depth=0, started=false, b=a;
     for(; b<L.length; b++){
       const line=L[b];
@@ -57,7 +59,13 @@ function _defOf(name){
   const vRe=new RegExp('^(?:var|const|let) '+esc+'\\s*=');
   a=L.findIndex(l=>vRe.test(l));
   if(a<0) return '';
-  if(/;\s*$/.test(L[a])) return L[a];
+  _lineOf.set(name, a);
+  // A one-line var that ends in a comment - `var progressPhotos = [];  // rows` -
+  // is still one line. Tested with the comment off, or the lifter scanned 1,235
+  // lines to the next lone `};` and called that the definition (7 Sep).
+  // Only a // that follows whitespace is a comment here: "https://" in SB_URL
+  // is not, and cutting there turned a one-line constant into a 1,501-line one.
+  if(/;\s*$/.test(L[a].replace(/\s+\/\/.*$/,''))) return L[a];
   let b=a;
   while(b<L.length && !/^\];|^\};|^\);/.test(L[b])) b++;
   return L.slice(a,Math.min(b,L.length-1)+1).join('\n');
@@ -75,17 +83,6 @@ function definedIn(code){
     if(m){ (l.slice(m[0].length).match(/([A-Za-z_$][\w$]*)\s*=/g)||[])
              .forEach(d=>out.add(d.replace(/\s*=$/,''))); }
     m=/^\s+(?:var|const|let|function) ([A-Za-z_$][\w$]*)/.exec(l); if(m) out.add(m[1]);
-    // AND EVERY DECLARATOR ON AN INDENTED ONE TOO. The line above was fixed for
-    // column-0 vars and not for indented ones, so a local like
-    //   var nmr=null, _sc=/…/g, _cand=null;
-    // inside _jimDateSaid declared three and counted one. _sc and _cand then came
-    // back as unresolved names — reported to the caller as holes in the lifted
-    // chain, which is what turned tphantom red over locals that are right there
-    // on the line. Anchored to the var or to a comma, so `b === c` further along
-    // the line is not mistaken for a fourth declarator.
-    m=/^\s+(?:var|const|let) /.exec(l);
-    if(m){ let d, dre=/(?:^|,)\s*([A-Za-z_$][\w$]*)\s*=/g, rest=l.slice(m[0].length);
-           while((d=dre.exec(rest))) out.add(d[1]); }
     // for(var _si=0; ...) declares _si and does not start with var.
     (l.match(/for\s*\(\s*(?:var|let)\s+([A-Za-z_$][\w$]*)/g)||[])
       .forEach(d=>out.add(d.replace(/^for\s*\(\s*(?:var|let)\s+/,'')));
@@ -96,14 +93,28 @@ function definedIn(code){
 // Returns {code, names, unresolved}. Strings and line comments are blanked
 // before names are harvested, so a helper named inside a prompt line or a
 // comment is never chased as though it were a call.
+const _unparsable=new Set();
 function closure(seeds){
   const names=seeds.slice(); const seen=new Set(seeds);
   for(let round=0; round<200; round++){
-    const code=names.map(defOf).filter(Boolean).join('\n');
+    // SOURCE ORDER, NOT CHASE ORDER (7 Sep). A `var MT_UNIT_ALIAS={oz:MT_G_PER_OZ}`
+    // initializer runs at eval time and needs MT_G_PER_OZ defined ABOVE it, as it
+    // is in index.html. Chase order put it below and threw ReferenceError.
+    // Functions hoist either way; only var initializers care, and they care.
+    const ordered=names.slice().filter(n=>defOf(n)).sort((x,y)=>(_lineOf.get(x)??0)-(_lineOf.get(y)??0));
+    const code=ordered.map(defOf).join('\n');
     const have=definedIn(code);
-    const bare=code.replace(/\/\/[^\n]*/g,'')
-                   .replace(/'(?:[^'\\]|\\.)*'/g,"''")
-                   .replace(/"(?:[^"\\]|\\.)*"/g,'""');
+    // BLOCK COMMENTS OUT FIRST (7 Sep). They were left in, so a function named
+    // in a /* */ note was chased as a dependency - and one apostrophe inside a
+    // block comment opened a string that swallowed the rest of the body and
+    // stopped the chase dead, green over a hole. Both gone with one line.
+    // ONE PASS FOR BOTH QUOTES (7 Sep). Two passes, single first, meant a
+    // "don't" in double quotes opened a single-quoted string that ran to the
+    // next apostrophe and blanked real code between - MT_G_PER_OZ vanished
+    // from the chase behind one. One alternation, left to right, and a string
+    // never crosses a line, so a stray quote cannot run across the file.
+    const bare=code.replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/[^\n]*/g,'')
+                   .replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g,'""');
     // ANY identifier that has a top-level definition, not only _-prefixed ones.
     // CITE_MAX is `var CITE_MAX=96;` and an underscore-only chase never looked
     // for it — _citeClip then threw at the first long name. The filter that
@@ -114,7 +125,15 @@ function closure(seeds){
     let added=false;
     refs.forEach(n=>{
       if(have.has(n) || seen.has(n)) return;
-      if(!defOf(n)) return;
+      const d=defOf(n);
+      if(!d) return;
+      // A DEFINITION THAT DOES NOT PARSE ON ITS OWN IS NOT LIFTED (7 Sep). The
+      // brace counter is fooled by a regex literal holding a "}" - analyze()
+      // ends on /:\s*(?=[,}\]])/ - and one such body in the closure turned the
+      // whole suite into "Unexpected end of input". It was only ever reached
+      // through a mis-stripped string anyway. Left out and named, so a test
+      // that really needs it sees the hole rather than a syntax error.
+      try{ new Function(d); }catch(e){ seen.add(n); _unparsable.add(n); return; }
       seen.add(n); names.push(n); added=true;
     });
     if(!added){
@@ -127,7 +146,8 @@ function closure(seeds){
       // Single letters are character-class fragments from regex literals
       // ([A-Za-z]), which the string-stripper above does not blank.
       const looksOurs=n=>n.length>1 && (/^_/.test(n) || /^[A-Z][A-Z0-9_]*$/.test(n));
-      return {code, names, unresolved:[...refs].filter(n=>!have.has(n) && !defOf(n) && looksOurs(n))};
+      return {code, names, unparsable:[..._unparsable],
+              unresolved:[...refs].filter(n=>!have.has(n) && (!defOf(n) || _unparsable.has(n)) && looksOurs(n))};
     }
   }
   throw new Error('static closure did not converge');

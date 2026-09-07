@@ -65,9 +65,12 @@ global._tlDateStr=(d)=>'2026-09-06';
 const stats=_tlStatsBlock('2026-09-06', true, false, {weigh:[]});
 t(/tlMealsEy">Stats</.test(stats), 'today has a Stats block, headed like the Food block is');
 t(/id="dayWeightHost"/.test(stats), 'and the weight card sits in it');
-t(/data-tl="steps"/.test(stats) && /data-tl="progphoto"/.test(stats), 'steps and the photo are cells under the card');
+t(/data-tl="steps"/.test(stats) && /data-tl="progphoto"/.test(stats), 'steps and the photo door are in the block');
 t(/data-tl="weighview"/.test(stats), 'the weigh-in door is INSIDE the weight card, not a row of its own');
-t((stats.match(/tlStatCell"/g)||[]).length===2, 'two cells, not three - the weight has the card');
+// "Add a place to put progress photos here. Consolidate." (Yusuf, 7 Sep, drawn on his phone)
+t((stats.match(/tlStatCell"/g)||[]).length===0, 'no cells under the card any more - one block');
+t(/class="dwPhotos"/.test(stats) && /dwPhAdd/.test(stats), 'the photo strip lives inside the card, with a +');
+t(/class="dwLine" data-tl="steps"/.test(stats), 'steps is a line inside the card');
 t(_tlLateAsks('2026-09-06', true, false, {weigh:[]})==='', 'so today draws no late asks - one set of doors, not two');
 const late=_tlLateAsks('2026-09-03', false, false, {weigh:[]});
 t(/Steps/.test(late) && /Weigh in/.test(late), 'a past day still offers steps and a weigh-in, to backfill');
