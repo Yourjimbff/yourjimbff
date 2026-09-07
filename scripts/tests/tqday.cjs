@@ -271,10 +271,10 @@ const ALIVE_QUIET=[
   /* YESTERDAY IS A TAB, NOT A BULK WRITE (Yusuf, 5 Sep). The card no longer
      draws a copy stored on the draft; it draws the LIVE day off _crm.logs,
      which is already loaded for the whole roster. A view, not a write. */
-  t((src.match(/\+ _crmYdayHtml\(/g)||[]).length===3,
-    'the day is drawn above the box on all three surfaces — drafted row, bare row, batch card',
-    String((src.match(/\+ _crmYdayHtml\(/g)||[]).length));
-  t(/_crmYdayHtml\(p\.code\)\n\s*\+ _dfEdHtml\(/.test(src), 'above the board’s box, not below it');
+  t((src.match(/_crmYdayHtml\(/g)||[]).length>=4,
+    'the day is drawn on all three surfaces — drafted row (folded behind the one line, 7 Sep), bare row, batch card',
+    String((src.match(/_crmYdayHtml\(/g)||[]).length));
+  t(/body\+=_crmYdayHtml\(code\);/.test(src) && /_crmMore\(p, d\)\n\s*\+ _dfEdHtml\(/.test(src), 'above the board’s box, not below it - inside the folded line');
   t(/_crmYdayHtml\(it\.code\)\n\s*\+ _dfEdHtml\(/.test(src), 'and above the batch box');
   t(!/_dqCtxHtml/.test(src), 'and the stored-copy renderer is gone, not left beside it');
   t(/\{k:'yday',\s+label:'Yesterday'/.test(src), 'Yesterday is the first tab on the board');

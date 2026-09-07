@@ -45,8 +45,8 @@ const cl=src.slice(src.indexOf('function _crmConvLine(code){'), src.indexOf('var
 t(/crmConvWho/.test(cl) && /crmConvAgo/.test(cl) && /crmConvTxt/.test(cl), 'all three parts');
 t(/_escHtml\(txt\)/.test(cl),              'their words are escaped, never rewritten');
 t(/slice\(0,89\)/.test(cl),                'and truncated rather than wrapped');
-t((src.match(/_crmConvLine\(p\.code\)/g)||[]).length===3,
-  'it is on the drafted row, the bare row and the already-spoken row',
+t((src.match(/_crmConvLine\(p\.code\)/g)||[]).length===2 && /line=_crmConvLine\(code\)/.test(src),
+  'it is on the drafted row (as the one line that opens, 7 Sep), the bare row and the already-spoken row',
   (src.match(/_crmConvLine\(p\.code\)/g)||[]).length+' call sites');
 
 console.log('\n  the stylesheet is a JAVASCRIPT STRING and stays one rule per line:');

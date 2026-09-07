@@ -97,7 +97,7 @@ t(/they have spoken since this was written/.test(src),
 t(/_stale=\(!_over && _crmStaleDraft/.test(src),
   'one line or the other, never both — overtaken is the louder fact');
 t(/SEND ANYWAY/.test(src), 'and keeps a Send anyway, because a draft about something else is still real');
-t(/_over\?'Clear':'Skip'/.test(src), 'with Clear instead of Skip, which is what it actually is');
+t(/_over\?'clear':'skip'/.test(src), 'with clear instead of skip, which is what it actually is');
 t(/\.crmRow\.overtaken\{/.test(src) && !/\+'\.crmRow\.overtaken\{[^']*\n/.test(src),
   'styled, one quoted line per rule');
 
