@@ -91919,7 +91919,10 @@ function _crmLogShape(code){
   var trainKeys=Object.keys(L.days).sort();
   var newest=trainKeys[trainKeys.length-1];
   if(newest!=null){ out.newest=newest; out.since=_crmDaysSince(newest); }
-  _crmStripKeys().forEach(function(k){ if(L.days[k]) out.inStrip++; });
+  var _keys=_crmStripKeysFor(code);
+  _keys.forEach(function(k){ if(L.days[k]) out.inStrip++; });
+  out.window=_keys.length;                      /* 14, or the days since they joined */
+  out.streak=_crmLogStreak(L);
   return out;
 }
 /* INACTIVE, drawn exactly where this file already drew the line: the
@@ -91932,7 +91935,12 @@ function _crmLogSumWords(s){
   if(!s.ever) return 'Nothing logged, ever.';
   if(s.since==null) return 'nothing logged in the last '+_CRM_LOG_WINDOW+' days';
   if(s.since>=_CRM_STRIP_DAYS) return 'nothing in '+s.since+' days';
-  return s.inStrip+' of the last '+_CRM_STRIP_DAYS+' days';
+  var w=s.window||_CRM_STRIP_DAYS, tail=(s.streak>=3?(' \u00b7 '+s.streak+' in a row'):'');
+  if(w<_CRM_STRIP_DAYS){
+    if(s.inStrip>=w) return 'every day since joining ('+w+' of '+w+')'+tail;
+    return s.inStrip+' of '+w+' days since joining'+tail;
+  }
+  return s.inStrip+' of the last '+_CRM_STRIP_DAYS+' days'+tail;
 }
 /* ONE LINE, ALWAYS TRUE, NEVER WIDER THAN THE CARD. "logged", not
    "trained": the strip counts food OR training, so "trained" would be a lie
@@ -91947,7 +91955,9 @@ function _crmHeadline(code, days){
   else if(!s.ever) right='nothing logged, ever';
   else if(s.since==null) right='nothing logged in '+_CRM_LOG_WINDOW;
   else if(s.since>=_CRM_STRIP_DAYS) right='nothing logged in '+s.since;
+  else if((s.window||_CRM_STRIP_DAYS)<_CRM_STRIP_DAYS) right=(s.inStrip>=s.window?('logged every day since joining'):('logged '+s.inStrip+' of '+s.window+' since joining'));
   else right='logged '+s.inStrip+' of the last '+_CRM_STRIP_DAYS;
+  if(s.streak>=3) right+=' \u00b7 '+s.streak+' in a row';
   return left+' · '+right;
 }
 /* THE STRIP AND ITS ONE LINE OF WORDS. This is the block that moved ABOVE
@@ -91960,7 +91970,7 @@ function _crmStripBlock(code){
   }
   if(!_crm.logs) return '<div class="crmLogNote">Reading their logs…</div>';
   var s=_crmLogShape(code);
-  return _crmStripHtml(s.L)+'<div class="crmLogSum">'+_escHtml(_crmLogSumWords(s))+'</div>';
+  return _crmStripHtml(s.L, code)+'<div class="crmLogSum">'+_escHtml(_crmLogSumWords(s))+'</div>';
 }
 /* THE DAYS THEMSELVES. Word for word what it always was - it now lives
    behind "why" instead of under the SEND button. Nothing is deleted here. */
@@ -92620,17 +92630,58 @@ function _crmStripKeys(){
   }
   return out;                                   // oldest left, today right
 }
-function _crmStripHtml(L){
+/* THE STRIP STARTS THE DAY THEY JOINED (Yusuf, 7 Sep: "if someone literally
+   just signed up... why would any days before that in their little 14-day
+   ticker even be visible? And then have it go from the left"). A client
+   three days in gets three boxes, growing from the left, labelled day 1 and
+   today. Fourteen days in, the strip is the full fourteen as before. The
+   join date is the roster's started_at, else created_at. */
+function _crmStartKey(code){
+  try{
+    var c=CLIENTS[code]||{};
+    var raw=c.started_at||c.created_at||'';
+    if(!raw) return '';
+    var d=new Date(String(raw).length===10 ? String(raw)+'T12:00:00' : raw);
+    if(isNaN(d.getTime())) return '';
+    return _dfDayKey(d.toISOString());
+  }catch(e){ return ''; }
+}
+function _crmStripKeysFor(code){
   var keys=_crmStripKeys();
+  var start=_crmStartKey(code);
+  if(!start) return keys;
+  var cut=keys.filter(function(k){ return k>=start; });
+  return cut.length ? cut : keys.slice(-1);
+}
+/* HOW MANY IN A ROW, ending today or yesterday. The number he actually
+   reacts to - "5 in a row" says more than "5 of 14". */
+function _crmLogStreak(L){
+  try{
+    if(!L || !L.days) return 0;
+    var now=new Date(_dfToday()+'T12:00:00'), n=0, i=0;
+    var todayK=_dfDayKey(now.toISOString());
+    if(!L.days[todayK]) i=1;                    /* today may not be over */
+    for(;;i++){
+      var k=_dfDayKey(new Date(now.getTime()-i*86400000).toISOString());
+      if(L.days[k]) n++; else break;
+      if(i>400) break;
+    }
+    return n;
+  }catch(e){ return 0; }
+}
+function _crmStripHtml(L, code){
+  var keys=code ? _crmStripKeysFor(code) : _crmStripKeys();
+  var partial=(keys.length<_CRM_STRIP_DAYS);
   var h='<div class="crmStripWrap">'
-       +'<div class="crmStrip" aria-label="the last '+_CRM_STRIP_DAYS+' days, oldest first, today last">';
+       +'<div class="crmStrip" aria-label="'+(partial?('the '+keys.length+' days since they joined'):('the last '+_CRM_STRIP_DAYS+' days'))+', oldest first, today last">';
   keys.forEach(function(k,i){
     var on=!!(L && L.days && L.days[k]);
     var isToday=(i===keys.length-1);
     h+='<i class="crmTick'+(on?' on':'')+(isToday?' today':'')+'"'
      + (isToday?' aria-label="today"':'')+'></i>';
   });
-  h+='</div><div class="crmStripEnds"><span>'+_CRM_STRIP_DAYS+'d ago</span><span>today</span></div>';
+  var leftLbl=partial ? (keys.length===1?'joined today':'day 1') : (_CRM_STRIP_DAYS+'d ago');
+  h+='</div><div class="crmStripEnds'+(partial?' partial':'')+'" style="width:'+(keys.length*13-4)+'px"><span>'+leftLbl+'</span><span>'+(keys.length===1?'':'today')+'</span></div>';
   return h+'</div>';
 }
 /* PAINT AROUND THE SEARCH BOX INSTEAD OF THROUGH IT (Yusuf, 3 Sep).
