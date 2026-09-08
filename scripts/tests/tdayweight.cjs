@@ -50,7 +50,7 @@ window._wtAll=[
 ];
 h=_dayWeightHtml(ds);
 t(/pgN">181\.4<u> lbs<\/u>/.test(h), 'the headline is the latest weigh-in in the display unit');
-t(/down 3\.6 since your first weigh-in/.test(h), 'the delta is against the start weight, worded as Progress worded it');
+t(/down 3\.6 since first weigh-in/.test(h), 'the delta is against the start weight, worded as Progress worded it');
 t(/185 at your first weigh-in → 181\.4 today/.test(h), 'start to today is still computed, same words as Progress');
 t(/<polyline points=/.test(h) && /<circle /.test(h), 'the gold line with the dot on the last reading');
 t(/class="pgCard dwCard dwCompact"/.test(h), 'and it IS the Progress card - same class, same look, half the size');
