@@ -148,6 +148,15 @@ answer='Thats what I want to hear - whats been the easiest part';
   r=await _crmRedraftOne('chrism1',null);
   t(r.ok===true,'a reply that reacts to what they sent goes through', r.reason);
 
+  console.log('\n  NEVER MONEY, NEVER A CANCELLATION (Scott, 8 Sep):');
+  CLIENTS.scottl1={name:'Scott Lee'};
+  _crm.contacts.scottl1={him:'2026-09-04T23:53',them:'2026-09-06T14:40',last:'them',text:'Yusuf, I apologize but I dont think this is for me.'};
+  answer='No apology needed'; r=await _crmRedraftOne('scottl1',null);
+  t(r.ok===false && /cancellation is his own/.test(r.reason),'a cancellation is never machine work', r.reason);
+  _crm.contacts.benp1={him:'2026-09-07T12:00',them:'2026-09-07T14:53',last:'them',text:'Won a corn hole tournament lol'};
+  answer="Love it, and that money's going back to you no question"; r=await _crmRedraftOne('benp1',null);
+  t(r.ok===false && /promises money/.test(r.reason),'a reply that promises money is refused', r.reason);
+
   console.log('\n  SEE THEIR THING:');
   const see=_crmSeeFor('chrism1');
   t(!!see && /see Chris.s progress photos/.test(see.label) && see.day==='2026-09-07','photos in their text puts "see Chris\u2019s progress photos" under it: '+(see&&see.label));
