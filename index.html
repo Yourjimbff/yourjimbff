@@ -94254,6 +94254,13 @@ async function _crmRedraftOne(code, d, force){
     if(!hard.length && _no) hard=[_no];
   }
   if(hard.length) return {ok:false, reason:'voice check: '+hard.join(', ')};
+  /* TWO BROWSERS, ONE BOARD (Gabriel, 8 Sep 5:00am: his phone and the Mac both
+     read the board and each wrote a reply five seconds apart). Re-read before
+     writing; if another screen answered this text meanwhile, stand down. */
+  if(!force){
+    try{ await dfLoadAll(); }catch(e){}
+    if(_crmAnswered(code, them) && !(d.id && (_crm.rows||[]).some(function(r){ return r.id===d.id && r.answers===them; }))) return {ok:false, reason:'another screen answered it first'};
+  }
   var w=await dfWrite(code, {id:(d.id||undefined), text:text, at:new Date().toISOString(),
     re:'answers their '+_crmClock(them)+' text', status:'pending', by:'jarvis',
     src:(d.src||(d.id?undefined:'reply')), day:(d.day||undefined), ctx:(d.ctx||undefined), answers:them});
@@ -94269,10 +94276,28 @@ function _crmAnswered(code, them){
   }
   return false;
 }
+/* Two pending machine replies to the same text from the same person: the
+   older one is a duplicate from another screen. Retire it. */
+async function _crmRetireDupes(){
+  var by={}, n=0;
+  (_crm.rows||[]).forEach(function(r){
+    if(r.status!=='pending' || r.by!=='jarvis' || !r.answers || !r.code) return;
+    var k=r.code+'|'+r.answers; (by[k]=by[k]||[]).push(r);
+  });
+  for(var k in by){
+    var L=by[k]; if(L.length<2) continue;
+    L.sort(function(a,b){ return String(b.at||'').localeCompare(String(a.at||'')); });
+    for(var i=1;i<L.length;i++){
+      try{ await dfSetStatus(L[i].code, L[i], 'skipped', L[i].text, {re:String(L[i].re||'')+' | retired: duplicate reply from a second screen'}); n++; }catch(e){}
+    }
+  }
+  return n;
+}
 async function _crmRedraftStale(){
   if(_crm.rdBusy) return 0;
   _crm.rdBusy=1; var n=0;
   try{
+    try{ if(await _crmRetireDupes()) await dfLoadAll(); }catch(e){}
     var ppl=_crmPeople()||[], seen={}, todo=[];
     for(var i=0;i<ppl.length;i++){
       var p=ppl[i], d=p&&p.draft;

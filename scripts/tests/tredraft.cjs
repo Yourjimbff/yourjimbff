@@ -13,7 +13,7 @@ const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  F
 global.window={addEventListener:()=>{}}; global.document={getElementById:()=>null, addEventListener:()=>{}, querySelectorAll:()=>[]};
 global.localStorage={ getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
 global.CLIENTS={andreaa1:{name:'Andrea Arrants'}, dhruvad1:{name:'Dhruva Daripalli'}, tonyt1:{name:'Tony T'}};
-const MINE=['_crmTapback','_rdClean','_crmRedraftOne','_crmRedraftStale','_crmBall','_crmSortPeople','_crmAnswered','_crmRecentKey','_crmLastPair','_crmSeeFor','_dfDayKey','_dfToday','_crmNiceDate','_crmTopicFacts','_crmTopicShort','_crmStaleDraft','_crmOvertaken','_dfRowNote','_dfFromNote','_crmSweepTime','_crmClock','_dfHardTells','_dfTells','_dfRefuse','_dfBubbles'];
+const MINE=['_crmTapback','_rdClean','_crmRedraftOne','_crmRedraftStale','_crmBall','_crmSortPeople','_crmAnswered','_crmRecentKey','_crmLastPair','_crmSeeFor','_dfDayKey','_dfToday','_crmNiceDate','_crmTopicFacts','_crmTopicShort','_crmRetireDupes','_crmStaleDraft','_crmOvertaken','_dfRowNote','_dfFromNote','_crmSweepTime','_crmClock','_dfHardTells','_dfTells','_dfRefuse','_dfBubbles'];
 eval(closure(['_DF_HARD','_BUB_LONG','_DF_MARK','_DF_SCHEMA','_RD_SYS','_RD_SWEAR','_RD_MODEL','_dfLet','_CRM_BALL_TIER']).code||'');
 eval(MINE.map(defOf).join('\n'));
 guard(MINE, n=>eval(n));
@@ -176,6 +176,16 @@ answer='Thats what I want to hear - whats been the easiest part';
   written=[]; asked=[]; answer='First set since August, pulling them up now';
   _crm.rows=[]; r=await _crmRedraftOne('chrism1',null);
   t(r.ok===true && /WHAT THE APP HAS ON FILE FOR THE THING THEY MENTIONED \(progress photos\): 6 photos/.test(asked[0]) && /BOUNCE OFF IT/.test(asked[0]),'the model is handed the facts and told to bounce off them');
+
+  console.log('\n  TWO BROWSERS, ONE BOARD (Gabriel, 5:00am):');
+  let statuses=[]; dfSetStatus=async(code,d,st,text,extra)=>{ statuses.push([d.id,st]); return {ok:true}; };
+  _crm.rows=[{id:'b',code:'benp1',status:'pending',by:'jarvis',answers:'2026-09-07T14:53',at:'2026-09-08T05:00:21Z',text:'x'},{id:'a',code:'benp1',status:'pending',by:'jarvis',answers:'2026-09-07T14:53',at:'2026-09-08T05:00:16Z',text:'y'},{id:'c',code:'benp1',status:'pending',by:'jarvis',answers:'2026-09-06T10:00',at:'2026-09-06T11:00Z',text:'z'}];
+  const nd=await _crmRetireDupes();
+  t(nd===1 && statuses.length===1 && statuses[0][0]==='a' && statuses[0][1]==='skipped','the older of two replies to the same text is retired, a reply to a different text is left');
+  _crm.rows=[]; written=[]; answer='Corn hole champ'; let loads=0; const _dl=dfLoadAll; dfLoadAll=async()=>{ loads++; _crm.rows=[{id:'q',code:'benp1',status:'pending',by:'jarvis',answers:'2026-09-07T14:53',text:'someone else got there'}]; };
+  r=await _crmRedraftOne('benp1',null);
+  t(r.ok===false && /another screen/.test(r.reason) && written.length===0,'re-reads before writing and stands down if another screen answered first', r.reason);
+  dfLoadAll=_dl;
 
   console.log('\n  SEE THEIR THING:');
   const see=_crmSeeFor('chrism1');
