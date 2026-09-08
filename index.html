@@ -91894,6 +91894,7 @@ function _crmStyle(){
   +'.crmAnsN{font-size:11.5px;font-weight:700;color:rgba(240,236,228,0.62);margin:2px 0 8px;}'
   +'.crmSee{display:inline-block;font-size:12px;font-weight:800;color:#f2c14e;margin:0 0 10px;cursor:pointer;letter-spacing:.2px;}'
   +'.crmSee:hover{text-decoration:underline;}'
+  +'.crmSeeF{color:rgba(240,236,228,0.62);font-weight:700;}'
   +'.crmSend.quiet{background:transparent;color:rgba(240,236,228,0.62);border:1px solid var(--border);}'
   +'.crmLeads{border:1px solid rgba(74,222,128,0.42);background:rgba(74,222,128,0.07);border-radius:13px;padding:11px 13px;margin:0 0 13px;}'
   +'.crmLeadsH{font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:#6ee79a;margin-bottom:8px;}'
@@ -91978,6 +91979,7 @@ async function crmRender(force){
   _crmWatchForWrites();
   /* Their replies come in after the board was read. Rewrite in the background
      and repaint when done, so the read is never held behind a model call. */
+  try{ _crmTopicWarm().then(function(n){ if(n) crmPaint(); }); }catch(e){}
   try{ _crmRedraftStale().then(function(n){ if(n){ dfLoadAll().then(function(){ crmPaint(); }); } }); }catch(e){}
 }
 /* IT FILLS WITHOUT A RELOAD (his immediate-changes ruling, applied here).
@@ -94070,12 +94072,72 @@ function _crmSeeFor(code){
     else if(/\b(workout|leg day|push day|pull day|lift(ing|s)?|squats?|bench|deadlifts?|gym|session|training|trained)\b/i.test(t)) what='workout';
     else if(/\b(weigh(ed)?( |-)?in|weight|scale|lbs|kg)\b/i.test(t)) what='weigh in';
     if(!what) return null;
-    return {label:'see '+first+'\u2019s '+what+' '+dayWord, code:code, day:when};
+    return {label:'see '+first+'\u2019s '+what+' '+dayWord, code:code, day:when, what:what};
   }catch(e){ return null; }
 }
 function _crmSeeHtml(code){
   var s=_crmSeeFor(code); if(!s) return '';
-  return '<div class="crmSee" onclick="event.stopPropagation();covOpen(\''+_escHtml(s.code)+'\',{dateStr:\''+_escHtml(s.day)+'\'})">'+_escHtml(s.label)+'</div>';
+  var sh=''; try{ sh=_crmTopicShort((_crm.topic||{})[code]); }catch(e){ sh=''; }
+  return '<div class="crmSee" onclick="event.stopPropagation();covOpen(\''+_escHtml(s.code)+'\',{dateStr:\''+_escHtml(s.day)+'\'})">'+_escHtml(s.label)+(sh?('<span class="crmSeeF"> \u00b7 '+_escHtml(sh)+'</span>'):'')+'</div>';
+}
+/* ===== THE REPLY BOUNCES OFF THE THING (Yusuf, 8 Sep 1:40am) ================
+   "it needs to truly bounce off of the text or the topic."
+   When their text names something the app holds - photos, a meal, a workout,
+   a weigh in - the app reads what is actually on file for that day and hands
+   the facts to the reply, and prints the short form after the see-link. Facts
+   only: counts, names, numbers, dates. Nothing here judges what it cannot
+   see. */
+function _crmTopicShort(f){ return f && f.short ? f.short : ''; }
+async function _crmTopicFacts(code){
+  var see=_crmSeeFor(code); if(!see) return null;
+  var day=see.day, what=see.what||'', L=((_crm.logs||{})[code])||null, d=(L&&L.byDay&&L.byDay[day])||null;
+  var facts=[], short=[];
+  try{
+    if(what==='progress photos'){
+      var rows=[]; try{ rows=await sbSelect('progress_photos','select=id,angle,logged_at,date_str&client_code=eq.'+encodeURIComponent(code)+'&order=logged_at.desc&limit=40'); }catch(e){ rows=[]; }
+      var today=rows.filter(function(r){ return String(r.date_str||_dfDayKey(r.logged_at))===day; });
+      var prev=rows.filter(function(r){ return String(r.date_str||_dfDayKey(r.logged_at))<day; });
+      var angles=[]; today.forEach(function(r){ var a=String(r.angle||'').toLowerCase(); if(a && angles.indexOf(a)<0) angles.push(a); });
+      if(today.length){ facts.push(today.length+' photo'+(today.length===1?'':'s')+' on file for '+day+(angles.length?(' ('+angles.join(', ')+')'):'')); short.push(today.length+' photo'+(today.length===1?'':'s')+(angles.length?(' \u00b7 '+angles.join(', ')):'')); }
+      else facts.push('no photos on file for '+day+' yet - the upload may not have landed');
+      if(prev.length){ var pk=String(prev[0].date_str||_dfDayKey(prev[0].logged_at)); var gap=Math.round((new Date(day)-new Date(pk))/86400000); facts.push('previous set '+pk+', '+gap+' days earlier'); short.push('first set since '+_crmNiceDate(pk)); }
+      else { facts.push('this is the first set of progress photos on file'); short.push('first set ever'); }
+    } else if(what==='food' || /^(breakfast|lunch|dinner|snack)$/.test(what)){
+      var food=(d&&d.food)||[]; try{ food=_dedupeTaps(food); }catch(e){}
+      var pick=(what==='food')?food:food.filter(function(f){ return String(f.meal||'').toLowerCase().indexOf(what)>=0; });
+      if(!pick.length && what!=='food') pick=food;
+      if(pick.length){
+        var cal=0, pro=0, names=[];
+        pick.forEach(function(f){ cal+=(+f.calories||0); pro+=(+f.protein||0); var n=String(f.name||'').trim(); if(n && names.indexOf(n)<0) names.push(n); });
+        facts.push((what==='food'?'food':what)+' logged '+day+': '+names.slice(0,4).join(', ')+' \u00b7 '+Math.round(cal)+' cal \u00b7 '+Math.round(pro)+'g protein');
+        short.push(names.slice(0,2).join(', ')+' \u00b7 '+Math.round(pro)+'g protein');
+        var dc=0, dp=0; food.forEach(function(f){ dc+=(+f.calories||0); dp+=(+f.protein||0); });
+        if(food.length>pick.length) facts.push('whole day so far: '+Math.round(dc)+' cal, '+Math.round(dp)+'g protein');
+      } else facts.push('nothing logged for '+what+' on '+day);
+    } else if(what==='workout'){
+      var work=(d&&d.work)||[];
+      if(work.length){ var titles=work.map(function(w){ return String(w.title||'Training').trim(); }); facts.push('workout logged '+day+': '+titles.join(', ')); short.push(titles[0]); }
+      else facts.push('no workout logged on '+day);
+    } else if(what==='weigh in'){
+      var w=d&&d.weight; if(w){ facts.push('weigh in '+day+': '+w.weight); short.push(String(w.weight));
+        var prevW=null, keys=Object.keys((L&&L.byDay)||{}).filter(function(k){ return k<day && L.byDay[k].weight; }).sort();
+        if(keys.length){ prevW=L.byDay[keys[keys.length-1]].weight; var diff=Math.round(((+w.weight)-(+prevW.weight))*10)/10; facts.push('previous '+keys[keys.length-1]+': '+prevW.weight+' ('+(diff>0?'up ':'down ')+Math.abs(diff)+')'); short.push((diff>0?'up ':'down ')+Math.abs(diff)+' since '+_crmNiceDate(keys[keys.length-1])); }
+      } else facts.push('no weigh in logged on '+day);
+    }
+  }catch(e){}
+  var out={what:what, day:day, facts:facts.join('. '), short:short.join(' \u00b7 ')};
+  _crm.topic=_crm.topic||{}; _crm.topic[code]=out;
+  return out;
+}
+/* Warm the facts for every card with a see-link, then repaint once. */
+async function _crmTopicWarm(){
+  var ppl=_crmPeople()||[], n=0;
+  for(var i=0;i<ppl.length;i++){
+    var p=ppl[i]; if(!_crmSeeFor(p.code)) continue;
+    if(_crm.topic && _crm.topic[p.code]) continue;
+    try{ await _crmTopicFacts(p.code); n++; }catch(e){}
+  }
+  return n;
 }
 function _crmTapback(t){
   return /^(Reacted|Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\b/i.test(String(t||'').trim());
@@ -94135,6 +94197,7 @@ async function _crmRedraftOne(code, d, force){
      model call, on their words. */
   if(/\b(not for me|(don.?t|dont) think (this|it)('s| is) for me|isn.?t for me|cancel|cancell?ing|refund|stop (my|the) (subscription|payments?)|i want out|drop(ping)? out|quit(ting)?|walk(ing)? away)\b/i.test(theirs)) return {ok:false, reason:'a cancellation is his own reply, never machine'};
   var tail=[]; try{ tail=await _crmThreadTail(code, 8); }catch(e){ tail=[]; }
+  var topic=null; try{ topic=await _crmTopicFacts(code); }catch(e){ topic=null; }
   var first=String((CLIENTS[code]||{}).name||code).split(' ')[0];
   var sw=_RD_SWEAR[first.toLowerCase()]||'no swearing with this person';
   /* HOW LONG SINCE HE LAST TEXTED THEM. Months of silence and a live thread
@@ -94150,6 +94213,7 @@ async function _crmRedraftOne(code, d, force){
     +'\nCLIENT: '+first+' ('+sw+')\nRELATIONSHIP: '+rel+'\n'
     +(tail.length?('THE THREAD, oldest first (HIM is Yusuf, THEM is the client):\n'+tail.map(function(m){ return (m.who==='him'?'HIM: ':'THEM: ')+m.text.slice(0,400); }).join('\n')+'\n'):'')
     +'\nTHEIR LAST TEXT, the one to answer:\nTHEM: '+theirs.slice(0,500)+'\n'
+    +((topic&&topic.facts)?('\nWHAT THE APP HAS ON FILE FOR THE THING THEY MENTIONED ('+topic.what+'): '+topic.facts+'\nBOUNCE OFF IT: the reply uses ONE specific fact from this line, plainly, the way a coach who just glanced at his screen would ("first set since August", "52g protein at lunch, thats right on", "Push day, two in a row"). Facts only. Never judge what you cannot see - no "looking great" about a photo, no verdict on a body. If the file says nothing landed, say you will look once it comes through.\n'):'')
     +(d.text?('\nThe draft that is now out of date, for context only, do not reuse it:\n'+String(d.text||'').slice(0,300)+'\n'):'')
     +'\nReply with ONLY the text Yusuf sends, nothing else.';
   var text='', hard=[];

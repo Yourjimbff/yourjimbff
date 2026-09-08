@@ -13,7 +13,7 @@ const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  F
 global.window={addEventListener:()=>{}}; global.document={getElementById:()=>null, addEventListener:()=>{}, querySelectorAll:()=>[]};
 global.localStorage={ getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
 global.CLIENTS={andreaa1:{name:'Andrea Arrants'}, dhruvad1:{name:'Dhruva Daripalli'}, tonyt1:{name:'Tony T'}};
-const MINE=['_crmTapback','_rdClean','_crmRedraftOne','_crmRedraftStale','_crmBall','_crmSortPeople','_crmAnswered','_crmRecentKey','_crmLastPair','_crmSeeFor','_dfDayKey','_dfToday','_crmNiceDate','_crmStaleDraft','_crmOvertaken','_dfRowNote','_dfFromNote','_crmSweepTime','_crmClock','_dfHardTells','_dfTells','_dfRefuse','_dfBubbles'];
+const MINE=['_crmTapback','_rdClean','_crmRedraftOne','_crmRedraftStale','_crmBall','_crmSortPeople','_crmAnswered','_crmRecentKey','_crmLastPair','_crmSeeFor','_dfDayKey','_dfToday','_crmNiceDate','_crmTopicFacts','_crmTopicShort','_crmStaleDraft','_crmOvertaken','_dfRowNote','_dfFromNote','_crmSweepTime','_crmClock','_dfHardTells','_dfTells','_dfRefuse','_dfBubbles'];
 eval(closure(['_DF_HARD','_BUB_LONG','_DF_MARK','_DF_SCHEMA','_RD_SYS','_RD_SWEAR','_RD_MODEL','_dfLet','_CRM_BALL_TIER']).code||'');
 eval(MINE.map(defOf).join('\n'));
 guard(MINE, n=>eval(n));
@@ -156,6 +156,21 @@ answer='Thats what I want to hear - whats been the easiest part';
   _crm.contacts.benp1={him:'2026-09-07T12:00',them:'2026-09-07T14:53',last:'them',text:'Won a corn hole tournament lol'};
   answer="Love it, and that money's going back to you no question"; r=await _crmRedraftOne('benp1',null);
   t(r.ok===false && /promises money/.test(r.reason),'a reply that promises money is refused', r.reason);
+
+  console.log('\n  THE REPLY BOUNCES OFF THE THING:');
+  sbSelect=async(table,q)=>{ if(table==='progress_photos') return [{id:1,angle:'front',logged_at:'2026-09-07T21:40:00Z',date_str:'2026-09-07'},{id:2,angle:'side',logged_at:'2026-09-07T21:41:00Z',date_str:'2026-09-07'},{id:3,angle:'front',logged_at:'2026-08-12T10:00:00Z',date_str:'2026-08-12'}]; return []; };
+  _dedupeTaps=(x)=>x;
+  _crm.logs={samanthav1:{byDay:{'2026-09-07':{food:[{name:'Chicken and rice',calories:620,protein:52,meal:'lunch'},{name:'Eggs',calories:300,protein:20,meal:'breakfast'}],work:[],weight:null}}}};
+  _crm.topic={};
+  let tf=await _crmTopicFacts('chrism1');
+  t(!!tf && /2 photos on file for 2026-09-07 \(front, side\)/.test(tf.facts) && /previous set 2026-08-12, 26 days earlier/.test(tf.facts),'photos: count, angles, days since the last set', tf&&tf.facts);
+  t(/2 photos · front, side · first set since/.test(tf.short),'and the short form for the card: '+tf.short);
+  CLIENTS.samanthav1={name:'Samantha V'}; _crm.contacts.samanthav1={him:'2026-09-07T12:00',them:'2026-09-07T14:54',last:'them',text:'my lunch feels really protein heavy, what do you think?'};
+  tf=await _crmTopicFacts('samanthav1');
+  t(/lunch logged 2026-09-07: Chicken and rice · 620 cal · 52g protein/.test(tf.facts) && /whole day so far: 920 cal, 72g protein/.test(tf.facts),'lunch: what it was, calories, protein, and the day', tf.facts);
+  written=[]; asked=[]; answer='First set since August, pulling them up now';
+  _crm.rows=[]; r=await _crmRedraftOne('chrism1',null);
+  t(r.ok===true && /WHAT THE APP HAS ON FILE FOR THE THING THEY MENTIONED \(progress photos\): 2 photos/.test(asked[0]) && /BOUNCE OFF IT/.test(asked[0]),'the model is handed the facts and told to bounce off them');
 
   console.log('\n  SEE THEIR THING:');
   const see=_crmSeeFor('chrism1');
