@@ -158,19 +158,20 @@ answer='Thats what I want to hear - whats been the easiest part';
   t(r.ok===false && /promises money/.test(r.reason),'a reply that promises money is refused', r.reason);
 
   console.log('\n  THE REPLY BOUNCES OFF THE THING:');
-  sbSelect=async(table,q)=>{ if(table==='progress_photos') return [{id:1,angle:'front',logged_at:'2026-09-07T21:40:00Z',date_str:'2026-09-07'},{id:2,angle:'side',logged_at:'2026-09-07T21:41:00Z',date_str:'2026-09-07'},{id:3,angle:'front',logged_at:'2026-08-12T10:00:00Z',date_str:'2026-08-12'}]; return []; };
+  // the real shape off the table, 8 Sep: date_str is "Sep 7, 2026", the day the photo is OF; Chris uploaded last night's set and a backfilled Aug 5 set in one sitting
+  sbSelect=async(table,q)=>{ if(table==='progress_photos') return [{id:135,angle:'Back',logged_at:'2026-09-07T21:47:47Z',date_str:'Aug 5, 2026'},{id:134,angle:'Side',logged_at:'2026-09-07T21:47:23Z',date_str:'Aug 5, 2026'},{id:133,angle:'Front',logged_at:'2026-09-07T21:46:48Z',date_str:'Aug 5, 2026'},{id:132,angle:'Back',logged_at:'2026-09-07T21:44:40Z',date_str:'Sep 7, 2026'},{id:131,angle:'Side',logged_at:'2026-09-07T21:44:21Z',date_str:'Sep 7, 2026'},{id:130,angle:'Front',logged_at:'2026-09-07T21:44:01Z',date_str:'Sep 7, 2026'}]; return []; };
   _dedupeTaps=(x)=>x;
   _crm.logs={samanthav1:{byDay:{'2026-09-07':{food:[{name:'Chicken and rice',calories:620,protein:52,meal:'lunch'},{name:'Eggs',calories:300,protein:20,meal:'breakfast'}],work:[],weight:null}}}};
   _crm.topic={};
   let tf=await _crmTopicFacts('chrism1');
-  t(!!tf && /2 photos on file for 2026-09-07 \(front, side\)/.test(tf.facts) && /previous set 2026-08-12, 26 days earlier/.test(tf.facts),'photos: count, angles, days since the last set', tf&&tf.facts);
-  t(/2 photos · front, side · first set since/.test(tf.short),'and the short form for the card: '+tf.short);
+  t(!!tf && /6 photos uploaded 2026-09-07: a Aug 5 set \(front, side, back\) and a Sep 7 set \(front, side, back\)/.test(tf.facts) && /33 days apart/.test(tf.facts),'photos: both sets, their angles, and the days between them', tf&&tf.facts);
+  t(/6 photos · 2 sets · Aug 5 vs Sep 7/.test(tf.short),'and the short form for the card: '+tf.short);
   CLIENTS.samanthav1={name:'Samantha V'}; _crm.contacts.samanthav1={him:'2026-09-07T12:00',them:'2026-09-07T14:54',last:'them',text:'my lunch feels really protein heavy, what do you think?'};
   tf=await _crmTopicFacts('samanthav1');
   t(/lunch logged 2026-09-07: Chicken and rice · 620 cal · 52g protein/.test(tf.facts) && /whole day so far: 920 cal, 72g protein/.test(tf.facts),'lunch: what it was, calories, protein, and the day', tf.facts);
   written=[]; asked=[]; answer='First set since August, pulling them up now';
   _crm.rows=[]; r=await _crmRedraftOne('chrism1',null);
-  t(r.ok===true && /WHAT THE APP HAS ON FILE FOR THE THING THEY MENTIONED \(progress photos\): 2 photos/.test(asked[0]) && /BOUNCE OFF IT/.test(asked[0]),'the model is handed the facts and told to bounce off them');
+  t(r.ok===true && /WHAT THE APP HAS ON FILE FOR THE THING THEY MENTIONED \(progress photos\): 6 photos/.test(asked[0]) && /BOUNCE OFF IT/.test(asked[0]),'the model is handed the facts and told to bounce off them');
 
   console.log('\n  SEE THEIR THING:');
   const see=_crmSeeFor('chrism1');
