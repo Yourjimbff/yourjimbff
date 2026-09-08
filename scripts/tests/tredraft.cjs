@@ -118,6 +118,19 @@ answer='Thats what I want to hear - whats been the easiest part';
   const order=_crmSortPeople(list,'recent').map(p=>p.code);
   t(order[0]==='andrewz1' && order[1]==='nobody1' && order.slice(2).sort().join()==='jordanr1,tonyt1','Andrew first, the ones he is done with last: '+order.join(' > '));
 
+  console.log('\n  THE THEME, NOT COACHING (Maisha, 8 Sep):');
+  t(_dfTells('That plan works when you already fixed the emotional eating piece, thats the real unlock').indexOf('sounds like coaching')>=0,'the Maisha line is marked as coaching');
+  t(_dfTells('Love that plan. Its been a minute - hows everything else been going?').indexOf('sounds like coaching')<0,'a warm reaction is not');
+  t(/farm of engagement/.test(_RD_SYS) && /NO training or food advice over text unless/.test(_RD_SYS),'the prompt carries the theme rule');
+  written=[]; asked=[]; answer='Love that plan. Its been a minute - hows everything else been going?';
+  CLIENTS.maishas1={name:'Maisha Shahjahan'};
+  _crm.rows=[]; _crm.contacts.maishas1={him:'2026-06-01T14:00',them:'2026-09-07T20:40',last:'them',text:'Plan for last bit is to do more perfectly. Like consistent home-cooking'};
+  r=await _crmRedraftOne('maishas1',null);
+  t(r.ok===true && /months ago - this is a re-opening/.test(asked[0]),'months of silence is named to the model as a re-opening', (asked[0].match(/RELATIONSHIP: [^\n]*/)||[''])[0]);
+  _crm.contacts.maishas1.him='2026-09-07T12:00'; asked=[];
+  r=await _crmRedraftOne('maishas1',null);
+  t(/live thread, no opener/.test(asked[0]),'a text from this morning is a live thread');
+
   console.log('\n  CLEAN:');
   t(_rdClean('"Sure - what time works for you."')==='Sure - what time works for you','quotes and the end stop come off');
   t(_rdClean('HIM: Hell yeah\n\n\nLets go\nthird line')==='Hell yeah\nLets go','prefix off, two lines at most');
