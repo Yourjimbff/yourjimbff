@@ -274,7 +274,7 @@ const ALIVE_QUIET=[
   t((src.match(/_crmYdayHtml\(/g)||[]).length>=3,
     'the day is drawn on all three surfaces — drafted row and bare row (both folded behind the one line, 7 Sep), batch card',
     String((src.match(/_crmYdayHtml\(/g)||[]).length));
-  t(/body\+=_crmYdayHtml\(code\);/.test(src) && /_crmMore\(p, d\)\n\s*\+ _dfEdHtml\(/.test(src), 'above the board’s box, not below it - inside the folded line');
+  t(/body\+=_crmYdayHtml\(code\);/.test(src) && /_crmMore\(p, d\)\n(\s*\+ _crmSeeHtml\(p\.code\)\n)?\s*\+ _dfEdHtml\(/.test(src), 'above the board’s box, not below it - inside the folded line');
   t(/_crmYdayHtml\(it\.code\)\n\s*\+ _dfEdHtml\(/.test(src), 'and above the batch box');
   t(!/_dqCtxHtml/.test(src), 'and the stored-copy renderer is gone, not left beside it');
   t(/\{k:'yday',\s+label:'Yesterday'/.test(src), 'Yesterday is the first tab on the board');

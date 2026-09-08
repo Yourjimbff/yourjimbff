@@ -13,7 +13,7 @@ const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  F
 global.window={addEventListener:()=>{}}; global.document={getElementById:()=>null, addEventListener:()=>{}, querySelectorAll:()=>[]};
 global.localStorage={ getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
 global.CLIENTS={andreaa1:{name:'Andrea Arrants'}, dhruvad1:{name:'Dhruva Daripalli'}, tonyt1:{name:'Tony T'}};
-const MINE=['_crmTapback','_rdClean','_crmRedraftOne','_crmRedraftStale','_crmBall','_crmSortPeople','_crmAnswered','_crmRecentKey','_crmLastPair','_crmStaleDraft','_crmOvertaken','_dfRowNote','_dfFromNote','_crmSweepTime','_crmClock','_dfHardTells','_dfTells','_dfRefuse','_dfBubbles'];
+const MINE=['_crmTapback','_rdClean','_crmRedraftOne','_crmRedraftStale','_crmBall','_crmSortPeople','_crmAnswered','_crmRecentKey','_crmLastPair','_crmSeeFor','_dfDayKey','_dfToday','_crmNiceDate','_crmStaleDraft','_crmOvertaken','_dfRowNote','_dfFromNote','_crmSweepTime','_crmClock','_dfHardTells','_dfTells','_dfRefuse','_dfBubbles'];
 eval(closure(['_DF_HARD','_BUB_LONG','_DF_MARK','_DF_SCHEMA','_RD_SYS','_RD_SWEAR','_RD_MODEL','_dfLet','_CRM_BALL_TIER']).code||'');
 eval(MINE.map(defOf).join('\n'));
 guard(MINE, n=>eval(n));
@@ -133,7 +133,31 @@ answer='Thats what I want to hear - whats been the easiest part';
 
   console.log('\n  CLEAN:');
   t(_rdClean('"Sure - what time works for you."')==='Sure - what time works for you','quotes and the end stop come off');
-  t(_rdClean('HIM: Hell yeah\n\n\nLets go\nthird line')==='Hell yeah\nLets go','prefix off, two lines at most');
+  t(_rdClean('HIM: Hell yeah\n\n\nLets go\nthird line')==='Hell yeah','prefix off, ONE line, the response and nothing else (8 Sep)');
+
+  console.log('\n  CHRIS, 8 SEP - NOTHING CLAIMED, NOTHING INVENTED:');
+  CLIENTS.chrism1={name:'Chris McCarthy'};
+  _crm.rows=[]; _crm.contacts.chrism1={him:'2026-09-06T15:04',them:'2026-09-07T21:49',last:'them',text:'Uploaded  progres photos'};
+  written=[]; asked=[]; answer='Just checked, looking great man';
+  r=await _crmRedraftOne('chrism1',null);
+  t(r.ok===false && /already looked/.test(r.reason),'a reply that claims he checked is refused', r.reason);
+  answer='Talk in a few for the call';
+  r=await _crmRedraftOne('chrism1',null);
+  t(r.ok===false && /invents a call/.test(r.reason),'a reply that invents a call is refused', r.reason);
+  answer='Pulling them up now';
+  r=await _crmRedraftOne('chrism1',null);
+  t(r.ok===true,'a reply that reacts to what they sent goes through', r.reason);
+
+  console.log('\n  SEE THEIR THING:');
+  const see=_crmSeeFor('chrism1');
+  t(!!see && /see Chris.s progress photos/.test(see.label) && see.day==='2026-09-07','photos in their text puts "see Chris\u2019s progress photos" under it: '+(see&&see.label));
+  _crm.contacts.samanthav1={him:'2026-09-07T15:00',them:'2026-09-07T14:54',last:'them',text:'my lunch feels really protein heavy, what do you think?'};
+  CLIENTS.samanthav1={name:'Samantha V'};
+  const see2=_crmSeeFor('samanthav1');
+  t(!!see2 && /see Samantha.s lunch/.test(see2.label),'lunch in their text: '+(see2&&see2.label));
+  t(_crmSeeFor('tonyt1')===null,'a tapback gets no link');
+  _crm.contacts.jordanr1={him:'2026-09-07T15:05',them:'2026-09-07T13:00',last:'him',text:'ok'};
+  t(_crmSeeFor('jordanr1')===null,'nothing when he spoke last');
   console.log(bad?('\n  '+bad+' FAILED'):'\n  all passed');
   process.exit(bad?1:0);
 })();
