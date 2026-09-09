@@ -44,11 +44,17 @@ const src=[
   'function _jvNum(n){ return String(n); }',
   'function _citeWhen(){ return " today"; }',
   'function wUnit(){ return "lb"; }',
-  'module.exports={_citeDayBody,_bfItemsFor,CITE_MAX};'
+  // The connection read, stubbed the way the live page answers it: by client,
+  // date and exercise name, or nothing. Set from the test to prove both shapes.
+  'var _TL_CONN_PHRASE={nothing:"quiet connection", partial:"decent connection", felt:"great connection"};',
+  'var _CONN_STUB={};',
+  'function _woConnFor(code, ds, nm){ return (_CONN_STUB[code+"|"+ds]||{})[nm]||""; }',
+  'function _setConn(o){ _CONN_STUB=o; }',
+  'module.exports={_citeDayBody,_bfItemsFor,CITE_MAX,_setConn};'
 ].join('\n');
 const m={exports:{}};
 new Function('module','exports',src)(m,m.exports);
-const {_citeDayBody}=m.exports;
+const {_citeDayBody,_setConn}=m.exports;
 
 // Hayden's day, as ordered: one Legs workout, five exercises, sets and reps on
 // every one, and a note of his own underneath. Names are longer than one word so
@@ -147,6 +153,20 @@ t('REAL ROW: his note, buried in the description, does not reach the client', ()
 t('REAL ROW: no loads or rep counts', ()=>!/135|180|\u00d7|\blb\b/.test(real));
 t('REAL ROW: nothing truncated', ()=>real.indexOf('\u2026')<0);
 t('REAL ROW: no Summary tally', ()=>!/Summary:/.test(real));
+
+// ===== THE CONNECTION RIDES ON THE EXERCISE (Yusuf, 9 Sep) ==============
+// "exercise - what they rated the connection", only where a rating exists.
+const cwo={ kind:'wo', code:'hayd1', data:Object.assign({}, wo.data, {client_code:'hayd1', date_str:'Sep 9, 2026'}) };
+_setConn({ 'hayd1|Sep 9, 2026': { 'Squat':'felt', 'Leg Press':'partial', 'Calves':'nothing' } });
+const conn=_citeDayBody([cwo]);
+t('CONN: a rated lift reads name - phrase', ()=>conn.indexOf('Squat - great connection')>-1);
+t('CONN: moderate reads decent', ()=>conn.indexOf('Leg Press - decent connection')>-1);
+t('CONN: low reads quiet, unjudging', ()=>conn.indexOf('Calves - quiet connection')>-1);
+t('CONN: an unrated lift stands alone, no dash', ()=>/\nLeg Extension\n/.test(conn) && conn.indexOf('Leg Extension -')<0);
+t('CONN: no em dash anywhere', ()=>conn.indexOf('\u2014')<0);
+_setConn({});
+const none=_citeDayBody([cwo]);
+t('CONN: with no rating the list is exactly as before', ()=>none.indexOf('Legs:\nSquat\nLeg Press\nLeg Extension\nHamstring Curl\nCalves')>-1);
 
 let bad=0;
 C.forEach(([n,ok,err])=>{ if(!ok) bad++; console.log((ok?'  ok    ':'  FAIL  ')+n+(err?'  ['+err+']':'')); });
