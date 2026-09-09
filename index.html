@@ -872,6 +872,11 @@ body.jv-wkProgEditWide #mEditProgramDay.mbg{align-items:center;}
   width:32px;height:32px;border-radius:9px;box-sizing:border-box;flex:none;margin-left:auto;
   border:1px solid #2d2d2d;background:#1b1b1b;color:rgba(240,236,228,0.78);cursor:pointer;}
 .fdRefresh svg{width:15px;height:15px;display:block;}
+.fdQ{flex:1 1 100%;min-width:0;height:34px;box-sizing:border-box;padding:0 12px;border-radius:10px;
+  border:1px solid rgba(255,255,255,0.10);background:rgba(255,255,255,0.05);color:var(--text);
+  font:inherit;font-size:14px;-webkit-appearance:none;appearance:none;outline:none;}
+.fdQ::placeholder{color:rgba(240,236,228,0.42);}
+.fdQ:focus{border-color:rgba(245,197,24,0.45);}
 .fdRefresh:hover{border-color:rgba(240,236,228,0.34);color:#f0ece4;}
 .fdRefresh.spin svg{animation:fdSpin .7s linear infinite;}
 @keyframes fdSpin{to{transform:rotate(360deg);}}
@@ -16073,8 +16078,16 @@ function _feedLensRow(){
   // THE ROW PINS, so it needs a class to hold on to rather than a bare inline
   // style, and the refresh sits IN it — a control that scrolls away is a control
   // he has to hunt for at the exact moment he wants it.
+  /* A NAME BOX ON THE FEED (Yusuf, 9 Sep 9:40am, from his phone: "there's no
+     search function at the client feed section"). One glass line under the
+     lenses. It hides cards, it never re-reads anything, and the day headings
+     go with their cards so an empty day does not sit there as a label. The
+     text survives a refresh because the box is rebuilt from window._feedQ. */
+  var _fq=String(window._feedQ||'');
   var row='<div class="fdLensRow" style="display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">'
-    +sp('all','All')+sp('kitchen','Food')+sp('gym','Fitness')+_feedRefreshHtml()+'</div>';
+    +sp('all','All')+sp('kitchen','Food')+sp('gym','Fitness')+_feedRefreshHtml()
+    +'<input id="fdQ" class="fdQ" type="search" placeholder="Find a name" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" value="'+_escHtml(_fq)+'" oninput="_feedSearch(this.value)">'
+    +'</div>';
   // Week mode can still be entered on a phone by an older route or a stale
   // flag; if it somehow is, the controls to leave it must be on screen.
   if(_fwOn()) row+='<div class="fwModeRow">'+_feedModeSegs()+_fwSortSegs()+'</div>';
@@ -16197,6 +16210,32 @@ function _feedPaint(holder, html){
   if(!holder) return;
   holder.innerHTML=html;
   try{ var c=holder.firstElementChild; if(c && c.classList) c.classList.add('feedOwned'); }catch(e){}
+  try{ _feedApplySearch(holder); }catch(e){}
+}
+function _feedSearch(v){
+  window._feedQ=String(v||'');
+  try{ _feedApplySearch(document.getElementById('trainingHistory')); }catch(e){}
+}
+function _feedApplySearch(holder){
+  if(!holder) return;
+  var q=String(window._feedQ||'').toLowerCase().replace(/\s+/g,' ').trim();
+  var cards=holder.querySelectorAll('.pfCard');
+  for(var i=0;i<cards.length;i++){
+    var nm=String(cards[i].getAttribute('data-name')||'');
+    cards[i].hidden=!!(q && nm.indexOf(q)<0);
+  }
+  // A day heading with nothing under it goes too.
+  var days=holder.querySelectorAll('.fdDay');
+  for(var j=0;j<days.length;j++){
+    var any=false, el=days[j].nextElementSibling;
+    while(el && !(el.classList && el.classList.contains('fdDay'))){
+      if(el.classList && el.classList.contains('pfCard') && !el.hidden){ any=true; break; }
+      // cards may sit inside a wrapper
+      if(!any && el.querySelector){ var vis=el.querySelectorAll('.pfCard'); for(var k=0;k<vis.length;k++){ if(!vis[k].hidden){ any=true; break; } } if(any) break; }
+      el=el.nextElementSibling;
+    }
+    days[j].hidden=!!(q && !any);
+  }
 }
 function _feedOwns(holder){
   try{ var c=holder && holder.firstElementChild; return !!(c && c.classList && c.classList.contains('feedOwned')); }catch(e){ return false; }
@@ -43453,6 +43492,32 @@ function _jvTagCodes(){
 // EVERY tag in a message, in the order he wrote them. A code that is not a real
 // client is not a tag — it is just text he typed, and it resolves to nothing.
 var _JV_TAG_RE=new RegExp('@([a-z0-9_]{2,40})','ig');
+/* A NAME IS A TAG TOO (Yusuf, 9 Sep 9:40am, from his phone: "the @ feature
+   does not work on mobile Jarvis tab. I want to ask Jarvis if Spencer has
+   done a workout"). On a phone the picker is easy to miss, so what reaches
+   this is "@Spencer", not "@spencerr1", and a word that is not a code resolved
+   to nobody - the question went out unscoped and he read that as broken.
+   A word is a tag when it is a code, OR when it is exactly one client's first
+   name, OR their whole name run together (@chrismccarthy). Two Chrises means
+   no match, never a guess: an ambiguous name is text, and the picker is
+   still the way to say which one. Trainers and hidden clients never match. */
+function _jvTagResolve(w){
+  try{
+    w=String(w||'').toLowerCase().replace(/[^a-z0-9_]+/g,'');
+    if(!w || !CLIENTS) return null;
+    if(CLIENTS[w] && !CLIENTS[w].isTrainer) return w;
+    var h={}; try{ h=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{}; }catch(e){}
+    var hit=null, n=0;
+    Object.keys(CLIENTS).forEach(function(c){
+      var r=CLIENTS[c]||{}; if(r.isTrainer || h[c]) return;
+      var nm=String(r.name||'').toLowerCase().replace(/[^a-z0-9 ]+/g,' ').trim();
+      if(!nm) return;
+      var first=nm.split(/\s+/)[0], whole=nm.replace(/\s+/g,'');
+      if(w===first || w===whole){ n++; hit=c; }
+    });
+    return n===1 ? hit : null;
+  }catch(e){ return null; }
+}
 function _jvTagsIn(text){
   var out={codes:[], everyone:false};
   try{
@@ -43461,7 +43526,8 @@ function _jvTagsIn(text){
     while((m=_JV_TAG_RE.exec(s))){
       var w=String(m[1]||'').toLowerCase();
       if(w==='everyone' || w==='all'){ out.everyone=true; continue; }
-      if(CLIENTS && CLIENTS[w] && !CLIENTS[w].isTrainer && out.codes.indexOf(w)<0) out.codes.push(w);
+      var code=_jvTagResolve(w);
+      if(code && out.codes.indexOf(code)<0) out.codes.push(code);
     }
   }catch(e){}
   return out;
@@ -43474,8 +43540,9 @@ function _jvChipHtml(esc){
       var k=String(w).toLowerCase();
       if(k==='everyone'||k==='all')
         return '<span class="jvTagChip jvTagAll">@everyone</span>';
-      if(!(CLIENTS && CLIENTS[k]) || (CLIENTS[k]||{}).isTrainer) return whole;
-      return '<span class="jvTagChip">'+_escHtml((CLIENTS[k]||{}).name||k)+'</span>';
+      var code=_jvTagResolve(k);
+      if(!code) return whole;
+      return '<span class="jvTagChip">'+_escHtml((CLIENTS[code]||{}).name||code)+'</span>';
     });
   }catch(e){ return esc; }
 }
@@ -43525,7 +43592,7 @@ function _jvTagPaint(inp, frag){
   if(!rows.length){ _jvTagClose(); return; }
   if(_jvTagSel>=rows.length) _jvTagSel=0;
   _jvTagBox.innerHTML=rows.map(function(x,i){
-    return '<div class="jvTagRow'+(i===_jvTagSel?' on':'')+'" data-i="'+i+'" onmousedown="_jvTagPick(event,'+i+')">'
+    return '<div class="jvTagRow'+(i===_jvTagSel?' on':'')+'" data-i="'+i+'" onmousedown="_jvTagPick(event,'+i+')" ontouchend="_jvTagPick(event,'+i+')">'
       +'<span class="jvTagName">'+_escHtml(x.name)+'</span>'
       +'<span class="jvTagCode">@'+_escHtml(x.code)+'</span></div>';
   }).join('');
@@ -43578,7 +43645,7 @@ function _jvTagBackspace(ev, inp){
     var m=/@([A-Za-z0-9_]{2,40})\s?$/.exec(v.slice(0,c));
     if(!m) return false;
     var w=String(m[1]).toLowerCase();
-    var real=(w==='everyone'||w==='all') || !!(CLIENTS && CLIENTS[w] && !CLIENTS[w].isTrainer);
+    var real=(w==='everyone'||w==='all') || !!_jvTagResolve(w);
     if(!real) return false;                       // ordinary text, ordinary backspace
     var start=c-m[0].length;
     inp.value=v.slice(0,start)+v.slice(c);
@@ -58048,7 +58115,12 @@ var _SPW_CODE='spencerr1';
 var _SPW_FROM='2026-09-05';          /* tomorrow */
 var _SPW_DAYS=7;                     /* through 11 Sep */
 var _spwSet=null, _spwAt=0, _spwFailed=false, _spwBusy=false;
+/* RETIRED (Yusuf, 9 Sep 9:40am, off his own screenshot: "We can also remove
+   the giant supple bitch notification - it's done its job"). The gate answers
+   false first, so the band never draws again; the functions below stay so a
+   future watch on someone else has a working shape to copy. */
 function _spwOn(){
+  return false;
   try{
     if(window.VIEWAS) return false;
     if(window._jvShareMode) return false;
