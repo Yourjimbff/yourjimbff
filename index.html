@@ -85711,6 +85711,57 @@ function _nlAbortable(ms){
   return {ac:ac, signal:ac&&ac.signal, done:function(){ clearTimeout(t); },
           abort:function(){ clearTimeout(t); try{ ac&&ac.abort(); }catch(e){} }};
 }
+/* THE NATIONAL DATABASE, BEHIND THE ESTIMATE (Yusuf, 10 Sep: "what are the
+   free ones we can do immediately? Can you just do that?"). USDA FoodData
+   Central - generic foods, the survey foods people actually eat, and packaged
+   products by brand, per printed serving. For every item the app's own table
+   cannot price, the top matches are fetched and handed to the model as
+   reference rows with real numbers, so a "Kirkland protein bar" or "Chobani
+   flip" is priced off the label USDA holds rather than a guess. The model
+   still does the amount; the numbers it scales are the database's. Never
+   blocks a meal: no answer in 2.5s means no reference, and the road is
+   exactly what it was. Chain restaurant menus are not in USDA; those still
+   come from the chain's own posted numbers. */
+var _USDA_MS=2500, _usdaCache={};
+async function _usdaLookup(q, n){
+  q=String(q||'').trim().slice(0,120); if(q.length<2) return [];
+  var key=q.toLowerCase()+'|'+(n||4);
+  if(_usdaCache[key]) return _usdaCache[key];
+  var t=null; try{ t=_sessToken(); }catch(e){}
+  var o={headers:{}}; if(t) o.headers['Authorization']='Bearer '+t;
+  try{ o.signal=_sbTimeout(_USDA_MS); }catch(e){}
+  try{
+    var r=await fetch('/.netlify/functions/usda?q='+encodeURIComponent(q)+'&n='+(n||4), o);
+    if(!r.ok) return [];
+    var d=await r.json(); var foods=(d && Array.isArray(d.foods))?d.foods:[];
+    _usdaCache[key]=foods; return foods;
+  }catch(e){ return []; }
+}
+/* The reference block for a prompt: one line per USDA match, with the
+   serving it is priced for. Food words only - the amount is stripped so
+   "2 kirkland protein bars" searches "kirkland protein bars". */
+function _usdaFoodWords(said){
+  return String(said||'').toLowerCase()
+    .replace(/^\s*(?:a|an|one|two|three|four|five|six|half|couple of|\d+(?:\.\d+)?(?:\/\d+)?)\s*/,'')
+    .replace(/^\s*(?:oz|g|kg|lb|lbs|ounces?|grams?|handfuls?|scoops?|slices?|tbsp|tsp|cups?|cans?|bowls?|bars?|packets?|pieces?)\s+(?:of\s+)?/,'')
+    .replace(/\s+/g,' ').trim();
+}
+async function _usdaRefs(items){
+  var names=[]; (items||[]).forEach(function(x){ var w=_usdaFoodWords(x); if(w && names.indexOf(w)<0) names.push(w); });
+  names=names.slice(0,4);
+  if(!names.length) return '';
+  var all=await Promise.all(names.map(function(nm){ return _usdaLookup(nm, 3); }));
+  var lines=[];
+  all.forEach(function(foods, i){
+    (foods||[]).slice(0,3).forEach(function(f){
+      if(f.calories==null) return;
+      var nm=String(f.name||'').replace(/\s+/g,' ').trim(); if(nm.length>70) nm=nm.slice(0,70);
+      lines.push('- for "'+names[i]+'": '+nm+(f.brand?(' ('+f.brand+')'):'')+' - per '+f.serving+': '+Math.round(f.calories)+' cal, '+Math.round(f.protein||0)+'g protein, '+Math.round(f.carbs||0)+'g carbs, '+Math.round(f.fat||0)+'g fat');
+    });
+  });
+  if(!lines.length) return '';
+  return '\n\nREFERENCE ROWS from the USDA national food database (real numbers, per the serving stated). Use a row only when it is the same food the client named, scale it to the amount they said, and prefer a branded row when they named the brand. Ignore rows that are a different food. Never let a reference override a number the client typed.\n'+lines.join('\n');
+}
 async function _nlEstimate(content, signal){
   var _o={method:'POST', headers:{'Content-Type':'application/json'},
           body:JSON.stringify({messages:[{role:'user',content:content}]})};
@@ -85910,10 +85961,12 @@ async function _nlEnrich(st, echo, rowId){
   if(!left.length) return;
   var est=null;
   try{
+    var refs=''; try{ refs=await _usdaRefs(left); }catch(e){ refs=''; }
     var content=[{type:'text', text:_NL_SYS
       +'\n\nPrice ONLY these items, nothing else. They are part of a larger meal '
       +'whose other items are already counted, so do not add anything they do not name.'
       +_nlItemsRule()
+      +refs
       +'\n\nThe client says: "'+left.join(', ')+'"'}];
     est=_nlSettle(await _nlEstimate(content, null));
   }catch(e){ est=null; }
@@ -85965,7 +86018,8 @@ async function nlSubmit(){
       if(m) content.push({type:'image', source:{type:'base64', media_type:m[1], data:m[2]}});
     }
   }catch(e){}
-  content.push({type:'text', text: sys+_nlItemsRule()+'\n\nThe client says: "'+(line||'(photo only)')+'"'});
+  var _refs=''; try{ if(line) _refs=await _usdaRefs(_nlEchoSplit(line)); }catch(e){ _refs=''; }
+  content.push({type:'text', text: sys+_nlItemsRule()+_refs+'\n\nThe client says: "'+(line||'(photo only)')+'"'});
   var est=null, _timedOut=false;
   // PRINTED NUMBERS BEAT GUESSING. A packaged meal with its macros on the sleeve
   // is not a plate to be estimated — the numbers are right there. The label reader
