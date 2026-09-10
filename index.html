@@ -12422,12 +12422,14 @@ function slogVoice(){
   try{
     _slogRec=new SR(); _slogRec.lang='en-US'; _slogRec.continuous=true; _slogRec.interimResults=true;
     _slogBase=String(el.value||''); if(_slogBase && !/\s$/.test(_slogBase)) _slogBase+=' ';
+    var _slogSt={base:_slogBase, wrote:String(el.value||''), drop:{}};
     _slogRec.onstart=function(){ _slogOn=true; slogVoiceUI(true); };
     _slogRec.onresult=function(ev){
-      var fin='', interim='';
-      for(var i=ev.resultIndex;i<ev.results.length;i++){ var tr=ev.results[i][0].transcript; if(ev.results[i].isFinal) fin+=tr+' '; else interim+=tr; }
-      if(fin) _slogBase+=fin;
-      var e2=document.getElementById('slogInput'); if(e2){ e2.value=_slogBase+interim; slogGrow(e2); try{ localStorage.setItem(_slogKey(), e2.value); }catch(e){} }
+      var e2=document.getElementById('slogInput');
+      var r=_micTakeEdits(_slogSt, e2, ev);
+      if(r.f) _slogSt.base+=r.f;
+      _slogBase=_slogSt.base;
+      if(e2){ e2.value=_slogSt.base+r.it; _slogSt.wrote=e2.value; slogGrow(e2); try{ localStorage.setItem(_slogKey(), e2.value); }catch(e){} }
     };
     _slogRec.onerror=function(ev){ if(ev&&ev.error==='no-speech') return; slogStopVoice(); };
     _slogRec.onend=function(){ if(_slogOn){ try{ _slogRec.start(); return; }catch(e){} } slogStopVoice(); };
@@ -20843,15 +20845,14 @@ function toggleEntryVoice(){
       btn.innerHTML='\u23f9 Listening\u2026 tap to stop'; btn.style.background='#ff4455'; btn.style.color='#f0ece4'; btn.style.borderColor='#ff4455';
       baseText=inp?(inp.value||''):'';
       if(baseText && !baseText.endsWith(' ')) baseText+=' ';
+      entryRecognition._st={base:baseText, wrote:(inp?inp.value:null), drop:{}};
     };
     entryRecognition.onresult=function(event){
-      var finalText='', interimText='';
-      for(var i=event.resultIndex;i<event.results.length;i++){
-        var t=event.results[i][0].transcript;
-        if(event.results[i].isFinal) finalText+=t; else interimText+=t;
-      }
-      if(inp){ inp.value=baseText+finalText+interimText; }
-      if(finalText) baseText+=finalText;
+      var st=entryRecognition._st||(entryRecognition._st={base:baseText, wrote:null, drop:{}});
+      var r=_micTakeEdits(st, inp, event);
+      if(inp){ inp.value=st.base+r.f+r.it; st.wrote=inp.value; }
+      if(r.f) st.base+=r.f;
+      baseText=st.base;
     };
     entryRecognition.onerror=function(e){
       entryListening=false;
@@ -35540,6 +35541,28 @@ function _jarvisMicReset(btn){
   btn.style.borderColor = tint ? (tint.replace('#','rgba(')==='rgba('? tint : tint) : 'rgba(224,196,152,0.4)';
   if(tint) btn.style.borderColor = 'rgba(78,169,111,0.42)';
 }
+/* WHAT HE DELETES STAYS DELETED - the shared half (10 Sep). For any mic that
+   rewrites its box as base + interim on every result: if the box is not what
+   the mic last wrote, the person edited it, so the box becomes the new base
+   and the phrase still being recognised at the cut is dropped for good.
+   Returns {f, it}: the finals to append and the interim to show. */
+function _micTakeEdits(st, box, ev){
+  if(box && st.wrote!=null && box.value!==st.wrote){
+    st.base=(box.value ? box.value.replace(/\s+$/,'')+' ' : '');
+    st.drop=st.drop||{};
+    // only the phrase that was already on screen when he cut it - a phrase
+    // that starts after the edit is new words and belongs in the box
+    (st.live||[]).forEach(function(k){ st.drop[k]=true; });
+  }
+  var f='', it='', live=[];
+  for(var i=ev.resultIndex;i<ev.results.length;i++){
+    if(st.drop && st.drop[i]){ if(ev.results[i].isFinal) delete st.drop[i]; continue; }
+    var tx=ev.results[i][0].transcript;
+    if(ev.results[i].isFinal) f+=tx+' '; else { it+=tx; live.push(i); }
+  }
+  st.live=live;
+  return {f:f, it:it};
+}
 function jarvisVoiceToggle(ns){
   ns=ns||'feed'; var ID=_jarvisIds(ns);
   var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -35549,7 +35572,24 @@ function jarvisVoiceToggle(ns){
   if(!jarvisRec){
     jarvisRec=new SR(); jarvisRec.continuous=true; jarvisRec.interimResults=true; jarvisRec.lang='en-US';
     jarvisRec.onstart=function(){ jarvisListening=true; var I=_jarvisIds(jarvisRec._ns||'feed'); var b=document.getElementById(I.mic); if(b){ b.innerHTML=_STOPSVG; b.style.background='#ff4455'; b.style.color='#f0ece4'; b.style.borderColor='#ff4455'; } };
-    jarvisRec.onresult=function(e){ var f='',it=''; for(var i=e.resultIndex;i<e.results.length;i++){ var tx=e.results[i][0].transcript; if(e.results[i].isFinal) f+=tx+' '; else it+=tx; } var I=_jarvisIds(jarvisRec._ns||'feed'); var box=document.getElementById(I.inp); if(box){ if(f) jarvisRec._base=((jarvisRec._base||'')+f); box.value=((jarvisRec._base||'')+it).trim(); if(I.inp==='clMomentInput'){ window._clJarvisDraft=box.value; } } };
+    /* WHAT HE DELETES STAYS DELETED (Yusuf, 10 Sep, mid-workout: "I said I did
+       three sets and then it said I did reset and I deleted that text while
+       the microphone was still running... as I spoke again, the entire field
+       repopulated"). The box was rewritten on every result as base + interim,
+       and base was the mic's own memory of everything said so far - so any
+       edit he made in the box was overwritten by the next word. Now the box is
+       the truth: if its text is not what the mic last wrote, he changed it, and
+       the mic takes the box as its new base and carries on from there. The
+       phrase that was still being recognised when he cut it is dropped too,
+       so it cannot land again the moment it finalises. */
+    jarvisRec.onresult=function(e){
+      var I=_jarvisIds(jarvisRec._ns||'feed'); var box=document.getElementById(I.inp);
+      jarvisRec._st=jarvisRec._st||{base:jarvisRec._base||'', wrote:jarvisRec._wrote, drop:{}, live:[]};
+      var r=_micTakeEdits(jarvisRec._st, box, e);
+      if(r.f) jarvisRec._st.base+=r.f;
+      jarvisRec._base=jarvisRec._st.base;
+      if(box){ box.value=(jarvisRec._st.base+r.it).trim(); jarvisRec._st.wrote=box.value; jarvisRec._wrote=box.value; if(I.inp==='clMomentInput'){ window._clJarvisDraft=box.value; } }
+    };
     // A MIC THAT DIES MUST SAY SO — the Feed mic was the other silent one. It
     // reset the icon and announced nothing, so a failed dictation on the Feed
     // looked identical to a mic he had tapped off himself. Routed through the
@@ -35565,6 +35605,8 @@ function jarvisVoiceToggle(ns){
   }
   jarvisRec._ns=ns;
   jarvisRec._base=(inp&&inp.value?inp.value+' ':'');
+  jarvisRec._wrote=(inp?inp.value:null);
+  jarvisRec._st={base:jarvisRec._base, wrote:jarvisRec._wrote, drop:{}, live:[]};
   try{ jarvisRec.start(); }catch(e){}
 }
 // Talking to Jarvis about ONE client. This panel was written months ago and nothing
@@ -60558,15 +60600,14 @@ function toggleFoodVoice(){
       btn.innerHTML='⏹ Listening… tap to stop'; btn.style.background='#ff4455'; btn.style.color='#f0ece4'; btn.style.borderColor='#ff4455';
       baseText=inp?(inp.value||''):'';
       if(baseText && !baseText.endsWith(' ')) baseText+=' ';
+      foodRecognition._st={base:baseText, wrote:(inp?inp.value:null), drop:{}};
     };
     foodRecognition.onresult=function(event){
-      var finalText='', interimText='';
-      for(var i=event.resultIndex;i<event.results.length;i++){
-        var t=event.results[i][0].transcript;
-        if(event.results[i].isFinal) finalText+=t; else interimText+=t;
-      }
-      if(inp){ inp.value=baseText+finalText+interimText; }
-      if(finalText) baseText+=finalText;
+      var st=foodRecognition._st||(foodRecognition._st={base:baseText, wrote:null, drop:{}});
+      var r=_micTakeEdits(st, inp, event);
+      if(inp){ inp.value=st.base+r.f+r.it; st.wrote=inp.value; }
+      if(r.f) st.base+=r.f;
+      baseText=st.base;
     };
     foodRecognition.onerror=function(e){
       foodListening=false;
