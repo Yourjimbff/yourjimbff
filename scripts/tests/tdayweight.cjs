@@ -35,7 +35,7 @@ window._wtAll=undefined;
 let h=_dayWeightHtml(ds);
 t(/pgK">Weight</.test(h) && !/No weigh-ins yet/.test(h),
   'before the weigh-ins have loaded it says nothing about them - a statement made before the read is a lie half the time');
-t(/data-tl="weighview"/.test(h), 'but the door is there from the first paint');
+t(!/data-tl="weighview"/.test(h), 'and the door is not in the card any more - it is a Body row above it (10 Sep)');
 window._wtAll=[];
 h=_dayWeightHtml(ds);
 t(/No weigh-ins yet/.test(h), 'read and empty says so');
@@ -70,14 +70,16 @@ console.log('\n  THREE LINES, ONE SIZE (Yusuf, 7 Sep, 9:35pm: "You fucked this u
 h=_dayWeightHtml(ds);
 t(!/dwPhotos|dwPh\b|dwPhAdd/.test(h), 'no tile, no strip');
 const L=(h.match(/class="(dwLine|dwLine dwMid|dwTap)"/g)||[]).length;
-t(L===3, 'three lines in the card', String(L));
-t(h.indexOf('data-tl="weighview"')<h.indexOf('data-tl="progphoto"') && h.indexOf('data-tl="progphoto"')<h.indexOf('data-tl="steps"'), 'weight, then photo in the MIDDLE, then steps');
-t(/class="dwLine dwMid" data-tl="progphoto"[^>]*><span>Progress photo<\/span><\/div>/.test(h), 'the photo line is words only - no value, no chevron');
+t(L===0, 'no lines in the card - it is the stat and nothing else (10 Sep)', String(L));
+const stats=src.slice(src.indexOf('function _tlStatsBlock'), src.indexOf('/* ===== THE CHECK IN'));
+t(/tlMealsEy">Body</.test(stats), 'a Body section sits above Stats');
+t(stats.indexOf("_tlAskRow('weighview', ds, 'Weigh in', 'weigh')")>0 && stats.indexOf("_tlAskRow('steps', ds, 'Steps')")>0 && stats.indexOf("_tlAskRow('progphoto', ds, 'Progress photo')")>0, 'with Weigh in, Steps and Progress photo as the same gold plus rows as Breakfast');
+t(/Weigh in \\u00b7 '\+_escHtml\(_pgW\(\+w0\.weight\)/.test(stats), 'done, the weigh-in row says the number');
 t(/\.dwMid\{justify-content:flex-start;\}/.test(src), 'left aligned, same height as its neighbours (Yusuf: "Left align")');
 t(/\.dwLines \.dwTap\{color:var\(--text\);\}/.test(src) && /\.dwLines \.dwLineV\{color:rgba\(240,236,228,0\.62\);\}/.test(src), 'the three doors read in text, not gold - "Watch overuse of gold"');
 window._wtAll=[];
 h=_dayWeightHtml(ds);
-t(/No weigh-ins yet/.test(h) && /data-tl="progphoto"/.test(h) && /data-tl="steps"/.test(h), 'even with no weigh-ins the card carries all three lines');
+t(/No weigh-ins yet/.test(h) && !/data-tl="progphoto"/.test(h) && !/data-tl="steps"/.test(h), 'even with no weigh-ins the card stays a stat; the rows live above it');
 window._wtAll=[{weight:185.0, logged_at:'2026-08-01T12:00:00Z'},{weight:181.4, logged_at:'2026-09-06T12:00:00Z'}];
 
 console.log('\n  ONE PLACE:');
