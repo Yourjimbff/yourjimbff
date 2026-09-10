@@ -63,8 +63,12 @@ t(/_phoneChase\(code\)/.test(cc),             'Call chases too');
 t(!/No number saved for/.test(cc),            'and no longer writes the toast it cannot justify');
 
 console.log('\n  a tab left open all day re-reads, and ONLY on his own screen:');
-const vh = src.slice(src.indexOf("document.addEventListener('visibilitychange'"),
-                     src.indexOf("document.addEventListener('visibilitychange'")+520);
+// Anchored on the roster hook itself: since 10 Sep a version check sits
+// earlier in the file on the same event (it reloads a client's phone onto a
+// newer build; it refreshes no data), so "the first visibilitychange" is no
+// longer this one.
+const _vhAt = src.indexOf("document.addEventListener('visibilitychange'", src.indexOf("is not the place to find out. A client's session refreshes nothing"));
+const vh = src.slice(_vhAt, _vhAt+520);
 t(vh.length>50,                               'the visibility hook exists');
 t(/visibilityState!=='visible'/.test(vh),     'it acts on becoming visible, not on leaving');
 t(/isTrainer/.test(vh) && /return/.test(vh),  'and a client session returns before it refreshes anything');
