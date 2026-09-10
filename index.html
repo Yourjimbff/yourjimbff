@@ -6453,6 +6453,9 @@ body.bfEditingToday .tlDaySec.ahead{display:none;}
   border:1px solid #292929;box-shadow:0 8px 22px rgba(0,0,0,0.30);}
 .bfName{font-size:16px;font-weight:800;letter-spacing:-0.3px;color:var(--text);}
 .bfPlan{font-size:12px;font-weight:600;color:var(--muted);margin-top:3px;}
+.bfFeedback{margin-top:8px;font-size:12px;font-weight:600;line-height:1.45;color:rgba(240,236,228,0.72);
+  padding:8px 10px;border-radius:10px;background:rgba(245,197,24,0.06);border:1px solid rgba(245,197,24,0.18);}
+.bfFeedbackK{display:block;font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:var(--gold);margin-bottom:3px;}
 .bfMini{flex-shrink:0;font-size:11px;font-weight:800;color:rgba(240,236,228,0.82);border:1px solid #333;
   border-radius:8px;padding:6px 11px;cursor:pointer;}
 .bfMiniX{border:none;font-size:16px;line-height:1;padding:4px 5px;color:rgba(240,236,228,0.6);}
@@ -33293,7 +33296,7 @@ function _wkSetRowsHtml(dayKey, i, e, ds){
   if(!vis || !vis.rows || !vis.rows.length) return '';
   var ro=false; try{ ro=_bfRepsOnly(e); }catch(err){}
   var rows=vis.rows.map(function(r,k){
-    var w=String(r.w||'').trim(), rep=String(r.r||'').trim()||String(e.r||'');
+    var w=String(r.w||'').trim(), rep=_bfRepShow(e, r, k);
     var A=' data-ds="'+_escHtml(ds)+'" data-day="'+_escHtml(dayKey)+'" data-i="'+i+'" data-k="'+k+'"';
     if(ro){
       var rn=String(r.r||'').trim();
@@ -46924,6 +46927,88 @@ function bfDaySwapCommit(x){
   try{ showToast('Swapped for today'); }catch(e){}
   return true;
 }
+/* ===== EACH SET GETS ITS OWN REP GOAL (Yusuf, 10 Sep 9:50am) ==============
+   His screenshot: a plan written "8, 6, 8" put "x 8, 6, 8" on every set.
+   "Set 1 is 8, set 2 is 6, set 3 is 8. Right?" Right. A rep string that
+   lists several numbers is a per-set prescription: set k gets the k-th
+   number, and past the end the last one repeats (a fourth set on "8, 6, 8"
+   is 8). One number, or a range like "8-12", stays as written on every set.
+   The goal is a placeholder; what they actually did overwrites it. */
+function _bfRepList(r){
+  var t=String(r==null?'':r).trim();
+  if(!t) return [];
+  // "8, 6, 8" / "8/6/8" / "8 6 8" list per set; "8-12" and "8 to 12" are one range
+  if(/^\d+\s*(?:-|to|–)\s*\d+$/i.test(t)) return [t];
+  var parts=t.split(/\s*[,\/]\s*|\s+/).filter(Boolean);
+  if(parts.length>1 && parts.every(function(x){ return /^\d+\+?$/.test(x); })) return parts;
+  return [t];
+}
+/* ===== SMART PROGRESSION OFF THE CONNECTION RATINGS (Yusuf, 10 Sep) =====
+   "anytime someone has done their workout four times we should notice and
+   give them feedback... Hey, notice you haven't had a high connection on
+   <exercises>, and it should automatically prescribe higher reps next time."
+   The ratings are the client's own (mi_checkins kind=connection, one row per
+   session, each exercise's answer under `by`). An exercise whose last FOUR
+   rated sessions carry fewer than two "felt" answers is flagged: the card
+   says so under the exercise, and every set's rep goal is raised by four,
+   capped at twenty. Read once per day, per client; the flag is a placeholder
+   change only - what they actually do still overwrites it. */
+var _BF_CONN_LOOK=4, _BF_CONN_BUMP=4, _BF_CONN_CAP=20;
+function _bfConnFlags(){ try{ return (window._bfConnFlag && window._bfConnFlag.code===(cl&&cl.code)) ? window._bfConnFlag.ex : {}; }catch(e){ return {}; } }
+async function _bfConnLoad(){
+  try{
+    if(!cl || !cl.code || window.VIEWAS) return;
+    if(window._bfConnFlag && window._bfConnFlag.code===cl.code && (Date.now()-window._bfConnFlag.at)<600000) return;
+    window._bfConnFlag={code:cl.code, ex:{}, at:Date.now()};
+    var rows=await sbSelect('mi_checkins','client_code=eq.'+encodeURIComponent(cl.code)+'&kind=eq.connection&select=date_str,ratings,checked_at&order=checked_at.desc&limit=40')||[];
+    var hist={};
+    rows.forEach(function(r){
+      var R=r.ratings||{};
+      Object.keys(R).forEach(function(g){
+        var by=(R[g]&&R[g].by)||{};
+        Object.keys(by).forEach(function(ex){
+          var key=_exCanonical(ex);
+          (hist[key]=hist[key]||[]).push(by[ex]);
+        });
+      });
+    });
+    var ex={};
+    Object.keys(hist).forEach(function(key){
+      var last=hist[key].slice(0,_BF_CONN_LOOK);
+      if(last.length<_BF_CONN_LOOK) return;
+      var felt=last.filter(function(v){ return v==='felt'; }).length;
+      if(felt<2) ex[key]={of:last.length, felt:felt};
+    });
+    window._bfConnFlag.ex=ex;
+    if(Object.keys(ex).length){ try{ renderDayTimeline(true); }catch(e){} }
+  }catch(e){}
+}
+function _bfConnFlagFor(e){
+  try{ return _bfConnFlags()[_exCanonical(e&&e.n)]||null; }catch(err){ return null; }
+}
+function _bfRepBump(t){
+  // "8" -> "12", "8-12" -> "12-16", "12+" -> "16+", capped at twenty
+  return String(t||'').replace(/\d+/g, function(n){ return String(Math.min(_BF_CONN_CAP, (parseInt(n,10)||0)+_BF_CONN_BUMP)); });
+}
+function _bfFeedbackHtml(e){
+  var f=_bfConnFlagFor(e); if(!f) return '';
+  return '<div class="bfFeedback"><span class="bfFeedbackK">Feedback</span>'
+    +'Connection has been low here '+(f.of-f.felt)+' of the last '+f.of+' sessions, so the rep goal is up. Lighter and slower until you feel it.</div>';
+}
+function _bfRepAt(e, k){
+  var list=_bfRepList(e&&e.r);
+  if(!list.length) return '';
+  var v=list[Math.min(k, list.length-1)];
+  return _bfConnFlagFor(e) ? _bfRepBump(v) : v;
+}
+/* A stored row that still carries the WHOLE list (drafts made before this
+   fix) reads as its own set's number, never as the list. */
+function _bfRepShow(e, r, k){
+  var rr=String((r&&r.r)||'').trim();
+  if(!rr) return _bfRepAt(e,k);
+  if(_bfRepList(rr).length>1) return _bfRepAt({r:rr}, k);
+  return rr;
+}
 function _bfVisible(e, ds){
   // Another day's card must not wear today's numbers — _tpToday is name-keyed
   // and belongs to today alone.
@@ -46938,7 +47023,7 @@ function _bfVisible(e, ds){
   var last=(typeof _tpLastSets!=='undefined' && _tpLastSets[e.n])||[];
   if(last.length) return {rows:last.map(function(x){ return {w:x.w,r:x.r}; }), src:'last'};
   var planned=Math.max(1,parseInt(e.s,10)||1), rows=[];
-  for(var k2=0;k2<planned;k2++) rows.push({w:String((_tpLastW&&_tpLastW[e.n])||''), r:String(e.r||'')});
+  for(var k2=0;k2<planned;k2++) rows.push({w:String((_tpLastW&&_tpLastW[e.n])||''), r:_bfRepAt(e,k2)});
   return {rows:rows, src:'plan'};
 }
 // Touching any number adopts the whole visible card as today's — from then on the
@@ -47010,8 +47095,8 @@ function bfSetTap(el){
 function bfAddSet(day,i,ds){
   var e=_bfMaterialize(day,i,ds); if(!e) return;
   var arr=(_tpToday[e.n]=_tpToday[e.n]||[]);
-  var top=arr[arr.length-1]||{w:String((_tpLastW&&_tpLastW[e.n])||''), r:String(e.r||'')};
-  arr.push({w:String(top.w||''), r:String(top.r||'')});
+  var top=arr[arr.length-1]||{w:String((_tpLastW&&_tpLastW[e.n])||''), r:_bfRepAt(e,0)};
+  arr.push({w:String(top.w||''), r:_bfRepAt(e,arr.length)||String(top.r||'')});
   tpPersistSets(day, e.n);
   renderDayTimeline(true);
 }
@@ -47019,7 +47104,7 @@ function bfRemoveSet(day,i,k,ds){
   var e=_bfMaterialize(day,i,ds); if(!e) return;
   var arr=(_tpToday[e.n]=_tpToday[e.n]||[]);
   if(k>=0 && k<arr.length) arr.splice(k,1);
-  if(!arr.length) arr.push({w:'', r:String(e.r||'')});
+  if(!arr.length) arr.push({w:'', r:_bfRepAt(e,0)});
   tpPersistSets(day, e.n);
   renderDayTimeline(true);
 }
@@ -47067,7 +47152,7 @@ function bfFeel(ds, ex, v){
 function _shelfExCard(ds, i, e){
   var ro=_bfRepsOnly(e);
   var rows=(e.rows||[]).map(function(r,k){
-    var w=String(r.w||'').trim(), rep=String(r.r||'').trim()||String(e.r||'');
+    var w=String(r.w||'').trim(), rep=_bfRepShow(e, r, k);
     if(ro){
       var rn=String(r.r||'').trim();
       return '<div class="bfRow">'
@@ -47146,8 +47231,8 @@ function tlShelfSetTap(el){
 function tlShelfAddSet(ds, i){
   var d=_woDraft(ds); var e=(d.shelfEx||[])[i]; if(!e) return;
   e.rows=e.rows||[];
-  var top=e.rows[e.rows.length-1]||{w:'', r:String(e.r||'')};
-  e.rows.push({w:String(top.w||''), r:String(top.r||'')});
+  var top=e.rows[e.rows.length-1]||{w:'', r:_bfRepAt(e,0)};
+  e.rows.push({w:String(top.w||''), r:_bfRepAt(e,e.rows.length)||String(top.r||'')});
   _woSaveDraft(ds,d); _draftSaved(ds);
   window._tlCache=null; renderDayTimeline(true);
 }
@@ -47155,7 +47240,7 @@ function tlShelfRemoveSet(ds, i, k){
   var d=_woDraft(ds); var e=(d.shelfEx||[])[i]; if(!e) return;
   e.rows=e.rows||[];
   if(k>=0 && k<e.rows.length) e.rows.splice(k,1);
-  if(!e.rows.length) e.rows.push({w:'', r:String(e.r||'')});
+  if(!e.rows.length) e.rows.push({w:'', r:_bfRepAt(e,0)});
   _woSaveDraft(ds,d); _draftSaved(ds);
   window._tlCache=null; renderDayTimeline(true);
 }
@@ -47247,7 +47332,7 @@ function _bfExCard(day,i,e,ds,dr){
   var _v=e.v?String(e.v).replace(/^\s*any\s+(variation|grip)\s*:?\s*/i,'').trim():'';
   var ro=_bfRepsOnly(e);
   var rows=vis.rows.map(function(r,k){
-    var w=String(r.w||'').trim(), rep=String(r.r||'').trim()||String(e.r||'');
+    var w=String(r.w||'').trim(), rep=_bfRepShow(e, r, k);
     if(ro){
       // AMRAP: no load column at all — the row asks one thing, how many.
       // The prescription word itself is not a number, so an untouched row
@@ -47286,7 +47371,8 @@ function _bfExCard(day,i,e,ds,dr){
               return '<span class="bfEq'+(cur===o?' on':'')+'" data-tl="bfequip" data-ds="'+_escHtml(ds)+'" data-ex="'+_escHtml(e.n)+'" data-v="'+_escHtml(o)+'">'+_escHtml(o)+'</span>';
             }).join('')+'</div>';
           })()
-        +'<div class="bfPlan">'+e.s+' × '+_escHtml(String(e.r||''))+' reps</div>'
+        +'<div class="bfPlan">'+e.s+' × '+_escHtml(_bfConnFlagFor(e)?_bfRepBump(String(e.r||'')):String(e.r||''))+' reps</div>'
+        +_bfFeedbackHtml(e)
       +'</div>'
       // Today's sheet, not the program. These used to call the builder's own
       // tpSwapOpen/tpRemove, which edit _tpPlan — see _bfDayEx for what that
@@ -49825,6 +49911,7 @@ async function _tlLoadDayCalls(start, end){
   if(myToken===_tlCallsToken) window._bookByDay=out;
 }
 async function renderDayTimeline(soft){
+  try{ _bfConnLoad(); }catch(e){}
   // Nothing should carry an inline height into a fresh render. One stuck value
   // plus overflow:hidden is how the card clipped into a black bar.
   try{

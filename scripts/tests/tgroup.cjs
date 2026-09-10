@@ -32,7 +32,7 @@ t(b>a, 'found its close');
 const block = src.slice(a, b+closeMark.length);
 
 // ===== THE CONTAINER OPENS AND CLOSES EXACTLY ONCE, ON THE SAME GUARD ==
-t((block.match(/if\(_grp\) html\+='<div class="fdGroup">';/g)||[]).length===1,
+t((block.match(/if\(_grp\) html\+='<div class="fdGroup"( data-name="'\+_gnm\+'")?>';/g)||[]).length===1,
   'the group opens exactly once');
 t((block.match(/if\(_grp\) html\+='<\/div>';/g)||[]).length===1,
   'and closes exactly once');
