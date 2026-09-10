@@ -20,7 +20,7 @@ cl={code:'zzscratchnotaclient'};
 console.log('\n  THE CARD:');
 let h=_tlCheckinBlock('Sep 10, 2026', true, false);
 t(/tlMealsEy">Check in</.test(h), 'headed Check in like Food and Stats');
-t(/class="ciTitle">Check in</.test(h), 'and the card says Check in, that is all');
+t(!/ciTitle/.test(h) && /class="pgCard ciCard"/.test(h), 'the card is the Weight card glass, and says nothing the eyebrow already said (10 Sep 8:28)');
 t(_CI_PILLS.join(',')==='Fitness,Nutrition,Sleep,Energy,Progress', 'five pills: Fitness, Nutrition, Sleep, Energy, Progress');
 t((h.match(/class="ciPill"/g)||[]).length===5, 'all five drawn, none lit at rest');
 t(/<textarea class="ciTa ciBox" id="ciBox"[^>]*><\/textarea>/.test(h), 'one blank box');
