@@ -85,4 +85,13 @@ const t=(pass,label)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  FAIL  '
   t(/return m\[1\]!==td;/.test(po), 'off is off for the one day it was flipped; tomorrow the programme is back');
 })();
 
+// THE CARDS THEY TOUCHED DECIDE (Samantha, 8 Sep): a draft carrying a plan
+// card's connection pill or done tick logs the PLAN, whatever the switch says.
+{
+  const src2=require('fs').readFileSync('index.html','utf8');
+  const fn=src2.slice(src2.indexOf('function tlLogInlineWorkout('), src2.indexOf('function tlMoveMeal('));
+  const ok=/var _planTouched=false;/.test(fn) && /dr\.feel && Object\.keys\(dr\.feel\)\.length/.test(fn) && /if\(!_progOn\(\) && !_fromProgram && !_planTouched\)\{/.test(fn);
+  console.log((ok?'  ok    ':'  FAIL  ')+'a tapped connection pill on a plan card takes the plan road, never "Say what you did first"');
+  if(!ok) bad++;
+}
 process.exit(bad?1:0);
