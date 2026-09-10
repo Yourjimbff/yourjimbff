@@ -4,11 +4,13 @@
 const fs=require('fs'), vm=require('vm');
 const src=fs.readFileSync('index.html','utf8');
 let bad=0; const t=(p,l)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l); };
-const nl=src.slice(src.indexOf('function nlTimeOpen(){'), src.indexOf('function nlTimeClose(){'));
+const nl=src.slice(src.indexOf('function nlTimeOpen(ev){'), src.indexOf('function nlTimeClose(){'));
 const sl=src.slice(src.indexOf('function openSlotTime(key){'), src.indexOf('function closeSlotTime(){'));
-t(!/type="time"/.test(nl) && /_tpkHtml\('nlTimeIn'/.test(nl) && /_tpkFocus\('nlTimeIn'\)/.test(nl), 'the meal time sheet is one typed field, focused on open');
-t(!/type="time"/.test(sl) && /_tpkHtml\('slotTimeIn'/.test(sl) && /_tpkFocus\('slotTimeIn'\)/.test(sl), 'the slot time sheet too');
-t(/align-items:flex-start/.test(nl) && /align-items:flex-start/.test(sl) && /safe-area-inset-top/.test(nl), 'both sit at the top of the screen, above where the keyboard rises');
+t(!/type="time"/.test(nl) && /span\.replaceWith\(inp\)/.test(nl) && /querySelector\('#nlOv \.nlTimeTap'\)/.test(nl), 'the meal time edits IN PLACE: the gold time in the header becomes the field, no second sheet');
+t(/inp\.focus\(\); inp\.select\(\)/.test(nl) && /_tpkParse\(inp\.value\)/.test(nl) && /st\.at=_tpkFmt\(mins\)/.test(nl), 'focused and selected on tap; return or tap-away saves what was typed');
+t(/nlTimeOpen\(event\)/.test(src) && !/nlTimeOpen\(\)"/.test(src), 'both headers (before and after the read) open it');
+t(!/type="time"/.test(sl) && /_tpkHtml\('slotTimeIn'/.test(sl) && /_tpkFocus\('slotTimeIn'\)/.test(sl), 'the slot time sheet is one typed field, focused on open');
+t(/align-items:flex-end/.test(sl) && /_tpkAboveKeyboard\(o\)/.test(sl) && !/align-items:flex-start/.test(sl), 'and it comes up from the bottom like everything else, riding above the keyboard');
 t(!/tpkP\b/.test(src) && !/tpkGrid/.test(src), 'the pills are gone');
 const block=src.slice(src.indexOf('var _tpk={};'), src.indexOf('function _tpkHtml(id, hhmm){'));
 const ctx={String, Date:class extends Date{ getHours(){ return 17; } }, Math}; vm.createContext(ctx); vm.runInContext(block, ctx);
