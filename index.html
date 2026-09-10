@@ -77634,6 +77634,8 @@ function hdlChatPhoto(input){
   var files=input.files; if(!files||!files.length)return;
   var MAX=4;
   Array.prototype.slice.call(files).forEach(function(file){
+    // the moment it was taken rides along, for the log's clock (10 Sep)
+    try{ _exifTaken(file).then(function(d){ if(d && !window._chatPhotoTaken) window._chatPhotoTaken=d; }); }catch(e){}
     var reader=new FileReader();
     reader.onload=function(ev){
       if(chatPhotos.length>=MAX){ showToast('Up to '+MAX+' photos at once'); return; }
@@ -77666,6 +77668,7 @@ function removeChatPhoto(i){
 function clearChatPhoto(){
   chatPhotos=[];
   chatPhotoData=null;
+  try{ window._chatPhotoTaken=null; }catch(e){}
   renderChatPhotos();
   document.getElementById('chatPbtn').classList.remove('has');
   var inp=document.getElementById('chatPhotoInput');
@@ -82694,7 +82697,23 @@ function _jimCalendarAsked(t){
 // X": the engine pins a stated day before it looks at the caller's day, and a
 // back-dated entry from the model still resolves on its own. This only ever
 // replaces the stale global for an entry that carries no day at all.
+/* Does the sentence itself name a clock or a day? Then their words win over
+   the photo's stamp. */
+function _jimSaysWhen(t){
+  return /\b\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m|p\.m)\b|\bat \d{1,2}\b|\b(?:noon|midnight|this morning|last night|tonight|yesterday|earlier|this afternoon|for breakfast|for lunch|for dinner|days? ago|on (?:mon|tue|wed|thu|fri|sat|sun))/i.test(String(t||''));
+}
 async function jimDoor(text, photos, opts){
+  opts=opts||{};
+  // THE PHOTO KNOWS WHEN (10 Sep): a chat photo that carries the moment it was
+  // taken sets the meal's clock and day, unless the sentence says otherwise or
+  // a caller already pinned a time.
+  try{
+    var _tk=window._chatPhotoTaken; window._chatPhotoTaken=null;
+    if(_tk && photos && photos.length && !opts.timeLocal && !_jimSaysWhen(text)){
+      var _tp=_takenParts(_tk);
+      if(_tp){ opts.timeLocal=_tp.at; if(!opts.dateStr && _tp.ds!==_tlDateStr(new Date())) opts.dateStr=_tp.ds; }
+    }
+  }catch(e){}
   opts = opts || {};
   if(!opts.dateStr) opts.dateStr = _tlDateStr(new Date());
   // ===== A PHOTO MIGHT NOT BE A MEAL (Yusuf, brief, 28 Aug) ============
@@ -85456,8 +85475,82 @@ function nlRender(){
 // A photo this app can't shrink is a photo it shouldn't send. Above this it is the
 // raw camera frame, and uploading one is the thirty-second wait.
 var NL_PHOTO_MAX_CHARS = 1600000;   // ~1.2 MB once base64 is undone
+/* THE PHOTO KNOWS WHEN (Yusuf, 10 Sep: "if I upload a photo of a meal, it
+   should capture the time"). A phone stamps every photo with the moment it
+   was taken, inside the file itself (EXIF DateTimeOriginal). This reads that
+   stamp straight off the file the picker hands over, before any resizing
+   strips it. Answers a Date in local time, or null when the file carries no
+   stamp (a screenshot, a saved image from a chat, a stripped download) - and
+   null means nothing changes. */
+function _exifTaken(file){
+  return new Promise(function(res){
+    try{
+      if(!file || !file.slice){ res(null); return; }
+      var r=new FileReader();
+      r.onerror=function(){ res(null); };
+      r.onload=function(){
+        try{ res(_exifTakenFromBuffer(r.result)); }catch(e){ res(null); }
+      };
+      r.readAsArrayBuffer(file.slice(0, 256*1024));
+    }catch(e){ res(null); }
+  });
+}
+function _exifTakenFromBuffer(buf){
+  var v=new DataView(buf);
+  if(v.byteLength<12 || v.getUint16(0)!==0xFFD8) return null;     // JPEG only
+  var off=2, tiff=-1;
+  while(off+4<=v.byteLength){
+    if(v.getUint8(off)!==0xFF) break;
+    var marker=v.getUint8(off+1), len=v.getUint16(off+2);
+    if(marker===0xE1 && off+10<=v.byteLength && v.getUint32(off+4)===0x45786966){ tiff=off+10; break; }   // "Exif"
+    if(marker===0xDA) break;                                       // image data - no more headers
+    off+=2+len;
+  }
+  if(tiff<0 || tiff+8>v.byteLength) return null;
+  var le=(v.getUint16(tiff)===0x4949);
+  function u16(p){ return v.getUint16(p, le); }
+  function u32(p){ return v.getUint32(p, le); }
+  function ascii(p, n){ var s=''; for(var i=0;i<n && p+i<v.byteLength;i++){ var c=v.getUint8(p+i); if(!c) break; s+=String.fromCharCode(c); } return s; }
+  function readIfd(p, want){
+    var out={}; if(p<=0 || p+2>v.byteLength) return out;
+    var n=u16(p); p+=2;
+    for(var i=0;i<n && p+12<=v.byteLength;i++, p+=12){
+      var tag=u16(p), type=u16(p+2), cnt=u32(p+4);
+      if(!want[tag]) continue;
+      if(type===2){ var at=(cnt>4)?(tiff+u32(p+8)):(p+8); out[tag]=ascii(at, cnt); }
+      else if(type===4){ out[tag]=u32(p+8); }
+    }
+    return out;
+  }
+  var ifd0=readIfd(tiff+u32(tiff+4), {0x8769:1, 0x0132:1});
+  var exif=ifd0[0x8769] ? readIfd(tiff+ifd0[0x8769], {0x9003:1, 0x9004:1}) : {};
+  var stamp=exif[0x9003] || exif[0x9004] || ifd0[0x0132] || '';
+  var m=/^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(stamp);
+  if(!m) return null;
+  var d=new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +(m[6]||0));
+  if(isNaN(d.getTime()) || +m[1]<2000) return null;
+  return d;
+}
+/* What a taken-at stamp means for a log: the day it was taken and the clock
+   in the app's own shapes. */
+function _takenParts(d){
+  if(!d) return null;
+  return {ds:_tlDateStr(d), at:_tpkFmt(d.getHours()*60+d.getMinutes()), d:d};
+}
 function nlPhotoPicked(input){
   if(!input.files || !input.files[0] || !window._nl) return;
+  // The time comes off the photo, unless they already typed one themselves.
+  try{
+    var _stP=window._nl;
+    _exifTaken(input.files[0]).then(function(d){
+      var tp=_takenParts(d); if(!tp || window._nl!==_stP || _stP.logged || _stP.atManual) return;
+      var moved=(tp.ds!==_stP.ds);
+      _stP.at=tp.at; _stP.atFromPhoto=true;
+      if(moved) _stP.ds=tp.ds;
+      try{ nlRender(); }catch(e){}
+      try{ showToast(moved ? ('Photo is from '+tp.ds.replace(/, \d{4}$/,'')+' at '+tp.at+' - logging it there') : ('Time taken from the photo - '+tp.at)); }catch(e){}
+    });
+  }catch(e){}
   var r=new FileReader();
   r.onload=function(e){
     var st=window._nl; if(!st) return;
@@ -87903,7 +87996,7 @@ function nlTimeOpen(ev){
     if(done) return; done=true;
     var mins=_tpkParse(inp.value);
     if(mins==null && String(inp.value||'').trim()){ try{ showToast('Couldn’t read that time - try 7:05 AM'); }catch(e){} }
-    else if(mins!=null){ st.at=_tpkFmt(mins); }
+    else if(mins!=null){ st.at=_tpkFmt(mins); st.atManual=true; }
     try{ nlRender(); }catch(e){}
   }
   inp.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); commit(); try{ inp.blur(); }catch(_){} } if(e.key==='Escape'){ done=true; try{ nlRender(); }catch(_){} } });
