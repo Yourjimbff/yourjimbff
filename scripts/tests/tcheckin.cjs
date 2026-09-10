@@ -64,7 +64,9 @@ t(blk.indexOf('dayCallsCard')>0 && blk.indexOf('dayCallsCard')<blk.indexOf('dayC
 t(_tlCheckinBlock('Sep 8, 2026', false, true)==='', 'not on a day that has not happened');
 t(_tlCheckinBlock('Sep 6, 2026', false, false)==='', 'not on a past day - a check in is about today');
 window._tlRO=true; t(_tlCheckinBlock('Sep 7, 2026', true, false)==='', 'never on the trainer read-only copy'); window._tlRO=false;
-// the real isTrainer was lifted (it reads TRAINER_CODES), so the trainer case is made the real way
+// the block no longer reads isTrainer at all (10 Sep), so TRAINER_CODES is no
+// longer lifted with it; the trainer case is still made the real way
+if(typeof TRAINER_CODES==='undefined') global.TRAINER_CODES=[];
 TRAINER_CODES.push('zztrainerfortest'); cl={code:'zztrainerfortest'};
 t(_tlCheckinBlock('Sep 7, 2026', true, false)!=='', 'and ON the trainer own day too (Yusuf, 10 Sep: "there is no spot for me to do a check-in")');
 TRAINER_CODES.pop(); cl={code:'zzscratchnotaclient'};
