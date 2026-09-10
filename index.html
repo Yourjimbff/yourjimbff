@@ -51589,6 +51589,35 @@ function tlWoTime(ds, v){ var d=_woDraft(ds); d.time=v; _woSaveDraft(ds,d); rend
 // only ever offers Complete on a day that HAS a programmed session, so it says
 // so explicitly rather than inheriting a toggle that is not about it.
 // Existing callers pass one argument and are completely unaffected.
+/* The connection record, one door for both roads (the programmed cards and
+   the Creative read lines): the pills translated to audit language - felt,
+   partial, nothing - per muscle group, one row per session in mi_checkins.
+   Multiple exercises on one group: the best signal wins, each kept underneath. */
+function _bfWriteConnection(fmap, ds){
+  var _MAPV={tore:'felt', ok:'partial', not:'nothing'};
+  var _RANK={felt:3, partial:2, nothing:1};
+  var _ratings={};
+  Object.keys(fmap||{}).forEach(function(exn){
+    var v=_MAPV[fmap[exn]]; if(!v) return;
+    var g=null; try{ g=_bfGroupOf(exn); }catch(e){ g=null; }
+    g=g||('ex:'+exn);
+    var cur=_ratings[g]||{r:v, by:{}};
+    if(_RANK[v]>_RANK[cur.r]) cur.r=v;
+    cur.by=cur.by||{}; cur.by[exn]=v;
+    _ratings[g]=cur;
+  });
+  if(!Object.keys(_ratings).length) return;
+  // sbInsert returns false on failure and never throws. The pills' answers
+  // must not evaporate on bad gym reception - a refused write goes to the
+  // offline queue, the same pattern the strength check uses.
+  var _connRow={client_code:cl.code, kind:'connection', ratings:_ratings, date_str:ds, checked_at:new Date().toISOString()};
+  sbInsert('mi_checkins', _connRow).then(function(ok){
+    if(!ok){ try{ sqPush('mi_checkins', _connRow, 'POST'); }catch(e){} }
+  });
+  // The loop closes here: casual voice in, audit language back, the moment
+  // the workout ends.
+  try{ _bfClosing(_ratings, ds); }catch(e){}
+}
 function tlLogInlineWorkout(ds, opts){
   var d=_parseDs(ds); var plan=d?_tlPlanForDate(d):null;
   var dr=_woDraft(ds);
@@ -51644,7 +51673,16 @@ function tlLogInlineWorkout(ds, opts){
     var oIso=_timeToISO(dr.time||_tlNowClock(), ds);
     // A shelf pick's own name is the title when nothing was typed over it \u2014
     // "Push" logs as Push, not the generic "Workout" a blank title used to fall to.
-    var oTitle=String(dr.ownTitle||'').trim() || dr.shelfType || 'Workout';
+    var oTitle=String(dr.ownTitle||'').trim() || dr.shelfType || '';
+    if(!oTitle){ try{ oTitle=_woSmartTitle(dr.freeRows, dr.freeText); }catch(e){ oTitle=''; } }
+    if(!oTitle) oTitle='Workout';
+    // THE CONNECTION RIDES WITH IT (10 Sep) - the pills on the read lines go to
+    // the same record the programmed cards write, one row per session.
+    try{
+      var _ff={};
+      (Array.isArray(dr.freeRows)?dr.freeRows:[]).forEach(function(r){ if(r && r.feel && String(r.n||'').trim()) _ff[String(r.n).trim()]=r.feel; });
+      if(Object.keys(_ff).length) _bfWriteConnection(_ff, ds);
+    }catch(e){}
     // duration and photo were being thrown away on save
     var oRow={client_code:cl.code, title:oTitle, description:oDesc,
               duration:(+dr.ownMins||null), date_str:ds, logged_at:oIso,
@@ -51709,29 +51747,7 @@ function tlLogInlineWorkout(ds, opts){
   // all today), each exercise kept underneath for the detail.
   try{
     var _fmap=(dr.feel||{});
-    if(Object.keys(_fmap).length){
-      var _MAPV={tore:'felt', ok:'partial', not:'nothing'};
-      var _RANK={felt:3, partial:2, nothing:1};
-      var _ratings={};
-      Object.keys(_fmap).forEach(function(exn){
-        var v=_MAPV[_fmap[exn]]; if(!v) return;
-        var g=_bfGroupOf(exn)||('ex:'+exn);
-        var cur=_ratings[g]||{r:v, by:{}};
-        if(_RANK[v]>_RANK[cur.r]) cur.r=v;
-        cur.by=cur.by||{}; cur.by[exn]=v;
-        _ratings[g]=cur;
-      });
-      // sbInsert returns false on failure and never throws. The pills' answers
-      // must not evaporate on bad gym reception — a refused write goes to the
-      // offline queue, the same pattern the strength check uses.
-      var _connRow={client_code:cl.code, kind:'connection', ratings:_ratings, date_str:ds, checked_at:new Date().toISOString()};
-      sbInsert('mi_checkins', _connRow).then(function(ok){
-        if(!ok){ try{ sqPush('mi_checkins', _connRow, 'POST'); }catch(e){} }
-      });
-      // The loop closes here: casual voice in, audit language back, the moment
-      // the workout ends.
-      try{ _bfClosing(_ratings, ds); }catch(e){}
-    }
+    if(Object.keys(_fmap).length) _bfWriteConnection(_fmap, ds);
   }catch(e){}
   var iso=_timeToISO(dr.time||_tlNowClock(), ds);
   // The photo slot sits on this card too, and this row never carried it — a
@@ -52139,6 +52155,7 @@ function _tlBindTaps(){
     if(a==='shelfadd'){ ev.stopPropagation(); tlShelfAddSet(el.getAttribute('data-ds'), +el.getAttribute('data-i')); return; }
     if(a==='shelfrm'){ ev.stopPropagation(); tlShelfRemoveSet(el.getAttribute('data-ds'), +el.getAttribute('data-i'), +el.getAttribute('data-k')); return; }
     if(a==='shelffeel'){ ev.stopPropagation(); tlShelfFeel(el.getAttribute('data-ds'), +el.getAttribute('data-i'), el.getAttribute('data-v')); return; }
+    if(a==='freefeel'){ ev.stopPropagation(); tlFreeFeel(el.getAttribute('data-ds'), +el.getAttribute('data-k'), el.getAttribute('data-v')); return; }
     if(a==='shelfequip'){ ev.stopPropagation(); tlShelfEquip(el.getAttribute('data-ds'), +el.getAttribute('data-i'), el.getAttribute('data-v')); return; }
     // THE TWO SCALES (Yusuf, 8 Aug) — one tap each, at the monument.
     if(a==='rateint'){ ev.stopPropagation(); tlRateIntensity(el.getAttribute('data-id'), el.getAttribute('data-ds'), el.getAttribute('data-v')); return; }
@@ -87758,6 +87775,7 @@ function tlToggleProgram(ds){
 function ownTitleSet(ds, v){
   var d=_woDraft(ds);
   d.ownTitle=String(v||'');
+  d.ownTitleAuto=false;                          // they typed it: it is theirs now
   _woSaveDraft(ds,d);
   _draftSaved(ds);
 }
@@ -88559,10 +88577,16 @@ function _woFmt(ds) { return 'write'; }
 function _woFreeHtml(ds, dr) {
   var txt = String(dr.freeText || '');
   var parsed = Array.isArray(dr.freeRows) ? dr.freeRows : [];
-  var h = '<textarea id="woFree_' + ds + '" onclick="event.stopPropagation()" oninput="woFreeSet(\'' + ds + '\',this.value)" '
+  /* THE BOX GROWS WITH WHAT IS SAID (Yusuf, 10 Sep: "should continue to
+     expand and grow accordingly... the same way the Jarvis chat does").
+     Sized to its content on every keystroke, on every word the mic writes,
+     and once on render so a long draft opens already at full height. */
+  var h = '<textarea id="woFree_' + ds + '" onclick="event.stopPropagation()" oninput="woFreeSet(\'' + ds + '\',this.value);_woGrow(this)" '
     + 'placeholder="Say what you did and I\u2019ll organize it" '
-    + 'class="woFree" style="width:100%;box-sizing:border-box;min-height:92px;margin-top:11px;background:#1b1b1b;border:1px solid #2d2d2d;border-radius:10px;padding:13px;color:#f0ece4;font-size:15px;line-height:1.5;font-family:inherit;outline:none;resize:vertical;">'
-    + _escHtml(txt) + '</textarea>'
+    + 'class="woFree" style="width:100%;box-sizing:border-box;min-height:92px;margin-top:11px;background:#1b1b1b;border:1px solid #2d2d2d;border-radius:10px;padding:13px;color:#f0ece4;font-size:15px;line-height:1.5;font-family:inherit;outline:none;resize:none;overflow:hidden;">'
+    + _escHtml(txt) + '</textarea>';
+  try{ requestAnimationFrame(function(){ _woGrow(document.getElementById('woFree_' + ds)); }); }catch(e){}
+  h = h
     + '<div style="display:flex;gap:6px;margin-top:7px;">'
     +   '<button onclick="event.stopPropagation();woOrganize(\'' + ds + '\')" style="flex:1;border:1px solid rgba(78,169,111,0.42);border-radius:9px;padding:10px;background:transparent;color:#4ea96f;font-size:12px;font-weight:800;font-family:inherit;cursor:pointer;">Organize</button>'
     +   '<button id="woMic_'+ds+'" data-mic-tint="#4ea96f" onclick="event.stopPropagation();woDictate(\'' + ds + '\')" style="border:1px solid rgba(78,169,111,0.42);border-radius:9px;padding:8px 14px;background:transparent;cursor:pointer;display:flex;align-items:center;">' + _MICSVG.replace(/#f5c518/g,'#4ea96f') + '</button>'
@@ -88581,6 +88605,15 @@ function _woFreeHtml(ds, dr) {
             + '</div>'
             + '<input value="' + _escHtml(r.d || '') + '" placeholder="3 \u00d7 10 @ 135, or 20 min" onclick="event.stopPropagation()" oninput="woRowSet(\'' + ds + '\',' + k + ',\'d\',this.value)" '
             +   'style="width:100%;box-sizing:border-box;background:transparent;border:none;outline:none;font-family:inherit;font-size:11px;color:rgba(240,236,228,0.78);padding:3px 0 0;">'
+            /* THE CONNECTION, HERE TOO (Yusuf, 10 Sep: "there should definitely be a
+               place for me to select my connection... it's not required"). The same
+               three pills a programmed card has, on every line the organizer read,
+               and untouched is fine. Stored as tore/ok/not like everywhere else. */
+            + '<div class="bfPills" style="margin-top:8px;">'
+            +   [['not','Low'],['ok','Moderate'],['tore','High']].map(function (p, pi) {
+                  return '<div class="bfPill s' + pi + ((r.feel === p[0]) ? ' on' : '') + (p[0] === 'tore' ? ' tore' : '') + '" data-tl="freefeel" data-ds="' + _escHtml(ds) + '" data-k="' + k + '" data-v="' + p[0] + '">' + p[1] + '</div>';
+                }).join('')
+            + '</div>'
             + '</div>';
         }).join('')
       + '<div onclick="event.stopPropagation();woRowAdd(\'' + ds + '\')" style="border:1px dashed rgba(78,169,111,0.34);border-radius:9px;padding:9px;text-align:center;font-size:12px;font-weight:800;color:#4ea96f;cursor:pointer;margin-bottom:8px;">+ Add a line</div>'
@@ -88592,6 +88625,62 @@ function _woFreeHtml(ds, dr) {
 
 function woFreeSet(ds, v) {
   var d = _woDraft(ds); d.freeText = String(v || ''); _woSaveDraft(ds, d); _draftSaved(ds);
+}
+function _woGrow(el){
+  if(!el) return;
+  try{ el.style.height='auto'; el.style.height=Math.max(92, el.scrollHeight+2)+'px'; }catch(e){}
+}
+/* One tap per line; the same tap again clears it. Unanswered is fine. */
+function tlFreeFeel(ds, k, v){
+  var rows=_woRows(ds); if(!rows[k]) return;
+  if(rows[k].feel===v) delete rows[k].feel; else rows[k].feel=v;
+  var d=_woDraft(ds); d.freeRows=rows; _woSaveDraft(ds,d);
+  try{ window._tlCache=null; renderDayTimeline(true); }catch(e){}
+}
+/* SMART TITLE (Yusuf, 10 Sep: "it should say like chest, shoulders, and
+   mobility... workout is a smart title and then the client should be able to
+   edit the title"). The muscle groups and activities the session actually
+   touched, in the order they came, from the read lines first and the spoken
+   words second - so a session that was never organized still gets a name.
+   The person's own typed title always wins; a title this wrote is replaced
+   the next time it reads, a title they typed is never touched. */
+var _WO_TITLE_WORDS=[
+  ['Chest',/\b(chest|bench|pecs?|push[- ]?ups?|fly|flyes?|flies)\b/i],
+  ['Shoulders',/\b(shoulders?|delts?|lateral raises?|overhead|military|arnold|face pulls?)\b/i],
+  ['Back',/\b(back|lat|pull[- ]?(down|up)s?|row|rows|rowing|deadlift|rdl)\b/i],
+  ['Biceps',/\b(bicep|biceps|curl|curls)\b/i],
+  ['Triceps',/\b(tricep|triceps|dip|dips|skull|pushdown|kickback)\b/i],
+  ['Forearms',/\b(forearm|forearms|wrist|grip)\b/i],
+  ['Legs',/\b(leg|legs|squat|lunge|lunges|quad|hamstring|leg press|extension|split squat|bulgarian)\b/i],
+  ['Glutes',/\b(glute|glutes|hip thrust|thrust|kickbacks?|abduction)\b/i],
+  ['Calves',/\b(calf|calves)\b/i],
+  ['Core',/\b(core|abs|ab|plank|planks|crunch|crunches|sit[- ]?ups?|oblique)\b/i],
+  ['Mobility',/\b(mobility|foam roll|foam rolling|stretch|stretching|yoga|warm[- ]?up)\b/i],
+  ['Cardio',/\b(cardio|run|ran|running|jog|treadmill|bike|biking|cycling|stairmaster|stairs|elliptical|rower|swim|swimming|walk|walking|hiit|sprints?)\b/i],
+  ['Pilates',/\b(pilates|reformer)\b/i]
+];
+function _woSmartTitle(rows, text){
+  var seen={}, out=[];
+  function look(str){
+    var t=String(str||''); if(!t) return;
+    // forearm and wrist curls are forearms, not biceps
+    t=t.replace(/\b(forearm|wrist)s?\s+curls?\b/ig,'$1 work');
+    var hits=[];
+    _WO_TITLE_WORDS.forEach(function(w){ if(seen[w[0]]) return; var m=w[1].exec(t); if(m) hits.push([m.index, w[0]]); });
+    hits.sort(function(x,y){ return x[0]-y[0]; });          // in the order they said it
+    hits.forEach(function(h){ if(!seen[h[1]]){ seen[h[1]]=1; out.push(h[1]); } });
+  }
+  (rows||[]).forEach(function(r){ look((r&&r.n)||''); });
+  if(!out.length) look(text);
+  return out.slice(0,5).join(', ');
+}
+function _woApplyTitle(ds, d, fromModel){
+  var cur=String(d.ownTitle||'').trim();
+  if(cur && !d.ownTitleAuto) return;            // theirs, typed - never touched
+  var t=String(fromModel||'').trim();
+  if(!t || /^workout$/i.test(t)) t=_woSmartTitle(d.freeRows, d.freeText);
+  if(!t) return;
+  d.ownTitle=t; d.ownTitleAuto=true;
 }
 
 function woDictate(ds) {
@@ -88616,7 +88705,7 @@ function woDictate(ds) {
     if (box && !box._woWatch) {
       box._woWatch = setInterval(function () {
         if (!document.body.contains(box)) { clearInterval(box._woWatch); return; }
-        if (box.value !== box._woLast) { box._woLast = box.value; woFreeSet(ds, box.value); }
+        if (box.value !== box._woLast) { box._woLast = box.value; woFreeSet(ds, box.value); _woGrow(box); }
       }, 600);
     }
   } catch (e) {
@@ -88630,7 +88719,7 @@ async function woOrganize(ds) {
   if (!q) { showToast('Write what you did first'); return; }
   showToast('Reading it\u2026');
   try {
-    var sys = 'You turn a spoken workout summary into structured lines. Reply with ONLY a compact JSON array, no markdown, no prose: [{"n": string, "d": string}]. "n" is the exercise or activity name in title case. "d" is the detail, formatted as "5 \u00d7 5 @ 185" for lifts, "20 min" for cardio or classes, or "" if unclear. Keep the order they said it. Do not invent exercises they did not mention.';
+    var sys = 'You turn a spoken workout summary into structured lines. Reply with ONLY compact JSON, no markdown, no prose: {"title": string, "rows": [{"n": string, "d": string}]}. "title" names what the session worked, as the muscle groups or activities in the order they came, comma separated, short - e.g. "Chest, Shoulders, Forearms, Mobility" or "Legs, Glutes" or "Run, Core". Never the word Workout. "n" is the exercise or activity name in title case. "d" is the detail, formatted as "5 \u00d7 5 @ 185" for lifts, "4 sets" when only sets were said, "20 min" for cardio or classes, or "" if unclear. Keep the order they said it. Do not invent exercises they did not mention.';
     var res = await fetch('/.netlify/functions/analyze', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({messages: [{role: 'user', content: sys + '\n\nWorkout: ' + q}]})
@@ -88638,9 +88727,13 @@ async function woOrganize(ds) {
     var data = await res.json(); var txt = '';
     if (data && data.content) data.content.forEach(function (b) { if (b && b.type === 'text' && b.text) txt += b.text; });
     txt = (txt || '').replace(/```json/gi, '').replace(/```/g, '').trim();
-    var rows = JSON.parse(txt);
+    var parsedOut = JSON.parse(txt);
+    var rows = Array.isArray(parsedOut) ? parsedOut : (parsedOut && parsedOut.rows);
     if (!Array.isArray(rows) || !rows.length) throw new Error('empty');
-    d.freeRows = rows.slice(0, 30);
+    // a connection already tapped on a line survives a re-read, by name
+    var prev = {}; try { (d.freeRows||[]).forEach(function(r){ if(r && r.feel) prev[String(r.n||'').toLowerCase()] = r.feel; }); } catch (e) {}
+    d.freeRows = rows.slice(0, 30).map(function(r){ r = r || {}; var f = prev[String(r.n||'').toLowerCase()]; if (f) r.feel = f; return r; });
+    _woApplyTitle(ds, d, (parsedOut && !Array.isArray(parsedOut)) ? parsedOut.title : '');
     _woSaveDraft(ds, d);
     try { window._tlCache = null; renderDayTimeline(true); } catch (e) {}
     showToast('Read as ' + rows.length + ' line' + (rows.length === 1 ? '' : 's'));
