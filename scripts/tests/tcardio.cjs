@@ -34,9 +34,9 @@ const src=fs.readFileSync('index.html','utf8');
 // ===== IT IS A REMINDER, NOT FURNITURE =================================
 console.log('\n  WHEN IT ASKS AND WHEN IT SHUTS UP:');
 t(_tlCardioRow('2026-09-06', true, false, {workout:[]})!=='', 'a day with no cardio asks for it');
-t(_tlCardioRow('2026-09-06', true, false, {workout:[{title:'Cardio'}]})==='',
-  'once cardio is logged it stops asking - a prompt that keeps prompting gets ignored');
-t(_tlCardioRow('2026-09-06', true, false, {workout:[{title:'cardio - stairmaster'}]})==='',
+t(!/data-tl="cardio"/.test(_tlCardioRow('2026-09-06', true, false, {workout:[{title:'Cardio'}]})) && /data-tl="steps"/.test(_tlCardioRow('2026-09-06', true, false, {workout:[{title:'Cardio'}]})),
+  'once cardio is logged it stops asking - the steps row beside it stays (10 Sep, steps live with the training)');
+t(!/data-tl="cardio"/.test(_tlCardioRow('2026-09-06', true, false, {workout:[{title:'cardio - stairmaster'}]})),
   'and it matches the real title the sheet writes, whatever case it lands in');
 t(_tlCardioRow('2026-09-06', true, false, {workout:[{title:'Legs'}]})!=='',
   'a leg session is not cardio, so it still asks');
@@ -65,12 +65,12 @@ global._tlDateStr=(d)=>'2026-09-06';
 const stats=_tlStatsBlock('2026-09-06', true, false, {weigh:[]});
 t(/tlMealsEy">Stats</.test(stats), 'today has a Stats block, headed like the Food block is');
 t(/id="dayWeightHost"/.test(stats), 'and the weight card sits in it');
-t(/data-tl="steps"/.test(stats) && /data-tl="progphoto"/.test(stats), 'steps and the photo door are in the block');
+t(/data-tl="progphoto"/.test(stats) && !/data-tl="steps"/.test(stats), 'the photo door is in the block; steps moved up beside Cardio (10 Sep)');
 t(/data-tl="weighview"/.test(stats), 'the weigh-in door is INSIDE the weight card, not a row of its own');
 // "Add a place to put progress photos here. Consolidate." (Yusuf, 7 Sep, drawn on his phone)
 t((stats.match(/tlStatCell"/g)||[]).length===0, 'no cells under the card any more - one block');
-t(/class="dwLine dwMid" data-tl="progphoto"/.test(stats), 'the photo is a line inside the card, words only, in the middle');
-t(/class="dwLine" data-tl="steps"/.test(stats), 'steps is a line inside the card');
+t(/data-tl="progphoto"/.test(stats) && /Progress photo/.test(stats), 'the photo is a Body row, words only (10 Sep)');
+t(/Weigh in/.test(stats), 'and the weigh-in is a Body row beside it');
 t(_tlLateAsks('2026-09-06', true, false, {weigh:[]})==='', 'so today draws no late asks - one set of doors, not two');
 const late=_tlLateAsks('2026-09-03', false, false, {weigh:[]});
 t(/Steps/.test(late) && /Weigh in/.test(late), 'a past day still offers steps and a weigh-in, to backfill');
@@ -150,7 +150,7 @@ console.log('\n  IT SAVES, AND IT SAYS SO HONESTLY:');
 const save=src.slice(src.indexOf('async function cardioSave(){'), src.indexOf('function _tlDaySectionHtml('));
 t(/await insertWorkoutLog\(row\)/.test(save),
   'writes through insertWorkoutLog - the same proven path the workout sheet uses');
-t(/title: 'Cardio'/.test(save), 'titled Cardio, which is what the reminder checks for');
+t(/title: creative \? _cdCreativeTitle\(said\) : 'Cardio'/.test(save), 'titled Cardio, which is what the reminder checks for; Creative mode titles from their words (10 Sep)');
 t(/client_code: cl\.code/.test(save), 'against the signed-in client, never a guessed code');
 t(/date_str: _cdDs \|\| _tlDateStr\(new Date\(\)\)/.test(save),
   'stamped with the day they are looking at, not the UTC day');
@@ -165,7 +165,7 @@ t(/dropped\|\|\[\]\)\.indexOf\('photo'\)/.test(save), 'a dropped photo column is
 // ===== THE SHEET ========================================================
 console.log('\n  WHAT THE SHEET OFFERS:');
 const sheet=src.slice(src.indexOf('<div class="mbg" id="mCardio">'), src.indexOf('<div class="mbg" id="mWorkout">'));
-t(/30 minutes on the stairmaster/.test(sheet), 'the placeholder is his own example');
+t(!/placeholder="30 minutes on the stairmaster"/.test(sheet), 'no placeholder in the box (Yusuf, 10 Sep: placeholder text is patronising)');
 // "photo 2 of the cardio bar, remove the placeholder text. it shuold just say
 //  note under the note."
 t(!/and it kicked my ass/.test(sheet), 'the note field carries NO placeholder - his correction, 6 Sep');
@@ -190,7 +190,7 @@ t(/cardioEcho\(\)/.test(mic), 'and dictated words move the echo too, or the read
 
 // ===== WIRING ===========================================================
 console.log('\n  WIRED IN:');
-t(/if\(a==='cardio'\)\{ ev\.stopPropagation\(\); cardioOpen/.test(src), 'the cardio row is tappable through the day dispatcher');
+t(/if\(a==='cardio'\)\{ ev\.stopPropagation\(\); _cdMode='cardio'; cardioOpen/.test(src), 'the cardio row is tappable through the day dispatcher, and opens as cardio, not creative');
 t(/if\(a==='progphoto'\)/.test(src), 'so is the progress photo');
 t(/if\(a==='steps'\)/.test(src) && /if\(a==='weighview'\)/.test(src), 'steps and the weigh-in were already wired, and still are');
 t(/try\{ html\+=_tlCardioRow\(ds, isToday, isAhead, slots\); \}catch\(e\)\{\}/.test(src),

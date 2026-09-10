@@ -81,13 +81,13 @@ console.log('\n  week and month in the sheet:');
 const map={}; for(let i=0;i<31;i++){ const d=new Date(2026,7,11+i); map[_tlDateStr(d)]=[11780,5280,6670,7560,3000,8610,4560,5330,4220,5610,1060,6670,10780,17110,3830,10720,5450,4670,6560,4220,6890,8220,8720,5470,6730,7650,7240,4950,4100,11570,5670][i]; }
 function _tlDateStr(d){ return d.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}); }
 setMap(map);
-const wk=_stSpan('Sep 10, 2026',7), mo=_stSpan('Sep 10, 2026',30);
+const wk=_stSpan('Sep 10, 2026',7), mo=_stSpan('Sep 10, 2026',31);
 t(wk.logged===7 && wk.avg===Math.round((6730+7650+7240+4950+4100+11570+5670)/7), 'the week ending today averages its seven days');
-t(mo.logged===30 && mo.n===30, 'thirty days back, all logged');
-const hm=_stChartHtml('Sep 10, 2026',30);
-t((hm.match(/class="stCol( sel)?"/g)||[]).length===30 && /stChart mo/.test(hm), 'thirty thin columns');
+t(mo.logged===31 && mo.n===31 && mo.avg===6803, 'thirty-one days back, the window Health calls a month, all logged, and its average is the 6,804 on his screen (6,803 here, the fixture rounds to ten)');
+const hm=_stChartHtml('Sep 10, 2026',31);
+t((hm.match(/class="stCol( sel)?"/g)||[]).length===31 && /stChart mo/.test(hm), 'thirty-one thin columns');
 t((hm.match(/class="stDay">[0-9]+\/[0-9]+</g)||[]).length===5 && /class="stDay">9\/10</.test(hm), 'a date under every seventh bar counted back from today, today last');
-t(/in 30 days/.test(hm) && /Last week [\d,]+ a day · last 30 days [\d,]+ a day/.test(hm), 'the month line and both averages');
+t(/this month/.test(hm) && /Last week [\d,]+ a day · last month 6,803 a day/.test(hm), 'the month line and both averages');
 const hw=_stChartHtml('Sep 10, 2026',7);
 t((hw.match(/class="stCol( sel)?"/g)||[]).length===7 && /this week/.test(hw) && /Last week/.test(hw), 'the week keeps its seven and says both averages too');
 

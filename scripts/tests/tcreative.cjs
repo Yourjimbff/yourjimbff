@@ -11,7 +11,7 @@ t(/data-want="0">Creative mode<\/div>/.test(src), 'the picker inside the open ca
 t(/\.tlModePick\.p2 \.tlModeThumb\{[^}]*#b8ff3a/.test(src), 'and its thumb is lime when Creative is on');
 t(/a==='creative'\)\{ ev\.stopPropagation\(\);[^\n]*creativeOpen\(/.test(src), 'the tap lights the switch and opens the sheet');
 t(/function creativeOpen\(ds\)\{ _cdMode='creative'; cardioOpen\(ds\); \}/.test(src), 'it is the cardio sheet with the name off');
-t(/creative\?'':'30 minutes on the stairmaster'/.test(src), 'no placeholder in creative mode');
+t(!/placeholder="30 minutes on the stairmaster"/.test(src) && !/creative?'':'30 minutes/.test(src), 'no placeholder in either mode (the box carries none since .246)');
 t(/title: creative \? _cdCreativeTitle\(said\) : 'Cardio'/.test(src), 'the row is titled from their words');
 t(_cdCreativeTitle('Push\nbench 3x8 135')==='Push', 'first line "Push" names it');
 t(_cdCreativeTitle('Upper body:\nrows')==='Upper body', 'a trailing colon is dropped');
