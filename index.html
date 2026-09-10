@@ -80387,7 +80387,7 @@ async function _jimStepsShot(dataUrl, text, code){
   if(!said && !(ratio>0 && ratio<0.6)) return null;
   var r=null;
   try{ r=await _stReadShot(dataUrl); }catch(e){ r=null; }
-  if(!r || r.error){ if(r && r.error==='not_health') return null; if(said) return {reply:'I could not read the steps off that picture. Nothing was written. Send the Health steps screen, the day, week or month view.', wrote:0, ok:false}; return null; }
+  if(!r || r.error){ if(r && r.error==='not_health') return null; if(r && r.error==='bars') return {reply:'I can see the steps chart but could not measure its bars. Nothing was written. Send the day view, or the week view with a bar tapped so its number shows.', wrote:0, ok:false}; if(said) return {reply:'I could not read the steps off that picture. Nothing was written. Send the Health steps screen, the day, week or month view.', wrote:0, ok:false}; return null; }
   if(!r.count){ return {reply:(r.view==='other'?'That view averages weeks together. Send the day, week or month view and I will put every day on your record.':'I could not find any days on that screen. Nothing was written.'), wrote:0, ok:false}; }
   var days={};
   Object.keys(r.days).forEach(function(ds){ var have=(cl && code===cl.code)?_stepsFor(ds):0; if(r.rough && have>0 && Math.abs(have-r.days[ds])<=0.12*r.days[ds]) return; days[ds]=r.days[ds]; });
@@ -87035,7 +87035,7 @@ async function stImportFile(input){
    estimated and the preview says so. The year is given because week charts
    rarely show one. */
 var _SHOT_SYS='You are reading a screenshot from a phone health or fitness app for a coaching app. Reply with ONLY compact JSON, no markdown, no prose. Today is %TODAY%. Dates on the screen without a year are this year unless that would put them in the future, in which case last year. Never invent a day that is not on the screen. If the screen is not a health or fitness screen, reply {"error":"not_health"}.';
-var _SHOT_STEPS=' STEPS: return {"kind":"steps","view":"day|week|month|other","range":{"start":"YYYY-MM-DD","end":"YYYY-MM-DD"},"average_printed":n,"axis_max":n,"days":[{"date":"YYYY-MM-DD","steps":n,"estimated":false}]}. "view" is the span the chart covers (Apple Health: the D, W or M pill that is lit; 6M and Y are "other"). "range" is the date span printed above the chart, first day to last day: "Sep 3–9, 2026" is start 2026-09-03 end 2026-09-09, "Aug 11–Sep 10, 2026" is start 2026-08-11 end 2026-09-10; a day view has start and end the same. "average_printed" is the AVERAGE number printed above the chart, left out if none is printed. "axis_max" is the top number on the y axis, left out if none. "days": a day view gives one entry with the total printed; a week or month view gives one entry per bar, left to right, the dates counted from the start of the range in order, one bar per day. A number printed on or beside a bar is read exactly with "estimated":false; a bar with no number gets your best estimate from its height against the axis, "estimated":true. Whole numbers.';
+var _SHOT_STEPS=' STEPS: return {"kind":"steps","view":"day|week|month|other","range":{"start":"YYYY-MM-DD","end":"YYYY-MM-DD"},"average_printed":n,"axis_max":n,"days":[{"date":"YYYY-MM-DD","steps":n}],"tallest":{"date":"YYYY-MM-DD","steps":n}}. "view" is the span the chart covers (Apple Health: the D, W or M pill that is lit; 6M and Y are "other"). "range" is the date span printed above the chart, first day to last day: "Sep 3–9, 2026" is start 2026-09-03 end 2026-09-09, "Aug 11–Sep 10, 2026" is start 2026-08-11 end 2026-09-10; a day view has start and end the same. "average_printed" is the AVERAGE number printed above the chart, left out if none is printed. "axis_max" is the top number on the y axis, left out if none. "days": only numbers actually printed on the screen - a day view gives its one total; a bar with a number printed on or beside it gives that number, dated by counting bars from the start of the range. Never estimate a bar; the bars are measured separately. "tallest": your one read of the tallest bar against the axis, so the measurement has a scale if no average is printed. Whole numbers.';
 var _SHOT_CARDIO=' CARDIO: return {"kind":"cardio","sessions":[{"date":"YYYY-MM-DD","activity":"Outdoor Walk","minutes":32,"distance":"2.1 mi","calories":210}]}. One entry per workout on the screen. Use the app’s own activity name. Leave out any field that is not printed; never estimate calories or distance.';
 async function _shotRead(dataUrl, kind){
   var m=String(dataUrl||'').match(/^data:(image\/[a-z]+);base64,(.+)$/i);
@@ -87043,7 +87043,7 @@ async function _shotRead(dataUrl, kind){
   var sys=_SHOT_SYS.replace('%TODAY%', _tlDateStr(new Date()))+(kind==='cardio'?_SHOT_CARDIO:_SHOT_STEPS);
   var content=[{type:'image', source:{type:'base64', media_type:m[1], data:m[2]}},{type:'text', text:sys}];
   var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:'claude-sonnet-5', max_tokens:1400, temperature:0, messages:[{role:'user',content:content}]})});
+    body:JSON.stringify({model:'claude-sonnet-5', max_tokens:1900, temperature:0, thinking:{type:'disabled'}, messages:[{role:'user',content:content}]})});
   var data=await res.json(), txt='';
   if(data && data.content) data.content.forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; });
   txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
@@ -87178,27 +87178,30 @@ async function _stReadShot(raw){
   var small=await downscaleImage(raw, 1440, 0.85).catch(function(){ return raw; });
   var j=await _shotRead(small||raw, 'steps');
   if(!j || j.error) return {error:(j&&j.error)||'unread'};
-  var days={}, est=0, exact={};
-  (j.days||[]).forEach(function(d){ var ds=_shotDs(d.date); var v=Math.round(+d.steps||0); if(ds && v>0){ days[ds]=v; if(d.estimated) est++; else exact[ds]=v; } });
+  var days={}, exact={};
+  (j.days||[]).forEach(function(d){ var ds=_shotDs(d.date); var v=Math.round(+d.steps||0); if(ds && v>0){ days[ds]=v; exact[ds]=v; } });
   var view=String(j.view||'').toLowerCase(), rg=j.range||{}, n=_stRangeDays(rg.start, rg.end);
   var printedAvg=Math.round(+j.average_printed||0), axisMax=Math.round(+j.axis_max||0);
-  var how='model', barsSeen=0, note='';
-  if(view!=='day' && n>1){
+  var scaleFrom={}; Object.keys(exact).forEach(function(k){ scaleFrom[k]=exact[k]; });
+  try{ if(j.tallest && +j.tallest.steps>0){ var tds=_shotDs(j.tallest.date)||'tallest'; scaleFrom[tds]=Math.round(+j.tallest.steps); } }catch(e){}
+  var how='printed', est=0, barsSeen=0, note='', chart=(view!=='day' && n>1);
+  if(chart){
     var scan=null;
     try{ scan=await _stScanImage(raw); }catch(e){ scan=null; }
     barsSeen=scan?scan.bars.length:0;
-    var mapped=scan && _stBarsToDays(scan.bars, rg.start, n, printedAvg, days, axisMax);
+    var mapped=scan && _stBarsToDays(scan.bars, rg.start, n, printedAvg, scaleFrom, axisMax);
     if(mapped && Object.keys(mapped.days).length){
       /* a number the phone printed beats a ruler, when they roughly agree */
       Object.keys(exact).forEach(function(ds){ if(mapped.days[ds] && Math.abs(mapped.days[ds]-exact[ds])<=0.25*exact[ds]) mapped.days[ds]=exact[ds]; });
       days=mapped.days; how=mapped.how;
       est=Object.keys(days).filter(function(ds){ return days[ds]!==exact[ds]; }).length;
+    } else if(!Object.keys(days).length){
+      return {error:'bars', view:view, n:n, bars:barsSeen};
     }
   }
   var k=Object.keys(days).length;
   if(how==='avg') note='Read off the bars and matched to the average on the screen, '+printedAvg.toLocaleString()+' a day. Close, not exact.';
   else if(how==='max') note='Read off the bars against the axis. Close, not exact.';
-  else if(est) note=est+' of these read off a bar with no number printed, so they are close, not exact.';
   return {days:days, est:est, how:how, view:view, range:rg, n:n, printedAvg:printedAvg, bars:barsSeen, rough:(view==='month'||n>14), note:note, count:k};
 }
 async function stImportShot(input){
@@ -87207,7 +87210,7 @@ async function stImportShot(input){
   try{
     var raw=await new Promise(function(res,rej){ var r=new FileReader(); r.onload=function(e){ res(e.target.result); }; r.onerror=rej; r.readAsDataURL(f); });
     var r=await _stReadShot(raw);
-    if(r.error){ _stImpStatus(r.error==='not_health' ? 'That does not look like a steps screen.' : 'Could not read that screenshot.'); return; }
+    if(r.error){ _stImpStatus(r.error==='not_health' ? 'That does not look like a steps screen.' : (r.error==='bars' ? 'I can see the chart but could not measure its bars. Tap a bar in Health so its number shows, or send the day view, or the Health export file.' : 'Could not read that screenshot.')); return; }
     if(!r.count && r.view==='other'){ _stImpStatus('That view is months or weeks averaged together. Send the day, week or month view.'); return; }
     _stPreview({days:r.days, samples:r.count, rough:r.rough, note:r.note}, 'screenshot');
   }catch(e){ _stImpStatus('Could not read that screenshot. '+_escHtml(String(e&&e.message||e))); }

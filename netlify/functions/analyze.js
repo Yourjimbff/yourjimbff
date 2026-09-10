@@ -98,9 +98,17 @@ exports.handler = async function (event) {
   // read by a smaller model. Caught while verifying the session gate.
   // Same shape as the door's unknown-column recovery: try, and if the upstream
   // names this exact problem, drop the field and go again once.
-  const send = async (withTemperature) => {
+  // THINKING OFF, WHEN THE CALLER SAYS SO (10 Sep). The steps screenshot
+  // reader asked sonnet for JSON and got back nothing: the model spent the
+  // whole max_tokens thinking about thirty-one bars and never wrote a word
+  // (stop_reason max_tokens, output all thinking). A caller that wants a
+  // flat read can pass thinking:{type:'disabled'}; nothing else is passed
+  // through, and a model that rejects the field gets the call again without it.
+  const thinkingOff = !!(body.thinking && body.thinking.type === 'disabled');
+  const send = async (withTemperature, withThinking) => {
     const payload = { model: model, max_tokens: maxTokens, messages: body.messages };
     if (withTemperature) payload.temperature = temperature;
+    if (withThinking && thinkingOff) payload.thinking = { type: 'disabled' };
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -114,11 +122,17 @@ exports.handler = async function (event) {
   };
 
   try {
-    let { res: response, data } = await send(true);
+    let { res: response, data } = await send(true, true);
+    let withThinking = true;
+    if (!response.ok && /thinking/i.test((data && data.error && data.error.message) || '')) {
+      console.warn('analyze:', model, 'rejects thinking:disabled — retrying without it');
+      withThinking = false;
+      ({ res: response, data } = await send(true, false));
+    }
     if (!response.ok && /temperature[\s\S]{0,40}deprecated/i.test(
         (data && data.error && data.error.message) || '')) {
       console.warn('analyze:', model, 'rejects temperature — retrying without it');
-      ({ res: response, data } = await send(false));
+      ({ res: response, data } = await send(false, withThinking));
     }
     // If Anthropic rejected the call, pass the real status + message through
     // instead of masking it as a 200 the app can't interpret.

@@ -65,7 +65,8 @@ t(/onclick="cardioImportOpen\(\)"/.test(src) && !/placeholder="30 minutes on the
 t(/^\.msheet\{/m.test(src), '.msheet has a rule at all now - the same glass as the Steps sheet');
 console.log('\n  the screenshot reader:');
 const rd=src.slice(src.indexOf('var _SHOT_SYS'), src.indexOf('function stImportPaste'));
-t(/Reply with ONLY compact JSON/.test(rd) && /"estimated":true/.test(rd), 'asks for JSON and for the estimated flag on eyeballed bars');
+t(/Reply with ONLY compact JSON/.test(rd) && /Never estimate a bar; the bars are measured separately/.test(rd) && /"tallest"/.test(rd), 'asks for JSON, the printed range and average, and never a guessed bar - the bars are measured off the pixels');
+t(/thinking:\{type:'disabled'\}/.test(src.slice(src.indexOf('async function _shotRead'), src.indexOf('function _shotDs'))), 'the reader turns thinking off - sonnet spent its whole budget thinking about 31 bars and wrote nothing');
 t(/never estimate calories or distance/.test(rd), 'cardio: never invents calories or distance');
 t(/d\.getTime\(\)>Date\.now\(\)\+864e5\) return null/.test(rd), 'a day in the future is dropped');
 t(/downscaleImage\(raw, 1440, 0\.85\)/.test(rd), 'the picture is shrunk before it goes up');
