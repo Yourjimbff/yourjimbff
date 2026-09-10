@@ -17,12 +17,11 @@ const src=fs.readFileSync('index.html','utf8');
 let bad=0;
 const t=(ok,label)=>{ if(!ok) bad++; console.log((ok?'  ok    ':'  FAIL  ')+label); };
 
-console.log('  it is gated, and the gate can be flipped without a deploy:');
+console.log('  it is ON for everyone (Yusuf, 10 Sep), and can still be killed without a deploy:');
 const g = src.slice(src.indexOf('function _nlFastOn'), src.indexOf('/* A name off their own words'));
-t(/isTrainer\(cl\.code\)/.test(g),           'on for the trainer');
-t(/yjb_fastlog'\)==='on'/.test(g),           'and for anyone he switches on');
+t(!/isTrainer\(cl\.code\)/.test(g),          'no longer gated to the trainer');
 t(/yjb_fastlog'\)==='off'/.test(g),          'off wins, so he can kill it instantly');
-t(/return false;\s*\}/.test(g.slice(g.lastIndexOf('catch'))), 'and it defaults to OFF');
+t(/return true;\s*\}/.test(g),               'and it defaults to ON');
 
 console.log('\n  the row is written before any model is asked:');
 const f = src.slice(src.indexOf('async function nlSubmitFast'), src.indexOf('/* Fills in what the table'));
