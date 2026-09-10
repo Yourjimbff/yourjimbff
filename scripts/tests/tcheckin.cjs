@@ -32,14 +32,14 @@ t(!/ciRow_all|dayCheckinHost|data-tl="ciall"/.test(h), 'the fold that did not op
 console.log('\n  A PILL DROPS ITS HEADING INTO THE BOX:');
 box={value:'', style:{}, scrollHeight:120, focus(){ this.focused=true; }, setSelectionRange(a,b){ this.sel=[a,b]; }};
 ciPill('Fitness');
-t(box.value==='Fitness:\n', 'empty box: "Fitness:" then a new line');
+t(box.value==='Fitness: ', 'empty box: "Fitness: " and the words go on that line (10 Sep 8:40)');
 t(box.sel && box.sel[0]===box.value.length, 'cursor sits under the heading');
 t(box.focused===true, 'and the box has focus');
-box.value='Fitness:\nbench felt heavy'; ciType(box.value);
+box.value='Fitness: bench felt heavy'; ciType(box.value);
 ciPill('Sleep');
-t(box.value==='Fitness:\nbench felt heavy\n\nSleep:\n', 'a second pill goes under what they wrote, one blank line between');
+t(box.value==='Fitness: bench felt heavy\n\nSleep: ', 'a second pill goes under what they wrote, one blank line between');
 ciPill('Fitness');
-t(box.value==='Fitness:\nbench felt heavy\n\nSleep:\n', 'a pill already in the box is not added twice');
+t(box.value==='Fitness: bench felt heavy\n\nSleep: ', 'a pill already in the box is not added twice');
 h=_ciPillsHtml();
 t(/class="ciPill on"[^>]*>Fitness</.test(h) && /class="ciPill on"[^>]*>Sleep</.test(h) && /class="ciPill"[^>]*>Energy</.test(h), 'pills in the box read lit, the others not');
 ciType('');
