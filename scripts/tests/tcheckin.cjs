@@ -66,7 +66,7 @@ t(_tlCheckinBlock('Sep 6, 2026', false, false)==='', 'not on a past day - a chec
 window._tlRO=true; t(_tlCheckinBlock('Sep 7, 2026', true, false)==='', 'never on the trainer read-only copy'); window._tlRO=false;
 // the real isTrainer was lifted (it reads TRAINER_CODES), so the trainer case is made the real way
 TRAINER_CODES.push('zztrainerfortest'); cl={code:'zztrainerfortest'};
-t(_tlCheckinBlock('Sep 7, 2026', true, false)==='', 'and never on the trainer own day');
+t(_tlCheckinBlock('Sep 7, 2026', true, false)!=='', 'and ON the trainer own day too (Yusuf, 10 Sep: "there is no spot for me to do a check-in")');
 TRAINER_CODES.pop(); cl={code:'zzscratchnotaclient'};
 
 console.log('\n  IT REACHES HIM:');
