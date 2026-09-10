@@ -67065,20 +67065,59 @@ function _looksLikeMultipleItems(s){
 // No match -> log it plain with no numbers. Macros stay a tap away on the entry.
 // Pull stated macros out of a sentence: "2 pancakes, 60g carbs, 40g protein, 28g fat"
 // -> {macros:{protein:40,carbs:60,fat:28,cal:null}, rest:"2 pancakes", hasMacro:true}
+/* HIS WORD ON THE MACROS IS THE MACROS (Yusuf, 10 Sep): "if Yusuf is saying
+   exactly what the macros are, I am taking 100% his word for that... any loose
+   characters, any loose writing." So every loose shape reads: "60g protein",
+   "protein 60", "60p", "p60", "60 pro", "60 prot", "10c", "10 carb", "30f",
+   "30 fats", "520 cal", "520kcal", "cal 520", "calories: 520", and a bare
+   triple "60/10/30" in the order everybody writes it, protein / carbs / fat.
+   A letter only counts with a number glued to it and a word boundary after
+   it: "60 pcs" is not 60 protein, "10 cups" is not 10 carbs, "2 fish" is not
+   2 fat, "12oz" is a weight. Whatever this finds is written verbatim; nothing
+   downstream may estimate over it or add to it. */
 function _parseInlineMacros(q){
-  var s=' '+String(q||'')+' ';
-  var out={protein:null,carbs:null,fat:null,cal:null};
-  function grab(re, key){ var m=s.match(re); if(m){ out[key]=parseFloat(m[1]); s=s.replace(m[0],' , '); } }
-  grab(/(\d+(?:\.\d+)?)\s*g?\s*(?:of\s+)?protein\b/i,'protein');
-  grab(/(\d+(?:\.\d+)?)\s*g?\s*(?:of\s+)?carb(?:s|ohydrates)?\b/i,'carbs');
-  grab(/(\d+(?:\.\d+)?)\s*g?\s*(?:of\s+)?fat\b/i,'fat');
-  grab(/(\d+(?:\.\d+)?)\s*(?:kcal|cal(?:ories|s)?)\b/i,'cal');   /* "250 cals" counts too (LeAndra M, 6 Sep) */
-  if(out.protein==null){ var mp=s.match(/protein\s*[:=]?\s*(\d+(?:\.\d+)?)/i); if(mp){ out.protein=parseFloat(mp[1]); s=s.replace(mp[0],' , '); } }
-  if(out.carbs==null){ var mc=s.match(/carb(?:s)?\s*[:=]?\s*(\d+(?:\.\d+)?)/i); if(mc){ out.carbs=parseFloat(mc[1]); s=s.replace(mc[0],' , '); } }
-  if(out.fat==null){ var mf=s.match(/fat\s*[:=]?\s*(\d+(?:\.\d+)?)/i); if(mf){ out.fat=parseFloat(mf[1]); s=s.replace(mf[0],' , '); } }
-  var rest=s.replace(/[-\u2013\u2014]/g,' ').replace(/\s*,\s*/g,', ').replace(/(^[\s,]+|[\s,]+$)/g,'').replace(/\s{2,}/g,' ').trim();
+  var s0=' '+String(q||'')+' ';
+  var NUM='(\\d+(?:\\.\\d+)?)';
+  var LBL={protein:'(?:protein|prot|pro|p)', carbs:'(?:carbohydrates?|carbs?|c)', fat:'(?:fats?|f)'};
+  function run(wordFirst){
+    var s=s0, out={protein:null,carbs:null,fat:null,cal:null}, n=0;
+    function grab(re, key){ var m=s.match(re); if(m && out[key]==null){ out[key]=parseFloat(m[1]); s=s.replace(m[0],' , '); n++; } }
+    // calories first, so "10 cal" can never be read as 10 carbs
+    grab(new RegExp(NUM+'\\s*(?:kcal|cals?|calories)\\b','i'),'cal');   /* "250 cals" counts too (LeAndra M, 6 Sep) */
+    grab(new RegExp('\\b(?:kcal|cals?|calories)\\s*[:=]?\\s*'+NUM+'\\b','i'),'cal');
+    ['protein','carbs','fat'].forEach(function(k){
+      grab(wordFirst ? new RegExp('\\b'+LBL[k]+'\\s*[:=]?\\s*'+NUM+'\\s*g?\\b','i')
+                     : new RegExp(NUM+'\\s*g?\\s*(?:of\\s+)?'+LBL[k]+'\\b','i'), k);
+    });
+    return {out:out, s:s, n:n};
+  }
+  // "60g protein 10g carbs" and "protein 60 carbs 10" are both how people type
+  // it, and read the wrong way round each steals the other's number. Both
+  // readings run on the same line; the one that found more figures is the one
+  // they meant. A tie goes to number-then-word, the commoner shape.
+  var A=run(false), B=run(true);
+  var R=(B.n>A.n)?B:A;
+  var out=R.out, s=R.s;
+  // a bare triple, only when nothing above named any macro: 60/10/30 = P/C/F
+  if(out.protein==null && out.carbs==null && out.fat==null){
+    var tri=s.match(/(?:^|\s)(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)(?=\s|$)/);
+    if(tri){ out.protein=parseFloat(tri[1]); out.carbs=parseFloat(tri[2]); out.fat=parseFloat(tri[3]); s=s.replace(tri[0],' , '); }
+  }
+  var rest=s.replace(/[-–—]/g,' ').replace(/\s*,\s*/g,', ').replace(/(^[\s,]+|[\s,]+$)/g,'').replace(/\s{2,}/g,' ').trim();
   var hasMacro=(out.protein!=null||out.carbs!=null||out.fat!=null||out.cal!=null);
   return {macros:out, rest:rest, hasMacro:hasMacro};
+}
+/* The stated numbers as one priced line: calories as written, or 4/4/9 from
+   the macros when no calorie figure was given. */
+function _nlStated(line){
+  var mm=null; try{ mm=_parseInlineMacros(line); }catch(e){ mm=null; }
+  if(!mm || !mm.hasMacro) return null;
+  var P=mm.macros;
+  var pro=P.protein!=null?Math.round(P.protein):0, carb=P.carbs!=null?Math.round(P.carbs):0, fat=P.fat!=null?Math.round(P.fat):0;
+  var cal=P.cal!=null?Math.round(P.cal):Math.round(pro*4+carb*4+fat*9);
+  if(!(cal||pro||carb||fat)) return null;
+  var name=String(mm.rest||'').replace(/[,\s]+$/,'').trim();
+  return {name:name, calories:cal, protein:pro, carbs:carb, fat:fat};
 }
 async function smartLogFromText(q){
   var _photo=(typeof photoData!=='undefined')?(photoData||null):null;
@@ -78766,6 +78805,33 @@ async function logFoodFromChat(offer, photo, targetCode){
   var _code=_tc || ((cl&&cl.code)||'');
   var _forOther=!!(_tc && (!cl || _tc!==String(cl.code||'').toLowerCase()));
   if(!offer || !offer.name || !_code) return false;
+  // HIS WORD ON THE MACROS IS THE MACROS (Yusuf, 10 Sep): "if Yusuf is saying
+  // exactly what the macros are, I am taking 100% his word for that... any
+  // loose writing." This is the one door every food log goes through, so it
+  // is the one place the law lives. The client's own words ride on meal_text
+  // (verbatim, see _pinVoice); any figure written there - in any of the shapes
+  // _parseInlineMacros reads - replaces what the model or the table decided
+  // for that figure, and the two steps below that re-price a meal from its
+  // rows and re-balance a total against its parts stand down. A stated
+  // calorie count stays even when it does not add up to the stated macros:
+  // arguing with him is the regression this exists to end.
+  var _stated=false;
+  try{
+    var _sm=_parseInlineMacros(offer.meal_text||'');
+    if(_sm && _sm.hasMacro){
+      var _P=_sm.macros, _o={};
+      if(_P.cal!=null) _o.calories=Math.round(_P.cal);
+      if(_P.protein!=null) _o.protein=Math.round(_P.protein);
+      if(_P.carbs!=null) _o.carbs=Math.round(_P.carbs);
+      if(_P.fat!=null) _o.fat=Math.round(_P.fat);
+      if(_o.calories==null && (_o.protein!=null||_o.carbs!=null||_o.fat!=null)){
+        _o.calories=Math.round((_o.protein!=null?_o.protein:(+offer.protein||0))*4+(_o.carbs!=null?_o.carbs:(+offer.carbs||0))*4+(_o.fat!=null?_o.fat:(+offer.fat||0))*9);
+      }
+      offer=Object.assign({}, offer, _o);
+      _stated=true;
+      try{ console.warn('FOOD_LOG: numbers stated in their own words - written as said', _o); }catch(e){}
+    }
+  }catch(e){ _stated=false; }
   // THE TABLE IS LAW (Yusuf, 30 Aug), applied BEFORE the reconciliation below so
   // what gets reconciled is already the table's arithmetic and not the model's.
   // Every row the table covers takes table numbers; the meal total becomes the
@@ -78773,7 +78839,7 @@ async function logFoodFromChat(offer, photo, targetCode){
   // and the existing behaviour stands, so an older reply still logs exactly as
   // it did.
   try{
-    if(Array.isArray(offer.items) && offer.items.length){
+    if(!_stated && Array.isArray(offer.items) && offer.items.length){
       var _mi=offer.items.map(function(x){ return Object.assign({}, x); });
       // A ROW THE TABLE DOES NOT KNOW, WITH NO NUMBERS OF ITS OWN, IS NOT A ZERO
       // (LeAndra M, 6 Sep, four turns in a row). The prompt example shows rows
@@ -78811,7 +78877,7 @@ async function logFoodFromChat(offer, photo, targetCode){
   // recompute from, the meal still lands, with its macros left NULL and its
   // calories kept as stated. Null is honest: it says nobody worked these out.
   // Zeroes would be a lie the totals would then add up.
-  if(!_macrosReconcileWithCalories(offer.calories, offer.protein, offer.carbs, offer.fat)){
+  if(!_stated && !_macrosReconcileWithCalories(offer.calories, offer.protein, offer.carbs, offer.fat)){
     var _p=+offer.protein||0, _c=+offer.carbs||0, _f=+offer.fat||0;
     var _implied=_p*4 + _c*4 + _f*9;
     if(_implied>0){
@@ -85202,6 +85268,17 @@ function _nlSameFood(typedName, row){
    throws - it runs on every keystroke. */
 function _nlEcho(line){
   var out = {lines:[], total:{calories:0,protein:0,carbs:0,fat:0}, unpriced:0};
+  /* STATED NUMBERS ARE THE WHOLE ANSWER (10 Sep). One line, their numbers,
+     nothing left for the table or the model to price - so nothing gets added
+     on top of what they said. */
+  var st=null; try{ st=_nlStated(line); }catch(e){ st=null; }
+  if(st){
+    var nm=st.name||String(line||'').trim();
+    out.lines.push({said:nm, name:nm, calories:st.calories, protein:st.protein, carbs:st.carbs, fat:st.fat, known:true, est:false, stated:true});
+    out.total={calories:st.calories, protein:st.protein, carbs:st.carbs, fat:st.fat};
+    out.stated=true;
+    return out;
+  }
   var frags = _nlEchoSplit(line);
   for(var i=0;i<frags.length && i<12;i++){
     var it = null;
@@ -85248,8 +85325,9 @@ function _nlEchoHtml(st){
          _mealMacLine drops a macro that is zero - so the echo keeps the two
          figures it has always shown and only the format is unified. */
       h += '<div class="nlEchoRow"><span class="nlEchoN">'+_escHtml(L.said)
-         + (L.est?'<span class="nlEchoEst">estimated</span>':'')+'</span>'
-         + '<span class="nlEchoV">'+_mealMacLine({calories:L.calories, protein:L.protein, carbs:0, fat:0},'long',{time:false})
+         + (L.est?'<span class="nlEchoEst">estimated</span>':'')
+         + (L.stated?'<span class="nlEchoEst">your numbers</span>':'')+'</span>'
+         + '<span class="nlEchoV">'+_mealMacLine(L.stated ? {calories:L.calories, protein:L.protein, carbs:L.carbs, fat:L.fat} : {calories:L.calories, protein:L.protein, carbs:0, fat:0},'long',{time:false})
          + '</span></div>';
     } else {
       /* NO NUMBER RATHER THAN A GUESSED ONE. */
@@ -85725,7 +85803,9 @@ async function nlSubmit(){
   /* THE WORDS ARE THE LOG, when he has this on. A photo-only capture still
      takes the old road: there is nothing to commit on until something has
      read the picture. */
-  if(line && _nlFastOn()){
+  /* Stated numbers never wait for a model, whatever the fast switch says:
+     there is nothing to work out. */
+  if(line && (_nlFastOn() || _nlStated(line))){
     var handled=false;
     try{ handled=await nlSubmitFast(st, line); }catch(e){ handled=false; }
     if(handled) return;

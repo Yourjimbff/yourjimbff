@@ -32,7 +32,7 @@ t(/_tlRefreshDay\(st\.ds\)/.test(f),         'the day refreshes under it');
 t(/Could not save — it is NOT logged/.test(f), 'a failed write says so and keeps their line');
 
 console.log('\n  a photo with no words still takes the old road:');
-t(/if\(line && _nlFastOn\(\)\)/.test(src),   'the fast path needs a line');
+t(/if\(line && \(_nlFastOn\(\) \|\| _nlStated\(line\)\)\)/.test(src),   'the fast path needs a line (and a stated line always takes it)');
 t(/nothing to commit on until something has\s*\n\s*read the picture/.test(src) || /photo-only capture still/.test(src),
   'and the reason is written down');
 
