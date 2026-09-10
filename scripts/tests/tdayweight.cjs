@@ -73,7 +73,7 @@ const L=(h.match(/class="(dwLine|dwLine dwMid|dwTap)"/g)||[]).length;
 t(L===0, 'no lines in the card - it is the stat and nothing else (10 Sep)', String(L));
 const stats=src.slice(src.indexOf('function _tlStatsBlock'), src.indexOf('/* ===== THE CHECK IN'));
 t(/tlMealsEy">Body</.test(stats), 'a Body section sits above Stats');
-t(stats.indexOf("_tlAskRow('weighview', ds, 'Weigh in', 'weigh')")>0 && stats.indexOf("_tlAskRow('steps', ds, 'Steps')")>0 && stats.indexOf("_tlAskRow('progphoto', ds, 'Progress photo')")>0, 'with Weigh in, Steps and Progress photo as the same gold plus rows as Breakfast');
+t(stats.indexOf("_tlAskRow('weighview', ds, 'Weigh in', 'weigh')")>0 && stats.indexOf("_tlAskRow('progphoto', ds, 'Progress photo')")>0, 'with Weigh in and Progress photo as the same gold plus rows as Breakfast (Steps moved beside Cardio, 10 Sep)');
 t(/Weigh in \\u00b7 '\+_escHtml\(_pgW\(\+w0\.weight\)/.test(stats), 'done, the weigh-in row says the number');
 t(/\.dwMid\{justify-content:flex-start;\}/.test(src), 'left aligned, same height as its neighbours (Yusuf: "Left align")');
 t(/\.dwLines \.dwTap\{color:var\(--text\);\}/.test(src) && /\.dwLines \.dwLineV\{color:rgba\(240,236,228,0\.62\);\}/.test(src), 'the three doors read in text, not gold - "Watch overuse of gold"');
