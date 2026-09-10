@@ -7,7 +7,7 @@ let bad=0; const t=(p,l)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+
 const day=src.slice(src.indexOf('var _plannedWo=null;'), src.indexOf('var _plannedWo=null;')+2600);
 t(/if\(!_plannedWo\)\{\s*_plannedWo=_woList\.filter\(function\(x\)\{ return !_tlIsRecord\(x\); \}\)\[0\]\|\|null;/.test(day), 'any real session logged takes the monument, plan or no plan');
 t(/_woMatchesPlan\(_plannedWo, plan\)\) \? plan\.type : _woDisplayTitle\(_plannedWo\)/.test(src), 'the monument is titled by the plan only when the session matched it');
-t(/_tlAskRow\('creative', ds, 'Another workout'\)/.test(src), '+ Another workout is the small line that replaces the Start card');
+t(/_tlAskRow\('creative', ds, 'Add another workout'\)/.test(src), '+ Add another workout is the small line that replaces the Start card');
 const fn=src.slice(src.indexOf('function _woDisplayTitle(w){'), src.indexOf('function _woMatchesPlan(w, plan){'));
 const wt=src.slice(src.indexOf('var _WO_TITLE_WORDS=['), src.indexOf('function _woApplyTitle(ds, d, fromModel){'));
 const ctx={String,RegExp,Array}; vm.createContext(ctx); vm.runInContext(wt+'\n'+fn, ctx);
@@ -18,5 +18,19 @@ t(D({title:'Workout', description:''})==='Workout', 'nothing to read from stays 
 t(/slotName = _woDisplayTitle\(it\);/.test(src) && /var title=_woDisplayTitle\(wo\)/.test(src), 'the row card and the monument both print it');
 const st=src.slice(src.indexOf('async function saveSteps(ds, clear){'), src.indexOf('// ===== PROGRAM ON / OFF'));
 t(/_doneFlash\(document\.querySelector\('#stepsOv \.stSheet'\)/.test(st) && /closeSteps\)/.test(st) && !/the close is theirs/.test(st), 'the steps sheet draws the check and closes itself after a save');
+
+// WORKOUT, THEN FOOD; THE FINISHED SESSION IS SMALL (10 Sep, second screen)
+(function(){
+  const fs=require('fs'); const src=fs.readFileSync('index.html','utf8');
+  const t=(p,l)=>{ console.log((p?'  ok    ':'  FAIL  ')+l); if(!p) process.exitCode=1; };
+  t(!/_mealRows\.forEach\(function\(r\)\{ rows\.push\(r\); \}\);/.test(src) && /_tlMealSection\(ds, slots, isToday, isAhead, _mealCards\)/.test(src), 'meal cards are drawn inside the Food block, not in the clock order above the session');
+  t(/return '<div class="tlMeals">'\+head\+\(cards\|\|''\)\+rows\.join\(''\)\+ask\+'<\/div>';/.test(src), 'under the Food head, above the doors');
+  const hero=src.slice(src.indexOf('function _tlDoneHero('), src.indexOf('function _tlHeroErr('));
+  t(/data-tl="herotog"/.test(hero) && /\(_open\?\('<div class="tlHeroBody">'\+body\+'<\/div>'\):''\)/.test(hero), 'the finished session is title and meta until tapped');
+  t(!/body\+=_tlRatingSection\(wo, ds, rec\);/.test(hero), 'no feel / connection sections at the foot of the card');
+  t(/closest\('\.tlHeroBody'\)\) return;/.test(src), 'a tap inside the open body does not fold it');
+  const guard=src.slice(src.indexOf('async function insertFoodLog'), src.indexOf('async function insertFoodLog')+3000);
+  t(/\(_now-_seen\)<15\*60\*1000/.test(guard) && /\+"\|"\+\(row\.date_str\|\|""\)\)\.toLowerCase\(\)/.test(guard) && !/Math\.round\(row\.calories\|\|0\)\)\.toLowerCase/.test(guard), 'the same food in the same slot within fifteen minutes is one meal, whatever the numbers');
+})();
 console.log(bad?'\n  '+bad+' FAILED':'\n  all day-idle assertions pass');
 process.exit(bad?1:0);
