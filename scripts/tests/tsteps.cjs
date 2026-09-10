@@ -8,7 +8,7 @@ const code=[
   'function _tlDateStr(d){ return d.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}); }',
   'function _parseDs(ds){ try{ var d=new Date(ds); return isNaN(d.getTime())?null:d; }catch(e){ return null; } }',
   'function _escHtml(x){ return String(x).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }',
-  lift('_stepsFor'), lift('_stDaysBack'), lift('_stWeek'), lift('_stChartHtml'), lift('_stParseHealthXml'), lift('_stParseLines'),
+  lift('_stepsFor'), lift('_stDaysBack'), lift('_stSpan'), lift('_stWeek'), lift('_stAvgLine'), lift('_stChartHtml'), lift('_stParseHealthXml'), lift('_stParseLines'),
   'module.exports={_stDaysBack,_stWeek,_stChartHtml,_stParseHealthXml,_stParseLines,setMap:function(m){ window._stepMap=m; }};'
 ].join('\n');
 const m={exports:{}}; new Function('module','exports',code)(m,m.exports);
@@ -56,7 +56,7 @@ t(!/_tlAskRow\('steps'/.test(stats), 'and not in the Body rows any more');
 t(/class="stSheet pgCard"/.test(src), 'the sheet is the glass card');
 t(/cdnjs\.cloudflare\.com\/ajax\/libs\/jszip\/3\.10\.1\/jszip\.min\.js/.test(src), 'export.zip opens in the browser');
 t(/f\.size>400\*1024\*1024/.test(src), 'a zip over 400 MB is refused with a reason, not attempted');
-t(/sbUpsert\('step_logs',\{client_code:cl\.code, steps:v, date_str:ds/.test(src.slice(src.indexOf('async function stImportGo'))), 'the import writes through the same upsert the box uses, one row per day');
+t(/sbUpsert\('step_logs',\{client_code:code, steps:v, date_str:ds/.test(src.slice(src.indexOf('async function _stWriteDays'))) && /await _stWriteDays\(days, cl\.code/.test(src.slice(src.indexOf('async function stImportGo'))), 'the import writes through the same upsert the box uses, one row per day');
 console.log('\n  the taps answer on a phone (10 Sep 10:34, "import from Apple Health hit nothing"):');
 const sheet=src.slice(src.indexOf('function _stChartHtml'), src.indexOf('function stPick'));
 t(!/data-tl="stpick"|data-tl="stimport"/.test(sheet), 'no data-tl inside the sheet - it lives outside the day page delegate');

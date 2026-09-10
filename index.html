@@ -6289,6 +6289,17 @@ body.bfEditingToday .tlDaySec.ahead{display:none;}
 .stImpDay b{font-weight:800;color:var(--text);font-variant-numeric:tabular-nums;}
 .stImpDay i{font-style:normal;font-size:11px;color:rgba(240,236,228,0.4);}
 .stImpEst{margin-bottom:6px;font-size:12px;color:rgba(245,197,24,0.85);}
+.stWhenRow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:4px;}
+.stWhenRow .stWhen{margin-top:0;}
+.stSeg{display:flex;gap:2px;padding:2px;border-radius:9px;border:1px solid rgba(255,255,255,0.10);background:rgba(255,255,255,0.04);flex:none;}
+.stSeg span{padding:4px 10px;border-radius:7px;font-size:11px;font-weight:800;letter-spacing:0.4px;color:rgba(240,236,228,0.45);cursor:pointer;-webkit-tap-highlight-color:transparent;}
+.stSeg span.on{background:rgba(255,255,255,0.12);color:var(--text);}
+.stChart.mo .stCols{gap:2px;}
+.stChart.mo .stBar{border-radius:3px 3px 1px 1px;max-width:none;}
+.stChart.mo .stBarNone{max-width:none;height:2px;}
+.stChart.mo .stDay{width:0;overflow:visible;white-space:nowrap;font-size:9px;letter-spacing:0;display:flex;justify-content:center;}
+.stAvgLine{margin-top:4px;font-size:12px;font-weight:700;color:rgba(240,236,228,0.4);}
+.stImpDay.kept b{color:rgba(240,236,228,0.45);}
 /* The lime switch: an iPhone-style toggle, lit lime when on. */
 .tlSwitchRow{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:10px 4px 0;padding:12px 2px 2px;cursor:pointer;-webkit-tap-highlight-color:transparent;}
 .tlSwitchLbl{font-size:13.5px;font-weight:800;color:var(--text);}
@@ -43340,6 +43351,9 @@ async function _jtTurn(t, opts){
     try{ _pReply=await jimTurn(String(t||''), _ph); }catch(e){ console.error('jt photo turn', e); }
     // A REPLY IS NOT A WRITE. ok is what the database accepted; wrote is only
     // what the engine parsed.
+    // A STEPS SCREEN SAYS ITS OWN LINE. The reader already names what landed
+    // and the averages; a "Done." head on top of it would say it twice.
+    try{ if(window._jimLastTurn && window._jimLastTurn.steps){ var _sl=_jvStripMd(String(_pReply||'').trim()); return {html:_escHtml(_sl).replace(/\n/g,'<br>'), speak:_sl}; } }catch(e){}
     var _pOk=false, _pLanded=[];
     try{ _pOk=!!(window._jimLastTurn && window._jimLastTurn.wrote>0 && window._jimLastTurn.ok!==false); }catch(e){}
     try{ _pLanded=(window._jimLastTurn && window._jimLastTurn.landed)||[]; }catch(e){}
@@ -80353,6 +80367,47 @@ function _jimSplitCardio(log){
     return [lift].concat(extras);
   }catch(e){ return [log]; }
 }
+/* ===== A HEALTH SCREENSHOT SENT TO JIM OR JARVIS (Yusuf, 10 Sep 10:40am:
+   "make sure Jim and Jarvis is a fully capable reader of this data") =====
+   A phone screenshot is tall and narrow; a photo of food is not. So a
+   screenshot-shaped picture, or any picture sent with the word steps beside
+   it, is tried as a steps screen first, through the same reader the Steps
+   sheet uses. A day, a week or a month lands as rows, the week and month
+   averages are said back, and anything that is not a steps screen falls
+   through to the photo turn untouched. */
+function _shotShape(dataUrl){
+  return new Promise(function(resolve){
+    try{ var img=new Image(); img.onload=function(){ resolve((img.naturalWidth||img.width)/(img.naturalHeight||img.height)); }; img.onerror=function(){ resolve(0); }; img.src=dataUrl; }
+    catch(e){ resolve(0); }
+  });
+}
+async function _jimStepsShot(dataUrl, text, code){
+  var said=/\b(steps?|step count|health|pedometer|walk(?:ed|ing)?)\b/i.test(String(text||''));
+  var ratio=await _shotShape(dataUrl);
+  if(!said && !(ratio>0 && ratio<0.6)) return null;
+  var r=null;
+  try{ r=await _stReadShot(dataUrl); }catch(e){ r=null; }
+  if(!r || r.error){ if(r && r.error==='not_health') return null; if(said) return {reply:'I could not read the steps off that picture. Nothing was written. Send the Health steps screen, the day, week or month view.', wrote:0, ok:false}; return null; }
+  if(!r.count){ return {reply:(r.view==='other'?'That view averages weeks together. Send the day, week or month view and I will put every day on your record.':'I could not find any days on that screen. Nothing was written.'), wrote:0, ok:false}; }
+  var days={};
+  Object.keys(r.days).forEach(function(ds){ var have=(cl && code===cl.code)?_stepsFor(ds):0; if(r.rough && have>0 && Math.abs(have-r.days[ds])<=0.12*r.days[ds]) return; days[ds]=r.days[ds]; });
+  var w=await _stWriteDays(days, code);
+  if(!w.done && w.total){ return {reply:'Those steps did not save. Nothing is on the record. Try again in a minute.', wrote:0, ok:false}; }
+  var sorted=Object.keys(r.days).sort(function(a,b){ return new Date(a)-new Date(b); });
+  var first=sorted[0], last=sorted[sorted.length-1];
+  var line=(sorted.length===1)
+    ? (r.days[first].toLocaleString()+' steps on '+first+'.')
+    : (sorted.length+' days of steps on the record, '+first+' to '+last+'.');
+  if(r.how==='avg') line+=' Read off the bars and matched to the average on the screen, '+r.printedAvg.toLocaleString()+' a day.';
+  else if(r.est) line+=' '+r.est+' of them read off a bar with no number, so close, not exact.';
+  if(w.failed) line+=' '+w.failed+' did not save.';
+  if(cl && code===cl.code){
+    var wk=_stSpan(_tlDateStr(new Date()),7), mo=_stSpan(_tlDateStr(new Date()),30);
+    if(wk.logged||mo.logged) line+=' Last week '+(wk.logged?wk.avg.toLocaleString():'nothing logged')+' a day, last 30 days '+(mo.logged?mo.avg.toLocaleString():'nothing logged')+' a day.';
+    try{ window._tlCache=null; renderDayTimeline(true); }catch(e){}
+  }
+  return {reply:line, wrote:w.done, ok:!w.failed, landed:[sorted.length===1?(r.days[first].toLocaleString()+' steps'):(sorted.length+' days of steps')]};
+}
 async function jimTurn(text, photos, opts){
   opts = opts || {};
   // WHOSE RECORD THIS TURN WRITES TO. Empty means the signed-in account, which
@@ -80374,6 +80429,11 @@ async function jimTurn(text, photos, opts){
   try{ window._jimWrote=[]; }catch(e){}
   var hasPhoto = photos.length>0;
   var photoSnapshot = photos[0] || null;
+  if(hasPhoto && photos.length===1 && typeof _jimStepsShot==='function'){
+    var _ss=null;
+    try{ _ss=await _jimStepsShot(photos[0], text, _forCode||(cl&&cl.code)); }catch(e){ console.error('jim steps shot', e); _ss=null; }
+    if(_ss){ _jimLastTurn={wrote:_ss.wrote||0, emitted:_ss.wrote||0, landed:_ss.landed||[], ok:_ss.ok!==false, steps:true}; return _ss.reply; }
+  }
   try{ noteBodyTalk(text); }catch(e){}
 
   // Jim no longer asks or listens for an intensity number after logging a
@@ -86710,7 +86770,7 @@ async function loadSteps(force){
     if(window._stepsLoaded && !force) return;
     if(!cl || !cl.code) return;
     var rows=await sbSelect('step_logs',
-      'client_code=eq.'+encodeURIComponent(cl.code)+'&select=steps,date_str&order=date_str.desc&limit=120') || [];
+      'client_code=eq.'+encodeURIComponent(cl.code)+'&select=steps,date_str&order=updated_at.desc.nullslast&limit=400') || [];
     var m={};
     rows.forEach(function(r){
       // THE WHOLE DATE, NOT THE FIRST TEN CHARACTERS (Yusuf, ruling, 24 Aug —
@@ -86758,28 +86818,50 @@ function _stDaysBack(ds, n){
   for(var i=n-1;i>=0;i--){ var d=new Date(end); d.setDate(end.getDate()-i); out.push({d:d, ds:_tlDateStr(d)}); }
   return out;
 }
-function _stWeek(ds){
-  var days=_stDaysBack(ds,7), tot=0, n=0, max=0;
-  days.forEach(function(x){ var v=_stepsFor(x.ds); x.v=v; if(v>0){ tot+=v; n++; if(v>max) max=v; } });
-  return {days:days, total:tot, logged:n, avg:n?Math.round(tot/n):0, max:max};
+function _stSpan(ds, n){
+  var days=_stDaysBack(ds,n), tot=0, k=0, max=0;
+  days.forEach(function(x){ var v=_stepsFor(x.ds); x.v=v; if(v>0){ tot+=v; k++; if(v>max) max=v; } });
+  return {days:days, n:n, total:tot, logged:k, avg:k?Math.round(tot/k):0, max:max};
 }
-function _stChartHtml(ds){
-  var w=_stWeek(ds), top=Math.max(w.max, 1);
-  var bars=w.days.map(function(x){
+function _stWeek(ds){ return _stSpan(ds,7); }
+/* WEEK OR MONTH (Yusuf, 10 Sep 10:40am: "view my last week's, my last
+   month's step count on average"). The same bars, seven wide or thirty thin,
+   the average drawn across whichever is up, and one line under it that says
+   both averages whichever is up. The average is over days with a number, the
+   way Health counts it; a day with no row is a gap, never a zero. */
+var _stMode='week';
+try{ if(localStorage.getItem('yjb_steps_mode')==='month') _stMode='month'; }catch(e){}
+function stMode(m){
+  _stMode=(m==='month')?'month':'week';
+  try{ localStorage.setItem('yjb_steps_mode', _stMode); }catch(e){}
+  _stPaint();
+}
+function _stAvgLine(ds){
+  var w=_stSpan(ds,7), m=_stSpan(ds,30);
+  if(!w.logged && !m.logged) return '';
+  var a=w.logged?('Last week '+w.avg.toLocaleString()+' a day'):'Nothing logged last week';
+  var b=m.logged?('last 30 days '+m.avg.toLocaleString()+' a day'):'nothing in the last 30 days';
+  return '<div class="stAvgLine">'+a+' · '+b+'</div>';
+}
+function _stChartHtml(ds, n){
+  n=(n===30)?30:7;
+  var w=_stSpan(ds,n), top=Math.max(w.max, 1), mo=(n===30);
+  var bars=w.days.map(function(x,i){
     var h=x.v>0 ? Math.max(4, Math.round(x.v/top*100)) : 0;
     var sel=(x.ds===ds);
-    var letter=x.d.toLocaleDateString('en-US',{weekday:'narrow'});
+    var letter=mo ? ((((n-1-i)%7)===0) ? x.d.toLocaleDateString('en-US',{month:'numeric',day:'numeric'}) : '') : x.d.toLocaleDateString('en-US',{weekday:'narrow'});
     return '<div class="stCol'+(sel?' sel':'')+'" onclick="stPick(\''+_escHtml(x.ds)+'\')" role="button" tabindex="0" aria-label="'+_escHtml(x.ds)+(x.v>0?(', '+x.v.toLocaleString()+' steps'):', nothing logged')+'">'
       +'<div class="stBarWrap">'+(x.v>0?('<div class="stBar" style="height:'+h+'%"></div>'):'<div class="stBarNone"></div>')+'</div>'
       +'<div class="stDay">'+_escHtml(letter)+'</div>'
     +'</div>';
   }).join('');
   var avgPct=w.avg>0 ? Math.round(w.avg/top*100) : 0;
-  return '<div class="stChart">'
+  return '<div class="stChart'+(mo?' mo':'')+'">'
     +(w.avg>0?('<div class="stAvg" style="bottom:calc(22px + '+avgPct+'% * 0.853)"><span>avg '+w.avg.toLocaleString()+'</span></div>'):'')
     +'<div class="stCols">'+bars+'</div>'
   +'</div>'
-  +'<div class="stWeekLine">'+(w.logged?(w.total.toLocaleString()+' this week \u00b7 '+w.logged+' of 7 days logged'):'Nothing logged this week yet')+'</div>';
+  +'<div class="stWeekLine">'+(w.logged?(w.total.toLocaleString()+(mo?' in 30 days':' this week')+' · '+w.logged+' of '+n+' days logged'):(mo?'Nothing logged in the last 30 days':'Nothing logged this week yet'))+'</div>'
+  +_stAvgLine(ds);
 }
 function _stPaint(){
   var o=document.getElementById('stepsOv'); if(!o) return;
@@ -86788,10 +86870,12 @@ function _stPaint(){
   var isToday=(ds===_tlDateStr(new Date()));
   var label=isToday?'Today':(d?d.toLocaleDateString('en-US',{weekday:'long', month:'short', day:'numeric'}):ds);
   var ro=!!window._tlRO;
+  var mo=(_stMode==='month');
   o.querySelector('.stBody').innerHTML=
-     '<div class="stBig">'+(cur>0?('<b>'+cur.toLocaleString()+'</b><span>steps</span>'):('<b class="stNone">\u2013</b><span>no steps logged</span>'))+'</div>'
-    +'<div class="stWhen">'+_escHtml(label)+'</div>'
-    +_stChartHtml(ds)
+     '<div class="stBig">'+(cur>0?('<b>'+cur.toLocaleString()+'</b><span>steps</span>'):('<b class="stNone">–</b><span>no steps logged</span>'))+'</div>'
+    +'<div class="stWhenRow"><div class="stWhen">'+_escHtml(label)+'</div>'
+      +'<div class="stSeg" role="tablist"><span class="'+(mo?'':'on')+'" role="tab" onclick="stMode(\'week\')">Week</span><span class="'+(mo?'on':'')+'" role="tab" onclick="stMode(\'month\')">Month</span></div></div>'
+    +_stChartHtml(ds, mo?30:7)
     +(ro?'':(
       '<div class="stInRow">'
         +'<input id="stepsIn" type="number" inputmode="numeric" value="'+(cur||'')+'" aria-label="Steps" oninput="_stTyped=true">'
@@ -86802,7 +86886,7 @@ function _stPaint(){
          day page's tap handler only listens inside #feedTabBody. On .240 the
          import row and the bars answered to nothing on a phone (Yusuf, 10 Sep
          10:34am, "why would import from Apple Health hit nothing?"). */
-      +'<div class="stImportRow" onclick="stImportOpen()" role="button" tabindex="0"><span>Import steps</span><span class="stChev">\u203a</span></div>'
+      +'<div class="stImportRow" onclick="stImportOpen()" role="button" tabindex="0"><span>Import steps</span><span class="stChev">›</span></div>'
       +'<div id="stImportBox" hidden></div>'
     ));
 }
@@ -86897,18 +86981,31 @@ function _stParseLines(txt){
   return {days:out, samples:n};
 }
 function _stPreview(parsed, from){
-  var days=parsed.days||{}, keys=Object.keys(days);
-  if(!keys.length){ _stImpStatus('Nothing I could read in that'+(from?(' '+from):'')+'. No days found.'); return; }
-  var sorted=keys.slice().sort(function(a,b){ return new Date(a)-new Date(b); });
+  var all=parsed.days||{}, allKeys=Object.keys(all);
+  if(!allKeys.length){ _stImpStatus('Nothing I could read in that'+(from?(' '+from):'')+'. No days found.'); return; }
+  /* A MONTH VIEW IS ROUGHER THAN A WEEK VIEW: thirty thin bars against a
+     30,000 axis. A day already on the record that agrees with it (within
+     12%) is kept as it is - a week read or a typed number is finer, and the
+     month must not sand it down. A real disagreement still shows and imports. */
+  var days={}, kept=0;
+  allKeys.forEach(function(ds){ var have=_stepsFor(ds), v=all[ds]; if(parsed.rough && have>0 && Math.abs(have-v)<=0.12*v){ kept++; return; } days[ds]=v; });
+  var keys=Object.keys(days);
+  var sorted=allKeys.slice().sort(function(a,b){ return new Date(a)-new Date(b); });
   var same=0, diff=0, fresh=0;
   keys.forEach(function(ds){ var have=_stepsFor(ds); if(!have) fresh++; else if(have===days[ds]) same++; else diff++; });
   _stImport={days:days};
-  var list=sorted.slice(0,14).map(function(ds){ var have=_stepsFor(ds); return '<div class="stImpDay"><span>'+_escHtml(ds)+'</span><b>'+days[ds].toLocaleString()+'</b>'+(have&&have!==days[ds]?('<i>was '+have.toLocaleString()+'</i>'):'')+'</div>'; }).join('')
-    +(sorted.length>14?('<div class="stImpDay"><span>and '+(sorted.length-14)+' more</span></div>'):'');
-  _stImpStatus('<b>'+keys.length+' day'+(keys.length===1?'':'s')+'</b>, '+_escHtml(sorted[0])+(sorted.length>1?(' to '+_escHtml(sorted[sorted.length-1])):'')
-    +' \u00b7 '+fresh+' new'+(same?(' \u00b7 '+same+' same'):'')+(diff?(' \u00b7 '+diff+' would change'):'')
+  var todayDs=_tlDateStr(new Date());
+  var list=sorted.slice(0,31).map(function(ds){
+    var have=_stepsFor(ds), v=all[ds], isKept=!(ds in days);
+    return '<div class="stImpDay'+(isKept?' kept':'')+'"><span>'+_escHtml(ds)+(ds===todayDs?' <i>today, so far</i>':'')+'</span><b>'+v.toLocaleString()+'</b>'
+      +(isKept?('<i>kept '+have.toLocaleString()+'</i>'):(have&&have!==v?('<i>was '+have.toLocaleString()+'</i>'):''))+'</div>';
+  }).join('')
+    +(sorted.length>31?('<div class="stImpDay"><span>and '+(sorted.length-31)+' more</span></div>'):'');
+  var head='<b>'+allKeys.length+' day'+(allKeys.length===1?'':'s')+'</b>, '+_escHtml(sorted[0])+(sorted.length>1?(' to '+_escHtml(sorted[sorted.length-1])):'')
+    +' · '+fresh+' new'+(same?(' · '+same+' same'):'')+(diff?(' · '+diff+' would change'):'')+(kept?(' · '+kept+' kept as they are'):'');
+  _stImpStatus((parsed.note?('<div class="stImpEst">'+_escHtml(parsed.note)+'</div>'):'')+head
     +'<div class="stImpList">'+list+'</div>'
-    +'<button class="stImpBtn gold" onclick="stImportGo()">Import '+keys.length+' day'+(keys.length===1?'':'s')+'</button>');
+    +(keys.length?('<button class="stImpBtn gold" onclick="stImportGo()">Import '+keys.length+' day'+(keys.length===1?'':'s')+'</button>'):'<div class="stImpHow">Everything on that screen is already on your record.</div>'));
 }
 async function stImportFile(input){
   var f=input && input.files && input.files[0]; if(!f) return;
@@ -86938,15 +87035,15 @@ async function stImportFile(input){
    estimated and the preview says so. The year is given because week charts
    rarely show one. */
 var _SHOT_SYS='You are reading a screenshot from a phone health or fitness app for a coaching app. Reply with ONLY compact JSON, no markdown, no prose. Today is %TODAY%. Dates on the screen without a year are this year unless that would put them in the future, in which case last year. Never invent a day that is not on the screen. If the screen is not a health or fitness screen, reply {"error":"not_health"}.';
-var _SHOT_STEPS=' STEPS: return {"kind":"steps","days":[{"date":"YYYY-MM-DD","steps":n,"estimated":false}]}. A day view gives one day. A week or month view gives one entry per bar you can see: read any number printed on or beside a bar exactly; for bars with no number, estimate from the bar height against the axis or the printed average and set "estimated":true. Whole numbers.';
-var _SHOT_CARDIO=' CARDIO: return {"kind":"cardio","sessions":[{"date":"YYYY-MM-DD","activity":"Outdoor Walk","minutes":32,"distance":"2.1 mi","calories":210}]}. One entry per workout on the screen. Use the app\u2019s own activity name. Leave out any field that is not printed; never estimate calories or distance.';
+var _SHOT_STEPS=' STEPS: return {"kind":"steps","view":"day|week|month|other","range":{"start":"YYYY-MM-DD","end":"YYYY-MM-DD"},"average_printed":n,"axis_max":n,"days":[{"date":"YYYY-MM-DD","steps":n,"estimated":false}]}. "view" is the span the chart covers (Apple Health: the D, W or M pill that is lit; 6M and Y are "other"). "range" is the date span printed above the chart, first day to last day: "Sep 3–9, 2026" is start 2026-09-03 end 2026-09-09, "Aug 11–Sep 10, 2026" is start 2026-08-11 end 2026-09-10; a day view has start and end the same. "average_printed" is the AVERAGE number printed above the chart, left out if none is printed. "axis_max" is the top number on the y axis, left out if none. "days": a day view gives one entry with the total printed; a week or month view gives one entry per bar, left to right, the dates counted from the start of the range in order, one bar per day. A number printed on or beside a bar is read exactly with "estimated":false; a bar with no number gets your best estimate from its height against the axis, "estimated":true. Whole numbers.';
+var _SHOT_CARDIO=' CARDIO: return {"kind":"cardio","sessions":[{"date":"YYYY-MM-DD","activity":"Outdoor Walk","minutes":32,"distance":"2.1 mi","calories":210}]}. One entry per workout on the screen. Use the app’s own activity name. Leave out any field that is not printed; never estimate calories or distance.';
 async function _shotRead(dataUrl, kind){
   var m=String(dataUrl||'').match(/^data:(image\/[a-z]+);base64,(.+)$/i);
   if(!m) throw new Error('not an image');
   var sys=_SHOT_SYS.replace('%TODAY%', _tlDateStr(new Date()))+(kind==='cardio'?_SHOT_CARDIO:_SHOT_STEPS);
   var content=[{type:'image', source:{type:'base64', media_type:m[1], data:m[2]}},{type:'text', text:sys}];
   var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:'claude-sonnet-5', max_tokens:900, temperature:0, messages:[{role:'user',content:content}]})});
+    body:JSON.stringify({model:'claude-sonnet-5', max_tokens:1400, temperature:0, messages:[{role:'user',content:content}]})});
   var data=await res.json(), txt='';
   if(data && data.content) data.content.forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; });
   txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
@@ -86954,25 +87051,165 @@ async function _shotRead(dataUrl, kind){
   return JSON.parse(txt);
 }
 function _shotDs(iso){
-  var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso||'').trim());
-  if(!m) return null;
-  var d=new Date(+m[1], +m[2]-1, +m[3]); if(isNaN(d.getTime())) return null;
+  var d=_shotDate(iso); if(!d) return null;
   if(d.getTime()>Date.now()+864e5) return null;           /* a day that has not happened */
   return _tlDateStr(d);
 }
+function _shotDate(iso){
+  var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso||'').trim());
+  if(!m) return null;
+  var d=new Date(+m[1], +m[2]-1, +m[3]); return isNaN(d.getTime())?null:d;
+}
+/* ===== THE BARS, READ PIXEL BY PIXEL (Yusuf, 10 Sep 10:40am) =============
+   His own Health screens have no number on any bar: seven or thirty-one
+   orange bars, an axis, and one printed AVERAGE. A model eyeballing a bar
+   is close; a ruler is exact. So the picture is measured here, in the
+   phone, before anything is written:
+     1. the one saturated colour that fills the most of the middle of the
+        screen is the bar colour (orange on Apple, whatever it is elsewhere);
+     2. every solid patch of that colour is found by flood fill; a bar is a
+        filled rectangle, and letters, icons and a trend line drawn under
+        the chart in the same orange are not, or stand on another floor;
+     3. patches that stand on the same floor, at the same width, are the
+        chart, sorted left to right;
+     4. each bar is a day, counted from the first day of the printed range;
+        a missing bar is a day with nothing on it, placed by the spacing;
+     5. the heights are scaled so their mean equals the printed AVERAGE -
+        Health averages the days that have a number, so does this - which
+        means the axis never has to be found. Without a printed average
+        the tallest bar is scaled to the model's read of it.
+   The model still reads the words: the range, the average, the view.
+   Every number from a bar is rounded to ten and marked estimated. */
+function _stBarsScan(px, W, H){
+  var hist=Object.create(null), y0=(H*0.10)|0, y1=(H*0.90)|0, best=-1, bestN=0, x, y, i;
+  for(y=y0;y<y1;y+=2){ for(x=0;x<W;x+=2){ i=(y*W+x)*4; var r=px[i], g=px[i+1], b=px[i+2]; var mx=r>g?(r>b?r:b):(g>b?g:b), mn=r<g?(r<b?r:b):(g<b?g:b); if(mx-mn<80) continue; var k=((r>>4)<<8)|((g>>4)<<4)|(b>>4); var c=(hist[k]||0)+1; hist[k]=c; if(c>bestN){ bestN=c; best=k; } } }
+  if(best<0 || bestN<40) return {bars:[], colour:null};
+  var r0=((best>>8)&15)*16+8, g0=((best>>4)&15)*16+8, b0=(best&15)*16+8;
+  var N=W*H, mask=new Uint8Array(N);
+  for(i=0;i<N;i++){ var p=i*4, dr=px[p]-r0, dg=px[p+1]-g0, db=px[p+2]-b0; if(dr*dr+dg*dg+db*db<4900) mask[i]=1; }
+  /* every solid patch of that colour, found by flood fill: a bar is a
+     patch that is a filled rectangle; a trend line under the chart is one
+     too but stands on another floor; letters and icons are not filled */
+  var seen=new Uint8Array(N), stack=new Int32Array(N), cand=[];
+  for(i=0;i<N;i++){
+    if(!mask[i] || seen[i]) continue;
+    var sp=0, cnt=0, minx=W, maxx=-1, miny=H, maxy=-1;
+    stack[sp++]=i; seen[i]=1;
+    while(sp){
+      var q=stack[--sp], qx=q%W, qy=(q-qx)/W; cnt++;
+      if(qx<minx) minx=qx; if(qx>maxx) maxx=qx; if(qy<miny) miny=qy; if(qy>maxy) maxy=qy;
+      if(qx>0 && mask[q-1] && !seen[q-1]){ seen[q-1]=1; stack[sp++]=q-1; }
+      if(qx<W-1 && mask[q+1] && !seen[q+1]){ seen[q+1]=1; stack[sp++]=q+1; }
+      if(qy>0 && mask[q-W] && !seen[q-W]){ seen[q-W]=1; stack[sp++]=q-W; }
+      if(qy<H-1 && mask[q+W] && !seen[q+W]){ seen[q+W]=1; stack[sp++]=q+W; }
+    }
+    var w=maxx-minx+1, h=maxy-miny+1;
+    if(w<3 || h<3 || cnt<9) continue;
+    if(cnt<0.8*w*h) continue;                                   /* not a filled rectangle */
+    cand.push({left:minx, right:maxx, cx:(minx+maxx)/2, w:w, top:miny, bottom:maxy, h:h});
+  }
+  if(cand.length<2) return {bars:[], colour:[r0,g0,b0]};
+  /* the floor: the bottom most bars share, within three pixels */
+  var floorOf={}; cand.forEach(function(c){ var key=Math.round(c.bottom/3); floorOf[key]=(floorOf[key]||0)+1; });
+  var fk=null, fn=0; Object.keys(floorOf).forEach(function(k){ if(floorOf[k]>fn){ fn=floorOf[k]; fk=+k; } });
+  var onFloor=cand.filter(function(c){ return Math.abs(Math.round(c.bottom/3)-fk)<=1; });
+  if(onFloor.length<2) return {bars:[], colour:[r0,g0,b0]};
+  var ws=onFloor.map(function(c){ return c.w; }).sort(function(a,b){ return a-b; }), wm=ws[ws.length>>1];
+  var bars=onFloor.filter(function(c){ return Math.abs(c.w-wm)<=Math.max(2, wm*0.35); }).sort(function(a,b){ return a.cx-b.cx; });
+  return {bars:bars, colour:[r0,g0,b0], floor:fk*3, width:wm, cand:cand.length};
+}
+function _stScanImage(dataUrl){
+  return new Promise(function(resolve, reject){
+    var img=new Image();
+    img.onload=function(){
+      try{
+        var w=img.naturalWidth||img.width, h=img.naturalHeight||img.height, cap=2000, sc=Math.min(1, cap/Math.max(w,h));
+        var cw=Math.max(1,Math.round(w*sc)), ch=Math.max(1,Math.round(h*sc));
+        var c=document.createElement('canvas'); c.width=cw; c.height=ch;
+        var ctx=c.getContext('2d'); ctx.drawImage(img,0,0,cw,ch);
+        var px=ctx.getImageData(0,0,cw,ch).data;
+        var out=_stBarsScan(px, cw, ch); out.w=cw; out.h=ch; out.ratio=w/h;
+        resolve(out);
+      }catch(e){ reject(e); }
+    };
+    img.onerror=function(){ reject(new Error('the picture would not decode')); };
+    img.src=dataUrl;
+  });
+}
+function _stRangeDays(startIso, endIso){
+  var a=_shotDate(startIso), b=_shotDate(endIso); if(!a||!b) return 0;
+  var n=Math.round((b.getTime()-a.getTime())/864e5)+1;
+  return (n>=1 && n<=62) ? n : 0;
+}
+function _stBarsToDays(bars, startIso, nDays, printedAvg, modelDays, axisMax){
+  if(!bars || bars.length<1 || !nDays) return null;
+  var start=_shotDate(startIso); if(!start) return null;
+  var slots=null, i;
+  if(bars.length===nDays){ slots=bars.map(function(b,i){ return i; }); }
+  else if(bars.length<nDays && bars.length>=2){
+    var minGap=Infinity; for(i=1;i<bars.length;i++){ var gp=bars[i].cx-bars[i-1].cx; if(gp>0 && gp<minGap) minGap=gp; }
+    if(!(minGap>0)) return null;
+    slots=bars.map(function(b){ return Math.round((b.cx-bars[0].cx)/minGap); });
+    var last=slots[slots.length-1];
+    if(last>nDays-1){ var shift=last-(nDays-1); slots=slots.map(function(s){ return s-shift; }); }
+    for(i=0;i<slots.length;i++){ if(slots[i]<0 || slots[i]>nDays-1 || (i && slots[i]<=slots[i-1])) return null; }
+  } else return null;
+  var sumH=0; bars.forEach(function(b){ sumH+=b.h; });
+  var meanH=sumH/bars.length, maxH=0; bars.forEach(function(b){ if(b.h>maxH) maxH=b.h; });
+  var scale=0, how='';
+  if(printedAvg>0){ scale=printedAvg/meanH; how='avg'; }
+  else {
+    var mx=0; Object.keys(modelDays||{}).forEach(function(k){ if(modelDays[k]>mx) mx=modelDays[k]; });
+    if(mx>0){ scale=mx/maxH; how='max'; } else return null;
+  }
+  if(axisMax>0 && maxH*scale>axisMax*1.15) return null;      /* the words and the picture disagree; trust neither */
+  var days={};
+  bars.forEach(function(b,i){
+    var d=new Date(start.getFullYear(), start.getMonth(), start.getDate()+slots[i]);
+    var ds=_shotDs(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'));
+    var v=Math.round(b.h*scale/10)*10;
+    if(ds && v>0) days[ds]=v;
+  });
+  return {days:days, how:how, scale:scale, bars:bars.length};
+}
+/* One reader for the sheet and for Jim. Words from the model, bars from the
+   pixels, and a note that says which. */
+async function _stReadShot(raw){
+  var small=await downscaleImage(raw, 1440, 0.85).catch(function(){ return raw; });
+  var j=await _shotRead(small||raw, 'steps');
+  if(!j || j.error) return {error:(j&&j.error)||'unread'};
+  var days={}, est=0, exact={};
+  (j.days||[]).forEach(function(d){ var ds=_shotDs(d.date); var v=Math.round(+d.steps||0); if(ds && v>0){ days[ds]=v; if(d.estimated) est++; else exact[ds]=v; } });
+  var view=String(j.view||'').toLowerCase(), rg=j.range||{}, n=_stRangeDays(rg.start, rg.end);
+  var printedAvg=Math.round(+j.average_printed||0), axisMax=Math.round(+j.axis_max||0);
+  var how='model', barsSeen=0, note='';
+  if(view!=='day' && n>1){
+    var scan=null;
+    try{ scan=await _stScanImage(raw); }catch(e){ scan=null; }
+    barsSeen=scan?scan.bars.length:0;
+    var mapped=scan && _stBarsToDays(scan.bars, rg.start, n, printedAvg, days, axisMax);
+    if(mapped && Object.keys(mapped.days).length){
+      /* a number the phone printed beats a ruler, when they roughly agree */
+      Object.keys(exact).forEach(function(ds){ if(mapped.days[ds] && Math.abs(mapped.days[ds]-exact[ds])<=0.25*exact[ds]) mapped.days[ds]=exact[ds]; });
+      days=mapped.days; how=mapped.how;
+      est=Object.keys(days).filter(function(ds){ return days[ds]!==exact[ds]; }).length;
+    }
+  }
+  var k=Object.keys(days).length;
+  if(how==='avg') note='Read off the bars and matched to the average on the screen, '+printedAvg.toLocaleString()+' a day. Close, not exact.';
+  else if(how==='max') note='Read off the bars against the axis. Close, not exact.';
+  else if(est) note=est+' of these read off a bar with no number printed, so they are close, not exact.';
+  return {days:days, est:est, how:how, view:view, range:rg, n:n, printedAvg:printedAvg, bars:barsSeen, rough:(view==='month'||n>14), note:note, count:k};
+}
 async function stImportShot(input){
   var f=input && input.files && input.files[0]; if(!f) return;
-  _stImpStatus('Reading the screenshot\u2026');
+  _stImpStatus('Reading the screenshot…');
   try{
     var raw=await new Promise(function(res,rej){ var r=new FileReader(); r.onload=function(e){ res(e.target.result); }; r.onerror=rej; r.readAsDataURL(f); });
-    var small=await downscaleImage(raw, 1440, 0.85).catch(function(){ return raw; });
-    var j=await _shotRead(small||raw, 'steps');
-    if(!j || j.error){ _stImpStatus(j&&j.error==='not_health' ? 'That does not look like a steps screen.' : 'Could not read that screenshot.'); return; }
-    var days={}, est=0;
-    (j.days||[]).forEach(function(d){ var ds=_shotDs(d.date); var v=Math.round(+d.steps||0); if(ds && v>0){ days[ds]=v; if(d.estimated) est++; } });
-    var parsed={days:days, samples:Object.keys(days).length};
-    _stPreview(parsed, 'screenshot');
-    if(est && _stImport){ var el=document.getElementById('stImpStatus'); if(el) el.innerHTML='<div class="stImpEst">'+est+' of these read off a bar with no number printed, so they are close, not exact.</div>'+el.innerHTML; }
+    var r=await _stReadShot(raw);
+    if(r.error){ _stImpStatus(r.error==='not_health' ? 'That does not look like a steps screen.' : 'Could not read that screenshot.'); return; }
+    if(!r.count && r.view==='other'){ _stImpStatus('That view is months or weeks averaged together. Send the day, week or month view.'); return; }
+    _stPreview({days:r.days, samples:r.count, rough:r.rough, note:r.note}, 'screenshot');
   }catch(e){ _stImpStatus('Could not read that screenshot. '+_escHtml(String(e&&e.message||e))); }
   try{ input.value=''; }catch(e){}
 }
@@ -86980,23 +87217,30 @@ function stImportPaste(){
   var t=(document.getElementById('stPaste')||{}).value||'';
   _stPreview(_stParseLines(t), 'paste');
 }
-async function stImportGo(){
-  if(!_stImport || !cl || window._tlRO) return;
-  var days=_stImport.days, keys=Object.keys(days), done=0, failed=0;
-  _stImpStatus('Importing 0 of '+keys.length+'\u2026');
+/* One writer for the sheet and for Jim: a row a day, the map kept in step
+   when it is the signed-in account, nothing rewritten that already matches. */
+async function _stWriteDays(days, code, onProgress){
+  var keys=Object.keys(days||{}), done=0, failed=0, mine=(cl && code===cl.code);
   for(var i=0;i<keys.length;i++){
     var ds=keys[i], v=days[ds];
-    if(_stepsFor(ds)===v){ done++; continue; }
+    if(mine && _stepsFor(ds)===v){ done++; continue; }
     var ok=false;
-    try{ ok=await sbUpsert('step_logs',{client_code:cl.code, steps:v, date_str:ds, updated_at:new Date().toISOString()},'client_code,date_str'); }catch(e){ ok=false; }
-    if(ok){ window._stepMap=window._stepMap||{}; window._stepMap[ds]=v; done++; } else failed++;
-    if((i%10)===9) _stImpStatus('Importing '+(done+failed)+' of '+keys.length+'\u2026');
+    try{ ok=await sbUpsert('step_logs',{client_code:code, steps:v, date_str:ds, updated_at:new Date().toISOString()},'client_code,date_str'); }catch(e){ ok=false; }
+    if(ok){ if(mine){ window._stepMap=window._stepMap||{}; window._stepMap[ds]=v; } done++; } else failed++;
+    if(onProgress && (i%10)===9) onProgress(done+failed, keys.length);
   }
-  _stImpStatus((done-failed>=0?done:0)+' days on your record'+(failed?(', <b>'+failed+' did not save</b> - try again for those'):'')+'.');
+  return {done:done, failed:failed, total:keys.length};
+}
+async function stImportGo(){
+  if(!_stImport || !cl || window._tlRO) return;
+  var days=_stImport.days;
+  _stImpStatus('Importing 0 of '+Object.keys(days).length+'…');
+  var r=await _stWriteDays(days, cl.code, function(k,n){ _stImpStatus('Importing '+k+' of '+n+'…'); });
+  _stImpStatus(r.done+' days on your record'+(r.failed?(', <b>'+r.failed+' did not save</b> - try again for those'):'')+'.');
   _stImport=null;
   try{ window._tlCache=null; renderDayTimeline(true); }catch(e){}
   _stPaint();
-  try{ var box=document.getElementById('stImportBox'); if(box && !failed){ setTimeout(function(){ box.hidden=true; }, 2500); } }catch(e){}
+  try{ var box=document.getElementById('stImportBox'); if(box && !r.failed){ setTimeout(function(){ box.hidden=true; }, 2500); } }catch(e){}
 }
 function closeSteps(){
   var o=document.getElementById('stepsOv'); if(o&&o.parentNode) o.parentNode.removeChild(o);
