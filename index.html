@@ -11548,6 +11548,50 @@ async function checkForUpdate(){
     window.location.replace(window.location.pathname + '?v=' + Date.now());
   }catch(e){ /* offline or fetch blocked — just run the cached version, no harm */ }
 }
+/* A PHONE THAT NEVER RE-BOOTS NEVER UPDATES (Samantha, 8 and 10 Sep). The
+   only version check ran at boot. An installed app on an iPhone is not
+   re-booted for days: the icon brings the same page back from the background,
+   so a fix shipped on Tuesday is still not on the phone on Thursday, and the
+   person is told a thing is fixed while looking at the build where it is not.
+   So: coming back to the foreground after at least three minutes away asks
+   the nine-byte question once more. A newer build reloads the page ONLY when
+   nothing would be lost - no sheet open, nothing being typed, no sign-in in
+   flight, no mic running. Anything less than that and it waits for the next
+   return. The inline workout draft survives a reload (it is in storage), so a
+   session in progress is not the thing this protects; a half-typed message is. */
+(function(){
+  var _hiddenAt=0, _busy=false;
+  function _quiet(){
+    try{
+      if(window._authBusy || window._navigatingAway) return false;
+      if(document.querySelector('.mbg.open')) return false;
+      var a=document.activeElement; if(a && (a.tagName==='INPUT' || a.tagName==='TEXTAREA' || a.isContentEditable)) return false;
+      if(typeof woListening!=='undefined' && woListening) return false;
+      if(typeof _hasActiveWoDraft==='function' && _hasActiveWoDraft()) return false;
+    }catch(e){ return false; }
+    return true;
+  }
+  async function _fgCheck(){
+    if(_busy) return; _busy=true;
+    try{
+      var live=await _liveVersion();
+      if(!live || live===APP_VERSION || !_quiet()) return;
+      try{ sessionStorage.setItem('yjb_just_updated','1'); }catch(e){}
+      window._navigatingAway=true;
+      window.location.replace(window.location.pathname+'?v='+Date.now());
+    }catch(e){}
+    finally{ _busy=false; }
+  }
+  window._fgUpdateCheck=_fgCheck;
+  try{
+    document.addEventListener('visibilitychange', function(){
+      if(document.visibilityState!=='visible'){ _hiddenAt=Date.now(); return; }
+      var away=_hiddenAt? (Date.now()-_hiddenAt) : 0; _hiddenAt=0;
+      if(away<3*60*1000) return;
+      setTimeout(function(){ try{ _fgCheck(); }catch(e){} }, 800);
+    });
+  }catch(e){}
+})();
 /* ===== VIEW AS CLIENT =====================================================
    Yusuf, ruling, 31 Aug: from a client's record, open their page exactly as
    they see it, read only, with every write path closed AT THE DOOR rather
@@ -51415,11 +51459,41 @@ async function tlDelWorkout(id){
 var _tlSlotDate=null;
 // --- Inline workout draft: lives on the page, saves as you go ---
 function _woKey(ds){ try{ return 'wodraft:'+(cl&&cl.code?cl.code:'x')+':'+ds; }catch(e){ return 'wodraft:x:'+ds; } }
+/* THE PAGE REMEMBERS EVEN WHEN THE PHONE'S STORAGE WON'T (Samantha, voice
+   note 10 Sep: "I literally can't select anything on the button"). A pill tap
+   used to live ONLY in localStorage: bfFeel wrote the draft there, then the
+   re-render read it back from there. On a phone whose storage refuses the
+   write (iOS quota, private mode, a full 5MB of old drafts and photos) the
+   catch swallowed it, the read came back empty, and the pill never lit - and
+   at Complete the same empty draft carried no answers, so the plan road was
+   never taken. Now the tap lands in memory first and is read from memory
+   first; storage is the copy that survives a reload, not the thing the page
+   depends on. A refused write also clears other days' drafts and tries once
+   more, so one big session photo cannot lock every later tap out. */
+window._woMem=window._woMem||{};
 function _woDraft(ds){
-  try{ var r=JSON.parse(localStorage.getItem(_woKey(ds))||'{}'); if(!r.done) r.done={}; if(r.note==null) r.note=''; return r; }
-  catch(e){ return {done:{}, note:''}; }
+  try{ var m=window._woMem[_woKey(ds)]; if(m){ if(!m.done) m.done={}; if(m.note==null) m.note=''; return m; } }catch(e){}
+  var r;
+  try{ r=JSON.parse(localStorage.getItem(_woKey(ds))||'{}'); if(!r.done) r.done={}; if(r.note==null) r.note=''; }
+  catch(e){ r={done:{}, note:''}; }
+  try{ window._woMem[_woKey(ds)]=r; }catch(e){}
+  return r;
 }
-function _woSaveDraft(ds, d){ try{ localStorage.setItem(_woKey(ds), JSON.stringify(d)); }catch(e){} }
+function _woSaveDraft(ds, d){
+  var k=_woKey(ds);
+  try{ window._woMem[k]=d; }catch(e){}
+  var js; try{ js=JSON.stringify(d); }catch(e){ return; }
+  try{ localStorage.setItem(k, js); return; }catch(e){}
+  // Refused. Make room: every other day's draft goes (a finished or abandoned
+  // session that never got cleared), then one more try. Still refused: memory
+  // holds it for this open page, which is where the tap is being looked at.
+  try{
+    var gone=[];
+    for(var i=0;i<localStorage.length;i++){ var kk=localStorage.key(i); if(kk && kk.indexOf('wodraft:')===0 && kk!==k) gone.push(kk); }
+    gone.forEach(function(kk){ try{ localStorage.removeItem(kk); }catch(_){} });
+    localStorage.setItem(k, js);
+  }catch(e){}
+}
 // Closed until asked, every day including today.
 // Today's card DID open itself for a while, on the reasoning that someone in a gym
 // shouldn't have to tap to see their session. That reasoning still holds, but what
@@ -51469,6 +51543,18 @@ function tlLogInlineWorkout(ds, opts){
   // what they logged, whatever the switch says.
   var _planTouched=false;
   try{ _planTouched=!!(plan && plan.type && ((dr.feel && Object.keys(dr.feel).length) || (dr.done && Object.keys(dr.done).length))); }catch(e){ _planTouched=false; }
+  // "I fill it out everything I did and then I hit complete and it says say
+  // what you did first" (Samantha, voice note, 10 Sep). Her numbers HAD saved -
+  // set_logs carried every set she typed on Tuesday and Wednesday - because a
+  // typed set goes straight to the table, not through the draft. Numbers typed
+  // onto the plan's cards today are the plan being logged, whatever the switch
+  // and whatever the draft managed to keep.
+  try{
+    if(!_planTouched && plan && plan.type && ds===_tlDateStr(new Date()) && _tpToday){
+      var _pex=_bfDayEx(ds, plan)||[];
+      _planTouched=_pex.some(function(e){ var L=_tpToday[e.n]||[]; return L.some(function(x){ return x && (String(x.w||'').trim() || String(x.r||'').trim()); }); });
+    }
+  }catch(e){}
   // Program off: what they built is the workout. There's no plan to require.
   if(!_progOn() && !_fromProgram && !_planTouched){
     // The gate used to check dr.ownEx \u2014 an array nothing writes to any more
@@ -51504,6 +51590,7 @@ function tlLogInlineWorkout(ds, opts){
               duration:(+dr.ownMins||null), date_str:ds, logged_at:oIso,
               photo:_woPhotoForRow(ds)};
     try{ localStorage.removeItem(_woKey(ds)); }catch(e){}
+  try{ delete window._woMem[_woKey(ds)]; }catch(e){}
     try{ if(window._woOpen) window._woOpen[ds]=false; }catch(e){}
     _tlCacheAdd('workouts', oRow);
     try{ renderDayTimeline(true); }catch(e){}
@@ -51592,6 +51679,7 @@ function tlLogInlineWorkout(ds, opts){
   var row={client_code:cl.code, title:plan.type, description:desc, duration:null, date_str:ds, logged_at:iso,
            photo:_woPhotoForRow(ds)};
   try{ localStorage.removeItem(_woKey(ds)); }catch(e){}
+  try{ delete window._woMem[_woKey(ds)]; }catch(e){}
   try{ if(window._woOpen) window._woOpen[ds]=false; }catch(e){}
   _tlCacheAdd('workouts', row);
   try{ renderDayTimeline(true); }catch(e){}

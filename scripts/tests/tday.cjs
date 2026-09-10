@@ -94,4 +94,31 @@ const t=(pass,label)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  FAIL  '
   console.log((ok?'  ok    ':'  FAIL  ')+'a tapped connection pill on a plan card takes the plan road, never "Say what you did first"');
   if(!ok) bad++;
 }
+
+// THE PAGE REMEMBERS EVEN WHEN STORAGE WON'T (Samantha, voice note 10 Sep): a
+// pill tap lands in memory and is read back from memory; a refused storage
+// write neither loses the tap nor throws. And numbers typed onto today's plan
+// cards count as the plan being logged.
+{
+  const src3=require('fs').readFileSync('index.html','utf8');
+  const a=src3.indexOf('window._woMem=window._woMem||{};'), b=src3.indexOf('// Closed until asked, every day including today.');
+  const block=src3.slice(a,b);
+  const vm=require('vm');
+  const throwing={ getItem(){ return null; }, setItem(){ throw new Error('QuotaExceededError'); }, removeItem(){}, key(){ return null; }, length:0 };
+  const ctx={ window:{}, localStorage:throwing, cl:{code:'zz'}, JSON, Error };
+  ctx.window._woMem=undefined;
+  vm.createContext(ctx);
+  vm.runInContext("function _woKey(ds){ return 'wodraft:zz:'+ds; }\n"+block, ctx);
+  let threw=false, lit=false;
+  try{
+    vm.runInContext("var d=_woDraft('Sep 10, 2026'); d.feel={'Squat':'tore'}; _woSaveDraft('Sep 10, 2026', d); var back=_woDraft('Sep 10, 2026'); globalThis.lit=(back.feel && back.feel.Squat==='tore');", ctx);
+    lit=ctx.lit;
+  }catch(e){ threw=true; }
+  t(!threw && lit===true, 'a connection pill stays lit on a phone whose storage refuses the write');
+  const fn=src3.slice(src3.indexOf('function tlLogInlineWorkout('), src3.indexOf('function tlMoveMeal('));
+  t(/_planTouched=_pex\.some\(/.test(fn) && /_bfDayEx\(ds, plan\)/.test(fn) && /String\(x\.w\|\|''\)\.trim\(\) \|\| String\(x\.r\|\|''\)\.trim\(\)/.test(fn), 'numbers typed onto today\'s plan cards take the plan road too, never "Say what you did first"');
+  t(/delete window\._woMem\[_woKey\(ds\)\];/.test(fn), 'Complete clears the remembered draft along with the stored one');
+  const fg=src3.slice(src3.indexOf('A PHONE THAT NEVER RE-BOOTS NEVER UPDATES'), src3.indexOf('/* ===== VIEW AS CLIENT'));
+  t(/visibilitychange/.test(fg) && /away<3\*60\*1000/.test(fg) && /\.mbg\.open/.test(fg) && /_liveVersion\(\)/.test(fg) && /location\.replace\(/.test(fg), 'coming back after three minutes away asks for the live version and takes it only when nothing would be lost');
+}
 process.exit(bad?1:0);
