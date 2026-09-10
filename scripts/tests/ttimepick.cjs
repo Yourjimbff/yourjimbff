@@ -1,33 +1,23 @@
-// OUR OWN CLOCK (Yusuf, 10 Sep: "the time is just off the screen"). The meal
-// and slot time sheets carry no native <input type="time"> any more - pills
-// for hour, minute and AM/PM, a hidden field with the id the Save handlers
-// already read, and a readout in the header's own shape.
+// ONE BOX, TYPE THE TIME (Yusuf, 10 Sep). No native clock, no pills: a sheet
+// at the top of the screen, one field that reads the time any way it is
+// written, and a hidden field with the id the Save handlers already read.
 const fs=require('fs'), vm=require('vm');
 const src=fs.readFileSync('index.html','utf8');
 let bad=0; const t=(p,l)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l); };
 const nl=src.slice(src.indexOf('function nlTimeOpen(){'), src.indexOf('function nlTimeClose(){'));
 const sl=src.slice(src.indexOf('function openSlotTime(key){'), src.indexOf('function closeSlotTime(){'));
-t(!/type="time"/.test(nl) && /_tpkHtml\('nlTimeIn'/.test(nl) && /_tpkBind\(o\)/.test(nl), 'the meal time sheet is pills, not the native clock');
-t(!/type="time"/.test(sl) && /_tpkHtml\('slotTimeIn'/.test(sl) && /_tpkBind\(o\)/.test(sl), 'the slot time sheet too');
-t(/class="tpkSheet"/.test(nl) && /\.tpkSheet\{[^}]*radial-gradient/.test(src), 'on glass');
-// lift the picker and drive it against a fake document
-const block=src.slice(src.indexOf('var _tpk={};'), src.indexOf('function nlTimeOpen(){'));
-const els={};
-function mk(id){ return {value:'',textContent:''}; }
-const ctx={ document:{ getElementById(id){ return els[id]||(els[id]=mk(id)); } }, String, parseInt, Math, Array,
-  _hhmmAny(v){ const m=/^(\d{1,2}):(\d{2})/.exec(String(v||'')); return m?(+m[1]*60+ +m[2]):null; }, _tlNowClock(){ return '5:28 PM'; } };
-vm.createContext(ctx); vm.runInContext(block, ctx);
-const html=vm.runInContext("_tpkHtml('nlTimeIn','17:29')", ctx);
-t(/tpkRead[^>]*>5:29 PM</.test(html) && /id="nlTimeIn" value="17:29"/.test(html), 'opens on the time it was handed, in the header\'s shape');
-t((html.match(/data-part="h"/g)||[]).length===12 && (html.match(/data-part="m"/g)||[]).length===12 && (html.match(/data-part="ap"/g)||[]).length===2, 'twelve hours, twelve minutes, AM and PM');
-t(/data-part="h" data-v="5">5<\/div>/.test(html) && /class="tpkP on" data-tpk="nlTimeIn" data-part="h" data-v="5"/.test(html), 'the current hour is lit');
-function fake(part,v){ const kids=[]; const el={ a:{'data-tpk':'nlTimeIn','data-part':part,'data-v':String(v)}, getAttribute(k){ return this.a[k]; }, classList:{ add(){ el.on=true; }, remove(){ el.on=false; } }, parentNode:{children:kids} }; return el; }
-vm.runInContext('globalThis.__tap=_tpkTap', ctx);
-ctx.__tap(fake('h',8)); ctx.__tap(fake('m',15)); ctx.__tap(fake('ap','am'));
-t(els.nlTimeIn.value==='08:15' && els.nlTimeInRead.textContent==='8:15 AM', 'tapping 8, :15, AM writes 08:15 to the hidden field and 8:15 AM to the readout');
-ctx.__tap(fake('ap','pm'));
-t(els.nlTimeIn.value==='20:15', 'PM keeps the hour and moves it to the afternoon');
-ctx.__tap(fake('h',12)); t(els.nlTimeIn.value==='12:15', '12 PM is noon');
-ctx.__tap(fake('ap','am')); t(els.nlTimeIn.value==='00:15', '12 AM is midnight');
-console.log(bad?'\n  '+bad+' FAILED':'\n  all time picker assertions pass');
+t(!/type="time"/.test(nl) && /_tpkHtml\('nlTimeIn'/.test(nl) && /_tpkFocus\('nlTimeIn'\)/.test(nl), 'the meal time sheet is one typed field, focused on open');
+t(!/type="time"/.test(sl) && /_tpkHtml\('slotTimeIn'/.test(sl) && /_tpkFocus\('slotTimeIn'\)/.test(sl), 'the slot time sheet too');
+t(/align-items:flex-start/.test(nl) && /align-items:flex-start/.test(sl) && /safe-area-inset-top/.test(nl), 'both sit at the top of the screen, above where the keyboard rises');
+t(!/tpkP\b/.test(src) && !/tpkGrid/.test(src), 'the pills are gone');
+const block=src.slice(src.indexOf('var _tpk={};'), src.indexOf('function _tpkHtml(id, hhmm){'));
+const ctx={String, Date:class extends Date{ getHours(){ return 17; } }, Math}; vm.createContext(ctx); vm.runInContext(block, ctx);
+const P=(v)=>vm.runInContext('_tpkParse('+JSON.stringify(v)+')', ctx);
+const F=(m)=>vm.runInContext('_tpkFmt('+m+')', ctx);
+console.log('\n  written any way, at 5pm:');
+[['5:44 PM',17*60+44],['5:44pm',17*60+44],['544',17*60+44],['5.44',17*60+44],['5 44 pm',17*60+44],['17:44',17*60+44],['5:44 am',5*60+44],['5',17*60],['12',12*60],['12 am',0],['noon',12*60],['1744',17*60+44],['5:44 p',17*60+44]].forEach(([v,w])=>{ t(P(v)===w, JSON.stringify(v)+'  ->  '+(P(v)==null?'null':F(P(v)))); });
+t(P('abc')===null && P('25:00')===null && P('')===null, 'nonsense is refused, not guessed');
+const th=src.slice(src.indexOf('function _tpkHtml(id, hhmm){'), src.indexOf('function _tpkType(id, el){'));
+t(/type="hidden" id="'\+id\+'"/.test(th) && /id="'\+id\+'Txt"/.test(th) && /font-size:22px/.test(th), 'a hidden HH:MM for Save, a big typed field for the person');
+console.log(bad?'\n  '+bad+' FAILED':'\n  all time-box assertions pass');
 process.exit(bad?1:0);
