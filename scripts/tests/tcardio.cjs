@@ -140,7 +140,7 @@ const e3=_cdEchoHtml('pushed the sled until my legs quit');
 t(/logged as cardio/.test(e3) && /pushed the sled/.test(e3),
   'when it recognises nothing it says so and echoes their own words - never a summary of them');
 t(!/\bcal\b|calorie/i.test(e1+e2+e3), 'it never prices cardio, because the app has no honest way to');
-t(/id="cdEcho"/.test(src) && /oninput="cardioEcho\(\)"/.test(src),
+t(/id="cdEcho"/.test(src) && /oninput="cardioEcho\(\);_cdGrow\(this\)"/.test(src),
   'and it is LIVE - wired to every keystroke, not to the save');
 t(/function cardioEcho\(\)/.test(src), 'the function he asked for exists');
 t(/\.cdEcho\{/.test(src) && /\.cdEchoRow\{/.test(src), 'and it is styled, so it is visible on his phone');
@@ -164,25 +164,31 @@ t(/dropped\|\|\[\]\)\.indexOf\('photo'\)/.test(save), 'a dropped photo column is
 
 // ===== THE SHEET ========================================================
 console.log('\n  WHAT THE SHEET OFFERS:');
-const sheet=src.slice(src.indexOf('<div class="mbg" id="mCardio">'), src.indexOf('<div class="mbg" id="mWorkout">'));
+// THE SHEET IS PAINTED, NOT STATIC (10 Sep, "logging steps, logging cardio,
+// both look very different... They should look very similar"): _cdPaint draws
+// the same shape as the Steps sheet - the day big, seven bars, one box with
+// Save beside it, the tools under it, the import row last.
+const sheet=src.slice(src.indexOf('function _cdPaint(){'), src.indexOf('function _cdDress(){'))+src.slice(src.indexOf('<div class="mbg" id="mCardio">'), src.indexOf('<div class="mbg" id="mExHist">'));
 t(!/placeholder="30 minutes on the stairmaster"/.test(sheet), 'no placeholder in the box (Yusuf, 10 Sep: placeholder text is patronising)');
 // "photo 2 of the cardio bar, remove the placeholder text. it shuold just say
 //  note under the note."
 t(!/and it kicked my ass/.test(sheet), 'the note field carries NO placeholder - his correction, 6 Sep');
-t(/class="cdLbl">Note<\/div>/.test(sheet) && /id="cdNote"/.test(sheet),
-  'it just says Note above the box, which is what he asked for');
-t(/\.cdLbl\{/.test(src), 'and the label is styled');
+t(/cardioNoteToggle\(\)[^>]*>Note</.test(sheet) && /id="cdNote"/.test(sheet),
+  'it just says Note, and the box opens under it when tapped');
+t(/class="stBig"/.test(sheet) && /_cdChartHtml\(ds, creative\)/.test(sheet) && /class="stInRow cdInRow"/.test(sheet) && /class="stSave" id="cdSave"/.test(sheet) && /class="stImportRow" id="cdImportRow"/.test(sheet),
+  'the Steps sheet recipe: the day big, seven bars, one box with Save beside it, the import row last');
+t(/id="cdBody"/.test(sheet) && /class="stBody"/.test(sheet), 'and it hangs in the same glass sheet');
 // "you also added 2 emojis which violate law." HOUSE LAW. SVG is fine, emoji is not.
 const EMOJI=/[‼-㊙\u{1F000}-\u{1FAFF}\u{FE0F}]/u;
 t(!EMOJI.test(sheet), 'NO EMOJI IN THE SHEET - house law, and it was broken here once');
 t(!EMOJI.test(cardio+late), 'and none in any of the day rows either');
-t((sheet.match(/<svg /g)||[]).length>=2, 'the mic and the camera are the app\'s own SVG glyphs');
+t(/_CD_MIC_SVG\+/.test(sheet) && /_CD_CAM_SVG\+/.test(sheet) && /var _CD_MIC_SVG='<svg /.test(src) && /var _CD_CAM_SVG='<svg /.test(src), 'the mic and the camera are the app\'s own SVG glyphs');
 t(/cardioMic\(\)/.test(sheet), 'dictation is offered');
 t(/accept="image\/\*"/.test(sheet), 'a photo can go on it');
-t(!/cdPhotoWrap[^>]*>\s*<div[^>]*placeholder/i.test(sheet) && /id="cdPhotoWrap" style="margin-top:10px;"><\/div>/.test(sheet),
+t(!/cdPhotoWrap[^>]*>\s*<div[^>]*placeholder/i.test(sheet) && /id="cdPhotoWrap"><\/div>/.test(sheet),
   'NO PLACEHOLDER BOX - his rule, the photo slot is empty until there is a photo');
 // "and it shuold say log, not log it / or log cardio"
-t(/>Log cardio<\/button>/.test(sheet), 'the button says Log cardio - his exact correction');
+t(/\?'Log workout':'Log cardio'\)\+'<\/button>/.test(sheet), 'the button says Log cardio - his exact correction');
 t(!/Log it/.test(sheet) && !/Log it/.test(save), 'and Log it is gone from the sheet and from the save path');
 const mic=src.slice(src.indexOf('function cardioMic(){'), src.indexOf('async function cardioSave(){'));
 t(/t\.value\.trim\(\) \? \(t\.value/.test(mic), 'dictation appends to what they typed rather than wiping it');
