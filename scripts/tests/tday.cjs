@@ -78,9 +78,11 @@ console.log(bad? '\n'+bad+' FAILED' : '\nall '+C.length+' pass');
 const t=(pass,label)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  FAIL  ')+label); };
 (function(){
   const src=L.join('\n'); const slot=src.slice(src.indexOf('function _tlSlot('), src.indexOf('function _tlSlot(')+2600);
-  t(/var _onNow=\(_progOn\(\) \|\| _hasPlan\);/.test(slot) && /var _pOn=_onNow;/.test(slot), 'a resolved plan shows on the hero even when a device carries an old freestyle flag');
+  t(/var _onNow=_progOn\(\);/.test(slot) && /var _pOn=_onNow;/.test(slot), 'the mode decides the hero, plan or no plan - Creative mode is a live switch (10 Sep)');
   const po=src.slice(src.indexOf('function _progOn(){'), src.indexOf('\n}', src.indexOf('function _progOn(){')));
   t(/if\(!cl \|\| !cl\.code\) return true;/.test(po) && !/'x'/.test(po), 'and with no account known the programme is on - never the key for nobody');
+  t(/if\(v==='0'\) return true;/.test(po), 'an old forever-off flag from before 10 Sep reads as ON, so no plan is hidden by a stale device');
+  t(/return m\[1\]!==td;/.test(po), 'off is off for the one day it was flipped; tomorrow the programme is back');
 })();
 
 process.exit(bad?1:0);
