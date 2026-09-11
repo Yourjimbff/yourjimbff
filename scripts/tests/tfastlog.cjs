@@ -51,9 +51,13 @@ t(/THE FIRST VERSION OF THIS WAS WRONG AND THE SCRATCH CLIENT CAUGHT IT/.test(e)
   'and why it changed is written down');
 t(/_NL_ENRICH_MAX_CAL/.test(e),                     'absurd leftovers are refused');
 t(/applyFoodEdit\(rowId, fields\)/.test(e),         'it patches the existing row, not a new one');
-t(/if\(!est \|\| est\.error\) return;/.test(e),     'a failed estimate costs nothing');
-t(/if\(!ok\) return;/.test(e),                      'and a failed patch costs nothing either');
-t(/if\(!left\.length\) return;/.test(e),            'nothing left over means no call at all');
+/* The worker hands its answer back now rather than finishing the job itself,
+   so every one of these gives up by returning null - and the wrapper above it
+   clears the settling mark and paints the day whichever way it went. */
+t(/if\(!est \|\| est\.error\) return null;/.test(e),  'a failed estimate costs nothing');
+t(/if\(!ok\) return null;/.test(e),                   'and a failed patch costs nothing either');
+t(/if\(!left\.length\) return null;/.test(e),         'nothing left over means no call at all');
+t(/_nlSettleEnd\(rowId\)/.test(e),                    'and the meal stops counting whichever way it went');
 
 console.log('\n  both roads ask the model the SAME question:');
 t(/var _NL_SYS=/.test(src),      'the prompt is one constant');
