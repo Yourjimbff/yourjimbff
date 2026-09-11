@@ -79597,6 +79597,41 @@ async function logFoodFromChat(offer, photo, targetCode){
       try{ console.warn('FOOD_LOG: numbers stated in their own words - written as said', _o); }catch(e){}
     }
   }catch(e){ _stated=false; }
+  /* ...AND THE TABLE IS LAW EVEN WHEN THE MODEL SENDS NO ROWS (caught on the
+     served build, 11 Sep, saying "for lunch I had 7oz chicken thigh and a
+     handful of rice" into Jarvis). The echo under the box priced that sentence
+     the instant it was typed - 55g protein, 558 cal - and the row that landed
+     said 35g and 550.
+     35P/55C/12F is 468 calories, not the 550 it also wrote, so the row did not
+     even agree with itself.
+
+     The block below is the fix for exactly this and it could not run: it needs
+     offer.items, and the model returned one food with no rows at all. So the
+     one number the app can compute WITHOUT a model - and had already shown him -
+     was thrown away in favour of an estimate that was wrong twice over.
+
+     His founding rule on this feature is that the preview and the write read
+     the same. _nlEcho IS the preview, so it is what runs here: their own words,
+     the same splitter, the same table, the same gate. It only speaks when the
+     table priced EVERY piece of the sentence and guessed at none - anything
+     less and the model's read stands, exactly as before. */
+  try{
+    if(!_stated && !(Array.isArray(offer.items) && offer.items.length)){
+      var _said=String(offer.meal_text||'').trim();
+      try{ if(typeof _nlSaidFoods==='function') _said=_nlSaidFoods(_said); }catch(e){}
+      if(_said && typeof _nlEcho==='function'){
+        var _e=_nlEcho(_said);
+        var _priced=(_e&&_e.lines||[]).filter(function(L){ return L.known && !L.est && !L.stated; }).length;
+        if(_e && !_e.stated && !_e.unpriced && _priced>0 && _priced===_e.lines.length){
+          offer=Object.assign({}, offer, {
+            items:_e.lines.map(function(L){ return {name:L.name, calories:L.calories, protein:L.protein, carbs:L.carbs, fat:L.fat}; }),
+            calories:Math.round(_e.total.calories), protein:Math.round(_e.total.protein),
+            carbs:Math.round(_e.total.carbs), fat:Math.round(_e.total.fat)});
+          try{ console.warn('FOOD_LOG: no rows from the model and the table prices the whole sentence - writing what the echo showed', _said); }catch(e){}
+        }
+      }
+    }
+  }catch(e){ console.error('echo fallback (chat)', e); }
   // THE TABLE IS LAW (Yusuf, 30 Aug), applied BEFORE the reconciliation below so
   // what gets reconciled is already the table's arithmetic and not the model's.
   // Every row the table covers takes table numbers; the meal total becomes the
@@ -86121,6 +86156,37 @@ function _nlSameFood(typedName, row){
     return false;                                  // a word that changes the food
   }
   return true;
+}
+/* WHAT THEY SAID, MINUS HOW THEY SAID IT (11 Sep). The echo was built for the
+   LOG BOX, where people type the foods and nothing else, so it reads
+   "7oz chicken thigh, 1 handful of rice" perfectly and reads
+   "for lunch I had 7oz chicken thigh and a handful of rice" not at all - the
+   whole sentence becomes one fragment, _nlSameFood finds "for lunch i had" left
+   over after the row's key and refuses it, correctly.
+
+   That refusal is right for the echo and wrong for the one caller that hands it
+   a CHAT sentence. This takes the wrapper off and nothing else: an opening
+   "for lunch," / "today" / "I had" / "I just ate", and a closing "for dinner".
+   It never touches the middle, it never removes a word that could be a food,
+   and if none of the shapes match it hands the sentence back exactly as it
+   arrived - so a line it does not recognise falls to the model as before.
+
+   _nlEcho itself is NOT touched. It has one contract and this is a caller. */
+var _NL_SAID_OPEN = new RegExp('^\\s*(?:so\\s+|ok\\s+|okay\\s+)?'
+  + '(?:for\\s+(?:breakfast|lunch|dinner|brunch|a\\s+snack|snack)\\s*,?\\s+)?'
+  + '(?:(?:today|tonight|earlier|just\\s+now|this\\s+(?:morning|afternoon|evening))\\s*,?\\s+)?'
+  + '(?:i\\s+)?(?:just\\s+)?(?:had|ate|have\\s+had|grabbed|got|made\\s+myself|made)\\s+', 'i');
+var _NL_SAID_CLOSE = /\s+for\s+(?:breakfast|lunch|dinner|brunch|a\s+snack|snack|the\s+day)\s*[.!]?\s*$/i;
+var _NL_SAID_LEAD  = /^\s*for\s+(?:breakfast|lunch|dinner|brunch|a\s+snack|snack)\s*[,:]\s*/i;
+function _nlSaidFoods(text){
+  var t=String(text||'').trim();
+  if(!t) return '';
+  var cut=t;
+  if(_NL_SAID_OPEN.test(cut)) cut=cut.replace(_NL_SAID_OPEN,'').trim();
+  else if(_NL_SAID_LEAD.test(cut)) cut=cut.replace(_NL_SAID_LEAD,'').trim();
+  cut=cut.replace(_NL_SAID_CLOSE,'').trim();
+  cut=cut.replace(/[.!]\s*$/,'').trim();
+  return cut || t;
 }
 /* Price the line. Returns {lines:[...], total:{...}, unpriced:n} and never
    throws - it runs on every keystroke. */
