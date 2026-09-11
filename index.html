@@ -46700,12 +46700,17 @@ function _tlTotLine(slots, dayState, ds){
   ['breakfast','lunch','dinner','snack'].forEach(function(k){
     var list=(slots&&slots[k])||[]; if(!list.length) return;
     meals++;
-    var t=0;
+    var t=0, settling=0;
     list.forEach(function(r){
       var c=(+r.calories||0), p=(+r.protein||0), cb=(+r.carbs||0), f=(+r.fat||0);
       cal+=c; pro+=p; carb+=cb; fat+=f; t+=c+p+cb+f;
+      if(r._pending) settling++;
     });
-    if(!t) blank++;
+    /* A meal whose estimate is still coming is not a meal "without numbers" -
+       that phrase is a nudge to go and fill something in, and there is nothing
+       for her to fill in. It counts as blank only if something else on the meal
+       genuinely has no numbers. */
+    if(!t && !settling) blank++;
   });
   // A day already over is a record, not an invitation. "The day's ahead of you"
   // was written for today and was being said to every empty day in the past —
@@ -46788,7 +46793,7 @@ function _fdMealHtml(label, list){
        row; every surface titles it the way the day cards already do. */
     var nm=_tcase(String(r.name||'').trim()||'Meal');
     h+='<div class="fdRow"><span class="fdNm">'+_escHtml(nm)+(clock?('<i>'+_escHtml(clock)+'</i>'):'')+'</span>'
-      +'<span class="fdKc">'+((c||P||C||F)?(c.toLocaleString()+'<i>'+P+'P \u00b7 '+C+'C \u00b7 '+F+'F</i>'):'<i>no numbers</i>')+'</span></div>';
+      +'<span class="fdKc">'+((c||P||C||F)?(c.toLocaleString()+'<i>'+P+'P \u00b7 '+C+'C \u00b7 '+F+'F</i>'):(r._pending?'<i>counting\u2026</i>':'<i>no numbers</i>'))+'</span></div>';
   });
   return h+'</div>';
 }
@@ -46860,7 +46865,7 @@ function _wdItems(ds, slots){
       push(_tlMins(r), '<div class="wdFood">'
         +(ph?('<img src="'+esc(String(ph))+'" alt="">'):'')
         +'<div><div class="wdN">'+esc(_tcase(String(r.name||'').trim()||'Meal'))+'</div>'
-        +'<div class="wdM">'+(nums?(P+'P \u00b7 '+C+'C \u00b7 '+F+'F'):'no numbers')+'</div></div>'
+        +'<div class="wdM">'+(nums?(P+'P \u00b7 '+C+'C \u00b7 '+F+'F'):(r._pending?'counting\u2026':'no numbers'))+'</div></div>'
         +(nums?('<b class="wdK">'+c.toLocaleString()+'</b>'):'')
       +'</div>', pair[1], c);
     });
@@ -46981,9 +46986,10 @@ function _tlMealSection(ds, slots, isToday, isAhead, cards){
       // is the only line here that can never be wrong.
       var said=named.join(', ');
       if(said.length>62) said=said.slice(0,61)+'\u2026';
+      var pending=list.some(function(f){ return f && f._pending; });
       var nums = c>0
         ? (Math.round(c).toLocaleString()+' cal'+(p>0?(' \u00b7 '+Math.round(p)+'P'):''))
-        : 'no numbers yet';
+        : (pending ? 'counting\u2026' : 'no numbers yet');
       /* A LOGGED MEAL IS ALREADY ON THIS PAGE (Yusuf, 4 Sep, off his own screen:
          "if hes logged breakfast, which he has, we can remove that under the
          meals category below. its redundant. just have it say lunch & dinner
@@ -49999,7 +50005,7 @@ function _tlDaySectionHtml(cur, ctx){
     var dayRealWos=dayWos.filter(function(w){ return !/walk/i.test(String(w.title||'')); });
     var dayWeights=(gByDay[ds]||[]).slice();
     var slots={walk:(dayWalks.length?dayWalks:null), breakfast:[], lunch:[], dinner:[], snack:[], workout:dayRealWos.slice(), weigh:(dayWeights.length?dayWeights:null)};
-    dayFoods.forEach(function(f){ slots[_mealSlotFor(f)].push(f); });
+    dayFoods.forEach(function(f){ slots[_mealSlotFor(f)].push(_nlDayRow(f)); });
     try{ window._tlSlotsByDs[ds]=slots; }catch(e){}
 
     // Each day is its own settled page: it snaps into the viewport and fills it,
@@ -51878,7 +51884,9 @@ function _tlSlot(key, label, filled, ds, plan){
         ? ('<span data-tl="taptime" data-id="'+it.id+'" data-ds="'+_escHtml(ds)+'" data-cur="'+_escHtml(clock)+'" style="cursor:pointer;border-bottom:1px solid rgba(240,236,228,0.35);">'+_escHtml(clock)+'</span>')
         : clock
     );
+    /* The card she is actually looking at when the sheet closes. */
     if(isFood && it.calories) cap.push(Math.round(it.calories)+' cal');
+    else if(isFood && it._pending) cap.push('counting\u2026');
     var rm=(isWo&&it.id&&!window._tlRO)?'<span onclick="event.stopPropagation();tlDelWorkout('+it.id+')" title="Remove" style="flex-shrink:0;color:var(--muted);font-size:13px;line-height:1;cursor:pointer;padding:2px 0 2px 8px;">\u00d7</span>':'';
     var uid=key+'_'+(it.id||0);
     var xp=!!(window._tlXp&&window._tlXp[uid]);
@@ -86180,13 +86188,17 @@ function nlRender(){
         +(st.logged?_escHtml(st.slot):('<span class="nlSlotTap" onclick="nlSlotOpen()">'+_escHtml(st.slot)+'</span>'))
         +(st.logged?' · logged'
                    :' · <span class="nlTimeTap" onclick="nlTimeOpen(event)">'+_escHtml(st.at||_tlNowClock())+'</span>')+'</div>'
-      +'<div class="nlCal"><b id="nlCalV">'+Math.round(+e.calories||0)+'</b><i>cal</i></div>'
+      /* NO FIGURE WHILE A FIGURE IS STILL COMING (Laylee, 11 Sep). The macro
+         table priced part of this plate and the estimate for the rest is a few
+         seconds out. Printing the part and correcting it is what she filmed. */
+      +'<div class="nlCal"><b id="nlCalV">'+(e.partial?'\u2026':Math.round(+e.calories||0))+'</b><i>cal</i></div>'
       +'<div class="nlName">'+_escHtml(e.name||'')+'</div>'
       +'<div class="tlXMac">'
         +['protein','carbs','fat'].map(function(f){
-            return '<div class="tlXm" onclick="nlEdit(this,\''+f+'\')"><b data-nlv="'+f+'">'+Math.round(+e[f]||0)+'</b><i>'+f+'</i><u>Edit</u></div>';
+            return '<div class="tlXm" onclick="nlEdit(this,\''+f+'\')"><b data-nlv="'+f+'">'+(e.partial?'\u2013':Math.round(+e[f]||0))+'</b><i>'+f+'</i><u>Edit</u></div>';
           }).join('')
       +'</div>'
+      +(e.partial?'<div class="nlSrc dim">Logged. Counting the calories\u2026</div>':'')
       +(e.source==='label'?'<div class="nlSrc">From the label</div>':(e.source==='estimate'&&st.photo?'<div class="nlSrc dim">Estimated from the photo - still reading the label</div>':''))
       +(e.tidbit?('<div class="nlTid">'+_escHtml(e.tidbit)+'</div>'):'')
       +'<button class="nlGo" id="nlGoBtn" onclick="'+(st.logged?'nlClose()':'nlConfirm()')+'">'+(st.logged?'Done':'Log it')+'</button>'
@@ -86616,15 +86628,92 @@ function _nlFastOn(){
   try{ if(localStorage.getItem('yjb_fastlog')==='off') return false; }catch(e){}
   return true;
 }
+/* A NUMBER THAT CHANGES UNDER SOMEONE READS AS A BROKEN APP (Laylee, 11 Sep,
+   on video: the meal landed at 335 cal, the screen redrew, and it was 360 with
+   two more grams of protein). She was not wrong and neither number was a bug -
+   the row is written the instant she says the words, priced with whatever the
+   macro table already knows, and the estimate for the items the table does not
+   carry lands a few seconds later and corrects it.
+
+   Committing on the words stays: it is what stops a meal being lost when a
+   phone goes in a pocket mid-wait. What stops is SHOWING the incomplete figure.
+   A row that is still settling prints "counting..." instead of a number and is
+   left out of the day's totals, and when the estimate lands the real figure
+   appears ONCE. Nothing is corrected on screen because nothing wrong is ever
+   put there, and the day is patched in place rather than reloaded.
+
+   The sixty seconds is a dead-man's switch, not a timeout: if a tab is
+   backgrounded mid-call and nothing ever comes back to clear the mark, the row
+   goes back to showing the number it actually holds rather than counting for
+   ever. */
+var _NL_SETTLING={};
+var _NL_SETTLE_MAX=60000;
+function _nlSettling(id){
+  if(id==null) return false;
+  var t=_NL_SETTLING[String(id)];
+  if(!t) return false;
+  if(Date.now()-t>_NL_SETTLE_MAX){ delete _NL_SETTLING[String(id)]; return false; }
+  return true;
+}
+function _nlSettleStart(id){ if(id!=null) _NL_SETTLING[String(id)]=Date.now(); }
+function _nlSettleEnd(id){ if(id!=null) delete _NL_SETTLING[String(id)]; }
+/* THE ONE DOOR EVERY READER ON THE DAY GOES THROUGH. A settling row is handed
+   on as a COPY reporting no macros, so every total on the page - the day line,
+   the meal heads, the food sheet, the whole-day sheet - excludes it without any
+   of them needing to know this exists. Mutating the cached row instead would
+   have put the zeroes on the record. */
+function _nlDayRow(f){
+  if(!f || !_nlSettling(f.id)) return f;
+  var c={}; for(var k in f){ if(Object.prototype.hasOwnProperty.call(f,k)) c[k]=f[k]; }
+  c.calories=0; c.protein=0; c.carbs=0; c.fat=0; c._pending=true;
+  return c;
+}
+/* The estimate landed: put it on the cached row so the day can repaint from
+   what it already holds instead of going back to the server for a row it just
+   wrote. */
+function _nlCachePatch(id, fields){
+  try{
+    var list=(window._tlCache&&window._tlCache.foods)||[];
+    for(var i=0;i<list.length;i++){
+      if(list[i] && String(list[i].id)===String(id)){
+        list[i].calories=fields.calories; list[i].protein=fields.protein;
+        list[i].carbs=fields.carbs; list[i].fat=fields.fat;
+        return true;
+      }
+    }
+  }catch(e){}
+  return false;
+}
 /* A name off their own words, so the row reads like a meal the moment it lands.
    The model usually improves on it a second later; this is what stands until
    then, and it is their sentence rather than a placeholder. */
+/* Peels a quantity, a unit and a dangling "of" off the front of a food's name,
+   as many times as it takes. ONE PASS WAS NOT ENOUGH and that is the whole bug
+   (Laylee, 11 Sep): "2 handfuls of zucchini" lost the 2 and lost "handfuls" and
+   kept the "of", so her meal was filed as "Chicken, of Zucchini". The loop ends
+   the moment a pass changes nothing, and a phrase that is nothing but quantity
+   words peels away to empty, which the caller then skips. */
+var _NL_QTY_RE=/^(?:[\d.\/¼½¾]+|oz|ounces?|g|grams?|kg|lbs?|pounds?|handfuls?|palms?|fists?|scoops?|slices?|pieces?|cups?|tbsp|tablespoons?|tsp|teaspoons?|cans?|bottles?|bowls?|plates?|servings?|small|medium|large|of|a|an|the|some)\s+/i;
+var _NL_QTY_ONLY_RE=/^(?:[\d.\/¼½¾]+|oz|ounces?|g|grams?|kg|lbs?|pounds?|handfuls?|palms?|fists?|scoops?|slices?|pieces?|cups?|tbsp|tablespoons?|tsp|teaspoons?|cans?|bottles?|bowls?|plates?|servings?)$/i;
+function _nlStripQty(n){
+  var s=String(n||'').trim(), prev='';
+  while(s && s!==prev){ prev=s; s=s.replace(_NL_QTY_RE,'').trim(); }
+  /* The loop needs a space to bite on, so a line that is ONLY an amount - "2
+     cups", with the food never typed - ends as the bare word "cups". Naming a
+     meal "Cups" is worse than leaving that item out of the name entirely. */
+  if(_NL_QTY_ONLY_RE.test(s)) return '';
+  return s;
+}
 function _nlFastName(echo, line){
   var parts=[];
   try{
     (echo.lines||[]).forEach(function(L){
-      var n=String(L.known ? L.name : L.said).replace(/^\s*[\d.\/]+\s*/,'').trim();
-      n=n.replace(/^(?:oz|g|kg|lb|lbs|handfuls?|scoops?|slices?|tbsp|cups?|of|a|an|the)\s+/i,'').trim();
+      /* THE ECHO ALREADY CARRIES A CLEAN NAME whether the table could price the
+         item or not - `known:false, name:"zucchini", said:"2 handfuls of
+         zucchini"`. This used to reach for `said` on anything unpriced and then
+         try to shave the front off it by hand, which is how the "of" survived.
+         `said` is now only the fallback for a line with no name at all. */
+      var n=_nlStripQty(String((L.name||'').trim() || L.said || ''));
       if(n) parts.push(n);
     });
   }catch(e){}
@@ -86667,8 +86756,6 @@ async function nlSubmitFast(st, line){
     return true;
   }
   st.logged=true; nlRender();
-  try{ _tlRefreshDay(st.ds); }catch(e){}
-  _nlDone(st);
 
   /* THE ROW EXISTS. Everything after this only makes it better, and every one
      of these steps is allowed to fail without costing the meal. */
@@ -86677,7 +86764,16 @@ async function nlSubmitFast(st, line){
     var w=window._jimWrote||[];
     for(var i=w.length-1;i>=0;i--){ if(w[i] && w[i].table==='food_logs'){ rowId=w[i].id; break; } }
   }catch(e){}
-  if(echo.unpriced>0 && rowId!=null){ _nlEnrich(st, echo, rowId); }
+  /* THE ORDER MATTERS AND IT IS THE FIX. The row id used to be read AFTER the
+     day was repainted, so the day got one paint carrying the incomplete figure
+     and a second one carrying the real one - the two numbers Laylee filmed.
+     The mark goes on first, so the very first paint says "counting..." and the
+     only figure the day ever shows is the finished one. */
+  var _settling=(echo.unpriced>0 && rowId!=null);
+  if(_settling) _nlSettleStart(rowId);
+  try{ _tlRefreshDay(st.ds); }catch(e){}
+  _nlDone(st);
+  if(_settling) _nlEnrich(st, echo, rowId);
   return true;
 }
 /* Fills in ONLY what the table could not price, and ADDS it to what the table
@@ -86699,10 +86795,39 @@ async function nlSubmitFast(st, line){
    always lands, and a smaller answer is arithmetically incapable of shrinking
    the meal. It is a shorter prompt and a cheaper call too. */
 var _NL_ENRICH_MAX_CAL = 2500;      // a sanity ceiling on leftovers, not a clamp on a meal
+/* THE ONE EXIT. Whatever happens inside - the model refuses, the call throws,
+   the patch is rejected - the row stops settling and the day paints ONCE. A
+   meal left counting for ever because a call quietly failed would be a worse
+   bug than the one this fixes. */
 async function _nlEnrich(st, echo, rowId){
+  var fields=null;
+  try{ fields=await _nlEnrichRun(st, echo, rowId); }catch(e){ fields=null; }
+  _nlSettleEnd(rowId);
+  var patched=false;
+  if(fields){
+    patched=_nlCachePatch(rowId, fields);
+    try{
+      if(window._nl===st && st.est){
+        st.est.calories=fields.calories; st.est.protein=fields.protein;
+        st.est.carbs=fields.carbs; st.est.fat=fields.fat;
+        st.est.partial=false;
+        if(fields._tidbit && !st.est.tidbit) st.est.tidbit=fields._tidbit;
+        nlRender();
+      }
+    }catch(e){}
+  }
+  /* PATCHED IN PLACE, NOT RELOADED. _tlRefreshDay goes back to the server for
+     rows it already holds and then redraws - that round trip is the "hard
+     refresh" she saw. The cache already has the row; correcting it there and
+     swapping the one day section is the same picture with none of the wait.
+     The reload is kept only for the case where the row is not in the cache at
+     all, which means the earlier read did not land. */
+  try{ if(patched) _tlPatchDay(st.ds); else _tlRefreshDay(st.ds); }catch(e){}
+}
+async function _nlEnrichRun(st, echo, rowId){
   var left=(echo.lines||[]).filter(function(L){ return !L.known; })
              .map(function(L){ return L.said; }).filter(Boolean);
-  if(!left.length) return;
+  if(!left.length) return null;
   var est=null;
   try{
     var refs=''; try{ refs=await _usdaRefs(left); }catch(e){ refs=''; }
@@ -86714,9 +86839,9 @@ async function _nlEnrich(st, echo, rowId){
       +'\n\nThe client says: "'+left.join(', ')+'"'}];
     est=_nlSettle(await _nlEstimate(content, null));
   }catch(e){ est=null; }
-  if(!est || est.error) return;
+  if(!est || est.error) return null;
   var addCal=Math.round(+est.calories||0);
-  if(!addCal || addCal>_NL_ENRICH_MAX_CAL) return;
+  if(!addCal || addCal>_NL_ENRICH_MAX_CAL) return null;
   var base=echo.total||{calories:0,protein:0,carbs:0,fat:0};
   var fields={
     calories: base.calories + addCal,
@@ -86726,17 +86851,9 @@ async function _nlEnrich(st, echo, rowId){
   };
   var ok=false;
   try{ ok=await applyFoodEdit(rowId, fields); }catch(e){ ok=false; }
-  if(!ok) return;
-  try{
-    if(window._nl===st && st.est){
-      st.est.calories=fields.calories; st.est.protein=fields.protein;
-      st.est.carbs=fields.carbs; st.est.fat=fields.fat;
-      st.est.partial=false;
-      if(est.tidbit && !st.est.tidbit) st.est.tidbit=est.tidbit;
-      nlRender();
-    }
-  }catch(e){}
-  try{ _tlRefreshDay(st.ds); }catch(e){}
+  if(!ok) return null;
+  if(est.tidbit) fields._tidbit=est.tidbit;
+  return fields;
 }
 /* A label that lands after the estimate. Still on the result screen: the
    numbers change under their eyes and a line says why. Already logged: the
