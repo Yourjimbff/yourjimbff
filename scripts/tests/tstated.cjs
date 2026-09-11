@@ -37,7 +37,7 @@ const sub=src.slice(src.indexOf('async function nlSubmit(){'), src.indexOf('func
 t(/_nlFastOn\(\) \|\| _nlStated\(line\)/.test(sub), 'a stated line takes the fast road whatever the switch says - no model');
 
 console.log('\n  the one door every food log goes through:');
-const door=src.slice(src.indexOf('async function logFoodFromChat(offer, photo, targetCode){'), src.indexOf('async function logFoodFromChat(offer, photo, targetCode){')+6000);
+const door=src.slice(src.indexOf('async function logFoodFromChat(offer, photo, targetCode){'), src.indexOf('async function logFoodFromChat(offer, photo, targetCode){')+11000);   // widened 11 Sep: the echo fallback sits between _stated and the reconcile
 t(/_parseInlineMacros\(offer\.meal_text\|\|''\)/.test(door) && /_stated=true;/.test(door), 'stated figures in their own words replace the model\'s and the table\'s');
 t(/if\(!_stated && Array\.isArray\(offer\.items\)/.test(door), 'the table does not re-price a meal he priced');
 t(/if\(!_stated && !_macrosReconcileWithCalories\(/.test(door), 'and a stated calorie count is not rebalanced against its parts - no arguing');
