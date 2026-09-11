@@ -52458,6 +52458,28 @@ function tlEditFood(id){
     var iEl=document.getElementById('editFoodInsight'); if(iEl) iEl.value=e.insight||'';
     var nEl=document.getElementById('editFoodNote'); if(nEl) nEl.value=e.note||'';
   }catch(err){}
+  /* AND THE EDIT SHEET SHOWED A THIRD NUMBER. Off his own screen, 11 Sep: the
+     card read 1,109 cal / 58 carbs and the Edit sheet on the same meal read
+     917 / 10 - the row as it stood BEFORE the estimate for the rest of the
+     plate landed on it. The sheet paints from the copy the page is holding, and
+     that copy can be a second behind the record. So it asks the record, and
+     corrects itself if the two disagree. The fields she is typing in are never
+     yanked out from under her. */
+  (async function(){
+    try{
+      var rows=await sbSelect('food_logs','id=eq.'+encodeURIComponent(id)+'&select=calories,protein,carbs,fat');
+      var r=(rows&&rows[0]); if(!r) return;
+      if(String(window._tlEditId)!==String(id)) return;          // sheet moved on
+      [['editFoodCal','calories'],['editFoodProt','protein'],['editFoodCarb','carbs'],['editFoodFat','fat']]
+        .forEach(function(pair){
+          var el=document.getElementById(pair[0]); if(!el) return;
+          if(document.activeElement===el) return;                 // never under her thumb
+          var v=(r[pair[1]]!=null? r[pair[1]] : '');
+          if(String(el.value)!==String(v)) el.value=v;
+        });
+      try{ var row=_tlFindFood(id); if(row){ row.calories=r.calories; row.protein=r.protein; row.carbs=r.carbs; row.fat=r.fat; } }catch(e2){}
+    }catch(e2){}
+  })();
   window._edDs = e.date_str || todayDateStr;
   window._edMeal = e.meal || '';
   /* The clock this row arrived with, so the save can tell a real change from a
@@ -86007,10 +86029,26 @@ function _nlEchoHtml(st){
          + '<span class="nlEchoV">worked out when you log it</span></div>';
     }
   });
-  if(e.lines.filter(function(L){return L.known;}).length > 1){
-    // Same builder, and this one already showed all four - so the running total
-    // under the bar is now character-identical to the day total it becomes.
-    h += '<div class="nlEchoRow tot"><span class="nlEchoN">so far</span>'
+  /* ONE NUMBER, NOT TWO (Lailee, 11 Sep, and Yusuf saying it plainly: "it says
+     1 number first, then you log it, then it submits it, and another number
+     pops up afterwards"). THIS LINE WAS THE FIRST NUMBER.
+
+     It printed the moment two items were priced, whether or not the rest of the
+     plate was. So a meal with one item the table could not price showed a
+     confident "so far 483" and then landed at something else once the model
+     priced the missing item - two numbers for one plate, and the second one
+     arriving after she had already read the first.
+
+     The running total is only honest when the table priced EVERY item and
+     guessed at none: then it IS the number the meal will land on, character for
+     character, and showing it is the whole point. Any other time the items
+     stand on their own and the number arrives once, when it is the real one.
+     This is the same rule Jim's chat echo has had since 3 Sep - "a partial
+     breakdown is a worse lie than no breakdown" - which this road never got. */
+  var _priced=e.lines.filter(function(L){ return L.known && !L.est; }).length;
+  var _whole=(_priced===e.lines.length && _priced>1 && !e.unpriced);
+  if(_whole){
+    h += '<div class="nlEchoRow tot"><span class="nlEchoN">that’s</span>'
        + '<span class="nlEchoV">'+_mealMacLine(e.total,'long',{time:false})+'</span></div>';
   }
   return h + '</div>';
@@ -86532,17 +86570,23 @@ function _nlDayRow(f){
    what it already holds instead of going back to the server for a row it just
    wrote. */
 function _nlCachePatch(id, fields){
+  var hit=false;
+  /* EVERY COPY, not just the day's. The page holds the same meal in three
+     places and patching one is how the card and the Edit sheet ended up
+     disagreeing about the same plate. */
   try{
-    var list=(window._tlCache&&window._tlCache.foods)||[];
-    for(var i=0;i<list.length;i++){
-      if(list[i] && String(list[i].id)===String(id)){
-        list[i].calories=fields.calories; list[i].protein=fields.protein;
-        list[i].carbs=fields.carbs; list[i].fat=fields.fat;
-        return true;
-      }
-    }
+    [(window._tlCache&&window._tlCache.foods)||[], (typeof allFood!=='undefined'&&allFood)||[], (typeof todayFood!=='undefined'&&todayFood)||[]]
+      .forEach(function(list){
+        for(var i=0;i<list.length;i++){
+          if(list[i] && String(list[i].id)===String(id)){
+            list[i].calories=fields.calories; list[i].protein=fields.protein;
+            list[i].carbs=fields.carbs; list[i].fat=fields.fat;
+            hit=true;
+          }
+        }
+      });
   }catch(e){}
-  return false;
+  return hit;
 }
 /* A name off their own words, so the row reads like a meal the moment it lands.
    The model usually improves on it a second later; this is what stands until
