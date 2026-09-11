@@ -80,6 +80,16 @@ t(fast.indexOf('_nlSettleStart(rowId)') < fast.indexOf('_tlRefreshDay'),
   'THE ORDER: the mark goes on BEFORE the day paints, or the first paint carries the number she is not meant to see');
 t(/dayFoods\.forEach\(function\(f\)\{ slots\[_mealSlotFor\(f\)\]\.push\(_nlDayRow\(f\)\); \}\);/.test(src),
   'every meal on the day is built through the one door, so no reader can miss it');
+/* THE CARD SHE IS ACTUALLY LOOKING AT. The meal card is one card for the whole
+   meal, so a dinner of three with one item still settling must not print the
+   two that are priced - that is the same restatement in a smaller place. */
+const card=slice('function _tlMealCard(key, label, items, ds){', 'One thumbnail for the plate');
+t(/var pending=rows\.some\(function\(r\)\{ return r && r\._pending; \}\);/.test(card),
+  'the meal card asks whether ANY food on it is still settling');
+t(/var known=\(!pending\) &&/.test(card),
+  'and a meal with one settling food has no total at all, not a partial one');
+t(/Counting the calories/.test(src), 'it says what it is doing instead of showing a figure');
+
 const exit=slice('async function _nlEnrich(st, echo, rowId){', 'async function _nlEnrichRun');
 t(/catch\(e\)\{ fields=null; \}/.test(exit) && exit.indexOf('_nlSettleEnd(rowId)')>0,
   'the settle mark is cleared on EVERY exit, thrown or returned - a meal stuck counting is worse than the bug');
