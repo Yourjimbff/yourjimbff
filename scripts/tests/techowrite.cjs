@@ -70,6 +70,16 @@ t(/console\.warn\('FOOD_LOG: the table prices the whole sentence/.test(block) &&
 /* AND WHEN IT STANDS DOWN. It declined three times on the served build with no
    way to see which clause did it, and three rounds of reading the code guessed
    wrong each time. A gate nobody can question is a gate nobody can fix. */
+/* AND THE TABLE MUST NOT PRICE IT A SECOND TIME (proved off the console on the
+   served build: the fallback fired, SAID it had fired, and the meal still landed
+   at 355). _mtApplyItems re-prices every row from its NAME, and these rows carry
+   a name with no amount on it, so "chicken thigh" was re-read as one ounce and
+   "rice" as one handful. The echo's lines ARE the table's arithmetic, at the
+   amounts he actually said. */
+t(/_echoOwned=true;/.test(block), 'a meal the echo priced is marked as already the table\'s');
+t(/if\(!_stated && !_echoOwned && Array\.isArray\(offer\.items\) && offer\.items\.length\)\{/.test(src),
+  'and the table stands down rather than re-pricing its own answer at quantity one');
+t(/var _stated=false, _echoOwned=false;/.test(src), 'the flag starts false, so nothing else changes');
 t(/console\.warn\('FOOD_LOG: echo stood down'/.test(block)
   && /modelRows:_mrows/.test(block) && /modelItems:/.test(block) && /priced:_priced/.test(block),
   'and it says WHY when it stands down - every clause of the gate, and the model rows it was weighed against');
@@ -86,6 +96,11 @@ t(said('for lunch I had 7oz chicken thigh and a handful of rice')==='7oz chicken
 t(said('I had 2 eggs and toast')==='2 eggs and toast', 'and off the shortest shape of it');
 t(said('I just ate a handful of nuts for a snack')==='a handful of nuts',
   'front and back', JSON.stringify(said('I just ate a handful of nuts for a snack')));
+/* "AS a snack" as well as "FOR a snack" - caught live, the echo stood down with
+   one unpriced fragment because the tail stayed on the last food. */
+t(said('I had 7oz chicken thigh and a handful of rice as a snack')==='7oz chicken thigh and a handful of rice',
+  'and a meal named at the end with "as" comes off too',
+  JSON.stringify(said('I had 7oz chicken thigh and a handful of rice as a snack')));
 t(said('7oz chicken thigh, 1 handful of rice')==='7oz chicken thigh, 1 handful of rice',
   'a line typed into the log box is handed back untouched');
 t(said('chicken and rice bowl')==='chicken and rice bowl',

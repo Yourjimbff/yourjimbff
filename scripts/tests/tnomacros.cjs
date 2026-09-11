@@ -13,7 +13,7 @@ let bad=0;
 const t=(pass,label)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  FAIL  ')+label); };
 const src=fs.readFileSync('index.html','utf8');
 
-const writer=src.slice(src.indexOf('async function logFoodFromChat('), src.indexOf('async function logFoodFromChat(')+16000);
+const writer=src.slice(src.indexOf('async function logFoodFromChat('), src.indexOf('async function logFoodFromChat(')+21000);   // widened 11 Sep: the echo fallback sits above this
 t(/if\(_ins && _ins\.zeroMacros\)\{\s*window\.__jimFoodUnsure = window\.__jimFoodUnsure \|\| \[\];\s*window\.__jimFoodUnsure\.push\(\{name:r\.name, why:'nomacros'\}\);/.test(writer),
   'the zero-macro refusal rides out of logFoodFromChat with its reason, like unconfirmed and duplicate already did');
 

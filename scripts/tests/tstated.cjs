@@ -39,7 +39,13 @@ t(/_nlFastOn\(\) \|\| _nlStated\(line\)/.test(sub), 'a stated line takes the fas
 console.log('\n  the one door every food log goes through:');
 const door=src.slice(src.indexOf('async function logFoodFromChat(offer, photo, targetCode){'), src.indexOf('async function logFoodFromChat(offer, photo, targetCode){')+11000);   // widened 11 Sep: the echo fallback sits between _stated and the reconcile
 t(/_parseInlineMacros\(offer\.meal_text\|\|''\)/.test(door) && /_stated=true;/.test(door), 'stated figures in their own words replace the model\'s and the table\'s');
-t(/if\(!_stated && Array\.isArray\(offer\.items\)/.test(door), 'the table does not re-price a meal he priced');
+t(/if\(!_stated && !_echoOwned && Array\.isArray\(offer\.items\)/.test(door), 'the table does not re-price a meal he priced');
+/* ...NOR ONE THE TABLE ITSELF JUST PRICED (11 Sep). The echo's lines carry a
+   name with no amount on it, so re-pricing them read "chicken thigh" as one
+   ounce. Same rule, second reason: a meal that is already the table's
+   arithmetic does not go through the table again. */
+t(/var _stated=false, _echoOwned=false;/.test(door) && /_echoOwned=true;/.test(door),
+  'and it does not re-price a meal the echo already priced either');
 t(/if\(!_stated && !_macrosReconcileWithCalories\(/.test(door), 'and a stated calorie count is not rebalanced against its parts - no arguing');
 console.log(bad?'\n  '+bad+' FAILED':'\n  all stated-macro assertions pass');
 process.exit(bad?1:0);
