@@ -1,113 +1,60 @@
-// THE DEMONSTRATIONS (Yusuf, 11 Sep: "import it into my app fully, i only want
-// 3d model, no person ... upload it against my entire exercise library, exact
-// matches preferably"). Every demo is checked against EX_LIB by name, because
-// a demo filed under a name the library does not have is a picture nobody will
-// ever see, and a name spelled differently is a picture on the wrong movement.
-const fs=require('fs'), vm=require('vm');
+// NO PICTURES IN THE EXERCISE LIBRARY, AND NONE ANYWHERE ELSE.
+//
+// Yusuf, 11 Sep, after seeing the imported set on his own Pull day and then two
+// attempts of mine at drawing a replacement: "I would just remove all the images
+// in general at this point."
+//
+// The imported set was never one set. Eighteen were 3D anatomy renders and nine
+// were flat cartoons or a line drawing, and a library where nine of twenty-seven
+// are a different style reads worse than a library with none. I could not draw
+// an anatomy chart either - what came out looked like a mannequin, twice.
+//
+// This file used to assert the demos were present and correct. It now asserts
+// the opposite, which is the only assertion worth keeping: that nothing brought
+// them back. A picture that creeps back one call site at a time is exactly how
+// this ends up half-shipped again.
+const fs=require('fs');
 const src=fs.readFileSync('index.html','utf8');
-let bad=0; const t=(p,l)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l); };
+let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x&&!p?('   ['+x+']'):'')); };
 
-const ctx={String,Object,Math,Array,JSON,window:{},document:{addEventListener(){}},
-  SB_URL:'https://sb.test', SB_BUCKET:'progress-photos',
-  _escHtml:(x)=>String(x==null?'':x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'),
-  _pgLastWeight:()=>'', _fdShow:(h,l,c)=>{ ctx.window.__sheet={h:h,label:l,cls:c}; return true; }};
-vm.createContext(ctx);
-const a=src.indexOf('var EX_LIB = {'), b=src.indexOf('var DAY_TYPES=');
-vm.runInContext(src.slice(a,b), ctx);
-const f=src.indexOf('function _exFind(name){');
-vm.runInContext(src.slice(f, src.indexOf('\n}', f)+2), ctx);
-const EX_LIB=vm.runInContext('EX_LIB', ctx), EX_DEMO=vm.runInContext('EX_DEMO', ctx);
-
-const names=[]; Object.keys(EX_LIB).forEach(k=>EX_LIB[k].forEach(x=>names.push(x.n)));
-t(names.length===49, 'the library is 49 movements', String(names.length));
-const demoNames=Object.keys(EX_DEMO);
-t(demoNames.length===27, '27 of the 49 have one, and the other 22 are the shot list', String(demoNames.length));
-
-const orphans=demoNames.filter(n=>names.indexOf(n)<0);
-t(orphans.length===0, 'EVERY demo is filed under a name the library actually has', orphans.join(', '));
-
-const slugs={}, dupes=[];
-demoNames.forEach(n=>{ const s=EX_DEMO[n].split('|')[0]; if(slugs[s]) dupes.push(s); slugs[s]=n; });
-t(dupes.length===0, 'no two movements point at the same picture', dupes.join(', '));
-t(demoNames.every(n=>/^[a-z0-9-]+\|(jpg|gif)\|.+$/.test(EX_DEMO[n])), 'every entry reads slug|ext|author');
-t(demoNames.every(n=>EX_DEMO[n].split('|')[0].replace(/-v\d+$/,'')===n.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')),
-  'and the slug is the movement name (a -v2 means the first picture was thrown out), so a file can be found from the app and the other way round');
-
-const d=vm.runInContext("_exDemo('Lateral Raises')", ctx);
-t(d.img==='https://sb.test/storage/v1/object/public/progress-photos/_exercise/lateral-raises.jpg', 'the picture is served from the app own storage, not from wger', d.img);
-t(d.thumb==='https://sb.test/storage/v1/object/public/progress-photos/_exercise/t/lateral-raises.jpg', 'lists load the small copy');
-t(demoNames.every(n=>EX_DEMO[n].split('|')[1]==='jpg'), 'every demo is a still jpg - the one animated gif carried another brand\'s watermark and went');
-t(vm.runInContext("_exDemo('lateral raises')", ctx)!==null, 'a name typed in any case still finds its demo');
-t(vm.runInContext("_exDemo('Preacher Curls')", ctx)===null && vm.runInContext("_exDemoThumb('Preacher Curls')", ctx)==='',
-  'a movement with no demo draws nothing - never an empty box');
-['Push-Ups','Dips','Tricep Extension','Hip Abduction','Hanging Leg Raises','Barbell Hip Thrust'].forEach(function(n){
-  t(vm.runInContext("_exDemo("+JSON.stringify(n)+")", ctx)===null, 'thrown out for not being a 3D model: '+n);
+const banned = [
+  ['EX_DEMO',        'the demo map is gone, not emptied and not commented out'],
+  ['EX_DEMO_ALIAS',  'and so is the alias table that fed it'],
+  ['_exDemo(',       'the lookup is gone'],
+  ['_exDemoCanon',   'and the name resolver'],
+  ['_exDemoThumb',   'the list thumbnail builder is gone'],
+  ['_exDemoTap',     'the tappable one is gone'],
+  ['_exDemoOpen',    'and the sheet it opened'],
+  ['exThumb',        'no thumbnail class survives in the stylesheet'],
+  ['bfThumb',        'nor the one the day cards used'],
+  ['woThumb',        'nor the one a finished session used'],
+  ['hasDemo',        'nor the library row variant that carried a picture'],
+  ['exDemoPic',      'nor anything the demo sheet was built from'],
+  ['exDemoCr',       'including the credit line'],
+];
+banned.forEach(function(pair){
+  const n=(src.split(pair[0]).length-1);
+  t(n===0, pair[1], pair[0]+' x'+n);
 });
-t(!/loading="lazy"/.test(vm.runInContext("_exDemoThumb('Squat')", ctx)), 'the list picture is not lazy - inside a closed modal a lazy image never loads');
 
-t(vm.runInContext("_exDemoOpen('Squat')", ctx)===true, 'tapping one opens the sheet');
-const sh=ctx.window.__sheet;
-t(/\bmid\b/.test(sh.cls), 'it floats in the middle, like the weight sheet');
-t(/exDemoT">Squat</.test(sh.h) && /exDemoEy">Legs</.test(sh.h), 'titled with the movement and the muscle group it lives under');
-t(/exChip">4 × 8</.test(sh.h), "and it carries Yusuf's own prescription, not the database's");
-t(/exDemoV">Barbell ideal</.test(sh.h), 'his note on which variation counts rides with it');
-t(/exDemoCr">Demo: Workout Guru · wger · CC BY-SA</.test(sh.h), 'the picture is credited to whoever drew it, by name, with the licence');
-t(!/@/.test(JSON.stringify(EX_DEMO)), 'nobody\'s email address is printed on a client\'s screen');
-t(/onclick="_exDemoOpen\(/.test(src) && /class="pgLibRow hasDemo"/.test(src), 'the library row is the door');
-t((src.match(/\+_exDemoThumb\(x\.n\)/g)||[]).length===2, 'the swap picker and the add picker show the picture too');
+// The storage folder the pictures were uploaded into must not be addressed from
+// anywhere in the app. The files themselves still sit in the bucket - the anon
+// key cannot delete them - but nothing reaches for them.
+t(src.indexOf('/_exercise/')<0, 'nothing in the app points at the folder the pictures were uploaded to');
+t(!/wger/i.test(src), 'and no credit to the database they came from is left on a client screen');
 
-// ===== THE DAY IS WHERE HE LOOKS =========================================
-// Yusuf, 11 Sep: "when I opened up my pull day today I don't see any graphics."
-// The pictures were wired into the library and the two pickers and nowhere
-// else - which is to say, wired into the three screens nobody opens mid-set.
-const tap=vm.runInContext("_exDemoTap('Shrugs')", ctx);
-t(/class="bfThumb"/.test(tap) && /src="https:\/\/sb\.test\/[^"]*\/t\/shrugs\.jpg"/.test(tap),
-  'an exercise card on the day carries the small picture');
-t(/data-ex="Shrugs"/.test(tap) && /getAttribute\('data-ex'\)/.test(tap),
-  'and the name travels in an attribute, so a slash or an apostrophe in it cannot break the tap');
-t(vm.runInContext("_exDemoTap('Preacher Curls')", ctx)==='',
-  'a movement with no demo yet keeps exactly the card it had');
-const slashy=vm.runInContext("_exDemoTap('Pull Downs / Pull Ups')", ctx);
-t(/data-ex="Pull Downs \/ Pull Ups"/.test(slashy) && slashy.indexOf("_exDemoOpen('Pull")<0,
-  'the one library name with a slash in it is not baked into a JS string');
-t(/class="woThumb"/.test(vm.runInContext("_exDemoTap('Squat','woThumb')", ctx)),
-  'a finished session prints a smaller one on every row');
+// What must STILL be true: the library itself is untouched. Removing the
+// pictures must not have taken a movement with it.
+const a=src.indexOf('var EX_LIB = {'), b=src.indexOf('var DAY_TEMPLATES = {');
+t(a>0 && b>a, 'the library and the day templates are both still there');
+const names=(src.slice(a,b).match(/\{n:'/g)||[]).length;
+t(names===49, 'all 49 movements survive', String(names));
+t(/'Pull':\s*\[/.test(src.slice(b)) && /'Push':\s*\[/.test(src.slice(b)), 'and the splits still name their movements');
 
-t(/\+_exDemoTap\(e\.n\)\n\s*\+'<div style="flex:1;min-width:0;">'/.test(src.replace(/\r/g,'')) ,
-  'the planned exercise card calls it');
-t((src.match(/\+_exDemoTap\(e\.n\)/g)||[]).length===2,
-  'both of them do - the programmed card and the shelf card');
-t(/\+_exDemoTap\(it\.name, 'woThumb'\)/.test(src), 'and so does the completed workout card');
+// And the library row still draws - without a picture, it is the row it was
+// before any of this started.
+t(/class="pgLibRow">/.test(src), 'a library row is a plain row again');
+t(!/pgLibTx/.test(src), 'the wrapper that only existed to sit beside a picture is gone too');
 
-// The day he actually opened.
-const pull=vm.runInContext('DAY_TEMPLATES.Pull', ctx).map(r=>r[0]);
-t(pull.length===6, 'his Pull day is six movements', pull.join(', '));
-const pullShown=pull.filter(n=>vm.runInContext("_exDemo("+JSON.stringify(n)+")", ctx)!==null);
-t(pullShown.length===5, 'five of the six now show a picture on that day; Barbell Row is on his own shot list', pullShown.join(', '));
-
-
-// ===== THE PROGRAM'S OWN SPELLING ========================================
-// His saved Pull day says "Rear Delts". The library says "Rear Delt Flies".
-// A stored program keeps the words it was written with forever.
-const ALIAS=vm.runInContext('EX_DEMO_ALIAS', ctx);
-const aliasTargets=Object.keys(ALIAS).map(k=>ALIAS[k]);
-t(aliasTargets.every(n=>demoNames.indexOf(n)>=0),
-  'every alias points at a movement that actually has a picture',
-  aliasTargets.filter(n=>demoNames.indexOf(n)<0).join(', '));
-t(Object.keys(ALIAS).every(k=>k===k.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim()),
-  'every alias key is already normalised, so the lookup is a plain hit');
-t(Object.keys(ALIAS).every(k=>demoNames.map(n=>n.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim()).indexOf(k)<0),
-  'no alias shadows a real library name');
-const rd=vm.runInContext("_exDemo('Rear Delts')", ctx);
-t(rd!==null && rd.slug.indexOf('rear-delt')===0, 'his own "Rear Delts" finds the rear delt picture', rd&&rd.slug);
-t(vm.runInContext("_exDemo('RDLs')", ctx)!==null, 'and so does a shorthand somebody types into a program');
-t(vm.runInContext("_exDemo('Bench Press')", ctx)!==null, 'and the everyday name for a movement the library files formally');
-t(vm.runInContext("_exDemo('Wobble Board Hops')", ctx)===null,
-  'a movement that genuinely has no picture still gets none - the aliases are written out, never guessed');
-t(vm.runInContext("_exDemoOpen('Rear Delts')", ctx)===true
-  && /exDemoT">Rear Delts</.test(ctx.window.__sheet.h)
-  && /exDemoEy">Back</.test(ctx.window.__sheet.h),
-  'the sheet is titled with HIS word and still knows which group it belongs to');
-
-console.log(bad?('\n  '+bad+' FAILED'):'\n  all demo assertions pass');
+console.log(bad?('\n  '+bad+' FAILED'):'\n  no demo images anywhere, and the library is whole');
 process.exit(bad?1:0);
