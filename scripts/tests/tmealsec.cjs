@@ -90,7 +90,7 @@ global.window = {};
 console.log('\nIT ASKS FOR EVERY MEAL STILL TO COME:');
 DUE = 'lunch';
 const ask = sec({breakfast:[meal('eggs',300,25)]}, true);
-t((ask.match(/tlMealAsk"/g)||[]).length === 2, 'lunch and dinner, both',
+t((ask.match(/tlMealAsk"/g)||[]).length === 3 && /data-key="food"/.test(ask), 'lunch and dinner, both - and the standing Add a food door (11 Sep)',
   (ask.match(/data-key="([a-z]+)"/g)||[]).join(' '));
 t(/data-key="lunch"/.test(ask) && /data-key="dinner"/.test(ask), 'named as themselves');
 t(!/data-key="breakfast"/.test(ask), 'and breakfast is not asked for again, he ate it');

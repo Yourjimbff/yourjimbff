@@ -32,7 +32,8 @@ t(/\.fdOv\{[^}]*backdrop-filter:blur/.test(src) && /\.fdPanel\{[^}]*radial-gradi
 t(/body\.tlwnav #tFeed\{padding-top:6px;\}/.test(src) && /body\.tlwnav #tlScroll\{height:calc\(100vh - 194px\);height:calc\(100svh - 194px\);\}/.test(src), 'the gap above the week strip closed and the scroller grew by the same amount');
 t(/\.mbg\.open, \.fdOv\.open/.test(src), 'the foreground update check waits while the sheet is up');
 const dw=src.slice(src.indexOf('function _dayWeightHtml(ds){'), src.indexOf('function _dayWeightRepaint(){'));
-t(/data-tl="dwhist"/.test(dw) && /if\(_hOpen\)\{/.test(dw) && /for\(var i=asc\.length-1;i>=0;i--\)/.test(dw) && /d==null\)\?'first'/.test(dw), 'the weight card lists every weigh-in newest first with the change from the one before');
-t(!/#e07b6a|#7fcf9a/.test(src.slice(src.indexOf('.tlItemR .dwUp'), src.indexOf('.tlItemR .dwUp')+120)), 'no red or green on a weight change - a direction is not a verdict');
+const dws=src.slice(src.indexOf('function _dwSheetHtml(){'), src.indexOf('function _dayWeightRepaint(){'));
+t(/data-tl="dwhist"/.test(dw) && /window\._dwSheet=\{rows:rows/.test(dw) && /for\(var i=asc\.length-1;i>=0;i--\)/.test(dws) && /dd==null\)\?'first'/.test(dws) && /if\(a==='dwhist'\)\{ ev\.stopPropagation\(\); try\{ _dwOpen\(\); \}catch\(e\)\{\} return; \}/.test(src), 'the weight card opens a sheet that lists every weigh-in newest first with the change from the one before - no drop-down');
+t(!/#e07b6a|#7fcf9a/.test(src.slice(src.indexOf('.dwSheetList .tlItemR span'), src.indexOf('.dwSheetList .tlItemR span')+80)), 'no red or green on a weight change - a direction is not a verdict');
 console.log(bad?'\n  '+bad+' FAILED':'\n  all day-list assertions pass');
 process.exit(bad?1:0);
