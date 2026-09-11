@@ -6288,7 +6288,9 @@ body.bfEditingToday .tlDaySec.ahead{display:none;}
   padding:0 14px;font-family:inherit;font-size:20px;font-weight:800;color:var(--text);outline:none;caret-color:var(--gold);-webkit-appearance:none;appearance:none;}
 .stInRow input:focus{border-color:rgba(245,197,24,0.5);}
 .stSave{flex:0 0 auto;height:48px;padding:0 22px;border:0;border-radius:12px;background:var(--gold);color:var(--onaccent);font-family:inherit;font-size:14px;font-weight:800;cursor:pointer;}
-.stClear{margin-top:10px;font-size:12px;font-weight:700;color:rgba(240,236,228,0.45);cursor:pointer;}
+.stClear{margin-top:10px;font-size:12px;font-weight:700;color:rgba(240,236,228,0.45);cursor:pointer;-webkit-tap-highlight-color:transparent;}
+.stClear.armed{color:#ff6f5e;}
+.stClear.undo{color:var(--gold);}
 .stImportRow{display:flex;align-items:center;justify-content:space-between;margin-top:16px;padding:12px 2px 4px;border-top:1px solid rgba(255,255,255,0.07);font-size:13.5px;font-weight:800;color:var(--text);cursor:pointer;-webkit-tap-highlight-color:transparent;}
 .stChev{color:rgba(240,236,228,0.4);font-size:18px;}
 .stImpHow{margin-top:8px;font-size:12.5px;font-weight:600;line-height:1.5;color:rgba(240,236,228,0.62);}
@@ -88136,7 +88138,18 @@ function _stPaint(){
         +'<input id="stepsIn" type="number" inputmode="numeric" value="'+(cur||'')+'" aria-label="Steps" oninput="_stTyped=true">'
         +'<button class="stSave" onclick="saveSteps(\''+_escHtml(ds)+'\')">Save</button>'
       +'</div>'
-      +(cur?'<div class="stClear" onclick="saveSteps(\''+_escHtml(ds)+'\',true)">Clear this day</div>':'')
+      /* IT ASKS NOW (Yusuf, 10 Sep, after nearly losing a day of his own: "I
+         tried to clear it. I think it just wiped it to zero" - "you are right,
+         I will turn it on"). One tap arms it, a second tap does it, and it
+         disarms itself after four seconds. No browser confirm box: on a phone
+         that is a system dialog over his own sheet, and it reads as the app
+         breaking rather than the app asking. After it clears, the same line
+         becomes Undo and the number is put straight back. */
+      +(cur
+          ? '<div class="stClear" id="stClearBtn" onclick="stClearTap(\''+_escHtml(ds)+'\')">Clear this day</div>'
+          : ((_stUndo && _stUndo.ds===ds)
+              ? '<div class="stClear undo" id="stClearBtn" onclick="stClearTap(\''+_escHtml(ds)+'\')">Undo</div>'
+              : ''))
       /* onclick, not data-tl: this sheet hangs off document.body, and the
          day page's tap handler only listens inside #feedTabBody. On .240 the
          import row and the bars answered to nothing on a phone (Yusuf, 10 Sep
@@ -88469,7 +88482,7 @@ async function stImportShot(input){
   try{
     var raw=await new Promise(function(res,rej){ var r=new FileReader(); r.onload=function(e){ res(e.target.result); }; r.onerror=rej; r.readAsDataURL(f); });
     var r=await _stReadShot(raw);
-    if(r.error){ _stImpStatus(r.error==='not_health' ? 'That does not look like a steps screen.' : (r.error==='bars' ? 'I can see the chart but could not measure its bars. Tap a bar in Health so its number shows, or send the day view, or the Health export file.' : 'Could not read that screenshot.')); return; }
+    if(r.error){ _stImpStatus(r.error==='not_health' ? 'That does not look like a steps screen.' : (r.error==='bars' ? 'I can see the chart but could not measure its bars. Tap a bar in Health so its number shows, or send the day view instead.' : 'Could not read that screenshot.')); return; }
     if(!r.count && r.view==='other'){ _stImpStatus('That view is months or weeks averaged together. Send the day, week or month view.'); return; }
     _stPreview({days:r.days, samples:r.count, rough:r.rough, note:r.note}, 'screenshot');
   }catch(e){ _stImpStatus('Could not read that screenshot. '+_escHtml(String(e&&e.message||e))); }
@@ -88507,6 +88520,43 @@ async function stImportGo(){
 function closeSteps(){
   var o=document.getElementById('stepsOv'); if(o&&o.parentNode) o.parentNode.removeChild(o);
 }
+var _stClearArm=0, _stClearTimer=null, _stUndo=null;
+function _stClearBtn(){ try{ return document.getElementById('stClearBtn'); }catch(e){ return null; } }
+function _stClearReset(){
+  _stClearArm=0; clearTimeout(_stClearTimer);
+  var el=_stClearBtn(); if(el){ el.className='stClear'; el.textContent='Clear this day'; }
+}
+function stClearTap(ds){
+  var el=_stClearBtn();
+  /* Second state: the day is already cleared and this is the way back. */
+  if(_stUndo && _stUndo.ds===ds && el && el.classList.contains('undo')){ stUndoClear(); return; }
+  if(_stClearArm!==1){
+    _stClearArm=1;
+    if(el){ el.className='stClear armed'; el.textContent='Tap again to clear'; }
+    clearTimeout(_stClearTimer);
+    _stClearTimer=setTimeout(_stClearReset, 4000);
+    return;
+  }
+  clearTimeout(_stClearTimer); _stClearArm=0;
+  var was=0; try{ was=(window._stepMap||{})[ds]||0; }catch(e){}
+  _stUndo = was ? {ds:ds, steps:was} : null;
+  saveSteps(ds, true);
+}
+async function stUndoClear(){
+  var u=_stUndo; if(!u || !u.steps) return;
+  _stUndo=null;
+  var ok=false;
+  try{
+    ok=await sbUpsert('step_logs',
+      {client_code:cl.code, steps:u.steps, date_str:u.ds, updated_at:new Date().toISOString()},
+      'client_code,date_str');
+  }catch(e){ ok=false; }
+  if(!ok && !_sbQueues('step_logs')){ _sbFailToast('put that back'); return; }
+  window._stepMap=window._stepMap||{}; window._stepMap[u.ds]=u.steps;
+  try{ window._tlCache=null; renderDayTimeline(true); }catch(e){}
+  try{ _stPaint(); }catch(e){}
+  try{ showToast(u.steps.toLocaleString()+' steps back'); }catch(e){}
+}
 async function saveSteps(ds, clear){
   var v = clear ? 0 : (parseInt((document.getElementById('stepsIn')||{}).value,10)||0);
   if(!clear && v<=0){ try{ showToast('Put in a number'); }catch(e){} return; }
@@ -88526,7 +88576,16 @@ async function saveSteps(ds, clear){
   /* It closes itself (Yusuf, 10 Sep: "it just says saved 11,800 steps but
      doesn't close when I edit it"). The bar fills, the check draws, gone. */
   try{ _stPaint(); }catch(e){}
-  try{ _doneFlash(document.querySelector('#stepsOv .stSheet'), clear?'Cleared':v.toLocaleString()+' steps', closeSteps); }catch(e){ closeSteps(); }
+  /* A SAVE CLOSES. A CLEAR DOES NOT - it leaves the sheet standing with Undo
+     on it, because the whole reason this asks twice is that the number is hard
+     to get back once it is gone. */
+  if(clear){
+    /* _stPaint has already redrawn the sheet, and with no steps on the day it
+       draws the Undo line in place of Clear. Nothing to poke at afterwards. */
+    try{ showToast('Cleared'); }catch(e){}
+  } else {
+    try{ _doneFlash(document.querySelector('#stepsOv .stSheet'), v.toLocaleString()+' steps', closeSteps); }catch(e){ closeSteps(); }
+  }
   // MY WEEK IS A CALLER NOW, so it has to be repainted like the day is. Its steps
   // cell is what opened this sheet; leaving it reading the old number makes the
   // save look like it did not take.
