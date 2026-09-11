@@ -18,7 +18,14 @@ t(!/tlItems/.test(line), 'and nothing unfolds under it any more');
 vm.runInContext("window._tlSlotsByDs['Sep 10, 2026']=__s", ctx);
 const opened=vm.runInContext("_fdOpen('Sep 10, 2026')", ctx);
 const html=doc._els.fdOv ? doc._els.fdOv.innerHTML : '';
-t(opened===true && doc._els.fdOv.cls==='open' && /^<div class="fdPanel">/.test(html), 'the tap opens the glass sheet');
+/* AND IT FLOATS (Yusuf, 11 Sep: "clicking todays calorie line seems to stick
+   the graphic to the bottom of the scren, it should be centred"). The stub DOM
+   only tracks classList, and _fdShow sets the overlay's class by assignment, so
+   the PANEL half is proved off the html and the OVERLAY half off the source. */
+t(opened===true && /\bopen\b/.test(doc._els.fdOv.cls) && /^<div class="fdPanel mid">/.test(html),
+  'the tap opens the glass sheet and the panel floats');
+t(src.indexOf("_fdShow(_fdHtml(ds, slots), 'Every food on the day', 'mid')")>-1,
+  'and the day total asks for the centred sheet by name');
 t(/fdTitle">Today<i>Sep 10<\/i>/.test(html) && /fdTot"><b>2,141<\/b> cal · 118P · 186C · 103F/.test(html), 'the sheet is titled with the day and carries its total');
 t(/fdMh"><span>Breakfast<\/span><span><b>1,021<\/b> cal · 22P · 114C · 53F/.test(html) && /fdMh"><span>Dinner<\/span><span><b>1,120<\/b> cal · 96P · 72C · 50F/.test(html), 'each meal is a block with its own numbers');
 t(/fdBand one"><img src="data:image\/jpeg;base64,AAAA"/.test(html) && /fdBand"><img src="data:image\/jpeg;base64,BBBB" alt=""><img src="data:image\/jpeg;base64,CCCC"/.test(html), 'the photos band across the top of the meal - one wide, two side by side');

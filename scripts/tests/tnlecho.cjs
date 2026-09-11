@@ -20,10 +20,16 @@ let bad=0;
 const t=(ok,label)=>{ if(!ok) bad++; console.log((ok?'  ok    ':'  FAIL  ')+label); };
 
 console.log('  the splitter cuts where a plate actually breaks:');
-const sp = src.slice(src.indexOf('function _nlEchoSplit'), src.indexOf('function _nlEchoParse'));
+const sp = src.slice(src.indexOf('function _nlHardBreaks'), src.indexOf('function _nlEchoParse'));
 ['\\\\n','[,]',';','and','with'].forEach(k=>{
   t(new RegExp(k).test(sp), 'splits on '+k.replace('\\\\n','a new line'));
 });
+/* AND THE THREE HE ASKED FOR ON 11 SEP ("please include the abilityt to
+   separate food with / and - and ."). The behaviour is proved in techo2; this
+   is the same shape as the four lines above it - the separator is in there. */
+t(/\[-\\u2013\\u2014\]/.test(sp), 'splits on a dash');
+t(sp.indexOf('\\/')>-1 && /a-z0-9/.test(sp), 'splits on a slash');
+t(/\\\.\(\?!\\d\)/.test(sp), 'splits on a full stop that is not a decimal point');
 
 console.log('\n  the unit string is handed on RAW, so _mtQty keeps owning units:');
 const pa = src.slice(src.indexOf('function _nlEchoParse'), src.indexOf('/* IS THE TABLE ROW'));
@@ -70,7 +76,7 @@ console.log(bad?('\n'+bad+' FAILED'):'\nall pass');
   const L=src.split('\n');
   function liftVar(name){ const s=L.findIndex(l=>l.startsWith('var '+name+'=')); if(s<0) throw new Error('no '+name); for(let i=s;i<L.length;i++) if(L[i].trim()==='];'||L[i].trim()==='};') return L.slice(s,i+1).join('\n'); throw new Error('no close '+name); }
   function liftFn(name){ const a=src.indexOf('function '+name+'('); if(a<0) throw new Error('no fn '+name); let d=0,i=src.indexOf('{',a); for(;i<src.length;i++){ if(src[i]==='{') d++; else if(src[i]==='}'){ d--; if(!d) break; } } return src.slice(a,i+1); }
-  const need=['_nlEchoSplit','_nlStandsAlone','_nlEchoParse','_nlUnitWords','_nlSameFood','_mtRow'];
+  const need=['_nlHardBreaks','_nlEchoSplit','_nlStandsAlone','_nlEchoParse','_nlUnitWords','_nlSameFood','_mtRow'];
   let code='';
   ['MT_ROWS','MT_UNIT_ALIAS','MT_WEIGHT_G','_NL_WORD_QTY','_NL_HARMLESS'].forEach(v=>{ try{ code+=liftVar(v)+'\n'; }catch(e){} });
   code+='var _NL_UW_CACHE=null;\n';

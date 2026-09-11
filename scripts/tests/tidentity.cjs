@@ -74,11 +74,31 @@ try{ MAIN=cp.execSync('git show origin/main:index.html',{maxBuffer:64*1024*1024}
 console.log('  THE 82 CLIENTS HEAR EXACTLY WHAT THEY HEARD:');
 t(!!MAIN, 'main\'s copy of the file is readable, so there is something to compare against');
 if(MAIN){
-  const a=promptFrom(MAIN,false), b=promptFrom(HERE,false);
+  let a=promptFrom(MAIN,false), b=promptFrom(HERE,false);
   t(!!a && a.length>2000, 'main builds a client prompt', a?String(a.length)+' chars':'');
   t(!!b && b.length>2000, 'and so does this branch', b?String(b.length)+' chars':'');
-  const same=(a===b);
-  t(same, 'AND THEY ARE IDENTICAL, byte for byte');
+  /* THE MACRO TABLE IS THE ONE PART THAT IS MEANT TO GROW (11 Sep, adding
+     chicken thigh, wings and ground chicken - "7oz of chicken breast and 7oz of
+     chicken thigh are both 60g of protein"). The table is dumped into the
+     prompt verbatim, so a new row moves every byte after it and this comparison
+     failed on a change whose whole point was that clients get it too.
+     So the table is compared as a table - rows only ever ADDED, never changed
+     or dropped - and the PROSE around it is still compared byte for byte, which
+     is what this test was written to protect. */
+  const cut=function(p){
+    var i=p.indexOf('chicken breast [oz]'); if(i<0) return {pre:p, rows:[], post:''};
+    var j=p.indexOf('\n\n', i); if(j<0) j=p.length;
+    return {pre:p.slice(0,i), rows:p.slice(i,j).split('\n').filter(Boolean), post:p.slice(j)};
+  };
+  const A=cut(a), B=cut(b);
+  const same=(A.pre===B.pre && A.post===B.post);
+  t(same, 'AND THE PROSE AROUND THE TABLE IS IDENTICAL, byte for byte');
+  const kept=A.rows.filter(function(r){ return B.rows.indexOf(r)<0; });
+  t(kept.length===0, 'every macro row main serves is still served, unchanged',
+    kept.length?('lost: '+kept.join(' | ')):'');
+  const added=B.rows.filter(function(r){ return A.rows.indexOf(r)<0; });
+  t(true, 'rows added on this branch', added.length?added.join(' | '):'none');
+  if(!same && a && b){ a=A.pre+A.post; b=B.pre+B.post; }
   if(!same && a && b){
     // Say WHERE, not just that. A diff nobody can locate gets argued with.
     let i=0; while(i<a.length && i<b.length && a[i]===b[i]) i++;

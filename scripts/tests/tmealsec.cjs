@@ -44,7 +44,16 @@ console.log('\nAN EMPTY PAST DAY DRAWS NOTHING; TODAY ALWAYS HAS ITS DOORS (Yusu
 DUE = null;
 t(sec({}, true) !== '' && /data-key="breakfast"/.test(sec({}, true)) && /data-key="lunch"/.test(sec({}, true)) && /data-key="dinner"/.test(sec({}, true)),
   'today with nothing logged and nothing due still has Breakfast, Lunch and Dinner doors');
-t(sec({}, false) === '', 'a past day with nothing logged is empty');
+/* ONE DOOR ON A PAST DAY, NEVER THE LADDER (Yusuf, 11 Sep: "no, this option
+   is not available on the main screen of my trainer page"). The ruling this
+   line was written under - "Five things you hadn't done, before you'd done
+   anything" - is about the four MEAL boxes, and those still never appear on a
+   day that is over. What appears is one way in, on the day he is looking at. */
+var _past=sec({}, false);
+t(/data-tl="add" data-key="food"/.test(_past) && /Log something for this day/.test(_past),
+  'a past day with nothing logged carries one way in');
+t(!/data-key="breakfast"/.test(_past) && !/data-key="lunch"/.test(_past) && !/data-key="dinner"/.test(_past),
+  'and never the meal ladder - a day that is over is not a report card');
 t(sec({}, false, true) === '', 'a day still ahead is empty');
 t(/Breakfast/.test(sec({dinner:[meal('steak',900,90)]}, true)),
   'and a day with only dinner still has the Breakfast door');

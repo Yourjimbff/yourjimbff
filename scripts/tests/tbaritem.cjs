@@ -42,6 +42,12 @@ eval([ one('var _JIM_DAY_BACK_RE='), one('var _JIM_DAY_NAGO_RE='), one('var _JIM
   'var _NL_UW_CACHE=null;',
   grab(l=>l.startsWith('function _nlUnitWords(')),
   multi('var _NL_WORD_QTY ='),
+  /* _nlEchoSplit calls _nlHardBreaks as of 11 Sep (dashes, slashes and full
+     stops became lists). Without it here the split THREW, the echo caught
+     it, and this suite reported one line for a three-food plate as though
+     the app had regressed - the silent-hole failure _lift.cjs was written
+     about, in a suite that hand-lifts instead. */
+  grab(l=>l.startsWith('function _nlHardBreaks(')),
   grab(l=>l.startsWith('function _nlEchoSplit(')), grab(l=>l.startsWith('function _nlEchoParse(')),
   multi('var _NL_HARMLESS ='),
   grab(l=>l.startsWith('function _nlSameFood(')), grab(l=>l.startsWith('function _nlEcho(')),

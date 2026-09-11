@@ -25,7 +25,17 @@ t(/worked out when you log it/.test(echo),
   'an item the table cannot price still says so instead of guessing');
 
 /* The per-item lines are the thing he actually asked for on 3 Sep and they stay. */
-t(/nlEchoRow/.test(echo) && /_mealMacLine\(L\.stated/.test(echo), 'the line per item is untouched');
+t(/nlEchoRow/.test(echo) && /_mealMacLine\(_nlEchoShape\(L, L\.row\)/.test(echo), 'the line per item is still one line per item');
+/* WHICH TWO FIGURES THAT LINE SPENDS ITS ROOM ON (Yusuf, 11 Sep: "when logging
+   rice, i dont care about the protein, OR in vegetables ... for vegetables carbs
+   and calories matter. in rice carbs and calories matter. not protein"). */
+const shape=slice('function _nlEchoShape(L, row){', 'function _nlEchoHtml');
+t(/carbs:L\.carbs, fat:0/.test(shape) && /protein:0/.test(shape),
+  'a starch or a vegetable shows calories and carbs, and drops the protein');
+t(/return \{calories:L\.calories, protein:L\.protein, carbs:0, fat:0\};/.test(shape),
+  'everything else keeps calories and protein');
+t(/if\(L\.stated\) return/.test(shape),
+  'and their own stated numbers are never reshaped');
 
 // ---- the third number: the Edit sheet ----
 const edit = slice('function tlEditFood(id){', 'function _edPaintDay');

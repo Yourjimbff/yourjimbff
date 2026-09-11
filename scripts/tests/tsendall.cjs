@@ -35,9 +35,21 @@ t(/try\{ var _sa=await _jvSendAllCommand\(t\); if\(_sa\) return _sa; \}/.test(sr
 // A MACHINE ROW IS NOT A JOURNAL ENTRY (Yusuf, 7 Sep, screenshot)
 console.log('\n  THE ORDER STAYS OFF HIS DAY:');
 const je=src.slice(src.indexOf('function _jeMachine('), src.indexOf('function _jeMachine(')+400);
-t(/entry_type==='sendall'/.test(je) && /\^\\\[SENDALL\\\]/.test(je), 'a send-all row is known by its type or its [SENDALL] body');
+t(/entry_type==='sendall'/.test(je) && /\\\[SENDALL\\b/.test(je), 'a send-all row is known by its type or its [SENDALL...] body');
 t((src.match(/_jeMachine\(/g)||[]).length>=7, 'and every journal surface skips it - day card, timeline, journal list, entry cache, today entry, check-in', String((src.match(/_jeMachine\(/g)||[]).length));
 t(/rowDs\(j\)===ds && !_jeMachine\(j\)/.test(src), 'the Day page journal card specifically');
+/* AND THE MAC'S ANSWER TO THE ORDER (Yusuf, 11 Sep, off his own Day: two cards
+   headed "Journal" reading [SENDALL-RESULT] {"orderId":"lailee-time-edit-11sep"
+   ...}). The old test proved the exact regex in the file rather than what it
+   catches, so a marker one character longer than [SENDALL] walked straight past
+   it and onto his day. Run the real function over the real bodies instead. */
+const _jm=(function(){ var f={}; eval(src.slice(src.indexOf('function _jeMachine('), src.indexOf('function _jeMachine(')+520).replace(/\n\/\*[\s\S]*$/,'')); return _jeMachine; })();
+t(_jm({body:'[SENDALL] {"orderId":"sa-1"}'})===true, 'the order itself is machine traffic');
+t(_jm({body:'[SENDALL-RESULT] {"orderId":"lailee-time-edit-11sep","items":[]}'})===true,
+  'and so is the Mac\'s answer to it - the shape that reached his day on 11 Sep');
+t(_jm({entry_type:'sendall'})===true, 'the column still says it on its own');
+t(_jm({body:'Felt strong today. Sendall the energy.'})===false, 'a real entry that happens to say the word is untouched');
+t(_jm({body:''})===false && _jm(null)===false, 'and nothing throws on an empty row');
 
 // THE PICKER (Yusuf, 7 Sep: "select all that apply... hit send... refresh and be clear")
 console.log('\n  THE PICKER:');

@@ -34,7 +34,13 @@ t(/fdHd"><div class="wdEy">YOURJIMBFF<\/div><span class="fdTitle">Today<i>Thursd
 t(/wdHead"><div class="wdT"><\/div><div class="wdL"><\/div><div class="wdHb"><span>Breakfast<\/span><span>1,021 cal<\/span>/.test(html) && /wdHb"><span>Dinner<\/span><span>366 cal<\/span>/.test(html) && /wdHb"><span>Snack<\/span><span><\/span>/.test(html) && (html.match(/wdHb/g)||[]).length===3, 'each meal heads its foods on the line with its calories; a meal with no numbers heads with none');
 t(/\.fdPanel\.wdFull\{[^}]*padding:14px 18px calc\(60px \+ env\(safe-area-inset-bottom,0px\)\)/.test(src) && /\.wdFull \.fdHd\{display:block;padding:40px 4px 0;\}/.test(src), 'share margins: the title sits well down, the line ends well up');
 t(/fdTitle">Today<i>Thursday, September 10<\/i><\/span><\/div><div class="wdTiles">/.test(html) && /wdTiles">[\s\S]*<div class="wdBody">/.test(html), 'the numbers sit right under the head, before the line');
-t(/data-key="food" data-ds="'\+_escHtml\(ds\)\+'" role="button" tabindex="0" aria-label="Add a meal"/.test(src) && /tlMealAskT">Add a meal</.test(src) && /if\(_ak==='food'\)\{ nlOpen\(_ads, null\); return; \}/.test(src), 'today always has an Add a meal door, and it opens Jim with no slot');
+t(/data-key="food" data-ds="'\+_escHtml\(ds\)\+'" role="button" tabindex="0" aria-label="Add a meal"/.test(src) && />'\+\(_pastLive\?'Log something for this day':'Add a meal'\)\+'</.test(src) && /if\(_ak==='food'\)\{ nlOpen\(_ads, null\); return; \}/.test(src), 'today has an Add a meal door, and it opens Jim with no slot');
+/* AND SO DOES A DAY THAT ALREADY PASSED (Yusuf, 11 Sep: "no, this option is
+   not available on the main screen of my trainer page, im sure it goes the same
+   for clients"). nlOpen has always taken the date; nothing ever handed it one
+   from a past day. */
+t(/if\(todayLive \|\| _pastLive\)\{/.test(src) && /var _pastLive=\(!isToday && !isAhead && !ro\);/.test(src),
+  'and a day that already passed has one too, onto the day he is looking at');
 t(/tlMealsEy">Body<\/span><\/div>'\s*\+'<div id="dayWeightHost">/.test(src) && !/tlMealsEy">Stats</.test(src), 'Body and Stats are one section, the weight card first');
 t(/<div class="fdGrab" role="button" aria-label="Close"><\/div>/.test(src) && /if\(atTop && dy>90 && dx<60 && panel\.scrollTop<=0\) _fdClose\(\);/.test(src), 'the handle closes and a pull down closes');
 t(/return _fdShow\(html, 'Weigh-in history', 'mid'\);/.test(src) && /\.fdOv\.mid\{align-items:center;/.test(src), 'the weight sheet floats mid-screen');
