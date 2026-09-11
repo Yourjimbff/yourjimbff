@@ -29,7 +29,7 @@ vm.runInContext(lifted.code, ctx);
    and strings (AEIOU, BBQ, BLT, OZ...) and a handful of caller-owned locals.
    Named here rather than filtered by shape, so a genuine hole still shows. */
 const KNOWN_OUTSIDE=['_dsFallback','_drawn','_go','JSON','AEIOU','BBQ','BLT','PB','PBJ','IPA',
-  'XL','XXL','MCT','BCAA','DHA','EPA','GF','LB','OZ','II','III','_nl','_liveChips','Z0','_ln'];
+  'XL','XXL','MCT','BCAA','DHA','EPA','GF','LB','OZ','II','III','_nl','_liveChips','Z0','_ln','_seen','_ks'];
 const holes=(lifted.unresolved||[]).filter(n=>KNOWN_OUTSIDE.indexOf(n)<0);
 t(holes.length===0, 'every function under test lifted with its whole closure', holes.join(' '));
 

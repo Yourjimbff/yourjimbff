@@ -34,7 +34,11 @@ t(S('12oz steak and 6 eggs')===null, 'a plain plate is not a stated line');
 const echo=src.slice(src.indexOf('function _nlEcho(line){'), src.indexOf('function _nlEchoHtml(st){'));
 t(/_nlStated\(line\)/.test(echo) && /out\.stated=true;\s*return out;/.test(echo), 'the echo shows one line of his numbers and leaves nothing for the table or the model');
 const sub=src.slice(src.indexOf('async function nlSubmit(){'), src.indexOf('function nlEdit(el, f){'));
-t(/_nlFastOn\(\) \|\| _nlStated\(line\)/.test(sub), 'a stated line takes the fast road whatever the switch says - no model');
+/* AND WHATEVER IS ATTACHED (11 Sep). A photo now sends a meal down the road
+   that reads it - but not when he has already said the numbers. There is
+   nothing for a model to work out, and his figures are his figures. */
+t(/_nlStated\(line\) \|\| \(!st\.photo && _nlFastOn\(\)\)/.test(sub),
+  'a stated line takes the fast road whatever the switch says and whatever is attached - no model');
 
 console.log('\n  the one door every food log goes through:');
 const door=src.slice(src.indexOf('async function logFoodFromChat(offer, photo, targetCode){'), src.indexOf('async function logFoodFromChat(offer, photo, targetCode){')+11000);   // widened 11 Sep: the echo fallback sits between _stated and the reconcile

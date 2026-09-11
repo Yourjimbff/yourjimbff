@@ -31,8 +31,16 @@ t(/st\.logged=true/.test(f),                 'and the sheet says logged, once it
 t(/_tlRefreshDay\(st\.ds\)/.test(f),         'the day refreshes under it');
 t(/Could not save — it is NOT logged/.test(f), 'a failed write says so and keeps their line');
 
-console.log('\n  a photo with no words still takes the old road:');
-t(/if\(line && \(_nlFastOn\(\) \|\| _nlStated\(line\)\)\)/.test(src),   'the fast path needs a line (and a stated line always takes it)');
+console.log('\n  a photo takes the road that reads it, with or without words:');
+/* WIDENED 11 Sep (Lailee, third report of "the app is doing the thing again").
+   This only sent a photo-ONLY capture down the reading road. She attaches a
+   photo AND types what it is every time, and that took the fast road: priced
+   the words off the table, committed on them, and filed the photograph without
+   one thing looking at it. A photo is the request to have it read. */
+t(/if\(line && \(_nlStated\(line\) \|\| \(!st\.photo && _nlFastOn\(\)\)\)\)/.test(src),
+  'the fast path needs a line AND no photo');
+t(/_nlStated\(line\) \|\|/.test(src),
+  'except for her own stated numbers, which never wait for a model whatever is attached');
 t(/nothing to commit on until something has\s*\n\s*read the picture/.test(src) || /photo-only capture still/.test(src),
   'and the reason is written down');
 
