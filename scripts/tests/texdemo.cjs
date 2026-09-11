@@ -55,5 +55,35 @@ t(/exDemoCr">Demo: Workout Guru · wger · CC BY-SA</.test(sh.h), 'the picture i
 t(!/@/.test(JSON.stringify(EX_DEMO)), 'nobody\'s email address is printed on a client\'s screen');
 t(/onclick="_exDemoOpen\(/.test(src) && /class="pgLibRow hasDemo"/.test(src), 'the library row is the door');
 t((src.match(/\+_exDemoThumb\(x\.n\)/g)||[]).length===2, 'the swap picker and the add picker show the picture too');
+
+// ===== THE DAY IS WHERE HE LOOKS =========================================
+// Yusuf, 11 Sep: "when I opened up my pull day today I don't see any graphics."
+// The pictures were wired into the library and the two pickers and nowhere
+// else - which is to say, wired into the three screens nobody opens mid-set.
+const tap=vm.runInContext("_exDemoTap('Shrugs')", ctx);
+t(/class="bfThumb"/.test(tap) && /src="https:\/\/sb\.test\/[^"]*\/t\/shrugs\.jpg"/.test(tap),
+  'an exercise card on the day carries the small picture');
+t(/data-ex="Shrugs"/.test(tap) && /getAttribute\('data-ex'\)/.test(tap),
+  'and the name travels in an attribute, so a slash or an apostrophe in it cannot break the tap');
+t(vm.runInContext("_exDemoTap('Preacher Curls')", ctx)==='',
+  'a movement with no demo yet keeps exactly the card it had');
+const slashy=vm.runInContext("_exDemoTap('Pull Downs / Pull Ups')", ctx);
+t(/data-ex="Pull Downs \/ Pull Ups"/.test(slashy) && slashy.indexOf("_exDemoOpen('Pull")<0,
+  'the one library name with a slash in it is not baked into a JS string');
+t(/class="woThumb"/.test(vm.runInContext("_exDemoTap('Squat','woThumb')", ctx)),
+  'a finished session prints a smaller one on every row');
+
+t(/\+_exDemoTap\(e\.n\)\n\s*\+'<div style="flex:1;min-width:0;">'/.test(src.replace(/\r/g,'')) ,
+  'the planned exercise card calls it');
+t((src.match(/\+_exDemoTap\(e\.n\)/g)||[]).length===2,
+  'both of them do - the programmed card and the shelf card');
+t(/\+_exDemoTap\(it\.name, 'woThumb'\)/.test(src), 'and so does the completed workout card');
+
+// The day he actually opened.
+const pull=vm.runInContext('DAY_TEMPLATES.Pull', ctx).map(r=>r[0]);
+t(pull.length===6, 'his Pull day is six movements', pull.join(', '));
+const pullShown=pull.filter(n=>vm.runInContext("_exDemo("+JSON.stringify(n)+")", ctx)!==null);
+t(pullShown.length===5, 'five of the six now show a picture on that day; Barbell Row is on his own shot list', pullShown.join(', '));
+
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all demo assertions pass');
 process.exit(bad?1:0);
