@@ -102,7 +102,36 @@ const q3=vm.runInContext("_qtyParse('3 eggs')", ctx);
 t(q3.qty===3 && q3.name==='eggs' && q3.cut===true, 'a real quantity is unchanged');
 t(/var ql=\(pr\.cut\?pr\.name:q\)\.toLowerCase\(\), qraw=q\.toLowerCase\(\)/.test(src)
   && /k\.indexOf\(ql\)<0 && k\.indexOf\(qraw\)<0/.test(src),
-  'and the suggest box searches the stripped name AND the raw words, so neither spelling can miss');
+  'the suggest box searches the stripped name AND the raw words, so neither spelling can miss');
+
+/* AND THE DOOR HE WAS ACTUALLY STANDING IN (proved on the served build, 11 Sep:
+   the log sheet's chip row, not the suggest box, was where nothing popped up).
+   Same bug, second copy: _nlChipCandidates scored a saved food's name against
+   the RAW line, so "1 " in front of it took the score to -1 every time. */
+const chipsrc=src.slice(src.indexOf('function _nlChipCandidates(text, slot){'),
+                        src.indexOf('function _nlChipsHtml('));
+const chips=(function(){
+  const c={String,Math,console,_savedFoods:[
+    {name:'Nutrition Solutions Protein Donut', calories:220, protein:20, carbs:24, fat:6},
+    {name:'2% Greek Yogurt', calories:140, protein:20, carbs:8, fat:4}
+  ]};
+  vm.createContext(c);
+  vm.runInContext(vm.runInContext.length?'':'', c);
+  vm.runInContext(closure(['_qtyParse']).code, c);
+  vm.runInContext(chipsrc, c);
+  return (q)=>vm.runInContext('_nlChipCandidates('+JSON.stringify(q)+', "breakfast").map(function(o){return o.item.name;})', c);
+})();
+t(chips('nutrition solutions protein donut').indexOf('Nutrition Solutions Protein Donut')>-1,
+  'his saved donut shows when he types its name', JSON.stringify(chips('nutrition solutions protein donut')));
+t(chips('1 nutrition solutions protein donut').indexOf('Nutrition Solutions Protein Donut')>-1,
+  'AND when he types how many of them - the exact thing that showed nothing',
+  JSON.stringify(chips('1 nutrition solutions protein donut')));
+t(chips('2 nutrition solutions').indexOf('Nutrition Solutions Protein Donut')>-1,
+  'and a quantity in front of a partial name too');
+t(chips('2% greek yogurt').indexOf('2% Greek Yogurt')>-1,
+  'a food whose real name opens with a number is still found under its own spelling',
+  JSON.stringify(chips('2% greek yogurt')));
+t(chips('xyzzy').length===0, 'and a name nobody saved still matches nothing');
 
 console.log(bad? '\n  '+bad+' FAILED' : '\n  the echo says one honest number per food');
 process.exit(bad?1:0);
