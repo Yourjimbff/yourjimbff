@@ -10,7 +10,7 @@ const ctx={String,Math,Number,Array,Date,isNaN,window:{}, document:doc,
   _escHtml:(x)=>String(x==null?'':x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'),
   _tlMins:(r)=>{ const d=new Date(r.logged_at); return d.getHours()*60+d.getMinutes(); },
   _tlClock:(m)=>{ const h=Math.floor(m/60), mm=m%60, hh=h%12||12; return hh+':'+(mm<10?'0':'')+mm+(h>=12?'pm':'am'); },
-  _tlDayLabel:(d)=>'Today', _woDisplayTitle:(w)=>'Chest, Forearms, Shoulders', _stepsFor:(ds)=> ds==='Sep 10, 2026' ? 11800 : null,
+  _tcase:(x)=>String(x).split(' ').map(w=>w.charAt(0).toUpperCase()+w.slice(1)).join(' '), _tlDayLabel:(d)=>'Today', _woDisplayTitle:(w)=>'Chest, Forearms, Shoulders', _stepsFor:(ds)=> ds==='Sep 10, 2026' ? 11800 : null,
   _bfItemsFor:(w)=>({items:[{name:'Smith Machine Chest Press',detail:'4 sets'},{name:'Forearm Curls',detail:'4 sets'},{name:'Hip Mobility',detail:'15 min'}],note:''}) };
 vm.createContext(ctx); vm.runInContext(src.slice(a,b), ctx);
 const slots={breakfast:[{name:'Banana walnut chocolate chip pancakes',calories:1021,protein:22,carbs:114,fat:53,logged_at:'2026-09-10T09:52:00',photo:'data:image/jpeg;base64,AAAA'}],dinner:[{name:'Sweet & Sour Chicken',calories:366,protein:59,carbs:10,fat:10,logged_at:'2026-09-10T16:26:00'}],lunch:[],snack:[{name:'a handful of almonds',calories:0,logged_at:'2026-09-10T22:00:00'}],
@@ -21,10 +21,13 @@ const html=doc._els.fdOv.innerHTML;
 const order=['7:00am','7:30am','9:52am','2:30pm','4:26pm','10:00pm'].map(c=>html.indexOf('wdT">'+c+'<'));
 t(order.every(i=>i>=0) && order.every((v,i)=>i===0||v>order[i-1]), 'everything on the day, in clock order: weigh-in, walk, pancakes, session, dinner, snack');
 t(/wdRow first"><div class="wdT">7:00am/.test(html) && /wdRow last"><div class="wdT">10:00pm/.test(html), 'the line starts at the first thing and ends at the last');
-t(/wdFood"><img src="data:image\/jpeg;base64,AAAA" alt=""><div><div class="wdN">Banana walnut chocolate chip pancakes<\/div><div class="wdM">Breakfast · 22P · 114C · 53F<\/div><\/div><b class="wdK">1,021<\/b>/.test(html), 'a food shows its photo small, its meal and P C F, and its calories');
+t(/wdFood"><img src="data:image\/jpeg;base64,AAAA" alt=""><div><div class="wdN">Banana Walnut Chocolate Chip Pancakes<\/div><div class="wdM">Breakfast · 22P · 114C · 53F<\/div><\/div><b class="wdK">1,021<\/b>/.test(html), 'a food shows its photo, its meal and P C F, its calories - and its name in the same case as every other');
 t(/wdFood"><div><div class="wdN">Sweet &amp; Sour Chicken<\/div>/.test(html), 'a food logged without a photo simply has none');
-t(/a handful of almonds<\/div><div class="wdM">Snack · no numbers<\/div><\/div><\/div>/.test(html), 'a food without numbers says so and shows no calorie figure');
-t(/wdWo"><div class="wdN">Chest, Forearms, Shoulders<\/div><div class="wdM">Smith Machine Chest Press 4 sets · Forearm Curls 4 sets · Hip Mobility 15 min<\/div>/.test(html), 'the session carries its smart title and its exercises in one line');
+t(/A Handful Of Almonds<\/div><div class="wdM">Snack · no numbers<\/div><\/div><\/div>/.test(html), 'a food without numbers says so and shows no calorie figure');
+t(/wdWo"><div class="wdN">Chest, Forearms, Shoulders<\/div><div class="wdExs"><div class="wdEx"><span>Smith Machine Chest Press<\/span><span>4 sets<\/span><\/div><div class="wdEx"><span>Forearm Curls<\/span><span>4 sets<\/span><\/div><div class="wdEx"><span>Hip Mobility<\/span><span>15 min<\/span><\/div><\/div>/.test(html), 'the session carries its smart title and one line per exercise, the sets at the right - never a run-on sentence');
+t(/^<div class="fdPanel wdFull">/.test(html) && /<\/div><div class="wdTiles">/.test(html) && /wdTiles">[\s\S]*<div class="fdFoot">YOURJIMBFF<\/div>$/.test(html.replace(/<\/div>$/,'')) , 'the sheet stands full height, the tiles hold the foot with the brand under them');
+t(/\.fdPanel\.wdFull\{height:calc\(100% - 34px\);max-height:none;display:flex;flex-direction:column;/.test(src) && /\.wdTiles\{[^}]*margin-top:auto/.test(src), 'and the stylesheet says so');
+t(/var _WO_OPEN='<div class="tlMeals tlFirst"><div class="tlMealsHead"><span class="tlMealsEy">Workout<\/span><\/div>';/.test(src) && /if\(html\.length===_woMark\+_WO_OPEN\.length\) html=html\.slice\(0,_woMark\); else html\+='<\/div>';/.test(src) && /\.tlAsks \+ \.tlAsks\{margin-top:0;\}/.test(src) && /\.tlAsks\{margin:10px 0 2px;padding:0;\}/.test(src), 'the day stacks in one grammar: the workout gets a section head like Food, Body and Stats, dropped when empty; ask rows share one indent and one group');
 t(/wdN">Morning walk</.test(html) && /wdN">Weighed in<\/div><div class="wdM">168 lb</.test(html), 'walks and weigh-ins are on the line too');
 t(/wdTk">Steps<\/div><div class="wdTv">11,800</.test(html) && /wdTk">Calories<\/div><div class="wdTv">1,387</.test(html) && /wdTk">Protein<\/div><div class="wdTv">81<small>g<\/small>/.test(html), 'steps and the day\'s numbers sit at the foot');
 t(/fdTitle">Today<i>Sep 10<\/i>/.test(html) && /YOURJIMBFF/.test(html), 'titled with the day, signed with the brand');
