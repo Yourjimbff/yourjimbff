@@ -36,8 +36,16 @@ t(/_nlSaidFoods\(_said\)/.test(block),
   'with only the wrapper taken off the sentence first');
 
 console.log('\n  WHEN IT MAY SPEAK:');
-t(/!\(Array\.isArray\(offer\.items\) && offer\.items\.length\)/.test(block),
-  'only when the model sent no rows at all - the rows path is untouched');
+/* IT WINS OVER THE MODEL'S ROWS, NOT JUST OVER THEIR ABSENCE (second sighting,
+   same session, same sentence: the model then sent ONE row the table could not
+   price - the whole sentence as a single food - and the meal landed at 355 cal
+   / 29g protein, a third number for the same plate). THE TABLE IS LAW, and a
+   row the table cannot price is not the table speaking. */
+t(/var _mrows=\(Array\.isArray\(offer\.items\)\?offer\.items\.length:0\);/.test(block)
+  && /_e\.lines\.length>=_mrows/.test(block),
+  'the echo outranks the model\'s rows when it accounted for at least as many foods');
+t(!/!\(Array\.isArray\(offer\.items\) && offer\.items\.length\)/.test(block),
+  'and is no longer limited to the case where the model sent nothing');
 t(/!_stated/.test(block),
   'never over numbers he stated in his own words');
 t(/!_e\.stated/.test(block),
@@ -57,8 +65,8 @@ t(/items:_e\.lines\.map/.test(block),
 t(/calories:Math\.round\(_e\.total\.calories\)/.test(block) && /protein:Math\.round\(_e\.total\.protein\)/.test(block)
   && /carbs:Math\.round\(_e\.total\.carbs\)/.test(block) && /fat:Math\.round\(_e\.total\.fat\)/.test(block),
   'and the echo\'s total becomes the meal\'s total - all four, character for character');
-t(/console\.warn\('FOOD_LOG: no rows from the model/.test(block),
-  'and it says in the console when it overrode the model, so this is never silent');
+t(/console\.warn\('FOOD_LOG: the table prices the whole sentence/.test(block) && /_mrows\+' model row\(s\)'/.test(block),
+  'and it says in the console when it overrode the model, and how many rows it beat');
 
 // ---- and the arithmetic it produces, run for real ------------------------
 console.log('\n  HIS SENTENCE, PRICED THE WAY HE SAW IT:');
