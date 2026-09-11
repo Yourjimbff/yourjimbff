@@ -16803,6 +16803,19 @@ async function _loadTrainerFeedRun(targetId){
     var _wosP   = (lens==='kitchen') ? Promise.resolve([]) : sbSelect('workout_logs','select=id,client_code,title,intensity,description,exercises,notes,logged_at,date_str,photo,performed_at'+_sinceQ+'&order=logged_at.desc.nullslast&limit=300').catch(function(){return [];});
     var _weightsP = (lens==='all') ? sbSelect('weight_logs','order=id.desc&limit=150').catch(function(){return [];}) : Promise.resolve([]);
     var _photosP  = (lens==='all') ? sbSelect('progress_photos','order=id.desc&limit=90').catch(function(){return [];}) : Promise.resolve([]);
+    /* STEPS ON THE FEED (Yusuf, 11 Sep: "whenever someone logs steps and it
+       updates, I should get notified... I add steps in multiple times throughout
+       the day. So clients are more than welcome to have that same thing happen.
+       I do not mind.").
+       The feed read seven things and step_logs was not one of them, so a step
+       count has never appeared here once - not rarely, never. What he was seeing
+       was a WALK logged as a workout.
+       ONE ROW PER CLIENT PER DAY, upserted, so adding steps three times does not
+       make three cards: the one card's number rises and its time moves, which
+       floats it back to the top of the feed. That is the notification he asked
+       for, on the surface he already watches, without a stream of near-identical
+       rows behind it. */
+    var _stepsP = (lens==='all') ? sbSelect('step_logs','select=id,client_code,steps,date_str,updated_at&updated_at=gte.'+encodeURIComponent(_feedSince)+'&order=updated_at.desc&limit=400').catch(function(){return [];}) : Promise.resolve([]);
     // A FAILED LIKE READ IS NOT "NOTHING IS LIKED" (Yusuf, ruling, 20 Aug —
     // three states on the like read). sbSelect returns [] on failure and never
     // throws, so an empty array here is ambiguous: it means either a genuinely
@@ -16842,7 +16855,7 @@ async function _loadTrainerFeedRun(targetId){
     // photo + raw_text backfills depend on which foods survived the cut — run them together, alongside everything else still in flight
     var _photoBackfill = (async function(){ try{ var _allIds=foods.filter(function(f){return f.id!=null;}).slice().sort(function(a,b){return _feedTs(b)-_feedTs(a);}).slice(0,150).map(function(f){return f.id;}); var _pm={}; var _pp=[]; for(var _bi=0;_bi<_allIds.length;_bi+=40){ var _chunk=_allIds.slice(_bi,_bi+40); if(_chunk.length) _pp.push(sbSelect('food_logs','id=in.('+_chunk.join(',')+')&select=id,photo&limit=40').catch(function(){return [];})); } var _pr=await Promise.all(_pp); _pr.forEach(function(_pf){ (_pf||[]).forEach(function(r){ if(r.photo) _pm[r.id]=r.photo; }); }); foods.forEach(function(f){ if(_pm[f.id]) f.photo=_pm[f.id]; }); }catch(e){} })();
     var _rawBackfill = (async function(){ try{ var _rids=foods.filter(function(f){return f.id!=null;}).slice().sort(function(a,b){return _feedTs(b)-_feedTs(a);}).slice(0,200).map(function(f){return f.id;}); var _rm={}; var _rp=[]; for(var _ri=0;_ri<_rids.length;_ri+=40){ var _rc=_rids.slice(_ri,_ri+40); if(_rc.length) _rp.push(sbSelect('food_logs','id=in.('+_rc.join(',')+')&select=id,raw_text&limit=40').catch(function(){return [];})); } var _rr2=await Promise.all(_rp); _rr2.forEach(function(_rr){ (_rr||[]).forEach(function(r){ if(r.raw_text) _rm[r.id]=r.raw_text; }); }); foods.forEach(function(f){ if(_rm[f.id]) f.raw_text=_rm[f.id]; }); }catch(e){} })();
-    var _resAll = await Promise.all([_wosP,_weightsP,_photosP,_reviewsP,_momentsP,_photoBackfill,_rawBackfill]);
+    var _resAll = await Promise.all([_wosP,_weightsP,_photosP,_reviewsP,_momentsP,_photoBackfill,_rawBackfill,_stepsP]);
     // The earliest useful bail-out: everything past this point is real CPU
     // work (grouping, sorting, per-item filtering) spent on a screen nobody
     // is looking at any more if this load has been superseded.
@@ -16852,6 +16865,17 @@ async function _loadTrainerFeedRun(targetId){
     try{ if(typeof FEED_HIDE!=='undefined'){ wos=wos.filter(function(w){ return !FEED_HIDE[w.client_code]; }); } }catch(e){}
     var weights=(_resAll[1]||[]).filter(function(w){return _feedTs(w)>=_feedCut;});
     var photos=(_resAll[2]||[]).filter(function(p){return _feedTs(p)>=_feedCut;});
+    /* step_logs is the one table here with NO logged_at and NO usable date on
+       the row for ordering - it is keyed on date_str and stamped updated_at, so
+       _feedTs would read the date_str and put a count logged at 9pm at midnight.
+       The clock it belongs at is the moment it was last updated. */
+    var steps=(_resAll[7]||[]).filter(function(r){
+      if(!r || !r.client_code || !(+r.steps>0)) return false;
+      var t=0; try{ t=new Date(r.updated_at).getTime(); }catch(e){ t=0; }
+      if(!t || isNaN(t)) return false;
+      r._ts=t; return t>=_feedCut;
+    });
+    try{ if(typeof FEED_HIDE!=='undefined'){ steps=steps.filter(function(r){ return !FEED_HIDE[r.client_code]; }); } }catch(e){}
     try{
       var _rvw=_resAll[3]||[];
       // THREE STATES. Rows back -> the server is the truth, replace. Empty AND
@@ -16946,6 +16970,7 @@ async function _loadTrainerFeedRun(targetId){
     photos.forEach(function(ph){ var c=ph.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(ph),kind:'photo',code:c,data:ph}); });
     moments.forEach(function(m){ items.push({ts:m.ts,kind:'moment',data:m}); });
     journals.forEach(function(j){ var c=j.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(j),kind:'journal',code:c,data:j}); });
+    steps.forEach(function(r){ var c=r.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:r._ts,kind:'steps',code:c,data:r}); });
     // One feed, one width, one ordering key: time. Same card, same size for everyone —
     // no priority lane, no gold edge, nothing that quietly reorders the clock.
     // BOTH WIDTHS, ONE FILTER (Yusuf, ruling, 23 Aug). This was desktop-only —
@@ -17580,6 +17605,18 @@ function _pfDayRow(it){
     what='Progress photo';
     meta = d.angle?_pfEsc(d.angle):'';
     photo = d.photo||null;
+  } else if(it.kind==='steps'){
+    /* The count as it stands right now, not a total for a finished day - the row
+       is still being added to. Said plainly, with no goal and no verdict on it:
+       the same rule the weigh-in row is written under. */
+    what='Steps';
+    meta = _feedNumBind(Number(d.steps||0).toLocaleString());
+    /* "So far" while the day is still running, because it is: the row is
+       upserted every time they add more. Once the day is over the number is
+       final and says nothing extra. */
+    try{
+      if(typeof todayDateStr!=='undefined' && d.date_str===todayDateStr) rating='So far today';
+    }catch(e){}
   } else if(it.kind==='journal'){
     what='Wrote a note';
   } else {
