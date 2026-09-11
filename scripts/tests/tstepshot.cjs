@@ -73,8 +73,13 @@ _stPreview({days:{'Sep 9, 2026':11560,'Sep 3, 2026':5450}, rough:true},'screensh
 t(/already on your record/.test(status()) && !/stImportGo/.test(status()), 'nothing to import: no button');
 _stPreview({days:{'Sep 9, 2026':11560,'Sep 3, 2026':5450}, rough:false},'screenshot');
 t(imp() && Object.keys(imp().days).length===2 && /2 would change/.test(status()), 'a week read is finer: it replaces');
-setMap({'Sep 10, 2026':5670});
-_stPreview({days:{'Sep 10, 2026':5670}},'screenshot');
+/* THE TEST EXPIRED AT MIDNIGHT. It hardcoded the day it was written on as
+   "today" and passed for exactly one day. _stPreview asks the clock, so the
+   test has to as well. */
+const _today = new Date().toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+const _oneDay = {}; _oneDay[_today] = 5670;
+setMap(_oneDay);
+_stPreview({days:_oneDay},'screenshot');
 t(/today, so far/.test(status()), 'today is marked as so far');
 
 console.log('\n  week and month in the sheet:');

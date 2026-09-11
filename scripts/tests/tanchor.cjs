@@ -32,8 +32,13 @@ const {_nlSettle}=m.exports;
 
 console.log('  the prompt asks for rows, and both roads settle the answer:');
 t(/function _nlItemsRule\(\)/.test(src),                      'the items rule exists');
-t(/sys\+_nlItemsRule\(\)\+'\\n\\nThe client says/.test(src),   'the estimate asks for rows');
-t(/\+_nlItemsRule\(\)\s*\n\s*\+'\\n\\nThe client says: "'\+left/.test(src), 'the enrich asks for rows');
+/* THESE ASSERTED ADJACENCY, not behaviour, and the USDA reference block was
+   later inserted between the rule and the client's line. Both prompts still
+   carry both halves, which is the thing worth holding. */
+const _oldRoad = src.slice(src.indexOf("content.push({type:'text', text: sys+_nlItemsRule()"), src.indexOf("content.push({type:'text', text: sys+_nlItemsRule()")+400);
+t(/_nlItemsRule\(\)/.test(_oldRoad) && /The client says: "/.test(_oldRoad), 'the estimate asks for rows');
+const _enrich = src.slice(src.indexOf('async function _nlEnrichRun'), src.indexOf('async function _nlEnrichRun')+1400);
+t(/_nlItemsRule\(\)/.test(_enrich) && /The client says: "'\+left/.test(_enrich), 'the enrich asks for rows');
 t(/est=_nlSettle\(await _estP\)/.test(src),                    'the estimate is settled');
 t(/est=_nlSettle\(await _nlEstimate\(content, null\)\)/.test(src), 'the enrich is settled');
 t(/var sys=_NL_SYS;/.test(src),                               'the old constant is untouched');

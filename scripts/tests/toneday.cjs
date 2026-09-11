@@ -58,8 +58,13 @@ t(/if\(!cols\[i\]\.classList\.contains\('ahead'\)\)/.test(SRC),
   'a week that ended mid-week lands on its last real day, not its Saturday');
 
 console.log('\nLANDING AND THE TODAY BUTTON ARE SELECTIONS NOW, NOT SCROLLS:');
-t(/if\(_tlOneDay\(\)\)\{\s*var _td='';[\s\S]{0,220}_tlShowOnly\(_td\)/.test(SRC),
-  'the opening render selects today instead of computing a scrollTop');
+/* Narrowed on purpose (Yusuf, 10 Sep, on Adriana's page: "I go to Wednesday...
+   and I get jumped to today"). Today is the landing ONLY when nothing is
+   selected yet. The test asserted the old always-today behaviour. */
+t(/if\(_tlOneDay\(\)\)\{[\s\S]{0,900}_tlShowOnly\(_want\)/.test(SRC),
+  'the opening render selects a day instead of computing a scrollTop');
+t(/var _want=\(window\._tlSelDs &&[\s\S]{0,120}\) \? window\._tlSelDs : _td;/.test(SRC),
+  'and the day they picked stays picked - today is only the cold open');
 t(/if\(\(window\._tlWeekOff\|0\)!==0\)\{ window\._tlWeekOff=0;/.test(SRC),
   'and the Today button brings the dial back to this week first');
 t(/document\.body\.classList\.toggle\('tlone', _navOn\);/.test(SRC),

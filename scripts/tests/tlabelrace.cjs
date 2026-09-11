@@ -14,8 +14,13 @@ t(/sbSelect\('food_logs','id=eq\.'/.test(landed) && /if\(!same\) return;/.test(l
 const res=src.slice(src.indexOf("else if(st.stage==='res'){"), src.indexOf("else if(st.stage==='res'){")+2500);
 t(/if\(st\.photo\) h\+='<div class="nlPhoto"/.test(res), 'the photo stays above the numbers');
 t(/From the label/.test(res) && /Estimated from the photo - still reading the label/.test(res), 'and the screen says label or estimate');
-const done=src.slice(src.indexOf('function _nlDone(st){'), src.indexOf('async function nlSubmit(){'));
-t(/nlDoneRing/.test(done) && /setTimeout\(function\(\)\{ try\{ if\(window\._nl===st\) nlClose\(\); \}catch\(e\)\{\} \}, 950\);/.test(done), 'a gold check draws and the sheet closes itself');
+/* The check itself was factored out of _nlDone into _doneFlash, which every
+   log flow now shares. Same behaviour, one door instead of one per flow. */
+const done=src.slice(src.indexOf('function _doneFlash(host, word, after){'), src.indexOf('async function nlSubmit(){'));
+t(/nlDoneRing/.test(done)
+  && /\}, 950\);/.test(done)
+  && /_doneFlash\(sh, 'Logged', function\(\)\{ if\(window\._nl===st\) nlClose\(\); \}\);/.test(done),
+  'a gold check draws, holds its beat, and the sheet closes itself');
 t((src.match(/_nlDone\(st\);/g)||[]).length===2, 'both log roads (fast and confirm) go out through it');
 t(/NUTRITION SOLUTIONS meal sleeve/.test(src) && /FIVE small yellow circles/.test(src), 'the label reader knows the Nutrition Solutions sleeve by shape');
 console.log(bad?'\n  '+bad+' FAILED':'\n  all label-race assertions pass');

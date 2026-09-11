@@ -55,12 +55,22 @@ const lines=css.split('\n').filter(l=>/crmConv|crmRowTop/.test(l));
 t(lines.every(l=>/^\s*\+'/.test(l) && /'$/.test(l.trim())),
   'every rule opens and closes its own quotes', lines.length+' rule line(s)');
 
-console.log(bad? ('\n'+bad+' FAILED') : '\n  all pass');
 // ONE LINE, NOT FOUR TILES (Yusuf, 7 Sep: "find a way to clean this up")
 const paint=src.slice(src.indexOf('function crmPaint(){'), src.indexOf('function crmPaint(){')+9000);
 t(!/crmScore/.test(paint) && !/earned today/.test(paint) && !/days the board ended clear/.test(paint), 'the four score tiles, the money and the streak are gone from the board head');
-t(/<div class="crmLine">/.test(paint) && /' to go<\/b>'/.test(paint) && /touched today'/.test(paint) && /longest wait <b>/.test(paint), 'one line says to go, touched today, longest wait');
+/* The copy was cut down on 8 Sep so the line stopped wrapping to two on his
+   phone: "N to go - N done - longest 3d Carly". The line still says the same
+   three things, in fewer words. */
+t(/<div class="crmLine">/.test(paint) && / to go<\/b>'/.test(paint) && /' done'/.test(paint) && /'longest <b>'/.test(paint),
+  'one line says to go, done today, longest wait');
+t(/Board.s empty/.test(paint) && /Nobody.s waiting/.test(paint) && /Board.s clear/.test(paint),
+  'and an empty board says which kind of empty it is');
+
+/* THE SUMMARY GOES LAST. It used to sit above these two, so a suite with a red
+   line down here still printed "all pass" as its final line and the runner's
+   tail showed green while its exit code said otherwise. */
 t(!/one at a time, your thumb still sends/.test(paint), 'and the hint under the buttons is gone');
+console.log(bad? ('\n  '+bad+' FAILED') : '\n  all pass');
 
 
 

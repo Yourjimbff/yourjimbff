@@ -63,7 +63,9 @@ global.profile=null; global.wUnit=()=>'lbs'; global.wToDisp=(v)=>Math.round(v*10
 global._pgStartWeight=(p,first)=>({ok:false,val:first,source:'first'});
 global._tlDateStr=(d)=>'2026-09-06';
 const stats=_tlStatsBlock('2026-09-06', true, false, {weigh:[]});
-t(/tlMealsEy">Stats</.test(stats), 'today has a Stats block, headed like the Food block is');
+/* "body should be body stats for weigh-in and progress photo" (Yusuf, 11 Sep):
+   Stats and Body are one section now, headed Body. */
+t(/tlMealsEy">Body</.test(stats), 'today has a Body block, headed like the Food block is');
 t(/id="dayWeightHost"/.test(stats), 'and the weight card sits in it');
 t(/data-tl="progphoto"/.test(stats) && !/data-tl="steps"/.test(stats), 'the photo door is in the block; steps moved up beside Cardio (10 Sep)');
 t(/data-tl="weighview"/.test(stats), 'the weigh-in door is INSIDE the weight card, not a row of its own');
