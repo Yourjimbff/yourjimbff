@@ -23,7 +23,7 @@ let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  '
 
 const block=src.slice(src.indexOf("  /* ...AND THE TABLE IS LAW EVEN WHEN THE MODEL SENDS NO ROWS"),
                       src.indexOf("  // THE TABLE IS LAW (Yusuf, 30 Aug), applied BEFORE the reconciliation"));
-t(block.length>1200 && block.length<4000, 'the fallback sits in logFoodFromChat, before the rows path', String(block.length)+' chars');
+t(block.length>1200 && block.length<6000, 'the fallback sits in logFoodFromChat, before the rows path', String(block.length)+' chars');
 
 console.log('\n  IT IS THE PREVIEW, NOT A SECOND IMPLEMENTATION OF IT:');
 t(/typeof _nlEcho==='function'/.test(block) && /_nlEcho\(_said\)/.test(block),
@@ -67,6 +67,12 @@ t(/calories:Math\.round\(_e\.total\.calories\)/.test(block) && /protein:Math\.ro
   'and the echo\'s total becomes the meal\'s total - all four, character for character');
 t(/console\.warn\('FOOD_LOG: the table prices the whole sentence/.test(block) && /_mrows\+' model row\(s\)'/.test(block),
   'and it says in the console when it overrode the model, and how many rows it beat');
+/* AND WHEN IT STANDS DOWN. It declined three times on the served build with no
+   way to see which clause did it, and three rounds of reading the code guessed
+   wrong each time. A gate nobody can question is a gate nobody can fix. */
+t(/console\.warn\('FOOD_LOG: echo stood down'/.test(block)
+  && /modelRows:_mrows/.test(block) && /modelItems:/.test(block) && /priced:_priced/.test(block),
+  'and it says WHY when it stands down - every clause of the gate, and the model rows it was weighed against');
 
 // ---- and the arithmetic it produces, run for real ------------------------
 console.log('\n  HIS SENTENCE, PRICED THE WAY HE SAW IT:');
