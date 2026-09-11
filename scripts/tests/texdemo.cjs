@@ -21,7 +21,7 @@ const EX_LIB=vm.runInContext('EX_LIB', ctx), EX_DEMO=vm.runInContext('EX_DEMO', 
 const names=[]; Object.keys(EX_LIB).forEach(k=>EX_LIB[k].forEach(x=>names.push(x.n)));
 t(names.length===49, 'the library is 49 movements', String(names.length));
 const demoNames=Object.keys(EX_DEMO);
-t(demoNames.length===38, '38 of the 49 have a demo, and the other 11 are the shot list', String(demoNames.length));
+t(demoNames.length===27, '27 of the 49 have one, and the other 22 are the shot list', String(demoNames.length));
 
 const orphans=demoNames.filter(n=>names.indexOf(n)<0);
 t(orphans.length===0, 'EVERY demo is filed under a name the library actually has', orphans.join(', '));
@@ -30,17 +30,20 @@ const slugs={}, dupes=[];
 demoNames.forEach(n=>{ const s=EX_DEMO[n].split('|')[0]; if(slugs[s]) dupes.push(s); slugs[s]=n; });
 t(dupes.length===0, 'no two movements point at the same picture', dupes.join(', '));
 t(demoNames.every(n=>/^[a-z0-9-]+\|(jpg|gif)\|.+$/.test(EX_DEMO[n])), 'every entry reads slug|ext|author');
-t(demoNames.every(n=>EX_DEMO[n].split('|')[0]===n.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')),
-  'and the slug is the movement name, so a file can be found from the app and the other way round');
+t(demoNames.every(n=>EX_DEMO[n].split('|')[0].replace(/-v\d+$/,'')===n.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')),
+  'and the slug is the movement name (a -v2 means the first picture was thrown out), so a file can be found from the app and the other way round');
 
 const d=vm.runInContext("_exDemo('Lateral Raises')", ctx);
 t(d.img==='https://sb.test/storage/v1/object/public/progress-photos/_exercise/lateral-raises.jpg', 'the picture is served from the app own storage, not from wger', d.img);
 t(d.thumb==='https://sb.test/storage/v1/object/public/progress-photos/_exercise/t/lateral-raises.jpg', 'lists load the small copy');
-const g=vm.runInContext("_exDemo('Overhead Tricep Extension')", ctx);
-t(g.ext==='gif' && g.thumb===g.img, 'the one that moves is a gif, and it is not shrunk into a still');
+t(demoNames.every(n=>EX_DEMO[n].split('|')[1]==='jpg'), 'every demo is a still jpg - the one animated gif carried another brand\'s watermark and went');
 t(vm.runInContext("_exDemo('lateral raises')", ctx)!==null, 'a name typed in any case still finds its demo');
 t(vm.runInContext("_exDemo('Preacher Curls')", ctx)===null && vm.runInContext("_exDemoThumb('Preacher Curls')", ctx)==='',
   'a movement with no demo draws nothing - never an empty box');
+['Push-Ups','Dips','Tricep Extension','Hip Abduction','Hanging Leg Raises','Barbell Hip Thrust'].forEach(function(n){
+  t(vm.runInContext("_exDemo("+JSON.stringify(n)+")", ctx)===null, 'thrown out for not being a 3D model: '+n);
+});
+t(!/loading="lazy"/.test(vm.runInContext("_exDemoThumb('Squat')", ctx)), 'the list picture is not lazy - inside a closed modal a lazy image never loads');
 
 t(vm.runInContext("_exDemoOpen('Squat')", ctx)===true, 'tapping one opens the sheet');
 const sh=ctx.window.__sheet;
