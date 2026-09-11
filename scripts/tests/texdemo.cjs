@@ -85,5 +85,29 @@ t(pull.length===6, 'his Pull day is six movements', pull.join(', '));
 const pullShown=pull.filter(n=>vm.runInContext("_exDemo("+JSON.stringify(n)+")", ctx)!==null);
 t(pullShown.length===5, 'five of the six now show a picture on that day; Barbell Row is on his own shot list', pullShown.join(', '));
 
+
+// ===== THE PROGRAM'S OWN SPELLING ========================================
+// His saved Pull day says "Rear Delts". The library says "Rear Delt Flies".
+// A stored program keeps the words it was written with forever.
+const ALIAS=vm.runInContext('EX_DEMO_ALIAS', ctx);
+const aliasTargets=Object.keys(ALIAS).map(k=>ALIAS[k]);
+t(aliasTargets.every(n=>demoNames.indexOf(n)>=0),
+  'every alias points at a movement that actually has a picture',
+  aliasTargets.filter(n=>demoNames.indexOf(n)<0).join(', '));
+t(Object.keys(ALIAS).every(k=>k===k.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim()),
+  'every alias key is already normalised, so the lookup is a plain hit');
+t(Object.keys(ALIAS).every(k=>demoNames.map(n=>n.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim()).indexOf(k)<0),
+  'no alias shadows a real library name');
+const rd=vm.runInContext("_exDemo('Rear Delts')", ctx);
+t(rd!==null && rd.slug.indexOf('rear-delt')===0, 'his own "Rear Delts" finds the rear delt picture', rd&&rd.slug);
+t(vm.runInContext("_exDemo('RDLs')", ctx)!==null, 'and so does a shorthand somebody types into a program');
+t(vm.runInContext("_exDemo('Bench Press')", ctx)!==null, 'and the everyday name for a movement the library files formally');
+t(vm.runInContext("_exDemo('Wobble Board Hops')", ctx)===null,
+  'a movement that genuinely has no picture still gets none - the aliases are written out, never guessed');
+t(vm.runInContext("_exDemoOpen('Rear Delts')", ctx)===true
+  && /exDemoT">Rear Delts</.test(ctx.window.__sheet.h)
+  && /exDemoEy">Back</.test(ctx.window.__sheet.h),
+  'the sheet is titled with HIS word and still knows which group it belongs to');
+
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all demo assertions pass');
 process.exit(bad?1:0);
