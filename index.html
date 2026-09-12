@@ -79756,7 +79756,27 @@ async function _jimEstimateFood(offer, code){
   }catch(e){}
   return null;
 }
-async function logFoodFromChat(offer, photo, targetCode){
+/* ONE NUMBER, DECIDED ONCE (Yusuf, 12 Sep, on Lailee's third report of it).
+   Her words: "it did not [log right] lol, it rearranged itself again". His:
+   "she sees two different numbers upon logging. It must be one number moving
+   forward."
+   THE CAUSE, and it was mine. Two engines priced the same plate one after the
+   other. The reading road put the MODEL's figure on the confirm screen - that
+   is the number she reads and taps Log it under - and then this function
+   re-priced the whole plate off the macro table on the way to the database and
+   wrote a different one. Her breakfast of 4 eggs, 2 handfuls of blueberries,
+   2 slices of turkey bacon and zero sugar ketchup landed at 481; the table can
+   only price one of those four (blueberries, 101), so the two engines were
+   never going to agree. Adding the table re-pricing is what fixed chicken
+   thigh and salmon. It also made the screen and the record disagree.
+   THE FIX IS NOT A THIRD ENGINE. Every pricing step in here now runs ONCE, on
+   a dry run, for the screen that is about to ask her - and the answer comes
+   back carrying _priced, which makes this function write it verbatim. The
+   number she agrees to is the number that lands, by construction: same code,
+   same input, one decision.  dry: price it and return, write nothing. */
+async function logFoodFromChat(offer, photo, targetCode, dry){
+  // Already priced by the screen that showed it - every step below stands down.
+  var _preP = !!(offer && offer._priced);
   var _tc=_codeAsStored(targetCode);
   // Named somebody the roster does not have: write nothing rather than file it under nobody.
   if(targetCode && !_tc) return false;
@@ -79776,7 +79796,7 @@ async function logFoodFromChat(offer, photo, targetCode){
   var _stated=false, _echoOwned=false;
   try{
     var _sm=_parseInlineMacros(offer.meal_text||'');
-    if(_sm && _sm.hasMacro){
+    if(!_preP && _sm && _sm.hasMacro){
       var _P=_sm.macros, _o={};
       if(_P.cal!=null) _o.calories=Math.round(_P.cal);
       if(_P.protein!=null) _o.protein=Math.round(_P.protein);
@@ -79809,7 +79829,7 @@ async function logFoodFromChat(offer, photo, targetCode){
      table priced EVERY piece of the sentence and guessed at none - anything
      less and the model's read stands, exactly as before. */
   try{
-    if(!_stated){
+    if(!_preP && !_stated){
       var _said=String(offer.meal_text||'').trim();
       try{ if(typeof _nlSaidFoods==='function') _said=_nlSaidFoods(_said); }catch(e){}
       if(_said && typeof _nlEcho==='function'){
@@ -79869,7 +79889,7 @@ async function logFoodFromChat(offer, photo, targetCode){
   // and the existing behaviour stands, so an older reply still logs exactly as
   // it did.
   try{
-    if(!_stated && !_echoOwned && Array.isArray(offer.items) && offer.items.length){
+    if(!_preP && !_stated && !_echoOwned && Array.isArray(offer.items) && offer.items.length){
       var _mi=offer.items.map(function(x){ return Object.assign({}, x); });
       // A ROW THE TABLE DOES NOT KNOW, WITH NO NUMBERS OF ITS OWN, IS NOT A ZERO
       // (LeAndra M, 6 Sep, four turns in a row). The prompt example shows rows
@@ -79907,7 +79927,7 @@ async function logFoodFromChat(offer, photo, targetCode){
   // recompute from, the meal still lands, with its macros left NULL and its
   // calories kept as stated. Null is honest: it says nobody worked these out.
   // Zeroes would be a lie the totals would then add up.
-  if(!_stated && !_macrosReconcileWithCalories(offer.calories, offer.protein, offer.carbs, offer.fat)){
+  if(!_preP && !_stated && !_macrosReconcileWithCalories(offer.calories, offer.protein, offer.carbs, offer.fat)){
     var _p=+offer.protein||0, _c=+offer.carbs||0, _f=+offer.fat||0;
     var _implied=_p*4 + _c*4 + _f*9;
     if(_implied>0){
@@ -79925,7 +79945,7 @@ async function logFoodFromChat(offer, photo, targetCode){
   // estimate, and the row lands marked as an estimate she can fix on her day.
   var _estimated=false;
   try{
-    if(_foodMacrosAllZero(offer) && !_foodZeroIsPlausible({name:offer.name, meal_text:offer.meal_text||offer.description||''})){
+    if(!_preP && _foodMacrosAllZero(offer) && !_foodZeroIsPlausible({name:offer.name, meal_text:offer.meal_text||offer.description||''})){
       var _est=await _jimEstimateFood(offer, _code);
       if(_est){
         offer=Object.assign({}, offer, {calories:_est.calories, protein:_est.protein, carbs:_est.carbs, fat:_est.fat, sugar:(_est.sugar!=null?_est.sugar:offer.sugar)});
@@ -79934,6 +79954,21 @@ async function logFoodFromChat(offer, photo, targetCode){
       }
     }
   }catch(e){ console.error('food estimate', e); }
+  /* THE DRY EXIT. Every step above has run; nothing has been written and
+     nothing below this line can run. What goes back is exactly the figure the
+     write would have used, so the caller can show it and then hand it straight
+     back with _priced on it. */
+  if(dry) return {
+    name: offer.name,
+    calories: Math.round(+offer.calories||0),
+    protein: (offer.protein==null ? null : Math.round(+offer.protein||0)),
+    carbs:   (offer.carbs==null   ? null : Math.round(+offer.carbs||0)),
+    fat:     (offer.fat==null     ? null : Math.round(+offer.fat||0)),
+    sugar:   (offer.sugar==null   ? null : Math.round(+offer.sugar||0)),
+    items:   (Array.isArray(offer.items) ? offer.items : null),
+    rating:  (offer.rating||'unknown'),
+    _priced: 1, _stated: _stated, _echoOwned: _echoOwned, _filled: _estimated
+  };
   var meal = offer.meal || guessMealByTime();
   var _daysAgo = Math.max(0, Math.min(_JIM_DAY_MAX, parseInt(offer.daysAgo||offer.days_ago||0,10)||0));
   // A per-day bar states its day outright; that beats an inferred daysAgo.
@@ -87436,6 +87471,35 @@ async function nlSubmit(){
     return;
   }
   if(!est.tidbit) est.tidbit=_NL_FACTS[(new Date().getMinutes())%_NL_FACTS.length];
+  /* PRICE IT ONCE, HERE, BEFORE SHE EVER SEES A NUMBER (Yusuf, 12 Sep).
+     logFoodFromChat is the one door every food log goes through and it holds
+     every pricing law there is - his stated numbers, the echo, the table, the
+     reconciliation. It used to apply all of them AFTER she had read the
+     model's figure and tapped Log it, which is where the second number came
+     from. The dry run applies them now, to the same offer the write will get,
+     and the answer is what goes on the screen. _priced rides along so the
+     write takes it verbatim instead of deciding again.
+     A dry run that fails or comes back empty changes nothing: the model's
+     figure still shows, exactly as it did before, and the write prices it the
+     old way. This can make the number better, never absent. */
+  try{
+    var _pf=await logFoodFromChat({
+      name:est.name, calories:est.calories, protein:est.protein, carbs:est.carbs,
+      fat:est.fat, sugar:est.sugar, items:(est.items||null),
+      rating:(est.rating||'unknown'), meal:st.slot,
+      eat_time:(st.at||_tlNowClock()), dateStr:st.ds, meal_text:(line||'')
+    }, null, null, true);
+    if(_pf && (+_pf.calories || +_pf.protein || +_pf.carbs || +_pf.fat)){
+      if(+_pf.calories!==Math.round(+est.calories||0)){
+        try{ console.warn('FOOD_LOG: priced before showing - '+Math.round(+est.calories||0)+' read, '+_pf.calories+' will be written, so '+_pf.calories+' is what she sees'); }catch(e){}
+      }
+      est.calories=_pf.calories; est.protein=_pf.protein;
+      est.carbs=_pf.carbs; est.fat=_pf.fat;
+      if(_pf.sugar!=null) est.sugar=_pf.sugar;
+      if(_pf.items) est.items=_pf.items;
+      est._priced=1;
+    }
+  }catch(e){ console.error('dry price', e); }
   st.est=est; st.stage='res'; nlRender();
 }
 // One macro, edited on the confirm screen before anything is written.
@@ -87485,9 +87549,16 @@ async function nlConfirm(){
       // an explicit no-write. Only false is a failure to report.
       ok=(_libRes!==false);
     } else {
+      /* _priced is the whole point: these numbers were priced by the door
+         below, on the dry run, and she has now read them and tapped Log it.
+         Anything she corrected by hand on this screen is hers and is final
+         too, which the same flag protects - the table must not re-price her
+         own correction either. Without the flag (an older flow, a saved meal)
+         this is byte-for-byte the call it always was. */
       ok=await logFoodFromChat({
         name:st.est.name, calories:st.est.calories, protein:st.est.protein,
         carbs:st.est.carbs, fat:st.est.fat, rating:(st.est.rating||'unknown'),
+        items:(st.est.items||null), _priced:(st.est._priced?1:0),
         meal:st.slot, eat_time:(st.at||_tlNowClock()), dateStr:st.ds,
         meal_text:(st.line||'')
       }, st.photo||null);
@@ -87527,10 +87598,10 @@ var EX_MUSCLE = {
   'Decline Chest Press':'lower chest', 'Cable Chest Fly':'inner chest',
   // Compound bodyweight movements genuinely work several things at once, so they
   // say so — primary first, three words at most. Isolation stays one muscle.
-  'Push-Ups':'chest, front delt, triceps',
+  'Push-Ups':'chest, front delts, triceps',
   // Shoulders
-  'Shoulder Press':'front delt', 'Lateral Raises':'side delt',
-  'Rear Delt Flies':'rear delt',
+  'Shoulder Press':'front delts', 'Lateral Raises':'side delts',
+  'Rear Delt Flies':'rear delts',
   // Triceps
   'Tricep Extension':'triceps', 'Rope Extension':'triceps',
   'Overhead Tricep Extension':'triceps long head',
@@ -87594,7 +87665,19 @@ var EX_ALIAS={
   'bicep curl':'Dumbbell Bicep Curls','bicep curls':'Dumbbell Bicep Curls','db curl':'Dumbbell Bicep Curls',
   'standing curl':'Dumbbell Bicep Curls',
   'leg curl':'Hamstring Curl','lying leg curl':'Hamstring Curl','seated leg curl':'Hamstring Curl',
-  'quad extension':'Leg Extension'
+  'quad extension':'Leg Extension',
+  /* HIS PROGRAM SAYS "Rear Delts" AND THE LIBRARY SAYS "Rear Delt Flies"
+     (Yusuf, 12 Sep: "the picker can't match them - renaming it in your program
+     fixes it. Yes. Fix this so that the name of the exercise is Rear Delt
+     Flys or Flies"). A muscle is not a movement, so the name the library uses
+     is the right one and the swap picker matches on it. Fixed HERE and not in
+     his data on purpose - this map is read-time, so every client whose week
+     already carries the old word is fixed at once and nothing stored is
+     rewritten. Both spellings land, because he asked which one was right. */
+  'rear delts':'Rear Delt Flies','rear delt':'Rear Delt Flies',
+  'rear delt flys':'Rear Delt Flies','rear delt fly':'Rear Delt Flies',
+  'rear delt flies':'Rear Delt Flies','reverse flys':'Rear Delt Flies',
+  'reverse flies':'Rear Delt Flies','face pulls':'Rear Delt Flies'
 };
 // ===== A DICTATED EXERCISE NAME IS CHECKED AGAINST WHAT WE KNOW ==========
 // (Yusuf, live, 24 Aug.) He said "dumbbell chest press"; the transcript kept
@@ -87683,17 +87766,30 @@ function _exCanonical(name){
   if(EX_ALIAS[lc]) return EX_ALIAS[lc];
   return n;
 }
+/* TITLE CASE, EVERY MUSCLE, NO EXCEPTIONS (Yusuf, 12 Sep: "the MUSCLE should
+   be Rear Delts (Make sure this title case format is correct across all
+   muscles)"). The dictionary above is written in lower case and the group
+   fallback used to be forced lower too, so the card read "rear delt" under
+   "Rear Delt Flies" and "mid back" under "Machine Rows". Said here, at the one
+   function every surface asks, rather than in thirty string literals - a new
+   library entry or a custom movement reads correctly the day it appears.
+   _titleCap already keeps "and" small, so "grip and forearms" stays readable. */
+function _bfMuscleSay(s){
+  var t=String(s==null?'':s).trim();
+  if(!t) return '';
+  try{ return _titleCap(t); }catch(e){ return t; }
+}
 function _bfMuscleOf(name){
   var n=_exCanonical(name);
-  if(EX_MUSCLE[n]) return EX_MUSCLE[n];
+  if(EX_MUSCLE[n]) return _bfMuscleSay(EX_MUSCLE[n]);
   // case-insensitive second pass, so "Decline sit-ups" and "Decline Sit-Ups"
   // are the same movement rather than two entries in the summary
   try{
     var lc=n.toLowerCase();
-    for(var k in EX_MUSCLE){ if(k.toLowerCase()===lc) return EX_MUSCLE[k]; }
+    for(var k in EX_MUSCLE){ if(k.toLowerCase()===lc) return _bfMuscleSay(EX_MUSCLE[k]); }
   }catch(e){}
   var g=null; try{ g=_bfGroupOf(n); }catch(e){}
-  return g ? String(g).toLowerCase() : n;
+  return g ? _bfMuscleSay(g) : n;
 }
 
 // ===== THE CLOSING MOMENT ================================================
