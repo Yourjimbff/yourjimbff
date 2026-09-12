@@ -36874,7 +36874,7 @@ var _MOB_BO_VIEWS={
   clients:  {label:'Clients',        sub:'everyone by heat — who is cooling, and who has strayed'},
   training: {label:'Training board', sub:'who is on today, and who trained'},
   week:     {label:'Week',           sub:'your calendar — calls, bookings and what you logged'},
-  money:    {label:'Money',          sub:'revenue, and the consults that are booked'}
+  money:    {label:'Money',          sub:'revenue, and what is still owed'}
 };
 function mobBackOffice(view){
   if(!cl || (typeof isTrainer==='function' && !isTrainer(cl.code))) return;
@@ -36930,7 +36930,7 @@ function mobBackOffice(view){
 function _mboBorrowMoney(host){
   if(!host) return;
   host.innerHTML='';
-  ['consultsCard','salesCard'].forEach(function(id){
+  ['salesCard'].forEach(function(id){
     var e=document.getElementById(id); if(!e) return;
     e.setAttribute('data-onloan','1');
     e.style.display='';
@@ -36942,7 +36942,7 @@ function _mboBorrowMoney(host){
 }
 function _mboReturnLoans(){
   var tc=document.getElementById('tClients'); if(!tc) return;
-  ['consultsCard','salesCard'].forEach(function(id){
+  ['salesCard'].forEach(function(id){
     var e=document.getElementById(id); if(!e || e.getAttribute('data-onloan')!=='1') return;
     e.removeAttribute('data-onloan');
     tc.appendChild(e);
@@ -56079,10 +56079,26 @@ function _cqConfirm(id){
   catch(e){ try{ showToast('Could not open Messages'); }catch(e2){} }
 }
 function _cqActsDefaultHtml(r){
-  var clean=r.phone ? String(r.phone).replace(/[^0-9+]/g,'') : '';
+  var _p=_cqPhone(r.phone);
+  var clean=_p.ok ? _p.clean : '';
   return (clean?'<button class="obtn" style="width:auto;padding:7px 14px;font-size:12px;" onclick="_cqConfirm(\''+r.id+'\')">Confirmation</button>':'')
     +(clean?'<a href="sms:'+clean+'" class="obtn" style="width:auto;padding:7px 14px;font-size:12px;text-decoration:none;display:inline-block;">Text</a>':'')
     +'<button class="obtn" style="width:auto;padding:7px 14px;font-size:12px;" onclick="_cqCancelPrompt(\''+r.id+'\')">Cancel</button>';
+}
+// RULING (Yusuf, 12 Sep, on the 1:11am booking that stored "4692580 66"): a
+// number that cannot be texted must never be dressed up as one. The offer page
+// takes whatever a stranger types, so nine digits with a stray space in the
+// middle land in this table intact - and the row then drew them as an sms:
+// link with a Text button beside it, two taps that both open Messages with a
+// number that can never send. Ten digits is the test the rest of the app
+// already uses (clients.phone's has_phone, the send queue's own refusal), so it
+// is the test here: below it the row says how short it is in words and neither
+// texting button is offered at all. Cancel is always offered.
+function _cqPhone(p){
+  var raw=String(p==null?'':p).trim();
+  var clean=raw.replace(/[^0-9+]/g,'');
+  var digits=clean.replace(/\D/g,'').length;
+  return {raw:raw, clean:clean, digits:digits, has:!!raw, ok:(digits>=10)};
 }
 function _cqRowHtml(r){
   var chips='';
@@ -56094,7 +56110,13 @@ function _cqRowHtml(r){
   var meta=[r.age?(r.age+' yo'):null, r.height||null, r.weight||null].filter(Boolean).map(_cqEsc).join(' · ');
   // RULING (Yusuf, live): sms:, not tel: — the trainer texts a prospect first, same
   // as the feed's own Text buttons, never a cold call from a tap on their number.
-  var phone=r.phone ? '<a href="sms:'+String(r.phone).replace(/[^0-9+]/g,'')+'" style="font-size:16px;font-weight:800;color:var(--gold);text-decoration:none;">'+_cqEsc(r.phone)+'</a>' : '';
+  var _ph=_cqPhone(r.phone);
+  var phone = !_ph.has ? ''
+    : (_ph.ok
+      ? '<a href="sms:'+_ph.clean+'" style="font-size:16px;font-weight:800;color:var(--gold);text-decoration:none;">'+_cqEsc(_ph.raw)+'</a>'
+      : '<div style="font-size:16px;font-weight:800;color:var(--text);">'+_cqEsc(_ph.raw)+'</div>'
+        +'<div style="font-size:11.5px;color:#f5c518;margin-top:3px;line-height:1.4;">'
+        +'That is only '+_ph.digits+' digits, so it cannot be texted. Ask them for it on the call.</div>');
   var cancelled = r.status==='cancelled';
   // RULING (Yusuf, live): Cancel opens an inline confirm on the row itself, not
   // window.confirm() — a native dialog can't carry a second button, and the old
@@ -56143,6 +56165,51 @@ function _cqPanelHtml(){
 }
 // Mobile — the standalone #consultsCard, hidden outright rather than blanked when
 // sharing mode is on, mirroring the desktop panel's own rule.
+// RULING (Yusuf, 12 Sep): "shouldn't there be a way for me to view it on
+// mobile as well? I haven't opened up the computer view in like several days."
+// It WAS on mobile the whole time - three taps deep, behind the account sheet,
+// inside Back office -> Money, under the revenue card, which is the same as
+// not being there at all. It moves to the top of the CRM tab, the trainer
+// screen he is actually on every day, and it leaves Money.
+//
+// THE SAME NODE, BORROWED - never a second copy. #consultsCard is written into
+// by id and each row inside it carries an id of its own (cqActs_<id>), so a
+// duplicate mount would have handed _cqCancelPrompt two targets and let it
+// drive the one that is off screen. data-onloan is the flag _admHideRetired
+// and _reorderClientsTab already honour, so neither yanks the card back while
+// it is up here.
+//
+// And it is PARKED before every wholesale repaint, not trusted to survive one:
+// crmPaint rewrites #crmA on every keystroke in the search box, and the error
+// path replaces the whole tab. A node destroyed by one of those writes is gone
+// for the rest of the session - getElementById would answer null and consults
+// would simply stop existing until a reload. So _crmPaintSplit hands it back
+// to #tClients first and crmPaint borrows it again after.
+function _cqParkConsults(){
+  var card=document.getElementById('consultsCard'); if(!card) return;
+  var tc=document.getElementById('tClients'); if(!tc) return;
+  if(card.parentNode===tc) return;
+  card.removeAttribute('data-onloan');
+  card.style.display='none';
+  tc.appendChild(card);
+}
+function _cqBorrowIntoCrm(){
+  var slot=document.getElementById('crmConsultsHost'); if(!slot) return;
+  var card=document.getElementById('consultsCard'); if(!card) return;
+  card.setAttribute('data-onloan','1');
+  card.style.marginBottom='14px';
+  // Sharing mode hides it outright rather than blanking it - strangers'
+  // personal details are exactly what cannot be on camera. Same rule as the
+  // desktop panel and _cqPaintMobile.
+  card.style.display = window._jvShareMode ? 'none' : '';
+  if(card.parentNode!==slot) slot.appendChild(card);
+  // READ ONCE. crmPaint runs on every keystroke; a consult books a few times a
+  // week. The first paint asks, nothing after it does.
+  if(_consultRows===null && !window._cqCrmAsked){
+    window._cqCrmAsked=1;
+    try{ if(typeof loadConsults==='function') loadConsults(); }catch(e){}
+  }
+}
 function _cqPaintMobile(){
   var card=document.getElementById('consultsCard'); if(!card) return;
   if(window._jvShareMode){ card.style.display='none'; return; }
@@ -56158,7 +56225,8 @@ function _cqPaintMobile(){
 function _cqCancelPrompt(id){
   var host=document.getElementById('cqActs_'+id); if(!host) return;
   var r=(_consultRows||[]).find(function(x){ return String(x.id)===String(id); });
-  var clean=(r&&r.phone) ? String(r.phone).replace(/[^0-9+]/g,'') : '';
+  var _pc=_cqPhone(r&&r.phone);
+  var clean=_pc.ok ? _pc.clean : '';
   host.innerHTML = '<div style="font-size:12px;color:rgba(240,236,228,0.78);margin-bottom:8px;">Cancel this consult?</div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;">'
       +(clean?'<a href="sms:'+clean+'" class="obtn" style="width:auto;padding:7px 14px;font-size:12px;text-decoration:none;display:inline-block;">Text them</a>':'')
@@ -96033,6 +96101,8 @@ function _crmStripHtml(L, code){
    A pass with no sentinel (the error card, which returns early) falls back to
    the old wholesale paint, which is correct: there is no search box on it. */
 function _crmPaintSplit(host, h, nPeople){
+  // Hand the borrowed consults card back before anything here writes innerHTML.
+  try{ _cqParkConsults(); }catch(e){}
   var parts=String(h).split('<!--CRMQ-->');
   if(parts.length!==2){ host.innerHTML=h; return; }
   var a=host.querySelector('#crmA'), qh=host.querySelector('#crmQHold'), b=host.querySelector('#crmB');
@@ -96074,10 +96144,14 @@ function _crmPaintSplit(host, h, nPeople){
 function crmPaint(){
   var host=_crmHost(); if(!host) return;
   var h='<div class="crmHead">CRM</div>'
-       +'<div class="crmSub">Everyone who needs a message, today.</div>';
+       +'<div class="crmSub">Everyone who needs a message, today.</div>'
+       /* Booked consults ride at the very top, above the board: a stranger who
+          picked a time is the one thing on this screen that expires. */
+       +'<div id="crmConsultsHost"></div>';
   if(_crm.err){
     h+='<div class="crmErr">I could not read the board just now, so this is not an empty board - it is an unread one. '
       +'<span style="text-decoration:underline;cursor:pointer;" onclick="crmRender(true)">Try again</span>.</div>';
+    try{ _cqParkConsults(); }catch(e){}
     host.innerHTML=h; return;
   }
   /* ABOVE THE SCORE, because a slot that passes tonight cannot be recovered
@@ -96385,6 +96459,7 @@ function crmPaint(){
   }
   try{ h+=_crmPickBarHtml(); }catch(e){}
   _crmPaintSplit(host, h, people.length);
+  try{ _cqBorrowIntoCrm(); }catch(e){}
   /* THE DRAFT IS NEVER CUT (his law, 31 Aug: no name cut, the box grows).
      A textarea at a fixed height hides the end of a long draft behind a
      scrollbar, which is exactly "hidden behind a count" wearing a different
