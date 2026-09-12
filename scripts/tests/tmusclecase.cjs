@@ -22,11 +22,17 @@ eval(CL.code||'');
 if(typeof _bfGroupOf!=='function') global._bfGroupOf=function(){ return null; };
 
 console.log('\n  HIS WORD FOR IT RESOLVES TO THE LIBRARY’S:');
-['Rear Delts','rear delts','REAR DELTS','Rear Delt Flys','rear delt fly','Reverse Flys','Face Pulls']
+['Rear Delts','rear delts','REAR DELTS','Rear Delt Flys','rear delt fly','Reverse Flys']
   .forEach(function(n){ t(_exCanonical(n.toLowerCase())==='Rear Delt Flies',
     '"'+n+'" is the same movement as Rear Delt Flies', _exCanonical(n.toLowerCase())); });
 t(!/'Rear Delts'/.test(src.slice(src.indexOf('var EX_MUSCLE'), src.indexOf('var EX_ALIAS'))),
   'and "Rear Delts" is never itself a movement in the dictionary');
+/* Face Pulls came OFF that alias list on 12 Sep: it is a rear-delt movement with
+   an external rotation in it, which a fly does not have, so it is its own entry
+   in the library now and resolves to itself. */
+t(_exCanonical('face pulls')==='face pulls' || _exCanonical('Face Pulls')==='Face Pulls',
+  'Face Pulls is its own movement, not an alias for the fly', _exCanonical('face pulls'));
+t(_bfMuscleOf('Face Pulls')==='Rear Delts', 'and it still reads as Rear Delts', _bfMuscleOf('Face Pulls'));
 
 console.log('\n  AND IT HITS REAR DELTS, PLURAL:');
 t(_bfMuscleOf('Rear Delt Flies')==='Rear Delts', 'Rear Delt Flies → Rear Delts', _bfMuscleOf('Rear Delt Flies'));

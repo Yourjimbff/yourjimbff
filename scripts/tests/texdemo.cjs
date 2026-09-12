@@ -48,7 +48,11 @@ t(!/wger/i.test(src), 'and no credit to the database they came from is left on a
 const a=src.indexOf('var EX_LIB = {'), b=src.indexOf('var DAY_TEMPLATES = {');
 t(a>0 && b>a, 'the library and the day templates are both still there');
 const names=(src.slice(a,b).match(/\{n:'/g)||[]).length;
-t(names===49, 'all 49 movements survive', String(names));
+/* 49 on 11 Sep, 73 on 12 Sep - Yusuf had me compare the library against what a
+   real gym carries and add everything missing (deadlift first). This test
+   guards against LOSS, so the floor moves up with the library and never down;
+   texlib.cjs is the one that names what has to be in there. */
+t(names>=73, 'no movement has been lost - the library only ever grows', String(names));
 t(/'Pull':\s*\[/.test(src.slice(b)) && /'Push':\s*\[/.test(src.slice(b)), 'and the splits still name their movements');
 
 // And the library row still draws - without a picture, it is the row it was
