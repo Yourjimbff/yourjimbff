@@ -64,7 +64,13 @@ const KNOWN={
   _jvApplyProgramRemove:2, _jvApplyPrograms:2, _jvApplyProgramEdits:1, _clearReacts:1,
   _mlibEstimateMacros:1, _gradePlateMeal:1, _rememberFood:1, _backfillFoodLibrary:1,
   hubEditDone:1, hubDelete:1, hubTogglePlan:1, tpPersistSets:1, tpSaveSessNote:1,
-  tpLogSteps:1, trackMealForMenu:1, toggleShareItem:1, toggleCoachPublish:1,
+  /* tpLogSteps came off this list 11 Sep, auditing the launch checklist. It was
+     the worst shape on it: a raw POST carrying a `logged_at` column step_logs
+     does not have, so the write 400d - and because fetch only rejects on a
+     network failure, the empty catch never fired and the toast said
+     "\u2713 N steps" anyway. It goes through sbUpsert now and says which
+     happened. The list only ever shrinks; this is one. */
+  trackMealForMenu:1, toggleShareItem:1, toggleCoachPublish:1,
   removeFromMenu:1, borrowCoachMeal:1,
   _jvJarvisCalendarActClient:1, tbRemove:1, _saveTrainingPlanQuiet:1
 };
