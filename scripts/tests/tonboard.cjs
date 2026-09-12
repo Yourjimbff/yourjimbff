@@ -32,11 +32,20 @@ t(keys[keys.length-1]==='plan', 'and it ends on their plan, not on a form');
 t(_OB_STEPS.filter(s=>s.q||s.type==='intro'||s.type==='plan').length===_OB_STEPS.length,
   'every screen asks exactly one thing');
 
-console.log('\n  AND WHO IT IS NOT FOR IS SAID ON SCREEN ONE:');
+console.log('\n  SCREEN ONE IS A PROMISE AND NOTHING ELSE:');
+/* Yusuf, seeing the first build on his phone: "too many words - just start with
+   a promise - welcome to your last fitness tracker". */
 const intro=slice("if(st.type==='intro'){", "if(st.type==='pick'){");
-t(/not a bodyweight or calisthenics plan/.test(intro),
-  'a bodyweight-only person is told before they answer fourteen questions');
-t(/built for a gym/.test(intro), 'and that it needs a gym');
+t(/Welcome to your last fitness tracker\./.test(intro), 'it opens on the promise');
+t(!/Fourteen questions|Two minutes/.test(intro),
+  'it does not brief them on the flow they have not agreed to yet');
+t(!/calisthenics/.test(intro), 'and the who-it-is-not-for line is not here');
+t((intro.match(/<div class="ob/g)||[]).length===3,
+  'three elements on the whole screen: the brand, the line, the button',
+  String((intro.match(/<div class="ob/g)||[]).length));
+const steps=slice('var _OB_STEPS=[', 'var _ob=null;');
+t(/It is not a bodyweight plan/.test(steps),
+  'the gym line moved to the equipment question, where it IS the question');
 
 console.log('\n  THE CALORIES ARE THE ENGINE THE APP ALREADY HAS:');
 const tg=slice('function _obTargets(){','function obRender(){');
@@ -58,15 +67,71 @@ t(!/weeks? to go|goal date|by [A-Z][a-z]+ \d|on track to/.test(plan),
 t(/We are not looking at that yet\. One week at a time\./.test(plan),
   'a big goal is explicitly parked');
 
-console.log('\n  IT RUNS ONCE, AND ONLY FOR SOMEONE WHO NEEDS IT:');
-const should=slice('function _obShouldRun(){','function _obStep(){');
+console.log('\n  RIGHT NOW IT REACHES ONE ACCOUNT AND NO OTHER:');
+const should=slice('function _obShouldRun(srv){','function _obStep(){');
+/* Yusuf, having seen it on his own phone: "the only person it should be on
+   right now is freeuser". A list with one name on it, checked first - and it
+   is now the SAME list that decides which surfaces are coach furniture, so
+   there is one place to add the next free code. */
+t(/var FREE_APP_CODES=\{freeuser:1\};/.test(src), 'there is a list, and freeuser is on it');
+t(/if\(!isFreeApp\(cl\.code\)\) return false;/.test(should),
+  'and any code not on that list is turned away before anything else is read');
+t(should.indexOf('isFreeApp') < should.indexOf('setup_done'),
+  'it is the FIRST thing checked, not the last');
+t(!/_OB_ONLY/.test(src), 'the old one-off list is gone - one list now, not two');
+
+console.log('\n  AND IT RUNS ONCE, ONLY FOR SOMEONE WHO NEEDS IT:');
 t(/if\(cl\.is_trainer\) return false;/.test(should), 'never for a trainer');
-t(/if\(profile\.setup_done\) return false;/.test(should), 'never for someone already set up');
-t(/if\(!profile\) return false;/.test(should), 'and never before the profile has loaded');
-t(/if\(profile\.weight && profile\.goal_weight && profile\.height\) return false;/.test(should),
-  'nor for an older client who has the numbers but no setup flag');
-t(/try\{ setTimeout\(function\(\)\{ try\{ obStart\(\); \}catch\(e\)\{\} \}, 400\); \}catch\(e\)\{\}/.test(src),
-  'and it is fired only after the SERVER profile row has landed and merged');
+t(/if\(srv\.setup_done\) return false;/.test(should), 'never for someone already set up');
+
+console.log('\n  IT JUDGES THE SERVER ROW AND NEVER THE STAND-IN:');
+/* THE DEFECT THAT MADE IT UNREACHABLE (Yusuf, 12 Sep): "I don't see the free
+   user having the onboarding screen at all." An account with no profiles row
+   is handed a local stand-in carrying goal 'maintain', cal_target 1800 and
+   protein_target 150 so the Day page has numbers to draw. Three of those sit
+   on the signs-of-life list, so the gate read the app's own invented numbers
+   as a filled-in profile and stood down for everybody, forever. */
+t(/function _obShouldRun\(srv\)\{/.test(src), 'the gate is handed the server row');
+t(!/profile\[known\[i\]\]/.test(should),
+  'and it never reads the merged profile, which is never empty for anyone');
+t(/var v=srv\[known\[i\]\];/.test(should), 'it reads the server row instead');
+t(/if\(srv===null \|\| srv===undefined\) return true;/.test(should),
+  'no row on the server at all means brand new, which is the case that was unreachable');
+t(/var _obSrv=\(profiles && profiles\.length>0\) \? profiles\[0\] : null;/.test(src),
+  'and the row handed in is the one the server actually answered with');
+t(/obStart\(0, _obSrv\)/.test(src),
+  'it is fired only after the SERVER profile row has landed');
+t(/goal:'maintain', cal_target:1800/.test(src),
+  'the stand-in that caused this is still there for the Day page - it is just not judged any more');
+
+/* HE SAW IT ON HIS OWN PHONE: "remove this for clients. you just placed this on
+   every client or something." The first gate wanted weight AND goal_weight AND
+   height together, and height is free text plenty of clients never filled - one
+   empty field made a two-year client look brand new. */
+t(/var known=\[/.test(should), 'the gate reads a whole list of signs of life');
+['weight','goal_weight','age','gender','height','phase','goal','train_days',
+ 'cal_target','protein_target','split_key','birthday'].forEach(function(c){
+  t(new RegExp("'"+c+"'").test(should), '  '+c+' alone is enough to stand down');
+});
+t(/if\(v!==null && v!==undefined && v!=='' && v!==0\) return false;/.test(should),
+  'and ANY one of them present means this is not a new person');
+t(!/profile\.weight && profile\.goal_weight && profile\.height/.test(should),
+  'the old all-three test is gone - it is what let this reach real clients');
+
+console.log('\n  THE WAY FORWARD IS REACHABLE WITH A KEYBOARD UP:');
+/* A client, 12 Sep: she "got stuck on the height question and isnt letting her
+   move forward". Height is the first screen with a typing keyboard on it, and
+   the button was pinned to the bottom of a fixed column - the keyboard came up
+   over it. */
+const rend=slice('function obRender(){','async function obFinish(){');
+t(rend.indexOf('obGo') > rend.indexOf("'<div class=\"obScroll\">'") &&
+  rend.indexOf('obGo') < rend.lastIndexOf("+'</div>'"),
+  'the button is INSIDE the scroller, so it can always be scrolled to');
+t(/padding-bottom:46vh/.test(src),
+  'and there is room under it for a keyboard to sit');
+t(/enterkeyhint/.test(rend), 'the keyboard paints its own key next/done');
+t(/if\(ev\.key==='Enter'\)\{ ev\.preventDefault\(\); try\{ el\.blur\(\); \}catch\(e\)\{\} obNext\(\); \}/.test(rend),
+  'and pressing it moves on, which needs no button at all');
 
 console.log('\n  THEIR ANSWERS SURVIVE A BAD NETWORK:');
 const fin=slice('async function obFinish(){','function obRender()');
