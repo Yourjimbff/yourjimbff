@@ -23,10 +23,14 @@ eval(CL.code||'');
 
 console.log('\n  EVERY QUESTION HE LISTED HAS ITS OWN SCREEN:');
 const keys=_OB_STEPS.map(s=>s.k);
-['gender','birthday','height','weight','goal_weight','phase','food','train_days',
+['gender','birthday','height','weight','phase','food','train_days',
  'equipment','experience','priority','cardio','sleep'].forEach(function(k){
   t(keys.indexOf(k)>=0, k);
 });
+/* Yusuf, 12 Sep: "weight and goal weight should be... two separate fields on
+   one page". They are one thought; they were two taps apart. */
+t(_OB_STEPS.filter(s=>s.type==='weight2').length===1, 'weight and goal share one screen');
+t(keys.indexOf('goal_weight')<0, 'and goal weight is no longer a screen of its own');
 t(keys[0]==='intro', 'it opens by saying what this is, before anything personal is asked');
 t(keys[keys.length-1]==='plan', 'and it ends on their plan, not on a form');
 t(_OB_STEPS.filter(s=>s.q||s.type==='intro'||s.type==='plan').length===_OB_STEPS.length,
@@ -40,12 +44,36 @@ t(/Welcome to your last fitness tracker\./.test(intro), 'it opens on the promise
 t(!/Fourteen questions|Two minutes/.test(intro),
   'it does not brief them on the flow they have not agreed to yet');
 t(!/calisthenics/.test(intro), 'and the who-it-is-not-for line is not here');
-t((intro.match(/<div class="ob/g)||[]).length===3,
-  'three elements on the whole screen: the brand, the line, the button',
-  String((intro.match(/<div class="ob/g)||[]).length));
+/* Yusuf, 12 Sep, picking from four drafts: the promise, then three verbs. */
+t(/Track your food\./.test(intro) && /Track your training\./.test(intro) &&
+  /Watch the number move\./.test(intro), 'then three lines, three verbs');
+t(!/[Bb]uild your workout/.test(intro),
+  'and nothing on it promises a builder that is not on the screen yet');
+t((intro.match(/<div>/g)||[]).length===3, 'exactly three of them, no fourth',
+  String((intro.match(/<div>/g)||[]).length));
 const steps=slice('var _OB_STEPS=[', 'var _ob=null;');
-t(/It is not a bodyweight plan/.test(steps),
-  'the gym line moved to the equipment question, where it IS the question');
+t(/This app uses weights\./.test(steps),
+  'the gym line lives on the equipment question, where it IS the question');
+
+console.log('\n  FEW WORDS, BETTER WORDS:');
+/* Yusuf, 12 Sep, on "What do you weigh today? Rough is fine. It only has to
+   start somewhere.": "What the fuck is that, bro? Why'd you make this, like,
+   really fucking wordy?" And on "Where do you want to land?": "Am I a fucking
+   airplane?" And on the mode options: "They're fucking filler text, dude." */
+t(!/Rough is fine/.test(steps), 'the weigh-in padding is gone');
+t(!/Where do you want to land/.test(steps), 'and so is the airplane');
+t(!/How hard do you want to run this/.test(steps), 'and so is "run this"');
+t(/q:'Select your mode\.'/.test(steps), 'the mode screen says select your mode');
+t(!/without running your life around it/.test(steps), 'and the mode options stopped explaining themselves');
+const ph=slice('var _OB_PHASE=[','var _OB_STEPS=[');
+['comp','fatloss','build'].forEach(function(v){
+  t(new RegExp("v:'"+v+"'").test(ph), '  '+v+' is still the stored value, so _fuelTargets is untouched');
+});
+/* No question and no subtitle in the whole flow runs past a phone line. */
+_OB_STEPS.forEach(function(st){
+  if(st.q) t(st.q.length<=34, '  short question: '+st.q, String(st.q.length));
+  if(st.s) t(st.s.length<=54, '  short subtitle: '+st.s, String(st.s.length));
+});
 
 console.log('\n  THE CALORIES ARE THE ENGINE THE APP ALREADY HAS:');
 const tg=slice('function _obTargets(){','function obRender(){');
