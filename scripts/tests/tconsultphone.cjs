@@ -47,7 +47,13 @@ const short={id:99, name:'Test', phone:'4692580 66', requested_at:'2026-09-13T18
 const good=Object.assign({}, short, {id:98, phone:'4692580066'});
 const shortHtml=_cqRowHtml(short), goodHtml=_cqRowHtml(good);
 t(!/sms:/.test(shortHtml), 'the short number is not a tap-to-text link');
-t(/only 9 digits/.test(shortHtml), 'the card says how short it is, in words');
+t(/Only 9 digits/.test(shortHtml), 'the card says how short it is, in words');
+/* Yusuf, 12 Sep: "If I can't fucking text him, what makes you think I can call
+   him" - the consult IS a phone call to this number, so there is no call on
+   which to ask for a better one. The line must not send him anywhere. */
+t(!/on the call/.test(shortHtml) && !/Ask them/.test(shortHtml),
+  'and does not tell him to ask for it on a call that cannot happen');
+t(/no way to reach them/.test(shortHtml), 'it says the whole truth instead');
 t(/4692580 66/.test(shortHtml), 'and still shows exactly what they typed - nothing is hidden');
 t(/sms:4692580066/.test(goodHtml), 'a real number is still one tap to text');
 t(!/cannot be texted/.test(goodHtml), 'and says nothing about digits');
