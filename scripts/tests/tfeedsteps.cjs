@@ -60,5 +60,22 @@ const _out=(card.match(/'[^']*'/g)||[]).join(' ');
 t(!/goal|target|behind|short of|only/i.test(_out),
   'and no goal, no verdict, nothing that grades them on it - the weigh-in row\'s rule', _out.slice(0,90));
 
+/* AND THE PHONE'S CARD, WHICH IS A DIFFERENT BUILDER (caught by reading the
+   served feed, not the code). The kind chain above is the DESKTOP cockpit row.
+   A steps item with a branch only there fell through the phone builder's final
+   ELSE - which is the food case - and rendered as "logged something" with the
+   words "a meal" under it. Both builders, or neither. */
+console.log('\n  AND THE PHONE BUILDS ITS OWN CARD:');
+const _pi=src.indexOf("/* STEPS (Yusuf, 11 Sep). THIS is the builder the phone uses");
+const phone=src.slice(_pi, src.indexOf("  else { var f=it.data;", _pi));
+t(phone.length>300, 'the phone card has a steps branch of its own', String(phone.length)+' chars');
+t(/_sv\.toLocaleString\(\)\+' steps'/.test(phone), 'it says the count and the word');
+t(/So far today/.test(phone) && /it\.data\.date_str===todayDateStr/.test(phone),
+  'and "So far today" while the day is open');
+t(/THIS is the builder the phone uses/.test(phone),
+  'with the trap written down, because the next person will add a kind and hit it too');
+t(/it\.kind==='steps'\?'logged steps'/.test(src),
+  'and the headline reads "logged steps", not "logged something"');
+
 console.log(bad? '\n  '+bad+' FAILED' : '\n  a step count reaches the feed and keeps itself current');
 process.exit(bad?1:0);
