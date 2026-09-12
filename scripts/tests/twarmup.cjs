@@ -38,6 +38,10 @@ t(/w\?_escHtml\(w\):'Add warm-up'/.test(html),
 t(/\.woWarmSaid\{[^}]*color:var\(--text\)/.test(css), 'in normal ink, because now it is information');
 t(/lbl\.textContent = d\.warm\.trim\(\) \? d\.warm\.trim\(\) : 'Add warm-up'/.test(src),
   'and the row updates the moment they save, without a repaint');
+/* Seen on the served build at 375px: the box stayed open under the line and the
+   same warm-up was printed twice, one above the other. */
+t(/if\(box\) box\.style\.display='none';/.test(src),
+  'the box shuts itself once it is written, so it is never said twice');
 
 console.log('\n  IT SITS ABOVE THE FIRST EXERCISE, ON BOTH SIDES:');
 t((src.match(/\+_woWarmHtml\(ds, dr\)/g)||[]).length===2,
