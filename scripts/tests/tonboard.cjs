@@ -130,8 +130,34 @@ t(rend.indexOf('obGo') > rend.indexOf("'<div class=\"obScroll\">'") &&
 t(/padding-bottom:46vh/.test(src),
   'and there is room under it for a keyboard to sit');
 t(/enterkeyhint/.test(rend), 'the keyboard paints its own key next/done');
-t(/if\(ev\.key==='Enter'\)\{ ev\.preventDefault\(\); try\{ el\.blur\(\); \}catch\(e\)\{\} obNext\(\); \}/.test(rend),
-  'and pressing it moves on, which needs no button at all');
+
+console.log('\n  AND "NEXT" MEANS THE NEXT BOX, NOT THE NEXT SCREEN:');
+/* Yusuf, 12 Sep, on the first version of that handler: "the number field in
+   the height section is what is not working. You can write the number in the
+   feet, but not the inches."
+   It called obNext() from EVERY field. Height counts as answered on feet
+   alone, so typing 5 and pressing the key the keyboard had painted "Next"
+   left the screen entirely - which is indistinguishable, to the person
+   holding the phone, from an inches box that will not take a number. Cardio
+   and sleep have two boxes each and carried the same trap. */
+t(/var isLast=\(ix===ins\.length-1\);/.test(rend),
+  'the handler knows whether this is the last box on the screen');
+t(/el\.setAttribute\('enterkeyhint', \(isLast\?'done':'next'\)\);/.test(rend),
+  'the word painted on the key comes from that same fact');
+t(/if\(!isLast\)\{ try\{ ins\[ix\+1\]\.focus\(\); \}catch\(e\)\{\} return; \}/.test(rend),
+  'a middle box moves to the next box and goes no further');
+t(rend.indexOf('ins[ix+1].focus()') < rend.indexOf('obNext();'),
+  'and it returns BEFORE obNext can be reached');
+t(/try\{ el\.blur\(\); \}catch\(e\)\{\}\s*\n\s*obNext\(\);/.test(rend),
+  'only the last box drops the keyboard and moves the screen');
+/* The screens this actually protects. If a two-box screen is ever added, it is
+   covered by the same rule - but these three are the ones that were broken. */
+['height','cardio','sleep'].forEach(function(k){
+  const i=src.indexOf("if(st.type==='"+k+"')");
+  const b=(i<0?'':src.slice(i, src.indexOf("if(st.type===", i+20)));
+  t((b.match(/<input/g)||[]).length>=2, '  the '+k+' screen really does have two boxes',
+    String((b.match(/<input/g)||[]).length));
+});
 
 console.log('\n  THEIR ANSWERS SURVIVE A BAD NETWORK:');
 const fin=slice('async function obFinish(){','function obRender()');
