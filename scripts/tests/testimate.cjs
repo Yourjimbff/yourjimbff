@@ -17,7 +17,9 @@ const w=src.slice(src.indexOf('async function logFoodFromChat('), src.indexOf("a
 t(/var _blank=0;[\s\S]{0,400}!_mtItem\(x\) && !\(\(\+x\.calories\)\|\|\(\+x\.protein\)\|\|\(\+x\.carbs\)\|\|\(\+x\.fat\)\)/.test(w), 'rows the table cannot price and that carry no numbers are counted BEFORE the table zeroes them');
 t(/if\(_blank && _top>_mt\.calories\)\{[\s\S]{0,300}offer=Object\.assign\(\{\}, offer, \{items:_mi\}\);/.test(w), 'when such a row exists and the meal total said more than the table found, the total she gave stands');
 t(/\} else \{\s*offer=Object\.assign\(\{\}, offer, \{items:_mi, protein:_mt\.protein/.test(w), 'otherwise the table is still law - the sum of the rows is the meal');
-t(/if\(_foodMacrosAllZero\(offer\) && !_foodZeroIsPlausible\([\s\S]{0,120}var _est=await _jimEstimateFood\(offer, _code\);/.test(w), 'a meal still at zero after the table is sent to the estimator, not the gate');
+/* !_preP: a plate the confirm screen already priced is not re-estimated on
+   the way in either (12 Sep, the one-number fix) - see tonenumber2. */
+t(/if\(!_preP && _foodMacrosAllZero\(offer\) && !_foodZeroIsPlausible\([\s\S]{0,120}var _est=await _jimEstimateFood\(offer, _code\);/.test(w), 'a meal still at zero after the table is sent to the estimator, not the gate');
 t(/estimated:\(_estimated\|\|false\)/.test(src), 'the landed row remembers that its numbers were found, and how');
 
 console.log('\n  THE THREE DOORS:');

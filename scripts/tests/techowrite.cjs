@@ -77,7 +77,9 @@ t(/console\.warn\('FOOD_LOG: the table prices the whole sentence/.test(block) &&
    "rice" as one handful. The echo's lines ARE the table's arithmetic, at the
    amounts he actually said. */
 t(/_echoOwned=true;/.test(block), 'a meal the echo priced is marked as already the table\'s');
-t(/if\(!_stated && !_echoOwned && Array\.isArray\(offer\.items\) && offer\.items\.length\)\{/.test(src),
+/* ...and the same condition now also stands down for an offer the confirm
+   screen already priced (12 Sep, the one-number fix) - see tonenumber2. */
+t(/if\(!_preP && !_stated && !_echoOwned && Array\.isArray\(offer\.items\) && offer\.items\.length\)\{/.test(src),
   'and the table stands down rather than re-pricing its own answer at quantity one');
 t(/var _stated=false, _echoOwned=false;/.test(src), 'the flag starts false, so nothing else changes');
 t(/console\.warn\('FOOD_LOG: echo stood down'/.test(block)
