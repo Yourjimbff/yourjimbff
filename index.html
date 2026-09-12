@@ -47606,8 +47606,18 @@ function bfDaySwapOpen(ds, day, i){
   var wd=_parseDs(ds); var plan=wd?_tlPlanForDate(wd):null;
   var list=_bfDayEx(ds, plan||{});
   var e=list[i]; if(!e || !e.n) return;
-  window._bfDayPick={ds:ds, day:day, i:i, from:e.n, mode:'swap', taken:list.map(function(x){ return x.n; })};
-  try{ _tpOpenPickerFor(e, list, day); }catch(err){ window._bfDayPick=null; }
+  /* NAMES, NOT THE EXERCISES THEMSELVES (found auditing the launch checklist,
+     11 Sep, w8 "swap, pick another, only today changes"). _tpOpenPickerFor
+     filters its list with taken.indexOf(x.n), so it needs NAMES - and this
+     handed it `list`, an array of exercise objects. indexOf of a name in an
+     array of objects is always -1, so the filter did nothing and the picker
+     offered movements already on today's sheet. Tap one and the commit step
+     refuses it with "Already on today's session", which reads as the swap
+     being broken rather than as the option never having been real.
+     The right list was already built on the line above. */
+  var _taken=list.map(function(x){ return x.n; });
+  window._bfDayPick={ds:ds, day:day, i:i, from:e.n, mode:'swap', taken:_taken};
+  try{ _tpOpenPickerFor(e, _taken, day); }catch(err){ window._bfDayPick=null; }
 }
 function bfDayAddOpen(ds, day){
   var wd=_parseDs(ds); var plan=wd?_tlPlanForDate(wd):null;
@@ -71708,15 +71718,32 @@ function _tpRestBlock(day){
     + '<div style="margin-top:2px;"><div style="font-size:10px;font-weight:800;letter-spacing:1.3px;text-transform:uppercase;color:rgba(240,236,228,0.78);margin-bottom:9px;">Cardio</div>'+_tpCardioRows(day)+'</div>';
 }
 var _tpStepsToday='';
+/* THE APP NEVER ASSERTS WHAT IT HAS NOT ESTABLISHED - the founding law, and
+   this one box broke it three ways at once (found auditing the launch
+   checklist, 11 Sep, b1 "Log steps - type today's steps, they save").
+
+   It posted RAW, with no sbUpsert and no on_conflict, so PostgREST had no
+   constraint to merge on. It sent `logged_at`, a column step_logs does not
+   have - the table is keyed on date_str and stamped updated_at - so the write
+   came back 400. fetch() only rejects on a network failure, so a 400 RESOLVES
+   and the empty catch never fired. And the toast said "\u2713 N steps" on the
+   line after, unconditionally.
+
+   Every one of the seven other places that writes steps already goes through
+   sbUpsert with 'client_code,date_str' and reads the answer. This was the one
+   that did not, and it is the box on the Training Plan tab. Same door as the
+   rest now, and it says so honestly either way. */
 async function tpLogSteps(v){
   if(_plBlocked('tpLogSteps')) return;
   _tpStepsToday=parseInt(v,10)||'';
   if(!cl) return;
+  var ok=false;
   try{
-    await fetch(SB_URL+'/rest/v1/step_logs',{method:'POST',headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'}),
-      body:JSON.stringify({client_code:cl.code,date_str:todayDateStr,steps:_tpStepsToday||0,logged_at:new Date().toISOString()})});
-    showToast('\u2713 '+(_tpStepsToday||0).toLocaleString()+' steps');
-  }catch(e){}
+    ok=await sbUpsert('step_logs',{client_code:cl.code, date_str:todayDateStr,
+      steps:_tpStepsToday||0, updated_at:new Date().toISOString()}, 'client_code,date_str');
+  }catch(e){ ok=false; }
+  if(ok) showToast('\u2713 '+(_tpStepsToday||0).toLocaleString()+' steps');
+  else   showToast('Steps did not save \u2014 try again');
 }
 async function loadTpSteps(){
   _tpStepsToday='';
@@ -72083,6 +72110,18 @@ function tpAddSearch(){
   var q=''; var el=document.getElementById('tpQ'); if(el) q=String(el.value||'').trim().toLowerCase();
   var box=document.getElementById('tpQRes'); if(!box) return;
   var all=_tpAllEx();
+  /* AND THE ADD SEARCH HIDES THEM TOO (same audit, w10 "add exercise, pick from
+     the library"). Only the commit step checked, so an exercise already on
+     today's sheet was listed, tappable, and then refused - the same dead option
+     the swap picker was offering. Two cards of one name share one set state and
+     double-log on Complete, which is why it is refused at all; the honest place
+     to refuse is before it is offered.
+     Only when a day is actually being edited: _bfDayPick is null for the
+     program editor, where the whole library SHOULD be listed. */
+  try{
+    var _bt=(window._bfDayPick && Array.isArray(window._bfDayPick.taken)) ? window._bfDayPick.taken : null;
+    if(_bt && _bt.length) all=all.filter(function(e){ return _bt.indexOf(e.n)<0; });
+  }catch(e){}
   var hits = q ? all.filter(function(e){ return e.n.toLowerCase().indexOf(q)>=0 || e.cat.toLowerCase().indexOf(q)>=0; }) : all;
   if(!hits.length){
     box.innerHTML='<div style="padding:18px 2px;">'
@@ -76216,12 +76255,31 @@ function _renderWpChart(weights){
   var line=pts.map(function(p){ return p.join(','); }).join(' ');
   var area=line+' '+Wd+','+Ht+' 0,'+Ht;
   var last=pts[pts.length-1];
-  var first=parseFloat(W[0].weight), now=parseFloat(W[W.length-1].weight);
+  /* "SINCE YOU STARTED" MEANS THE WEIGHT HE RECORDED AS THE START (found
+     auditing the launch checklist, 11 Sep, b6 "the direction and the number are
+     correct"). This one chart measured from W[0] - the OLDEST WEIGH-IN - while
+     the Day card, the Goals page and the trainer's board all go through
+     _pgStartWeight, which prefers profile.start_weight and only falls back to
+     the first weigh-in when there is no recorded one.
+
+     When those two differ - and they differ for anyone who logged their first
+     weigh-in a few days after signing up - the same person saw two different
+     answers to the same question on two screens. That is the bug the 20 Aug
+     ruling put _startWeightOf in the file to end; this was the one function
+     that never got pointed at it.
+
+     The fallback carries its own wording ("since first weigh-in") so the line
+     stops claiming a start it does not have. */
+  var _sw=null;
+  try{ _sw=_pgStartWeight((typeof profile!=='undefined'?profile:null), parseFloat(W[0].weight), _feedTs(W[0])); }catch(e){ _sw=null; }
+  var first=(_sw && _sw.ok && _sw.val!=null) ? _sw.val : parseFloat(W[0].weight);
+  var now=parseFloat(W[W.length-1].weight);
   var moved=Math.round((now-first)*10)/10;
   var dir = Math.abs(moved)<0.1 ? 'Even' : (moved>0?'Up':'Down');
+  var _since=(_sw && _sw.note) ? _sw.note : 'since you started';
   host.innerHTML=(inCard?'':('<div class="wpTop">'
       +'<div><span class="wpNow">'+wToDisp(now)+'</span><span class="wpUnit">'+wUnit()+'</span></div>'
-      +'<div class="wpDelta">'+dir+(Math.abs(moved)>=0.1?(' <b>'+wToDisp(Math.abs(moved))+' '+wUnit()+'</b>'):'')+' since you started</div>'
+      +'<div class="wpDelta">'+dir+(Math.abs(moved)>=0.1?(' <b>'+wToDisp(Math.abs(moved))+' '+wUnit()+'</b>'):'')+' '+_since+'</div>'
     +'</div>'))
     +'<svg class="wpSvg" viewBox="0 0 '+Wd+' '+Ht+'" preserveAspectRatio="none" aria-hidden="true">'
       +'<defs><linearGradient id="wpg" x1="0" y1="0" x2="0" y2="1">'
