@@ -50,10 +50,13 @@ t(/_nav\.style\.gridTemplateColumns='repeat\(5,1fr\)';/.test(nav), 'and the bar 
 /* THE BAR IS FLEX WITH AN EXPLICIT ORDER PER ITEM, not a grid - a new button
    dropped into the markup lands at the far LEFT until it is given one. Found by
    looking at the served page, not by reading the HTML. */
-t(/\.bnav:not\(\.trainer-mode\) #bnFood\{order:2;\}/.test(src), 'Food takes the second slot, beside Day');
-t(/\.bnav:not\(\.trainer-mode\) #bnFeed\{order:1;\}/.test(src), 'Day stays first');
-t(/\.bnav:not\(\.trainer-mode\) #bnProgram\{order:3;\}/.test(src) && /#bnAsk\{order:4;\}/.test(src) && /#bnProgress\{order:5;\}/.test(src),
-  'and everything after keeps the relative order it has had since 20 Aug');
+/* His words, 13 Sep, given as the whole bar: "day, Jim, program, food,
+   progress". */
+t(/\.bnav:not\(\.trainer-mode\) #bnFeed\{order:1;\}/.test(src), 'Day');
+t(/\.bnav:not\(\.trainer-mode\) #bnAsk\{order:2;\}/.test(src), 'Jim');
+t(/\.bnav:not\(\.trainer-mode\) #bnProgram\{order:3;\}/.test(src), 'Program');
+t(/\.bnav:not\(\.trainer-mode\) #bnFood\{order:4;\}/.test(src), 'Food');
+t(/\.bnav:not\(\.trainer-mode\) #bnProgress\{order:5;\}/.test(src), 'Progress');
 t(/\.bnav\.trainer-mode #bnFood\{display:none !important;\}/.test(src), 'the trainer bar never shows it');
 t(/\['bnProgram','bnFollow','bnToday','bnFood'\]/.test(src), 'the trainer bar stays three - he reaches the page from My Food');
 t(/if\(t==='Food'\)\{ try\{ renderFoodTab\(\); \}catch\(e\)\{\} \}/.test(src), 'and switching to it renders it');
