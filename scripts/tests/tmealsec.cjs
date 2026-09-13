@@ -26,13 +26,47 @@ global.window = {};
 global._escHtml = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let DUE = null;
 global._duePrompt = () => DUE;
-eval(one('var _TL_MEAL_ORDER=') + '\n' + lift('_tlMealSection'));
+/* THEIR FIRST DAY DOES NOT START AT BREAKFAST (Yusuf, 12 Sep, signing in at
+   8:40 on a Sunday evening: "I didn't skip breakfast, skip lunch"). The ladder
+   now asks _tlFirstDay, which reads profiles.intake_date. Lifted here rather
+   than stubbed so the real test runs, with `profile` as the only dial - exactly
+   what the app reads. */
+global.profile = {};
+eval(one('var _TL_MEAL_ORDER=') + '\n' + lift('_tlFirstDay') + '\n' + lift('_tlMealSection'));
+const FIRSTDAY = d => { global.profile = d ? {intake_date:d} : {}; };
 
 let bad = 0, n = 0;
 const t = (ok, msg, got) => { n++; if(!ok) bad++; console.log((ok?'  ok    ':'  FAIL  ')+msg+(got!=null?('  '+got):'')); };
 const meal = (name,c,p) => ({name:name, calories:c, protein:p});
 const S = o => Object.assign({breakfast:[],lunch:[],dinner:[],snack:[]}, o||{});
 const sec = (slots, isToday, isAhead) => _tlMealSection('Sep 3, 2026', S(slots), !!isToday, !!isAhead);
+
+console.log('\nTHEIR FIRST DAY DOES NOT START AT BREAKFAST (Yusuf, 12 Sep):');
+/* Somebody who installs the app at 8:40pm on a Sunday did not skip breakfast
+   and did not skip lunch. The word Skipped beside those rows is an OFFER, not
+   a claim - but it reads as a claim, and on this one day it is certainly
+   false. Meals whose hour was already over before this person had the app are
+   not on the list at all. */
+global._mealHourGone = k => (k==='breakfast'||k==='lunch');
+FIRSTDAY('Sep 3, 2026');
+DUE = 'dinner';
+var _d1 = sec({}, true);
+t(!/data-key="breakfast"/.test(_d1), 'on day one, breakfast is not offered at 8:40pm');
+t(!/data-key="lunch"/.test(_d1), 'and neither is lunch');
+t(/data-key="dinner"/.test(_d1), 'but dinner is - they can still eat it');
+/* Tomorrow the ladder is whole again, and an existing client - anybody with no
+   intake_date at all - never sees any of this. */
+FIRSTDAY('Sep 2, 2026');
+var _d2 = sec({}, true);
+t(/data-key="breakfast"/.test(_d2) && /data-key="lunch"/.test(_d2),
+  'the day after, the whole ladder is back');
+FIRSTDAY(null);
+var _d3 = sec({}, true);
+t(/data-key="breakfast"/.test(_d3) && /data-key="lunch"/.test(_d3),
+  'and a client with no intake_date - every existing client - is untouched');
+global._mealHourGone = undefined;
+FIRSTDAY(null);
+DUE = null;
 
 console.log('\nAN EMPTY PAST DAY DRAWS NOTHING; TODAY ALWAYS HAS ITS DOORS (Yusuf, 7 Sep 6am):');
 // SUPERSEDED 7 Sep, by him, off Ali's screen at 6am: "do you realize youve

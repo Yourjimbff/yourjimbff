@@ -211,7 +211,9 @@ t(/try\{ el\.blur\(\); \}catch\(e\)\{\}\s*\n\s*obNext\(\);/.test(rend),
   'only the last box drops the keyboard and moves the screen');
 /* The screens this actually protects. If a two-box screen is ever added, it is
    covered by the same rule - but these three are the ones that were broken. */
-['height','cardio','sleep'].forEach(function(k){
+/* sleep came out of the flow entirely on 12 Sep and took its two native time
+   pickers with it - see tobwidth.cjs. These two are what the rule protects. */
+['height','cardio'].forEach(function(k){
   const i=src.indexOf("if(st.type==='"+k+"')");
   const b=(i<0?'':src.slice(i, src.indexOf("if(st.type===", i+20)));
   t((b.match(/<input/g)||[]).length>=2, '  the '+k+' screen really does have two boxes',
@@ -233,6 +235,17 @@ t(/if\(_sessionFlipped\(\)\)/.test(fin),
 t(/Stay as them/.test(src), 'which names the button that actually fixes it');
 t(/if\(btn\)\{ btn\.disabled=false; btn\.textContent='Start'; \}/.test(fin),
   'and the button comes back rather than sitting there dead');
+
+console.log('\n  THE NUMBERS ON THE LAST SCREEN FOLLOW THEM IN:');
+/* Caught by running the flow through as a beginner on the served build: every
+   answer landed and cal_target came back null. The Day page then falls back to
+   its 1800 stand-in and prints no target at all - one screen after promising
+   in writing that these numbers live there now. */
+t(/row\.cal_target=Math\.round\(_T\.cal\)/.test(fin), 'the calorie target is written');
+t(/row\.protein_target=Math\.round\(_T\.prot\)/.test(fin), 'and the protein target with it');
+t(/var _T=_obTargets\(\);/.test(fin), 'from the same engine the plan screen drew');
+t(/if\(_T && _T\.cal>0\)/.test(fin), 'and never a zero, which would read as a real choice');
+t(/These sit on your Day page from now on/.test(src), 'which is what the screen promises out loud');
 t(fin.indexOf('localStorage.removeItem(_obSetupKey())') > fin.indexOf('if(!ok){'),
   'and the local copy is only cleared AFTER the server took it');
 
