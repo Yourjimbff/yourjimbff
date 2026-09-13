@@ -74,6 +74,38 @@ t(sl.indexOf('void v.offsetHeight') < sl.indexOf('ta.focus('), 'in that order, o
 t(/ta\.focus\(\{preventScroll:true\}\)/.test(sl), 'focused without throwing the page around');
 t(!/setTimeout\([^)]*ta\.focus/.test(sl), 'and never on a timer - that leaves the tap gesture and iOS refuses');
 
+console.log('\n  THE JIM CHAT IS A CARD, NOT A SECOND SCREEN:');
+/* Yusuf, 13 Sep: "when the keyboard collapsed there's no bottom to it of that
+   Jim chat. It should be like a slightly overlay screen in someway. We should
+   be able to see the bottom." */
+const ov=slice('<div id="slogView"','<div id="slogBody"');
+t(/position:fixed;inset:0/.test(ov), 'the overlay is the dim, edge to edge');
+t(/background:rgba\(8,8,8,0\.72\)/.test(ov), 'and it is see-through, so the day is still behind it');
+t(/backdrop-filter:blur\(14px\)/.test(ov), 'blurred, the house recipe');
+t(/align-items:center;justify-content:center/.test(ov), 'with the card centred in it');
+t(!/height:100vh/.test(ov), 'nothing in here is full-screen any more');
+t(/<div id="slogPanel"/.test(ov), 'the chat itself is a panel');
+t(/border:1px solid #2e2e2e;border-radius:22px/.test(ov), 'with a border and corners on all four sides');
+t(/max-width:440px;height:100%;min-height:0/.test(ov), 'filling the overlay it sits inside, and no more');
+t(/overflow:hidden/.test(ov), 'so the thread cannot paint over its own rounded corners');
+/* The panel no longer touches the screen, so the safe area is paid ONCE, by the
+   overlay's padding - not again by the header and the input row inside it. */
+t(/padding:calc\(env\(safe-area-inset-top,0px\) \+ 12px\) 10px calc\(env\(safe-area-inset-bottom,0px\) \+ 12px\)/.test(ov),
+  'the overlay pays the safe area');
+const head=slice('<div id="slogPanel"','<div id="slogBody"');
+t(/padding:15px 16px 12px/.test(head), 'the header does not pay it again');
+const row=slice('<div id="slogBody"','id="jConvoView"');
+t(/padding:11px 12px 12px/.test(row), 'and neither does the input row');
+t(/<\/div>\n   <\/div>\n  <\/div>/.test(src), 'and the panel is closed inside the overlay');
+/* Same way out as every other sheet on the page. */
+t(/id="slogView" onclick="slogBackdrop\(event\)"/.test(src), 'tapping the dim is a way out');
+const bd=slice('function slogBackdrop(ev){','function openSmartLog(){');
+t(/ev\.target\.id==='slogView'/.test(bd), 'and only the dim - a tap on the card must not close it');
+/* _slogFit already tracked the visible viewport; with the card inset it is what
+   keeps the bottom edge on screen when the keyboard is up. */
+const fitS=slice('function _slogFit(){','function openSmartLog(){');
+t(/v\.style\.height = window\.visualViewport\.height/.test(fitS), 'and the card still follows the keyboard');
+
 console.log('\n  NOBODY IS BEHIND:');
 t(!/Behind\?/.test(src), 'the word does not appear anywhere Jim speaks');
 t(/A whole day at once is fine/.test(src), 'the day version is an offer');
