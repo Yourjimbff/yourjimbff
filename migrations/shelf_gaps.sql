@@ -47,3 +47,46 @@ where not exists (
 );
 
 notify pgrst, 'reload schema';
+
+-- ============================================================
+-- ADDED 13 SEP, SAME DAY, SAME FILE — so it stays one paste.
+-- Re-running the whole file is still safe: everything below is guarded.
+--
+-- Yusuf, working the lunch builder:
+--   "include beets ... also add peas to vegetables"
+--   "pasta should be replaced with whole wheat pasta"
+--   "Rice, potatoes, sweet potatoes, whole wheat pasta, sourdough bread,
+--    beans, chickpeas"
+--
+-- Beets and peas are new rows. Pasta is RENAMED rather than replaced, so every
+-- meal already saved against it keeps pointing at the same row — the id never
+-- changes and nobody's history moves. Sourdough bread is added ALONGSIDE the
+-- existing Bread rather than renaming it: plain bread is still a real food and
+-- breakfast still offers it; the lunch and dinner carb list is the thing that
+-- names sourdough.
+--
+-- Peas are carried as a vegetable because that is where he asked for them,
+-- and their macros are honest about being the starchiest one on the shelf.
+-- ============================================================
+
+insert into meal_components (owner_code, kind, name, unit, per_unit, sort, is_archived)
+select v.owner_code, v.kind, v.name, v.unit, v.per_unit::jsonb, v.sort, false
+from (values
+  ('yusuf1', 'veg',  'Beets',           'handful', '{"cal":40,"p":1,"c":9,"f":0}',    134),
+  ('yusuf1', 'veg',  'Peas',            'handful', '{"cal":62,"p":4,"c":11,"f":0}',   135),
+  ('yusuf1', 'carb', 'Sourdough Bread', 'slice',   '{"cal":120,"p":4,"c":23,"f":1}',  136)
+) as v(owner_code, kind, name, unit, per_unit, sort)
+where not exists (
+  select 1 from meal_components m
+  where m.owner_code = v.owner_code and m.name = v.name
+);
+
+-- A rename, not a replacement: same row, same id, same history.
+update meal_components
+   set name = 'Whole Wheat Pasta', updated_at = now()
+ where owner_code = 'yusuf1'
+   and name = 'Pasta'
+   and not exists (select 1 from meal_components m2
+                    where m2.owner_code = 'yusuf1' and m2.name = 'Whole Wheat Pasta');
+
+notify pgrst, 'reload schema';
