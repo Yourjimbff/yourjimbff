@@ -95,7 +95,14 @@ t((wel.match(/\{t:'/g)||[]).length===3, 'three cards, one at a time', String((we
    made on screen one and kept on the way in is worth more than a new one. */
 t(/Track your food\./.test(src) && /Track your training\./.test(src),
   'which is the promise screen one made, kept');
-t(/obWelcome\(\)/.test(fin), 'it runs when setup finishes');
+/* IT MOVED TO obClose ON 13 SEP, and had to. obFinish is no longer the last
+   screen -- the save-it-to-your-home-screen step is -- so a setup that finished
+   would have dropped somebody onto the Day page with no introduction at all,
+   which is the exact thing these cards exist to prevent. One place now,
+   whichever way the overlay is closed. */
+t(/if\(wasSetup\)\{ try\{ obWelcome\(\); \}catch\(e\)\{\} \}/.test(src),
+  'it runs when the setup overlay closes, by any route');
+t(!/obWelcome\(\)/.test(fin), 'and obFinish no longer fires it itself, since it is not the end any more');
 t(!/showToast\('You are set up'\)/.test(fin) || /catch\(_e\)/.test(fin),
   'and the three-second toast is only a fallback now');
 const done=slice('function obWelDone(){','}');

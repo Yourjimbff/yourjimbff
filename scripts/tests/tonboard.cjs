@@ -23,10 +23,29 @@ eval(CL.code||'');
 
 console.log('\n  EVERY QUESTION HE LISTED HAS ITS OWN SCREEN:');
 const keys=_OB_STEPS.map(s=>s.k);
-['gender','birthday','height','weight','train_days',
- 'equipment','experience'].forEach(function(k){
+['gender','birthday','height','weight',
+ 'muscles','experience'].forEach(function(k){
   t(keys.indexOf(k)>=0, k);
 });
+/* 13 Sep, two more off the flow, both in his words.
+   train_days: "I believe someone should be working out everyday. that's my
+               belief, it's baked in now. fitness or training is daily, I'd
+               rather use it as a selling point." A question you already know
+               the answer to is not a question - and "the week you have, not
+               the week you want" invited somebody to negotiate themselves down
+               before they had started. Seven, for everybody, said out loud on
+               the Week One screen.
+   equipment:  replaced by the thing his whole method turns on - "what are your
+               strengths & weaknesses? and then it's just a run down of all the
+               muscle groups, organized". */
+['train_days','equipment'].forEach(function(k){
+  t(keys.indexOf(k)<0, '  '+k+' is off the flow');
+});
+t(/var OB_TRAIN_DAYS=7;/.test(src), 'and seven is a constant, not a default a screen could argue with');
+t(!/a\.train_days/.test(src), 'nothing reads a training-days ANSWER any more');
+t((src.match(/train_days:OB_TRAIN_DAYS/g)||[]).length===2,
+  'both the calorie engine and the saved profile take it from that one place',
+  (src.match(/train_days:OB_TRAIN_DAYS/g)||[]).length);
 /* CUT, 12 Sep, screen by screen, in his words.
    food:     "that question doesn't need to be there... just remove that
               question in general" - and "whole foods" means nothing to somebody
@@ -48,8 +67,13 @@ const keys=_OB_STEPS.map(s=>s.k);
 t(_OB_STEPS.filter(s=>s.type==='weight2').length===1, 'weight and goal share one screen');
 t(keys.indexOf('goal_weight')<0, 'and goal weight is no longer a screen of its own');
 t(keys[0]==='intro', 'it opens by saying what this is, before anything personal is asked');
-t(keys[keys.length-1]==='plan', 'and it ends on their plan, not on a form');
-t(_OB_STEPS.filter(s=>s.q||s.type==='intro'||s.type==='plan').length===_OB_STEPS.length,
+/* It ended on the plan until 13 Sep: "I'd prefer this be a sign in to the home
+   screen, and save this to your home screen ... then go to home screen." The
+   plan is still the last thing they READ; the last thing they DO is put the
+   icon on their phone, because a tab is something you close. */
+t(keys[keys.length-1]==='home', 'and it ends by putting it on their home screen');
+t(keys[keys.length-2]==='plan', 'straight after their plan, which is still the last thing they read');
+t(_OB_STEPS.filter(s=>s.q||s.type==='intro'||s.type==='plan'||s.type==='home').length===_OB_STEPS.length,
   'every screen asks exactly one thing');
 
 console.log('\n  SCREEN ONE IS A PROMISE AND NOTHING ELSE:');
@@ -73,14 +97,66 @@ t(!/[Bb]uild your workout/.test(intro),
 t((intro.match(/<div>/g)||[]).length===3, 'exactly three of them, no fourth',
   String((intro.match(/<div>/g)||[]).length));
 const steps=slice('var _OB_STEPS=[', 'var _ob=null;');
-t(/q:'What do you have access to\?'/.test(steps),
-  'equipment asks what they can walk into, not what they own');
-const eq=slice('var _OB_EQUIP=[','var _OB_EXP=[');
-t(/A commercial gym/.test(eq) && /An apartment gym/.test(eq) && /A home gym/.test(eq),
-  'commercial, apartment, home - his three');
-t(!/hotel/i.test(eq), 'and nobody is asked whether they are in a hotel gym');
-t(!/Barbell, dumbbells, a bench/.test(eq),
+t(/q:'Where are you strong and weak\?'/.test(steps),
+  'the equipment question is now about them, not about a room');
+/* The equipment options survive as _OB_EQUIP, unreferenced by the flow -- the
+   same way restTextSet and restLogEntry survive. If a room question is ever
+   wanted again it is a line in _OB_STEPS, not a rebuild. */
+/* The only survivor of "hotel gym" is the comment recording why it went, which
+   is what that comment is for. */
+t(!/t:'[^']*hotel/i.test(src), 'and nobody is asked whether they are in a hotel gym');
+t(!/Barbell, dumbbells, a bench/.test(src),
   'and the app stops telling people what is in their own home gym');
+
+console.log('\n  SEVENTEEN MUSCLES, EACH ONE NAMING ITS LIFT:');
+/* Yusuf, 13 Sep, handing over his own Physical Questionnaire: "muscles
+   (corresponding exercises) ------ weak or strong ... break it down by muscle
+   groups: push pull core legs". A muscle on its own is a word; a muscle with
+   its lift beside it is a thing you have either felt working or you have not,
+   and that is the whole question. */
+const mus=slice('var MI_MUSCLES = [','var MI_BY_KEY=');
+[['pec_major','Chest press'],['upper_pec','Incline chest press'],
+ ['front_delts','Shoulder press'],['side_delts','Lateral raises'],
+ ['triceps','Tricep extensions'],['traps','Shrugs'],
+ ['rear_delts','Rear delt flys'],['outer_back','Pull ups, lat pulldowns'],
+ ['centre_back','Rows, deadlifts'],['low_back','Back extensions'],
+ ['biceps','Curls'],['abs','Sit ups, leg raises'],
+ ['obliques','Side crunches, twists'],['quads','Lunges, leg extensions'],
+ ['glutes','Hip thrusts'],['hamstrings','Hamstring curls'],
+ ['calves','Calf raises']].forEach(function(pair){
+  t(new RegExp("k:'"+pair[0]+"'[\\s\\S]{0,80}?x:'"+pair[1].replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+"'").test(mus),
+    '  '+pair[0]+' \u2192 '+pair[1]);
+});
+t(/var MI_GROUPS=\['Push','Pull','Core','Legs'\];/.test(src), 'grouped push, pull, core, legs - his order');
+/* Low back sat under Core. His own list puts it at the foot of pull, and back
+   extensions are a pull movement. */
+t(/k:'low_back'[\s\S]{0,90}?group:'Pull'/.test(mus), 'low back moved to pull, where he put it');
+/* Forearms is not on his questionnaire, but it is in the Strength Check, which
+   is a longer conversation than the first two minutes of the app. */
+t(/k:'forearms'[\s\S]{0,110}?intake:false/.test(mus), 'forearms stays in the Strength Check and off the setup screen');
+t(/function miIntakeMuscles\(\)/.test(src), 'and one function decides which is which');
+
+console.log('\n  AND WHAT THEY SAY IS THEIR BASELINE, NOT A SECOND OPINION:');
+const fin2=slice('async function obFinish(){','/* ===== THE FIRST MINUTE');
+t(/sbInsert\('mi_checkins', _mrow\)/.test(fin2), 'it writes the row the Strength Check already reads');
+t(/kind:'baseline'/.test(fin2), 'as their baseline');
+t(/_rt\[k\]=\{r:_mus\[k\]\}/.test(fin2), 'in the same shape miCommit writes');
+t(fin2.indexOf("sbUpsert('profiles'") < fin2.indexOf("sbInsert('mi_checkins'"),
+  'after the profile, so a setup that worked is never reported as failed because one extra table was missing');
+t(/sqPush\('mi_checkins', _mrow, 'POST'\)/.test(fin2), 'and it queues if the network is not there');
+t(/muscles:\(a\.muscles\|\|\{\}\)/.test(fin2), 'the answers ride in intake_json too, which is what the pre-call brief reads');
+
+console.log('\n  SAVE IT TO YOUR HOME SCREEN:');
+const home=slice("  if(st.type==='home'){","  if(st.type==='mus'){");
+t(/Add to Home Screen/.test(home), 'it says the words iOS says');
+t(/Tap the share button at the bottom/.test(home), 'and points at the right control on iOS Safari');
+t(/Tap the \\u00b7\\u00b7\\u00b7 at the bottom right/.test(home), 'the dots on iOS Chrome');
+t(/Tap the \\u22ee at the top right/.test(home), 'and the other dots on Android');
+t(/class="obRing"/.test(home), 'the button is circled');
+t(/class="obPoint"/.test(home), 'with an arrow at it');
+t(/function _obInstalled\(\)/.test(src), 'and somebody already installed never sees it');
+t(/if\(!_obInstalled\(\) && _obStepIndex\('home'\)>=0\)/.test(src), 'checked before it is shown');
+t(/st\.type!=='home'/.test(src), 'it carries its own Done and no second button');
 const ex=slice('var _OB_EXP=[','/* WHAT THEY CAN WALK INTO');
 const ex2=slice('var _OB_EXP=[','var _OB_MUS=');
 t(/Beginner/.test(ex2) && /Intermediate/.test(ex2) && /Advanced/.test(ex2),
