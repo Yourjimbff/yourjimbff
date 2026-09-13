@@ -234,3 +234,31 @@ Two ways out, both cheap: read `document.hidden` first, and set
 `el.style.transition='none'` before measuring (restore it after). Do this for
 every colour assertion on a live page — the alternative is half an hour spent
 hunting a CSS bug that was never there.
+
+## A CLAMP IS NOT A CEILING (13 Sep)
+
+`portionFor` divided a carb target by a food's carbs-per-unit and clamped the
+answer at 8. Perfectly correct code, and it told a man to eat four and a half
+handfuls of mixed berries next to two eggs. `mbDefaultQty` handled palms and
+fell through to `return 1` for everything else, so an egg — 6g of protein
+against a rule aiming at 42 — came out as one egg.
+
+Neither bug is visible in the source. Both bodies read as sound arithmetic.
+They only appear when the arithmetic is RUN against the real rows: 28 ÷ 6 =
+4.67, 42 ÷ 6 = 7. So portioning gets a suite that evals the lifted functions
+and asserts numbers (`tportion.cjs`), not one that regexes the file.
+
+The fix has a shape worth reusing: **compute from the goal, then stop at what a
+person actually does.** The ceiling is named per unit (`MB_COUNT_CAP`,
+`mbFruitCap`) and is a separate idea from the clamp that stops a divide by a
+tiny number from running away. A clamp is arithmetic safety; a ceiling is
+domain knowledge. Writing one where the other belongs is how 8 ends up standing
+in for "nobody eats eight handfuls of blackberries".
+
+Two things to check whenever you touch a portion rule:
+- **A second path may hard-code the same answer.** `MB_INSPO` carries
+  `{name:'Turkey Bacon', qty:3}`, so the guided door says 3 and the picker now
+  says 2 — same food, two answers.
+- **The shelf may not have the food at all.** `_mbComponents` is owner-filtered,
+  so a name that resolves against `meal_components` in a query can still be
+  another client's private row. Query the filtered shelf, not the table.
