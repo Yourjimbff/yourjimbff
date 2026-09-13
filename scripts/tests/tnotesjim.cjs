@@ -51,9 +51,19 @@ t(/\.fdOv\.mid\{align-items:center/.test(src), 'and mid is the house rule he alr
 const fit=slice('function _fdFit(){','function _fdClose(){');
 t(/ov\.classList\.contains\('mid'\)/.test(fit), 'only a floating sheet tracks the viewport');
 t(/var vv=window\.visualViewport;/.test(fit), 'it measures the VISIBLE viewport, not the layout one');
-t(/ov\.style\.height=Math\.round\(vv\.height\)\+'px';/.test(fit), 'the overlay becomes what is actually on screen');
+/* SHRINKING THE OVERLAY LEFT A BAND (Yusuf, 13 Sep: "write a note still has a
+   tiny section of the screen underneath visible"). Between where the overlay
+   stopped and where the keyboard began, the page showed through undimmed - on
+   iOS that band is the form accessory bar. The dim is full-screen again and it
+   is the PADDING that moves. */
+t(/ov\.style\.height=''; ov\.style\.top='';/.test(fit), 'the overlay is never shrunk');
+t(/var kb=Math\.max\(0, Math\.round\(\(window\.innerHeight\|\|0\) - vv\.height - \(vv\.offsetTop\|\|0\)\)\);/.test(fit),
+  'the keyboard is measured');
+t(/ov\.style\.paddingBottom=kb\+'px';/.test(fit), 'and added to the bottom, so the box centres in what is left');
 t(/p\.style\.maxHeight=Math\.max\(160, Math\.round\(vv\.height-28\)\)\+'px';/.test(fit),
   'and the box can never be taller than that, so both its edges stay in sight');
+t(/ov\.style\.height=''; ov\.style\.top=''; ov\.style\.paddingBottom='';/.test(src),
+  'closing clears every one of those');
 t(/function _fdUnfit\(\)\{/.test(src) && /function _fdClose\(\)\{ try\{ _fdUnfit\(\); \}catch\(e\)\{\}/.test(src),
   'closing puts the overlay back and drops the listeners');
 const show=slice('function _fdShow(html, label, cls){','function _fdFit(){');
@@ -105,6 +115,30 @@ t(/ev\.target\.id==='slogView'/.test(bd), 'and only the dim - a tap on the card 
    keeps the bottom edge on screen when the keyboard is up. */
 const fitS=slice('function _slogFit(){','function openSmartLog(){');
 t(/v\.style\.height = window\.visualViewport\.height/.test(fitS), 'and the card still follows the keyboard');
+
+console.log('\n  JIM DOES NOT SPEAK IN ASTERISKS:');
+/* Found 13 Sep in a screenshot of his own chat: a reply printed literally as
+   "**What's your day look like this week?**". Three surfaces, all textContent,
+   no markdown anywhere in this app. */
+const SAY=closure(['_jimSay','_jvStripMd']);
+t(!SAY.unparsable || !SAY.unparsable.length, 'the helper lifts cleanly', JSON.stringify(SAY.unparsable||[]));
+eval(SAY.code||'');
+t(_jimSay('**Whats your day look like?** You are on a 5-lift schedule')==='Whats your day look like? You are on a 5-lift schedule',
+  'the asterisks go');
+t(_jimSay('- 4 sets squats\n- 4 sets leg press')==='- 4 sets squats\n- 4 sets leg press',
+  'and a dash list is left EXACTLY as Jim writes it');
+t(_jimSay(null)==='' && _jimSay(undefined)==='', 'nothing in, nothing out');
+t(/function _jimSay\(s\)\{/.test(src), 'one seam');
+t(/return _jvStripMd\(/.test(slice('function _jimSay(s){','function buildBubble(m){')),
+  'and it reuses the stripper that already exists rather than a second one');
+t(!/_jvBulletRows/.test(slice('function _jimSay(s){','function buildBubble(m){')),
+  'never _jvBulletRows, which eats the dashes - its own comment says so');
+/* All three surfaces, so rows already saved in chat_messages come out clean. */
+t(/txt\.textContent=\(m\.role==='assistant'\) \? _jimSay\(m\.content\) : \(m\.content\|\|''\);/.test(src),
+  'the thread bubble runs it, and only on what Jim said');
+t(/\+_escHtml\(_jimSay\(m\.content\)\)\+'<\/div>'/.test(src), 'the Log-anything thread runs it');
+t(/_typeInto\(function\(\)\{ return document\.getElementById\('slogMsg'\+ix\); \}, _jimSay\(reply\),/.test(src),
+  'and so does the typing animation, or it would type them and then swap');
 
 console.log('\n  NOBODY IS BEHIND:');
 t(!/Behind\?/.test(src), 'the word does not appear anywhere Jim speaks');
