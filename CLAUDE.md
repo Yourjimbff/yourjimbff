@@ -134,3 +134,103 @@ Full design standard lives in [BACKLOG.md](BACKLOG.md) — read it before design
 ## What's next
 [BACKLOG.md](BACKLOG.md) holds the ordered build backlog. Read it at the start of a session
 when I ask for something new, or ask "what's next" — the top unbuilt item is the answer.
+
+## Consult alerts: one channel works, the other never has (12 Sep)
+The "stranger booked a consult" alert was built as TWO things and only one of
+them has ever fired:
+  · the TEXT comes from send_watch.py's check_consults() on his Mac, polling
+    the trainer door. It works — a 1:11:42am booking texted him at 1:13:18am,
+    96 seconds. But it only fires while his Mac is awake, so a booking made
+    while it sleeps waits for the wake.
+  · the EMAIL (netlify/functions/notify-consult.js, fired by a Supabase
+    database webhook on INSERT) is NOT configured. POST it and it answers
+    503 {"error":"not_configured"} — CONSULT_WEBHOOK_SECRET was never set in
+    Netlify. Never tell him he was emailed about a booking. Nothing in his
+    Gmail has ever come from this door.
+
+## The booking forms are in a DIFFERENT repo
+consult_requests is written straight into Supabase with the anon key by
+github.com/Yourjimbff/yourjimbff-offer (private) — never through a function
+in this repo. Two doors in it:
+  · `/` (index.html, 65.8 KB) — the full offer page. Its modal is the only
+    one that asks age/height/weight/main_problem, so a row carrying those
+    came from there.
+  · `/book` — the text-thread link. Phone is explicitly optional there and it
+    sets no age/height/weight/main_problem.
+NEITHER validates the number's length: row 47 stored the phone as the literal
+string "4692580 66" — nine digits with a space in the middle. Ten digits is
+the test everywhere on this side of the wall (_cqPhone, clients.phone's
+has_phone, the send queue's own refusal), and that repo has never heard of it.
+
+## THE STAND-IN PROFILE IS NOT AN EMPTY PROFILE (12 Sep)
+
+An account with no `profiles` row is handed a local stand-in a few lines into
+`signIn` so the Day page has numbers to draw:
+
+    goal:'maintain', cal_target:1800, protein_target:150
+
+`profile` is therefore NEVER empty for anybody, ever. Any check that asks "has
+this person filled anything in?" by reading `profile` will answer yes for a
+brand-new account. That is exactly how the first-run questions shipped in a
+state where they could not fire for a single human being: three of the
+stand-in's own invented values sat on the signs-of-life list.
+
+If you need to know whether a human has ever filled something in, read the
+SERVER row - `profiles[0]` from the sbSelect in `signIn`, or null when the
+array came back empty. `cal_target_seeded` marks the fake 1800 for the same
+reason, and is the older half of this same landmine.
+
+## COACH FURNITURE VS THE FREE APP (12 Sep)
+
+`isTrainer(code)` splits the app in two, and for two years "not a trainer"
+meant "one of Yusuf's clients". It does not any more. Surfaces that only make
+sense because a coach is on the other end - the phone-number ask, the Calls
+card, Your file on the Progress page - must test `isFreeApp(cl.code)` as well,
+or a stranger who downloaded the app is told Yusuf needs their number.
+
+`FREE_APP_CODES` is the one list. Add the next free code there and nowhere
+else; the first-run questions read the same list.
+
+## LAW IS GLASS. NO OLD SCREEN EVER COMES BACK (12 Sep, learned the hard way)
+
+Twice in one night a NEW client-facing screen went out as the trainer's old
+builder (`renderTrainingBuilder`) in a full-screen sheet - old chrome, a This
+week pager, a "set it in my goals" card - designed and checked at 1512px on a
+Mac. Both were regressions of the design function, and both came from one
+omission: BACKLOG.md's design standard was not read first.
+
+Rules, in the order they were broken:
+- **Read BACKLOG.md's "Design standard" before designing any screen.** It is
+  eight lines. "Mobile-first, always. Nothing gets designed at desktop width
+  first" is one of them.
+- **Every client surface is the house glass**: the `.tlHero` / `.pgCard`
+  recipe (radial-gradient, #2e2e2e edge, 20px radius, deep shadow, gold corner
+  glow). Reusing a trainer screen's MECHANISM (its data, its save, its
+  read-back) is right. Reusing its SCREEN is a regression.
+- **Before building a client surface, grep for the one that already exists.**
+  The Program tab has carried a glass builder for clients since v7.981.104
+  (`_gpDaysInner`: add a session, eight kinds, add a movement, sets/reps, make
+  a rest day, `pgSavePlan`). It was invisible to a free user only because it
+  refused to draw an empty week. An empty week is not an invented one.
+- **Nothing is invented, and a sentence does not change that.** A week
+  composed from a sex and a day count is invented whether or not "nothing is
+  yours until you save it" is written underneath. Build means seven empty days.
+- **`_saveTrainingPlanQuiet` fires on every type change** when `#tpBody` is on
+  screen. A test that opens the trainer builder writes to the live account.
+
+## MEASURING A COLOUR ON A BACKGROUNDED TAB LIES (13 Sep)
+
+Verifying the gold "done" state on the served build, `getComputedStyle(el).color`
+kept answering the OLD colour even with the class on, the rule matching, and
+`--gold` resolving. Even an inline `style.color='var(--gold)'` read back as the
+old value.
+
+The cause: the element has `transition:color .18s`, and a computed style during
+a transition is the INTERPOLATED value at the current time. His Chrome window
+was not in front, so `document.hidden` was true, so no animation frames ran, so
+time never advanced and the interpolation sat forever at frame zero.
+
+Two ways out, both cheap: read `document.hidden` first, and set
+`el.style.transition='none'` before measuring (restore it after). Do this for
+every colour assertion on a live page — the alternative is half an hour spent
+hunting a CSS bug that was never there.
