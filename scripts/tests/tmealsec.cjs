@@ -32,7 +32,9 @@ global._duePrompt = () => DUE;
    than stubbed so the real test runs, with `profile` as the only dial - exactly
    what the app reads. */
 global.profile = {};
-eval(one('var _TL_MEAL_ORDER=') + '\n' + lift('_tlFirstDay') + '\n' + lift('_tlMealSection'));
+eval(one('var _TL_MEAL_ORDER=') + '\n' + lift('_parseDs') + '\n' + lift('_localYmd') + '\n' + lift('_tlFirstDay') + '\n' + lift('_tlMealSection'));
+/* intake_date is YYYY-MM-DD; the day strings on screen are "Sep 3, 2026".
+   The first build of this compared them raw and could never match. */
 const FIRSTDAY = d => { global.profile = d ? {intake_date:d} : {}; };
 
 let bad = 0, n = 0;
@@ -48,7 +50,7 @@ console.log('\nTHEIR FIRST DAY DOES NOT START AT BREAKFAST (Yusuf, 12 Sep):');
    false. Meals whose hour was already over before this person had the app are
    not on the list at all. */
 global._mealHourGone = k => (k==='breakfast'||k==='lunch');
-FIRSTDAY('Sep 3, 2026');
+FIRSTDAY('2026-09-03');
 DUE = 'dinner';
 var _d1 = sec({}, true);
 t(!/data-key="breakfast"/.test(_d1), 'on day one, breakfast is not offered at 8:40pm');
@@ -56,7 +58,7 @@ t(!/data-key="lunch"/.test(_d1), 'and neither is lunch');
 t(/data-key="dinner"/.test(_d1), 'but dinner is - they can still eat it');
 /* Tomorrow the ladder is whole again, and an existing client - anybody with no
    intake_date at all - never sees any of this. */
-FIRSTDAY('Sep 2, 2026');
+FIRSTDAY('2026-09-02');
 var _d2 = sec({}, true);
 t(/data-key="breakfast"/.test(_d2) && /data-key="lunch"/.test(_d2),
   'the day after, the whole ladder is back');
@@ -64,6 +66,13 @@ FIRSTDAY(null);
 var _d3 = sec({}, true);
 t(/data-key="breakfast"/.test(_d3) && /data-key="lunch"/.test(_d3),
   'and a client with no intake_date - every existing client - is untouched');
+/* A row written before 12 Sep carries the UTC day: signed up 8:30pm on the 3rd
+   in Texas, intake_date says the 4th. done_at is the exact instant, and its
+   LOCAL day is the 3rd. */
+var _late=new Date(2026,8,3,20,30,0);   // 3 Sep, 8:30pm local
+global.profile={intake_date:'2026-09-04', intake_json:JSON.stringify({done_at:_late.toISOString()})};
+var _d4 = sec({}, true);
+t(!/data-key="breakfast"/.test(_d4), 'a legacy UTC-day row still finds its real first day from done_at');
 global._mealHourGone = undefined;
 FIRSTDAY(null);
 DUE = null;

@@ -77,6 +77,14 @@ t(/if\(_pw && !_freeEmpty\)\{/.test(inner), 'no week strip over an empty week');
 t(/\(rest\?\(_freeEmpty\?'':'<span class="pgDayRestTag"> \\u00b7 Rest<\/span>'\)/.test(inner),
   'an empty day is its name and nothing else - Rest means rest FROM something');
 t(/Add a session/.test(inner), 'and every empty day offers Add a session');
+/* 12 Sep: "the program page before I click any session at all, it should be
+   glass, not grey." .pgDay.rest is the quiet line for a rest day inside a
+   program; an unset day on an empty week wears the full card. */
+t(/\(rest\?\(_freeEmpty\?' unset':' rest'\):''\)/.test(inner), 'an empty-week row is unset, not rest');
+t(/\.pgDay\.unset\{[^}]*radial-gradient\(120% 140% at 0% 0%,#232323 0%,#171717 46%,#121212 100%\)/.test(src),
+  'and unset is the .pgCard recipe');
+t(/\.pgDay\.unset::after\{[^}]*rgba\(245,197,24,0\.10\)/.test(src), 'gold corner glow included');
+t(/\.pgDay\.rest\{background:rgba\(255,255,255,0\.035\)/.test(src), 'while a real rest day stays quiet');
 t(/var _PG_WAKE=\['Push','Pull','Legs','Upper','Lower','Full body','Arms','Cardio'\];/.test(src),
   'which is the same eight kinds real clients pick from');
 const wake=slice('async function pgWakeDo(dk, type){','function pgTellJim(){');

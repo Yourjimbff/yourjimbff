@@ -26,10 +26,13 @@ function slice(a,b){ const i=src.indexOf(a); return i<0?'':src.slice(i, src.inde
 console.log('\n  NOBODY SKIPPED A MEAL THAT HAPPENED BEFORE THEY HAD THE APP:');
 const fd=slice('function _tlFirstDay(ds){','\n}');
 t(/profile&&profile\.intake_date/.test(fd), 'first day is read off intake_date, which setup writes');
-t(/return !!d && d===String\(ds\|\|''\)\.slice\(0,10\);/.test(fd), 'and compares it to the date on screen');
+/* Both sides go through _localYmd: intake_date is YYYY-MM-DD and the day on
+   screen is "Sep 12, 2026", and the UTC day at 8:30pm in Texas is tomorrow. */
+t(/var want=_localYmd\(dd\);/.test(fd), 'and compares it to the LOCAL day on screen, same shape both sides');
+t(/intake_date:_localYmd\(new Date\(\)\),/.test(src), 'and setup writes the local day, not the UTC one');
 /* An existing client has no intake_date. They must answer false and nothing
    about their day may change. */
-t(/var d=\(profile&&profile\.intake_date\) \? String\(profile\.intake_date\)\.slice\(0,10\) : '';/.test(fd),
+t(/var d=\(profile&&profile\.intake_date\) \? String\(profile\.intake_date\)\.slice\(0,10\) : '';/.test(fd) && /return false;\s*\n\s*\}catch/.test(fd),
   'no intake_date answers false, so every existing client is untouched');
 t(/catch\(e\)\{ return false; \}/.test(fd), 'and a throw answers false too');
 const ladder=slice('var left=[], skipped=[];','var head=');
