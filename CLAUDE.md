@@ -262,3 +262,40 @@ Two things to check whenever you touch a portion rule:
 - **The shelf may not have the food at all.** `_mbComponents` is owner-filtered,
   so a name that resolves against `meal_components` in a query can still be
   another client's private row. Query the filtered shelf, not the table.
+
+## SUPABASE ACCESS TOKENS ARE ES256 HERE, NOT HS256 (13 Sep)
+
+Building email sign-up, signup.js verified the user's access token locally with
+session.js's `verify()` — an HMAC-SHA256 check against `SUPABASE_JWT_SECRET`, on
+the reasonable-sounding assumption that a Supabase access token is signed with
+the project's JWT secret. Every genuine signup came back `bad_token`.
+
+This project issues `{"alg":"ES256","kid":"…","typ":"JWT"}` — asymmetric signing
+keys. The JWT secret signs nothing Supabase hands a user. Reading the code could
+never have shown this; it took decoding a real token off a real signup.
+
+**The rule: Supabase verifies its own tokens.** `GET /auth/v1/user` with the
+user's token as the Bearer and the service key as `apikey`. It checks the
+signature against whichever key signed it, and returns 401 for expired, revoked
+or foreign tokens. That cannot drift when a key rotates or an algorithm changes,
+and it needs one environment variable fewer.
+
+`session.js`'s own tokens ARE HS256 with that secret — it mints them itself, so
+`verify()` stays right for those. Don't confuse the two: a session token names a
+CLIENT CODE in `sub`, a Supabase token names a user id.
+
+## A NEW COLUMN IS NOT READABLE BY THE ANON KEY (13 Sep)
+
+`clients` carries COLUMN-LEVEL grants from 2026-08-07-lock-down-anon.sql
+(`revoke select (phone, email, stripe_session) … from anon`). Once a table has
+those, a column added later is **not** selectable by anon by default.
+
+Adding `is_free_app` and asking for it in the sign-in read returned **401 for the
+whole row** — and that read IS sign-in, for every account whose code the device
+had not cached. Not just new members: everyone.
+
+Two things, every time a migration adds a column the client reads:
+- `grant select (<column>) on public.<table> to anon;` in the same migration.
+- The client's retry must widen on ANY refusal, not just a 400. "No such column"
+  is a 400; "not allowed to see that column" is a 401, and only the second one
+  happens on a table with column grants.
