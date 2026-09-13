@@ -30,12 +30,26 @@ function _liftVar(name){
   for(let j=i;j<src.length;j++) if(src[j].trim()==='];') return src.slice(i,j+1).join('\n');
   console.log('FAIL: no close for var '+name); process.exit(1);
 }
-eval(src.find(l=>l.startsWith('var MB_PALM_OZ'))+'\n'+_liftVar('MT_ROWS')+'\nvar _MT_BY=null;\n'+_liftFn('_mtIndex')+'\n'+_liftFn('_mtPromptBlock'));
+eval(src.find(l=>l.startsWith('var MB_PALM_OZ'))+'\n'+_liftVar('MT_ROWS')+'\nvar _MT_BY=null;\n'+_liftFn('_mtIndex')+'\n'+_liftFn('_mtPromptBlock')+'\n'+_liftFn('_jimMealPlanBlock'));
 let out;
 eval(body+'\nout=buildCoachVoice();');
 // The rules this prompt is supposed to be teaching. Each one is a line that was
 // written, shipped, and reported as "not taking" — because it never arrived.
 const MUST=[
+  /* 13 Sep: he asked Jim to help build his meal plan and got three questions
+     back. These are the lines that stop that happening again. */
+  ['meal plans give the format',      'MEAL PLAN REQUESTS'],
+  ['and ask nothing first',           'DO NOT INTERVIEW'],
+  ['it overrides the follow-up rule', 'OVERRIDES the INTELLIGENT FOLLOW-UPS rule'],
+  ['breakfast is his breakfast',      'berries, Greek yogurt, cottage cheese'],
+  ['lunch is his lunch',              'Salad mix, cucumber, carrot, tomato, onion'],
+  ['dinner is his dinner',            'one to two servings of carbs'],
+  ['and so is the sweet',             'berries, yogurt, honey, nuts, protein powder'],
+  ['two handfuls to a little over 4', 'two full handfuls of food up to a little over four'],
+  ['said as a shape, not a quota',    'It is not a target, not a quota and not a judgement'],
+  ['the vehicle rule',                'vehicle for the peanut butter'],
+  ['a length the client will read',   'Under 120 words total'],
+  ['and it ends on their own foods',  'build it out of the foods you already eat'],
   ['the macro table itself',          'MACRO TABLE (authoritative)'],
   ['a row the app computes with',     'chicken breast [oz] 8.5P/0C/1F'],
   ['the rows-in-the-marker rule',     'ROWS IN THE MARKER'],

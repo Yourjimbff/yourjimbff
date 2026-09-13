@@ -60,6 +60,11 @@ function promptFrom(text, asTrainer){
     (function(){ const i=src.findIndex(l=>l.startsWith('function _mtIndex(')); if(i<0) return '';
       let d=0,st=false; for(let j=i;j<src.length;j++){ for(const c of src[j]){ if(c==='{'){d++;st=true;} else if(c==='}'){d--;} } if(st&&d===0) return src.slice(i,j+1).join('\n'); } return ''; })(),
     (function(){ const i=src.findIndex(l=>l.startsWith('function _mtPromptBlock(')); if(i<0) return '';
+      let d=0,st=false; for(let j=i;j<src.length;j++){ for(const c of src[j]){ if(c==='{'){d++;st=true;} else if(c==='}'){d--;} } if(st&&d===0) return src.slice(i,j+1).join('\n'); } return ''; })(),
+    /* THE MEAL PLAN BLOCK, LIFTED THE SAME WAY (13 Sep). Lifted from WHICHEVER
+       copy is being read, so main - which does not have it, and does not call
+       it - evaluates exactly as it did. */
+    (function(){ const i=src.findIndex(l=>l.startsWith('function _jimMealPlanBlock(')); if(i<0) return '';
       let d=0,st=false; for(let j=i;j<src.length;j++){ for(const c of src[j]){ if(c==='{'){d++;st=true;} else if(c==='}'){d--;} } if(st&&d===0) return src.slice(i,j+1).join('\n'); } return ''; })()
   ].filter(Boolean).join('\n');
   let out;
@@ -85,6 +90,18 @@ if(MAIN){
      So the table is compared as a table - rows only ever ADDED, never changed
      or dropped - and the PROSE around it is still compared byte for byte, which
      is what this test was written to protect. */
+  /* AND THE MEAL PLAN BLOCK IS THE SECOND PART THAT IS MEANT TO GROW (13 Sep -
+     "it should just pop out the format"). Same ruling as the table: a
+     DELIBERATE, NAMED addition is carved off by its own marker and checked on
+     its own terms below, and everything else stays compared byte for byte. An
+     accidental edit anywhere else in the prompt still fails this test, which is
+     the whole reason it exists. */
+  /* The two newlines that introduce it belong to the block, not to the prose
+     before it - otherwise the byte-for-byte half fails on whitespace. */
+  const MPMARK='\n\n=== MEAL PLAN REQUESTS';
+  const lop=function(p){ var i=p.indexOf(MPMARK); return i<0 ? {main:p, mp:''} : {main:p.slice(0,i), mp:p.slice(i)}; };
+  const LA=lop(a), LB=lop(b);
+  a=LA.main; b=LB.main;
   const cut=function(p){
     var i=p.indexOf('chicken breast [oz]'); if(i<0) return {pre:p, rows:[], post:''};
     var j=p.indexOf('\n\n', i); if(j<0) j=p.length;
@@ -98,6 +115,8 @@ if(MAIN){
     kept.length?('lost: '+kept.join(' | ')):'');
   const added=B.rows.filter(function(r){ return A.rows.indexOf(r)<0; });
   t(true, 'rows added on this branch', added.length?added.join(' | '):'none');
+  t(!!LB.mp, 'and this branch adds the meal plan block', LB.mp?String(LB.mp.length)+' chars':'missing');
+  t(LA.mp==='' || LA.mp===LB.mp, 'which main either does not have, or has unchanged');
   if(!same && a && b){ a=A.pre+A.post; b=B.pre+B.post; }
   if(!same && a && b){
     // Say WHERE, not just that. A diff nobody can locate gets argued with.
@@ -118,6 +137,31 @@ t(/^YOU ARE: JIM — the logging surface inside YOURJIMBFF/.test(C),
   'the client prompt still opens exactly as it did', C.slice(0,46));
 t(/they dump their day/.test(C), 'and still says whose day it is for');
 t(/that’s a Yusuf call|that's a Yusuf call/.test(C), 'and still routes the heavy stuff to Yusuf');
+
+console.log('\n  A MEAL PLAN QUESTION GETS THE FORMAT, NOT AN INTERVIEW:');
+/* Yusuf, 13 Sep, asking Jim himself: "Although I think this is a smart
+   response, it's too long... Too many questions... it should just pop out the
+   format." */
+t(/=== MEAL PLAN REQUESTS/.test(C), 'the client prompt carries the block');
+t(/OVERRIDES the INTELLIGENT FOLLOW-UPS rule/.test(C),
+  'and says out loud that it beats the ask-one-question rule, or that rule wins');
+t(/you do NOT ask what their week looks like, when they train/.test(C), 'no interview');
+t(/Under 120 words total/.test(C), 'and a length a client will actually read');
+/* The four slots are HIS, dictated 13 Sep. */
+t(/berries, Greek yogurt, cottage cheese/.test(C), 'breakfast');
+t(/Salad mix, cucumber, carrot, tomato, onion/.test(C), 'lunch');
+t(/Dinner \u2014 meat, vegetables, and one to two servings of carbs/.test(C), 'dinner');
+t(/Something sweet \u2014 berries, yogurt, honey, nuts, protein powder/.test(C), 'and the sweet');
+t(/vehicle for the peanut butter/.test(C), 'the vehicle rule survives in his own words');
+/* THE DANGEROUS PART. A meal-size range sits one careless sentence away from
+   three hard NEVER rules this prompt already carries. */
+t(/two full handfuls of food up to a little over four/.test(C), 'the size is a handful count first');
+t(/It is not a target, not a quota and not a judgement/.test(C), 'said as a shape, never a quota');
+t(/never tell anyone they have room, never encourage more food, and never call a meal too small or too big/.test(C),
+  'and the block repeats the three NEVERs itself rather than trusting distance');
+t(/Every NEVER rule above governs this block too/.test(C), 'under everything above it');
+/* The trainer hears it too - he is the one who asked. */
+t(/=== MEAL PLAN REQUESTS/.test(T), 'his own account gets it as well');
 
 console.log('\n  HIS OWN ACCOUNT IS NAMED FIRST, AND CONCRETELY:');
 t(/^YOU ARE: JIM\. On THIS account you are YUSUF/.test(T),
