@@ -158,8 +158,15 @@ console.log('\n  THE DAY PAGE POINTS THE SAME WAY:');
 const rest=slice('function _tlRestCard(ds, isToday, isAhead, slots, kind){','function _tlMoveRow');
 t(/var _canBuild=false; try\{ _canBuild=\(none && _meFreeApp\(\) && !window\._tlRO\); \}catch\(e\)\{\}/.test(rest),
   'a free user with no program gets the card');
-t(/tlHeroName long">Build your program</.test(rest), 'it says Build your program');
-t(!/tlHeroMeta/.test(slice("if(_canBuild){","return '<div class=\"tlHero\">")), 'with no third line');
+/* THE DAY PAGE STOPPED LEADING WITH IT (Yusuf, 13 Sep: "Before a user has a
+   program, there should just be a blank log for their workout space ... Someone
+   could and should have the ability to not create a program, and just simply
+   log what they do"). The card is an open log now and the builder is one quiet
+   line under it - see tblanklog.cjs. What this suite still owns is that the
+   line is THERE and still opens the same builder. */
+t(/class="tlLogPlan" data-tl="buildweek"/.test(rest), 'the way into the builder is still on the card');
+t(/Rather plan it\? Build a program/.test(rest), 'said in one line, understated, which is the word he used');
+t(!/tlHeroMeta/.test(slice("if(_canBuild){","  return '<div class=\"tlHero\">")), 'with no third line');
 t(/if\(a==='buildweek'\)\{ ev\.stopPropagation\(\); try\{ pgBuildStart\(\); \}catch\(e\)\{\} return; \}/.test(src),
   'and tapping it opens the same builder on the Program tab');
 const bs=slice('function pgBuildStart(){','async function pgSavePlan');

@@ -55,12 +55,22 @@ t(/\.catch\(function\(\)\{\}\);/.test(fin),
 t(/insertWeightLog/.test(src.slice(src.indexOf('async function insertWeightLog'))),
   'through the verified write path, not a raw POST');
 
-console.log('\n  A FREE USER WITH NO WEEK IS OFFERED THE BUILDER, NOT A VERDICT:');
+console.log('\n  A FREE USER WITH NO WEEK IS OFFERED A BLANK LOG, NOT A VERDICT:');
+/* 12 Sep it was "you are offered the builder rather than told you have no
+   program". 13 Sep he went a step further: "Before a user has a program, there
+   should just be a blank log for their workout space ... Someone could and
+   should have the ability to not create a program, and just simply log what
+   they do if they don't want to follow a program."
+   So the card is an open log and the builder is the quiet line under it. The
+   verdict this section was written to keep out is still out; what replaced it
+   just asks less of them. Full coverage in tblanklog.cjs. */
 const rest=slice('function _tlRestCard(ds, isToday, isAhead, slots, kind){','function _tlMoveRow');
 t(/_canBuild=\(none && _meFreeApp\(\) && !window\._tlRO\)/.test(rest), 'a free user with no program, and nobody else');
-t(/>Build your program</.test(rest), 'the card says Build your program - three words');
-t(!/tlHeroMeta/.test(slice("if(_canBuild){","return '<div class=\"tlHero\">")), 'and nothing under it');
-t(/data-tl="buildweek"/.test(rest), 'and the whole card is the door');
+t(/class="tlLogEy">Log your workout</.test(rest), 'the card is a log');
+t(/Say or type what you did/.test(rest), 'and it says what to do with it');
+t(!/tlHeroMeta/.test(slice("if(_canBuild){","  return '<div class=\"tlHero\">")), 'and nothing under it');
+t(/data-tl="wolog"/.test(rest), 'the box is the door');
+t(/data-tl="buildweek"/.test(rest), 'and the builder is still one line away');
 t(/if\(a==='buildweek'\)\{ ev\.stopPropagation\(\); try\{ pgBuildStart\(\); \}catch\(e\)\{\} return; \}/.test(src),
   'wired through the same delegated handler as every other card here, onto the Program tab');
 /* Creative mode is not deleted. It is the right control for somebody who HAS a
@@ -70,8 +80,8 @@ t(/tlSwitchLbl">Creative mode</.test(rest), 'Creative mode still exists for ever
 /* The builder branch RETURNS, so Creative mode is not merely later on the
    page - it is unreachable on that render. That is the real guarantee. */
 t(rest.indexOf('if(_canBuild){') < rest.indexOf('tlSwitchLbl">Creative mode') &&
-  /if\(_canBuild\)\{[\s\S]{0,800}?\+'<\/div>';\s*\n\s*\}/.test(rest),
-  'and the builder branch returns, so Creative mode cannot also draw');
+  /if\(_canBuild\)\{[\s\S]*?\+'<\/div>';\s*\n\s*\}/.test(rest),
+  'and the log branch returns, so Creative mode cannot also draw');
 t(/No program set up yet/.test(rest),
   'the old line survives for a coaching client, whose coach writes their week');
 

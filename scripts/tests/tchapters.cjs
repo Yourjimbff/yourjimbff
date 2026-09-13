@@ -33,7 +33,7 @@ t(!/tlChN/.test(h), 'it is NOT numbered');
 t(!/>1<|>2<|>3</.test(h), 'and carries no chapter number in any other shape');
 t(/<span class="tlChT">Eat<\/span>/.test(h), 'it is a verb');
 t(/<span class="tlChS">410 of 1,980 cal<\/span>/.test(h), 'and the number rides the right side');
-const h2=_tlChapterHead('Train','Nothing built yet',false,true);
+const h2=_tlChapterHead('Train','Push \u00b7 5 exercises',false,true);
 t(/tlChS gold/.test(h2) && !/ done/.test(h2), 'a chapter with something to do is gold on the right and not done');
 t(!/[\u{1F300}-\u{1FAFF}]/u.test(h+h2), 'no emoji, house law');
 
@@ -65,8 +65,15 @@ t(/_tlChapterHead\('Train'/.test(sec), 'Train');
 t(/\(slots\.workout\|\|\[\]\)\.length \|\| \(slots\.walk\|\|\[\]\)\.length\)\) _woDone=true;/.test(sec),
   'and cardio or a walk counts as training done - "training and some steps"');
 t(/var _stp=_stepsFor\(ds\); if\(_stp>0\) _woDone=true;/.test(sec), 'and so do steps, on today');
-t(/\(isToday \? 'Nothing built yet' : ''\)/.test(sec), 'Nothing built yet is said on today only, never on a past day');
-t(/'Nothing built yet'/.test(sec), 'and says so when there is no program');
+/* IT SAYS NOTHING NOW (Yusuf, 13 Sep). "Nothing built yet" sat over a card
+   that is an open log, so the head was contradicting the invitation directly
+   under it -- and it is the same "you are behind" voice he had already cut out
+   of Jim the day before. A person with no program is not behind; they are
+   someone who logs what they do. */
+t(!/'Nothing built yet'/.test(src), 'the head passes no judgement on a day with no program');
+t(/: ''\);/.test(sec), 'it simply says nothing');
+t(/_woDone \? 'Done'/.test(sec), 'while a day that WAS trained still says Done');
+t(/_woHas \? \(_escHtml\(plan\.type\)/.test(sec), 'and a day with a program still names it');
 t(/_tlChapterHead\('Eat',_eatSt,cal>0,false\)/.test(src), 'Eat, done once anything is logged');
 t(/Math\.round\(cal\)\.toLocaleString\(\)\+' of '\+_tgt\.toLocaleString\(\)\+' cal'/.test(src), 'and it reads X of target');
 t(/_tlChapterHead\('Track',_trSt,_todayW,false\)/.test(src), 'Track, done once they weighed today');
