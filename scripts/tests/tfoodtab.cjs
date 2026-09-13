@@ -22,6 +22,11 @@ console.log('\n  ONE FOOD PAGE, PROMOTED - NOT A SECOND ONE:');
 t(!/id="flibView"/.test(src), 'the full-screen overlay is gone');
 t(!/function closeFoodLibrary/.test(src), 'and so is its close');
 t(/<div class="tab" id="tFood">/.test(src), 'Food is a tab');
+/* THE MARKUP AND THE STYLESHEET HAVE TO AGREE. Renaming the classes off the
+   .fdCard collision touched the CSS and the JS and MISSED the static markup,
+   so the page title painted unstyled on the served build. */
+t(/<div class="fdxPageT">Food<\/div>/.test(src), 'and its title wears a class the stylesheet knows');
+t(!/class="fdPage/.test(src), 'nothing is left on the old names');
 t((src.match(/id="flibBody"/g)||[]).length===1, 'and #flibBody exists exactly once - no duplicate id',
   (src.match(/id="flibBody"/g)||[]).length);
 t((src.match(/id="flibSearch"/g)||[]).length===1, 'and so does the search box',
