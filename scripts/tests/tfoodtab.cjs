@@ -41,7 +41,15 @@ t(/<div class="bni-lb">Food<\/div>/.test(src), 'labelled Food');
 t(!/[\u{1F300}-\u{1FAFF}]/u.test(slice('id="bnFood"','id="bnTraining"')), 'drawn as a line icon, no emoji, house law');
 const nav=slice("var _bpr=document.getElementById('bnProgress');","try{ _clDeskSync(); }catch(e){}");
 t(/var _bfd=document\.getElementById\('bnFood'\); if\(_bfd\) _bfd\.style\.display='';/.test(nav), 'a client sees it');
-t(/_nav\.style\.gridTemplateColumns='repeat\(5,1fr\)';/.test(nav), 'and the bar becomes five columns');
+t(/_nav\.style\.gridTemplateColumns='repeat\(5,1fr\)';/.test(nav), 'and the bar is sized for five');
+/* THE BAR IS FLEX WITH AN EXPLICIT ORDER PER ITEM, not a grid - a new button
+   dropped into the markup lands at the far LEFT until it is given one. Found by
+   looking at the served page, not by reading the HTML. */
+t(/\.bnav:not\(\.trainer-mode\) #bnFood\{order:2;\}/.test(src), 'Food takes the second slot, beside Day');
+t(/\.bnav:not\(\.trainer-mode\) #bnFeed\{order:1;\}/.test(src), 'Day stays first');
+t(/\.bnav:not\(\.trainer-mode\) #bnProgram\{order:3;\}/.test(src) && /#bnAsk\{order:4;\}/.test(src) && /#bnProgress\{order:5;\}/.test(src),
+  'and everything after keeps the relative order it has had since 20 Aug');
+t(/\.bnav\.trainer-mode #bnFood\{display:none !important;\}/.test(src), 'the trainer bar never shows it');
 t(/\['bnProgram','bnFollow','bnToday','bnFood'\]/.test(src), 'the trainer bar stays three - he reaches the page from My Food');
 t(/if\(t==='Food'\)\{ try\{ renderFoodTab\(\); \}catch\(e\)\{\} \}/.test(src), 'and switching to it renders it');
 
@@ -105,12 +113,15 @@ t(/_avLine\+\n\s*'THE FOUR SLOTS/.test(src), 'placed immediately above the slots
 t(/catch\(e\)\{ _av=\[\]; \}/.test(mp), 'and an account with no list is simply a block without that line');
 
 console.log('\n  THE GLASS:');
-t(/\.fdCard\{position:relative;overflow:hidden;border-radius:19px/.test(src), 'the Today card is the house glass');
-t(/radial-gradient\(120% 140% at 0% 0%,#242424 0%,#171717 46%,#111 100%\)/.test(slice('.fdCard{','.fdCard::after')),
+/* .fdCard WAS ALREADY TAKEN - min-height:224px, display:flex - and the Today
+   card inherited it and stood there two-thirds empty. Named off it. */
+t(!/class="fdCard"/.test(src), 'the Today card does not wear a class that already belongs to something else');
+t(/\.fdxCard\{position:relative;overflow:hidden;border-radius:19px/.test(src), 'the Today card is the house glass');
+t(/radial-gradient\(120% 140% at 0% 0%,#242424 0%,#171717 46%,#111 100%\)/.test(slice('.fdxCard{','.fdxCard::after')),
   'the exact recipe, not a lookalike');
-t(/\.fdCard::after\{content:'';position:absolute;inset:0/.test(src), 'with the gold wash in the corner');
-t(/\.fdAddBtn\{[^}]*background:var\(--gold\)/.test(src), 'and gold is on the one control that does something');
-t(!/\.fdSecT\{[^}]*var\(--gold\)/.test(src), 'never on a section heading');
+t(/\.fdxCard::after\{content:'';position:absolute;inset:0/.test(src), 'with the gold wash in the corner');
+t(/\.fdxAddBtn\{[^}]*background:var\(--gold\)/.test(src), 'and gold is on the one control that does something');
+t(!/\.fdxSecT\{[^}]*var\(--gold\)/.test(src), 'never on a section heading');
 
 console.log(bad? ('\n  '+bad+' FAILED\n') : '\n  all good (food is a tab)\n');
 process.exit(bad?1:0);
