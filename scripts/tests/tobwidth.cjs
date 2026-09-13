@@ -61,6 +61,29 @@ const ds=slice('function _obDateSay(a){','function obPick');
 t(/_OB_MONTHS\[parseInt\(p\[1\],10\)-1\]/.test(ds), 'and it reads the date back in words');
 t(/return 'That is not a date yet\.';/.test(ds), 'or says plainly that it is not one yet');
 
+console.log('\n  AND NEITHER IS THE SLEEP SCREEN SPUN:');
+/* Same shape of bug as the birthday, caught before he reached the screen: two
+   native <input type="time"> in half-width columns on a 375px phone. Gone. */
+const sl=slice("if(st.type==='sleep'){", "if(st.type==='plan')");
+t(!/type="time"/.test(markup(sl)), 'no native time input left either');
+t((markup(sl).match(/inputmode="numeric"/g)||[]).length===2, 'both boxes are number pads');
+const ot=slice('function obTime(k, el){','function obTimeFlip(k){');
+t(/replace\(\/\\D\/g,''\)/.test(ot), 'letters never reach the value');
+t(/_ob\.a\[k\+'Pm'\]=\(k==='bed'\?1:0\);/.test(ot),
+  'asleep-by guesses night and up-at guesses morning, which is right nearly every time');
+const tf=slice('function obTimeFlip(k){','function _obTimeParts');
+t(/_ob\.a\[k\+'Pm'\]=_ob\.a\[k\+'Pm'\]\?0:1;/.test(tf), 'and one tap overturns the guess');
+const tp=slice('function _obTimeParts(k, a){','function _obTimeJoin(k){');
+t(/if\(v\.length<=2\)\{ h=parseInt\(v,10\); m=0; \}/.test(tp), '"10" means ten o\'clock');
+t(/h=parseInt\(v\.slice\(0,v\.length-2\),10\); m=parseInt\(v\.slice\(-2\),10\);/.test(tp),
+  'and "1030" means ten thirty, with no colon to type');
+t(/if\(!\(h>=1 && h<=12\) \|\| !\(m>=0 && m<=59\)\) return null;/.test(tp), '25:70 is not a time');
+const tj=slice('function _obTimeJoin(k){','function _obTimeSay(k, a){');
+t(/var h24=p\.h%12 \+ \(p\.pm\?12:0\);/.test(tj),
+  'and what lands in the column is the same 24-hour HH:MM it always took');
+const ts=slice('function _obTimeSay(k, a){','var _OB_MONTHS=');
+t(/tap to flip/.test(ts), 'the guess is shown, never hidden');
+
 console.log('\n  NO BOX CAN RUN OFF THE EDGE:');
 const css=slice('.obField{','.obRow{');
 t(/min-width:0/.test(css), 'min-width:0 - the one that actually lets a native input shrink');
