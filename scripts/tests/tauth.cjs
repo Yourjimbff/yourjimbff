@@ -191,6 +191,11 @@ const msg=slice('function _authMsg(res){','async function _emailSignIn');
 t(/if\(!res\) return 'Can\\u2019t reach the server right now/.test(msg) || /if\(!res\) return 'Can.t reach the server/.test(msg),
   'no answer means no answer, not a rejection');
 t(/res\.status===400 && \/invalid login\/i\.test\(m\)/.test(msg), 'only a 400 that says so is a wrong password');
+/* Found by signing up twice on purpose against the live project: Supabase
+   answers "User already registered" with 422, not 400, so a 400-only test let
+   the raw server string through to the screen. */
+t(/\(res\.status===400\|\|res\.status===422\) && \/already registered/.test(msg),
+  'an address that already has an account is caught on 422 as well as 400');
 t(/res\.status===429/.test(msg), 'and being rate-limited says that, rather than blaming them');
 
 console.log(bad? ('\n  '+bad+' FAILED\n') : '\n  all good\n');

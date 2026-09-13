@@ -60,9 +60,14 @@ t(/Welcome to your last fitness tracker\./.test(intro), 'it opens on the promise
 t(!/Fourteen questions|Two minutes/.test(intro),
   'it does not brief them on the flow they have not agreed to yet');
 t(!/calisthenics/.test(intro), 'and the who-it-is-not-for line is not here');
-/* Yusuf, 12 Sep, picking from four drafts: the promise, then three verbs. */
+/* Yusuf, 12 Sep, picking from four drafts: the promise, then three verbs.
+   13 Sep, tightening it: "watch the number move should just be track your
+   progress." That line was a promise about the scale, made to somebody who has
+   not logged anything yet, and it was the only one of the three that was not a
+   thing they DO. */
 t(/Track your food\./.test(intro) && /Track your training\./.test(intro) &&
-  /Watch the number move\./.test(intro), 'then three lines, three verbs');
+  /Track your progress\./.test(intro), 'then three lines, and the same verb three times');
+t(!/Watch the number move/.test(src), 'the scale promise is gone');
 t(!/[Bb]uild your workout/.test(intro),
   'and nothing on it promises a builder that is not on the screen yet');
 t((intro.match(/<div>/g)||[]).length===3, 'exactly three of them, no fourth',
