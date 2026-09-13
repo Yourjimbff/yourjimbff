@@ -160,6 +160,14 @@ t(/It is not a target, not a quota and not a judgement/.test(C), 'said as a shap
 t(/never tell anyone they have room, never encourage more food, and never call a meal too small or too big/.test(C),
   'and the block repeats the three NEVERs itself rather than trusting distance');
 t(/Every NEVER rule above governs this block too/.test(C), 'under everything above it');
+/* 13 Sep, proving it live: asked the question, then answered "yes", Jim sent
+   the whole format back a second time AND appraised him - "you're solid at that
+   range". Both are named in the block now. */
+t(/ONCE IS ONCE/.test(C), 'the format goes out once');
+t(/you are now WRITING THE DAY OUT/.test(C), 'and a yes writes the actual day out instead');
+t(/Do NOT repeat the size line\. Do NOT ask the closing question again\./.test(C), 'without asking again');
+t(/NEVER APPRAISE THEIR SIZE OR THEIR AMOUNT/.test(C), 'and the handful line is never turned on the person');
+t(/Say the plate, never the person\./.test(C), 'said in four words so it cannot be missed');
 /* The trainer hears it too - he is the one who asked. */
 t(/=== MEAL PLAN REQUESTS/.test(T), 'his own account gets it as well');
 
