@@ -32,6 +32,10 @@ global._duePrompt = () => DUE;
    than stubbed so the real test runs, with `profile` as the only dial - exactly
    what the app reads. */
 global.profile = {};
+/* 12 Sep: the free app gets a numbered chapter head instead of Food. These
+   assertions are about the meal ladder, which is the same for both, so the
+   coaching path is the one exercised here. */
+global._meFreeApp = () => false;
 eval(one('var _TL_MEAL_ORDER=') + '\n' + lift('_parseDs') + '\n' + lift('_localYmd') + '\n' + lift('_tlFirstDay') + '\n' + lift('_tlMealSection'));
 /* intake_date is YYYY-MM-DD; the day strings on screen are "Sep 3, 2026".
    The first build of this compared them raw and could never match. */

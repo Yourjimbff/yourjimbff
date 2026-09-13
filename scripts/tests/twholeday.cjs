@@ -41,7 +41,10 @@ t(/data-key="food" data-ds="'\+_escHtml\(ds\)\+'" role="button" tabindex="0" ari
    from a past day. */
 t(/if\(todayLive \|\| _pastLive\)\{/.test(src) && /var _pastLive=\(!isToday && !isAhead && !ro\);/.test(src),
   'and a day that already passed has one too, onto the day he is looking at');
-t(/tlMealsEy">Body<\/span><\/div>'\s*\+'<div id="dayWeightHost">/.test(src) && !/tlMealsEy">Stats</.test(src), 'Body and Stats are one section, the weight card first');
+/* 12 Sep: the free app's head is the numbered chapter "3 Track" in the same
+   slot; a coaching client still gets Body. Either way the weight card is first. */
+t(/var _bodyHead='<div class="tlMealsHead"><span class="tlMealsEy">Body<\/span><\/div>';/.test(src)
+  && /\+_bodyHead\s*\n\s*\+'<div id="dayWeightHost">/.test(src) && !/tlMealsEy">Stats</.test(src), 'Body and Stats are one section, the weight card first');
 t(/<div class="fdGrab" role="button" aria-label="Close"><\/div>/.test(src) && /if\(atTop && dy>90 && dx<60 && panel\.scrollTop<=0\) _fdClose\(\);/.test(src), 'the handle closes and a pull down closes');
 t(/return _fdShow\(html, 'Weigh-in history', 'mid'\);/.test(src) && /\.fdOv\.mid\{align-items:center;/.test(src), 'the weight sheet floats mid-screen');
 t(vm.runInContext("_wdOpen('Sep 9, 2026')", ctx)===true && /wdEmpty">Nothing logged\.</.test(doc._els.fdOv.innerHTML) && !/wdTile/.test(doc._els.fdOv.innerHTML), 'an empty day says Nothing logged and draws no tiles');
