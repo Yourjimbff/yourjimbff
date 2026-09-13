@@ -40,6 +40,21 @@ t(/if\(!mwpCanBuild\(\)\) return;/.test(op), 'the door itself asks before it ope
 t(/if\(mwpCanBuild\(\)\)\{/.test(slice('function renderProgramTab(){','function _pnDaysSettle')),
   'and the card is not even drawn for anyone else');
 
+console.log('\n  IT OPENS EMPTY:');
+/* Yusuf, 12 Sep, looking at the first build of this: "why is there a program
+   on there anyway? Why are there exercises written on there?"
+   I got this wrong twice in one night - once by letting a quiet save write a
+   test week onto his live account, once by seeding this builder from his sex
+   and day count and writing "nothing is yours until you save it" underneath.
+   A sentence does not make invented content stop being invented. */
+t(/_tpPlan=_mwpBlankWeek\(\);/.test(op), 'a fresh builder is seven empty days');
+t(!/_tpDefaultPlan\(\)/.test(op), 'and never _tpDefaultPlan, which guesses a week from a sex and a day count');
+const bw=slice('function _mwpBlankWeek(){','function mwpCanBuild');
+t(/WEEKDAYS\.forEach\(function\(d\)\{ p\[d\]=\{type:'Rest', ex:\[\]\}; \}\);/.test(bw),
+  'every day starts as Rest with nothing on it');
+t(/_tpDefaultPlan/.test(src), 'the guess-a-week helper still exists for the trainer side');
+t(/Seven empty days/.test(op), 'and the sheet says so plainly');
+
 console.log('\n  THE STARTER WEEK NEVER BECOMES A CLAIM:');
 /* The standing ruling: a client with no programme must not be shown a week
    composed from their sex and a day count as though Yusuf assigned it. A
@@ -47,10 +62,6 @@ console.log('\n  THE STARTER WEEK NEVER BECOMES A CLAIM:');
    week that appears on their feed. The flag below is what keeps them apart. */
 t(/var fresh=\(window\._tpFromServer!==true\);/.test(op),
   'it knows whether a real saved row came back');
-t(/if\(fresh \|\| !_tpPlan\) _tpPlan=_tpDefaultPlan\(\);/.test(op),
-  'and only composes a starter when none did');
-t(/Nothing is yours until you save it/.test(op),
-  'and says so on the screen, in those words');
 const pfd=slice('function _tlPlanForDate(d){','function _tlPlanKeyFor');
 t(/if\(!_tpPlan \|\| window\._tpFromServer!==true\) return null;/.test(pfd),
   'the Day feed still refuses to draw a plan that did not come from the server');
