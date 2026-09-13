@@ -35,7 +35,10 @@ t(/fdFoot">YOURJIMBFF</.test(html), 'the sheet signs off with the brand, small')
 t(vm.runInContext("_fdOpen('Sep 9, 2026')", ctx)===false, 'a day the page has not drawn cannot open');
 t(/if\(a==='tottog'\)\{ ev\.stopPropagation\(\); try\{ _fdOpen\(el\.getAttribute\('data-ds'\)\); \}catch\(e\)\{\} return; \}/.test(src) && /if\(a==='dwhist'\)/.test(src), 'both taps are wired on the Day page');
 t(/window\._tlSlotsByDs\[ds\]=slots/.test(src) && /_metaHtml\.replace\('class="tlTot"','class="tlTot inHd"'\)/.test(src) && /html\+=\(_totInHd \? '' : _metaHtml\);/.test(src), 'the day remembers its slots, and the total rides the title row instead of sitting under it');
-t(/\.fdOv\{[^}]*backdrop-filter:blur/.test(src) && /\.fdPanel\{[^}]*radial-gradient\(120% 140% at 0% 0%,#232323 0%,#171717 46%,#121212 100%\)/.test(src), 'glass: blurred backdrop, the pgCard recipe on the sheet');
+/* The blur moved off .fdOv onto .fdOv::before on 13 Sep -- an overscanned
+   layer, so no sizing of the box can uncover the page behind it (see
+   tnotesjim.cjs). It is the same glass, one element further out. */
+t(/\.fdOv::before\{[\s\S]{0,400}?backdrop-filter:blur/.test(src) && /\.fdPanel\{[^}]*radial-gradient\(120% 140% at 0% 0%,#232323 0%,#171717 46%,#121212 100%\)/.test(src), 'glass: blurred backdrop, the pgCard recipe on the sheet');
 t(/body\.tlwnav #tFeed\{padding-top:6px;\}/.test(src) && /body\.tlwnav #tlScroll\{height:calc\(100vh - 194px\);height:calc\(100svh - 194px\);\}/.test(src), 'the gap above the week strip closed and the scroller grew by the same amount');
 t(/\.mbg\.open, \.fdOv\.open/.test(src), 'the foreground update check waits while the sheet is up');
 const dw=src.slice(src.indexOf('function _dayWeightHtml(ds){'), src.indexOf('function _dayWeightRepaint(){'));

@@ -27,8 +27,12 @@ t(!CL.unparsable || !CL.unparsable.length, 'the words lift cleanly', JSON.string
 global.window={};
 eval(CL.code||'');
 _meFreeApp=()=>true;
-t(_ciWord()==='Notes', 'the free app calls the box Notes');
-t(_ciWordT()==='Notes', 'and so does its tab');
+/* "Notes" first, then corrected the same day (Yusuf: "Check-in becomes Notes
+   for free users - this should be Progress Notes"). A place to put anything
+   versus a record of how it is going. */
+t(_ciWord()==='Progress notes', 'the free app calls the box Progress notes', _ciWord());
+t(_ciWordT()==='Progress notes', 'and so does its tab', _ciWordT());
+t(!/_meFreeApp\(\)\?'Notes'/.test(src), 'and the bare word "Notes" is gone from both');
 t(_ciWordAdd(false)==='Write a note', 'an empty day offers to write one');
 t(_ciWordAdd(true)==='Add another note', 'and a day with one offers another');
 _meFreeApp=()=>false;
@@ -51,19 +55,48 @@ t(/\.fdOv\.mid\{align-items:center/.test(src), 'and mid is the house rule he alr
 const fit=slice('function _fdFit(){','function _fdClose(){');
 t(/ov\.classList\.contains\('mid'\)/.test(fit), 'only a floating sheet tracks the viewport');
 t(/var vv=window\.visualViewport;/.test(fit), 'it measures the VISIBLE viewport, not the layout one');
-/* SHRINKING THE OVERLAY LEFT A BAND (Yusuf, 13 Sep: "write a note still has a
-   tiny section of the screen underneath visible"). Between where the overlay
-   stopped and where the keyboard began, the page showed through undimmed - on
-   iOS that band is the form accessory bar. The dim is full-screen again and it
-   is the PADDING that moves. */
+/* TWICE. (Yusuf, 13 Sep: "write a note still has a tiny section of the screen
+   underneath visible" -- and then again, on the build that was supposed to
+   have fixed it.)
+
+   FIRST TRY: shrink the overlay to the visible viewport. That centred the box
+   and shrank the dim with it, leaving a bare band between the box and the
+   keyboard.
+   SECOND TRY: keep the overlay full-screen and move the PADDING instead. The
+   arithmetic was right and it was still arithmetic -- the dim was still the
+   same element as the box, so any measurement iOS reported oddly could still
+   uncover the page. It was proved with a stubbed viewport on a desktop, which
+   is a simulation and not a phone.
+
+   SO THE DIM IS NO LONGER PART OF THE BOX. It is a fixed pseudo-element
+   overscanned 15% past every edge: nothing the sizing does can reveal what is
+   under it, because there is nothing under it to reveal.
+
+   AND THE SCROLL OFFSET IS APPLIED. iOS scrolls the page when the keyboard
+   opens and reports it as visualViewport.offsetTop. The overlay is fixed to the
+   LAYOUT viewport, so its top slides off screen by exactly that much. The old
+   code measured offsetTop, spent it working out the keyboard, and never put it
+   back. */
+t(/\.fdOv\{position:fixed;inset:0;z-index:9100;[^}]*\}/.test(src), 'the overlay is still the fixed full-screen box');
+t(!/\.fdOv\{[^}]*background:rgba\(8,8,8,0\.74\)/.test(src), 'but it no longer carries the dim itself');
+t(/\.fdOv::before\{content:"";position:fixed;left:-15vw;right:-15vw;top:-15vh;bottom:-15vh;/.test(src),
+  'the dim is its own layer, overscanned past every edge');
+t(/\.fdOv::before\{[\s\S]{0,400}?background:rgba\(8,8,8,0\.74\)/.test(src), 'and it is the thing that is dark');
+t(/\.fdOv::before\{[\s\S]{0,400}?pointer-events:none;/.test(src), 'it never swallows the tap that closes the sheet');
+t(/\.fdOv > \*\{position:relative;z-index:1;\}/.test(src), 'and the box sits above it');
+
 t(/ov\.style\.height=''; ov\.style\.top='';/.test(fit), 'the overlay is never shrunk');
-t(/var kb=Math\.max\(0, Math\.round\(\(window\.innerHeight\|\|0\) - vv\.height - \(vv\.offsetTop\|\|0\)\)\);/.test(fit),
-  'the keyboard is measured');
-t(/ov\.style\.paddingBottom=kb\+'px';/.test(fit), 'and added to the bottom, so the box centres in what is left');
+t(/var top=Math\.max\(0, Math\.round\(vv\.offsetTop\|\|0\)\);/.test(fit), 'the page scroll is measured');
+t(/ov\.style\.paddingTop=top\+'px';/.test(fit), 'AND PUT BACK, which is what was missing');
+t(/var kb=Math\.max\(0, Math\.round\(\(window\.innerHeight\|\|0\) - vv\.height - top\)\);/.test(fit),
+  'the keyboard is what is left over');
+t(/ov\.style\.paddingBottom=kb\+'px';/.test(fit), 'and added to the bottom, so the box centres in what is visible');
 t(/p\.style\.maxHeight=Math\.max\(160, Math\.round\(vv\.height-28\)\)\+'px';/.test(fit),
   'and the box can never be taller than that, so both its edges stay in sight');
-t(/ov\.style\.height=''; ov\.style\.top=''; ov\.style\.paddingBottom='';/.test(src),
+t(/ov\.style\.height=''; ov\.style\.top=''; ov\.style\.paddingTop=''; ov\.style\.paddingBottom='';/.test(src),
   'closing clears every one of those');
+t(/ov\.style\.paddingTop=''; ov\.style\.paddingBottom=''; return;/.test(fit),
+  'and a browser with no visualViewport gets them cleared too, not left half-set');
 t(/function _fdUnfit\(\)\{/.test(src) && /function _fdClose\(\)\{ try\{ _fdUnfit\(\); \}catch\(e\)\{\}/.test(src),
   'closing puts the overlay back and drops the listeners');
 const show=slice('function _fdShow(html, label, cls){','function _fdFit(){');
