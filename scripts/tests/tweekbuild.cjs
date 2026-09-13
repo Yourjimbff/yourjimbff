@@ -81,6 +81,30 @@ t(rpCode.indexOf('_mwpOpen') < rpCode.indexOf('_finRepaint'),
 t(!/try\{ _tpRepaint\(\); \}catch\(e\)\{\}/.test(rp),
   'and the old last line that called itself forever is gone');
 t(/try\{ renderTrainingBuilder\(\); \}catch\(e\)\{\}/.test(rp), 'it falls back to the builder instead');
+/* FOUND BY DRIVING IT, NOT BY READING IT. _tpAfterType and tpUndoType each
+   carried their OWN copy of the repaint chain and never called _tpRepaint, so
+   with the sheet open over the Day tab, changing Monday from Lower to Push
+   repainted the timeline BEHIND the sheet and the sheet sat there still saying
+   Lower. One door, or the next surface breaks the same way. */
+t(!/if\(window\._plEditing\) _plRender\(\); else if\(typeof _finRepaint==='function'\) _finRepaint\(\); else renderTrainingBuilder\(\);/.test(src),
+  'no inlined copy of the repaint chain survives anywhere in the file');
+t(/try\{ _tpRepaint\(\); \}catch\(e\)\{ try\{ renderTrainingBuilder\(\); \}catch\(_e\)\{\} \}/.test(slice('function _tpAfterType(day, msg){','function tpUndoType(day){')),
+  'changing a day type repaints through the one door');
+t(/try\{ _tpRepaint\(\); \}catch\(e\)\{\}/.test(slice('function tpUndoType(day){','function tpSet(day,i,k,v){')),
+  'and so does undoing it');
+
+console.log('\n  AND NOTHING IS WRITTEN UNTIL THEY PRESS SAVE:');
+/* _tpAfterType fires _saveTrainingPlanQuiet on EVERY type change, and the
+   sheet's host is called tpBody, so it sailed through that function's guard
+   and wrote a week to the server on the first tap of a pill. The sheet says
+   "Nothing is yours until you save it" in those words, and a row on the server
+   is a week the Day feed draws on the next load. */
+const qs=slice('async function _saveTrainingPlanQuiet(){','function _finRepaint');
+t(/if\(window\._mwpOpen\) return;/.test(qs), 'the quiet write stands down while the sheet is open');
+t(qs.indexOf('if(window._mwpOpen) return;') < qs.indexOf("getElementById('tpBody')"),
+  'before the tpBody check the sheet would otherwise satisfy');
+t(/_saveTrainingPlanQuiet\(\)/.test(slice('function _tpAfterType(day, msg){','function tpUndoType(day){')),
+  'the quiet write is still wired up for the trainer builder, which is whose it is');
 
 console.log('\n  WHAT IT SAVES IS WHAT THE APP ALREADY READS:');
 const st=slice('async function saveTrainingPlan(){','// ---- set logging state ----');

@@ -23,9 +23,25 @@ eval(CL.code||'');
 
 console.log('\n  EVERY QUESTION HE LISTED HAS ITS OWN SCREEN:');
 const keys=_OB_STEPS.map(s=>s.k);
-['gender','birthday','height','weight','phase','food','train_days',
- 'equipment','experience','priority','cardio','sleep'].forEach(function(k){
+['gender','birthday','height','weight','train_days',
+ 'equipment','experience'].forEach(function(k){
   t(keys.indexOf(k)>=0, k);
+});
+/* CUT, 12 Sep, screen by screen, in his words.
+   food:     "that question doesn't need to be there... just remove that
+              question in general" - and "whole foods" means nothing to somebody
+              who has not been coached.
+   phase:    "right now we shouldn't even have the choice to do that because it
+              doesn't look very - we haven't come up with that. Select your mode
+              will be added later."
+   priority: "anything you want to bring up? Why the fuck... this looks fucking
+              AI written." It comes back as a muscle-connection assessment.
+   cardio:   "why would I decide how much cardio? If a person is left to decide
+              how much cardio they should do..." - it gets prescribed, not asked.
+   sleep:    "that is such a random question to ask at that point... I don't
+              think that's even really needed" right now. */
+['food','phase','priority','cardio','sleep'].forEach(function(k){
+  t(keys.indexOf(k)<0, '  '+k+' is off the flow');
 });
 /* Yusuf, 12 Sep: "weight and goal weight should be... two separate fields on
    one page". They are one thought; they were two taps apart. */
@@ -52,8 +68,20 @@ t(!/[Bb]uild your workout/.test(intro),
 t((intro.match(/<div>/g)||[]).length===3, 'exactly three of them, no fourth',
   String((intro.match(/<div>/g)||[]).length));
 const steps=slice('var _OB_STEPS=[', 'var _ob=null;');
-t(/This app uses weights\./.test(steps),
-  'the gym line lives on the equipment question, where it IS the question');
+t(/q:'What do you have access to\?'/.test(steps),
+  'equipment asks what they can walk into, not what they own');
+const eq=slice('var _OB_EQUIP=[','var _OB_EXP=[');
+t(/A commercial gym/.test(eq) && /An apartment gym/.test(eq) && /A home gym/.test(eq),
+  'commercial, apartment, home - his three');
+t(!/hotel/i.test(eq), 'and nobody is asked whether they are in a hotel gym');
+t(!/Barbell, dumbbells, a bench/.test(eq),
+  'and the app stops telling people what is in their own home gym');
+const ex=slice('var _OB_EXP=[','/* WHAT THEY CAN WALK INTO');
+const ex2=slice('var _OB_EXP=[','var _OB_MUS=');
+t(/Beginner/.test(ex2) && /Intermediate/.test(ex2) && /Advanced/.test(ex2),
+  'experience is beginner, intermediate, advanced');
+t(!/I know my way around/.test(ex2), 'and "I know my way around" is gone');
+t(/q:'What is your experience level\?'/.test(steps), 'asked as a level, not as a length of time');
 
 console.log('\n  FEW WORDS, BETTER WORDS:');
 /* Yusuf, 12 Sep, on "What do you weigh today? Rough is fine. It only has to
@@ -63,12 +91,15 @@ console.log('\n  FEW WORDS, BETTER WORDS:');
 t(!/Rough is fine/.test(steps), 'the weigh-in padding is gone');
 t(!/Where do you want to land/.test(steps), 'and so is the airplane');
 t(!/How hard do you want to run this/.test(steps), 'and so is "run this"');
-t(/q:'Select your mode\.'/.test(steps), 'the mode screen says select your mode');
-t(!/without running your life around it/.test(steps), 'and the mode options stopped explaining themselves');
+/* The mode table stays in the file untouched - _fuelTargets reads comp,
+   fatloss and build, and obFinish still writes one. It is the SCREEN that is
+   parked, not the concept. */
 const ph=slice('var _OB_PHASE=[','var _OB_STEPS=[');
 ['comp','fatloss','build'].forEach(function(v){
-  t(new RegExp("v:'"+v+"'").test(ph), '  '+v+' is still the stored value, so _fuelTargets is untouched');
+  t(new RegExp("v:'"+v+"'").test(ph), '  '+v+' survives, so _fuelTargets is untouched');
 });
+t(/phase:a\.phase\|\|'comp'/.test(slice('async function obFinish(){','function _gpFirstRun')),
+  'and a flow with no mode screen still writes a phase');
 /* No question and no subtitle in the whole flow runs past a phone line. */
 _OB_STEPS.forEach(function(st){
   if(st.q) t(st.q.length<=34, '  short question: '+st.q, String(st.q.length));
@@ -191,8 +222,17 @@ console.log('\n  THEIR ANSWERS SURVIVE A BAD NETWORK:');
 const fin=slice('async function obFinish(){','function obRender()');
 t(/localStorage/.test(src.slice(src.indexOf('function _obSetupStash()'), src.indexOf('function obStart('))),
   'every answer is written to this device as it is given');
-t(/Could not save that — your answers are kept, try Start again/.test(fin),
-  'a failed save says so and keeps them');
+/* A TOAST WAS NOT ENOUGH (Yusuf, 12 Sep: "when I hit start absolutely nothing
+   thanks a lot for that asshole"). Start WAS working; every write it made was
+   being refused by the session guard, and the only thing that said so slid
+   away in three seconds. */
+t(/var box=document\.getElementById\('obFail'\);/.test(fin),
+  'a failed save writes the reason onto the card, where it stays');
+t(/if\(_sessionFlipped\(\)\)/.test(fin),
+  'and when the reason is the session guard it says THAT, not "try again"');
+t(/Stay as them/.test(src), 'which names the button that actually fixes it');
+t(/if\(btn\)\{ btn\.disabled=false; btn\.textContent='Start'; \}/.test(fin),
+  'and the button comes back rather than sitting there dead');
 t(fin.indexOf('localStorage.removeItem(_obSetupKey())') > fin.indexOf('if(!ok){'),
   'and the local copy is only cleared AFTER the server took it');
 
