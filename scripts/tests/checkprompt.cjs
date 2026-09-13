@@ -30,7 +30,11 @@ function _liftVar(name){
   for(let j=i;j<src.length;j++) if(src[j].trim()==='];') return src.slice(i,j+1).join('\n');
   console.log('FAIL: no close for var '+name); process.exit(1);
 }
-eval(src.find(l=>l.startsWith('var MB_PALM_OZ'))+'\n'+_liftVar('MT_ROWS')+'\nvar _MT_BY=null;\n'+_liftFn('_mtIndex')+'\n'+_liftFn('_mtPromptBlock')+'\n'+_liftFn('_jimMealPlanBlock'));
+// A REAL TARGET, SO THE RANGE BRANCH IS THE ONE UNDER TEST (13 Sep). With no
+// profile the block correctly says nothing about calories - which would mean
+// this suite never checked the half that actually goes to clients.
+var profile={cal_target:1980};
+eval(src.find(l=>l.startsWith('var MB_PALM_OZ'))+'\n'+_liftVar('MT_ROWS')+'\nvar _MT_BY=null;\n'+_liftFn('_mtIndex')+'\n'+_liftFn('_mtPromptBlock')+'\n'+_liftFn('_calTargetSet')+'\n'+_liftFn('_jimCalRange')+'\n'+_liftFn('_jimMealPlanBlock'));
 let out;
 eval(body+'\nout=buildCoachVoice();');
 // The rules this prompt is supposed to be teaching. Each one is a line that was
@@ -42,14 +46,25 @@ const MUST=[
   ['and ask nothing first',           'DO NOT INTERVIEW'],
   ['it overrides the follow-up rule', 'OVERRIDES the INTELLIGENT FOLLOW-UPS rule'],
   ['breakfast is his breakfast',      'berries, Greek yogurt, cottage cheese'],
-  ['lunch is his lunch',              'Salad mix, cucumber, carrot, tomato, onion'],
-  ['dinner is his dinner',            'one to two servings of carbs'],
+  ['lunch is his lunch',              'salad mix, cucumber, carrot, tomato'],
+  ['dinner is his dinner',            'one to two handfuls of a carb'],
   ['and so is the sweet',             'berries, yogurt, honey, nuts, protein powder'],
-  ['two handfuls to a little over 4', 'two full handfuls of food up to a little over four'],
+  ['2 to 4 handfuls a meal',          '2 to 4 full handfuls of food a meal'],
   ['said as a shape, not a quota',    'It is not a target, not a quota and not a judgement'],
   ['the vehicle rule',                'vehicle for the peanut butter'],
-  ['a length the client will read',   'Under 120 words total'],
+  ['the exact shape it must print',   'THIS IS THE SHAPE, EXACTLY'],
   ['and it ends on their own foods',  'build it out of the foods you already eat'],
+  ['one food per line',               'ONE FOOD PER LINE'],
+  ['every food carries an amount',    'AMOUNTS, ALWAYS, AND ALWAYS AS A RANGE'],
+  ['any meat, not a guessed animal',  'SAY "ANY MEAT" AND "ANY PROTEIN", NOT A SPECIFIC ANIMAL'],
+  ['no pork in a generated plan',     'NEVER NAME PORK'],
+  ['cooking fats are not foods',      'DO NOT LIST COOKING FATS AS FOODS'],
+  ['their own calorie range',         '2 to 4 full handfuls of food a meal, about 1,900-2,100 calories a day'],
+  ['and it is theirs, used verbatim', 'That calorie range is THEIRS, already fitted to them'],
+  ['never depending on your size',    'NEVER SAY "depending on your size"'],
+  ['a close they can answer',         "Tell me what you actually eat and I'll swap it in."],
+  ['and never the one they cannot',   'NEVER ask "want me to build it out of the foods you already eat?"'],
+  ['a no is remembered',              'AND KEEP WHAT THEY TOLD YOU'],
   ['the format is sent once',          'ONCE IS ONCE'],
   ['then it writes the actual day',    'you are now WRITING THE DAY OUT'],
   ['size is never turned on them',     'NEVER APPRAISE THEIR SIZE OR THEIR AMOUNT'],

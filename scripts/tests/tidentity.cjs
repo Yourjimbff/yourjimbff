@@ -41,6 +41,10 @@ function promptFrom(text, asTrainer){
   function isTrainer(c){ return c==='thegoat'; }
   var YOURJIMBFF_NUTRITION_FORMULA='<<nutrition formula>>';
   var JIM_ASK_RULES='<<ask rules>>';
+  /* A REAL TARGET ON BOTH SIDES (13 Sep). The meal plan block prints the
+     client's own calorie range, so both copies must be built against the same
+     profile or the comparison would blame this change for a missing number. */
+  var profile={cal_target:1980};
   // THE MACRO TABLE, LIFTED FROM WHICHEVER COPY IS BEING READ (Calendar,
   // 30 Aug). buildCoachVoice now calls _mtPromptBlock(), so evaluating it
   // needs the table — and it has to come from the SAME source string, or
@@ -61,9 +65,13 @@ function promptFrom(text, asTrainer){
       let d=0,st=false; for(let j=i;j<src.length;j++){ for(const c of src[j]){ if(c==='{'){d++;st=true;} else if(c==='}'){d--;} } if(st&&d===0) return src.slice(i,j+1).join('\n'); } return ''; })(),
     (function(){ const i=src.findIndex(l=>l.startsWith('function _mtPromptBlock(')); if(i<0) return '';
       let d=0,st=false; for(let j=i;j<src.length;j++){ for(const c of src[j]){ if(c==='{'){d++;st=true;} else if(c==='}'){d--;} } if(st&&d===0) return src.slice(i,j+1).join('\n'); } return ''; })(),
-    /* THE MEAL PLAN BLOCK, LIFTED THE SAME WAY (13 Sep). Lifted from WHICHEVER
-       copy is being read, so main - which does not have it, and does not call
-       it - evaluates exactly as it did. */
+    /* THE MEAL PLAN BLOCK AND THE RANGE IT PRINTS, LIFTED THE SAME WAY
+       (13 Sep). Lifted from WHICHEVER copy is being read, so main - which does
+       not have them, and does not call them - evaluates exactly as it did. */
+    (function(){ const i=src.findIndex(l=>l.startsWith('function _calTargetSet(')); if(i<0) return '';
+      let d=0,st=false; for(let j=i;j<src.length;j++){ for(const c of src[j]){ if(c==='{'){d++;st=true;} else if(c==='}'){d--;} } if(st&&d===0) return src.slice(i,j+1).join('\n'); } return ''; })(),
+    (function(){ const i=src.findIndex(l=>l.startsWith('function _jimCalRange(')); if(i<0) return '';
+      let d=0,st=false; for(let j=i;j<src.length;j++){ for(const c of src[j]){ if(c==='{'){d++;st=true;} else if(c==='}'){d--;} } if(st&&d===0) return src.slice(i,j+1).join('\n'); } return ''; })(),
     (function(){ const i=src.findIndex(l=>l.startsWith('function _jimMealPlanBlock(')); if(i<0) return '';
       let d=0,st=false; for(let j=i;j<src.length;j++){ for(const c of src[j]){ if(c==='{'){d++;st=true;} else if(c==='}'){d--;} } if(st&&d===0) return src.slice(i,j+1).join('\n'); } return ''; })()
   ].filter(Boolean).join('\n');
@@ -146,16 +154,16 @@ t(/=== MEAL PLAN REQUESTS/.test(C), 'the client prompt carries the block');
 t(/OVERRIDES the INTELLIGENT FOLLOW-UPS rule/.test(C),
   'and says out loud that it beats the ask-one-question rule, or that rule wins');
 t(/you do NOT ask what their week looks like, when they train/.test(C), 'no interview');
-t(/Under 120 words total/.test(C), 'and a length a client will actually read');
+t(/THIS IS THE SHAPE, EXACTLY/.test(C), 'and the exact shape it has to print');
 /* The four slots are HIS, dictated 13 Sep. */
 t(/berries, Greek yogurt, cottage cheese/.test(C), 'breakfast');
-t(/Salad mix, cucumber, carrot, tomato, onion/.test(C), 'lunch');
-t(/Dinner \u2014 meat, vegetables, and one to two servings of carbs/.test(C), 'dinner');
-t(/Something sweet \u2014 berries, yogurt, honey, nuts, protein powder/.test(C), 'and the sweet');
+t(/salad mix, cucumber, carrot, tomato/.test(C), 'lunch');
+t(/Dinner \u2014 any meat, vegetables, and one to two handfuls of a carb/.test(C), 'dinner');
+t(/Sweet \u2014 berries, yogurt, honey, nuts, protein powder/.test(C), 'and the sweet');
 t(/vehicle for the peanut butter/.test(C), 'the vehicle rule survives in his own words');
 /* THE DANGEROUS PART. A meal-size range sits one careless sentence away from
    three hard NEVER rules this prompt already carries. */
-t(/two full handfuls of food up to a little over four/.test(C), 'the size is a handful count first');
+t(/2 to 4 full handfuls of food a meal/.test(C), 'the size is a handful count first');
 t(/It is not a target, not a quota and not a judgement/.test(C), 'said as a shape, never a quota');
 t(/never tell anyone they have room, never encourage more food, and never call a meal too small or too big/.test(C),
   'and the block repeats the three NEVERs itself rather than trusting distance');
@@ -163,7 +171,17 @@ t(/Every NEVER rule above governs this block too/.test(C), 'under everything abo
 /* 13 Sep, proving it live: asked the question, then answered "yes", Jim sent
    the whole format back a second time AND appraised him - "you're solid at that
    range". Both are named in the block now. */
+t(/ONE FOOD PER LINE/.test(C), 'one food per line, so it can be read and screenshotted');
+t(/AMOUNTS, ALWAYS, AND ALWAYS AS A RANGE/.test(C), 'and every food carries an amount');
+t(/NEVER NAME PORK/.test(C), 'no pork in a plan generated for someone you do not know');
+t(/SAY "ANY MEAT" AND "ANY PROTEIN", NOT A SPECIFIC ANIMAL/.test(C), 'the slot is the system, the food in it is theirs');
+t(/DO NOT LIST COOKING FATS AS FOODS/.test(C), 'olive oil is how food is cooked, not a line on a plan');
+t(/about 1,900-2,100 calories a day/.test(C), 'their own calorie range, fitted, as a range');
+t(/NEVER SAY "depending on your size"/.test(C), 'and never handed back to them to work out');
+t(/Tell me what you actually eat and I.ll swap it in\./.test(C), 'a closing line they can answer');
+t(/NEVER ask "want me to build it out of the foods you already eat\?"/.test(C), 'and never the one they cannot');
 t(/ONCE IS ONCE/.test(C), 'the format goes out once');
+t(/AND KEEP WHAT THEY TOLD YOU/.test(C), 'and a food they said no to never comes back');
 t(/you are now WRITING THE DAY OUT/.test(C), 'and a yes writes the actual day out instead');
 t(/Do NOT repeat the size line\. Do NOT ask the closing question again\./.test(C), 'without asking again');
 t(/NEVER APPRAISE THEIR SIZE OR THEIR AMOUNT/.test(C), 'and the handful line is never turned on the person');
