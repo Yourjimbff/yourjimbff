@@ -30,11 +30,17 @@ _meFreeApp=()=>true;
 /* "Notes" first, then corrected the same day (Yusuf: "Check-in becomes Notes
    for free users - this should be Progress Notes"). A place to put anything
    versus a record of how it is going. */
-t(_ciWord()==='Progress notes', 'the free app calls the box Progress notes', _ciWord());
-t(_ciWordT()==='Progress notes', 'and so does its tab', _ciWordT());
-t(!/_meFreeApp\(\)\?'Notes'/.test(src), 'and the bare word "Notes" is gone from both');
-t(_ciWordAdd(false)==='Write a note', 'an empty day offers to write one');
-t(_ciWordAdd(true)==='Add another note', 'and a day with one offers another');
+/* THIRD PASS ON ONE WORD: Check-in -> "Notes" -> "Progress Notes" -> "instead
+   of notes it should say progress entry" (Yusuf, 13 Sep). A note is something
+   you jot. An entry is something you put into a record you are keeping - which
+   is what this is, and what the Progress tab it feeds is for. */
+t(_ciWord()==='Progress entry', 'the free app calls the box a Progress entry', _ciWord());
+t(_ciWordT()==='Progress entry', 'and so does its tab', _ciWordT());
+t(!/_meFreeApp\(\)\?'Notes'/.test(src) && !/_meFreeApp\(\)\?'Progress notes'/.test(src),
+  'neither "Notes" nor "Progress notes" survives');
+t(_ciWordAdd(false)==='Write an entry', 'an empty day offers to write one');
+t(_ciWordAdd(true)==='Add another entry', 'and a day with one offers another');
+t(!/'Write a note'|'Add another note'/.test(src), 'and the word note is gone from both');
 _meFreeApp=()=>false;
 t(_ciWord()==='Check in', 'a coaching client still checks in');
 t(_ciWordT()==='Check-in', 'and their tab still says Check-in');
