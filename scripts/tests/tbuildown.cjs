@@ -37,8 +37,19 @@ t(/try\{ _tpRepaint\(\); \}catch\(e\)\{ try\{ renderTrainingBuilder\(\); \}catch
   'and the repaint-through-one-door fix from that night is kept');
 
 console.log('\n  ONE CARD, THREE WORDS:');
-t(/var _freeEmpty=\(!_ownsTab && !_hasReal && !_saved && _meFreeApp\(\) && _pgPlanKnown\(\) && window\._tpLoadFailed!==true\);/.test(inner),
-  'a free user with no saved plan is the case, and only once the read has settled');
+t(/var _freeEmpty=\(!_ownsTab && !_hasReal && \(!_saved \|\| _savedEmpty\) && _meFreeApp\(\) && _pgPlanKnown\(\) && window\._tpLoadFailed!==true\);/.test(inner),
+  'a free user with no saved plan OR a saved plan with nothing in it, once the read has settled');
+/* HIS PHONE, 10:46pm: he added a session and took it back, which saved seven
+   Rest days. "A row exists" was read as "has a program": the strip drew seven
+   Rest cells, 0 days a week, Rest on every row, and the Day page said Active
+   rest under a Creative mode switch. */
+t(/_savedEmpty=!WEEKDAYS\.some\(function\(d\)\{ var x=_saved\[d\]; return x && x\.type && x\.type!=='Rest'; \}\);/.test(inner),
+  'empty is decided by what is IN the week, not by whether a row is there');
+t(/if\(_saved && _savedEmpty\)\{ _tpPlan=_saved; window\._pgBlankRef=_tpPlan; \}/.test(inner),
+  'and an empty saved row is edited in place, so the next session lands on it');
+const pfd2=slice('function _tlPlanForDate(d){','function _tlPlanKeyFor');
+t(/if\(_meFreeApp\(\) && !WEEKDAYS\.some\(function\(k\)\{ var x=_tpPlan\[k\]; return x && x\.type && x\.type!=='Rest'; \}\)\) return null;/.test(pfd2),
+  'and the Day page agrees: seven Rest days is no week, so it offers Build your program, not Active rest');
 t(/if\(!window\._pgBuilding\)\{/.test(inner), 'until they tap, the tab is one card');
 const card=slice("if(!window._pgBuilding){","range:range, week:null");
 t(/class="tlHero tlHeroGo"/.test(card), 'and the card is the house glass - the Day hero recipe');
@@ -71,6 +82,37 @@ t(/var _PG_WAKE=\['Push','Pull','Legs','Upper','Lower','Full body','Arms','Cardi
 const wake=slice('async function pgWakeDo(dk, type){','function pgTellJim(){');
 t(/_tpPlan\[dk\]=\{type:String\(type\|\|'Workout'\), ex:\[\]\};/.test(wake),
   'and picking one makes the day that kind with NOTHING in it - they add the movements');
+
+console.log('\n  ADD A SESSION IS A LIST, IN GLASS, AND IT CLOSES:');
+/* Yusuf, 12 Sep: "I don't really like this current drop down menu, it doesn't
+   look very organized... these boxes are not glass... when I open and expand
+   Monday, there's no way to close it." */
+t(/<div class="pgKinds">/.test(inner), 'the kinds are a stacked list');
+t(/class="pgKind" onclick="pgWakeDo/.test(inner), 'one full-width row per kind');
+t(!/class="pgWakeP"/.test(inner), 'the chip cloud is gone');
+t(/\.pgKind\{[^}]*radial-gradient\(120% 140% at 0% 0%,#232323 0%,#171717 46%,#121212 100%\)/.test(src),
+  'and each row is the house glass - the .pgCard recipe');
+t(/\.pgKind\{[^}]*min-height:52px/.test(src), '52px tall');
+t(/pgKindOff" onclick="pgWakeCancel\(\)"/.test(inner), 'the last row closes the list');
+t(/function pgWakeStart\(dk\)\{ _pgWakeAsk=\(_pgWakeAsk===dk\)\?null:dk;/.test(src), 'and tapping the day again closes it too');
+t(/\(rest\?\(\(_ro\)\?'':\(' onclick="pgWakeStart\(\\''\+dk\+'\\'\)"'\)\)/.test(inner),
+  'because a rest row head now toggles its own list');
+t(/var _PG_WAKE_FREE=\['Push','Pull','Legs','Upper','Full body','Arms','Cardio'\];/.test(src),
+  'the free list has one word for legs - Legs and Lower name the same muscles');
+t(/\(_meFreeApp\(\)\?_PG_WAKE_FREE:_PG_WAKE\)/.test(inner), 'and coaching clients keep both, because his female split is written in those words');
+
+console.log('\n  NO CREATIVE MODE FOR A FREE USER, ON ANY DAY:');
+t(/showHint && isToday && !window\._tlRO && !_meFreeApp\(\)\)\?\('<div class="tlSwitchRow" data-tl="creative"/.test(src),
+  'the switch is gated on the rest-day card as well as the empty one');
+
+console.log('\n  THE WEIGHT THEY GAVE AT SETUP IS ON THE GRAPH:');
+const wj=slice('async function renderWeightJourney(){','syncWeightUnitUI();');
+t(/if\(_meFreeApp\(\) && !weights\.length && !window\._wtSeeded && Array\.isArray\(weights\)\)/.test(wj),
+  'a free user with no weigh-ins is healed where the empty list is first known');
+t(/parseFloat\(profile && \(profile\.start_weight\|\|profile\.weight\)\)/.test(wj), 'from the weight they typed');
+t(/window\._wtSeeded=true;/.test(wj), 'once per load');
+t(/insertWeightLog\(\{client_code:cl\.code, weight:_pw0, notes:'', logged_at:_at\}\)/.test(wj), 'through the verified write path');
+t(/profile\.intake_date/.test(wj), 'dated to the day they set up');
 
 console.log('\n  FEWER WORDS FOR A FREE USER:');
 t(/\(_meFreeApp\(\) \? '' : '<div class="pgLibCard" onclick="pgOpenLib\(\)">'/.test(src),

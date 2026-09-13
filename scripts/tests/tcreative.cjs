@@ -18,6 +18,8 @@ t(_cdCreativeTitle('Upper body:\nrows')==='Upper body', 'a trailing colon is dro
 t(_cdCreativeTitle('bench 3x8 at 135, incline db 3x10')==='Workout', 'a line with numbers is not a name');
 t(_cdCreativeTitle('did some stuff at the gym today with my brother')==='Workout', 'a sentence is not a name');
 const hero=src.slice(src.indexOf('function _tlRestCard'), src.indexOf('// MOVEMENT REMINDERS'));
-t(/showHint && isToday && !window\._tlRO\)\?\('<div class="tlSwitchRow" data-tl="creative"/.test(hero), 'a day with no program gets a lime switch row under the hero, today only');
+/* 12 Sep: and never for a free app user - "what even is creative mode in
+   this format?" Their off-plan logging is Jim's tab. */
+t(/showHint && isToday && !window\._tlRO && !_meFreeApp\(\)\)\?\('<div class="tlSwitchRow" data-tl="creative"/.test(hero), 'a day with no program gets a lime switch row under the hero, today only, and never for a free user');
 t(/\.tlSwitchRow\.on \.tlSwitch\{background:#b8ff3a/.test(src), 'the switch lights lime');
 console.log(bad?('\n'+bad+' FAILED'):'\n  all creative assertions pass'); process.exit(bad?1:0);
