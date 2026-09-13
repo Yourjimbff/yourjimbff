@@ -134,7 +134,42 @@ t(/k:'low_back'[\s\S]{0,90}?group:'Pull'/.test(mus), 'low back moved to pull, wh
 /* Forearms is not on his questionnaire, but it is in the Strength Check, which
    is a longer conversation than the first two minutes of the app. */
 t(/k:'forearms'[\s\S]{0,110}?intake:false/.test(mus), 'forearms stays in the Strength Check and off the setup screen');
-t(/function miIntakeMuscles\(\)/.test(src), 'and one function decides which is which');
+t(/function miIntakeMuscles\(sex\)/.test(src), 'and one function decides which is which');
+
+console.log('\n  AND THE ONE QUESTION A WOMAN IS NOT ASKED:');
+/* Yusuf, 13 Sep: "main differentiating factor here is that females dont need
+   the traps question, they wont be doing shrugs." He had already ruled that
+   men and women get the same list - "everyone should be the same, male and or
+   female" - so this is the single exception he carved out of his own rule, and
+   it is carved at SETUP ONLY. The Strength Check keeps all eighteen: a woman
+   who does shrug can still rate it there, and nobody loses a rating they have
+   already given. What comes off is the QUESTION. */
+t(/k:'traps'[\s\S]{0,110}?intakeSex:'male'/.test(mus), "traps is marked as a men's question");
+t((mus.match(/intakeSex:/g)||[]).length===1, 'and it is the only muscle in the list that is sexed',
+  String((mus.match(/intakeSex:/g)||[]).length));
+const MI=closure(['MI_MUSCLES','miIntakeMuscles']);
+t(!MI.unparsable || !MI.unparsable.length, 'the muscle list lifted cleanly', JSON.stringify(MI.unparsable||[]));
+eval(MI.code||'');
+const _f=miIntakeMuscles('female').map(m=>m.k);
+const _m=miIntakeMuscles('male').map(m=>m.k);
+const _u=miIntakeMuscles('').map(m=>m.k);
+t(_f.indexOf('traps')<0, 'a woman is never asked about shrugs');
+t(_f.length===16, 'sixteen questions for her, not seventeen', String(_f.length));
+t(_m.indexOf('traps')>=0, 'a man still is');
+t(_m.length===17, 'seventeen for him', String(_m.length));
+/* An unknown sex shows everything. A question is only dropped when there is a
+   reason, never on a guess - and setup asks gender before it asks this, so in
+   practice the guess never has to be made. */
+t(_u.indexOf('traps')>=0, 'and an answer nobody gave yet drops nothing');
+t(_u.length===17, 'so the unsexed list is the full setup list', String(_u.length));
+/* The only thing either list drops is forearms, which is not on his
+   questionnaire at all. Everything else is a matter of sex, and there is
+   exactly one of those. */
+t(MI_MUSCLES.length===18, 'while the Strength Check still carries all eighteen', String(MI_MUSCLES.length));
+t(MI_MUSCLES.filter(m=>m.k==='traps').length===1, 'traps among them, rateable by anyone who wants to');
+/* The screen has to pass the answer through, or the filter is a function that
+   is never asked a question. */
+t(/miIntakeMuscles\(a\.gender\)/.test(src), 'and the setup screen hands it the gender they gave');
 
 console.log('\n  AND WHAT THEY SAY IS THEIR BASELINE, NOT A SECOND OPINION:');
 const fin2=slice('async function obFinish(){','/* ===== THE FIRST MINUTE');
