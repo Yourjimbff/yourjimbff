@@ -132,6 +132,37 @@ t(/if\(r\.is_free_app===true\) c\.is_free_app=true;/.test(inner), 'carrying it o
 t(/return json\(503, \{ error: 'not_migrated' \}\)/.test(fn),
   'and sign-UP refuses rather than writing a row nothing could ever find again');
 
+console.log('\n  THE FORM ASKS FOR A WHOLE NAME, AND FOR THE PASSWORD TWICE:');
+/* Yusuf, 13 Sep: "a little bit more space between your name, email, and
+   password. And it should be your first and last name ... Make sure they
+   confirm a password and they match." */
+const su=slice('<div class="screen" id="sSignup">','<!-- SETUP -->');
+t(/placeholder="First and last name"/.test(su), 'the name field asks for both');
+t(!/placeholder="Your name"/.test(src), 'and no longer for just a name');
+t(/id="suPass2"/.test(su), 'there is a second password box');
+t(/placeholder="Type it again"/.test(su), 'which says what it is for');
+t(/\.suF \+ \.suF\{margin-top:12px;\}/.test(src), 'and the boxes have air between them');
+t((su.match(/class="li suF"/g)||[]).length===4, 'all four of them', (su.match(/class="li suF"/g)||[]).length);
+const sign=slice('async function doSignup(){','// FORGOT PASSWORD');
+t(/if\(name\.split\(' '\)\.filter\(Boolean\)\.length<2\)/.test(sign), 'a single word is refused');
+t(!/\[a-z\]\+\\s\+\[a-z\]\+/i.test(sign), 'by counting words, not by whitelisting characters - an apostrophe is a name');
+t(/if\(pass!==pass2\)/.test(sign), 'and two passwords that differ are refused');
+t(sign.indexOf('if(pass!==pass2)') < sign.indexOf("_sbAuth('signup'"),
+  'BEFORE the account is made, or they are locked out of a password they never typed right');
+t(/_p2\.value=''; _p2\.focus\(\)/.test(sign), 'with the second box cleared and waiting');
+
+console.log('\n  AND FORCING A FRESH COPY KEEPS YOU WHERE YOU WERE:');
+/* Yusuf, 13 Sep: "When I hit tap to force a fresh copy, it goes to email or
+   access code only. Like there's nothing else that's there anymore." The link
+   rebuilt the URL from location.pathname alone, so #signup was dropped and the
+   reload landed on the sign-in screen. On a page whose whole job is to survive
+   a stale cache, the one control for it threw the screen away. */
+t((src.match(/location\.pathname\+'\?v='\+Date\.now\(\)\+\(location\.hash\|\|''\)/g)||[]).length===2,
+  'both force-fresh links carry the hash through',
+  (src.match(/location\.pathname\+'\?v='\+Date\.now\(\)\+\(location\.hash\|\|''\)/g)||[]).length);
+t(!/location\.replace\(location\.pathname\+'\?v='\+Date\.now\(\)\)/.test(src),
+  'and neither one drops it any more');
+
 console.log('\n  THE LINK HE POSTS:');
 t(/<div class="screen" id="sSignup">/.test(src), 'there is a sign-up screen');
 t(/String\(location\.hash\|\|''\)\.toLowerCase\(\)==='#signup'/.test(src), 'and #signup opens it');
