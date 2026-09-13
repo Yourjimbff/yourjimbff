@@ -42,5 +42,40 @@ t(/status:423/.test(src) || /_fe\.status=423/.test(src),
 t(/function _flipRestore\(\)/.test(src),            'the way back to his own account still exists');
 t(/jvSignOut\(\)/.test(src),                        'and Sign out is still on the menu, so nothing strands him');
 
+
+function slice(a,b){ const i=src.indexOf(a); return i<0?'':src.slice(i, src.indexOf(b,i)); }
+console.log('\n  AND A PASSWORD IS PROOF, SO IT CLAIMS THE DEVICE:');
+/* Yusuf, 13 Sep, testing his own launch link on his own Mac: "That did not
+   save. You are signed in as YUSUF RICHARDSON on somebody else's device." He
+   had just created a brand new account, on his own machine, with a password he
+   chose, and the guard refused every write because the device was still
+   stamped from months ago.
+
+   THE DISTINCTION IT WAS MISSING: typing a code is a CLAIM. Signing up, or
+   signing in with an email and a password, is PROOF. The case this guard
+   exists for is a trainer typing a client's code to look at their day and then
+   writing to it by accident - there is no password anywhere in that story, and
+   there cannot be, because the trainer does not have theirs. */
+const claim=slice('function _flipClaimDevice(code){','/* ON PURPOSE IS NOT AN ACCIDENT');
+t(/localStorage\.setItem\('yjb_owner_code', c\);/.test(claim), 'an authenticated arrival re-stamps the device');
+t(/sessionStorage\.removeItem\('yjb_flip_ok'\);/.test(claim),
+  'and drops the one-off pass, so the guard re-arms cleanly behind them');
+t(/removeChild\(el\)/.test(claim), 'taking the banner down with it');
+t(/if\(!c\) return;/.test(claim), 'an empty code claims nothing');
+
+const up=slice('async function doSignup(){','// FORGOT PASSWORD');
+t(/try\{ _flipClaimDevice\(got\.body\.code\); \}catch\(e\)\{\}/.test(up),
+  'a brand new account made on this device makes the device theirs');
+const inn=slice('async function _emailSignIn(email, password){','function openSignup');
+t(/try\{ _flipClaimDevice\(got\.body\.code\); \}catch\(e\)\{\}/.test(inn),
+  'and so does signing in with a password');
+
+/* THE ONE THAT MUST NOT. A bare code is exactly the story the guard is for. */
+const inner=slice('async function _doLoginInner(code){','function _mbAllowed');
+t(!/_flipClaimDevice/.test(inner), 'typing a code claims nothing - that is the case the guard exists for');
+t((src.match(/_flipClaimDevice\(/g)||[]).length===3,
+  'three mentions in the whole file: the function, sign-up, sign-in',
+  (src.match(/_flipClaimDevice\(/g)||[]).length);
+
 console.log(bad? ('\n'+bad+' FAILED') : '\n  all pass');
 process.exit(bad?1:0);
