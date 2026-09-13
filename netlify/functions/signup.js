@@ -13,18 +13,26 @@
 // name themselves a trainer, or take a code that is not theirs. That is not a
 // theoretical: the anon key ships in the HTML and always will.
 //
-// HOW THE TOKEN IS CHECKED: a Supabase access token is an HS256 JWT signed with
-// the project's JWT secret -- the same secret session.js already needs and that
-// is already set in Netlify. So verification is local, offline, and reuses the
-// verifier session.js already exports rather than a second copy of it.
+// HOW THE TOKEN IS CHECKED: BY ASKING SUPABASE.
 //
-// REQUIRED ENVIRONMENT (all three already exist for session.js):
+// The first version of this verified the JWT locally with session.js's HMAC
+// verifier, on the assumption that a Supabase access token is HS256 signed with
+// the project's JWT secret. IT IS NOT, on this project: tokens come back
+//   { "alg": "ES256", "kid": "5ac635f4-...", "typ": "JWT" }
+// -- asymmetric signing keys. Every real signup was refused as 'bad_token',
+// found by running an actual signup against the live project rather than by
+// reading the code, which could not have shown it.
+//
+// So the token goes to GET /auth/v1/user and Supabase answers. Supabase is the
+// authority on its own tokens: it checks the signature against whichever key
+// signed it, and a token that is expired, revoked, or for another project gets
+// a 401. That is stronger than any verifier kept in this repo, and it cannot
+// drift when Supabase rotates a key or changes an algorithm.
+//
+// REQUIRED ENVIRONMENT (both already exist for session.js):
 //   SUPABASE_URL
 //   SUPABASE_SERVICE_KEY
-//   SUPABASE_JWT_SECRET
-// Missing any one returns 503 and writes nothing. It never half-creates a client.
-
-const { verify } = require('./session.js');
+// Missing either returns 503 and writes nothing. It never half-creates a client.
 
 const json = (code, obj) => ({
   statusCode: code,
@@ -54,26 +62,46 @@ exports.handler = async (event) => {
 
   const URL = process.env.SUPABASE_URL;
   const SERVICE = process.env.SUPABASE_SERVICE_KEY;
-  const SECRET = process.env.SUPABASE_JWT_SECRET;
-  if (!URL || !SERVICE || !SECRET) {
-    console.error('signup: missing env', { URL: !!URL, SERVICE: !!SERVICE, SECRET: !!SECRET });
+  if (!URL || !SERVICE) {
+    console.error('signup: missing env', { URL: !!URL, SERVICE: !!SERVICE });
     return json(503, { error: 'not_configured' });
   }
 
   let body = {};
   try { body = JSON.parse(event.body || '{}'); } catch (e) { return json(400, { error: 'bad_request' }); }
 
-  const claims = verify(String(body.access_token || ''), SECRET);
-  if (!claims || !claims.sub) return json(401, { error: 'bad_token' });
-  // A Supabase user token names the user in `sub` and carries `authenticated`.
-  // A session.js token names a CLIENT CODE in sub and must never be accepted
-  // here: it would let a signed-in client mint a second account for themselves.
-  if (claims.client_code) return json(401, { error: 'wrong_token' });
-  if (claims.exp && claims.exp * 1000 < Date.now()) return json(401, { error: 'expired' });
+  const token = String(body.access_token || '');
+  // Shape only, to keep junk off the network. The real check is the next call.
+  if (!token || token.length > 4096 || token.split('.').length !== 3) {
+    return json(401, { error: 'bad_token' });
+  }
+  // A session.js token is HS256 and names a CLIENT CODE in sub. Supabase would
+  // refuse it anyway, but refusing it here says WHY: a signed-in client must
+  // never be able to mint a second account for themselves.
+  try {
+    const mid = JSON.parse(Buffer.from(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64'));
+    if (mid && mid.client_code) return json(401, { error: 'wrong_token' });
+  } catch (e) { return json(401, { error: 'bad_token' }); }
 
-  const uid = String(claims.sub);
-  const email = String(claims.email || body.email || '').trim().toLowerCase().slice(0, 160);
-  const name = cleanName(body.name) || (email ? email.split('@')[0] : 'Member');
+  // SUPABASE IS THE AUTHORITY ON ITS OWN TOKENS.
+  let user = null;
+  try {
+    const r = await fetch(`${URL}/auth/v1/user`, {
+      headers: { apikey: SERVICE, Authorization: 'Bearer ' + token },
+    });
+    if (r.status === 401 || r.status === 403) return json(401, { error: 'bad_token' });
+    if (!r.ok) { console.error('signup: /auth/v1/user said', r.status); return json(502, { error: 'verify_failed' }); }
+    user = await r.json();
+  } catch (e) {
+    console.error('signup: verify threw', e && e.message);
+    return json(502, { error: 'verify_failed' });
+  }
+  if (!user || !user.id) return json(401, { error: 'bad_token' });
+
+  const uid = String(user.id);
+  const email = String(user.email || '').trim().toLowerCase().slice(0, 160);
+  const metaName = (user.user_metadata && user.user_metadata.name) || '';
+  const name = cleanName(body.name) || cleanName(metaName) || (email ? email.split('@')[0] : 'Member');
 
   const H = { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE, 'Content-Type': 'application/json' };
 
