@@ -53,7 +53,8 @@ t(/pgWakeStart\(\\''\+dk\+'\\'\)">Add a session/.test(src), 'a rest day offers A
 t(/var _PG_WAKE=\['Push','Pull','Legs','Upper','Lower','Full body','Arms','Cardio'\];/.test(src), 'and asks what kind, from eight');
 t(/_pgDayOpen=WEEKDAYS\.indexOf\(dk\);/.test(src), 'the woken day opens so they can put movements in it');
 t(/\(rest && !_ro\)/.test(src) && /_ro \? '' : \(_pgRestAsk===dk/.test(src), 'none of it on a programme Yusuf built - his call stays his');
-t(/id="pgJimIn"/.test(src) && /window\._pgProgPlan \? '' : \('<div class="pgJim">/.test(src), 'a Tell Jim box at the foot of the program, not on a programme he built');
+/* 12 Sep: and not for a free app user either - fewer things on their screen. */
+t(/id="pgJimIn"/.test(src) && /\(window\._pgProgPlan \|\| _meFreeApp\(\)\) \? '' : \('<div class="pgJim">/.test(src), 'a Tell Jim box at the foot of the program, not on a programme he built, not for a free user');
 const tj=src.slice(src.indexOf('function pgTellJim('), src.indexOf('function pgSetsNudge('));
 t(/switchTab\('Jim'\)/.test(tj) && /ci\.value='Change my program: '\+txt/.test(tj) && !/sendChatMessage|jimSend/.test(tj), 'it carries the sentence to Jim and the SEND stays theirs - they see what they are asking before it goes');
 

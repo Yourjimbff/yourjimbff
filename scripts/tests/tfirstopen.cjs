@@ -54,12 +54,12 @@ t(/insertWeightLog/.test(src.slice(src.indexOf('async function insertWeightLog')
 
 console.log('\n  A FREE USER WITH NO WEEK IS OFFERED THE BUILDER, NOT A VERDICT:');
 const rest=slice('function _tlRestCard(ds, isToday, isAhead, slots, kind){','function _tlMoveRow');
-t(/typeof mwpCanBuild==='function' && mwpCanBuild\(\)/.test(rest), 'it asks whether this person can build one');
-t(/none && typeof mwpCanBuild/.test(rest), 'and only when there is no program at all');
-t(/>Build your week</.test(rest), 'the card says build your week');
+t(/_canBuild=\(none && _meFreeApp\(\) && !window\._tlRO\)/.test(rest), 'a free user with no program, and nobody else');
+t(/>Build your program</.test(rest), 'the card says Build your program - three words');
+t(!/tlHeroMeta/.test(slice("if(_canBuild){","return '<div class=\"tlHero\">")), 'and nothing under it');
 t(/data-tl="buildweek"/.test(rest), 'and the whole card is the door');
-t(/if\(a==='buildweek'\)\{ ev\.stopPropagation\(\); try\{ mwpOpen\(\); \}catch\(e\)\{\} return; \}/.test(src),
-  'wired through the same delegated handler as every other card here');
+t(/if\(a==='buildweek'\)\{ ev\.stopPropagation\(\); try\{ pgBuildStart\(\); \}catch\(e\)\{\} return; \}/.test(src),
+  'wired through the same delegated handler as every other card here, onto the Program tab');
 /* Creative mode is not deleted. It is the right control for somebody who HAS a
    week and is off-plan today - it is only wrong as the first thing a stranger
    meets. */
@@ -67,7 +67,7 @@ t(/tlSwitchLbl">Creative mode</.test(rest), 'Creative mode still exists for ever
 /* The builder branch RETURNS, so Creative mode is not merely later on the
    page - it is unreachable on that render. That is the real guarantee. */
 t(rest.indexOf('if(_canBuild){') < rest.indexOf('tlSwitchLbl">Creative mode') &&
-  /if\(_canBuild\)\{[\s\S]{0,600}?\+'<\/div>';\s*\n\s*\}/.test(rest),
+  /if\(_canBuild\)\{[\s\S]{0,800}?\+'<\/div>';\s*\n\s*\}/.test(rest),
   'and the builder branch returns, so Creative mode cannot also draw');
 t(/No program set up yet/.test(rest),
   'the old line survives for a coaching client, whose coach writes their week');
