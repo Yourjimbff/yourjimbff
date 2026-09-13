@@ -256,5 +256,21 @@ console.log('\n  IT WRITES WHERE THE APP ALREADY READS:');
 t(/food_method|equipment|experience|priority/.test(fin),
   'and the four with no column of their own ride in intake_json');
 
+console.log('\n  THE YEAR CAN BE FINISHED, AND BACK FITS:');
+/* Yusuf, 13 Sep: "I'm stuck on my birth year. I'm not able to type beyond the
+   1 on 1997." The box SHOWS "MM / DD / YYYY" - 14 characters with the spaces -
+   and carried maxlength="10", which is exactly "09 / 27 / ". The first digit
+   landed because obDate sets el.value itself and maxlength does not apply to a
+   programmatic write; the second keystroke was refused. */
+t(/class="obField obDate1" id="obIn" type="text" inputmode="numeric" maxlength="14"/.test(src),
+  'the cap counts what is displayed, not what is typed');
+t(/d=String\(el\.value\|\|''\)\.replace\(\/\\D\/g,''\)\.slice\(0,8\)/.test(src),
+  'and the real limit is still eight digits, inside obDate');
+/* Two different things were called .obBack - a 32x32 icon button on the
+   trainer board, declared first, and this text link. Both applied. */
+t(/<div class="obBk" onclick="obBack\(\)"/.test(src), 'Back wears a class of its own');
+t(/\.obBk\{font-size:13px;font-weight:700/.test(src), 'with a rule nothing else shares');
+t(/\.obBack\{flex:0 0 auto;width:32px;height:32px/.test(src), 'and the 32px icon button keeps its own');
+
 console.log(bad? '\n  '+bad+' FAILED\n' : '\n  all good ('+keys.length+' screens)\n');
 process.exit(bad?1:0);

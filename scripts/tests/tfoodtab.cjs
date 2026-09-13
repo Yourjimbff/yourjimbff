@@ -78,7 +78,10 @@ t(!/Nothing yet/.test(h), 'and never claims an untouched day it has not establis
 window._fdFoodLoaded=true;
 h=fdTodayHtml();
 t(/Nothing yet/.test(h), 'after the read, an empty day says so');
-t(/Room for about 1,900-2,100 today/.test(h), 'with their own range, not a single number');
+/* Yusuf, 13 Sep: "cut this AI language. Just 1,900-2,100 calorie goal is
+   fine." */
+t(/1,900-2,100 calorie goal/.test(h), 'with their own range, in four words');
+t(!/Room for about/.test(src), 'and nothing is written at them');
 allFood=[{date_str:ds, calories:620, protein:48, carbs:52, fat:22},
          {date_str:ds, calories:410, protein:30, carbs:38, fat:12},
          {date_str:'Jan 1, 2020', calories:9999, protein:999, carbs:999, fat:999}];
