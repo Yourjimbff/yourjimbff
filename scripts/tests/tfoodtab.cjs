@@ -134,5 +134,35 @@ t(/\.fdxCard::after\{content:'';position:absolute;inset:0/.test(src), 'with the 
 t(/\.fdxAddBtn\{[^}]*background:var\(--gold\)/.test(src), 'and gold is on the one control that does something');
 t(!/\.fdxSecT\{[^}]*var\(--gold\)/.test(src), 'never on a section heading');
 
+console.log('\n  THE MY FOODS EDITOR IS GLASS:');
+/* Yusuf, 13 Sep, off a screenshot: "this editor box is also outdated. Fix and
+   modernise." */
+const ed=slice('function _flibFoodRow(f){','function flibRender(){');
+t(/class="fleCard"/.test(ed), 'the editor is one named card');
+t(!/background:var\(--surface\);border:1px solid rgba\(245,197,24,0\.4\)/.test(src),
+  'and not a flat surface with a gold hairline round it');
+t(/\.fleCard\{position:relative;overflow:hidden;border-radius:19px/.test(src), 'it is the house glass');
+t(/radial-gradient\(120% 140% at 0% 0%,#242424 0%,#171717 46%,#111 100%\)/.test(slice('.fleCard{','.fleCard::after')),
+  'the exact recipe, not a lookalike');
+t(/\.fleCard::after\{content:'';position:absolute;inset:0/.test(src), 'with the gold wash in the corner');
+/* Calories are computed from the three macros on every keystroke, so they are
+   a RESULT, not a fourth box to fill in. */
+t(/el\.value=Math\.round\(4\*g\('flibEPro'\)\+4\*g\('flibECarb'\)\+9\*g\('flibEFat'\)\)/.test(src),
+  'calories are still derived from the macros');
+t(/class="fleCal"/.test(ed) && /\.fleCal input\{[^}]*font-size:34px/.test(src),
+  'so they sit at the top at 34px, reading as the result they are');
+t(/Calories work themselves out from these three\./.test(ed), 'said in one line');
+t(/class="fleMacs"/.test(ed) && /<span>'\+lbl\+'<\/span>/.test(ed),
+  'and the three macros are named in words under their own numbers');
+t(!/PRO \(G\)|CARB \(G\)|FAT \(G\)/.test(src), 'never PRO (G) in shouty caps over a cramped box');
+/* Gold means action. One action. */
+t(/\.fleSave\{[^}]*background:var\(--gold\)/.test(src), 'Save is the gold control');
+t(/\.fleFoot span\{font-size:12\.5px;font-weight:700;color:rgba\(240,236,228,0\.45\)/.test(src),
+  'Cancel and Delete are quiet text under it');
+t(/\.fleFoot span\.del\{color:rgba\(255,98,112,0\.62\)\}|\.fleFoot span\.del\{color:rgba\(255,98,112,0\.62\);\}/.test(src),
+  'Delete is dimmed, not a red button beside Save');
+t(/-webkit-appearance:none/.test(slice('.fleCal input::-webkit-outer-spin-button','body.free')),
+  'and the number spinners are off - they are noise on a phone');
+
 console.log(bad? ('\n  '+bad+' FAILED\n') : '\n  all good (food is a tab)\n');
 process.exit(bad?1:0);
