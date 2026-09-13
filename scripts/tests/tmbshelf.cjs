@@ -62,5 +62,34 @@ t((src.match(/chip==='Save'/g)||[]).length===4, 'and every branch that tested fo
   (src.match(/chip==='Save'/g)||[]).length);
 t(/function mlibAdopt/.test(src), 'the function keeps its name - only the word the client reads changed');
 
+console.log('\n  OUNCES IS TO PALMS IS TO GRAMS OF PROTEIN:');
+/* Yusuf, 13 Sep: "no one ever buys a steak or meat source in palm sizes in the
+   grocery store. But people do buy it in ounces... have it be ounces equates to
+   palm sizes equates to grams of protein. This should be a very handy user
+   guide coincidentally. This should go for all protein sources." */
+t(/var MB_PROTEIN_OZ=\[4,6,8,10,12\];/.test(src), 'the amounts are ounces - the numbers on a packet');
+const step=slice('function _mbPalmStep(){','function mbPickPalms');
+t(/MB_PROTEIN_OZ\.map\(function\(oz\)\{/.test(step), 'a palm-measured protein lists them');
+t(/\+oz\+' oz<\/div>'/.test(step), 'ounces lead the row');
+t(/about '\+_mbPalmsAbout\(oz\)/.test(step), 'the palm sits under them as the estimate it is');
+t(/mbFormatExact\(c,q\)/.test(step), 'and the protein is the answer on the right');
+const about=slice('function _mbPalmsAbout(oz){','function _mbPalmStep');
+t(/Math\.round\(\(oz\/MB_PALM_OZ\)\*2\)\/2/.test(about), 'palms round to the nearest half, the way the rest of the screen speaks');
+t(/Around '\+mbFormatQty\(R\.minOz\)\+' to '\+mbFormatQty\(R\.maxOz\)\+' oz suits most people/.test(step),
+  'and the hint above them is in ounces too');
+t(!/palms suits most people/.test(src), 'never "1½ to 2½ palms suits most people" again');
+/* ALL protein sources means the ones measured in palms; an egg has no ounces
+   anybody thinks in, so eggs, slices, scoops and cups keep their own unit. */
+t(/\} else \{\s*\n\s*rows=mbAmountOptions\(c\)\.map/.test(step), 'eggs and slices keep their own unit');
+/* Asked in ounces, answered in ounces. */
+const pick=slice('function mbPickOz(oz){','function mbClosePick');
+t(/_mbPlace\(\{component:_mbPickComp, qty:_mbOzPalms\(oz\), pinned:true, showOz:true\}\)/.test(pick),
+  'picking an ounce amount pins it and marks it as ounces');
+t(/if\(part\.showOz\) return mbOzOf\(part\)\+' oz '\+nm\.toLowerCase\(\);/.test(src),
+  'so the slot reads back "8 oz steak", not "2¼ palms steak"');
+/* The item editor said the same thing twice, in two different languages. */
+t(!/>OR IN OUNCES<\/div>/.test(src), 'the duplicate OR IN OUNCES block is gone');
+t(/One palm is about '\+MB_PALM_OZ\+' oz, and gives you /.test(src), 'and one palm is defined in ounces where it is explained');
+
 console.log(bad? ('\n  '+bad+' FAILED\n') : '\n  all good (the shelf is on)\n');
 process.exit(bad?1:0);
