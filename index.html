@@ -67094,6 +67094,91 @@ async function mbReadLabel(dataUrl, opts){
 // never saves on its own — the client always sees the numbers first.
 var _mbAdd=null, _mbAddBusy=false;
 
+/* ===== LOOK IT UP, OR SCAN IT (Yusuf, 13 Sep: "this screen needs to be
+   modernized as well... it needs to be simpler. Someone will either just look
+   up a food or scan the label of a food.")
+   So the screen is those two doors, in that order, and the seven-field form
+   that used to BE the screen is folded away behind a line of text. Nobody
+   should be typing a calorie count as their first move.
+   WHERE THE LOOKUP READS FROM: the shelf first - the 80 components already on
+   this account, so a food that exists is picked rather than duplicated - and
+   then MT_ROWS, the macro table this app has carried for weeks. 48 foods with
+   his own numbers and their aliases, which is the same table Jim portions
+   meals from. Nothing is invented here and no new list was written.
+   THE KIND IS NOT GUESSED. It comes from the slot they tapped to get here,
+   because MT_ROWS says what a food IS worth, not what it is FOR. */
+function _mbTableHits(q, kind){
+  var t=_mbNorm(q); if(t.length<2) return [];
+  var rows=(typeof MT_ROWS!=='undefined')?MT_ROWS:[];
+  var out=[];
+  for(var i=0;i<rows.length && out.length<6;i++){
+    var r=rows[i], names=[String(r.k||'')].concat(r.a||[]);
+    var hit=names.some(function(n){ return _mbNorm(n).indexOf(t)>=0; });
+    if(hit) out.push(r);
+  }
+  return out;
+}
+/* An MT row carries macros PER ITS OWN UNIT. A meat priced by the ounce becomes
+   a palm here - 3.5 oz - so it lands on the ounce ladder the picker now shows
+   instead of offering somebody "1 oz, 2 oz, 3 oz". */
+function _mbFromTable(r, kind){
+  var u=String(r.u||'serving'), mult=1, serving='1 '+u;
+  if(u==='oz' && kind==='protein'){ mult=MB_PALM_OZ; serving='1 palm ('+MB_PALM_OZ+' oz)'; }
+  var P=(+r.p||0)*mult, C=(+r.c||0)*mult, F=(+r.f||0)*mult;
+  var rd=function(n){ return Math.round(n*10)/10; };
+  return {id:null, name:_tcase(String(r.k||'')), kind:kind||'protein', serving_text:serving,
+          calories:Math.round(4*P+4*C+9*F), protein:rd(P), carbs:rd(C), fibre:'', fat:rd(F)};
+}
+/* One tap. The food is known, so there is nothing to confirm. */
+function mbAddFromTable(i){
+  if(!_mbAdd) return;
+  var hits=_mbTableHits(_mbAdd.q||'', _mbAdd.kind);
+  var r=hits[i]; if(!r) return;
+  var keep=_mbAdd.id;
+  _mbAdd=Object.assign(_mbFromTable(r, _mbAdd.kind), {id:keep||null, q:''});
+  mbAddSave();
+}
+/* Already on the shelf: pick it, never make a second copy of it. */
+function mbAddPickShelf(id){
+  var c=mbById(id); if(!c) return;
+  mbAddClose();
+  try{ mbChooseById(String(id)); }catch(e){}
+}
+function mbAddType(v){
+  if(!_mbAdd) return;
+  _mbAdd.q=String(v||'');
+  try{ var h=document.getElementById('mbaHits'); if(h) h.innerHTML=_mbAddHits(); }catch(e){}
+}
+function mbAddManual(){
+  if(!_mbAdd) return;
+  mbAddRead(); _mbAdd.manual=true; _mbAddRender();
+}
+function _mbAddHits(){
+  if(!_mbAdd) return '';
+  var q=String(_mbAdd.q||'');
+  if(_mbNorm(q).length<2) return '';
+  var row=function(click, nm, meta){
+    return '<div onclick="'+click+'" class="mbSheetRow">'
+      +'<div style="font-size:15px;font-weight:800;color:var(--text);min-width:0;">'+_escHtml(nm)+'</div>'
+      +'<div style="flex-shrink:0;font-size:12.5px;font-weight:700;color:var(--gold);">'+_escHtml(meta)+'</div>'
+    +'</div>';
+  };
+  var h='', n=0;
+  /* the shelf first - a food that already exists is picked, not duplicated */
+  try{
+    mbComponents(_mbAdd.kind).forEach(function(c){
+      if(n>=4) return;
+      if(_mbNorm(c.name).indexOf(_mbNorm(q))<0) return;
+      n++; h+=row('mbAddPickShelf(\''+_escAttr(String(c.id))+'\')', c.name, 'already yours');
+    });
+  }catch(e){}
+  _mbTableHits(q, _mbAdd.kind).forEach(function(r, i){
+    var f=_mbFromTable(r, _mbAdd.kind);
+    h+=row('mbAddFromTable('+i+')', f.name, Math.round(f.protein)+'g protein');
+  });
+  return h || '<div style="font-size:12.5px;color:var(--m2);padding:4px 2px 2px;line-height:1.5;">'
+    +'Nothing by that name. Scan the label, or type the numbers in yourself.</div>';
+}
 function mbOpenAdd(kind, id){
   if(!cl) return;
   var ex=id?mbById(id):null;
@@ -67102,7 +67187,7 @@ function mbOpenAdd(kind, id){
     _mbAdd=Object.assign({id:ex.id}, mbLabelFieldsFor(ex));
   } else {
     _mbAdd={id:null, name:'', kind:kind||_mbPick||'protein', serving_text:'',
-            calories:'', protein:'', carbs:'', fibre:'', fat:''};
+            calories:'', protein:'', carbs:'', fibre:'', fat:'', q:'', manual:false};
   }
   _mbAddRender();
 }
@@ -67130,16 +67215,26 @@ function _mbAddRender(){
   o.innerHTML='<div style="width:100%;max-width:430px;max-height:92vh;overflow-y:auto;-webkit-overflow-scrolling:touch;background:radial-gradient(120% 140% at 0% 0%,#232323 0%,#171717 46%,#121212 100%);border:1px solid #2e2e2e;border-bottom:0;box-shadow:0 -12px 40px rgba(0,0,0,0.5);border-radius:22px 22px 0 0;padding:16px 18px calc(24px + env(safe-area-inset-bottom,0px));">'
     +'<div style="width:42px;height:4px;border-radius:2px;background:#3d3d3d;margin:0 auto 15px;"></div>'
     +'<div style="font-size:18px;font-weight:800;color:var(--text);">'+(editing?'Edit this':'Add your own')+'</div>'
-    +(editing?'':'<div style="font-size:12.5px;color:var(--m2);line-height:1.5;margin:5px 0 0;">Point the camera at the nutrition panel and I’ll read it. The photo isn’t saved — it’s only used to get the numbers.</div>')
-    +(editing?'':'<label style="display:block;position:relative;margin-top:13px;">'
+    /* TWO DOORS, IN THE ORDER PEOPLE USE THEM. Look it up. Failing that, scan
+       it. The form is a third door and it is closed until asked for. */
+    +(editing?'':'<div style="margin-top:13px;">'
+      +'<input id="mbaQ" type="text" autocomplete="off" value="'+_escAttr(String(d.q||''))+'" '
+        +'placeholder="Search a food" oninput="mbAddType(this.value)" '
+        +'style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.10);'
+        +'border-radius:13px;padding:13px 14px;color:var(--text);font-family:inherit;font-size:16px;font-weight:700;outline:none;">'
+    +'</div>'
+    +'<div id="mbaHits" style="margin-top:9px;">'+_mbAddHits()+'</div>'
+    +'<label style="display:block;position:relative;margin-top:13px;">'
       +'<input type="file" accept="image/*" capture="environment" onchange="mbAddPhoto(this)" style="position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer;">'
-      +'<div id="mbScanBtn" style="text-align:center;background:var(--gold);color:var(--onaccent);border-radius:12px;padding:14px;font-size:14.5px;font-weight:800;">Scan the label</div>'
+      +'<div id="mbScanBtn" style="text-align:center;background:var(--gold);color:#141008;border-radius:13px;padding:15px;font-size:14.5px;font-weight:800;">Scan a label</div>'
     +'</label>'
-    +'<div style="text-align:center;font-size:11.5px;font-weight:600;color:var(--muted);margin:11px 0 3px;">or fill it in yourself</div>')
+    +'<div style="font-size:11.5px;font-weight:600;color:var(--muted);text-align:center;line-height:1.5;margin:9px 0 0;">For anything packaged. The photo isn’t saved — it only reads the numbers.</div>')
 
-    +'<div style="margin-top:12px;">'+_mbAddField('mbaName','Name',d.name,'Chicken sausage',false)+'</div>'
+    +((editing||d.manual)?'':'<div onclick="mbAddManual()" role="button" tabindex="0" style="text-align:center;font-size:12.5px;font-weight:700;color:var(--m2);padding:16px 2px 4px;cursor:pointer;">Type the numbers myself</div>')
 
-    +'<div style="font-size:11px;font-weight:700;color:var(--muted);margin:14px 0 6px;">What is it?</div>'
+    +((editing||d.manual)?('<div style="margin-top:12px;">'+_mbAddField('mbaName','Name',d.name,'Chicken sausage',false)+'</div>'):'')
+
+    +((editing||d.manual)?('<div style="font-size:11px;font-weight:700;color:var(--muted);margin:14px 0 6px;">What is it?</div>'
     +'<div style="display:flex;gap:6px;">'
     + _MB_KINDS.map(function(k){
         var on=(d.kind===k[0]);
@@ -67166,7 +67261,7 @@ function _mbAddRender(){
     +'<div id="mbaPreview" style="font-size:12.5px;font-weight:700;color:var(--m2);line-height:1.5;margin-top:15px;min-height:19px;"></div>'
 
     +'<button class="sbtn" style="margin-top:14px;" onclick="mbAddSave()">'+(editing?'Save changes':'Add it to my list')+'</button>'
-    +(editing?'<button class="obtn" onclick="mbAddDelete()">Delete this</button>':'')
+    +(editing?'<button class="obtn" onclick="mbAddDelete()">Delete this</button>':'')):'')
     +'<button class="obtn" onclick="mbAddClose()">Cancel</button>'
   +'</div>';
   document.body.appendChild(o);
@@ -67223,6 +67318,11 @@ function mbAddPhoto(input){
     _mbAdd.carbs   =_mbRound1(n.carbs_total*d);
     _mbAdd.fibre   =_mbRound1(n.fibre*d);
     _mbAdd.fat     =_mbRound1(n.per_unit.f*d);
+    /* A LABEL THAT HAS BEEN READ IS SHOWN, NOT SWALLOWED (13 Sep). The form is
+       folded away until asked for now, so a scan has to open it - otherwise the
+       numbers it just pulled off the packet land behind a closed door and the
+       person has no way to check them before they save. */
+    _mbAdd.manual=true; _mbAdd.q='';
     _mbAddRender();
     showToast(raw.confidence==='low' ? 'Got it — worth checking these' : 'Got it — check it matches');
   };
