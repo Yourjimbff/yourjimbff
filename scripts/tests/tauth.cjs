@@ -62,13 +62,29 @@ t(/fetch\('\/\.netlify\/functions\/signup'/.test(toCode), 'it asks the server in
 t(/access_token:access_token/.test(toCode), 'handing over the token and nothing else that matters');
 
 console.log('\n  AND THE SERVER CHECKS THE TOKEN BEFORE IT WRITES ANYTHING:');
-t(/const \{ verify \} = require\('\.\/session\.js'\);/.test(fn), 'it reuses the verifier that already exists');
-t(/const claims = verify\(String\(body\.access_token \|\| ''\), SECRET\);/.test(fn), 'every request is verified');
-t(/if \(!claims \|\| !claims\.sub\) return json\(401/.test(fn), 'an unsigned or forged token gets nothing');
-t(/if \(claims\.client_code\) return json\(401, \{ error: 'wrong_token' \}\);/.test(fn),
+/* IT IS ES256, NOT HS256 (found by running a real signup against the live
+   project, 13 Sep). The first version verified the JWT locally with
+   session.js's HMAC verifier, on the assumption that a Supabase access token is
+   signed with the project's JWT secret. This project's tokens carry
+   { "alg": "ES256", "kid": ... } -- asymmetric signing keys -- so every genuine
+   signup was refused as bad_token. Reading the code could not have shown it.
+   Supabase is the authority on its own tokens now: it checks the signature
+   against whichever key signed it, and that cannot drift when a key rotates. */
+t(!/require\('\.\/session\.js'\)/.test(fn), 'it no longer verifies the signature itself');
+t(/fetch\(`\$\{URL\}\/auth\/v1\/user`/.test(fn), 'it asks Supabase whose token this is');
+t(/Authorization: 'Bearer ' \+ token/.test(fn), 'handing over the token as the bearer');
+t(/if \(r\.status === 401 \|\| r\.status === 403\) return json\(401, \{ error: 'bad_token' \}\)/.test(fn),
+  'a forged, expired or revoked token gets nothing');
+t(/if \(!user \|\| !user\.id\) return json\(401, \{ error: 'bad_token' \}\);/.test(fn),
+  'and an answer without a user is not an answer');
+t(/if \(!r\.ok\) \{ console\.error\('signup: \/auth\/v1\/user said', r\.status\); return json\(502/.test(fn),
+  'a server that could not answer is a 502, never a quiet yes');
+t(/if \(mid && mid\.client_code\) return json\(401, \{ error: 'wrong_token' \}\);/.test(fn),
   'AND A SESSION TOKEN IS NOT AN AUTH TOKEN -- a signed-in client cannot mint a second account');
-t(/if \(claims\.exp && claims\.exp \* 1000 < Date\.now\(\)\) return json\(401/.test(fn), 'nor can an expired one');
-t(/if \(!URL \|\| !SERVICE \|\| !SECRET\)/.test(fn) && /return json\(503, \{ error: 'not_configured' \}\)/.test(fn),
+t(/const uid = String\(user\.id\);/.test(fn), 'the identity comes from Supabase, never from the request body');
+t(/const email = String\(user\.email \|\| ''\)/.test(fn), 'and so does the email');
+t(!/body\.email/.test(fn), 'nothing the browser sent decides who this is');
+t(/if \(!URL \|\| !SERVICE\)/.test(fn) && /return json\(503, \{ error: 'not_configured' \}\)/.test(fn),
   'and a half-configured function writes nothing at all');
 t(/Authorization: 'Bearer ' \+ SERVICE/.test(fn), 'the row is written with the service key, never the public one');
 t(!/SUPABASE_ANON/.test(fn), 'and it needs no environment variable that is not already set');
