@@ -91,5 +91,32 @@ t(/if\(part\.showOz\) return mbOzOf\(part\)\+' oz '\+nm\.toLowerCase\(\);/.test(
 t(!/>OR IN OUNCES<\/div>/.test(src), 'the duplicate OR IN OUNCES block is gone');
 t(/One palm is about '\+MB_PALM_OZ\+' oz, and gives you /.test(src), 'and one palm is defined in ounces where it is explained');
 
+console.log('\n  LOOK IT UP, OR SCAN IT:');
+/* Yusuf, 13 Sep: "this screen needs to be modernized as well... it needs to be
+   simpler. Someone will either just look up a food or scan the label of a
+   food." */
+const addr=slice('function _mbAddRender(){','function mbAddSetKind');
+t(/placeholder="Search a food"/.test(addr), 'a search box is the first thing on the screen');
+t(/id="mbaHits"/.test(addr), 'with the answers right under it');
+t(/>Scan a label</.test(addr), 'the label scanner is the second door');
+t(/>Type the numbers myself</.test(addr), 'and the form is a third, behind a line of text');
+t(/\(\(editing\|\|d\.manual\)\?'':/.test(addr), 'closed until it is asked for');
+t(/_mbAdd\.manual=true; _mbAdd\.q='';\s*\n\s*_mbAddRender\(\);/.test(src),
+  'a scan opens it, so the numbers off the packet can be checked before they save');
+/* The lookup reads what the app already has. Nothing new was written down. */
+const hits=slice('function _mbTableHits(q, kind){','function _mbFromTable');
+t(/var rows=\(typeof MT_ROWS!=='undefined'\)\?MT_ROWS:\[\];/.test(hits), 'it searches the macro table this app already carries');
+t(/\[String\(r\.k\|\|''\)\]\.concat\(r\.a\|\|\[\]\)/.test(hits), 'by name and by every alias on the row');
+const from=slice('function _mbFromTable(r, kind){','function mbAddFromTable');
+t(/if\(u==='oz' && kind==='protein'\)\{ mult=MB_PALM_OZ;/.test(from),
+  'a meat priced by the ounce becomes a palm, so it lands on the ounce ladder');
+t(/calories:Math\.round\(4\*P\+4\*C\+9\*F\)/.test(from), 'calories are computed, never typed');
+t(/kind:kind\|\|'protein'/.test(from), 'and the kind comes from the slot they tapped, never guessed off the table');
+const one=slice('function mbAddFromTable(i){','function mbAddPickShelf');
+t(/mbAddSave\(\);/.test(one), 'tapping a result saves it - one tap, nothing to confirm');
+const shelf=slice('function mbAddPickShelf(id){','function mbAddType');
+t(/mbChooseById\(String\(id\)\)/.test(shelf), 'and a food already on the shelf is picked, never duplicated');
+t(/already yours/.test(slice('function _mbAddHits(){','function mbOpenAdd')), 'which the row says out loud');
+
 console.log(bad? ('\n  '+bad+' FAILED\n') : '\n  all good (the shelf is on)\n');
 process.exit(bad?1:0);
