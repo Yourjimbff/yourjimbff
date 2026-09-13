@@ -25,12 +25,15 @@ _meFreeApp=()=>true;
 /* The lift declares its own `var cl` and `var profile`, which shadow the
    globals set above. Assign without `global.` so the lifted ones are set. */
 cl={code:'freeuser',name:'Free User'}; profile={};
-const h=_tlChapterHead(2,'Eat','410 of 1,980 cal',true,false);
+const h=_tlChapterHead('Eat','410 of 1,980 cal',true,false);
 t(/class="tlMealsHead tlCh done"/.test(h), 'a chapter with something logged is marked done');
-t(/<span class="tlChN">2<\/span>/.test(h), 'it is numbered');
+/* NO NUMBERS (Yusuf, 12 Sep: "I don't think that we should be putting in a
+   numbered list on the front page. Like one train, two eat, three track."). */
+t(!/tlChN/.test(h), 'it is NOT numbered');
+t(!/>1<|>2<|>3</.test(h), 'and carries no chapter number in any other shape');
 t(/<span class="tlChT">Eat<\/span>/.test(h), 'it is a verb');
 t(/<span class="tlChS">410 of 1,980 cal<\/span>/.test(h), 'and the number rides the right side');
-const h2=_tlChapterHead(1,'Train','Nothing built yet',false,true);
+const h2=_tlChapterHead('Train','Nothing built yet',false,true);
 t(/tlChS gold/.test(h2) && !/ done/.test(h2), 'a chapter with something to do is gold on the right and not done');
 t(!/[\u{1F300}-\u{1FAFF}]/u.test(h+h2), 'no emoji, house law');
 
@@ -58,24 +61,26 @@ t(/\(\(isToday && _meFreeApp\(\)\) \? cur\.toLocaleDateString\('en-US',\{weekday
   'today is its weekday name for a free user, Today for everyone else');
 t(/html\+=_tlGreeting\(ds, plan, isToday\);/.test(sec), 'the greeting sits under it');
 t(/var _woDone=rows\.some\(function\(r\)\{ return r\.completed; \}\);/.test(sec), 'Train reads whether the session is completed');
-t(/_tlChapterHead\(1,'Train'/.test(sec), '1 Train');
+t(/_tlChapterHead\('Train'/.test(sec), 'Train');
 t(/\(slots\.workout\|\|\[\]\)\.length \|\| \(slots\.walk\|\|\[\]\)\.length\)\) _woDone=true;/.test(sec),
   'and cardio or a walk counts as training done - "training and some steps"');
 t(/var _stp=_stepsFor\(ds\); if\(_stp>0\) _woDone=true;/.test(sec), 'and so do steps, on today');
 t(/\(isToday \? 'Nothing built yet' : ''\)/.test(sec), 'Nothing built yet is said on today only, never on a past day');
 t(/'Nothing built yet'/.test(sec), 'and says so when there is no program');
-t(/_tlChapterHead\(2,'Eat',_eatSt,cal>0,false\)/.test(src), '2 Eat, done once anything is logged');
+t(/_tlChapterHead\('Eat',_eatSt,cal>0,false\)/.test(src), 'Eat, done once anything is logged');
 t(/Math\.round\(cal\)\.toLocaleString\(\)\+' of '\+_tgt\.toLocaleString\(\)\+' cal'/.test(src), 'and it reads X of target');
-t(/_tlChapterHead\(3,'Track',_trSt,_todayW,false\)/.test(src), '3 Track, done once they weighed today');
+t(/_tlChapterHead\('Track',_trSt,_todayW,false\)/.test(src), 'Track, done once they weighed today');
 t(/_localYmd\(_lastAt\)===_localYmd\(_parseDs\(ds\)\|\|new Date\(\)\)/.test(src), 'today decided in local days, not UTC');
 /* The coaching client's heads are the same strings they were. */
 t(/<span class="tlMealsEy">Workout<\/span>/.test(src) && /<span class="tlMealsEy">Food<\/span>/.test(src) && /<span class="tlMealsEy">Body<\/span>/.test(src),
   'Workout / Food / Body still exist for coaching clients');
 
 console.log('\n  SATISFACTION, QUIETLY:');
-t(/\.tlCh\.done \.tlChN\{background:var\(--gold\);color:#141008;\}/.test(src), 'a done chapter fills its badge gold');
-t(/\.tlCh\.done \.tlChT\{color:var\(--gold\);\}/.test(src), 'and warms its title');
-t(/transition:background \.18s ease/.test(slice('.tlChN{','}')), 'and it moves, briefly');
+/* The badge the gold used to live on is gone, so the whole line carries it. */
+t(!/\.tlChN\{/.test(src), 'there is no badge left to fill');
+t(/\.tlCh\.done \.tlChT\{color:var\(--gold\);\}/.test(src), 'a done chapter warms its title');
+t(/\.tlCh\.done \.tlChS\{color:var\(--gold\);\}/.test(src), 'and its status with it');
+t(/transition:color \.18s ease/.test(slice('.tlChT{','}')), 'and it moves, briefly');
 
 console.log('\n  ONE SCALE:');
 t(/document\.body\.classList\.toggle\('free', _meFreeApp\(\)\)/.test(src), 'the body knows it is the free app');
