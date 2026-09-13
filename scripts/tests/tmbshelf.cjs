@@ -35,6 +35,26 @@ t(!/if\(!T\.length\) return 'owner_code=eq\.'/.test(f),
 t(/'or=\(owner_code\.in\.\('\+tcsv\+'\),owner_code\.eq\.'\+encodeURIComponent\(mine\)\+'\)'/.test(f),
   'a client still sees their own rows alongside his');
 
+console.log('\n  LAW IS GLASS:');
+/* Yusuf, 13 Sep, off a screenshot of the empty builder: "this format is
+   outdated and needs to be glass. The dotted border is not a good design." */
+const glass=/radial-gradient\(120% 140% at 0% 0%,#242424 0%,#171717 46%,#111 100%\)/;
+t(glass.test(slice('.mbFood{','.mbFood::after')), 'a meal slot is the house glass, the exact recipe');
+t(/\.mbFood::after\{content:'';position:absolute;inset:0/.test(src), 'with the gold wash in the corner');
+t(/\.mbFood>\*\{position:relative;z-index:1;\}/.test(src), 'and its content sits above that wash');
+t(!/\.mbFood\.mbBlank\{background:rgba\(255,255,255,0\.04\);border:1px dashed/.test(src),
+  'an empty slot is no longer a dashed box');
+t(/\.mbFood\.mbBlank\{box-shadow:none;border-color:#242424;/.test(src),
+  'it is the same glass, quieter - solid edge, no lift');
+t(/\.mbFood\.mbBlank::after\{opacity:0;\}/.test(src),
+  'and no gold, because gold is what arrives when food does');
+t(glass.test(slice('.mbSent{','.mbSent::after')), 'the shape of the meal above it is glass too');
+t(/\.mbSent>\*\{position:relative;z-index:1;\}/.test(src), 'same treatment');
+/* The three sheets this screen opens were flat #222 panels. */
+const sheets=(src.match(/background:radial-gradient\(120% 140% at 0% 0%,#232323 0%,#171717 46%,#121212 100%\);border:1px solid #2e2e2e;border-bottom:0;/g)||[]).length;
+t(sheets>=3, 'the picker, the item editor and the add form are glass sheets', String(sheets));
+t(!/border:1\.5px dashed rgba\(255,255,255,0\.22\)/.test(src), 'and the last dashed border on the screen is gone');
+
 console.log('\n  ADOPT IS NOT A WORD ANYBODY USES ABOUT FOOD:');
 t(!/'Adopt'/.test(src), 'the label is gone');
 t(/_flibMealRow\(t, trainer\?'Log':'Save'\)/.test(src), 'a client sees Save on one of his meals');
