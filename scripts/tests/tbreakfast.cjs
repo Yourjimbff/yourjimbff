@@ -147,12 +147,17 @@ function entries(step, out, depth){
 }
 const all=entries(B);
 const KINDS={protein:1, veg:1, carb:1, fruit:1, fat:1};
-const shapeless=all.filter(p=>!p.expand && !(p.kind && p.name));
+/* An `add` entry is a third shape alongside a food and an `expand` doorway --
+   it opens the add-your-own screen (Yusuf, 13 Sep: "an option to add a
+   vegetable that i missed") and never becomes a part. */
+const shapeless=all.filter(p=>!p.expand && !p.add && !(p.kind && p.name));
 t(shapeless.length===0, 'every food entry carries both a kind and a name', JSON.stringify(shapeless));
 const wrongKind=all.filter(p=>p.kind && !KINDS[p.kind]);
 t(wrongKind.length===0, 'and a kind the shelf actually has', wrongKind.map(p=>p.kind).join(', '));
-const doorways=all.filter(p=>p.expand);
+const doorways=all.filter(p=>p.expand||p.add);
 t(doorways.every(p=>p.label), 'a doorway is labelled, or it renders blank', doorways.length);
+t(all.filter(p=>p.add).every(p=>p.add==='veg'||KINDS[p.add]),
+  'and an add doorway names a kind the shelf has');
 t(all.length>25, 'and the door is not quietly thin', all.length);
 
 console.log('\n  THE COACH’S AMOUNTS ARE STILL THE COACH’S:');
