@@ -118,5 +118,28 @@ const shelf=slice('function mbAddPickShelf(id){','function mbAddType');
 t(/mbChooseById\(String\(id\)\)/.test(shelf), 'and a food already on the shelf is picked, never duplicated');
 t(/already yours/.test(slice('function _mbAddHits(){','function mbOpenAdd')), 'which the row says out loud');
 
+console.log('\n  FIVE FIELDS, NO GHOST TEXT:');
+/* Yusuf, 13 Sep: "very few things should need to be filled out on that screen.
+   Remove placeholder text as well." */
+const form=slice('function _mbAddRender(){','function mbAddSetKind');
+t(/_mbAddField\('mbaName','Name',d\.name,'',false\)/.test(form), 'Name carries no example inside it');
+t(/_mbAddField\('mbaServing','One serving is',d\.serving_text,'',false\)/.test(form), 'nor does the serving');
+t(/_mbAddField\('mbaP','Protein',d\.protein,'',true\)/.test(form)
+  && /_mbAddField\('mbaC','Carbs',d\.carbs,'',true\)/.test(form)
+  && /_mbAddField\('mbaF','Fat',d\.fat,'',true\)/.test(form), 'nor the three macros');
+t(!/'Chicken sausage'|'1 link \(85g\)'/.test(src), 'and the old examples are gone from the file');
+/* Five inputs. Calories are arithmetic, fibre is optional, and the kind is
+   known from the slot they tapped. */
+t(!/_mbAddField\('mbaCal'/.test(src), 'calories are not a field any more');
+t(!/_mbAddField\('mbaFib'/.test(src), 'and neither is fibre');
+t(/\(editing\?\('<div style="font-size:11px;font-weight:700;color:var\(--muted\);margin:14px 0 6px;">What is it\?/.test(form),
+  'What is it? asks only when editing, where fixing a mis-filed kind is the point');
+const read=slice('function mbAddRead(){','function mbAddPreview');
+t(/if\(!\(\+_mbAdd\.calories>0\)\)\{/.test(read), 'calories fill themselves in');
+t(/Math\.round\(4\*n\(_mbAdd\.protein\)\+4\*n\(_mbAdd\.carbs\)\+9\*n\(_mbAdd\.fat\)\)/.test(read), 'from the three macros');
+t(/Grams per serving\. Calories work themselves out\./.test(form), 'and the screen says so in one line');
+/* A scanned label prints its own calories and those are the truth. */
+t(/only fires\s*\n\s*when there is nothing there/.test(read), 'a printed figure is never overwritten');
+
 console.log(bad? ('\n  '+bad+' FAILED\n') : '\n  all good (the shelf is on)\n');
 process.exit(bad?1:0);
