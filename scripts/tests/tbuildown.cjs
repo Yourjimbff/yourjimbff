@@ -51,8 +51,12 @@ t(/return \{inner:'<div class="tlHero tlHeroGo"/.test(inner), 'and it RETURNS - 
 console.log('\n  BEHIND IT, SEVEN EMPTY DAYS:');
 t(/_tpPlan=\{\}; WEEKDAYS\.forEach\(function\(d\)\{ _tpPlan\[d\]=\{type:'Rest', ex:\[\]\}; \}\);/.test(inner),
   'the week starts as seven days with nothing on them');
-t(/if\(!\(_tpPlan && _tpPlan\.Mon\)\)/.test(inner),
-  'built only when there is nothing in memory, so an unsaved edit survives a repaint');
+/* CAUGHT ON THE SERVED BUILD: _tpPlan already held a Push/Pull/Legs template
+   the Day tab had composed, and a "does it have a Monday" test kept it - seven
+   invented days drawn as the user's own. The blank is trusted by REFERENCE. */
+t(/if\(_tpPlan!==window\._pgBlankRef\)\{/.test(inner), 'only the blank this code made is trusted, by reference');
+t(/window\._pgBlankRef=_tpPlan;/.test(inner), 'and it is remembered so an unsaved edit survives a repaint');
+t(!/if\(!\(_tpPlan && _tpPlan\.Mon\)\)/.test(inner), 'the shape test that let a template through is gone');
 t(!/_tpDefaultPlan\(\)/.test(slice("var _freeEmpty=","var _plate='';")),
   'and never from _tpDefaultPlan, which guesses a week from a sex and a day count');
 t(/_pgPlan=_tpPlan;/.test(inner), 'and it is the object the existing controls edit');
@@ -77,6 +81,17 @@ t(/\(\(moved && !_meFreeApp\(\)\)\?/.test(inner), 'no Back to the standard week 
 t(/!_hasReal && !_meFreeApp\(\) && _pgPlanKnown\(\)/.test(inner), 'and never the No programme set card');
 t(!/Tap a day to see what.s in it\. Swaps you make here become your program\.'\)\s*\+'<\/div>'\)\)\s*$/m.test(inner) || /_meFreeApp\(\) \? \(_freeEmpty \?/.test(inner),
   'and the week note is off for them');
+
+console.log('\n  NOTHING ELSE INVENTS A WEEK FOR THEM EITHER:');
+/* _gpSyncWeek composes a week from a sex and a day count and WRITES IT to
+   training_plans whenever settings save with no plan on file - and the save
+   banner's Try again calls it. That is how a split nobody built appeared on
+   his phone. */
+const sync=slice('async function _gpSyncWeek(){','function _gpCard(');
+t(/if\(_meFreeApp\(\)\) return;/.test(sync), '_gpSyncWeek stands down for a free user');
+t(sync.indexOf('if(_meFreeApp()) return;') < sync.indexOf('var plan=_tpPlanForClient()'),
+  'before it composes anything');
+t(/_gpSyncWeek\(\)/.test(slice('async function gpRetrySave(){','\n}')), 'and Try again still calls it, so the gate is where it matters');
 
 console.log('\n  THE FIRST SAVE IS A REAL SAVE:');
 const sv=slice('async function pgSavePlan(what, note){','var PG_WEEKDAY_FULL=');
