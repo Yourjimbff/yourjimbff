@@ -57,8 +57,12 @@ const sec=slice('function _tlDaySectionHtml(cur, ctx){','function _tlMoveRow');
 t(/\(\(isToday && _meFreeApp\(\)\) \? cur\.toLocaleDateString\('en-US',\{weekday:'long'\}\) : _tlDayLabel\(cur\)\)/.test(sec),
   'today is its weekday name for a free user, Today for everyone else');
 t(/html\+=_tlGreeting\(ds, plan, isToday\);/.test(sec), 'the greeting sits under it');
-t(/if\(_meFreeApp\(\)\)\{\s*\n\s*var _woDone=rows\.some/.test(sec), 'Train reads whether the session is completed');
+t(/var _woDone=rows\.some\(function\(r\)\{ return r\.completed; \}\);/.test(sec), 'Train reads whether the session is completed');
 t(/_tlChapterHead\(1,'Train'/.test(sec), '1 Train');
+t(/\(slots\.workout\|\|\[\]\)\.length \|\| \(slots\.walk\|\|\[\]\)\.length\)\) _woDone=true;/.test(sec),
+  'and cardio or a walk counts as training done - "training and some steps"');
+t(/var _stp=_stepsFor\(ds\); if\(_stp>0\) _woDone=true;/.test(sec), 'and so do steps, on today');
+t(/\(isToday \? 'Nothing built yet' : ''\)/.test(sec), 'Nothing built yet is said on today only, never on a past day');
 t(/'Nothing built yet'/.test(sec), 'and says so when there is no program');
 t(/_tlChapterHead\(2,'Eat',_eatSt,cal>0,false\)/.test(src), '2 Eat, done once anything is logged');
 t(/Math\.round\(cal\)\.toLocaleString\(\)\+' of '\+_tgt\.toLocaleString\(\)\+' cal'/.test(src), 'and it reads X of target');

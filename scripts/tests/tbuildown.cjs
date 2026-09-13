@@ -120,7 +120,7 @@ t(/if\(_meFreeApp\(\) && !weights\.length && !window\._wtSeeded && Array\.isArra
 t(/parseFloat\(profile && \(profile\.start_weight\|\|profile\.weight\)\)/.test(wj), 'from the weight they typed');
 t(/window\._wtSeeded=true;/.test(wj), 'once per load');
 t(/insertWeightLog\(\{client_code:cl\.code, weight:_pw0, notes:'', logged_at:_at\}\)/.test(wj), 'through the verified write path');
-t(/profile\.intake_date/.test(wj), 'dated to the day they set up');
+t(/_t0\.setHours\(12,0,0,0\)/.test(wj), 'dated to noon on the local day they set up');
 
 console.log('\n  FEWER WORDS FOR A FREE USER:');
 t(/\(_meFreeApp\(\) \? '' : '<div class="pgLibCard" onclick="pgOpenLib\(\)">'/.test(src),
