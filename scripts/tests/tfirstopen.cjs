@@ -118,13 +118,21 @@ t(!/watch the number move/i.test(shown), 'not "watch the number move", which he 
 console.log('\n  EACH ONE TYPES A REAL SENTENCE AND SHOWS WHAT IT MADE:');
 /* His sentence, typed the way he typed it - lower case, no punctuation at the
    end, because that is what somebody actually thumbs in. */
-t(/i did push today, 4 sets of chest press, 4 sets of shoulder press/.test(demos),
+t(/i trained legs today, 4 sets of squats/.test(demos),
   'the training demo types the exact sentence he wrote');
+t(!/i did push today/.test(demos), 'and the push one it replaced is gone');
 t(/163lbs today/.test(demos), 'and the progress demo types his weigh-in, his way');
 t(/two eggs and toast/.test(demos), 'food keeps the example the welcome card already used');
-['Chest press','Shoulder press'].forEach(function(w){
-  t(new RegExp(w).test(demos), '  it populates '+w);
-});
+/* ONE LIFT TYPED, ONE ROW BACK. He typed one exercise, so a second row would
+   be the card claiming the app invented something he never said. */
+t(/\['Squats','4 sets'\]/.test(demos), '  it populates Squats, 4 sets');
+const trainRows=(demos.match(/train:[\s\S]*?rows:(\[.*?\]\])/)||[])[1]||'';
+t(trainRows.split('],[').length===1, '  and nothing he did not type', trainRows);
+/* Yusuf, 14 Sep, on the served build: "the end result is quickly gone, let it
+   linger for another 2 seconds." The typing you follow at a glance; the card
+   underneath is the part you have to read. */
+t(/var MS_DEMO_HOLD=4600;/.test(src), 'the answer stays up long enough to read');
+t(/\}, MS_DEMO_HOLD\);/.test(src), 'and all three demos read that one number');
 
 t(/_obReduceMotion\(\)/.test(src),
   'somebody who asked their phone to stop animating gets the finished state, not the movement');
