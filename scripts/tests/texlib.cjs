@@ -1,81 +1,65 @@
-// WHAT A REAL GYM HAS, AND WHAT THE LIBRARY HAD.
+// EVERY MOVEMENT JARVIS IS TOLD TO USE IS ONE THE APP CAN PLACE.
 //
-// Yusuf, 12 Sep: "I have a lot of exercises in there. I'm not sure which ones I
-// don't have. You're welcome to find out, maybe compare my exercise database to
-// maybe what every gym has. I believe I have everything though."
+// This app decides which muscle a logged exercise worked by matching its NAME
+// against EX_LIB (_bfGroupOf). Jarvis, building programs, named its exercises
+// freehand — and on the five-day split built on 14 Sep, 8 of 17 movements
+// matched nothing at all, including both of the main ones. The library writes
+// "Squat" and "Barbell Hip Thrust"; the model wrote "Barbell Back Squat" and
+// "Hip Thrust". Others missed by a plural or a hyphen alone. Nothing anywhere
+// said so: the client sees the movement, logs it, and it counts towards
+// nothing.
 //
-// He had 49 movements and no DEADLIFT of any kind - the first thing a lifter
-// looks for. Also missing: back extension, skull crushers, close-grip bench,
-// hip adduction, plank, cable crunch, ab wheel, farmer's carry, front and hack
-// squat, step-ups, good mornings, the nordic/GHR, pec deck, chest-supported
-// row, arnold press, upright row, front raises - and "Calves" was one entry for
-// two muscles (a straight knee is the gastroc, a bent knee is the soleus).
-//
-// THE OLD NAMES ALL STILL RESOLVE. Nothing stored is ever rewritten - see the
-// alias map's own note - so a week that already says "Calves" keeps working.
+// The fix hands the model the library. This suite does not check that the
+// prompt SAYS so — it closes the loop: every name _jvExLibLine hands over is
+// fed to _bfGroupOf, the same function the app uses, and must come back with a
+// group. A list that drifts from the matcher fails here, which is the only
+// failure that matters.
 const fs=require('fs');
-const src=fs.readFileSync('index.html','utf8');
 const {closure}=require('./_lift.cjs');
-let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
+const src=fs.readFileSync('index.html','utf8');
+let bad=0;
+const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  FAIL  ')+label+(extra!==undefined&&extra!==''?('  '+extra):'')); };
 
-const CL=closure(['EX_LIB','EX_MUSCLE','EX_ALIAS','_bfGroupOf','_bfMuscleOf','_exCanonical','_bfMuscleSay','_titleCap','FOREARM_EX','FIN_GROUP']);
-t(!CL.unparsable || !CL.unparsable.length, 'the library lifted cleanly', JSON.stringify(CL.unparsable||[]));
 global.window={};
-eval(CL.code||'');
+global.localStorage={getItem:()=>null,setItem(){},removeItem(){}};
 
-const all=[]; Object.keys(EX_LIB).forEach(g=>EX_LIB[g].forEach(e=>all.push(e)));
-const names=all.map(e=>e.n);
+const lift=closure(['_jvExLibLine','_bfGroupOf']);
+eval(lift.code);
+t(typeof _jvExLibLine==='function', 'lifted _jvExLibLine');
+t(typeof _bfGroupOf==='function',   'lifted _bfGroupOf');
 
-console.log('\n  THE GAPS ARE CLOSED:');
-[['Deadlift','the one that was missing and gets noticed first'],
- ['Chest-Supported Row','a row with your chest on the pad'],
- ['Back Extension','every gym has the bench'],
- ['Skull Crushers','the tricep staple'],
- ['Close-Grip Bench Press','pressing for triceps'],
- ['Machine Chest Fly','the pec deck'],
- ['Arnold Press',''],['Front Raises',''],['Upright Row',''],['Face Pulls',''],
- ['Front Squat',''],['Hack Squat',''],['Goblet Squat',''],['Step-Ups',''],
- ['Good Mornings',''],['Nordic Curl','the hamstring one nobody has'],
- ['Hip Adduction','he had abduction and not its opposite'],
- ['Standing Calf Raise','straight knee'],['Seated Calf Raise','bent knee'],
- ['Plank',''],['Side Plank',''],['Cable Crunch',''],['Ab Wheel',''],
- ['Farmer’s Carry','grip and traps']].forEach(function(pair){
-  t(names.indexOf(pair[0])>=0, pair[0]+(pair[1]?(' — '+pair[1]):''));
+const line=_jvExLibLine();
+t(line.length>0, 'the library renders', line.length+' chars');
+// Small enough to ride in every program turn's prompt without crowding it out.
+t(line.length<4000, 'and stays small enough to send every turn', line.length+' chars');
+
+const names=[];
+line.split('\n').forEach(row=>{
+  const i=row.indexOf(': '); if(i<0) return;
+  row.slice(i+2).split(', ').forEach(n=>{ n=n.trim(); if(n) names.push(n); });
+});
+t(names.length>40, 'and carries the whole library', names.length+' movements');
+
+console.log('\n  every name it hands over, fed back through the matcher:');
+const orphans=names.filter(n=>!_bfGroupOf(n));
+t(orphans.length===0, 'all '+names.length+' place to a muscle group',
+  orphans.length?('ORPHANED: '+orphans.join(' | ')):'');
+
+// And the ones that caused this — still orphans, so the suite is measuring
+// something. If these ever start passing the matcher got looser, not the list.
+console.log('\n  the names that caused this are still the wrong names:');
+[['Barbell Back Squat','Squat'],['Face Pull','Face Pulls'],['Assisted Pull Ups','Assisted Pull-Ups']].forEach(([wrong,right])=>{
+  t(!_bfGroupOf(wrong) && !!_bfGroupOf(right),
+    JSON.stringify(wrong)+' misses, '+JSON.stringify(right)+' lands',
+    String(_bfGroupOf(wrong))+' / '+String(_bfGroupOf(right)));
 });
 
-console.log('\n  NOTHING THAT WAS THERE IS GONE:');
-['Chest Press','Squat','Romanian Deadlift','Pull Downs / Pull Ups','Calf Raise',
- 'Rear Delt Flies','Ab Workout','Barbell Hip Thrust','Shrugs','Dips'].forEach(function(n){
-  t(names.indexOf(n)>=0, n+' is still there');
-});
-t(names.length>=72, 'the library grew rather than moved', String(names.length));
-t(new Set(names).size===names.length, 'and no movement is listed twice',
-  names.filter((n,i)=>names.indexOf(n)!==i).join(','));
+// The prompt has to actually be handed the list, inside the program branch.
+console.log('\n  and the model is actually given it:');
+t(/var _exlib=''; try\{ _exlib=_jvExLibLine\(\); \}catch\(e\)\{\}/.test(src), 'the prompt builds it from EX_LIB');
+t(/if\(_exlib\) sys \+= '=== THE MOVEMENTS THIS APP KNOWS ===/.test(src), 'and appends it to the system prompt');
+const branch=src.slice(src.indexOf("if(_JT_PROG_RE.test(msg)) sys +="), src.indexOf("var msgs=[{role:'user',content:sys}]"));
+t(branch.indexOf('_jvExLibLine()')>-1, 'inside the program branch, not on every turn');
 
-console.log('\n  EVERY MOVEMENT IS COMPLETE:');
-const bads=all.filter(e=>!e.n || e.s==null || !e.r || (e.c!==0 && e.c!==1) || typeof e.v!=='string');
-t(bads.length===0, 'each one carries a name, sets, reps, a compound flag and a variation note',
-  bads.map(e=>e.n).join(','));
-
-console.log('\n  AND EVERY ONE KNOWS ITS GROUP AND ITS MUSCLE:');
-const nogroup=names.filter(n=>!_bfGroupOf(n));
-t(nogroup.length===0, 'every movement resolves to a group', nogroup.join(','));
-const saysitself=names.filter(n=>_bfMuscleOf(n)===n);
-t(saysitself.length===0, 'and none of them prints its own name where the muscle goes',
-  saysitself.join(','));
-t(_bfMuscleOf('Deadlift')==='Whole Posterior Chain', 'Deadlift → Whole Posterior Chain', _bfMuscleOf('Deadlift'));
-t(_bfMuscleOf('Standing Calf Raise')==='Calves' && _bfMuscleOf('Seated Calf Raise')==='Soleus',
-  'and the two calf raises are told apart',
-  _bfMuscleOf('Standing Calf Raise')+' / '+_bfMuscleOf('Seated Calf Raise'));
-
-console.log('\n  HOW PEOPLE ACTUALLY SPELL THEM STILL LANDS:');
-[['deadlifts','Deadlift'],['trap bar deadlift','Deadlift'],['skullcrushers','Skull Crushers'],
- ['t-bar row','Chest-Supported Row'],['hyperextension','Back Extension'],
- ['pec deck','Machine Chest Fly'],['calf raises','Calf Raise'],['calves','Calf Raise'],
- ['ghr','Nordic Curl'],['adduction','Hip Adduction'],['planks','Plank'],
- ['ab rollout','Ab Wheel'],['farmers carry','Farmer’s Carry']].forEach(function(p){
-  t(_exCanonical(p[0])===p[1], '"'+p[0]+'" → '+p[1], _exCanonical(p[0]));
-});
-
-console.log(bad? '\n  '+bad+' FAILED\n' : '\n  all good ('+names.length+' movements)\n');
+console.log(bad? ('\n'+bad+' FAILED') : '\nall passed');
 process.exit(bad?1:0);

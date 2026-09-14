@@ -352,3 +352,38 @@ onboarding writes the middle dot as a backslash-u escape, and both are
 correct where they sit. This very note got it wrong on the way in: the
 escape was typed and a real character landed in the file. Reasoning about which one a
 heredoc produced is always slower than `grep -n ... | cat -A`. Look first.
+
+## THE SHIP ROUTE IS `git push`, NOT THE GITHUB WEB UI (14 Sep)
+
+Sessions have been shipping by driving github.com/Yourjimbff/yourjimbff/upload
+in his Chrome — find the file input, upload, fill the commit fields, click
+Commit with JS. Minutes per ship, and every step a place to go wrong.
+
+The Mac VM can reach github over HTTPS and there is a credential store at
+`.git/.jarvis-credentials`. `git ls-remote`, `git fetch` and `git push` all
+work from `device_bash`. Ship with git.
+
+THE TRAP, and why it is not as simple as committing in place: the local repo
+in `~/mnt/yourjimbff` is STALE. Its HEAD sits many commits behind origin/main
+because every web-UI ship happened on the server and the clone never learned
+about it — while `index.html` on disk kept being edited directly. So
+`git diff --stat` there reports ~21,000 changed lines against a HEAD nobody
+has used for weeks, and committing that tree would push a month of resurrected
+old code.
+
+The working FILES are the truth; the local git HISTORY is not. So:
+
+1. `git fetch origin main` and diff the working files against `origin/main:<path>`
+   — not against HEAD. Confirm that ONLY the files you edited differ. On 14 Sep
+   the whole tree matched origin except the three files that session touched.
+2. Clone fresh into `$HOME` (OUTSIDE `mnt/`, so nothing lands in his folder and
+   nothing hits the mount's no-delete rule):
+   `git clone --depth 1 --branch main https://github.com/Yourjimbff/yourjimbff.git`
+3. Point the clone at the existing credential store by ABSOLUTE path:
+   `git config credential.helper "store --file=$HOME/mnt/yourjimbff/.git/.jarvis-credentials"`
+4. Copy in only the files you changed, commit, `git push origin main`.
+
+Never read the credential file. Never `git checkout`/`git stash` in his working
+tree — his index.html is the only copy of the work.
+
+Netlify still builds from main, so the deploy wait is unchanged (~2 min).
