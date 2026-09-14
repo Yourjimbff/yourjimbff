@@ -90175,6 +90175,8 @@ window._nl=null;
 
 function nlOpen(ds, slot, opts){
   opts=opts||{};
+  /* A NEW PLATE STARTS EMPTY, whatever the last one did. */
+  try{ nlStopVoice(); _nlSayReset(); }catch(e){}
   window._nl={stage:'cap', ds:(ds||_tlDateStr(new Date())), slot:slot||null,
               photo:null, at:(opts.at||''), est:null, logged:false, busyMsg:''};
   nlRender();
@@ -90184,6 +90186,8 @@ function nlOpen(ds, slot, opts){
 function nlClose(){
   /* AND THE THIRD: walking away is finishing too. */
   try{ nlStopVoice(); }catch(e){}
+  /* AND NOTHING SPOKEN IS LEFT BEHIND FOR THE NEXT MEAL TO INHERIT. */
+  try{ _nlSayReset(); }catch(e){}
   var ov=document.getElementById('nlOv'); if(ov) ov.classList.remove('on');
   var was=window._nl; window._nl=null;
   try{ _nlBusyStop(was); }catch(e){}   // an interval left running renders into a dead sheet
@@ -90562,7 +90566,25 @@ function _nlEchoHtml(st){
    is a decision this file makes: Log it stops it, closing the sheet stops it,
    and any repaint that leaves the capture stage stops it. */
 var _NL_MIC='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 19v3"/></svg>';
-var _nlRec=null, _nlRecOn=false, _nlRecBase='';
+var _nlRec=null, _nlRecOn=false, _nlRecBase='', _nlRecT=null, _nlRecQuiet=0;
+/* A CLEAN BOX EVERY TIME (Yusuf, 14 Sep: "It didn't reset ... It needs to
+   reset the field when I've submitted").
+
+   _nlRecBase is the running transcript, and it lives outside the sheet because
+   the sheet is rebuilt on every repaint. Outside the sheet also means it
+   outlives the sheet, which is the bug: a meal that was spoken and logged left
+   its words sitting in that variable, and the next plate started on top of the
+   last one.
+
+   Called at both ends rather than on the submit itself. Submit is not the only
+   way out - a failed save deliberately KEEPS the line so nothing said is lost,
+   and wiping it there would throw away the thing it is protecting. Opening and
+   closing are the two moments where a clean box is always right. */
+function _nlSayReset(){
+  _nlRecBase='';
+  try{ var ta=document.getElementById('nlLine'); if(ta) ta.value=''; }catch(e){}
+  try{ if(window._nl) window._nl.line=''; }catch(e){}
+}
 function _nlMicPaint(){
   var b=document.getElementById('nlMic'); if(!b) return;
   b.classList.toggle('on', !!_nlRecOn);
@@ -90589,6 +90611,7 @@ function nlVoice(){
         var t=ev.results[i][0].transcript;
         if(ev.results[i].isFinal) fin+=t+' '; else inter+=t;
       }
+      if(fin||inter) _nlRecQuiet=0;    // it is alive; the restart counter starts over
       if(fin) _nlRecBase+=fin;
       var ta2=document.getElementById('nlLine'); if(!ta2) return;
       ta2.value=_nlRecBase+inter;
@@ -90597,7 +90620,7 @@ function nlVoice(){
          does not fire one - so a spoken plate would have shown no numbers
          underneath it until something else was typed. */
       try{ ta2.dispatchEvent(new Event('input',{bubbles:true})); }
-      catch(e){ try{ if(window._nl) window._nl.line=ta2.value; }catch(_e){} }
+      catch(e){ try{ if(window._nl) window._nl.line=ta2.value; }catch(e2){} }
       ta2.scrollTop=ta2.scrollHeight;
     };
     _nlRec.onerror=function(ev){
@@ -90606,16 +90629,52 @@ function nlVoice(){
       nlStopVoice();
     };
     _nlRec.onend=function(){
-      // Only a stop this file asked for is a real stop. Chrome ending its own
-      // session on a pause means keep listening.
-      if(_nlRecOn){ try{ _nlRec.start(); return; }catch(e){} }
-      nlStopVoice();
+      // Only a stop this file asked for is a real stop.
+      if(!_nlRecOn){ nlStopVoice(); return; }
+      /* SAFARI DOES NOT DO `continuous`, whatever the flag says - it ends the
+         session after each utterance. So on Safari a restart is not a rare
+         edge, it is every single sentence, and the restart is what has to be
+         solid. Two things were wrong with restarting inline:
+
+         it was IMMEDIATE, and Safari throws if the last session has not
+         finished letting go - so the catch swallowed it and the button stayed
+         red over a microphone that had already died. That is "it basically
+         stops while I'm talking", and it looked identical to working.
+
+         and it was ENDLESS, so a mic left on in a quiet room restarted forever.
+
+         Now: a beat before restarting, one honest retry if that beat was not
+         enough, and a stop that puts the button back if it still will not go.
+         The counter only counts SILENT restarts - any word heard resets it -
+         so a long dictation is never cut off, and a forgotten mic in a quiet
+         kitchen gives up after about a minute. */
+      _nlRecQuiet++;
+      if(_nlRecQuiet>45){ nlStopVoice(); return; }
+      try{ if(_nlRecT) clearTimeout(_nlRecT); }catch(e){}
+      _nlRecT=setTimeout(function(){
+        if(!_nlRecOn || !_nlRec) return;
+        try{ _nlRec.start(); return; }catch(e){}
+        _nlRecT=setTimeout(function(){
+          if(!_nlRecOn || !_nlRec) return;
+          try{ _nlRec.start(); }
+          catch(e){
+            nlStopVoice();
+            try{ showToast('Microphone stopped - tap it to keep going'); }catch(e2){}
+          }
+        }, 280);
+      }, 80);
     };
+    _nlRecQuiet=0;
     _nlRec.start();
   }catch(e){ nlStopVoice(); }
 }
 function nlStopVoice(){
   _nlRecOn=false;
+  _nlRecQuiet=0;
+  /* THE PENDING RESTART IS PART OF THE MICROPHONE. A timer already in flight
+     would start a new session a moment after the stop and there would be
+     nothing on screen saying so - the exact shape of a mic that will not die. */
+  try{ if(_nlRecT){ clearTimeout(_nlRecT); _nlRecT=null; } }catch(e){}
   try{ if(_nlRec){ _nlRec.onend=null; _nlRec.onresult=null; _nlRec.onerror=null; _nlRec.stop(); } }catch(e){}
   _nlRec=null;
   var ta=document.getElementById('nlLine');

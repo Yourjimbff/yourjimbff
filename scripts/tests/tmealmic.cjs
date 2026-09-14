@@ -75,6 +75,35 @@ const rend=slice('  sh.innerHTML=h;',"    var ln=document.getElementById('nlLine
 t(/st\.stage!=='cap'/.test(rend) && /nlStopVoice\(\)/.test(rend),
   'and any repaint that leaves the capture stage stops it');
 
+console.log('\n  AND THE BOX IS EMPTY NEXT TIME (14 Sep: "It didn\u2019t reset"):');
+// _nlRecBase is the running transcript and it lives OUTSIDE the sheet, because
+// the sheet is rebuilt on every repaint. Outside the sheet also means it
+// outlives the sheet - so a meal that was spoken and logged left its words in
+// that variable and the next plate started on top of the last one.
+const reset=after('function _nlSayReset(){');
+t(/_nlRecBase='';/.test(reset), 'the running transcript is cleared');
+t(/ta\.value=''/.test(reset), 'the box on screen is cleared');
+t(/window\._nl\.line=''/.test(reset), 'and the state behind it');
+t(/_nlSayReset\(\)/.test(after('function nlOpen(')), 'a new plate starts empty');
+t(/_nlSayReset\(\)/.test(close), 'and closing leaves nothing behind');
+// A FAILED SAVE MUST KEEP THE LINE. Wiping on submit would throw away the very
+// thing the failure path exists to protect, so the reset is at the two ends of
+// the sheet and never on the button.
+t(!/_nlSayReset\(\)/.test(sub), 'but submitting never wipes it - a failed save keeps what was said');
+
+console.log('\n  SAFARI RESTARTS AFTER EVERY SENTENCE:');
+// Safari does not honour `continuous` - it ends the session after each
+// utterance - so on Safari the restart IS the feature, not an edge case.
+const onend=slice('_nlRec.onend=function(){','function nlStopVoice(){');
+t(/setTimeout/.test(onend), 'the restart waits a beat, because Safari throws if the last session is still letting go');
+t((onend.match(/start\(\)/g)||[]).length>=2, 'and tries once more before giving up');
+t(/nlStopVoice\(\)/.test(onend) && /showToast/.test(onend),
+  'a restart that will not go puts the button back and says so, instead of staying red over a dead mic');
+t(/_nlRecQuiet\+\+/.test(onend) && /_nlRecQuiet>/.test(onend), 'and a mic left on in a quiet room gives up');
+t(/_nlRecQuiet=0/.test(v), 'any word heard starts that count over, so a long dictation is never cut off');
+t(/clearTimeout\(_nlRecT\)/.test(stop),
+  'stopping also kills a restart already in flight - otherwise it comes back a moment later');
+
 console.log('\n  THE STATE SURVIVES A REPAINT:');
 // nlRender replaces the whole sheet, so the button is a new element every time.
 t(/_nlRecOn\?' on':''/.test(cap), 'a redraw mid-sentence comes back still recording');
