@@ -16439,6 +16439,54 @@ async function feedDeleteMoment(kind, ref){
   else { _saveLocalMoments(_localMoments().filter(function(m){ return m.ts!==ref; })); }
   loadTrainerFeed();
 }
+/* ===== TWO FEEDS, ONE TAB (Yusuf, order, 14 Sep) =====================
+   "all free users who create an account that do not have a deal attached to
+   them moving forward are on a separate free feed. everything still shows the
+   same way that shows for clients, but it's just on a separate feed. It can be
+   a part of feed. I just need to toggle over to it."
+
+   So this is a FILTER, not a second surface. Same cards, same order, same
+   width, same everything - the only question it asks is whose activity this
+   is. A free account posting a meal is not noise, it is just not a client, and
+   mixing the two made the one board he reads every morning stop meaning what
+   it used to mean.
+
+   isFreeApp() already decides this everywhere else in the file (the flag rides
+   on the clients row as is_free_app), so there is no second definition of who
+   is free and nothing new to keep in sync. */
+var _FEED_WHO_KEY='yjb_feed_who';
+function _feedWho(){
+  try{ if(window._feedWhoV) return window._feedWhoV;
+       var v=localStorage.getItem(_FEED_WHO_KEY);
+       window._feedWhoV=(v==='free')?'free':'clients'; return window._feedWhoV; }catch(e){ return 'clients'; }
+}
+function _feedWhoPass(code){
+  try{
+    if(!code) return true;                       // a moment belongs to nobody
+    var free=isFreeApp(code);
+    return (_feedWho()==='free') ? free : !free;
+  }catch(e){ return true; }
+}
+function setFeedWho(v){
+  window._feedWhoV=(v==='free')?'free':'clients';
+  try{ localStorage.setItem(_FEED_WHO_KEY, window._feedWhoV); }catch(e){}
+  window._feedStat=null;
+  _feedRepaint();
+}
+// How many free accounts there are, for the chip. Counted off the same roster
+// every other surface reads, so it can never claim a number the feed cannot show.
+function _feedFreeCount(){
+  var n=0;
+  try{
+    var hid=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
+    Object.keys(CLIENTS||{}).forEach(function(c){
+      var r=CLIENTS[c]||{};
+      if(r.isTrainer || hid[c] || (cl && c===cl.code)) return;
+      if(isFreeApp(c)) n++;
+    });
+  }catch(e){}
+  return n;
+}
 function setFeedLens(v){
   window._feedLens=v; window._feedStat=null;
   // Render into whichever surface is actually on screen. This targeted the mobile
@@ -17453,6 +17501,18 @@ function feedRefresh(ev){
     if(pr && typeof pr.then==='function') pr.then(done, done); else setTimeout(done, 600);
   }catch(e){ done(); }
 }
+// Clients | Free. A different question from All/Food/Fitness, so it reads as
+// its own pair with a hairline after it rather than a fourth lens chip.
+function _feedWhoSegs(){
+  var who=_feedWho(), n=0; try{ n=_feedFreeCount(); }catch(e){}
+  function seg(v,label){
+    var on=(who===v);
+    return '<span onclick="setFeedWho(\''+v+'\')" style="font-size:12px;font-weight:800;letter-spacing:0.3px;cursor:pointer;padding:7px 16px;border-radius:20px;background:'
+      +(on?'var(--gold)':'transparent')+';color:'+(on?'#000':'var(--muted)')+';border:1px solid '+(on?'var(--gold)':'#2d2d2d')+';">'+label+'</span>';
+  }
+  return seg('clients','Clients')+seg('free','Free'+(n?(' '+n):''))
+    +'<span style="width:1px;height:20px;background:#2d2d2d;margin:0 3px;"></span>';
+}
 function _feedLensRow(){
   var lens=window._feedLens||'all';
   function sp(v,label){ var on=lens===v; return '<span onclick="setFeedLens(\''+v+'\')" style="font-size:12px;font-weight:800;letter-spacing:0.3px;cursor:pointer;padding:7px 16px;border-radius:20px;background:'+(on?'var(--gold)':'transparent')+';color:'+(on?'#000':'var(--muted)')+';border:1px solid '+(on?'var(--gold)':'#2d2d2d')+';">'+label+'</span>'; }
@@ -17477,6 +17537,7 @@ function _feedLensRow(){
      text survives a refresh because the box is rebuilt from window._feedQ. */
   var _fq=String(window._feedQ||'');
   var row='<div class="fdLensRow" style="display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">'
+    +_feedWhoSegs()
     +sp('all','All')+sp('kitchen','Food')+sp('gym','Fitness')+_feedRefreshHtml()
     +'<input id="fdQ" class="fdQ" type="search" placeholder="Find a name" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" value="'+_escHtml(_fq)+'" oninput="_feedSearch(this.value)">'
     +'</div>';
@@ -17952,7 +18013,7 @@ async function _loadTrainerFeedRun(targetId){
     // "the phone keeps its own controls" was true when the phone had a front desk
     // of its own to filter. It has the feed now, and a chip that moves the cockpit
     // and not the phone is half a ruling.
-    try{ items=items.filter(function(it){ return !it.code || (_jvPassesFilters(it.code) && _fdChipPass(it.code)); }); }catch(e){}
+    try{ items=items.filter(function(it){ return !it.code || (_jvPassesFilters(it.code) && _fdChipPass(it.code) && _feedWhoPass(it.code)); }); }catch(e){}
     items.sort(function(a,b){ return b.ts-a.ts; });
     items.forEach(function(it,i){ it._idx=i; }); window._feedItems=items;
     _ciSetSub('Everyone’s recent activity');
@@ -21713,7 +21774,9 @@ function _feedVersionHtml(){
 function _feedStatSets(foods,wos,weights,hidden){
   hidden=hidden||{};
   var t0ms=_feedDayStart(Date.now()).getTime();   // same rollover as logging
-  function ok(c){ return c && !hidden[c] && CLIENTS[c] && !CLIENTS[c].isTrainer && c!==cl.code; }
+  // Same side of the toggle as the cards underneath. A tile counting clients
+  // over a feed showing free accounts is two answers to one question.
+  function ok(c){ return c && !hidden[c] && CLIENTS[c] && !CLIENTS[c].isTrainer && c!==cl.code && _feedWhoPass(c); }
   var logged={}, trained={}, titles={}, slots={}, weighed={};
   (wos||[]).forEach(function(w){ var c=w.client_code; if(!ok(c) || _feedTs(w)<t0ms) return;
     logged[c]=1; trained[c]=1;
