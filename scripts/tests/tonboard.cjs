@@ -235,8 +235,12 @@ t(/Add to Home Screen/.test(home), 'it says the words iOS says');
 t(/Tap the share button at the bottom/.test(home), 'and points at the right control on iOS Safari');
 t(/Tap the \\u00b7\\u00b7\\u00b7 at the bottom right/.test(home), 'the dots on iOS Chrome');
 t(/Tap the \\u22ee at the top right/.test(home), 'and the other dots on Android');
-t(/class="obRing"/.test(home), 'the button is circled');
-t(/class="obPoint"/.test(home), 'with an arrow at it');
+t(/class="obRing" id="obRing"/.test(home), 'the button is circled');
+/* THE ARROW WENT WITH THE STILL PICTURE (14 Sep). It pointed at a button in a
+   drawing that never did anything; the drawing now performs the whole thing,
+   so a second graphic pointing at it is one thing too many. */
+t(!/class="obPoint"/.test(home), 'and the arrow that pointed at a still picture is gone');
+t(/id="obSheet"/.test(home), 'because the share sheet comes up instead');
 t(/function _obInstalled\(\)/.test(src), 'and somebody already installed never sees it');
 t(/if\(!_obInstalled\(\) && _obStepIndex\('home'\)>=0\)/.test(src), 'checked before it is shown');
 t(/st\.type!=='home'/.test(src), 'it carries its own Done and no second button');

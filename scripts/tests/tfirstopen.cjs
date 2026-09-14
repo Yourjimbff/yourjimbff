@@ -122,6 +122,13 @@ t(/i trained legs today, 4 sets of squats/.test(demos),
   'the training demo types the exact sentence he wrote');
 t(!/i did push today/.test(demos), 'and the push one it replaced is gone');
 t(/163lbs today/.test(demos), 'and the progress demo types his weigh-in, his way');
+/* THE ANSWER GOES WHERE THE EYE LANDS (Yusuf, 14 Sep, with a photo): "my eyes
+   went to the 'today' part to see the weight logged, thats where the weight
+   should be." The left slot is the bold one - it holds Eggs and Squats on the
+   other two cards, where the THING is the answer. On a weigh-in the NUMBER is
+   the answer and the day is the detail, so the two swap. */
+t(/rows:\[\['163 lbs','Today'\]\]/.test(demos), 'and the weight sits in the bold slot, not the day');
+t(!/\['Today','163/.test(demos), 'never the other way round again');
 t(/two eggs and toast/.test(demos), 'food keeps the example the welcome card already used');
 /* ONE LIFT TYPED, ONE ROW BACK. He typed one exercise, so a second row would
    be the card claiming the app invented something he never said. */
@@ -156,10 +163,12 @@ t(/_obDemoStop\(\)/.test(slice('function obClose(){','function obBack')),
 t(/document\.addEventListener\('visibilitychange', _obDemoVisibility\)/.test(src),
   'and a backgrounded tab does not leave one crawling');
 const vis=slice('function _obDemoVisibility(){','\n}');
-t(/document\.hidden \? .*_obDemoStop|if\(document\.hidden\) _obDemoStop\(\)/.test(vis),
+t(/if\(document\.hidden\)\{ _obDemoStop\(\); return; \}/.test(vis),
   'it stops when the page goes away');
-t(/_obDemoRun\(st\.demo\)/.test(vis), 'and starts again from the top when it comes back');
-t(/st\.type!=='demo'/.test(vis), 'and does nothing at all on a screen that is not a demo');
+t(/if\(isDemo\) _obDemoRun\(st\.demo\); else _obHomeRun\(\);/.test(vis),
+  'and starts the right one again from the top when it comes back');
+t(/if\(!isDemo && !isHome\) return;/.test(vis),
+  'and does nothing at all on a screen that is neither');
 t(!/wasSetup/.test(src), 'and the welcome hook it used to carry left nothing behind');
 /* Nobody has to sit through an animation to get out of it: the button is drawn
    from the same place on every step, before the demo starts. */
@@ -167,6 +176,52 @@ t(/st\.fin\?'<button class="obGo" onclick="obFinish\(\)">Start<\/button>'/.test(
   'the last demo carries Start, so the write is still a button somebody pressed');
 t((steps.match(/fin:true/g)||[]).length===1, 'exactly one screen commits',
   String((steps.match(/fin:true/g)||[]).length));
+
+console.log('\n  AND THE LAST SCREEN PERFORMS IT TOO:');
+/* Yusuf, 14 Sep, with two photos: "that save to home screen instruction is a
+   little vague, its not as descriptive as the other animations, it should be an
+   animation of you going on safari on mobile, and hitting the bottom right 3
+   dots ... its hit 3 dots, share, scroll down to add to home screen."
+   It drew a still picture of a button and explained the rest in a numbered
+   list, which is the shape of a manual next to three screens that SHOW the
+   thing happening. */
+const share=slice('var _OB_SHARE_ROWS=[','\nvar _obDemoT');
+/* HIS SCREENSHOT, not an invented menu. A plausible-sounding list would send
+   somebody hunting for words that are not on their phone. */
+[['Add Bookmark to','the row iOS puts first'],
+ ['Add to Favorites','then favourites'],
+ ['Find on Page','then find on page'],
+ ['Add to Home Screen','and the one he is after, last']].forEach(function(p){
+  t(share.indexOf(p[0])>=0, '  '+p[1]);
+});
+const order=(share.match(/t:'([^']+)'/g)||[]).map(x=>x.slice(3,-1));
+t(order.length===4, 'four rows, the four on his screen', String(order.length));
+t(order[3].indexOf('Home Screen')>=0, 'in his order, with Home Screen at the bottom');
+t((share.match(/hit:true/g)||[]).length===1, 'exactly one row is the destination');
+t(/Add to Home Screen', hit:true/.test(share.replace(/\s+/g,' ')) || /hit:true/.test(share.slice(share.indexOf('Add to Home Screen')-40)),
+  'and it is Add to Home Screen');
+t((share.match(/<svg /g)||[]).length===4, 'each row carries its own icon, drawn');
+
+const home=slice('function _obHomeRun(){','\nfunction _obDemoVisibility');
+t(/_obDemoStop\(\)/.test(home), 'it stops anything already running before it starts');
+t(/classList\.add\('tap'\)/.test(home), 'the button gets pressed');
+t(/classList\.add\('up'\)/.test(home), 'the sheet comes up');
+t(/classList\.add\('lit'\)/.test(home), 'and the row he wants lights up');
+t(/_obDemoT=setTimeout\(step, MS_DEMO_HOLD\)/.test(home),
+  'and it holds as long as the other three before looping');
+/* ONE TIMER IN THIS OVERLAY, NEVER TWO. Running through the same handle means
+   leaving the screen, backgrounding the tab and closing setup all stop it for
+   free - the three things that already stop a demo. */
+t(!/setTimeout\((?!function|step)/.test(home) && (home.match(/_obDemoT=setTimeout/g)||[]).length>=4,
+  'every one of its timers goes through the demo handle');
+t(/_obReduceMotion\(\)/.test(home), 'reduced motion gets the finished state, not the movement');
+t(/if\(st\.type==='home'\)\{ try\{ _obHomeRun\(\); \}catch\(e\)\{\} \}/.test(src),
+  'and the screen starts it when it draws');
+t(/isHome\)/.test(vis) || /st\.type==='home'/.test(vis),
+  'a backgrounded tab stops this one too');
+/* The arrow and the still ring it pointed at are gone - the animation IS the
+   instruction now, so a second thing pointing at it is one thing too many. */
+t(!/obPoint/.test(src), 'the old arrow-at-a-still-picture is gone');
 
 console.log(bad? ('\n  '+bad+' FAILED\n') : '\n  all good (the first minute makes sense)\n');
 process.exit(bad?1:0);
