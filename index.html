@@ -66906,11 +66906,27 @@ function mbNormaliseLabel(raw){
   if(S.grams==null && +raw.grams>0) S.grams=+raw.grams;
   var d=S.divisor>0?S.divisor:1;
 
+  /* THE SAME MISSING FAT AS THE MEAL SHEET, on the other road in. A label that
+     prints its calories but not its fat gets the fat worked out from them here
+     too, or the two screens would disagree about the same box. TOTAL carbs go
+     into the sum, not net - the calories on the panel were costed on total. */
+  /* NO UNDERSCORE ON A LOCAL IN HERE. _lift.cjs chases every _-prefixed name a
+     lifted body mentions and fails when it cannot find one - which is the
+     guard that stops a suite measuring a fallback instead of the shipped
+     path. A local called _rcal reads to it as a missing global, and this
+     function is one of the lifted ones. */
+  var rawP=+raw.protein||0, rawCarbT=+raw.carbs||0, rawCal=+raw.calories||0;
+  var rawFatRead=(raw.fat==null || raw.fat==='') ? null : (+raw.fat||0);
+  var rawFat=(rawFatRead==null)?0:rawFatRead;
+  if(rawCal && rawFatRead==null){
+    var rawRem=rawCal - 4*rawP - 4*rawCarbT;
+    rawFat=(rawRem>0 && rawRem<9*250) ? Math.round(rawRem/9) : 0;
+  }
   var per={
-    cal:_mbRound1((+raw.calories||0)/d),
-    p:  _mbRound1((+raw.protein||0)/d),
+    cal:_mbRound1(rawCal/d),
+    p:  _mbRound1(rawP/d),
     c:  _mbRound1(mbNetCarbs(raw.carbs, raw.fibre)/d),
-    f:  _mbRound1((+raw.fat||0)/d)
+    f:  _mbRound1(rawFat/d)
   };
   return {
     name: _mbLabelName(raw.brand, raw.name),
@@ -68306,7 +68322,21 @@ function _mbLabelPrompt(){
     +'kind — one of protein, veg, carb, fruit; whichever the food mainly is.\n'
     +'confidence — "high" or "low".\n\n'
     +'Read only what is printed — never estimate from what the food looks like. A nutrient '
-    +'printed as 0 is 0; a nutrient not shown at all is 0.\n'
+    +'printed as 0 is 0; a nutrient NOT SHOWN AT ALL is null, never 0.\n'
+    /* THE LINE THAT CAUSED IT (Zadkiel Rios, 14 Sep, a Factor box logged at 220
+       calories when the box says 640). The old last line - a nutrient not
+       shown being called zero - flatly contradicted the NUMBERS rule four
+       lines above it, "NEVER write 0
+       for a number you could not read" - and the model followed whichever it
+       read last. A front-of-box panel that prints only calories, protein and
+       carbs then came back with fat:0, and 0 fat is not a fact about the food,
+       it is the absence of a reading being stored as one. */
+    +'  MEAL-DELIVERY BOXES PRINT AN INCOMPLETE PANEL ON PURPOSE. Factor, and others '
+    +'like it, print CALORIES, PROTEIN and TOTAL CARBS on the front and then say '
+    +'"SEE NUTRITION INFORMATION FOR TOTAL FAT, SATURATED FAT AND CHOLESTEROL CONTENT". '
+    +'On a box like that the fat is genuinely not on the panel: send fat null. Do not '
+    +'send 0, and do not work it out - the calories are printed and this app does that '
+    +'arithmetic itself.\n'
     +'Reply {} ONLY if the photo contains no printed nutrition numbers anywhere.';
 }
 
@@ -91085,11 +91115,42 @@ function _nlFromLabel(_lab){
   // more than one serving, log the pack and say so, rather than silently recording a
   // fraction of what they ate.
   var _mul=(_per>1)?_per:1;
-  // Calories printed on the label win. When the panel shows macros but the calorie
-  // figure is not legible, DERIVE it from them — that is what 4/4/9 is for. Logging
-  // the 0 that "not read" produces would be the silent zero this app refuses to store.
+  /* THE FACTOR BOX (Zadkiel Rios, 14 Sep). The box says 640 CALORIES, 43g
+     PROTEIN, 12g TOTAL CARBS and then, in small capitals, "SEE NUTRITION
+     INFORMATION FOR TOTAL FAT" - the fat is deliberately not on the front. It
+     logged as 220, which is 43x4 + 12x4 + 0x9 exactly: the fat was read as
+     zero and the calories were then worked out from a plate that was missing
+     its biggest number.
+
+     THE ARITHMETIC ONLY EVER RUNS ONE WAY NOW. Printed calories are a fact and
+     they win, always. What is missing is the fat, and the calories PAY for it:
+     whatever is left after protein and carbs have taken their 4s is fat, at 9
+     a gram. That is the same sum a coach does in his head, and it turns the
+     whole class of front-of-box panels - Factor and every company that copies
+     the format - from a 65% undercount into the printed number.
+
+     AND WHEN THE CALORIES DID NOT READ, nothing is derived at all unless the
+     fat did. Deriving calories from macros with an unknown fat cannot be
+     wrong by a little; it is wrong by everything the fat was worth. A label
+     that gives neither is handed back so the estimator reads the plate
+     instead, which is a guess that knows it is one. */
+  var _lp=+_lab.protein||0, _lc=+_lab.carbs||0;
+  var _fatRead=(_lab.fat==null || _lab.fat==='') ? null : (+_lab.fat||0);
   var _pc=+_lab.calories||0;
-  if(!_pc) _pc=Math.round(4*(+_lab.protein||0)+4*(+_lab.carbs||0)+9*(+_lab.fat||0));
+  var _lf=(_fatRead==null)?0:_fatRead;
+  if(_pc){
+    if(_fatRead==null){
+      var _rem=_pc - 4*_lp - 4*_lc;
+      /* A remainder that is negative, or big enough to be absurd, means the
+         three printed numbers do not belong together - a misread, not a fat
+         reading. Zero is the honest answer there, and the calories still
+         stand on their own. */
+      _lf=(_rem>0 && _rem<9*250) ? Math.round(_rem/9) : 0;
+    }
+  } else {
+    if(_fatRead==null) return null;      // neither figure read: not ours to invent
+    _pc=Math.round(4*_lp+4*_lc+9*_lf);
+  }
   // Brand credit, in Yusuf's format: the food, then who made it.
   var _nm=String(_lab.name||'').trim();
   var _br=String(_lab.brand||'').trim();
@@ -91098,9 +91159,9 @@ function _nlFromLabel(_lab){
   return {
     name:_full.slice(0,80),
     calories:Math.round(_pc*_mul),
-    protein:Math.round((+_lab.protein||0)*_mul),
-    carbs:Math.round((+_lab.carbs||0)*_mul),
-    fat:Math.round((+_lab.fat||0)*_mul),
+    protein:Math.round(_lp*_mul),
+    carbs:Math.round(_lc*_mul),
+    fat:Math.round(_lf*_mul),
     rating:'unknown',
     fromLabel:true, servings:_per,
     tidbit:(_per>1)
