@@ -47,25 +47,31 @@ const meal = (name,c,p) => ({name:name, calories:c, protein:p});
 const S = o => Object.assign({breakfast:[],lunch:[],dinner:[],snack:[]}, o||{});
 const sec = (slots, isToday, isAhead) => _tlMealSection('Sep 3, 2026', S(slots), !!isToday, !!isAhead);
 
-console.log('\nTHEIR FIRST DAY DOES NOT START AT BREAKFAST (Yusuf, 12 Sep):');
+console.log('\nDAY ONE: THE WORD COMES OFF, THE DOOR STAYS (Yusuf, 12 and 14 Sep):');
 /* Somebody who installs the app at 8:40pm on a Sunday did not skip breakfast
    and did not skip lunch. The word Skipped beside those rows is an OFFER, not
-   a claim - but it reads as a claim, and on this one day it is certainly
-   false. Meals whose hour was already over before this person had the app are
-   not on the list at all. */
+   a claim - but it reads as a claim, and on this one day it is certainly false.
+   THE FIRST FIX TOOK THE MEALS AWAY ENTIRELY AND HE TOOK THAT BACK (14 Sep,
+   same hour, same day of the week): "even if I'm signing in at 9 o'clock at
+   night I should be allowed to log breakfast and lunch today and say what I
+   had so it should still be there ... I want to take back so add it back."
+   The door was never the problem. Only the word comes off. */
 global._mealHourGone = k => (k==='breakfast'||k==='lunch');
 FIRSTDAY('2026-09-03');
 DUE = 'dinner';
 var _d1 = sec({}, true);
-t(!/data-key="breakfast"/.test(_d1), 'on day one, breakfast is not offered at 8:40pm');
-t(!/data-key="lunch"/.test(_d1), 'and neither is lunch');
-t(/data-key="dinner"/.test(_d1), 'but dinner is - they can still eat it');
+t(/data-key="breakfast"/.test(_d1), 'on day one at 8:40pm, breakfast is still loggable');
+t(/data-key="lunch"/.test(_d1), 'and so is lunch');
+t(/data-key="dinner"/.test(_d1), 'and dinner, which they can still eat');
+/* THE WHOLE POINT. Doors yes, verdicts no. */
+t(!/data-tl="mealskip"/.test(_d1), 'and nothing on day one offers to mark a meal Skipped');
 /* Tomorrow the ladder is whole again, and an existing client - anybody with no
    intake_date at all - never sees any of this. */
 FIRSTDAY('2026-09-02');
 var _d2 = sec({}, true);
 t(/data-key="breakfast"/.test(_d2) && /data-key="lunch"/.test(_d2),
   'the day after, the whole ladder is back');
+t(/data-tl="mealskip"/.test(_d2), 'and Skipped comes back with it, where it is a fair offer');
 FIRSTDAY(null);
 var _d3 = sec({}, true);
 t(/data-key="breakfast"/.test(_d3) && /data-key="lunch"/.test(_d3),
@@ -76,7 +82,8 @@ t(/data-key="breakfast"/.test(_d3) && /data-key="lunch"/.test(_d3),
 var _late=new Date(2026,8,3,20,30,0);   // 3 Sep, 8:30pm local
 global.profile={intake_date:'2026-09-04', intake_json:JSON.stringify({done_at:_late.toISOString()})};
 var _d4 = sec({}, true);
-t(!/data-key="breakfast"/.test(_d4), 'a legacy UTC-day row still finds its real first day from done_at');
+t(!/data-tl="mealskip"/.test(_d4), 'a legacy UTC-day row still finds its real first day from done_at');
+t(/data-key="breakfast"/.test(_d4), 'and it keeps its doors too');
 global._mealHourGone = undefined;
 FIRSTDAY(null);
 DUE = null;

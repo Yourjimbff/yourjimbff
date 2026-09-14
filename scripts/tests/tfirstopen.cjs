@@ -36,12 +36,18 @@ t(/var d=\(profile&&profile\.intake_date\) \? String\(profile\.intake_date\)\.sl
   'no intake_date answers false, so every existing client is untouched');
 t(/catch\(e\)\{ return false; \}/.test(fd), 'and a throw answers false too');
 const ladder=slice('var left=[], skipped=[];','var head=');
-t(/if\(_tlFirstDay\(ds\)\)\{/.test(ladder), 'the meal ladder asks whether this is their first day');
-t(/if\(_g && due!==k\) return; \}/.test(ladder),
-  'and a meal whose hour was already over is not on the list at all');
-t(/_mealHourGone\(k\)/.test(ladder), 'measured by the meal hour, not by a guess');
-/* The meal whose hour it is right now still shows - they can still eat dinner. */
-t(/due!==k/.test(ladder), 'except the one whose hour it is, which they can still eat');
+/* HE TOOK THE FIRST FIX BACK (14 Sep): "even if I'm signing in at 9 o'clock at
+   night I should be allowed to log breakfast and lunch today ... I want to take
+   back so add it back." Dropping the meals removed the word AND the door, and
+   the door was never the problem. The ladder is whole on day one; what comes
+   off is the Skipped chip, down at the render. */
+t(!/if\(_tlFirstDay\(ds\)\)\{/.test(ladder), 'the ladder no longer drops a meal on day one');
+t(!/if\(_g && due!==k\) return; \}/.test(ladder), 'every meal stays loggable, whatever the hour');
+const ask=slice('    left.forEach(function(pair){','    skipped.forEach(');
+t(/_tlFirstDay\(ds\)/.test(ask), 'and the first day is asked about at the word instead');
+t(/\(gone && !first\)/.test(ask),
+  'so Skipped needs the hour gone AND a day that is not their first');
+t(/_mealHourGone\(due\)/.test(ask), 'measured by the meal hour, not by a guess');
 
 console.log('\n  THE WEIGHT THEY TYPED IS THEIR FIRST WEIGH-IN:');
 const fin=slice('async function obFinish(){','function _gpFirstRun');

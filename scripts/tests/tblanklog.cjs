@@ -102,5 +102,30 @@ t(/try\{ clearChatPhoto\(\); \}catch\(e\)\{\}/.test(send), 'sending empties it o
 t(/var _pb=document\.getElementById\('chatPbtn'\); if\(_pb\)/.test(src),
   'and clearing from the card cannot throw on an element that belongs to the tab');
 
+console.log('\n  AND A REST DAY IS NOT "DID NOT TRAIN":');
+/* Yusuf, 14 Sep, after building a program and landing on a rest day: "it made
+   today an active rest day and that activity bar got removed. wasnt there a gym
+   bar there on that top main page." There was. _canBuild is kind==='none', so
+   the moment a week existed every rest day fell through to a hero that says
+   Active rest and offers nothing, and somebody who trains anyway had nowhere to
+   put it. */
+const rest=slice('function _tlRestCard(','function _tlLogBoxHtml');
+t(/_tlLogBoxHtml\(false\)/.test(rest), 'a rest day carries the log box too');
+t(/!logged && isToday && !isAhead/.test(rest),
+  'today only, and only while nothing is on it');
+t(/_meFreeApp\(\)\) \? _tlLogBoxHtml\(false\)/.test(rest),
+  'for the free user whose only way in this is');
+/* ONE DOOR IN TWO PLACES IS NOT TWO DOORS. His ruling on this screen is "one
+   input, one conversation, one behaviour" - the box has never been an input,
+   it is a door onto openSmartLog. Built once so the two can never drift. */
+const lbox=slice('function _tlLogBoxHtml(withPlan){','\n}');
+t(/data-tl="wolog"/.test(lbox), 'and it is the same door, built in one place');
+t((src.match(/class="tlLogBox"/g)||[]).length===1, 'written once, not twice',
+  String((src.match(/class="tlLogBox"/g)||[]).length));
+/* The plan line is for somebody who has NO program. A person standing on their
+   own rest day has already built one. */
+t(/\(withPlan\?'<div class="tlLogPlan"/.test(lbox), 'the build-a-program line is optional');
+t(/_tlLogBoxHtml\(true\)/.test(rest), 'and only the no-program version carries it');
+
 console.log(bad? ('\n  '+bad+' FAILED\n') : '\n  all good\n');
 process.exit(bad?1:0);
