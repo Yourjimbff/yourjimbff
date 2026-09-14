@@ -299,3 +299,56 @@ Two things, every time a migration adds a column the client reads:
 - The client's retry must widen on ANY refusal, not just a 400. "No such column"
   is a 400; "not allowed to see that column" is a 401, and only the second one
   happens on a table with column grants.
+
+## A SLICE THAT CANNOT FIND ITS END READS THE WHOLE FILE (14 Sep)
+
+Twenty-three suites carried this helper:
+
+```js
+function slice(a,b){ const i=src.indexOf(a); return i<0?'':src.slice(i, src.indexOf(b,i)); }
+```
+
+It guards the START and not the END. When the end marker is missing,
+`indexOf` answers -1 and `src.slice(i,-1)` hands back **everything from the
+start anchor to the last byte of a 6 MB file**. The suite does not fail. It
+goes green against text it was never meant to be reading, and a regex that
+should have been scoped to one function now matches anywhere in the app.
+
+It bit twice in one hour. `tobwidth` ended a slice at `// THE PLAN.`, a
+comment deleted that same day, and immediately started counting every
+`<input>` in the file — reported as "no date input anywhere in the flow"
+failing, which sounded like a real product regression. `tfirstopen` sliced on
+`visibilitychange` when there are now TWO listeners with that name, grabbed
+the wrong one, then ran to EOF when its end marker never matched.
+
+Guarding the end turned up **eight more that were already broken**, some for
+weeks — `tonenumber2` ending at `insertFoodLog`, `tsettings2` at
+`function CONSULT_BOOK_URL` (which is a `var`, so that anchor was never real),
+and `tonboard`'s `fin` ending at `function obRender()` when `obFinish` sits
+AFTER `obRender` in the file, so it could never have matched once. Every one
+of them had been passing.
+
+**The rules:**
+
+- A missing END anchor is a broken test, not an empty result. It throws now,
+  and it names the anchor it could not find.
+- An end anchor must come AFTER the start anchor in the file. `indexOf(b,i)`
+  searches forward only — an anchor earlier in the file is the same as no
+  anchor.
+- Anchor on something the code cannot lose quietly: a named function, not a
+  comment and not an event name that two listeners share. If a test needs an
+  anchor, that is a reason to NAME the thing (`_obDemoVisibility`) rather than
+  to write a cleverer regex.
+- A whole-file scan cries wolf on comments. Three times now a global
+  `!/phrase/.test(src)` has failed on a comment recording why the phrase went
+  — which is exactly what that comment is for. Scope to what a screen
+  DISPLAYS (`q:'...'`, `>Word<`, `showToast(...)`), never to the file.
+
+## CHECK THE BYTES BEFORE WRITING A PYTHON ANCHOR (14 Sep, again)
+
+Fourth time. The file mixes real characters and their escapes with no rule:
+`fdPrefHtml` writes the multiplication sign as a real character while the
+onboarding writes the middle dot as a backslash-u escape, and both are
+correct where they sit. This very note got it wrong on the way in: the
+escape was typed and a real character landed in the file. Reasoning about which one a
+heredoc produced is always slower than `grep -n ... | cat -A`. Look first.
