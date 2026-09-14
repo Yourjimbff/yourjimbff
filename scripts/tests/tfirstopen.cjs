@@ -129,7 +129,21 @@ t(/163lbs today/.test(demos), 'and the progress demo types his weigh-in, his way
    the answer and the day is the detail, so the two swap. */
 t(/rows:\[\['163 lbs','Today'\]\]/.test(demos), 'and the weight sits in the bold slot, not the day');
 t(!/\['Today','163/.test(demos), 'never the other way round again');
-t(/two eggs and toast/.test(demos), 'food keeps the example the welcome card already used');
+/* SOURDOUGH, AND EACH FOOD SHOWS WHAT IT IS FOR (Yusuf, 14 Sep): "wouldnt it
+   be better if that said the protein count under the eggs, and then the carb
+   count? 2 eggs and sourdough should be it."
+   "Eggs - 2 large" only proved the app counted. "2 eggs - 12g protein" proves
+   it knows what an egg IS, which is the whole lesson of the screen. */
+t(/two eggs and sourdough/.test(demos), 'food types the breakfast he named');
+t(!/toast/i.test(demos), 'and toast is gone');
+t(/\['2 eggs','12g protein'\]/.test(demos), '  eggs answer in protein');
+t(/\['1 slice sourdough','23g carbs'\]/.test(demos), '  and the bread answers in carbs');
+/* HIS OWN SHELF, not numbers anybody picked: meal_components on the live
+   project prices Eggs at 6g protein an egg and Sourdough Bread at 23g carbs a
+   slice, so the card cannot claim a breakfast the app would price differently.
+   If the shelf ever changes, this assertion is the thing that notices. */
+t(/macro:\{calories:264, protein:16, carbs:23, fat:11\}/.test(demos),
+  'and the total is what those two foods actually come to');
 /* ONE LIFT TYPED, ONE ROW BACK. He typed one exercise, so a second row would
    be the card claiming the app invented something he never said. */
 t(/\['Squats','4 sets'\]/.test(demos), '  it populates Squats, 4 sets');
@@ -195,25 +209,64 @@ const share=slice('var _OB_SHARE_ROWS=[','\nvar _obDemoT');
   t(share.indexOf(p[0])>=0, '  '+p[1]);
 });
 const order=(share.match(/t:'([^']+)'/g)||[]).map(x=>x.slice(3,-1));
-t(order.length===4, 'four rows, the four on his screen', String(order.length));
-t(order[3].indexOf('Home Screen')>=0, 'in his order, with Home Screen at the bottom');
+t(order.length===5, 'five rows, the five on his screen', order.join(' / '));
+t(order[3].indexOf('Home Screen')>=0, 'in his order');
+/* THE ROW HE WANTS IS NOT THE LAST ONE, because on a real phone it is not -
+   and without something under it the list ended halfway up the sheet with a
+   block of dead grey beneath it. */
+t(order[4]==='Markup', 'and something under it, the way the real sheet has');
 t((share.match(/hit:true/g)||[]).length===1, 'exactly one row is the destination');
 t(/Add to Home Screen', hit:true/.test(share.replace(/\s+/g,' ')) || /hit:true/.test(share.slice(share.indexOf('Add to Home Screen')-40)),
   'and it is Add to Home Screen');
-t((share.match(/<svg /g)||[]).length===4, 'each row carries its own icon, drawn');
+t((share.match(/<svg /g)||[]).length===5, 'each row carries its own icon, drawn');
+/* NOBODY'S CONTACTS. The real sheet's top row is other people's names and
+   faces - his screenshot has four of them on it, by name. A demo does not need
+   them and must never put somebody's friends on a stranger's setup screen. */
+const homeSrc=slice("  if(st.type==='home'){","  if(st.type==='multi'){");
+const homeDraw=homeSrc.replace(/\/\*[\s\S]*?\*\//g,'');
+t(!/AirDrop|Messages|MacBook|Lailee|Gioia/.test(homeDraw),
+  'and no real contacts are drawn into it');
+t(!/obShPpl|avatar/i.test(homeDraw), 'there is no people row at all');
+
+/* SAFARI GOES STRAIGHT THERE. EVERYTHING ELSE HAS A MENU IN THE WAY (Yusuf,
+   14 Sep, with two screenshots off his own phone): "you might need to hit
+   share first in this animation and scroll down." He is on Chrome, where the
+   dots open a CHROME menu whose first row is Share, and only that opens the
+   iOS sheet. An animation that skipped it would have people tap the dots, not
+   find Add to Home Screen on the menu in front of them, and stop. */
+t(/var viaMenu = \(plat!=='ios'\);/.test(homeSrc), 'the extra step is decided by which browser they are in');
+t(/viaMenu[\s\S]{0,80}?obMenu/.test(homeSrc), 'and only drawn when it is real');
+t(/<span>Share<\/span>/.test(homeSrc), 'the menu names the row they have to press');
+t(/\(viaMenu\?'<li>Tap <b>Share<\/b><\/li>':''\)/.test(homeSrc),
+  'and the written steps gain that step too, never on Safari');
+/* Safari's toolbar button opens the sheet directly, so putting a step on its
+   screen that is not on their phone would be worse than leaving it out. */
+t(/_OB_SHARE_GLYPH/.test(homeSrc), 'the toolbar button and the Share row are the same drawing');
+
+console.log('\n  AND THE SCROLL IS SHOWN, NOT JUST SAID:');
+/* "Scroll down to Add to Home Screen" is the step people actually miss - on a
+   real phone the list sits well below the site row and the icons. */
+t(/obShTrack/.test(homeSrc), 'the sheet has a track inside a fixed window');
+t(/\.obSheet\.scrolled \.obShTrack\{transform:translateY\(-\d+px\)/.test(src),
+  'and scrolling it is what moves the list into view');
+t(/classList\.add\('scrolled'\)/.test(src), 'which the loop actually does');
 
 const home=slice('function _obHomeRun(){','\nfunction _obDemoVisibility');
 t(/_obDemoStop\(\)/.test(home), 'it stops anything already running before it starts');
 t(/classList\.add\('tap'\)/.test(home), 'the button gets pressed');
 t(/classList\.add\('up'\)/.test(home), 'the sheet comes up');
 t(/classList\.add\('lit'\)/.test(home), 'and the row he wants lights up');
-t(/_obDemoT=setTimeout\(step, MS_DEMO_HOLD\)/.test(home),
+t(/at\(MS_DEMO_HOLD, run\)/.test(home),
   'and it holds as long as the other three before looping');
 /* ONE TIMER IN THIS OVERLAY, NEVER TWO. Running through the same handle means
    leaving the screen, backgrounding the tab and closing setup all stop it for
    free - the three things that already stop a demo. */
-t(!/setTimeout\((?!function|step)/.test(home) && (home.match(/_obDemoT=setTimeout/g)||[]).length>=4,
-  'every one of its timers goes through the demo handle');
+/* ONE TIMER IN THIS OVERLAY, NEVER TWO. Running through the same handle means
+   leaving the screen, backgrounding the tab and closing setup all stop it for
+   free - the three things that already stop a demo. */
+t((home.match(/setTimeout\(/g)||[]).length===(home.match(/_obDemoT=setTimeout\(/g)||[]).length,
+  'every one of its timers goes through the demo handle',
+  (home.match(/setTimeout\(/g)||[]).length+' timers');
 t(/_obReduceMotion\(\)/.test(home), 'reduced motion gets the finished state, not the movement');
 t(/if\(st\.type==='home'\)\{ try\{ _obHomeRun\(\); \}catch\(e\)\{\} \}/.test(src),
   'and the screen starts it when it draws');

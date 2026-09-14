@@ -16,7 +16,7 @@ const {closure}=require('./_lift.cjs');
 let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
 function slice(a,b){ const i=src.indexOf(a); if(i<0) return ''; const j=src.indexOf(b,i); if(j<0) throw new Error('stale end anchor, this suite was reading the rest of the file: '+b); return src.slice(i,j); }
 
-const CL=closure(['_OB_STEPS','_OB_EQUIP','_OB_EXP','_OB_FOOD','_OB_MUS','_OB_PHASE']);
+const CL=closure(['_OB_STEPS','_OB_EQUIP','_OB_ACTIVE','_OB_FOOD','_OB_MUS','_OB_PHASE']);
 t(!CL.unparsable || !CL.unparsable.length, 'the flow lifted cleanly', JSON.stringify(CL.unparsable||[]));
 global.window={};
 eval(CL.code||'');
@@ -24,7 +24,7 @@ eval(CL.code||'');
 console.log('\n  EVERY QUESTION HE LISTED HAS ITS OWN SCREEN:');
 const keys=_OB_STEPS.map(s=>s.k);
 ['gender','birthday','height','weight',
- 'experience'].forEach(function(k){
+ 'active'].forEach(function(k){
   t(keys.indexOf(k)>=0, k);
 });
 /* 13 Sep, two more off the flow, both in his words.
@@ -244,12 +244,25 @@ t(/id="obSheet"/.test(home), 'because the share sheet comes up instead');
 t(/function _obInstalled\(\)/.test(src), 'and somebody already installed never sees it');
 t(/if\(!_obInstalled\(\) && _obStepIndex\('home'\)>=0\)/.test(src), 'checked before it is shown');
 t(/st\.type!=='home'/.test(src), 'it carries its own Done and no second button');
-const ex=slice('var _OB_EXP=[','var _OB_MUS=');
-const ex2=slice('var _OB_EXP=[','var _OB_MUS=');
-t(/Beginner/.test(ex2) && /Intermediate/.test(ex2) && /Advanced/.test(ex2),
-  'experience is beginner, intermediate, advanced');
-t(!/I know my way around/.test(ex2), 'and "I know my way around" is gone');
-t(/q:'What is your experience level\?'/.test(steps), 'asked as a level, not as a length of time');
+/* ARE YOU ACTIVE RIGHT NOW (Yusuf, 14 Sep). "What is your experience level?"
+   was still on the flow four versions after he picked this, which he caught:
+   "this question is still here?" It was.
+   Two things were wrong with it. His own: "for what? this might not have
+   context anymore." And one the file showed: the answer was written to
+   intake_json.experience and NO line in the app ever read it back - not the
+   calories, not the builder, not one display. Same fault as the training-days
+   question and the equipment question before it. */
+const ex2=slice('var _OB_ACTIVE=[','var _OB_MUS=');
+t(/q:'Are you active right now\?'/.test(steps), 'asked about this week, not about a CV');
+t(!/experience level/.test(src), 'and nobody is asked to grade themselves any more');
+t(!/_OB_EXP\b/.test(src), 'with the old list gone rather than left lying about');
+[['Not yet','none'],['On and off','some'],['Every week','weekly']].forEach(function(p){
+  t(new RegExp("v:'"+p[1]+"'[\\s\\S]{0,30}?t:'"+p[0]+"'").test(ex2), '  '+p[0]+' \u2192 '+p[1]);
+});
+t(!/Beginner|Intermediate|Advanced/.test(ex2), 'no beginner, intermediate, advanced');
+/* Every answer says what it MEANS underneath, the same shape as the mode
+   screen - a name and a line, not a word to be compared against strangers. */
+t((ex2.match(/s:'/g)||[]).length===3, 'each one says what it means');
 
 console.log('\n  FEW WORDS, BETTER WORDS:');
 /* Yusuf, 12 Sep, on "What do you weigh today? Rough is fine. It only has to
@@ -436,8 +449,10 @@ console.log('\n  IT WRITES WHERE THE APP ALREADY READS:');
 ['gender','birthday','age','height','weight','start_weight','goal_weight','phase',
  'train_days','cardio_days','cardio_min','bed_time','wake_time','intake_json','setup_done']
  .forEach(function(c){ t(new RegExp(c+':').test(fin), 'profiles.'+c); });
-t(/food_method|equipment|experience|priority/.test(fin),
+t(/food_method|equipment|active|priority/.test(fin),
   'and the four with no column of their own ride in intake_json');
+t(/active:a\.active\|\|null/.test(fin), 'the new answer is what gets written, under its own name');
+t(!/experience:a\./.test(fin), 'and the old one is not still being written beside it');
 
 console.log('\n  THE YEAR CAN BE FINISHED, AND BACK FITS:');
 /* Yusuf, 13 Sep: "I'm stuck on my birth year. I'm not able to type beyond the
