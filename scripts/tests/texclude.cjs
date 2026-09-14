@@ -129,8 +129,15 @@ t(/var pool=mbComponents\(kind\);/.test(src), 'so mbFind cannot resolve one eith
 console.log('\n  THE CARD SAYS WHAT IT DOES:');
 t(/<span class="fdxSecT">Food exclusions<\/span>/.test(src), 'it is called Food exclusions');
 t(!/Not for me<\/span>/.test(src), 'and "Not for me" is gone');
-t(/<span class="fdxSecS">Never shown anywhere<\/span>/.test(src),
+t(/Never shown anywhere \\u2039/.test(src),
   'the line under it no longer promises only that Jim will not suggest them');
+t(/function _fdExOpen\(\)/.test(src) && /fdExToggle\(\)/.test(src),
+  'and the whole section folds away, because it was eating the page');
+const shut=src.slice(src.indexOf('  if(!_fdExOpen()){'), src.indexOf('  var h=', src.indexOf('  if(!_fdExOpen()){')));
+t(/_n\?\(_n\+\(_n===1\?' food':' foods'\)\):'none'/.test(shut),
+  'shut, it still says how many are set - a fold that hides its own state is worse than no fold');
+t(/localStorage\.setItem\(_fdExOpenKey\(\)/.test(src),
+  'and being open survives a repaint, so nobody loses it mid-type');
 t(!/Jim never suggests these/.test(src), 'that sentence is gone with it');
 
 console.log('\n  AND IT IS A TAP, NOT A SPELLING TEST:');
