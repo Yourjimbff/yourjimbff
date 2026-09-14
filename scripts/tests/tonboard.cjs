@@ -287,7 +287,13 @@ t(/intake_json:JSON\.stringify\(\{active:\(a\.active\|\|'none'\)\}\)/.test(tg2),
 t(/return _fuelTargets\(\);/.test(tg2), 'and it is the same engine the Food page prints');
 const fp=slice('function _obFuelPaint(){','// Targets from the answers');
 t(/_obReduceMotion\(\)/.test(fp), 'reduced motion gets the value with no journey');
-t(/clearInterval/.test(fp), 'and a second tap never leaves two counts running');
+/* It counts on requestAnimationFrame since 14 Sep ("make the animation
+   smoother, now it looks like a slot machine"), so the thing that must be
+   cancelled on a second tap is a frame, not an interval. The assertion is the
+   same one: two counts must never run at once. */
+t(/cancelAnimationFrame/.test(fp), 'and a second tap never leaves two counts running');
+t(/requestAnimationFrame/.test(fp), 'it counts on the browser\u2019s own paint clock, not a timer');
+t(!/setInterval\(/.test(fp), 'the interval that made it flicker is gone, not left beside it');
 
 console.log('\n  SAVE IT TO YOUR HOME SCREEN:');
 const home=slice("  if(st.type==='home'){","  if(st.type==='multi'){");
@@ -316,13 +322,20 @@ const ex2=slice('var _OB_ACTIVE=[','var _OB_MUS=');
 t(/q:'Are you active right now\?'/.test(steps), 'asked about this week, not about a CV');
 t(!/experience level/.test(src), 'and nobody is asked to grade themselves any more');
 t(!/_OB_EXP\b/.test(src), 'with the old list gone rather than left lying about');
-[['Not yet','none'],['On and off','some'],['Every week','weekly']].forEach(function(p){
-  t(new RegExp("v:'"+p[1]+"'[\\s\\S]{0,30}?t:'"+p[0]+"'").test(ex2), '  '+p[0]+' \u2192 '+p[1]);
+/* HIS WORDS, 14 Sep. The values did not move - only what the person reads. */
+[['No but im about to be','none'],['been on and off','some'],['m active','weekly']].forEach(function(p){
+  t(new RegExp("v:'"+p[1]+"'[\\s\\S]{0,40}?t:'[^']*"+p[0]).test(ex2), '  '+p[0]+' \u2192 '+p[1]);
 });
 t(!/Beginner|Intermediate|Advanced/.test(ex2), 'no beginner, intermediate, advanced');
 /* Every answer says what it MEANS underneath, the same shape as the mode
    screen - a name and a line, not a word to be compared against strangers. */
-t((ex2.match(/s:'/g)||[]).length===3, 'each one says what it means');
+/* THE EXPLANATION MOVED UP A LEVEL, 14 Sep. "No but im about to be \u{1F440}" is
+   already the whole answer and a line underneath it would only repeat itself,
+   so the first option has none. What needed explaining was the QUESTION -
+   "active" is a word people grade themselves against - and that line now sits
+   under it. The screen still says what it means; it says it once. */
+t((ex2.match(/s:'/g)||[]).length===2, 'the two that need a line still have one');
+t(/s:'Lifting 3\+ days a week/.test(steps), 'and the question itself says what active means');
 
 console.log('\n  FEW WORDS, BETTER WORDS:');
 /* Yusuf, 12 Sep, on "What do you weigh today? Rough is fine. It only has to

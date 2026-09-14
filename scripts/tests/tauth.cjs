@@ -57,9 +57,13 @@ t(!/password/i.test(save), 'and what is kept afterwards is a token, never the pa
 
 console.log('\n  THE BROWSER NEVER CREATES A CLIENT:');
 t(!/rest\/v1\/clients[^']*'\s*,\s*\{\s*method:'POST'/.test(src), 'the page never POSTs to clients');
-const toCode=slice('async function _authToCode(access_token, name){','function _authMsg');
+const toCode=slice('async function _authToCode(access_token, name, phone){','function _authMsg');
 t(/fetch\('\/\.netlify\/functions\/signup'/.test(toCode), 'it asks the server instead');
 t(/access_token:access_token/.test(toCode), 'handing over the token and nothing else that matters');
+/* AND THE NUMBER, since 14 Sep. It rides next to the name and is re-normalised
+   on the far side - the browser is not the authority on what lands in
+   clients.phone, which is the column every text path in the app reads. */
+t(/phone:phone\|\|''/.test(toCode.replace(/\s/g,'')), 'and the phone number, which is the whole reason the form asks for it');
 
 console.log('\n  AND THE SERVER CHECKS THE TOKEN BEFORE IT WRITES ANYTHING:');
 /* IT IS ES256, NOT HS256 (found by running a real signup against the live
@@ -142,7 +146,11 @@ t(!/placeholder="Your name"/.test(src), 'and no longer for just a name');
 t(/id="suPass2"/.test(su), 'there is a second password box');
 t(/placeholder="Type it again"/.test(su), 'which says what it is for');
 t(/\.suF \+ \.suF\{margin-top:12px;\}/.test(src), 'and the boxes have air between them');
-t((su.match(/class="li suF"/g)||[]).length===4, 'all four of them', (su.match(/class="li suF"/g)||[]).length);
+/* FIVE SINCE 14 SEP - the phone box went in between email and password, the
+   hour the app went live. Counting them is what catches a box added with the
+   wrong class and left without the spacing rule above. */
+t((su.match(/class="li suF"/g)||[]).length===5, 'all five of them', (su.match(/class="li suF"/g)||[]).length);
+t(/id="suPhone"[^>]*type="tel"/.test(su), 'and the phone box opens a number pad');
 const sign=slice('async function doSignup(){','// FORGOT PASSWORD');
 t(/if\(name\.split\(' '\)\.filter\(Boolean\)\.length<2\)/.test(sign), 'a single word is refused');
 t(!/\[a-z\]\+\\s\+\[a-z\]\+/i.test(sign), 'by counting words, not by whitelisting characters - an apostrophe is a name');

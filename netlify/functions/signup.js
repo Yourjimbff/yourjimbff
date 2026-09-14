@@ -57,6 +57,31 @@ function cleanName(s) {
   return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 
+// THE SAME RULE AS THE PAGE'S _phoneNorm, KEPT HERE ON PURPOSE.
+//
+// The page normalises before it posts, and this normalises again. That is not
+// a duplicate: anyone can post to this endpoint with whatever they like, and
+// clients.phone is the column every text path in the app reads. A number
+// stored in a shape _phoneOf does not recognise is the same as no number at
+// all, so the shape is decided on this side of the wire.
+//
+// A bare ten digits is American and gets +1. Eleven starting with 1 is the
+// same number typed with its country code. A leading + is somebody who knows
+// their own country code and is believed. Anything else is kept as digits
+// rather than guessed at.
+function cleanPhone(v) {
+  const s = String(v == null ? '' : v).trim();
+  if (!s) return '';
+  const plus = /^\+/.test(s);
+  const d = s.replace(/\D/g, '');
+  if (!d) return '';
+  if (d.length < 10 || d.length > 15) return '';   // too short to dial, too long to be real
+  if (plus) return '+' + d;
+  if (d.length === 10) return '+1' + d;
+  if (d.length === 11 && d.charAt(0) === '1') return '+' + d;
+  return d;
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return json(405, { error: 'POST only' });
 
@@ -102,6 +127,7 @@ exports.handler = async (event) => {
   const email = String(user.email || '').trim().toLowerCase().slice(0, 160);
   const metaName = (user.user_metadata && user.user_metadata.name) || '';
   const name = cleanName(body.name) || cleanName(metaName) || (email ? email.split('@')[0] : 'Member');
+  const phone = cleanPhone(body.phone);
 
   const H = { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE, 'Content-Type': 'application/json' };
 
@@ -109,11 +135,24 @@ exports.handler = async (event) => {
   // the first row landed, must return the SAME code and never a second account.
   try {
     const r = await fetch(
-      `${URL}/rest/v1/clients?auth_uid=eq.${encodeURIComponent(uid)}&select=code,name,active&limit=1`,
+      `${URL}/rest/v1/clients?auth_uid=eq.${encodeURIComponent(uid)}&select=code,name,active,phone&limit=1`,
       { headers: H });
     if (r.ok) {
       const rows = await r.json();
       if (rows && rows[0]) {
+        // AN ACCOUNT MADE BEFORE THE FORM ASKED FOR A NUMBER HAS NONE. If this
+        // signup carries one and the row is empty, fill it in - that is the
+        // only chance this account will ever get to become reachable. A row
+        // that already has a number is never overwritten from here: changing
+        // somebody's number must go through the trainer, not through anyone
+        // who can reach this endpoint.
+        if (phone && !String(rows[0].phone || '').trim()) {
+          try {
+            await fetch(`${URL}/rest/v1/clients?code=eq.${encodeURIComponent(rows[0].code)}`, {
+              method: 'PATCH', headers: H, body: JSON.stringify({ phone }),
+            });
+          } catch (e) { console.error('signup: backfill phone threw', e && e.message); }
+        }
         return json(200, { code: rows[0].code, name: rows[0].name || name, existing: true });
       }
     } else if (r.status === 400) {
@@ -132,7 +171,10 @@ exports.handler = async (event) => {
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = makeCode();
     const row = {
-      code, name, email, auth_uid: uid,
+      // NULL, NOT AN EMPTY STRING, when there is nothing to store. Both read
+      // as "no number" to the app, but only one of them answers
+      // `phone is null` honestly when he goes looking for who he can text.
+      code, name, email, phone: phone || null, auth_uid: uid,
       is_free_app: true,
       active: true,
       is_trainer: false,
