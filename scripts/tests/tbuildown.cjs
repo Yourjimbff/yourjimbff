@@ -21,7 +21,7 @@
 const fs=require('fs');
 const src=fs.readFileSync('index.html','utf8');
 let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
-function slice(a,b){ const i=src.indexOf(a); return i<0?'':src.slice(i, src.indexOf(b,i)); }
+function slice(a,b){ const i=src.indexOf(a); if(i<0) return ''; const j=src.indexOf(b,i); if(j<0) throw new Error('stale end anchor, this suite was reading the rest of the file: '+b); return src.slice(i,j); }
 const inner=slice('function _gpDaysInner(){','function _gpSecDays(n){');
 
 console.log('\n  THE OLD BUILDER IS GONE FROM THE FREE APP:');
@@ -47,7 +47,7 @@ t(/_savedEmpty=!WEEKDAYS\.some\(function\(d\)\{ var x=_saved\[d\]; return x && x
   'empty is decided by what is IN the week, not by whether a row is there');
 t(/if\(_saved && _savedEmpty\)\{ _tpPlan=_saved; window\._pgBlankRef=_tpPlan; \}/.test(inner),
   'and an empty saved row is edited in place, so the next session lands on it');
-const pfd2=slice('function _tlPlanForDate(d){','function _tlPlanKeyFor');
+const pfd2=slice('function _tlPlanForDate(d){','function _tpEffectiveWeek');
 t(/if\(_meFreeApp\(\) && !WEEKDAYS\.some\(function\(k\)\{ var x=_tpPlan\[k\]; return x && x\.type && x\.type!=='Rest'; \}\)\) return null;/.test(pfd2),
   'and the Day page agrees: seven Rest days is no week, so it offers Build your program, not Active rest');
 t(/if\(!window\._pgBuilding\)\{/.test(inner), 'until they tap, the tab is one card');

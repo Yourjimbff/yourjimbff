@@ -10,7 +10,7 @@ const fs=require('fs'), vm=require('vm');
 const src=fs.readFileSync('index.html','utf8');
 let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
 
-function slice(from,to){ const a=src.indexOf(from); const b=src.indexOf(to,a); return src.slice(a,b); }
+function slice(a,b){ const i=src.indexOf(a); if(i<0) return ''; const j=src.indexOf(b,i); if(j<0) throw new Error('stale end anchor, this suite was reading the rest of the file: '+b); return src.slice(i,j); }
 
 // ---- the slot rule itself, lifted and run ----
 const ctx={String,Math,Number,Date,window:{},console};

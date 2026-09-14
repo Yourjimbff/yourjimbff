@@ -16,7 +16,7 @@
 const fs=require('fs');
 const src=fs.readFileSync('index.html','utf8');
 let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
-function slice(a,b){ const i=src.indexOf(a); return i<0?'':src.slice(i, src.indexOf(b,i)); }
+function slice(a,b){ const i=src.indexOf(a); if(i<0) return ''; const j=src.indexOf(b,i); if(j<0) throw new Error('stale end anchor, this suite was reading the rest of the file: '+b); return src.slice(i,j); }
 /* Comments in this file explain the very things they must not be mistaken for -
    the date input that was REMOVED is named in the note saying why. So every
    scan below reads only lines that actually build markup. */
@@ -58,7 +58,7 @@ t(/if\(t\.getTime\(\) > Date\.now\(\)\) return '';/.test(dj), 'nobody was born t
 t(/if\(y<1900 \|\| y>now\) return '';/.test(dj), 'and nobody in the year 12');
 t(/return y\+'-'\+\('0'\+m\)\.slice\(-2\)\+'-'\+\('0'\+d\)\.slice\(-2\);/.test(dj),
   'what it hands back is the same YYYY-MM-DD the profiles column always took');
-const ds=slice('function _obDateSay(a){','function obPick');
+const ds=slice('function _obDateSay(a){','function obMulti');
 t(/_OB_MONTHS\[parseInt\(p\[1\],10\)-1\]/.test(ds), 'and it reads the date back in words');
 t(/return 'That is not a date yet\.';/.test(ds), 'or says plainly that it is not one yet');
 

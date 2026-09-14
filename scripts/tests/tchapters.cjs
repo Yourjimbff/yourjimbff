@@ -12,7 +12,7 @@ const fs=require('fs');
 const src=fs.readFileSync('index.html','utf8');
 const {closure}=require('./_lift.cjs');
 let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
-function slice(a,b){ const i=src.indexOf(a); return i<0?'':src.slice(i, src.indexOf(b,i)); }
+function slice(a,b){ const i=src.indexOf(a); if(i<0) return ''; const j=src.indexOf(b,i); if(j<0) throw new Error('stale end anchor, this suite was reading the rest of the file: '+b); return src.slice(i,j); }
 
 console.log('\n  THE HEAD IS ONE HELPER:');
 const CL=closure(['_tlChapterHead','_tlGreeting','_escHtml','_localYmd']);
@@ -56,7 +56,7 @@ profile={intake_json:JSON.stringify({done_at:eight.toISOString()})};
 t(/Day 9\./.test(_tlGreeting('x',null,true)), 'eight days after setup is day 9, counted in local days');
 
 console.log('\n  WIRED INTO THE DAY, FREE APP ONLY:');
-const sec=slice('function _tlDaySectionHtml(cur, ctx){','function _tlMoveRow');
+const sec=slice('function _tlDaySectionHtml(cur, ctx){','function _tlBuildCtx');
 t(/\(\(isToday && _meFreeApp\(\)\) \? cur\.toLocaleDateString\('en-US',\{weekday:'long'\}\) : _tlDayLabel\(cur\)\)/.test(sec),
   'today is its weekday name for a free user, Today for everyone else');
 t(/html\+=_tlGreeting\(ds, plan, isToday\);/.test(sec), 'the greeting sits under it');

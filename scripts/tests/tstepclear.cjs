@@ -4,7 +4,7 @@
 const fs=require('fs');
 const src=fs.readFileSync('index.html','utf8');
 let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
-function slice(a,b){ const i=src.indexOf(a); return src.slice(i, src.indexOf(b,i)); }
+function slice(a,b){ const i=src.indexOf(a); if(i<0) return ''; const j=src.indexOf(b,i); if(j<0) throw new Error('stale end anchor, this suite was reading the rest of the file: '+b); return src.slice(i,j); }
 
 const tap = slice('function stClearTap(ds){', 'async function stUndoClear');
 t(/_stClearArm!==1/.test(tap), 'the first tap only arms it');
@@ -20,7 +20,7 @@ t(/sbUpsert\('step_logs'/.test(undo), 'Undo writes the old number straight back'
 t(/window\._stepMap\[u\.ds\]=u\.steps/.test(undo), 'and puts it back on the screen');
 t(/_sbFailToast\('put that back'\)/.test(undo), 'and says so plainly when the write is refused, rather than looking like it worked');
 
-const save = slice('async function saveSteps(ds, clear){', 'function _stImpPaint');
+const save = slice('async function saveSteps(ds, clear){', '// ===== PROGRAM ON / OFF');
 t(/if\(clear\)\{/.test(save) && /_doneFlash/.test(save), 'a SAVE still closes the sheet with its check');
 t(save.indexOf('if(clear){') < save.indexOf('_doneFlash'), 'and a CLEAR does not close it - the way back has to still be on screen');
 

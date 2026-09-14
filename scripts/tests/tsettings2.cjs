@@ -14,10 +14,10 @@ const fs=require('fs');
 const src=fs.readFileSync('index.html','utf8');
 let bad=0;
 const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
-function slice(a,b){ const i=src.indexOf(a); return i<0?'':src.slice(i, src.indexOf(b,i)); }
+function slice(a,b){ const i=src.indexOf(a); if(i<0) return ''; const j=src.indexOf(b,i); if(j<0) throw new Error('stale end anchor, this suite was reading the rest of the file: '+b); return src.slice(i,j); }
 
 console.log('\n  NO PROGRAMME DRAWS NO CARD:');
-const prog=slice('function _gpSecProgramme(){','function CONSULT_BOOK_URL');
+const prog=slice('function _gpSecProgramme(){','function _gpSecCalls');
 const prog2=slice('function _gpSecProgramme(){','function _gpSecCalls(){');
 t(!/Yusuf has not set you one yet/.test(src), 'the sentence is gone from the whole file');
 t(/if\(!cap \|\| !cap\.program\) return '';/.test(prog2), 'and an empty programme returns nothing at all');

@@ -43,7 +43,7 @@ t(/function _flipRestore\(\)/.test(src),            'the way back to his own acc
 t(/jvSignOut\(\)/.test(src),                        'and Sign out is still on the menu, so nothing strands him');
 
 
-function slice(a,b){ const i=src.indexOf(a); return i<0?'':src.slice(i, src.indexOf(b,i)); }
+function slice(a,b){ const i=src.indexOf(a); if(i<0) return ''; const j=src.indexOf(b,i); if(j<0) throw new Error('stale end anchor, this suite was reading the rest of the file: '+b); return src.slice(i,j); }
 console.log('\n  AND A PASSWORD IS PROOF, SO IT CLAIMS THE DEVICE:');
 /* Yusuf, 13 Sep, testing his own launch link on his own Mac: "That did not
    save. You are signed in as YUSUF RICHARDSON on somebody else's device." He

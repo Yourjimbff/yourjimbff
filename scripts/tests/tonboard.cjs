@@ -14,7 +14,7 @@ const fs=require('fs');
 const src=fs.readFileSync('index.html','utf8');
 const {closure}=require('./_lift.cjs');
 let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
-function slice(a,b){ const i=src.indexOf(a); return i<0?'':src.slice(i, src.indexOf(b,i)); }
+function slice(a,b){ const i=src.indexOf(a); if(i<0) return ''; const j=src.indexOf(b,i); if(j<0) throw new Error('stale end anchor, this suite was reading the rest of the file: '+b); return src.slice(i,j); }
 
 const CL=closure(['_OB_STEPS','_OB_EQUIP','_OB_EXP','_OB_FOOD','_OB_MUS','_OB_PHASE']);
 t(!CL.unparsable || !CL.unparsable.length, 'the flow lifted cleanly', JSON.stringify(CL.unparsable||[]));
@@ -230,7 +230,7 @@ t(/f\.textContent='That did not save/.test(fin2),
   'but seventeen taps that failed to save say so and stay on the screen');
 
 console.log('\n  SAVE IT TO YOUR HOME SCREEN:');
-const home=slice("  if(st.type==='home'){","  if(st.type==='mus'){");
+const home=slice("  if(st.type==='home'){","  if(st.type==='multi'){");
 t(/Add to Home Screen/.test(home), 'it says the words iOS says');
 t(/Tap the share button at the bottom/.test(home), 'and points at the right control on iOS Safari');
 t(/Tap the \\u00b7\\u00b7\\u00b7 at the bottom right/.test(home), 'the dots on iOS Chrome');
@@ -240,7 +240,7 @@ t(/class="obPoint"/.test(home), 'with an arrow at it');
 t(/function _obInstalled\(\)/.test(src), 'and somebody already installed never sees it');
 t(/if\(!_obInstalled\(\) && _obStepIndex\('home'\)>=0\)/.test(src), 'checked before it is shown');
 t(/st\.type!=='home'/.test(src), 'it carries its own Done and no second button');
-const ex=slice('var _OB_EXP=[','/* WHAT THEY CAN WALK INTO');
+const ex=slice('var _OB_EXP=[','var _OB_MUS=');
 const ex2=slice('var _OB_EXP=[','var _OB_MUS=');
 t(/Beginner/.test(ex2) && /Intermediate/.test(ex2) && /Advanced/.test(ex2),
   'experience is beginner, intermediate, advanced');
@@ -400,7 +400,7 @@ t(/try\{ el\.blur\(\); \}catch\(e\)\{\}\s*\n\s*obNext\(\);/.test(rend),
 });
 
 console.log('\n  THEIR ANSWERS SURVIVE A BAD NETWORK:');
-const fin=slice('async function obFinish(){','function obRender()');
+const fin=slice('async function obFinish(){','/* ===== THE FIRST MINUTE');
 t(/localStorage/.test(src.slice(src.indexOf('function _obSetupStash()'), src.indexOf('function obStart('))),
   'every answer is written to this device as it is given');
 /* A TOAST WAS NOT ENOUGH (Yusuf, 12 Sep: "when I hit start absolutely nothing

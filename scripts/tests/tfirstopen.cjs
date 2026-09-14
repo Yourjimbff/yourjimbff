@@ -21,7 +21,7 @@
 const fs=require('fs');
 const src=fs.readFileSync('index.html','utf8');
 let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
-function slice(a,b){ const i=src.indexOf(a); return i<0?'':src.slice(i, src.indexOf(b,i)); }
+function slice(a,b){ const i=src.indexOf(a); if(i<0) return ''; const j=src.indexOf(b,i); if(j<0) throw new Error('stale end anchor, this suite was reading the rest of the file: '+b); return src.slice(i,j); }
 
 console.log('\n  NOBODY SKIPPED A MEAL THAT HAPPENED BEFORE THEY HAD THE APP:');
 const fd=slice('function _tlFirstDay(ds){','\n}');
@@ -125,7 +125,7 @@ t(/two eggs and toast/.test(demos), 'food keeps the example the welcome card alr
 ['Chest press','Shoulder press'].forEach(function(w){
   t(new RegExp(w).test(demos), '  it populates '+w);
 });
-const run=slice('function _obDemoRun(kind){','var _obDemoI');
+
 t(/_obReduceMotion\(\)/.test(src),
   'somebody who asked their phone to stop animating gets the finished state, not the movement');
 /* A TIMER OUTLIVING ITS SCREEN IS THE WHOLE RISK HERE. obRender replaces the

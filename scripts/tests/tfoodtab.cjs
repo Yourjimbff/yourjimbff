@@ -16,7 +16,7 @@ const fs=require('fs');
 const src=fs.readFileSync('index.html','utf8');
 const {closure}=require('./_lift.cjs');
 let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
-function slice(a,b){ const i=src.indexOf(a); return i<0?'':src.slice(i, src.indexOf(b,i)); }
+function slice(a,b){ const i=src.indexOf(a); if(i<0) return ''; const j=src.indexOf(b,i); if(j<0) throw new Error('stale end anchor, this suite was reading the rest of the file: '+b); return src.slice(i,j); }
 
 console.log('\n  ONE FOOD PAGE, PROMOTED - NOT A SECOND ONE:');
 t(!/id="flibView"/.test(src), 'the full-screen overlay is gone');
@@ -116,7 +116,7 @@ t(/window\._fdAvoidCol=false/.test(slice('async function _fdAvoidPersist','funct
   'a write before the migration falls back quietly rather than erroring at a client');
 
 console.log('\n  AND JIM READS IT:');
-const mp=slice('function _jimMealPlanBlock(){','function _flibIsOpen');
+const mp=slice('function _jimMealPlanBlock(){','function extractWorkoutLog');
 t(/var _av=\[\]; try\{ _av=fdAvoid\(\)\|\|\[\]; \}catch\(e\)\{ _av=\[\]; \}/.test(mp), 'the block reads their list');
 t(/THIS PERSON DOES NOT EAT: /.test(mp), 'and names it to him');
 t(/not once, not as an alternative, not in brackets, not "or"/.test(mp), 'in words that close the loopholes');

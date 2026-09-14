@@ -13,7 +13,7 @@
 const fs=require('fs');
 const src=fs.readFileSync('index.html','utf8');
 let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
-function slice(a,b){ const i=src.indexOf(a); return i<0?'':src.slice(i, src.indexOf(b,i)); }
+function slice(a,b){ const i=src.indexOf(a); if(i<0) return ''; const j=src.indexOf(b,i); if(j<0) throw new Error('stale end anchor, this suite was reading the rest of the file: '+b); return src.slice(i,j); }
 
 console.log('\n  ONE LIST DECIDES WHO IS ON THE FREE APP:');
 t(/var FREE_APP_CODES=\{freeuser:1\};/.test(src), 'the list exists and freeuser is on it');
@@ -64,7 +64,7 @@ t(/I read this before every call we have/.test(src),
   'the wording that gives it away is still in the file (it is right for real clients)');
 
 console.log('\n  THE JIM CARD IS OFF FOR EVERYONE:');
-const wn=slice('function _tlWnCard(ds){','function _tlCoachNote');
+const wn=slice('function _tlWnCard(ds){','/* ===== ASK THEM FOR THEIR NUMBER');
 t(/^\s*function _tlWnCard\(ds\)\{[\s\S]{0,600}?return '';/.test(wn),
   'it returns nothing before it reads anything');
 t(wn.indexOf("return '';") < wn.indexOf('localStorage.getItem(_tlWnKey())'),

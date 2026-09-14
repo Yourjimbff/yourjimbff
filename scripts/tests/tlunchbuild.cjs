@@ -21,7 +21,7 @@ const fs=require('fs');
 const src=fs.readFileSync('index.html','utf8');
 let bad=0;
 const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
-function slice(a,b){ const i=src.indexOf(a); return i<0?'':src.slice(i, src.indexOf(b,i)); }
+function slice(a,b){ const i=src.indexOf(a); if(i<0) return ''; const j=src.indexOf(b,i); if(j<0) throw new Error('stale end anchor, this suite was reading the rest of the file: '+b); return src.slice(i,j); }
 
 // ---- run the shape line for real ----
 const sent=slice('function _mbSentence(){','function _mbTotalsBlock');

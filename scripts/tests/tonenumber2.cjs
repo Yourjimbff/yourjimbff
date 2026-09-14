@@ -21,10 +21,10 @@
 const fs=require('fs');
 const src=fs.readFileSync('index.html','utf8');
 let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
-function slice(a,b){ const i=src.indexOf(a); return i<0?'':src.slice(i, src.indexOf(b,i)); }
+function slice(a,b){ const i=src.indexOf(a); if(i<0) return ''; const j=src.indexOf(b,i); if(j<0) throw new Error('stale end anchor, this suite was reading the rest of the file: '+b); return src.slice(i,j); }
 
 const door=slice('async function logFoodFromChat(offer, photo, targetCode, dry){',
-                 'async function insertFoodLog(');
+                 'function extractAllMarkers(');
 t(door.length>3000, 'the one door is where this test says it is', String(door.length));
 
 console.log('\n  THE DOOR CAN PRICE WITHOUT WRITING:');
@@ -65,7 +65,7 @@ t(/catch\(e\)\{ console\.error\('dry price', e\); \}/.test(sub),
   'and a dry run that throws cannot cost her the meal');
 
 console.log('\n  AND THE WRITE CARRIES THE STAMP:');
-const conf=slice('async function nlConfirm(){', 'function _tlRefreshDay');
+const conf=slice('async function nlConfirm(){', '// ===== WHAT EACH MOVEMENT ACTUALLY HITS');
 t(/_priced:\(st\.est\._priced\?1:0\)/.test(conf), 'Log it hands the stamp back');
 t(/items:\(st\.est\.items\|\|null\)/.test(conf), 'with the rows it was priced from');
 t(conf.indexOf('_priced:(st.est._priced?1:0)') < conf.indexOf('}, st.photo||null);'),
