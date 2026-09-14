@@ -2,7 +2,7 @@
 //
 // This app decides which muscle a logged exercise worked by matching its NAME
 // against EX_LIB (_bfGroupOf). Jarvis, building programs, named its exercises
-// freehand — and on the five-day split built on 14 Sep, 8 of 17 movements
+// freehand — and on the five-day split built on 14 Sep, 7 of 17 movements
 // matched nothing at all, including both of the main ones. The library writes
 // "Squat" and "Barbell Hip Thrust"; the model wrote "Barbell Back Squat" and
 // "Hip Thrust". Others missed by a plural or a hyphen alone. Nothing anywhere
