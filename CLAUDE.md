@@ -387,3 +387,48 @@ Never read the credential file. Never `git checkout`/`git stash` in his working
 tree — his index.html is the only copy of the work.
 
 Netlify still builds from main, so the deploy wait is unchanged (~2 min).
+
+## TWO PROGRAMME SYSTEMS, AND `programs` IS THE ONE THAT WINS (14 Sep, measured)
+
+Read this before touching anybody's week. The file has a comment saying "TWO
+PROGRAMME SYSTEMS" and never says which answers.
+
+- `training_plans` — one row per client, `plan` = `{Mon:{type,ex:[{n,s,r,c,v}]},...}`.
+  Written by `_writeCalendar` (the client's own Program tab), `_covPlanWrite`
+  (the trainer's client card) and `covSetSplit` (the day chips).
+- `programs` + `program_workouts` — `{name,sets,detail}` per day, linked by
+  `profiles.assigned_program_id`. Written by Jarvis's `[PROGRAM]` markers.
+
+`_tlPlanForDate` checks `clientAssignedProgram` FIRST and returns from it when
+it has workouts. A `programs` row therefore overrides the `training_plans` week
+on the Day feed entirely. The comment above it is a Yusuf ruling: a client on a
+real programme must not also be shown the split week.
+
+AND NEITHER TABLE MEANS `train_days` IS ENOUGH. `_tlPlanForDate` returns null
+unless `window._tpFromServer===true` — a real saved row came back. Lailee was
+female with `train_days:5` and nothing else: her Day page showed no session at
+all and her Program tab said "No programme set". "She is on the female five
+day split" was true of the SPLIT TABLE and false of her app. Check the row,
+never the profile fields.
+
+## JARVIS CAN ASSIGN AND EDIT PROGRAMS FROM THE CHAT — it always could
+
+`jvChatSend` builds a system prompt that teaches five markers when
+`_JT_PROG_RE.test(msg)`: `[PROGRAM]` (new), `[PROGRAM_EDIT]` (rewrite whole
+days), `[PROGRAM_PATCH]` (swap/set/add/remove single movements — preferred),
+`[PROGRAM_REMOVE]`, `[CLIENT_EDIT]` (rename). The appliers run in that order
+and each returns `{code, ok}` per marker; `window._jtProgWrote` is the database
+answering. Proven end to end on the served build, 14 Sep: an eight-second turn
+built a five-day split with `restSteps:15000` for the weekend days.
+
+`restSteps` / `restNote` live in `programs.description` as `[restSteps:N]` and
+`[restNote:...]`, and show as a checkable task on EVERY non-lifting day. That
+is the ONLY place a weekend instruction can live — a `training_plans` Rest day
+renders no exercises, so an `ex` array on one is invisible to the client.
+
+## EX_LIB IS 73 MOVEMENTS, NOT 49
+
+/areas/program-surfaces.md says 49 — that was before the library grew. Counted
+live 14 Sep: Chest 6, Shoulders 6, Triceps 7, Back 14, Legs 19, Biceps 8,
+Core 11, Neck 2. `_jvExLibLine()` renders it for the prompt; anything that
+needs the list should call that rather than count again.
