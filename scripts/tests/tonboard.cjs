@@ -229,6 +229,66 @@ t(/if\(skipped\)\{ msClose\(\); _pgBuildGo\(\); return; \}/.test(fin2),
 t(/f\.textContent='That did not save/.test(fin2),
   'but seventeen taps that failed to save say so and stay on the screen');
 
+console.log('\n  AND THE ANSWER IS WORTH SOMETHING NOW:');
+/* Yusuf, 14 Sep: "the very active people have slightly higher proteins,
+   slightly higher carbohydrates, slightly higher fat. Basically think like an
+   allowance of 150 to 250 calories more per day. Maybe even more if it's a
+   bigger person. Like if they're taller."
+   THE HOLE IT FILLS: train_days is seven for every free user and the cardio
+   question is off the flow, so dayAdj and cardioAdj are the same number for
+   everybody - goal weight times the phase multiplier was the whole
+   calculation, and a 150lb goal at a desk was fed like a 150lb goal on a roof. */
+const AC=closure(['_actStep','_actShare','_actLevel','MS_ACT_LO','MS_ACT_HI','MS_ACT_SHARE']);
+t(!AC.unparsable || !AC.unparsable.length, 'the allowance lifted cleanly', JSON.stringify(AC.unparsable||[]));
+eval(AC.code||'');
+t(MS_ACT_LO===150 && MS_ACT_HI===250, 'the allowance is the range he named', MS_ACT_LO+'-'+MS_ACT_HI);
+/* BIGGER PERSON, BIGGER ALLOWANCE - held inside that range, so "more if
+   they're taller" never becomes a number he did not give. */
+t(_actStep(120) < _actStep(175), 'a bigger goal weight earns more of it');
+[120,150,175,220].forEach(function(gw){
+  var n=_actStep(gw);
+  t(n>=MS_ACT_LO && n<=MS_ACT_HI, '  '+gw+' lbs stays inside it', String(n));
+});
+/* ANCHORED AT THE BOTTOM. "Not yet" is exactly what everybody gets today, so
+   nobody's number drops on the day this ships. */
+t(_actShare('none')===0, 'not active is the anchor, which is today\u2019s number');
+t(_actShare('some')===0.5 && _actShare('weekly')===1, 'and the two above it are half and whole');
+global.profile={};
+t(_actLevel()==='none', 'an unanswered profile is the anchor too');
+global.profile={intake_json:JSON.stringify({active:'weekly'})};
+t(_actLevel()==='weekly', 'and an answered one is read off intake_json');
+global.profile={intake_json:'not json at all'};
+t(_actLevel()==='none', 'a profile that cannot be parsed falls back, never throws');
+global.profile=undefined;
+/* PROTEIN IS THE ONE RAISING CALORIES DOES NOT LIFT BY ITSELF - it is pinned
+   to goal weight in grams, so it climbs its own band instead, and never goes
+   below goal weight at any answer. */
+const ft=slice('function _fuelTargets(){','function _fuelRanges(){');
+t(/var prot=Math\.round\(gw \+ \(gw\*\(\(P\.proHi\|\|1\.1\)-1\)\)\*actShare\);/.test(ft),
+  'protein climbs its own band with the answer');
+t(/var actAdj=_actStep\(gw\)\*actShare;/.test(ft), 'and the calories carry the allowance');
+t(/base\+dayAdj\+cardioAdj\+actAdj/.test(ft), 'added where every other adjustment is added');
+
+console.log('\n  AND YOU CAN SEE IT MOVE WHILE YOU ANSWER:');
+/* "you could make an animation that shows if they choose the lesser quantity
+   and they toggle between ... that the numbers might decrease." A screen that
+   answers itself and leaves cannot be toggled. */
+t(/\{k:'active'[^}]*stay:true/.test(steps), 'the screen stays put instead of advancing');
+t(/\{k:'active'[^}]*fuel:true/.test(steps), 'and carries the four numbers');
+t((steps.match(/stay:true/g)||[]).length===1, 'it is the only pick screen that does');
+const pick=slice('function obPick(k, v){','\n}');
+t(/if\(st && st\.stay\)\{ obRender\(\); return; \}/.test(pick), 'a tap repaints where it stands');
+t(/st\.type!=='pick' \|\| st\.stay/.test(src), 'so it gets a Next button, which no other pick screen has');
+/* ONE ENGINE. _obTargets lays the answers over a copy of the live profile and
+   calls _fuelTargets, so this cannot disagree with the Food page. */
+const tg2=slice('function _obTargets(){','function obRender(){');
+t(/intake_json:JSON\.stringify\(\{active:\(a\.active\|\|'none'\)\}\)/.test(tg2),
+  'the answer being toggled rides in, not the one on the saved profile');
+t(/return _fuelTargets\(\);/.test(tg2), 'and it is the same engine the Food page prints');
+const fp=slice('function _obFuelPaint(){','// Targets from the answers');
+t(/_obReduceMotion\(\)/.test(fp), 'reduced motion gets the value with no journey');
+t(/clearInterval/.test(fp), 'and a second tap never leaves two counts running');
+
 console.log('\n  SAVE IT TO YOUR HOME SCREEN:');
 const home=slice("  if(st.type==='home'){","  if(st.type==='multi'){");
 t(/Add to Home Screen/.test(home), 'it says the words iOS says');
@@ -295,7 +355,17 @@ t(/profile=keep;/.test(tg) && /finally/.test(tg),
 const fuel=slice('function _fuelTargets(){','function _fuelRanges(){');
 t(/var gw=parseFloat\(profile&&\(profile\.goal_weight/.test(fuel),
   'which eats from GOAL weight, not scale weight - his whole principle, already shipped');
-t(/var prot=Math\.round\(gw\);/.test(fuel), 'and sets protein at goal weight in grams');
+t(/var prot=Math\.round\(gw \+ /.test(fuel), 'and builds protein up from goal weight in grams');
+(function(){
+  var P={proHi:1.12}, gw=150, floor=null, ceil=null;
+  ['none','some','weekly'].forEach(function(l){
+    var v=Math.round(gw + (gw*((P.proHi||1.1)-1))*_actShare(l));
+    if(floor===null||v<floor) floor=v;
+    if(ceil===null||v>ceil) ceil=v;
+  });
+  t(floor===gw, '  never below goal weight at any answer', String(floor));
+  t(ceil===Math.round(gw*P.proHi), '  and never above the top of its own band', String(ceil));
+})();
 /* THE NUMBERS OUTLIVED THE PAGE THEY WERE ON. Yusuf, 14 Sep: "it should say
    on the food page, these are your nutrition goals based on your goals."
    The Week One page had promised in writing that these would not be lost, so
