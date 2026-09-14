@@ -137,6 +137,21 @@ t((src.match(/document\.getElementById\('obDemo[TO]\w*'\)!==/g)||[]).length>=2,
   'and each tick checks its own element is still the one on the page');
 t(/_obDemoStop\(\)/.test(slice('function obClose(){','function obBack')),
   'closing setup stops it too');
+/* MEASURED ON THE SERVED BUILD, 14 Sep: a background tab's setTimeout asking
+   for 40ms came back at 1006, 992, 1002. A demo left running through that does
+   not pause, it crawls, and somebody who answers a text comes back to a
+   sentence stuck half-typed finishing one letter a second. */
+/* ANCHORED ON THE NAMED HANDLER, not on the event name. There are two
+   visibilitychange listeners in this file - the foreground re-check owns the
+   other one - and slicing on the event name grabbed that one instead, then ran
+   to the end of the file when its end marker never matched. */
+t(/document\.addEventListener\('visibilitychange', _obDemoVisibility\)/.test(src),
+  'and a backgrounded tab does not leave one crawling');
+const vis=slice('function _obDemoVisibility(){','\n}');
+t(/document\.hidden \? .*_obDemoStop|if\(document\.hidden\) _obDemoStop\(\)/.test(vis),
+  'it stops when the page goes away');
+t(/_obDemoRun\(st\.demo\)/.test(vis), 'and starts again from the top when it comes back');
+t(/st\.type!=='demo'/.test(vis), 'and does nothing at all on a screen that is not a demo');
 t(!/wasSetup/.test(src), 'and the welcome hook it used to carry left nothing behind');
 /* Nobody has to sit through an animation to get out of it: the button is drawn
    from the same place on every step, before the demo starts. */

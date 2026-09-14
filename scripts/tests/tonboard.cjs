@@ -24,7 +24,7 @@ eval(CL.code||'');
 console.log('\n  EVERY QUESTION HE LISTED HAS ITS OWN SCREEN:');
 const keys=_OB_STEPS.map(s=>s.k);
 ['gender','birthday','height','weight',
- 'muscles','experience'].forEach(function(k){
+ 'experience'].forEach(function(k){
   t(keys.indexOf(k)>=0, k);
 });
 /* 13 Sep, two more off the flow, both in his words.
@@ -103,11 +103,15 @@ t(!/[Bb]uild your workout/.test(intro),
 t((intro.match(/<div>/g)||[]).length===3, 'exactly three of them, no fourth',
   String((intro.match(/<div>/g)||[]).length));
 const steps=slice('var _OB_STEPS=[', 'var _ob=null;');
-t(/q:'Where are you strong and weak\?'/.test(steps),
-  'the equipment question is now about them, not about a room');
-/* The equipment options survive as _OB_EQUIP, unreferenced by the flow -- the
-   same way restTextSet and restLogEntry survive. If a room question is ever
-   wanted again it is a line in _OB_STEPS, not a rebuild. */
+/* BOTH OF THEM ARE OFF THIS FLOW NOW. Equipment went on 13 Sep (a question
+   about a room, not about them); strengths and weaknesses replaced it and then
+   left too on 14 Sep - "it is genuinely a lot of questions ... it might be
+   worth putting in the training tab instead, before accessing programs".
+   The options survive as _OB_EQUIP, unreferenced, the same way restTextSet
+   does. If a room question is ever wanted again it is a line in _OB_STEPS. */
+t(keys.indexOf('muscles')<0, 'and strengths and weaknesses is off the flow too');
+t(!/type:'mus'/.test(steps), 'with no step left carrying it');
+t(!/function obMus\(/.test(src), 'and the setup-only picker gone with it');
 /* The only survivor of "hotel gym" is the comment recording why it went, which
    is what that comment is for. */
 t(!/t:'[^']*hotel/i.test(src), 'and nobody is asked whether they are in a hotel gym');
@@ -121,6 +125,7 @@ console.log('\n  SEVENTEEN MUSCLES, EACH ONE NAMING ITS LIFT:');
    its lift beside it is a thing you have either felt working or you have not,
    and that is the whole question. */
 const mus=slice('var MI_MUSCLES = [','var MI_BY_KEY=');
+const ms=slice('function msRender(){','\nfunction msSkip');
 [['pec_major','Chest press'],['upper_pec','Incline chest press'],
  ['front_delts','Shoulder press'],['side_delts','Lateral raises'],
  ['triceps','Tricep extensions'],['traps','Shrugs'],
@@ -175,17 +180,54 @@ t(MI_MUSCLES.length===18, 'while the Strength Check still carries all eighteen',
 t(MI_MUSCLES.filter(m=>m.k==='traps').length===1, 'traps among them, rateable by anyone who wants to');
 /* The screen has to pass the answer through, or the filter is a function that
    is never asked a question. */
-t(/miIntakeMuscles\(a\.gender\)/.test(src), 'and the setup screen hands it the gender they gave');
+t(/miIntakeMuscles\(sex\)/.test(ms), 'and the screen hands it the gender on their profile');
+
+console.log('\n  ASKED AT THE PROGRAM DOOR, NOT IN THE FIRST TWO MINUTES:');
+/* Yusuf, 14 Sep: "it might be worth putting in the training tab instead,
+   before accessing programs." */
+const bs=slice('function pgBuildStart(){','function _pgBuildGo(){');
+t(/msAsked\(\)/.test(bs) && /msOpen\(\)/.test(bs), 'tapping Build a program opens it first');
+t(/return;/.test(bs), 'and the builder does not also draw behind it');
+/* ONE DOOR. The blank log's "Rather plan it?" line and the Program tab's own
+   hero both call pgBuildStart, so one gate covers both. */
+t((src.match(/pgBuildStart\(\)/g)||[]).length>=3, 'both ways in go through the one gate',
+  String((src.match(/pgBuildStart\(\)/g)||[]).length));
+t(!/pgBuildStart\(\)\{[\s\S]{0,120}?window\._pgBuilding=true/.test(src),
+  'the gate runs before anything sets the building flag');
+
+console.log('\n  GOOD AND BAD ON THE SCREEN, strong AND weak IN THE TABLE:');
+t(/>Good</.test(ms) && />Bad</.test(ms), 'the buttons say what he asked them to say');
+t(!/>Strong</.test(ms) && !/>Weak</.test(ms), 'and no longer say Strong and Weak');
+t(/Are you good at these, or bad\?/.test(ms), 'asked the way he asked it');
+t(/This goes into building your program\./.test(ms), 'and it says what the answer is for');
+/* RENAMING A BUTTON IS NOT A REASON TO MIGRATE A TABLE. The Strength Check,
+   the pre-call brief and every mi_checkins row already speak strong/weak. */
+t(/msPick\('+[^']*',\s*'strong'\)|\\'strong\\'/.test(ms), 'Good still stores strong');
+t(ms.indexOf("\\'weak\\'")>=0, 'and Bad still stores weak');
 
 console.log('\n  AND WHAT THEY SAY IS THEIR BASELINE, NOT A SECOND OPINION:');
-const fin2=slice('async function obFinish(){','/* ===== THE FIRST MINUTE');
+const fin2=slice('async function _msCommit(picks, skipped){','\n}');
 t(/sbInsert\('mi_checkins', _mrow\)/.test(fin2), 'it writes the row the Strength Check already reads');
 t(/kind:'baseline'/.test(fin2), 'as their baseline');
-t(/_rt\[k\]=\{r:_mus\[k\]\}/.test(fin2), 'in the same shape miCommit writes');
+t(/_rt\[k\]=\{r:clean\[k\]\}/.test(fin2), 'in the same shape miCommit writes');
 t(fin2.indexOf("sbUpsert('profiles'") < fin2.indexOf("sbInsert('mi_checkins'"),
-  'after the profile, so a setup that worked is never reported as failed because one extra table was missing');
+  'after the profile, so a saved answer is never reported as failed because one extra table was missing');
 t(/sqPush\('mi_checkins', _mrow, 'POST'\)/.test(fin2), 'and it queues if the network is not there');
-t(/muscles:\(a\.muscles\|\|\{\}\)/.test(fin2), 'the answers ride in intake_json too, which is what the pre-call brief reads');
+t(/j\.muscles=clean;/.test(fin2), 'the answers ride in intake_json too, which is what the pre-call brief reads');
+t(/j=Object\.assign\(\{\}, j\|\|\{\}\);/.test(fin2),
+  'merged into the intake they already have, never written over the top of it');
+
+console.log('\n  ASKED ONCE, AND A SKIP IS AN ANSWER:');
+t(/j\.muscles_at=/.test(fin2), 'every trip through here records that they were asked');
+t(/function msSkip\(\)\{ _msCommit\(\{\}, true\); \}/.test(src),
+  'including a skip, so nobody is asked again every time they build');
+const asked=slice('function msAsked(){','\n}');
+t(/j\.muscles && Object\.keys\(j\.muscles\)\.length/.test(asked),
+  'and anybody who answered on the old setup screen is not asked a second time');
+t(/if\(skipped\)\{ msClose\(\); _pgBuildGo\(\); return; \}/.test(fin2),
+  'a skip that failed to save still opens the builder - it is not worth a roadblock');
+t(/f\.textContent='That did not save/.test(fin2),
+  'but seventeen taps that failed to save say so and stay on the screen');
 
 console.log('\n  SAVE IT TO YOUR HOME SCREEN:');
 const home=slice("  if(st.type==='home'){","  if(st.type==='mus'){");
