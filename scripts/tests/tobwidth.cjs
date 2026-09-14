@@ -66,7 +66,7 @@ console.log('\n  AND THE SLEEP SCREEN TOOK ITS PICKERS WITH IT:');
 /* It was the last place in the flow with a native control on it - two
    <input type="time"> in half-width columns, the same shape that broke the
    birthday screen. Yusuf cut the question; the pickers went with it. */
-t(!/type="time"/.test(markup(slice('function _obBody(st){','// THE PLAN.'))),
+t(!/type="time"/.test(markup(slice('function _obBody(st){','/* ===== THE DEMOS ====='))),
   'no native time input anywhere in the setup flow');
 t(/profiles\.bed_time \/ wake_time are still there waiting/.test(src),
   'and the columns are still there for when the question comes back');
@@ -88,7 +88,7 @@ t(/\*\{margin:0;padding:0;box-sizing:border-box/.test(src),
   'and the global border-box reset is still there, which is what keeps the card itself in');
 
 console.log('\n  EVERY INPUT IN THE FLOW IS ONE OF THE SAFE KINDS:');
-const body=markup(slice('function _obBody(st){','// THE PLAN.'));
+const body=markup(slice('function _obBody(st){','/* ===== THE DEMOS ====='));
 const types=(body.match(/type="[a-z]+"/g)||[]).map(x=>x.slice(6,-1));
 const seen={}; types.forEach(x=>seen[x]=(seen[x]||0)+1);
 t(!types.some(x=>x==='date'), 'no date input anywhere in the flow');

@@ -72,9 +72,15 @@ t(keys[0]==='intro', 'it opens by saying what this is, before anything personal 
    plan is still the last thing they READ; the last thing they DO is put the
    icon on their phone, because a tab is something you close. */
 t(keys[keys.length-1]==='home', 'and it ends by putting it on their home screen');
-t(keys[keys.length-2]==='plan', 'straight after their plan, which is still the last thing they read');
-t(_OB_STEPS.filter(s=>s.q||s.type==='intro'||s.type==='plan'||s.type==='home').length===_OB_STEPS.length,
-  'every screen asks exactly one thing');
+/* 14 Sep, his executive decision: "im making the executive decision which is
+   to remove this page; i think instead it should be the tutorial". YOUR WEEK
+   ONE is gone and the three things the app does are shown instead, so the last
+   thing they read before the home-screen step is the third of those. */
+t(keys[keys.length-2]==='t_prog', 'straight after the last of the three demos');
+t(keys.indexOf('plan')<0, 'and the WEEK ONE page is off the flow entirely');
+t(!/_obPlanHtml/.test(src), 'with nothing left behind to draw it');
+t(_OB_STEPS.filter(s=>s.q||s.type==='intro'||s.type==='home').length===_OB_STEPS.length,
+  'every screen carries exactly one thing');
 
 console.log('\n  SCREEN ONE IS A PROMISE AND NOTHING ELSE:');
 /* Yusuf, seeing the first build on his phone: "too many words - just start with
@@ -231,16 +237,31 @@ const fuel=slice('function _fuelTargets(){','function _fuelRanges(){');
 t(/var gw=parseFloat\(profile&&\(profile\.goal_weight/.test(fuel),
   'which eats from GOAL weight, not scale weight - his whole principle, already shipped');
 t(/var prot=Math\.round\(gw\);/.test(fuel), 'and sets protein at goal weight in grams');
-const plan=slice('function _obPlanHtml(){','function _obTargets(){');
-t(/You eat for the body underneath the fat/.test(plan),
-  'and the plan screen says WHY that number is not their scale weight');
-
-console.log('\n  WEEK ONE ONLY — NO PROJECTION:');
-t(/This week has one job/.test(plan), 'the plan gives them one job');
-t(!/weeks? to go|goal date|by [A-Z][a-z]+ \d|on track to/.test(plan),
+/* THE NUMBERS OUTLIVED THE PAGE THEY WERE ON. Yusuf, 14 Sep: "it should say
+   on the food page, these are your nutrition goals based on your goals."
+   The Week One page had promised in writing that these would not be lost, so
+   deleting it without giving them a home would have made that a lie. */
+const goal=slice('function fdGoalHtml(){','\n}');
+t(/Your nutrition goals/.test(goal), 'the numbers now live on the Food page');
+t(/_fuelTargets\(\)/.test(goal) && !/gw\*|\*\s*0\.|Math\.round\(w\s*\*/.test(goal),
+  'printed from the one engine, not computed a second time');
+['calories','protein','carbs','fat'].forEach(function(w){
+  t(new RegExp('<i>'+w+'</i>').test(goal), '  '+w);
+});
+t(/You eat for the body underneath the fat/.test(goal),
+  'and it still says WHY that number is not their scale weight');
+t(!/weeks? to go|goal date|by [A-Z][a-z]+ \d|on track to/.test(goal),
   'and never shows a date they hit the goal');
-t(/We are not looking at that yet\. One week at a time\./.test(plan),
-  'a big goal is explicitly parked');
+/* His ask, exactly: "somewhere they can click x and close the subtext /
+   explanation and just keep the numbers there." */
+t(/fdWhyClose\(\)/.test(goal) && goal.indexOf('\u00d7</i>')>=0, 'the explanation closes with an x');
+t(/_fdWhyHidden\(\)/.test(goal), 'and the numbers stay when it does');
+t(/fdWhyOpen\(\)/.test(goal), 'a closed explanation can be opened again, so one stray tap is not final');
+t(/localStorage\.setItem\(_fdWhyKey\(\),'1'\)/.test(src), 'and closing it is remembered');
+t(/gw>0 && w>0 && gw!==w/.test(goal),
+  'somebody already at their goal weight is never told their food is built from a weight they are at');
+t(/if\(!T \|\| !\(\+T\.cal>0\)\) return '';/.test(goal),
+  'and no targets draws no card, rather than a card of dashes');
 
 console.log('\n  RIGHT NOW IT REACHES ONE ACCOUNT AND NO OTHER:');
 const should=slice('function _obShouldRun(srv){','function _obStep(){');
@@ -359,7 +380,7 @@ console.log('\n  THE NUMBERS ON THE LAST SCREEN FOLLOW THEM IN:');
    in writing that these numbers live there now. */
 t(/row\.cal_target=Math\.round\(_T\.cal\)/.test(fin), 'the calorie target is written');
 t(/row\.protein_target=Math\.round\(_T\.prot\)/.test(fin), 'and the protein target with it');
-t(/var _T=_obTargets\(\);/.test(fin), 'from the same engine the plan screen drew');
+t(/var _T=_obTargets\(\);/.test(fin), 'from the same engine the Food page draws');
 t(/if\(_T && _T\.cal>0\)/.test(fin), 'and never a zero, which would read as a real choice');
 t(/These sit on your Day page from now on/.test(src), 'which is what the screen promises out loud');
 t(fin.indexOf('localStorage.removeItem(_obSetupKey())') > fin.indexOf('if(!ok){'),

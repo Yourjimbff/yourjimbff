@@ -85,31 +85,65 @@ t(rest.indexOf('if(_canBuild){') < rest.indexOf('tlSwitchLbl">Creative mode') &&
 t(/No program set up yet/.test(rest),
   'the old line survives for a coaching client, whose coach writes their week');
 
-console.log('\n  AND THERE IS AN INTRODUCTION:');
-const wel=slice('var _OB_WELCOME=[','function _obWelKey');
-t((wel.match(/\{t:'/g)||[]).length===3, 'three cards, one at a time', String((wel.match(/\{t:'/g)||[]).length));
-['Say what you ate','Say what you lifted','watch the number move'].forEach(function(w){
-  t(new RegExp(w).test(wel), '  '+w);
-});
+console.log('\n  AND THERE IS AN INTRODUCTION — SHOWN, NOT DESCRIBED:');
+/* IT USED TO BE A SECOND FLOW AFTER THE FIRST ONE. Three cards on their own
+   overlay (_OB_WELCOME) fired the instant obClose ran: right words, wrong
+   moment - three more taps after somebody had just finished tapping through
+   setup, on a screen they had every reason to read as over.
+   Yusuf, 14 Sep, deleting the YOUR WEEK ONE page that ended setup: "i think
+   instead it should be the tutorial ... would be great if there was a graphic
+   or short video of someone typing 'i did push today, 4 sets of chest press,
+   4 sets of shoulder press' and then enter, and show it populating."
+   Same three things, now the last three steps OF setup, each demonstrating
+   itself. One flow, one set of dots, two screens shorter than what it
+   replaced. */
+t(!/_OB_WELCOME/.test(src) || !/function obWelcome\(/.test(src),
+  'the separate welcome overlay is gone, not left running alongside');
+t(!/obWelcome\(\)/.test(src), 'and nothing still calls it');
+const demos=slice('var _OB_DEMOS={','function _obDemoHtml');
+t((demos.match(/^  \w+: \{/gm)||[]).length===3, 'three demos, one per thing the app does',
+  String((demos.match(/^  \w+: \{/gm)||[]).length));
+const steps=slice('var _OB_STEPS=[','var _ob=null;');
+const dkeys=(steps.match(/\{k:'(t_\w+)',\s*type:'demo'/g)||[]).map(m=>m.match(/'(t_\w+)'/)[1]);
+t(dkeys.length===3, 'and three steps carrying them', dkeys.join(','));
+t(dkeys.join(',')==='t_food,t_train,t_prog', 'food, then training, then progress - his order');
 /* The same three verbs as the very first screen, in the same order. A promise
    made on screen one and kept on the way in is worth more than a new one. */
 t(/Track your food\./.test(src) && /Track your training\./.test(src),
   'which is the promise screen one made, kept');
-/* IT MOVED TO obClose ON 13 SEP, and had to. obFinish is no longer the last
-   screen -- the save-it-to-your-home-screen step is -- so a setup that finished
-   would have dropped somebody onto the Day page with no introduction at all,
-   which is the exact thing these cards exist to prevent. One place now,
-   whichever way the overlay is closed. */
-t(/if\(wasSetup\)\{ try\{ obWelcome\(\); \}catch\(e\)\{\} \}/.test(src),
-  'it runs when the setup overlay closes, by any route');
-t(!/obWelcome\(\)/.test(fin), 'and obFinish no longer fires it itself, since it is not the end any more');
-t(!/showToast\('You are set up'\)/.test(fin) || /catch\(_e\)/.test(fin),
-  'and the three-second toast is only a fallback now');
-const done=slice('function obWelDone(){','}');
-t(/localStorage\.setItem\(_obWelKey\(\),'1'\)/.test(done), 'seen once, ever');
-t(slice('function obWelcome(force){','function obWelRender').indexOf('localStorage.setItem')<0,
-  'and marked seen on the way OUT, so closing halfway through keeps the rest for next time');
-t(/'yjb_welcome_'\+\(\(cl&&cl\.code\)\|\|'x'\)/.test(src), 'per account, not per phone');
+const shown=(steps.match(/\b[qs]:'[^']*'/g)||[]).join(' | ');
+t(/Track your progress\./.test(shown), 'and the third one finally says it the way he does');
+t(!/watch the number move/i.test(shown), 'not "watch the number move", which he struck');
+
+console.log('\n  EACH ONE TYPES A REAL SENTENCE AND SHOWS WHAT IT MADE:');
+/* His sentence, typed the way he typed it - lower case, no punctuation at the
+   end, because that is what somebody actually thumbs in. */
+t(/i did push today, 4 sets of chest press, 4 sets of shoulder press/.test(demos),
+  'the training demo types the exact sentence he wrote');
+t(/163lbs today/.test(demos), 'and the progress demo types his weigh-in, his way');
+t(/two eggs and toast/.test(demos), 'food keeps the example the welcome card already used');
+['Chest press','Shoulder press'].forEach(function(w){
+  t(new RegExp(w).test(demos), '  it populates '+w);
+});
+const run=slice('function _obDemoRun(kind){','var _obDemoI');
+t(/_obReduceMotion\(\)/.test(src),
+  'somebody who asked their phone to stop animating gets the finished state, not the movement');
+/* A TIMER OUTLIVING ITS SCREEN IS THE WHOLE RISK HERE. obRender replaces the
+   card on every step, so a tick that fires afterwards would be writing into a
+   node nobody can see. */
+t(/_obDemoStop\(\)/.test(slice('function obRender(){','var st=_obStep')) ||
+  /_obDemoStop\(\);/.test(src), 'every repaint stops the demo that was running');
+t((src.match(/document\.getElementById\('obDemo[TO]\w*'\)!==/g)||[]).length>=2,
+  'and each tick checks its own element is still the one on the page');
+t(/_obDemoStop\(\)/.test(slice('function obClose(){','function obBack')),
+  'closing setup stops it too');
+t(!/wasSetup/.test(src), 'and the welcome hook it used to carry left nothing behind');
+/* Nobody has to sit through an animation to get out of it: the button is drawn
+   from the same place on every step, before the demo starts. */
+t(/st\.fin\?'<button class="obGo" onclick="obFinish\(\)">Start<\/button>'/.test(src),
+  'the last demo carries Start, so the write is still a button somebody pressed');
+t((steps.match(/fin:true/g)||[]).length===1, 'exactly one screen commits',
+  String((steps.match(/fin:true/g)||[]).length));
 
 console.log(bad? ('\n  '+bad+' FAILED\n') : '\n  all good (the first minute makes sense)\n');
 process.exit(bad?1:0);
