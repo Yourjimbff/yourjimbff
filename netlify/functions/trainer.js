@@ -57,6 +57,17 @@ const OPS = {
   clientNotesAll: () => `client_notes?select=id,client_code,note,logged_at&order=logged_at.desc&limit=1500`,
   clientPlan:    (a) => `training_plans?client_code=eq.${enc(a.code)}&limit=1`,
 
+  // ---- what the drafter on his Mac needs to write a reply (15 Sep) ----------
+  // send_watch.py built its client brief by reading food_logs, workout_logs and
+  // profiles with the PUBLIC key - the same key that ships in the page. Those
+  // three are the last tables a stranger can still read, and they cannot be
+  // locked while the drafter depends on that key. So the same two reads come
+  // through here instead, on the service role, behind a checked trainer session.
+  // Columns and limits are copied from the calls they replace, character for
+  // character: this is a change of door, not a change of what it sees.
+  clientFood:     (a) => `food_logs?client_code=eq.${enc(a.code)}&select=name,date_str,logged_at&order=logged_at.desc&limit=300`,
+  clientWorkouts: (a) => `workout_logs?client_code=eq.${enc(a.code)}&select=title,date_str,logged_at&order=logged_at.desc&limit=150`,
+
   // ---- calendar block display labels (1d/1e, 20 Aug) -------------------------
   // block_display_names is DARK from birth: RLS on with no policies and all
   // privileges revoked from anon and authenticated, so the page cannot read one
