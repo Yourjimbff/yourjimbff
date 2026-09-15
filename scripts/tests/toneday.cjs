@@ -98,8 +98,16 @@ t(!/Nothing here yet\. The pen/.test(SRC), 'the line is gone from the file entir
 t(/if\(_dst!=='past' && _dst!=='ahead'\) return '';/.test(SRC),
   'and today returns nothing at all rather than a different sentence');
 // The other two earn their place and must survive.
-t(/Nothing logged\.'\+\(window\._tlRO\?''/.test(SRC),
+// STALE ASSERTION REPAIRED (15 Sep). This used to match the exact expression
+// `Nothing logged.'+(window._tlRO?''` — a string that has since been rewritten
+// into _pfQuietWords, which scopes the sentence to the lens. The BEHAVIOUR this
+// line exists to protect is unchanged and still worth guarding: a day that is
+// over must say so plainly rather than returning the empty string today
+// returns. So it now tests the function instead of the old spelling of it.
+t(/if\(!isToday\) return 'Nothing logged that day\.';/.test(SRC),
   'a PAST day still names the gap');
+t(/if\(!isToday\) return 'No '\+what\+' logged that day\.';/.test(SRC),
+  '...and names it per lens too, so the Food lens does not speak for the gym');
 t(/Nothing here yet\. That day/.test(SRC),
   'and an AHEAD day still explains itself rather than looking broken');
 
