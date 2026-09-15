@@ -139,6 +139,37 @@ t(_PB_CAP.hard===3 && _PB_MIN.hard===2, 'two or three hard ones');
 t(_PB_CAP.work===4 && _PB_MIN.work===2, 'two to four for connection');
 t(_PB_CAP.core===2 && _PB_MIN.core===undefined, 'core is capped but never required');
 
+console.log('\n  AND A DAY BUILT FROM A LIST GETS THE RIGHT NAME:');
+/* THE SIX NEW MOVEMENTS HAD TO LAND SOMEWHERE. _bfGroupOf reads EX_LIB, and
+   _jimSplitFromExercises reads that to title a logged day - so a movement filed
+   in the wrong library group would give somebody a "Push & Legs" on his feed
+   for what was plainly a pull day. Checked by running the real classifier, not
+   by reading where I put them. */
+const L=fs.readFileSync('index.html','utf8').split('\n');
+function blk(sw){ const a=L.findIndex(l=>l.startsWith(sw)); let b=a; while(!L[b].startsWith('};')) b++; return L.slice(a,b+1).join('\n'); }
+function grab(pr){ const a=L.findIndex(pr); let b=a; while(L[b]!=='}') b++; return L.slice(a,b+1).join('\n'); }
+function one(sw){ return L[L.findIndex(l=>l.startsWith(sw))]; }
+global.EX_ALIAS=eval('('+blk('var EX_ALIAS').replace(/^var EX_ALIAS\s*=\s*/,'').replace(/;\s*$/,'')+')');
+global.FOREARM_EX={}; global.FIN_GROUP={};
+eval([grab(l=>l.startsWith('function _exCanonical(')), grab(l=>l.startsWith('function _bfGroupOf(')),
+      one('var _JIM_SPLIT_OF='), grab(l=>l.startsWith('function _jimSplitFromExercises('))].join('\n'));
+const NEW={'Forward Lunges':'Legs','High Row':'Back','Single-Arm Row':'Back',
+           'Cross-Body Sit-Ups':'Core','Cable Woodchop':'Core','Russian Twists':'Core'};
+Object.keys(NEW).forEach(function(n){
+  var g=''; try{ g=_bfGroupOf(n)||''; }catch(e){ g='threw'; }
+  t(g===NEW[n], '  '+n+' files under '+NEW[n], g);
+});
+t(_jimSplitFromExercises(['Chest Press','Decline Chest Press','Dips','Lateral Raises','Tricep Extension'])==='Push Day',
+  'his push list titles as a push day');
+t(_jimSplitFromExercises(['Barbell Row','Pull Downs / Pull Ups','High Row','Single-Arm Row','Shrugs'])==='Pull Day',
+  'his pull list as a pull day');
+t(_jimSplitFromExercises(['Squat','Hack Squat','Leg Extension','Hamstring Curl','Calf Raise'])==='Leg Day',
+  'and his legs list as a leg day');
+/* Core is always on offer as a finisher, so it must never be what decides the
+   name - a leg day with two ab moves on the end is still a leg day. */
+t(_jimSplitFromExercises(['Squat','Hack Squat','Leg Extension','Russian Twists','Cable Woodchop'])==='Leg Day',
+  'and a core finisher does not rename it');
+
 console.log('\n  THE WIRING:');
 t(/try\{ if\(pbOpen\(dk, type\)\)\{ _pgWakeAsk=null; renderProgramTab\(\); return; \} \}catch\(e\)\{\}/.test(src),
   'picking a session opens the builder instead of writing an empty day');
