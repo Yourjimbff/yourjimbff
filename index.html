@@ -49604,6 +49604,57 @@ async function _bfLoadRecord(ds, code){
 // The description is the fallback record and the only place equipment and the
 // note survive. Parse it back into per-exercise lines rather than dumping the
 // blob on screen.
+/* ONE LINE IS STILL A LIST (Yusuf, 15 Sep). Lauren Burnam's cross-training
+   session arrived as 249 characters on a single line, and _bfParseDesc split on
+   newlines - of which there were none - so the whole session became ONE item
+   and the card printed it as a paragraph. His ruling: "when it shows on my feed
+   and on their feed, it shows as nicely itemized. So bullet points, like
+   different parts of what they did."
+
+   THE TWO THINGS THIS MUST NOT BREAK:
+
+   A THOUSANDS SEPARATOR IS NOT A LIST. "1,500m" and "2,000 steps" keep their
+   comma. The test is a digit on BOTH sides with no space - "rest, 2x800m" has a
+   letter before the comma and splits, "1,500" does not. Done with a placeholder
+   swap rather than a lookbehind, because Safari only learned lookbehind in 16.4
+   and his users are on phones.
+
+   A STRUCTURED LINE IS NOT PROSE. "Bench: 145 lb x 8, 145 lb x 8, 145 lb x 8"
+   is one exercise and three sets; splitting it would invent two more exercises.
+   A line carrying a colon or an em-dash separator - the two shapes this parser
+   already reads as name-plus-detail - is never split. */
+function _bfSegs(line){
+  var s=String(line||'');
+  if(!s.trim()) return [];
+  if(/^(.+?):\s*(.+)$/.test(s)) return [s];
+  if(/^(.+?)\s+\u2014\s*(.+)$/.test(s)) return [s];
+  if(s.indexOf(',')<0 && s.indexOf(';')<0) return [s];
+  var KEEP='\u0001';
+  var guarded=s.replace(/(\d),(\d)/g, '$1'+KEEP+'$2');
+  var parts=guarded.split(/\s*[;,]\s*/);
+  var out=[];
+  for(var i=0;i<parts.length;i++){
+    var p=parts[i].split(KEEP).join(',').trim();
+    if(!p) continue;
+    p=p.replace(/^(?:and|&)\s+/i,'').trim();
+    if(!p) continue;
+    // "Boxing, cardio, and full body strength" gave three items, one of them
+    // sentence-middle lowercase. Each one is its own line on the card now, so
+    // each one starts like a line. Only a lowercase LETTER is touched - a
+    // segment opening on a digit ("2x800m") is left exactly as written.
+    // A WORD THAT CAPITALISES ITSELF LATER OWNS ITS OWN SPELLING. "iPhone
+    // timer" became "IPhone timer" under a bare first-letter rule, caught by
+    // its own test. So a first word carrying an interior capital - iPhone,
+    // eBay, xRep - is left exactly as the client typed it.
+    if(/^[a-z]/.test(p) && !/^[a-z]+[A-Z]/.test(p)) p=p.charAt(0).toUpperCase()+p.slice(1);
+    out.push(p);
+  }
+  if(out.length<2) return [s];
+  var usable=0;
+  for(var j=0;j<out.length;j++){ if(out[j].length>=3) usable++; }
+  if(usable<2) return [s];
+  return out;
+}
 function _bfParseDesc(desc){
   var out={items:[], note:''};
   var s=String(desc||'');
@@ -49626,11 +49677,15 @@ function _bfParseDesc(desc){
   }
   s.split('\n').forEach(function(ln){
     ln=ln.trim(); if(!ln) return;
-    var m=ln.match(/^(.+?):\s*(.+)$/);
-    if(m){ push(m[1].trim(), m[2].trim(), true); return; }
-    var m2=ln.match(/^(.+?)\s+—\s*(.+)$/);
-    if(m2){ push(m2[1].trim(), m2[2].trim(), false); return; }
-    push(ln, '', false);
+    // A single prose line carrying a list becomes one item per thing they did.
+    _bfSegs(ln).forEach(function(seg){
+      seg=String(seg||'').trim(); if(!seg) return;
+      var m=seg.match(/^(.+?):\s*(.+)$/);
+      if(m){ push(m[1].trim(), m[2].trim(), true); return; }
+      var m2=seg.match(/^(.+?)\s+\u2014\s*(.+)$/);
+      if(m2){ push(m2[1].trim(), m2[2].trim(), false); return; }
+      push(seg, '', false);
+    });
   });
   return out;
 }

@@ -39,6 +39,11 @@ const src=[
   // _dayFoodTotals is the ONE tally the card and this summary both read; it has
   // to come with _citeDayBody now that the summary no longer counts its own day.
   lift('_citeClip'), lift('_parseClock'), lift('_hhmmAny'), lift('_citeDayMins'), lift('_citeSessionNoun'),
+  // _bfSegs is _bfParseDesc's list splitter (15 Sep). This suite composes its own
+  // world by hand rather than taking a computed closure, so a new dependency has
+  // to be named here or the parser throws ReferenceError and every exercise
+  // silently vanishes - which is exactly how this line was added.
+  lift('_bfSegs'),
   lift('_bfParseDesc'), lift('_bfItemsFor'), lift('_dayFoodTotals'), lift('_citeDayBody'),
   'function _has(){ return false; }',
   'function _jvNum(n){ return String(n); }',
