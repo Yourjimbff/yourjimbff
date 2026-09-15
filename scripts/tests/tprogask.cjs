@@ -61,12 +61,48 @@ t(ask('my knee is sore')===false, 'a complaint is not a program request');
 t(ask('')===false, 'empty');
 t(ask(null)===false, 'null does not throw');
 
-// ---- what Jim says now ----------------------------------------------------
-t(/I cannot move the days in your programme/.test(src), 'Jim says plainly that he cannot');
-t(/not going to change them behind his back/.test(src), '...and why, which is that it is Yusuf’s call');
-t(/it does not have to match what the plan says for today/.test(src),
-  '...and tells her the thing she actually needed to hear: log what you really do');
-t(/Message Yusuf and he can move the day itself/.test(src), '...and where the real door is');
+// ---- HE DOES THE SWAP, using the applier that already existed -------------
+// tlDoSwap trades two days inside ONE week, writes week_overrides and never the
+// template, and files Yusuf a note. It shipped long before tonight. Kelly could
+// not find it and Jim did not know it was there, so he invented a workout
+// instead. Nothing new writes here - the resolver hands it two weekday keys.
+t(/await tlDoSwap\(_sw\.to, _sw\.from, null\)/.test(src), 'Jim calls the existing swap applier');
+t(/A REPLY IS NOT A WRITE/.test(src), 'the file is own law is quoted at the seam it protects');
+t(/if\(_did\)\{/.test(src), 'nothing is confirmed unless the DATABASE came back true');
+t(/I could not save that swap just now/.test(src), 'a failed write says so instead of claiming success');
+t(/for this week only/.test(src), 'the confirmation says it is this week only');
+t(/Your programme itself has not changed/.test(src), '...and that the programme is untouched');
+t(/I could not tell which two days you meant/.test(src),
+  'an unresolved sentence ASKS rather than moving the wrong session');
+
+// ---- the resolver, against Kelly real week -------------------------------
+function constAt2(name){ const a=L.findIndex(l=>l.indexOf('var '+name+'=')===0); if(a<0) return '';
+  let b=a; while(b<L.length && !/;\s*$/.test(L[b])) b++; return L.slice(a,b+1).join('\n'); }
+const WEEK={Mon:{type:'Lower'},Tue:{type:'Rest'},Wed:{type:'Push'},Thu:{type:'Rest'},
+            Fri:{type:'Glutes'},Sat:{type:'Pull'},Sun:{type:'Rest'}};
+const swWorld='var WEEKDAYS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];'
+ +'function _tlSwapKey(){return "Tue";}function _tpWeekKeyFor(){return "k";}'
+ +'var _W='+JSON.stringify(WEEK)+';function _tpEffectiveWeek(){return _W;}'
+ +constAt2('_JIM_DAYNAME')+'\n'+fnAt('_jimSwapPlan');
+const swap=new Function(swWorld+'; return _jimSwapPlan;')();
+const pair=g=>g?[g.from,g.to].sort().join('+'):'asks';
+
+t(pair(swap("I need you to switch today's workout from active rest to push day"))==='Tue+Wed',
+  'HER SENTENCE resolves to Tuesday and Wednesday');
+t(pair(swap('swap today and wednesday'))==='Tue+Wed', 'two named days');
+t(pair(swap('move monday to friday'))==='Fri+Mon', 'two weekdays, neither of them today');
+t(pair(swap('switch my pull and lower days'))==='Mon+Sat', 'named by SESSION, not by weekday');
+t(pair(swap('move my glutes to saturday'))==='Fri+Sat', 'one session name, one weekday');
+
+// A TYPE ON MORE THAN ONE DAY NAMES NO DAY. Her week carries Rest on Tue, Thu
+// and Sun - "from active rest to push day" matched a THIRD day and stopped
+// resolving until this guard went in. Caught here, not in production.
+t(pair(swap('swap my rest day and push day'))==='asks',
+  'a session name sitting on three days is ambiguous, so it asks');
+t(/if\(count\[ty\.toLowerCase\(\)\]!==1\) return;/.test(src), 'the ambiguity guard is in the shipped code');
+t(pair(swap('change my program'))==='asks', 'no days named at all: it asks');
+t(pair(swap('swap today and today'))==='asks', 'the same day twice is not a swap');
+t(pair(swap(''))==='asks', 'empty');
 
 // ---- it must never reach the trainer's own chat ---------------------------
 // Yusuf HAS the program hands. Standing between him and them would be the worse

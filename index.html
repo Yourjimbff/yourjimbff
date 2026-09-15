@@ -88274,6 +88274,70 @@ var _JIM_PROGRAM_ASK_RE=new RegExp(
   +'|the (?:programme|program|plan|split|schedule)'
   +'|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\b', 'i');
 var _JIM_LOGGING_VERB_RE=/\b(?:log|logged|logging|track|record|add(?:ed)?\s+(?:my|a|this|that)|did|done|finished|completed|just\s+did)\b/i;
+/* WORKING OUT WHICH TWO DAYS SHE MEANT (Kelly G, 15 Sep).
+
+   THE SWAP ALREADY EXISTS. tlDoSwap trades two days inside one week, writes to
+   week_overrides and never to the template, and files Yusuf a note - his own
+   ruling, already shipped, already proven. Kelly did not find it and Jim did
+   not know it was there, so instead of pointing at the door he invented a
+   completed workout. Nothing new is written here: this only reads her sentence
+   and hands the two weekday keys to the applier that already exists.
+
+   PEOPLE ASK BY SESSION NAME, NOT BY WEEKDAY. "switch today's workout from
+   active rest to push day" names no day at all - it names what is ON a day. So
+   a session name is looked up in her own week and resolved to the day holding
+   it, and explicit weekdays are read too.
+
+   IT REFUSES RATHER THAN GUESSES. Two days or nothing: if the sentence does not
+   resolve to exactly one pair, Jim says he could not tell which days and asks,
+   because moving the wrong session is worse than asking. */
+var _JIM_DAYNAME={sun:'Sun',sunday:'Sun',mon:'Mon',monday:'Mon',tue:'Tue',tues:'Tue',tuesday:'Tue',
+  wed:'Wed',weds:'Wed',wednesday:'Wed',thu:'Thu',thur:'Thu',thurs:'Thu',thursday:'Thu',
+  fri:'Fri',friday:'Fri',sat:'Sat',saturday:'Sat'};
+function _jimSwapPlan(t){
+  var s=String(t||'').toLowerCase();
+  if(!s) return null;
+  var week=null, todayKey=null;
+  try{ todayKey=_tlSwapKey(); }catch(e){}
+  try{ week=_tpEffectiveWeek(_tpWeekKeyFor(new Date())); }catch(e){}
+  if(!week || !todayKey) return null;
+  // Every day named outright, in the order it was said.
+  var named=[];
+  (s.match(/\b[a-z]+\b/g)||[]).forEach(function(w){
+    if(w==='today'){ if(named.indexOf(todayKey)<0) named.push(todayKey); return; }
+    var k=_JIM_DAYNAME[w];
+    if(k && named.indexOf(k)<0) named.push(k);
+  });
+  // Every session name on her week, matched longest-first so "push day" beats
+  // "push" and "active rest" beats "rest".
+  /* A TYPE ON MORE THAN ONE DAY NAMES NO DAY. Kelly's week carries "Rest" on
+     Tuesday, Thursday and Sunday, so "from active rest to push day" matched a
+     THIRD day and the whole sentence stopped resolving. A session name is only
+     an address when exactly one day answers to it - "Push" does, "Rest" never
+     will - so a repeated type is skipped rather than guessed at. */
+  var count={};
+  WEEKDAYS.forEach(function(k){
+    var ty=String(((week[k]||{}).type)||'').trim().toLowerCase();
+    if(ty) count[ty]=(count[ty]||0)+1;
+  });
+  var byType=[];
+  WEEKDAYS.forEach(function(k){
+    var ty=String(((week[k]||{}).type)||'').trim();
+    if(!ty) return;
+    if(count[ty.toLowerCase()]!==1) return;
+    byType.push({k:k, ty:ty.toLowerCase()});
+  });
+  byType.sort(function(a,b){ return b.ty.length-a.ty.length; });
+  byType.forEach(function(e){
+    if(named.indexOf(e.k)>=0) return;
+    // A type is only a match as a whole phrase, optionally followed by "day".
+    var re=new RegExp('\\b'+e.ty.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'(?:\\s+day)?\\b','i');
+    if(re.test(s)) named.push(e.k);
+  });
+  if(named.length!==2) return null;
+  if(named[0]===named[1]) return null;
+  return {from:named[0], to:named[1]};
+}
 function _jimProgramAsk(t){
   var s=String(t||'').trim();
   if(!s) return false;
@@ -88497,9 +88561,25 @@ async function jimDoor(text, photos, opts){
     try{
       var _isTr=false; try{ _isTr=(typeof isTrainer==='function' && cl && isTrainer(cl.code)); }catch(e){}
       if(!_isTr && (!photos || !photos.length) && _jimProgramAsk(text)){
-        return 'I cannot move the days in your programme \u2014 Yusuf sets those, and I am not going to change them behind his back.\n\n'
-             + 'What I can do is take what you actually train. Do the session you want and tell me here, and it goes on your record properly '
-             + '\u2014 it does not have to match what the plan says for today. Message Yusuf and he can move the day itself.';
+        var _sw=null; try{ _sw=_jimSwapPlan(text); }catch(e){}
+        if(_sw){
+          /* A REPLY IS NOT A WRITE - this file's own law, and the one Kelly got
+             bitten by. tlDoSwap returns the database's answer, not the model's,
+             and nothing is confirmed unless it came back true. */
+          var _did=false;
+          try{ _did=await tlDoSwap(_sw.to, _sw.from, null); }catch(e){ _did=false; }
+          if(_did){
+            var _fn=function(k){ try{ return FULL_WEEKDAY[k]||k; }catch(e){ return k; } };
+            return 'Done \u2014 swapped '+_fn(_sw.from)+' and '+_fn(_sw.to)+' for this week only. '
+                 + 'Your programme itself has not changed, so next week goes back to normal. Yusuf can see the move.';
+          }
+          return 'I could not save that swap just now. Try again in a moment, and if it still will not go, message Yusuf.';
+        }
+        /* THE DAYS DID NOT RESOLVE. Asking is the only honest move - moving the
+           wrong session is worse than one more question. */
+        return 'I can move a session to another day for you, but I could not tell which two days you meant. '
+             + 'Say it as two days \u2014 for example "swap today and Wednesday" \u2014 and I will do it. '
+             + 'That moves them for this week only; your programme stays as it is.';
       }
     }catch(e){}
     var _pgr=await _jimPhotoRoute(text, photos, opts);
