@@ -69,4 +69,43 @@ t(/!CLIENTS\[c\]\.isTrainer && c!==cl\.code && _feedWhoPass\(c\)/.test(src),'and
 t(/isFreeApp\(c\)/.test(src),'and free is decided by isFreeApp, not a second list');
 
 console.log(bad?('\n'+bad+' FAILED'):'\nall passed');
-process.exit(bad?1:0);
+// (exit moved to the foot of the file - a second block runs below)
+
+/* ===== THE FLAG HAS TO BE LOADED, NOT JUST READ =========================
+   Yusuf, 14 Sep, an hour into the launch: "some of these free people are
+   popping up on clients instead of free."
+
+   Everything in this suite above measured the FILTER, and the filter was
+   right. What was wrong sat one layer down: isFreeApp() reads
+   CLIENTS[code].is_free_app and nothing else, and the roster query - the one
+   the trainer's feed is built from - never selected that column. The sign-in
+   read learned to fetch it on 13 Sep, but that read fetches one row, the
+   person signing in. So every free account arrived with the flag undefined,
+   isFreeApp answered false for all of them, and the Clients side swallowed
+   eleven people.
+
+   An undefined flag and a paying client look identical to a boolean, which is
+   why nothing anywhere said so. This is the assertion that would have. */
+(function(){
+  const fs2=require('fs');
+  const src2=fs2.readFileSync('index.html','utf8');
+  const i=src2.indexOf("async function loadRosterFromDB(){");
+  const body=i<0?'':src2.slice(i, i+4000);
+  let b2=0;
+  const t2=(pass,label,extra)=>{ if(!pass) b2++; console.log((pass?'  ok    ':'  FAIL  ')+label+(extra!==undefined?('  '+extra):'')); };
+  console.log('\n  AND THE ROSTER ACTUALLY LOADS THE FLAG:');
+  t2(!!body, 'the roster loader is findable');
+  const sel=(body.match(/select=code,name,initials[^']*/)||[''])[0];
+  t2(/is_free_app/.test(sel), 'the roster asks the database for is_free_app', sel.slice(0,120));
+  t2(/if\(r\.is_free_app!==undefined\) e\.is_free_app = \(r\.is_free_app===true\)/.test(body),
+     'and puts it on the roster entry isFreeApp reads');
+  t2(!/e\.is_free_app\s*=\s*false/.test(body),
+     'an absent column is never written as false - sbSelect drops a rejected column, so absent means not asked');
+  // isFreeApp itself is the only reader, and it is strict about true.
+  const ifa=(src2.match(/function isFreeApp\(code\)\{[\s\S]*?\n\}/)||[''])[0];
+  t2(/rec && rec\.is_free_app===true/.test(ifa), 'isFreeApp still reads exactly that field');
+  if(b2){ console.log('  '+b2+' FAILED'); process.exitCode=1; }
+  else console.log('  all passed');
+})();
+
+process.exit((bad||process.exitCode)?1:0);
