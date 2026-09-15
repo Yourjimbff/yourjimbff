@@ -1,226 +1,69 @@
-// WHOSE ACCOUNT THIS IS (the identity fix, 29 Aug).
+// THE APP SAYS WHO IS ASKING (Yusuf, 15 Sep).
 //
-// On his OWN trainer thread, a fragment with nothing in it to log came back
-// "I'm Jim — the logging surface", and told him to text Yusuf. He is Yusuf.
+// Every read and write in this file went out as the anon key — the same key that
+// ships in the page, the same one for all eighty clients. The database could not
+// tell one person from another, which is exactly why every row-level policy on
+// the project reads USING (true): there was nothing to key one on. That is the
+// whole reason a stranger could read 4,231 food logs, 93 progress photos and
+// 1,909 Jim conversations, and delete every one of them.
 //
-// The cause was ORDER. TRAINER MODE has said "NEVER TELL HIM TO MESSAGE YUSUF.
-// He IS Yusuf" for weeks, but the prompt OPENED with a concrete self-description
-// written for a client, stated unconditionally, above all of it. A concrete
-// identity at the top beats an abstract correction in the middle.
-//
-// THE DANGEROUS HALF OF THIS FIX IS NOT THE TRAINER, IT IS THE 82 CLIENTS.
-// buildCoachVoice is what every one of them hears. So the first and most
-// important thing proved here is a NEGATIVE: the client prompt is byte for byte
-// what main already serves. Not "looks the same", not "still has the rules" —
-// identical, compared character by character against the deployed branch.
+// This suite guards the cutover: the request carries the signed session when
+// there is one, the public key when there cannot be one, and the three call
+// sites that must stay on the public key are left alone.
 const fs=require('fs');
-const cp=require('child_process');
+const src=fs.readFileSync('index.html','utf8');
 let bad=0;
-const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  FAIL  ')+label+(extra!==undefined&&extra!==''?('  '+extra):'')); };
+const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+JSON.stringify(x)+']'):'')); };
 
-// A FROZEN CLOCK. buildCoachVoice stamps the current time into the prompt, so
-// two builds a minute apart differ for a reason that has nothing to do with
-// this change and would make the comparison below lie in both directions.
-const REAL=Date;
-class FD extends REAL{
-  constructor(...a){ if(!a.length) super(2026,7,29,9,0,0); else super(...a); }
-  static now(){ return new REAL(2026,7,29,9,0,0).getTime(); }
-}
-global.Date=FD;
+const H=src.slice(src.indexOf('function sbHeaders(){'), src.indexOf('function sbHeaders(){')+420);
 
-// Build the prompt the way the app builds it, out of a given copy of the file.
-function promptFrom(text, asTrainer){
-  const src=text.split('\n');
-  let start=-1;
-  for(let i=0;i<src.length;i++){ if(src[i].startsWith('function buildCoachVoice(')){ start=i; break; } }
-  if(start<0) return null;
-  let end=-1;
-  for(let i=start+1;i<src.length;i++){ if(src[i]==='}'){ end=i; break; } }
-  const body=src.slice(start,end+1).join('\n');
-  const cl={code:(asTrainer?'thegoat':'testday1'), name:(asTrainer?'Yusuf':'Test Day')};
-  function isTrainer(c){ return c==='thegoat'; }
-  var YOURJIMBFF_NUTRITION_FORMULA='<<nutrition formula>>';
-  var JIM_ASK_RULES='<<ask rules>>';
-  /* A REAL TARGET ON BOTH SIDES (13 Sep). The meal plan block prints the
-     client's own calorie range, so both copies must be built against the same
-     profile or the comparison would blame this change for a missing number. */
-  var profile={cal_target:1980};
-  // THE MACRO TABLE, LIFTED FROM WHICHEVER COPY IS BEING READ (Calendar,
-  // 30 Aug). buildCoachVoice now calls _mtPromptBlock(), so evaluating it
-  // needs the table — and it has to come from the SAME source string, or
-  // main's prompt would be built with this branch's table and the comparison
-  // below would compare the wrong two things. A copy that has no table (main,
-  // before this ships) simply does not define it and is evaluated as it was.
-  function _lf(re, endTest){
-    const i=src.findIndex(l=>re.test(l));
-    if(i<0) return '';
-    if(endTest){ for(let j=i;j<src.length;j++) if(endTest(src[j])) return src.slice(i,j+1).join('\n'); return ''; }
-    return src[i];
-  }
-  const _tbl=[
-    _lf(/^var MB_PALM_OZ/),
-    _lf(/^var MT_ROWS=\[/, l=>l.trim()===');'||l.trim()==='];'),
-    /^var MT_ROWS=\[/.test(src.find(l=>/^var MT_ROWS=\[/.test(l))||'')?'var _MT_BY=null;':'',
-    (function(){ const i=src.findIndex(l=>l.startsWith('function _mtIndex(')); if(i<0) return '';
-      let d=0,st=false; for(let j=i;j<src.length;j++){ for(const c of src[j]){ if(c==='{'){d++;st=true;} else if(c==='}'){d--;} } if(st&&d===0) return src.slice(i,j+1).join('\n'); } return ''; })(),
-    (function(){ const i=src.findIndex(l=>l.startsWith('function _mtPromptBlock(')); if(i<0) return '';
-      let d=0,st=false; for(let j=i;j<src.length;j++){ for(const c of src[j]){ if(c==='{'){d++;st=true;} else if(c==='}'){d--;} } if(st&&d===0) return src.slice(i,j+1).join('\n'); } return ''; })(),
-    /* THE MEAL PLAN BLOCK AND THE RANGE IT PRINTS, LIFTED THE SAME WAY
-       (13 Sep). Lifted from WHICHEVER copy is being read, so main - which does
-       not have them, and does not call them - evaluates exactly as it did. */
-    (function(){ const i=src.findIndex(l=>l.startsWith('function _calTargetSet(')); if(i<0) return '';
-      let d=0,st=false; for(let j=i;j<src.length;j++){ for(const c of src[j]){ if(c==='{'){d++;st=true;} else if(c==='}'){d--;} } if(st&&d===0) return src.slice(i,j+1).join('\n'); } return ''; })(),
-    (function(){ const i=src.findIndex(l=>l.startsWith('function _jimCalRange(')); if(i<0) return '';
-      let d=0,st=false; for(let j=i;j<src.length;j++){ for(const c of src[j]){ if(c==='{'){d++;st=true;} else if(c==='}'){d--;} } if(st&&d===0) return src.slice(i,j+1).join('\n'); } return ''; })(),
-    (function(){ const i=src.findIndex(l=>l.startsWith('function _jimMealPlanBlock(')); if(i<0) return '';
-      let d=0,st=false; for(let j=i;j<src.length;j++){ for(const c of src[j]){ if(c==='{'){d++;st=true;} else if(c==='}'){d--;} } if(st&&d===0) return src.slice(i,j+1).join('\n'); } return ''; })()
-  ].filter(Boolean).join('\n');
-  let out;
-  eval(_tbl+'\n'+body+'\nout=buildCoachVoice();');
-  return out;
-}
+console.log('\n  THE REQUEST CARRIES AN IDENTITY:');
+t(/var bearer=SB_KEY;/.test(H), 'the public key is the starting point');
+t(/try\{ var t=_sessToken\(\); if\(t\) bearer=t; \}catch\(e\)\{\}/.test(H),
+  'and the signed session replaces it whenever there is one');
+t(/'Authorization':'Bearer '\+bearer/.test(H), 'that is what goes on the request');
+t(!/'Authorization':'Bearer '\+SB_KEY,\n    'Prefer'/.test(src),
+  'the old unconditional public-key bearer is gone');
+t(/'apikey':SB_KEY/.test(H),
+  'apikey stays the public key, which is what identifies the PROJECT - it is not the identity');
 
-const HERE=fs.readFileSync('index.html','utf8');
-let MAIN=null;
-try{ MAIN=cp.execSync('git show origin/main:index.html',{maxBuffer:64*1024*1024}).toString(); }catch(e){ MAIN=null; }
+console.log('\n  AND IT FALLS BACK, BECAUSE SIGNING IN CANNOT REQUIRE BEING SIGNED IN:');
+/* The identity read inside doLogin runs before a session can exist. If this
+   threw or refused without a token, nobody could ever sign in again — which is
+   the one failure this whole migration must not produce. */
+t(/try\{ var t=_sessToken\(\); if\(t\) bearer=t; \}catch\(e\)\{\}/.test(H),
+  'a missing or expired session leaves the public key in place, silently');
+const tok=src.slice(src.indexOf('function _sessToken(){'), src.indexOf('function _sessToken(){')+340);
+t(/if\(s\.exp <= Math\.floor\(Date\.now\(\)\/1000\)\) return null;/.test(tok),
+  'an expired token is not offered');
+t(/if\(cl && cl\.code && s\.code && s\.code!==cl\.code\) return null;/.test(tok),
+  'and a session belonging to somebody else is never used for this person');
 
-console.log('  THE 82 CLIENTS HEAR EXACTLY WHAT THEY HEARD:');
-t(!!MAIN, 'main\'s copy of the file is readable, so there is something to compare against');
-if(MAIN){
-  let a=promptFrom(MAIN,false), b=promptFrom(HERE,false);
-  t(!!a && a.length>2000, 'main builds a client prompt', a?String(a.length)+' chars':'');
-  t(!!b && b.length>2000, 'and so does this branch', b?String(b.length)+' chars':'');
-  /* THE MACRO TABLE IS THE ONE PART THAT IS MEANT TO GROW (11 Sep, adding
-     chicken thigh, wings and ground chicken - "7oz of chicken breast and 7oz of
-     chicken thigh are both 60g of protein"). The table is dumped into the
-     prompt verbatim, so a new row moves every byte after it and this comparison
-     failed on a change whose whole point was that clients get it too.
-     So the table is compared as a table - rows only ever ADDED, never changed
-     or dropped - and the PROSE around it is still compared byte for byte, which
-     is what this test was written to protect. */
-  /* AND THE MEAL PLAN BLOCK IS THE SECOND PART THAT IS MEANT TO GROW (13 Sep -
-     "it should just pop out the format"). Same ruling as the table: a
-     DELIBERATE, NAMED addition is carved off by its own marker and checked on
-     its own terms below, and everything else stays compared byte for byte. An
-     accidental edit anywhere else in the prompt still fails this test, which is
-     the whole reason it exists. */
-  /* The two newlines that introduce it belong to the block, not to the prose
-     before it - otherwise the byte-for-byte half fails on whitespace. */
-  const MPMARK='\n\n=== MEAL PLAN REQUESTS';
-  const lop=function(p){ var i=p.indexOf(MPMARK); return i<0 ? {main:p, mp:''} : {main:p.slice(0,i), mp:p.slice(i)}; };
-  const LA=lop(a), LB=lop(b);
-  a=LA.main; b=LB.main;
-  const cut=function(p){
-    var i=p.indexOf('chicken breast [oz]'); if(i<0) return {pre:p, rows:[], post:''};
-    var j=p.indexOf('\n\n', i); if(j<0) j=p.length;
-    return {pre:p.slice(0,i), rows:p.slice(i,j).split('\n').filter(Boolean), post:p.slice(j)};
-  };
-  const A=cut(a), B=cut(b);
-  const same=(A.pre===B.pre && A.post===B.post);
-  t(same, 'AND THE PROSE AROUND THE TABLE IS IDENTICAL, byte for byte');
-  const kept=A.rows.filter(function(r){ return B.rows.indexOf(r)<0; });
-  t(kept.length===0, 'every macro row main serves is still served, unchanged',
-    kept.length?('lost: '+kept.join(' | ')):'');
-  const added=B.rows.filter(function(r){ return A.rows.indexOf(r)<0; });
-  t(true, 'rows added on this branch', added.length?added.join(' | '):'none');
-  t(!!LB.mp, 'and this branch adds the meal plan block', LB.mp?String(LB.mp.length)+' chars':'missing');
-  t(LA.mp==='' || LA.mp===LB.mp, 'which main either does not have, or has unchanged');
-  if(!same && a && b){ a=A.pre+A.post; b=B.pre+B.post; }
-  if(!same && a && b){
-    // Say WHERE, not just that. A diff nobody can locate gets argued with.
-    let i=0; while(i<a.length && i<b.length && a[i]===b[i]) i++;
-    console.log('        first difference at char '+i);
-    console.log('        main: '+JSON.stringify(a.slice(Math.max(0,i-60), i+60)));
-    console.log('        here: '+JSON.stringify(b.slice(Math.max(0,i-60), i+60)));
-    console.log('        lengths: main '+a.length+', here '+b.length);
-  }
-}
+console.log('\n  THE THREE THAT STAY ON THE PUBLIC KEY ARE CORRECT:');
+const hand=(src.match(/'apikey':\s*SB_KEY/g)||[]).length;
+t(hand===4, 'four places name the key by hand - sbHeaders and three others', hand);
+t(/headers:\{'Content-Type':'application\/json','apikey':SB_KEY,'Authorization':'Bearer '\+SB_KEY\}/.test(src),
+  '  _sbAuth talks to Supabase Auth, which has to be presented the anon key');
+t((src.match(/'Content-Type':'image\/jpeg', 'x-upsert':'true'/g)||[]).length===2,
+  '  and two Storage uploads, which answer to bucket policies, not these');
 
-const C=promptFrom(HERE,false);
-const T=promptFrom(HERE,true);
-t(!!C && !!T, 'both prompts build on this branch');
+console.log('\n  THE RECOVERY PATH EXISTS FOR WHEN THE LOCK GOES ON:');
+/* Built before this cutover and not yet wired to a refusal — recorded here so
+   the next step has somewhere to land rather than being invented under
+   pressure. */
+t(/async function sessOnDenied\(\)/.test(src), 'a refused request can trade for a fresh session');
+t(/function sessForceSignIn\(\)/.test(src), 'and an unrecoverable refusal lands on sign-in, not on blanks');
+t(/if\(_sessSigningOut\) return;/.test(src), '  guarded, so a storm of refusals cannot reload in a loop');
+t(/quietly falling back to a key that can still see everything/.test(src),
+  'and the file states the rule: never fall back to a key that can see everything');
 
-console.log('\n  A CLIENT IS STILL TOLD WHAT JIM IS:');
-t(/^YOU ARE: JIM — the logging surface inside YOURJIMBFF/.test(C),
-  'the client prompt still opens exactly as it did', C.slice(0,46));
-t(/they dump their day/.test(C), 'and still says whose day it is for');
-t(/that’s a Yusuf call|that's a Yusuf call/.test(C), 'and still routes the heavy stuff to Yusuf');
+console.log('\n  WHAT IS STILL TRUE AND MUST NOT BE FORGOTTEN:');
+/* This step gives the database an identity to reason about. It does not itself
+   restrict anything — the policies are still permissive and anon still holds
+   SELECT/INSERT/UPDATE/DELETE on ~45 tables. Said out loud so nobody reads a
+   green suite here as "the data is private now". */
+t(/NOTHING CHANGES TODAY, and that is deliberate/.test(src),
+  'the source says plainly that this step restricts nothing by itself');
 
-console.log('\n  A MEAL PLAN QUESTION GETS THE FORMAT, NOT AN INTERVIEW:');
-/* Yusuf, 13 Sep, asking Jim himself: "Although I think this is a smart
-   response, it's too long... Too many questions... it should just pop out the
-   format." */
-t(/=== MEAL PLAN REQUESTS/.test(C), 'the client prompt carries the block');
-t(/OVERRIDES the INTELLIGENT FOLLOW-UPS rule/.test(C),
-  'and says out loud that it beats the ask-one-question rule, or that rule wins');
-t(/you do NOT ask what their week looks like, when they train/.test(C), 'no interview');
-t(/THIS IS THE SHAPE, EXACTLY/.test(C), 'and the exact shape it has to print');
-/* The four slots are HIS, dictated 13 Sep. */
-t(/berries, Greek yogurt, cottage cheese/.test(C), 'breakfast');
-t(/salad mix, cucumber, carrot, tomato/.test(C), 'lunch');
-t(/Dinner \u2014 any meat, vegetables, and one to two handfuls of a carb/.test(C), 'dinner');
-t(/Sweet \u2014 berries, yogurt, honey, nuts, protein powder/.test(C), 'and the sweet');
-t(/vehicle for the peanut butter/.test(C), 'the vehicle rule survives in his own words');
-/* THE DANGEROUS PART. A meal-size range sits one careless sentence away from
-   three hard NEVER rules this prompt already carries. */
-t(/2 to 4 full handfuls of food a meal/.test(C), 'the size is a handful count first');
-t(/It is not a target, not a quota and not a judgement/.test(C), 'said as a shape, never a quota');
-t(/never tell anyone they have room, never encourage more food, and never call a meal too small or too big/.test(C),
-  'and the block repeats the three NEVERs itself rather than trusting distance');
-t(/Every NEVER rule above governs this block too/.test(C), 'under everything above it');
-/* 13 Sep, proving it live: asked the question, then answered "yes", Jim sent
-   the whole format back a second time AND appraised him - "you're solid at that
-   range". Both are named in the block now. */
-t(/ONE FOOD PER LINE/.test(C), 'one food per line, so it can be read and screenshotted');
-t(/AMOUNTS, ALWAYS, AND ALWAYS AS A RANGE/.test(C), 'and every food carries an amount');
-t(/NEVER NAME PORK/.test(C), 'no pork in a plan generated for someone you do not know');
-t(/SAY "ANY MEAT" AND "ANY PROTEIN", NOT A SPECIFIC ANIMAL/.test(C), 'the slot is the system, the food in it is theirs');
-t(/DO NOT LIST COOKING FATS AS FOODS/.test(C), 'olive oil is how food is cooked, not a line on a plan');
-t(/about 1,900-2,100 calories a day/.test(C), 'their own calorie range, fitted, as a range');
-t(/NEVER SAY "depending on your size"/.test(C), 'and never handed back to them to work out');
-t(/Tell me what you actually eat and I.ll swap it in\./.test(C), 'a closing line they can answer');
-t(/NEVER ask "want me to build it out of the foods you already eat\?"/.test(C), 'and never the one they cannot');
-t(/ONCE IS ONCE/.test(C), 'the format goes out once');
-t(/AND KEEP WHAT THEY TOLD YOU/.test(C), 'and a food they said no to never comes back');
-t(/you are now WRITING THE DAY OUT/.test(C), 'and a yes writes the actual day out instead');
-t(/Do NOT repeat the size line\. Do NOT ask the closing question again\./.test(C), 'without asking again');
-t(/NEVER APPRAISE THEIR SIZE OR THEIR AMOUNT/.test(C), 'and the handful line is never turned on the person');
-t(/Say the plate, never the person\./.test(C), 'said in four words so it cannot be missed');
-/* The trainer hears it too - he is the one who asked. */
-t(/=== MEAL PLAN REQUESTS/.test(T), 'his own account gets it as well');
-
-console.log('\n  HIS OWN ACCOUNT IS NAMED FIRST, AND CONCRETELY:');
-t(/^YOU ARE: JIM\. On THIS account you are YUSUF/.test(T),
-  'the trainer prompt opens by naming whose account it is', T.slice(0,52));
-t(!/the logging surface inside YOURJIMBFF/.test(T),
-  'and NEVER describes itself to him as the client logging surface');
-t(!/they dump their day/.test(T), 'nor as the place a client dumps their day');
-t(/He is NOT a client/.test(T) && /nobody to hand him on to/.test(T),
-  'it says plainly that he has no coach above him');
-t(/never route him anywhere/.test(T), 'and that he is never routed');
-
-console.log('\n  ORDER IS THE FIX, so order is what is asserted:');
-const idAt=T.indexOf('On THIS account you are YUSUF');
-const behaveAt=T.indexOf('HOW YOU BEHAVE');
-const trainerModeAt=T.indexOf('TRAINER MODE');
-t(idAt>=0 && behaveAt>idAt, 'the identity comes BEFORE the behaviour rules written for a client',
-  'identity@'+idAt+' behaviour@'+behaveAt);
-t(trainerModeAt>behaveAt, 'and TRAINER MODE still sits below them, where it always did',
-  'trainerMode@'+trainerModeAt);
-t(/NEVER TELL HIM TO MESSAGE YUSUF/.test(T),
-  'TRAINER MODE is untouched, so the account is now named at BOTH ends');
-
-console.log('\n  AND HE CAN STILL LOG:');
-// The fix must not cost him the thing the prompt is for.
-[['the FOOD_LOG marker','[FOOD_LOG]'],['the marker rules','MARKER RULES:'],
- ['the roster instructions','TRAINER ROSTER CONTEXT'],['the quantity rule','QUANTITY MULTIPLIES']
-].forEach(([label,needle])=>t(T.indexOf(needle)>=0, label+' still reaches him'));
-
-console.log('\n  THE TWO SELVES ARE ONE OR THE OTHER, NEVER BOTH:');
-t(!(/the logging surface inside YOURJIMBFF/.test(T) && /On THIS account you are YUSUF/.test(T)),
-  'the trainer never gets both identities');
-t(!/On THIS account you are YUSUF/.test(C), 'and a client never gets his');
-
-console.log('');
-if(bad){ console.log('  '+bad+' FAILED'); process.exit(1); }
-console.log('  all pass');
+console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (the database can finally tell who is asking)');
+process.exit(bad?1:0);
