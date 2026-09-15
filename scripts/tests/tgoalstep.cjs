@@ -33,7 +33,19 @@ const steps=(function(){ const i=src.indexOf('var _OB_STEPS=['); const j=src.ind
 console.log('\n  IT IS ASKED');
 t(/k:'goal_text', type:'say'/.test(steps), 'there is a goal step');
 t(/q:'What is your goal\?'/.test(steps), 'in his words');
-t(/ph:'lose 20 lbs/.test(steps), 'with a placeholder that shows what detail looks like');
+/* THE WORKED EXAMPLE CAME OUT, 15 Sep. It read "lose 20 lbs before my sister's
+   wedding in June, and stop feeling wrecked by 3pm" and people wrote to its
+   SHAPE - the same fault the meal box had, where a three-item example produced
+   three-item answers. An empty box asks for their sentence; a filled one asks
+   them to copy somebody else's. The line UNDER the box now carries the reason
+   to answer properly, which is a different job from showing them how. */
+t(!/ph:'lose 20 lbs/.test(steps), 'and no worked example inside the box to copy');
+t(/More personal and real, the better your commitment\./.test(steps),
+  'the line under it says why it is worth answering');
+/* And the one screen in the intake that wants a paragraph does not have to be
+   thumb-typed: same microphone as the meal log, same glyph, learned once. */
+t(/onclick="obSayMic\(\)"/.test(src), 'the goal box can be spoken into');
+t(/'obSayStopVoice'\]/.test(src), 'and its mic is in the sweep that stops every other one');
 // WHERE it sits is the whole point: straight after the two weights, while why
 // is still the thing in their head. Asked after three demo screens it gets
 // three words.

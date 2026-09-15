@@ -295,7 +295,15 @@ t(/st\.type!=='pick' \|\| st\.stay/.test(src), 'so it gets a Next button, which 
 const tg2=slice('function _obTargets(){','function obRender(){');
 t(/intake_json:JSON\.stringify\(\{active:\(a\.active\|\|'none'\)\}\)/.test(tg2),
   'the answer being toggled rides in, not the one on the saved profile');
-t(/return _fuelTargets\(\);/.test(tg2), 'and it is the same engine the Food page prints');
+/* 15 Sep: the call is still the only source of the numbers, but its result is
+   now held so two ceilings he named can be trimmed off the tail - carbs over
+   250 (300 if they are 6'1"+) and protein more than a tenth over goal weight.
+   The engine is untouched; nothing here recomputes it. */
+t(/var T=_fuelTargets\(\);/.test(tg2), 'and it is the same engine the Food page prints');
+t(!/prot\s*=\s*[\d.]+\s*\*/.test(tg2), 'no second formula - the caps only trim, never calculate');
+t(/if\(T && \+T\.carb>_carbCap\) T\.carb=_carbCap;/.test(tg2), 'the carb ceiling is applied');
+t(/T\.prot=Math\.round\(_gw\*1\.1\)/.test(tg2), 'and protein stops a tenth over goal weight');
+t(!/T\.cal\s*=/.test(tg2), 'calories are never moved to satisfy a rule about one macro');
 const fp=slice('function _obFuelPaint(){','// Targets from the answers');
 t(/_obReduceMotion\(\)/.test(fp), 'reduced motion gets the value with no journey');
 /* It counts on requestAnimationFrame since 14 Sep ("make the animation
@@ -334,19 +342,46 @@ t(/q:'Are you active right now\?'/.test(steps), 'asked about this week, not abou
 t(!/experience level/.test(src), 'and nobody is asked to grade themselves any more');
 t(!/_OB_EXP\b/.test(src), 'with the old list gone rather than left lying about');
 /* HIS WORDS, 14 Sep. The values did not move - only what the person reads. */
-[['No but im about to be','none'],['been on and off','some'],['m active','weekly']].forEach(function(p){
+/* REWRITTEN 15 Sep, him walking his own sign-up. The old three described a
+   MOOD - "Some weeks yes, some no", "It is already a habit" - and a mood does
+   not convert into a calorie. Each option now carries the frequency that
+   defines it, which is both what somebody recognises themselves by and what
+   the maths actually needs. The stored values did not move. */
+[['not active yet','none'],['semi consistent','some'],['very active','weekly']].forEach(function(p){
   t(new RegExp("v:'"+p[1]+"'[\\s\\S]{0,40}?t:'[^']*"+p[0]).test(ex2), '  '+p[0]+' \u2192 '+p[1]);
 });
 t(!/Beginner|Intermediate|Advanced/.test(ex2), 'no beginner, intermediate, advanced');
 /* Every answer says what it MEANS underneath, the same shape as the mode
    screen - a name and a line, not a word to be compared against strangers. */
-/* THE EXPLANATION MOVED UP A LEVEL, 14 Sep. "No but im about to be \u{1F440}" is
-   already the whole answer and a line underneath it would only repeat itself,
-   so the first option has none. What needed explaining was the QUESTION -
-   "active" is a word people grade themselves against - and that line now sits
-   under it. The screen still says what it means; it says it once. */
-t((ex2.match(/s:'/g)||[]).length===2, 'the two that need a line still have one');
-t(/s:'Lifting 3\+ days a week/.test(steps), 'and the question itself says what active means');
+/* AND IT MOVED BACK DOWN, 15 Sep. On 14 Sep the explanation lived under the
+   QUESTION, because "active" is a word people grade themselves against. The
+   trouble is that one line has to cover three different answers at once, so it
+   ended up as "Lifting 3+ days a week, cardio, etc." - a rule of thumb sitting
+   above three options that each mean something different.
+   Now every option carries its OWN frequency and the question needs no
+   footnote at all. Three lines, one per answer, and nothing above them. */
+t((ex2.match(/s:'/g)||[]).length===3, 'all three answers say what they mean');
+t(/Exercise less than 3 days a week/.test(ex2), 'not active yet: under three days');
+t(/On and off ~3 days per week/.test(ex2), 'semi consistent: about three');
+t(/Exercise more than 5 days per week/.test(ex2), 'very active: more than five');
+t(!/s:'Lifting 3\+ days a week/.test(steps), 'and the question carries no footnote any more');
+
+console.log('\n  THE SUBTITLES THAT EXPLAINED THE MACHINE ARE GONE (15 Sep):');
+/* "It sets your starting split", "Your food is built from the goal, not from
+   today" and "Lifting 3+ days a week, cardio, etc." all explained the machine
+   to somebody who had asked nothing about it. A question needing a footnote is
+   a question not written well enough; these three did not need one. */
+/* Scoped to the STEPS, not the whole file: the comment above them quotes the
+   removed lines to record why they went, and a whole-file grep would read that
+   note as the thing still shipping. */
+t(!/s:'It sets your starting split/.test(steps), 'the gender question stands on its own');
+t(!/s:'Your food is built from the goal/.test(steps), 'so does the weight question');
+/* The goal box asks for THEIR sentence, so it no longer shows them mine: the
+   worked example in the placeholder was being copied in shape, the same fault
+   the meal box had. The line under it now says why it is worth answering. */
+t(!/ph:'lose 20 lbs before my sister/.test(steps), 'the goal box has no worked example in it');
+t(/More personal and real, the better your commitment\./.test(steps),
+  'and the line under it says why to answer properly, not how');
 
 console.log('\n  FEW WORDS, BETTER WORDS:');
 /* Yusuf, 12 Sep, on "What do you weigh today? Rough is fine. It only has to
@@ -373,7 +408,7 @@ _OB_STEPS.forEach(function(st){
 
 console.log('\n  THE CALORIES ARE THE ENGINE THE APP ALREADY HAS:');
 const tg=slice('function _obTargets(){','function obRender(){');
-t(/return _fuelTargets\(\);/.test(tg), 'it calls _fuelTargets rather than inventing a second formula');
+t(/var T=_fuelTargets\(\);/.test(tg), 'it calls _fuelTargets rather than inventing a second formula');
 t(/profile=keep;/.test(tg) && /finally/.test(tg),
   'and it puts the live profile back afterwards, even if that throws');
 const fuel=slice('function _fuelTargets(){','function _fuelRanges(){');
