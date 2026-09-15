@@ -23,8 +23,19 @@ let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  '
 console.log('  THE FEED READS THEM NOW:');
 t(/var _stepsP = \(lens==='all'\) \? sbSelect\('step_logs'/.test(src),
   'step_logs is one of the feed\'s reads');
-t(/_stepsP\]\)/.test(src) && /_resAll\[7\]/.test(src),
-  'awaited with the rest and read off the right slot');
+/* THE SLOT, COUNTED, NOT ASSUMED (15 Sep). This used to assert that _stepsP was
+   LAST in the array, which is not the invariant - the invariant is that _stepsP
+   sits at whatever index _resAll is read at. A caffeine backfill added beside
+   the other backfills pushed steps from 7 to 8 and this suite caught it, which
+   is the point; but "is last" would also have failed for a promise correctly
+   appended AFTER steps. So it counts the position now, and the two have to
+   agree. */
+const _all=(src.match(/var _resAll = await Promise\.all\(\[([^\]]*)\]\)/)||[])[1]||'';
+const _slot=_all.split(',').map(x=>x.trim()).indexOf('_stepsP');
+const _read=(src.match(/var steps=\(_resAll\[(\d+)\]\|\|\[\]\)/)||[])[1];
+t(_slot>=0, 'steps is awaited with the rest', _all);
+t(String(_slot)===String(_read),
+  'and read off the slot it is actually in', 'in slot '+_slot+', read from '+_read);
 t(/updated_at=gte\.'\+encodeURIComponent\(_feedSince\)/.test(src),
   'over the same window as everything else');
 
