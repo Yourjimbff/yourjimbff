@@ -28,9 +28,16 @@ const { verify } = require('./session.js');
 // model at all except MB_LABEL_MODEL for reading a nutrition label). An
 // allowlist rather than a passthrough means a stolen session cannot redirect
 // the spend onto the most expensive model available.
+// OPUS IS ON THE LIST FOR ONE JOB: WRITING AS HIM (Yusuf, 15 Sep, after a draft
+// to Anthony Perry opened with the third "Whats up" in a row): "Respectfully, I
+// want Opus running my text messages." Nothing in the app asks for it - the
+// drafter in Client Files/send_watch.py is the only caller - but the allowlist
+// is what decides, so it has to be named here. Reading a label and pricing a
+// meal stay on haiku; a message that goes out under his name does not.
 const ALLOWED_MODELS = {
   'claude-haiku-4-5-20251001': 1,
   'claude-sonnet-5': 1,
+  'claude-opus-5': 1,
 };
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 // The app's own largest request is 1200. This is the ceiling, not the default,
