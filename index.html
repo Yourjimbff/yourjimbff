@@ -63941,6 +63941,145 @@ async function _sbRowLanded(table, id){
   }
   return answered ? false : null;
 }
+/* ONE DAY, ONE SESSION, FOR A FREE ACCOUNT (Yusuf, 15 Sep, off Nick Santiago's
+   feed - two workouts forty-nine seconds apart).
+
+   WHAT NICK ACTUALLY DID, from his own rows: at 03:17:11 he said Push Day -
+   incline dumbbell press 4 sets @ 150, kettlebell abs, sauna 20 minutes. At
+   03:18:00 he said it again with the real detail - Chest Day, incline dumbbell
+   press 60 lbs x 10 four times, pec deck 130 x 10 four times, kettlebell abs.
+   He was not training twice. He was correcting himself and adding what he had
+   left out, the way anybody talks.
+
+   THE APP MADE IT TWO SESSIONS. Yusuf: "they don't realise they can add to it
+   ... free users should just add to the current workout they have, so take the
+   accumulative total workout without repeating and make it one."
+
+   THE GUARD THAT WAS ALREADY HERE COULD NOT SEE IT. It blocks an IDENTICAL
+   re-insert inside ten seconds - same title, same description. Nick's second
+   message had a different title, a different description, and arrived at
+   forty-nine seconds. It was never a double tap; it was a second sentence.
+
+   SO THE TEST IS THE DAY, NOT THE KEYSTROKE. A free account that already has a
+   session on this date does not get a second one - the new movements are added
+   to the one that is there, and a movement named twice keeps the LATER detail,
+   because the later telling is the correction. That is what turns 4 sets @ 150
+   lbs into 60 lbs x 10, which is the number he actually lifted.
+
+   FREE ACCOUNTS ONLY, which is his word and also the safe line: a paying
+   client who trains twice a day is a real thing, and this must never fold
+   their evening session into their morning one. */
+/* NOT _woKey. That name was already taken 10,000 lines up by the workout
+   DRAFT key, and a second definition here would have silently shadowed it for
+   everything below - the duplicate-identifier landmine CLAUDE.md names, wearing
+   a function's face instead of an element id's. */
+function _woMoveKey(n){ return String(n==null?'':n).toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); }
+/* THE SAME MOVEMENT, SAID TWO WAYS. Nick wrote "Kettlebell Ab Workouts" and
+   then "Kettlebell ab work" - obviously one thing to a person, two things to a
+   string comparison. Exact matching would have left both on the card.
+
+   THE RULE IS PREFIX, and it is deliberately the dullest one that works: two
+   names are the same movement when one of them starts with the other, and the
+   shorter is at least four characters. "kettlebell ab work" opens
+   "kettlebell ab workouts", so they are one. "squat" opens "squats". "leg
+   press" opens "leg press machine".
+
+   AND IT STAYS HONEST THE OTHER WAY: "incline dumbbell press" does not open
+   "incline barbell press", nor "leg press" "leg curl", so nothing that is
+   genuinely two movements is ever folded into one. Four characters keeps a
+   stray short word from swallowing a real name. The worse failure of the two
+   is duplicating what somebody did, not over-joining it - and either way the
+   later, fuller telling is the one kept. */
+function _woSameMove(a, b){
+  if(!a || !b) return false;
+  if(a===b) return true;
+  var lo=(a.length<=b.length)?a:b, hi=(a.length<=b.length)?b:a;
+  return lo.length>=4 && hi.indexOf(lo)===0;
+}
+function _woMergeLists(oldEx, newEx){
+  var out=[], keys=[];
+  function push(e){
+    if(!e) return;
+    var nm=(typeof e==='string')?e:e.name;
+    var k=_woMoveKey(nm); if(!k) return;
+    for(var i=0;i<keys.length;i++){
+      if(_woSameMove(keys[i], k)){
+        out[i]=e;                        // said twice: the later telling wins
+        if(k.length>keys[i].length) keys[i]=k;
+        return;
+      }
+    }
+    keys.push(k); out.push(e);
+  }
+  (Array.isArray(oldEx)?oldEx:[]).forEach(push);
+  (Array.isArray(newEx)?newEx:[]).forEach(push);
+  return out;
+}
+function _woMergeDesc(oldD, newD){
+  /* The description is one clean line of what was done, comma separated, so it
+     merges on the same rule as the movements: keyed by the words it opens
+     with, later telling wins. Newlines split too, because applyWorkoutEdit
+     writes a bulleted list rather than a line. */
+  var out=[], keys=[];
+  function add(part){
+    var t=String(part||'').replace(/^[\s\u2022\u00b7-]+/,'').trim();
+    if(!t) return;
+    var k=_woMoveKey(t).split(' ').slice(0,3).join(' ');
+    if(!k) return;
+    for(var i=0;i<keys.length;i++){
+      if(_woSameMove(keys[i], k)){        // same rule as the movement list
+        out[i]=t;
+        if(k.length>keys[i].length) keys[i]=k;
+        return;
+      }
+    }
+    keys.push(k); out.push(t);
+  }
+  String(oldD||'').split(/[,\n]/).forEach(add);
+  String(newD||'').split(/[,\n]/).forEach(add);
+  return out.join(', ');
+}
+async function _woMergeIntoToday(row){
+  try{
+    var code=String((row&&row.client_code)||'').toLowerCase();
+    if(!code || typeof isFreeApp!=='function' || !isFreeApp(code)) return null;
+    var ds=String((row&&row.date_str)||'').trim();
+    if(!ds) return null;
+    var rows=await sbSelect('workout_logs','select=id,title,description,exercises,duration,notes'
+      +'&client_code=eq.'+encodeURIComponent(code)
+      +'&date_str=eq.'+encodeURIComponent(ds)+'&order=id.desc&limit=1');
+    /* sbSelect ANSWERS [] ON FAILURE and never throws, so an empty list means
+       "no session today" OR "the read did not land", and the two cannot be
+       told apart here. Only the first is a reason to write. An empty answer
+       therefore falls through to the ordinary insert, which is what this has
+       always done. Merging is the improvement; never losing the log is the
+       floor. */
+    var prev=(rows&&rows[0])||null;
+    if(!prev || prev.id==null) return null;
+    var fields={};
+    var ex=_woMergeLists(prev.exercises, row.exercises);
+    if(ex.length) fields.exercises=ex;
+    var desc=_woMergeDesc(prev.description, row.description);
+    if(desc) fields.description=desc;
+    /* The newer title is the considered one - Nick fixed Push Day to Chest Day
+       in the same breath as the weights. */
+    if(String(row.title||'').trim()) fields.title=String(row.title).trim();
+    /* Duration belongs to whatever was actually timed, so keep the longer of
+       the two rather than letting a second lift with no time blank out a walk. */
+    var d0=parseFloat(prev.duration)||0, d1=parseFloat(row.duration)||0;
+    if(Math.max(d0,d1)>0) fields.duration=String(Math.max(d0,d1));
+    var nNew=String(row.notes||'').trim(), nOld=String(prev.notes||'').trim();
+    if(nNew && nOld.indexOf(nNew)<0) fields.notes = nOld ? (nOld+'\n\u00b7 '+nNew) : nNew;
+    var res=await fetch(SB_URL+'/rest/v1/workout_logs?id=eq.'+encodeURIComponent(prev.id), {
+      method:'PATCH',
+      headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}),
+      body: JSON.stringify(fields)
+    });
+    if(!res.ok) return null;    // could not add to it: fall through and log it rather than lose it
+    try{ console.warn('WORKOUT MERGED into today\u2019s session #'+prev.id, fields); }catch(e){}
+    return {ok:true, id:prev.id, merged:true};
+  }catch(e){ return null; }
+}
 async function insertWorkoutLog(row){
   if(!(await _confirmLogTarget())) return {ok:false, cancelled:true};
   try{ if(row && !row.logged_at) row.logged_at = new Date().toISOString(); }catch(e){}
@@ -63967,6 +64106,14 @@ async function insertWorkoutLog(row){
       return {ok:true, id:id};
     }catch(e){ return {ok:false}; }
   }
+  /* ADDED TO TODAY'S SESSION RATHER THAN STARTED BESIDE IT. This answers null
+     for everything it must not touch - a paying client, no session yet today,
+     a read that did not land, a patch that failed - and every one of those
+     falls straight through to the ordinary insert below. */
+  try{
+    var _m=await _woMergeIntoToday(row);
+    if(_m){ try{ window.__woInsertBusy=false; }catch(e){} return _m; }
+  }catch(e){}
   var payload = Object.assign({}, row);
   var attempt = await tryInsert(payload);
   // Gracefully drop any column the DB doesn't have yet (title, exercises, photo, intensity…)
