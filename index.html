@@ -9929,7 +9929,7 @@ body.hasnav #tToday{padding-bottom:96px;}
            thing wherever you meet him. -->
       <div style="flex:1;min-width:0;">
         <div style="font-size:19px;font-weight:800;letter-spacing:-0.5px;color:var(--gold);line-height:1.05;font-family:'Plus Jakarta Sans',sans-serif;">Jim</div>
-        <div style="font-size:11.5px;color:rgba(240,236,228,0.72);margin-top:3px;line-height:1.35;">Your AI logging assistant. Say what you ate, trained, or did.</div>
+        <div style="font-size:11.5px;color:rgba(240,236,228,0.72);margin-top:3px;line-height:1.35;">Your AI logging assistant. Say what you ate or trained — or send a photo or a screenshot.</div>
       </div>
     </div>
     <div id="slogBody" style="flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px;background:#131313;min-height:0;display:flex;flex-direction:column;justify-content:flex-end;"></div>
@@ -10414,7 +10414,7 @@ body.hasnav #tToday{padding-bottom:96px;}
     <div id="journalTabHost" style="display:none;"></div>
     <div class="chat-header jimHd" id="askChatHeader">
       <div class="jimHdT">Jim</div>
-      <div class="jimHdS">Your AI logging assistant. Tell me your day and I’ll take it down.</div>
+      <div class="jimHdS">Your AI logging assistant. Tell me your day — food, training, a photo or a screenshot.</div>
     </div>
     <div class="chat-scroll" id="chatScroll">
       <div class="chat-empty" id="chatEmpty">
@@ -88036,6 +88036,27 @@ var _JIM_PROGRESS_RE=new RegExp(
   +'|\\bfor\\s+(?:my\\s+)?progress\\b'
   +'|\\btransformation\\s*(?:photo|pic|picture|shot)\\b', 'i');
 function _jimProgressPhotoAsked(t){ return _JIM_PROGRESS_RE.test(String(t||'')); }
+/* ANSWERING THE QUESTION, versus saying it in passing. _JIM_PROGRESS_RE is
+   written to spot somebody VOLUNTEERING that a photo is a progress shot inside
+   a longer sentence, so it insists on "progress photo" / "body check" and is
+   right to. But when Jim has just asked "meal, progress or workout?", a one
+   word reply is the whole answer and has no room for the noun. Both shapes
+   count here, and nowhere else. */
+function _jimSaysProgress(t){
+  var s=String(t||'').trim();
+  if(!s) return false;
+  if(/\bmeal\b/i.test(s)) return false;
+  if(_JIM_PROGRESS_RE.test(s)) return true;
+  return /^(?:progress|physique|body\s*(?:check|shot))\.?$/i.test(s);
+}
+/* "Training" is what she typed. So are these. A bare "workout", "gym", "run",
+   "boxing", "cardio", "lifted" - the words somebody actually uses when the
+   question is what the photo is OF. */
+var _JIM_WO_ANS_RE=new RegExp(
+  '^(?:training|workout|work\\s*out|gym|exercise|cardio|run|running|ride|cycling|'
+  +'swim|swimming|boxing|lift|lifted|lifting|strength|session|class)\\b'
+  +'|\\b(?:my|the|todays?|this)\\s+(?:training|workout|gym|run|session|class)\\b', 'i');
+
 // ===== MEAL CONTEXT, WIDER THAN "THIS LOOKS LIKE A MEAL" ================
 // Caught on the deployed screen: a photo captioned "my lunch" was asked "Meal
 // or progress photo?" instead of going to the meal path. _jimLooksLikeMeal is
@@ -88137,6 +88158,92 @@ var _JIM_PHOTO_PEND_MS=10*60*1000;
 function _jimPhotoPendLive(){
   try{ return !!(_jimPhotoPend && _jimPhotoPend.photo && (Date.now()-_jimPhotoPend.at)<_JIM_PHOTO_PEND_MS); }catch(e){ return false; }
 }
+/* JIM LOOKS AT THE PHOTO BEFORE HE ASKS ABOUT IT (Yusuf, 15 Sep, off Lauren's
+   thread: "Make jim more communicative in helping them know what he can do and
+   make his memory not so [bad]").
+
+   "Meal or progress photo?" was a false choice. Lauren sent a screenshot of a
+   training session - neither of the two things on offer - answered "Training",
+   matched nothing, and was told it had not saved. She sent a second photo and
+   got the SAME question back. She ended up pasting her whole Runna plan as text
+   to get a run logged, and texted Yusuf: "I tried this!! But it thought it was
+   a progress photo."
+
+   The reader is the same one the progress-photo upload uses, asked a wider
+   question. Three answers matter and nothing else does:
+     meal     -> hands straight back to the meal path, untouched. This function
+                 has never had an opinion about food and still does not.
+     workout  -> a screen with exercise numbers on it and nobody in frame.
+     progress -> a person, photographed as the subject.
+   Anything less than certain returns '' and Jim asks - but now he asks a
+   question with the right options in it. */
+async function _jimPhotoWhat(dataUrl){
+  try{
+    var small=await downscaleImage(dataUrl, 900, 0.8);
+    var m=String(small).match(/^data:(image\/[a-z]+);base64,(.+)$/i);
+    if(!m) return '';
+    var res=await fetch('/.netlify/functions/analyze',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({max_tokens:200, temperature:0, messages:[{role:'user', content:[
+        {type:'image', source:{type:'base64', media_type:m[1], data:m[2]}},
+        {type:'text', text:'Reply ONLY compact JSON: {"what":"meal"|"workout"|"progress"|"unsure",'
+          +'"activity":"<exercise name if what=workout, else empty>",'
+          +'"detail":"<the numbers exactly as shown if what=workout, else empty>",'
+          +'"minutes":<whole minutes if shown, else null>}\n\n'
+          +'meal: food or drink is the subject.\n'
+          +'workout: a screenshot or photo of a SCREEN showing exercise data - distance, pace, '
+          +'duration, calories, heart rate, a route map, activity rings - with no person as the subject.\n'
+          +'progress: a human body photographed as the subject, a mirror or physique shot.\n'
+          +'unsure: anything else, or if you are not confident. Prefer unsure over guessing.\n'
+          +'Copy any figures exactly. Never invent or convert a number.'}
+      ]}]})
+    });
+    if(!res.ok) return '';
+    var data=await res.json();
+    var txt=''; (data.content||[]).forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; });
+    txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
+    var i=txt.indexOf('{'), j=txt.lastIndexOf('}');
+    if(i<0||j<i) return '';
+    var o=JSON.parse(txt.slice(i,j+1));
+    var w=String(o.what||'').toLowerCase();
+    if(w!=='meal' && w!=='workout' && w!=='progress') return '';
+    o.what=w;
+    return o;
+  }catch(e){ return ''; }
+}
+// The workout a training screenshot should have been, written the same way the
+// progress-photo upload writes one: the activity names itself, the figures are
+// copied, the image rides along.
+async function _jimPhotoWorkoutReply(photo, text, opts){
+  var code=null;
+  try{ code=(opts&&opts.forCode)||(cl&&cl.code)||null; }catch(e){}
+  if(!code) return null;
+  var read=null;
+  try{ read=await _jimPhotoWhat(photo); }catch(e){}
+  var act='', det='', mins=null;
+  if(read && read.what==='workout'){
+    act=String(read.activity||'').trim();
+    det=String(read.detail||'').trim();
+    try{ mins=(read.minutes!=null && !isNaN(+read.minutes))?Math.round(+read.minutes):null; }catch(e){}
+  }
+  if(!act){
+    // The picture did not say. What they TYPED is the next best source, and it
+    // is theirs - "Boxing, cardio and strength (full body)" is a better title
+    // than anything invented here.
+    var said=String(text||'').trim();
+    act=(said && said.length<=60) ? said : 'Workout';
+  }
+  var desc=det;
+  if(mins && det.indexOf(String(mins))<0) desc=(det?(det+' \u00b7 '):'')+mins+' min';
+  var ds=_jimProgressPhotoDay(text, opts);
+  var res=null;
+  try{
+    res=await insertWorkoutLog({client_code:code, title:act, description:(desc||null),
+                                date_str:ds, photo:photo, logged_at:new Date().toISOString()});
+  }catch(e){}
+  if(!res || !res.ok) return 'That did not save \u2014 nothing is on your training log. Try it again in a moment.';
+  return 'Logged as a workout \u2014 '+act+(desc?(' \u00b7 '+desc):'')+'.';
+}
 // ===== THE ROUTE ========================================================
 // Returns a STRING when it has handled the turn, and null to mean "not mine" —
 // which is every food photo, every photo it is unsure about after asking, and
@@ -88146,9 +88253,27 @@ async function _jimPhotoRoute(text, photos, opts){
   var has=!!(photos && photos.length);
   // 1. ANSWERING THE ONE QUESTION. Only ever reached because Jim asked it.
   if(!has && _jimPhotoPendLive() && t){
-    if(/\b(progress|physique|body)\b/i.test(t) && !/\bmeal\b/i.test(t)){
+    /* "BOXING, CARDIO AND STRENGTH (FULL BODY)" IS NOT A PROGRESS PHOTO
+       (Lauren Burnam, 15 Sep). She sent a photo, Jim parked it and asked his
+       question; four turns later she typed what her class actually was and Jim
+       answered "Progress photo added for today." She replied "??".
+
+       The cause was this line: a bare \bbody\b matched "full body", so a
+       sentence naming a boxing class filed her parked photo as a physique shot.
+       _JIM_PROGRESS_RE is the careful reader that already exists for exactly
+       this - it wants "body CHECK", "body SHOT", "progress PHOTO" - and a bare
+       one-word answer is allowed alongside it, because "progress" on its own IS
+       the answer to the question Jim just asked. */
+    if(_jimSaysProgress(t)){
       var pend=_jimPhotoPend; _jimPhotoPend=null;
       return await _jimProgressPhotoReply(pend.photo, t, opts);
+    }
+    // TRAINING IS AN ANSWER. She typed "Training" and it matched nothing at
+    // all, so Jim told her it had not saved - the first wrong turn, and every
+    // other one in that thread followed from it.
+    if(_JIM_WO_ANS_RE.test(t)){
+      var wp=_jimPhotoPend; _jimPhotoPend=null;
+      return await _jimPhotoWorkoutReply(wp.photo, t, opts);
     }
     if(/\b(meal|food|lunch|dinner|breakfast|snack)\b/i.test(t)){
       // Handed straight back to the untouched path, carrying the parked photo.
@@ -88168,10 +88293,34 @@ async function _jimPhotoRoute(text, photos, opts){
   try{ if(!mealish && t && _JIM_MEAL_CTX_RE.test(t)) mealish=true; }catch(e){}   // "my lunch" is about food
   try{ if(!mealish && window._mealSlot) mealish=true; }catch(e){}   // a door opened for a meal slot
   if(t && mealish) return null;
-  // 4. NOTHING SAID, OR NOTHING THAT DECIDES IT. ONE question, then silence.
+  // 3b. THEIR WORDS SAY TRAINING. Same standing as the progress branch above.
+  if(t && _JIM_WO_ANS_RE.test(t)) return await _jimPhotoWorkoutReply(photos[0], t, opts);
+  // 4. NOTHING SAID, OR NOTHING THAT DECIDES IT. LOOK AT IT FIRST.
   if(!t || !mealish){
+    var seen=null;
+    try{ seen=await _jimPhotoWhat(photos[0]); }catch(e){}
+    if(seen && seen.what==='meal'){
+      // Straight back to the sacred path. Still no opinion about food here.
+      _jimPhotoPend=null;
+      return null;
+    }
+    if(seen && seen.what==='workout'){
+      _jimPhotoPend=null;
+      return await _jimPhotoWorkoutReply(photos[0], t, opts);
+    }
+    if(seen && seen.what==='progress'){
+      _jimPhotoPend=null;
+      return await _jimProgressPhotoReply(photos[0], t, opts);
+    }
+    /* ONLY NOW DOES HE ASK, and the question finally has the right options in
+       it. THE SECOND ASK IS NOT THE FIRST ONE REPEATED: Lauren got "Meal or
+       progress photo?" twice in a row, which is what made it feel like nothing
+       was being remembered. If a photo is already parked, the question says so
+       and offers the way out. */
+    var again=_jimPhotoPendLive();
     _jimPhotoPend={photo:photos[0], at:Date.now()};
-    return 'Meal or progress photo?';
+    if(again) return 'Still not sure what I am looking at, sorry \u2014 tell me in a word and I will take it: meal, progress, or training. Or just say what you did and I will log that instead.';
+    return 'What is this one \u2014 a meal, a progress photo, or a training session?';
   }
   return null;
 }
@@ -88311,6 +88460,20 @@ async function jimDoor(text, photos, opts){
   try{
     var _pgr=await _jimPhotoRoute(text, photos, opts);
     if(_pgr!=null) return _pgr;
+    /* A LINK HE CANNOT OPEN, AND THE THING THAT DOES WORK (Lauren, 15 Sep).
+       She sent a Strava link; Jim said "Got the Strava link - what was the
+       workout? Give me the exercises and I'll log it", so she pasted her entire
+       Runna plan by hand. He CAN read a screenshot of that same session - it is
+       the one thing he is best at - and nobody had ever told her. Saying what
+       he cannot do without naming what he can is how somebody ends up doing his
+       job for him. */
+    if(!photos || !photos.length){
+      var _lk=String(text||'').trim();
+      if(/^https?:\/\/\S+$/i.test(_lk) && /strava|garmin|runna|nike|fitbit|whoop|peloton|applewatch|apple\.co/i.test(_lk)){
+        return 'I cannot open links \u2014 but a screenshot of that session I can read straight off the picture: '
+             + 'the activity, the time, the distance and the minutes. Send me the screenshot and I will log it.';
+      }
+    }
   }catch(e){ console.error('progress photo route', e); }
   var _calOk=false;
   try{ _calOk=_jimCalendarAsked(text); }catch(e){ _calOk=false; }

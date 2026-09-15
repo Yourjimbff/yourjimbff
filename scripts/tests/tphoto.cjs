@@ -111,7 +111,16 @@ t(/if\(!has\) return null;/.test(RT), 'no photo in the turn is not its business'
 t(/if\(t && mealish\) return null;/.test(RT), 'A FOOD PHOTO IS HANDED STRAIGHT BACK — the sacred path');
 t(/_jimLooksLikeMeal/.test(RT), 'and it uses the meal recogniser this file already has');
 t(/window\._mealSlot/.test(RT), 'a door opened for a meal slot counts as meal context too');
-t(/return 'Meal or progress photo\?';/.test(RT), 'ambiguous asks ONE question, in those words');
+/* 15 Sep, Lauren Burnam. "Meal or progress photo?" was a FALSE CHOICE and this
+   line was pinning it. She sent a training screenshot - neither option - said
+   "Training", matched nothing, and was told it had not saved. The rule is no
+   longer "ask one question"; it is LOOK FIRST, and only ask when the picture
+   genuinely does not say, with the third option in the question. */
+t(/await _jimPhotoWhat\(photos\[0\]\)/.test(RT), 'ambiguous LOOKS at the photo before asking');
+t(/a meal, a progress photo, or a training session\?/.test(RT),
+  '...and when it still has to ask, the third option is in the question');
+t(!/return 'Meal or progress photo\?';/.test(RT), 'the two-option question is gone');
+t(/if\(again\) return 'Still not sure/.test(RT), 'and asking twice does not repeat the same words');
 t((RT.match(/return '[^']*\?'/g)||[]).length===1, 'and exactly one question is ever asked', String((RT.match(/return '[^']*\?'/g)||[]).length));
 t(/_jimPhotoPend=\{photo:photos\[0\], at:Date\.now\(\)\}/.test(RT), 'the photo is parked while it asks');
 t(/jimTurn\(t, \[mp\.photo\], opts\)/.test(RT), 'and answering "meal" hands the parked photo to the untouched path');
