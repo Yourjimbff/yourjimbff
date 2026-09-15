@@ -215,7 +215,18 @@ t(/_tlStatsBlock/.test(after) && /_tlLateAsks/.test(after), 'stats sit UNDER the
 // the "window." off, and it is not a hole. Anything else unresolved IS a hole,
 // which is the whole reason this assertion exists: the lifter's own note says a
 // suite can go green over a chain with a gap in it.
+/* A HOST GLOBAL IS NOT A HOLE (15 Sep). The chase reports every name it could
+   not find a declaration for, and the language's own objects have no declaration
+   in this file to find - so the first function pulled in that uses a bare JSON
+   or Math reported it as a gap in the chain. Named here rather than waved away,
+   so a REAL missing dependency still fails this assertion. */
+const HOST=['JSON','Math','Date','Object','Array','String','Number','Boolean','RegExp',
+            'Promise','Error','Map','Set','parseInt','parseFloat','isNaN','encodeURIComponent',
+            'decodeURIComponent','atob','btoa','setTimeout','clearTimeout','setInterval',
+            'clearInterval','console','window','document','localStorage','sessionStorage',
+            'fetch','navigator','location','Intl','requestAnimationFrame','cancelAnimationFrame'];
 const holes=CL.unresolved.filter(function(n){
+  if(HOST.indexOf(n)>-1) return false;
   // Comments out first: a name mentioned in prose is not a reference to it.
   const stripped=src.replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/[^\n]*/g,'').split('window.'+n).join('window.__WINPROP__');
   return new RegExp('(^|[^.A-Za-z0-9_$])'+n+'(?![A-Za-z0-9_$])').test(stripped);

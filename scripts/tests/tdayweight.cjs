@@ -104,7 +104,17 @@ global.window._tlRO=true;
 t(_dayWeightHtml(ds)==='' && _tlStatsBlock(ds, true, false, {})==='', 'the trainer read-only copy draws none of it');
 global.window._tlRO=false;
 
+/* A HOST GLOBAL IS NOT A HOLE (15 Sep). The chase reports every name it could
+   not find a declaration for, and the language's own objects have no declaration
+   in this file to find. Named here rather than waved away, so a REAL missing
+   dependency still fails this assertion. */
+const HOST=['JSON','Math','Date','Object','Array','String','Number','Boolean','RegExp',
+            'Promise','Error','Map','Set','parseInt','parseFloat','isNaN','encodeURIComponent',
+            'decodeURIComponent','atob','btoa','setTimeout','clearTimeout','setInterval',
+            'clearInterval','console','window','document','localStorage','sessionStorage',
+            'fetch','navigator','location','Intl','requestAnimationFrame','cancelAnimationFrame'];
 const holes=CL.unresolved.filter(function(n){
+  if(HOST.indexOf(n)>-1) return false;
   const stripped=src.replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/[^\n]*/g,'').split('window.'+n).join('window.__WINPROP__');
   return new RegExp('(^|[^.A-Za-z0-9_$])'+n+'(?![A-Za-z0-9_$])').test(stripped);
 });

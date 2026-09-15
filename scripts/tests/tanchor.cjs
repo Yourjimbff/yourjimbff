@@ -39,8 +39,16 @@ const _oldRoad = src.slice(src.indexOf("content.push({type:'text', text: sys+_nl
 t(/_nlItemsRule\(\)/.test(_oldRoad) && /The client says: "/.test(_oldRoad), 'the estimate asks for rows');
 const _enrich = src.slice(src.indexOf('async function _nlEnrichRun'), src.indexOf('async function _nlEnrichRun')+1400);
 t(/_nlItemsRule\(\)/.test(_enrich) && /The client says: "'\+left/.test(_enrich), 'the enrich asks for rows');
-t(/est=_nlSettle\(await _estP\)/.test(src),                    'the estimate is settled');
-t(/est=_nlSettle\(await _nlEstimate\(content, null\)\)/.test(src), 'the enrich is settled');
+/* _nlSettle TOOK A SECOND ARGUMENT ON 15 Sep - the client's own line - so that
+   a portion they measured is applied before the rows are summed rather than
+   after (Kristyn Perin; see tstatedwins.cjs). These two asserted the exact call
+   text, so they read a new argument as a missing call. What they are actually
+   protecting is that every road out of the estimate is settled, so that is what
+   they check now, and they check the line goes with it. */
+t(/est=_nlSettle\(await _estP, line\)/.test(src),
+  'the estimate is settled, with her line');
+t(/est=_nlSettle\(await _nlEstimate\(content, null\), left\.join\(', '\)\)/.test(src),
+  'and so is the enrich, with the leftovers it was given');
 t(/var sys=_NL_SYS;/.test(src),                               'the old constant is untouched');
 
 console.log('\n  a whole-plate 520 over macros that do not add up cannot survive:');

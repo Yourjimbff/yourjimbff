@@ -217,9 +217,17 @@ t(!/function\s+changeAccessCode\s*\(/.test(src), 'the function is gone');
 t(!/getElementById\('acNew'\)/.test(src) && !/getElementById\('acConfirm'\)/.test(src),
   'and nothing reads its inputs');
 t(!/id=["\']ac(New|Confirm)["\']/.test(src), 'and the inputs do not exist to be read');
-// Only the WRITER went. A device holding an entry from before still signs in.
-t(/localStorage\.getItem\('yjb_custom_trainer_codes'/.test(src),
-  'the custom-code readers stay, so an old device is not locked out');
+/* THE READERS WENT TOO, ON 15 Sep, AND THIS ASSERTION WAS HOLDING THE DOOR OPEN.
+   It pinned the two readers in place so "a device holding an entry from before
+   still signs in" - which also meant anybody could type that entry into their
+   own browser console and become a trainer. Somebody did. The writer being gone
+   never mattered while the readers trusted a store the attacker controls.
+   Inverted deliberately, and the reason is kept rather than the assertion, so
+   nobody restores the readers for the same kind reason a second time. */
+t(!/localStorage\.getItem\('yjb_custom_trainer_codes'/.test(src),
+  'nothing READS the custom-code map any more - that map was the trainer backdoor');
+t(/localStorage\.removeItem\('yjb_custom_trainer_codes'\)/.test(src),
+  'and a device still carrying one has it wiped rather than honoured');
 t(!/localStorage\.setItem\('yjb_custom_trainer_codes'/.test(src),
   'but nothing writes that map any more');
 // The rebuild is ordered, and it goes through the door or not at all.

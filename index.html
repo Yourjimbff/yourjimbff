@@ -12818,7 +12818,14 @@ window.addEventListener('load', function(){
     if(savedCode && !CLIENTS[savedCode]){
       try{
         var _self=JSON.parse(localStorage.getItem('yjb_self_client')||'null');
-        if(_self && _self.code===savedCode) CLIENTS[savedCode]=_self;
+        /* THE CACHE MAY REMEMBER WHO YOU ARE, NOT WHAT YOU ARE (15 Sep). This
+           record is written by the app but it lives in localStorage, which the
+           person holding the device can edit - so an isTrainer riding in here
+           was a second way to promote yourself, identical in effect to the
+           yjb_custom_trainer_codes map that has just been removed. The flag is
+           dropped on the way in; the session says what they are, a moment
+           later, from the server. */
+        if(_self && _self.code===savedCode){ try{ delete _self.isTrainer; }catch(e){} CLIENTS[savedCode]=_self; }
       }catch(e){}
     }
     if(savedCode && !CLIENTS[savedCode]) await loadRosterOrCarryOn();
@@ -14094,14 +14101,11 @@ async function _doLoginInner(code){
   loadRosterOrCarryOn();
   // First the map — a returning device already knows itself and owes nobody a trip.
   var c = CLIENTS[entered];
-  // Then custom trainer access codes (set via changeAccessCode)
-  if(!c){
-    var customMap = {};
-    try{ customMap = JSON.parse(localStorage.getItem('yjb_custom_trainer_codes')||'{}'); }catch(e){}
-    if(customMap[entered]){
-      c = customMap[entered];
-    }
-  }
+  /* THE localStorage SIGN-IN FALLBACK IS GONE (15 Sep, see isTrainer). It let a
+     map the person controls stand in for the client record, so an invented code
+     could sign in - as a trainer - without the server being asked at all. A
+     cache miss now goes to the identity read below, which is the honest path and
+     was always the next line anyway. */
   // THE IDENTITY READ. Raw fetch with its own status check, deliberately NOT
   // sbSelect: sbSelect returns [] on failure and never throws, so a refused or
   // timed-out read is indistinguishable from "no such code" — and telling someone
@@ -14195,7 +14199,12 @@ async function _doLoginInner(code){
   localStorage.setItem('yjb_logged_in', code);
   // The one record this device is allowed to remember: its own. Auto-login seeds
   // from this now that no roster ships in the file.
-  try{ localStorage.setItem('yjb_self_client', JSON.stringify(cl)); }catch(e){}
+  /* Stored WITHOUT the trainer flag, so nothing downstream can be tempted to
+     trust it and nobody inherits one from a device they borrowed. */
+  try{
+    var _selfSafe=Object.assign({}, cl); delete _selfSafe.isTrainer; delete _selfSafe.is_trainer;
+    localStorage.setItem('yjb_self_client', JSON.stringify(_selfSafe));
+  }catch(e){}
   // THE SILENT EXCHANGE. Both routes into the app end here — a fresh sign-in and the
   // restore of someone already signed in — so this one line is what gets a session onto
   // every device without a single client being asked to do anything. It is why nobody
@@ -66801,7 +66810,38 @@ function _mtApplyResult(res){
 // The parenthetical is dropped first: "(roughly 7-8oz)" is the client showing
 // their working, and reading a second number out of it is how one portion
 // becomes two.
-var _MT_UNIT_RE=new RegExp("^(oz|ounce|ounces|palm|palms|handful|handfuls|slice|slices|tbsp|tablespoon|tablespoons|thumb|thumbs|scoop|scoops|half|halves|each)$","i");
+/* ===== GRAMS ARE A WEIGHT ON THIS ROAD TOO (Kristyn Perin, 15 Sep) =======
+   "When I added a photo to my dinner meal it added 500 calories even though the
+    description listed the weighed out portions of each item."
+
+   Chasing that turned up something worse sitting underneath it, and it is the
+   SAME bug that gave Scott 34,750 calories on 2 Sep - fixed that day on one
+   road and never on this one.
+
+   _mtQty has understood g, kg, lb and the rest since Scott's breakfast:
+   MT_WEIGHT_G is right there and it converts them correctly. But it only ever
+   sees a unit that _mtParse hands it, and _mtParse gated units through this
+   list - which had ounces and not a single gram spelling. So a typed phrase
+   lost its unit BEFORE the converter could do its job, and the number fell
+   through as a bare COUNT of whatever the row is priced in.
+
+   MEASURED, ON THE SERVED BUILD, in her own words and a client's:
+     "115 g of rice"            -> 115 handfuls -> 18,078 cal, 4,025g carbs
+     "200 grams of sweet potato"-> 200 handfuls -> 24,920 cal, 5,600g carbs
+   Both should be a few hundred calories.
+
+   THE LIST IS NOW BUILT FROM THE TABLES THAT DO THE WORK - every spelling
+   MT_WEIGHT_G converts, plus the portion words and cup, which _mtQty
+   also handles - so a unit added to those tables can never again be legal in
+   the converter and illegal in the parser. That drift IS the bug. */
+var _MT_UNIT_RE=(function(){
+  var words=['palm','palms','handful','handfuls','slice','slices','tbsp','tablespoon','tablespoons',
+             'thumb','thumbs','scoop','scoops','half','halves','each','cup','cups'];
+  try{ Object.keys(MT_WEIGHT_G||{}).forEach(function(k){ if(words.indexOf(k)<0) words.push(k); }); }catch(e){}
+  /* A hard floor, so a missing table cannot quietly narrow this back to nothing. */
+  ['oz','ounce','ounces','g','gram','grams'].forEach(function(k){ if(words.indexOf(k)<0) words.push(k); });
+  return new RegExp('^('+words.join('|')+')$','i');
+})();
 function _mtParse(phrase){
   var t=String(phrase==null?'':phrase).toLowerCase();
   t=t.replace(/\([^)]*\)/g,' ');                 // drop their working out
@@ -79978,18 +80018,58 @@ var coachMenuLoadedFor = null;
 // credential in the source. The roster loader and the sign-in fallback both push
 // trainer codes in here; the primary trainer (clients.is_primary) is kept first.
 var TRAINER_CODES = [];
-// Load any custom trainer access codes registered via changeAccessCode
-try{
-  var _customMap = JSON.parse(localStorage.getItem('yjb_custom_trainer_codes')||'{}');
-  Object.keys(_customMap).forEach(function(k){
-    if(_customMap[k] && _customMap[k].isTrainer && TRAINER_CODES.indexOf(k) === -1){
-      TRAINER_CODES.push(k);
-    }
-  });
-}catch(e){}
+/* ===== THE TRAINER BACKDOOR IS CLOSED (Yusuf, 15 Sep) ====================
+   "someone was able to change user type to trainer."
 
+   THEY DID NOT NEED TO BREAK ANYTHING. Two lines used to sit here reading
+   yjb_custom_trainer_codes out of localStorage and pushing every key marked
+   isTrainer straight into TRAINER_CODES. localStorage is a text box anybody can
+   type into from their own browser console, so becoming a trainer was one line:
+   set the key, reload, done. A second reader in the sign-in path went further -
+   it let that same map STAND IN for the client record, so an invented code
+   signed in as a trainer without the server ever being asked.
+
+   THE WRITER WAS DELETED ON 29 AUG and these two readers were deliberately left
+   behind, so that "a device that has an entry from before would not lose its way
+   in." That trade was wrong: it kept a credential store that the person holding
+   the device controls. Nobody legitimate depends on it - every real trainer flag
+   comes from clients.is_trainer, read from the server at sign-in and again by
+   the roster loader - so the readers go, and the stale key is wiped on the way
+   past so no device keeps carrying one.
+
+   AND THE CLAIM GETS A VETO. TRAINER_CODES is now only ever filled from the
+   server, but the session token names who this person actually is, signed by a
+   secret the browser does not hold. If it says this code is not a trainer, that
+   answer wins over any list. A forged token is still possible - the page cannot
+   check a signature - which is exactly why this is a lock on the DOOR and not
+   the lock on the safe: the safe is row-level security on the tables, and that
+   is the work this is a down payment on. */
+try{ localStorage.removeItem('yjb_custom_trainer_codes'); }catch(e){}
+function _sessClaims(){
+  try{
+    var s=(typeof _sessLoad==='function')?_sessLoad():null;
+    if(!s || !s.token) return null;
+    var seg=String(s.token).split('.')[1]; if(!seg) return null;
+    return JSON.parse(atob(seg.replace(/-/g,'+').replace(/_/g,'/')));
+  }catch(e){ return null; }
+}
 function isTrainer(code){
-  return TRAINER_CODES.indexOf(code) !== -1;
+  var c=String(code==null?'':code);
+  if(!c) return false;
+  /* THE PERSON HOLDING THIS BROWSER IS ANSWERED BY THEIR SESSION, and by nothing
+     else. session.js looks the code up in `clients` with the service key - a
+     table the public key cannot read, let alone write - and signs the answer.
+     It is minted before any trainer decision is taken (see THE SILENT EXCHANGE
+     in doLogin), so this is available when it is needed.
+     It fails CLOSED: no session, no trainer. That is the right way for this one
+     to fail, and it is why the exchange above is raced rather than skipped. */
+  try{
+    var j=_sessClaims();
+    if(j && String(j.client_code||'')===c) return j.is_trainer===true;
+  }catch(e){}
+  /* ANYBODY ELSE is a roster question, and the roster is only ever filled from
+     the server. */
+  return TRAINER_CODES.indexOf(c) !== -1;
 }
 /* ===== THE FREE APP TIER (Yusuf, 12 Sep) ================================
    "It says Yusuf needs your number and he does not. They also don't need
@@ -81955,9 +82035,10 @@ function spawnConf(){var w=document.getElementById('confw');var cols=['#f5c518',
 // table back, and make a half-migration impossible rather than merely unlikely.
 // It is real admin capability and it earns a rebuild, not a burial.
 //
-// The two READERS of yjb_custom_trainer_codes stay (the sign-in fallback and the
-// TRAINER_CODES bootstrap). Nothing writes that map now, but a device that has
-// an entry from before would lose its way in if the readers went with it.
+// BOTH READERS ARE GONE NOW (15 Sep). Keeping them so an old device would not
+// "lose its way in" left a credential store that the person holding the device
+// could type into, and somebody used it to make themselves a trainer. See the
+// note on isTrainer. The stale key is wiped on load.
 
 // Setup is a route now, not a sheet. This used to relocate #profilePanelWrap into a
 // modal — a live subtree moving across tabs, which never moved back. It stays as the
@@ -93293,7 +93374,18 @@ var _NL_SYS='You are reading one meal for a fitness coach whose clients measure 
    enrich pass that prices what the table missed. */
 function _nlItemsRule(){
   var mt=''; try{ mt=_mtPromptBlock(); }catch(e){ mt=''; }
-  return '\n\nALSO give "items": ONE ROW PER FOOD they named, each {"name","table_key","qty","unit","calories","protein","carbs","fat"}. '
+  /* SAID IN THE PROMPT AS WELL AS ENFORCED AFTER IT (Kristyn Perin, 15 Sep).
+     The arithmetic above already replaces a measured row with her own figure,
+     so this is not what makes it true - but a model told the amount is settled
+     stops re-reading the plate to argue with it, which is what put 500
+     calories on her dinner. Belt and braces, and the braces are the code. */
+  return '\n\nA QUANTITY THE CLIENT WROTE IS A FACT THEY MEASURED. If they state an amount - '
+    +'"5.5 oz lean ground beef", "115 g of rice", "1 tbsp sauce" - use exactly that amount. A photo '
+    +'is evidence of WHAT is on the plate, never of HOW MUCH when they have already said how much: '
+    +'do not scale it up because the plate looks full, do not round it, and do not add a food they '
+    +'did not mention unless it is plainly visible and plainly unlisted. Where they named no amount, '
+    +'the picture is exactly what you should judge it by.'
+    +'\n\nALSO give "items": ONE ROW PER FOOD they named, each {"name","table_key","qty","unit","calories","protein","carbs","fat"}. '
     +'table_key is the exact key from the table below, or null. For a food in the table you do NOT need its macros - the app prices it from the table. '
     +'Put your own macros on the rows the table does not cover. Price each row on its own; never a round number for the whole plate. The app adds the rows up itself.'
     +(mt?('\n'+mt):'');
@@ -93303,9 +93395,84 @@ function _nlItemsRule(){
 // "Gyro Chicken with Pita & Hummus" would price as one palm of chicken - and
 // the calories are instead made to agree with the macros at 4/4/9. A 520
 // over 58/18/20 cannot survive that either.
-function _nlSettle(est){
+/* ===== WHAT SHE WROTE IS A MEASUREMENT, NOT A SUGGESTION =================
+   Kristyn Perin, 15 Sep: "When I added a photo to my dinner meal it added 500
+   calories even though the description listed the weighed out portions of each
+   item."
+   Yusuf: "Don't just make a short term fix for her log, make a long-term fix.
+   When someone writes what it is we always factor that in."
+
+   WHY A PHOTO COULD OVERRULE HER SCALE. On the reading road the picture and
+   her sentence go up together and ONE answer comes back: one row per food,
+   each carrying the model's own qty and unit. The macro table then prices
+   those rows faithfully - from the model's numbers. So her "5.5 oz" was never
+   held anywhere as a fact. It was a phrase in a prompt, and a model looking at
+   a photograph of a full plate is free to decide the plate looks like more
+   than that. Nothing in the code said it could not.
+
+   SO THE NUMBER SHE MEASURED IS TAKEN BEFORE THE MODEL IS ASKED. Her line is
+   split into the same phrases the echo bar already shows her, and any phrase
+   carrying an explicit MEASURED amount of a food the table knows is priced
+   right there, off her figure, with no model involved. When the answer comes
+   back those rows are replaced with the locked ones and the rest of the plate
+   is kept. The photo still does everything it is good for: naming what she did
+   not name, and pricing what the table does not know - her Bachan's sauce.
+
+   MEASURED UNITS ONLY, AND THAT IS THE HONEST LINE. "5.5 oz" and "115 g" came
+   off a scale and nothing may touch them. "1 zucchini" is a count of a thing
+   that comes in sizes, and a photograph is genuinely better evidence of how
+   big that one was - so a bare count is left for the picture to judge. */
+function _nlLocks(line){
+  var out=[];
+  try{
+    if(!line) return out;
+    _nlEchoSplit(line).forEach(function(phrase){
+      var p=null; try{ p=_mtParse(phrase); }catch(e){ p=null; }
+      if(!p || !(p.qty>0) || !p.unit) return;
+      var priced=null; try{ priced=_mtFromPhrase(phrase); }catch(e){ priced=null; }
+      out.push({phrase:phrase, qty:p.qty, unit:p.unit, food:p.name,
+                key:(priced&&priced.mt)||null, priced:priced||null});
+    });
+  }catch(e){ return out; }
+  return out;
+}
+/* MATCHED ON THE TABLE KEY, never on the words. Both sides - her phrase and
+   the model's row - resolve through _mtRow to the same short key, so "5.5 oz
+   lean ground beef" and a row the model called "Lean ground beef (cooked)"
+   are one food without any string cleverness deciding it. */
+function _nlApplyLocks(est, locks){
+  try{
+    if(!est || est.error) return est;
+    if(!locks || !locks.length) return est;
+    if(!Array.isArray(est.items) || !est.items.length) return est;
+    var byKey={};
+    locks.forEach(function(L){ if(L && L.key && L.priced) byKey[L.key]=L; });
+    var keys=Object.keys(byKey);
+    if(!keys.length) return est;
+    var kept=est.items.filter(function(it){
+      var row=null;
+      try{ row=_mtRow((it&&(it.table_key||it.name))||''); }catch(e){ row=null; }
+      return !(row && byKey[row.k]);
+    });
+    /* HER ROWS CARRY HER FIGURE. The qty and unit are hers; _mtApplyItems
+       prices them from the table exactly as it prices everything else, so a
+       locked row and a free row are worked out by the same arithmetic and the
+       total cannot disagree with its parts. */
+    var forced=keys.map(function(k){
+      var L=byKey[k];
+      return {name:L.priced.name, table_key:k, qty:L.qty, unit:L.unit, _locked:1};
+    });
+    est.items=forced.concat(kept);
+    est._lockedCount=forced.length;
+  }catch(e){}
+  return est;
+}
+function _nlSettle(est, line){
   try{
     if(!est || est.error || est.name==null) return est;
+    /* HER MEASUREMENTS GO IN BEFORE THE SUM, so the total is built on her
+       figures rather than corrected towards them afterwards. */
+    if(line){ try{ _nlApplyLocks(est, _nlLocks(line)); }catch(e){} }
     if(Array.isArray(est.items) && est.items.length){ _mtApplyResult(est); return est; }
     var p=_mtRound(est.protein), c=_mtRound(est.carbs), f=_mtRound(est.fat);
     if(p||c||f){ est.protein=p; est.carbs=c; est.fat=f; est.calories=_mtCal(p,c,f); }
@@ -93554,7 +93721,10 @@ async function _nlEnrichRun(st, echo, rowId){
       +_nlItemsRule()
       +refs
       +'\n\nThe client says: "'+left.join(', ')+'"'}];
-    est=_nlSettle(await _nlEstimate(content, null));
+    /* The leftovers carry their own stated amounts too - this pass exists
+       because the table did not know these foods, not because she stopped
+       measuring them. */
+    est=_nlSettle(await _nlEstimate(content, null), left.join(', '));
   }catch(e){ est=null; }
   if(!est || est.error) return null;
   var addCal=Math.round(+est.calories||0);
@@ -93709,7 +93879,7 @@ async function nlSubmit(){
     if(est && est._est!==undefined){
       // the estimate crossed first
       var _e0=est._est; est=null;
-      try{ est=_nlSettle(_e0); }catch(e){ est=null; }
+      try{ est=_nlSettle(_e0, line); }catch(e){ est=null; }
       if(est && !est.error){ est.source='estimate'; }
       if(!est && _et.signal && _et.signal.aborted) _timedOut=true;
       // the label is still reading (unless it already came back empty)
@@ -93741,7 +93911,7 @@ async function nlSubmit(){
       _et.abort();               // the label answered; nothing is waiting on the estimate
     } else {
       // the label came back empty first; wait for the estimate
-      try{ est=_nlSettle(await _estP); }catch(e){ est=null; }
+      try{ est=_nlSettle(await _estP, line); }catch(e){ est=null; }
       if(est && !est.error) est.source='estimate';
       if(!est && _et.signal && _et.signal.aborted) _timedOut=true;
     }

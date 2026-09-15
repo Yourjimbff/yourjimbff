@@ -36,6 +36,18 @@ function liftLine(startsWith) {
   if (l == null) throw new Error('SEAM MOVED: line not found: ' + startsWith);
   return l;
 }
+// _MT_UNIT_RE STOPPED BEING ONE LINE (15 Sep). It is generated from MT_WEIGHT_G
+// now rather than typed out beside it, because the two drifting apart is what
+// let "115 g of rice" price as 115 handfuls. liftLine took its first line and
+// this whole suite died on a syntax error - which is the failure mode the
+// comment above is about, so it gets a reader instead of a shrug.
+function liftIife(startsWith) {
+  const s0 = L.findIndex(l => l.startsWith(startsWith));
+  if (s0 < 0) throw new Error('SEAM MOVED: not found: ' + startsWith);
+  if (/;\s*$/.test(L[s0]) && !/\{\s*$/.test(L[s0])) return L[s0];   // still one line
+  for (let i = s0; i < L.length; i++) if (/\}\)\(\);\s*$/.test(L[i])) return L.slice(s0, i + 1).join('\n');
+  throw new Error('SEAM MOVED: no close found for ' + startsWith);
+}
 
 // SEEDING THE NAMES THE LIFTER NEVER TOOK (3 Sep). This suite could not run at
 // all -- it died on "MT_G_PER_OZ is not defined" before reaching a single table
@@ -56,7 +68,7 @@ const src = [
   'var _MT_BY=null;',
   lift('_mtIndex'), lift('_mtRow'), lift('_mtRound'), lift('_mtCal'),
   lift('_mtQty'), lift('_mtItem'), lift('_mtApplyItems'), lift('_mtSum'),
-  lift('_mtApplyResult'), liftLine('var _MT_UNIT_RE'), lift('_mtParse'), lift('_mtFromPhrase'), lift('_mtPromptBlock'),
+  lift('_mtApplyResult'), liftIife('var _MT_UNIT_RE'), lift('_mtParse'), lift('_mtFromPhrase'), lift('_mtPromptBlock'),
   'module.exports={MT_ROWS,MT_G_PER_OZ,_mtRow,_mtRound,_mtCal,_mtQty,_mtItem,_mtApplyItems,_mtSum,_mtApplyResult,_mtParse,_mtFromPhrase,_mtPromptBlock,MB_PALM_OZ};'
 ].join('\n');
 const m = { exports: {} };
