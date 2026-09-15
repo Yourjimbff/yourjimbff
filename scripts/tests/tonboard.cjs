@@ -296,12 +296,18 @@ const tg2=slice('function _obTargets(){','function obRender(){');
 t(/intake_json:JSON\.stringify\(\{active:\(a\.active\|\|'none'\)\}\)/.test(tg2),
   'the answer being toggled rides in, not the one on the saved profile');
 /* 15 Sep: the call is still the only source of the numbers, but its result is
-   now held so two ceilings he named can be trimmed off the tail - carbs over
-   250 (300 if they are 6'1"+) and protein more than a tenth over goal weight.
-   The engine is untouched; nothing here recomputes it. */
+   now held so the ceilings he named can be trimmed off the tail - protein more
+   than a tenth over goal weight, and carbs above what that person's activity
+   level warrants. The engine is untouched; nothing here recomputes it.
+   THE CARB CAP MOVED OUT OF THIS FUNCTION the same day. It started as a height
+   test written inline; it is an activity test now, it has to rebalance fat to
+   keep the plate adding up, and that is a piece of arithmetic with its own
+   suite (tcarbcap.cjs) rather than four lines in the middle of a setup helper. */
 t(/var T=_fuelTargets\(\);/.test(tg2), 'and it is the same engine the Food page prints');
 t(!/prot\s*=\s*[\d.]+\s*\*/.test(tg2), 'no second formula - the caps only trim, never calculate');
-t(/if\(T && \+T\.carb>_carbCap\) T\.carb=_carbCap;/.test(tg2), 'the carb ceiling is applied');
+t(/if\(T\) _obCarbCap\(T, a\.active\);/.test(tg2),
+  'the carb ceiling is applied, off the answer they just gave');
+t(!/_carbCap=_tall/.test(src), 'and it is no longer a rule about how tall they are');
 t(/T\.prot=Math\.round\(_gw\*1\.1\)/.test(tg2), 'and protein stops a tenth over goal weight');
 t(!/T\.cal\s*=/.test(tg2), 'calories are never moved to satisfy a rule about one macro');
 const fp=slice('function _obFuelPaint(){','// Targets from the answers');
