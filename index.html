@@ -68863,7 +68863,8 @@ function _mbLabelPrompt(){
     +'Read whatever is printed, wherever it sits in the photo.\n\n'
     +'Reply with ONLY compact JSON. No markdown fence, no prose:\n'
     +'{"seen":"","name":"","brand":"","serving_text":"","servings_per_container":null,'
-    +'"calories":null,"protein":null,"carbs":null,"fibre":null,"fat":null,"kind":"","confidence":"high"}\n\n'
+    +'"calories":null,"protein":null,"carbs":null,"fibre":null,"fat":null,"sugar":null,'
+    +'"kind":"","confidence":"high"}\n\n'
     +'seen — FILL THIS FIRST, before any other field. Transcribe the macro text exactly as it '
     +'appears in the photo, e.g. "570 CALORIES  66 PROTEIN  50 CARBS  10 FAT  3 FIBER". '
     +'Copying the numbers out before you assign them is what stops them being guessed. If you '
@@ -68886,6 +68887,14 @@ function _mbLabelPrompt(){
     +'protein, carbs, fibre, fat — grams, for one serving. carbs is TOTAL carbohydrate: do not '
     +'subtract the fibre, report both separately. If fibre is shown as its own circle or line, '
     +'that is fibre, not carbs.\n'
+    /* SUGAR WAS NOT ON THE SHAPE AT ALL (Giovanni Mejia, 15 Sep). His panel
+       prints "Total Sugars 2g" in plain sight and his row stored 0 - not
+       because it was misread, because it was never asked for. The app has a
+       sugar column, a sugar rule in the meal prompt and a whole "tracked
+       quietly in the background" policy, and the one road that reads printed
+       numbers off a packet skipped it. Same null-not-zero rule as the rest. */
+    +'sugar — grams of TOTAL SUGARS for one serving, exactly as printed. This is the "Total '
+    +'Sugars" line, not "Added Sugars". null if the panel does not show it.\n'
     +'kind — one of protein, veg, carb, fruit; whichever the food mainly is.\n'
     +'confidence — "high" or "low".\n\n'
     +'Read only what is printed — never estimate from what the food looks like. A nutrient '
@@ -93232,12 +93241,26 @@ function _nlFromLabel(_lab){
   var _br=String(_lab.brand||'').trim();
   var _full=_nm ? (_br && _nm.toLowerCase().indexOf(_br.toLowerCase())<0 ? (_nm+' · '+_br) : _nm)
                 : (_br||'Meal');
+  /* "MEAL" IS NOT A NAME (Giovanni Mejia, 15 Sep). He photographed a nutrition
+     panel whose product name sits above the crop, so the reader honestly
+     returned no name and this wrote "Meal". His feed card then read
+     "Meal · Francese Sauce — 590 cal" beside a photo of a label saying 480, and
+     there was no way to tell from the card where 590 came from.
+     THE LABEL'S NUMBERS WIN, ALWAYS. Its silence about the name does not: the
+     estimator is already reading the same photo in parallel and it DOES name
+     it - it called this one "Flour Breaded Chicken Breast", off the printed
+     ingredients - and that answer is thrown away the moment the label wins the
+     race. The flag lets the caller borrow it, and "Meal" stays as the last
+     resort so nothing downstream ever meets an empty name. */
+  var _sug=(_lab.sugar==null || _lab.sugar==='') ? null : Math.round((+_lab.sugar||0)*_mul);
   return {
     name:_full.slice(0,80),
+    _unnamed:(!_nm && !_br),
     calories:Math.round(_pc*_mul),
     protein:Math.round(_lp*_mul),
     carbs:Math.round(_lc*_mul),
     fat:Math.round(_lf*_mul),
+    sugar:_sug,
     rating:'unknown',
     fromLabel:true, servings:_per,
     tidbit:(_per>1)
@@ -93570,7 +93593,13 @@ function _nlLabelLanded(st, lab){
         var same=Math.round(+r.calories||0)===Math.round(+_was.calories||0) && Math.round(+r.protein||0)===Math.round(+_was.protein||0)
               && Math.round(+r.carbs||0)===Math.round(+_was.carbs||0) && Math.round(+r.fat||0)===Math.round(+_was.fat||0);
         if(!same) return;
-        return applyFoodEdit(rowId, {calories:Math.round(+lab.calories||0), protein:Math.round(+lab.protein||0), carbs:Math.round(+lab.carbs||0), fat:Math.round(+lab.fat||0), name:(lab.name||undefined)})
+        /* Sugar rides the correction too, now that the label reads it. Only
+           when the label actually printed one - null means the panel did not
+           show it, and writing 0 there would store the absence of a reading as
+           a fact, which is the exact rule the reader itself obeys. */
+        var _patch={calories:Math.round(+lab.calories||0), protein:Math.round(+lab.protein||0), carbs:Math.round(+lab.carbs||0), fat:Math.round(+lab.fat||0), name:(lab.name||undefined)};
+        if(lab.sugar!=null) _patch.sugar=Math.round(+lab.sugar||0);
+        return applyFoodEdit(rowId, _patch)
           .then(function(ok){ if(ok){ try{ _tlRefreshDay(st.ds); }catch(e){} try{ showToast('Label read - '+Math.round(+lab.calories||0)+' cal, corrected'); }catch(e){} } });
       }).catch(function(){});
     }
@@ -93692,6 +93721,23 @@ async function nlSubmit(){
       }
     } else if(est){
       _labelWon=true; est.source='label';
+      /* BORROW A NAME, NEVER A NUMBER (Giovanni Mejia, 15 Sep). The label won,
+         so every figure on this row is printed fact and stays exactly as read.
+         But his panel had no product name on it, and "Meal" on a feed card is
+         what turned a perfectly correct 480 read into something he had to
+         come and ask about. The estimate is already in flight against the same
+         photo and it names things; this waits for it ONLY in the rare case the
+         label was silent, and takes the name and nothing else.
+         It cannot slow down the normal case - a label that printed a name
+         never enters this branch - and if the estimate fails or is empty the
+         row keeps "Meal" exactly as before. */
+      if(est._unnamed){
+        try{
+          var _lateEst=await _estP;
+          var _bn=(_lateEst && _lateEst.name) ? String(_lateEst.name).replace(/\s+/g,' ').trim() : '';
+          if(_bn && _bn.toLowerCase()!=='meal'){ est.name=_bn.slice(0,80); est._namedBy='estimate'; }
+        }catch(e){}
+      }
       _et.abort();               // the label answered; nothing is waiting on the estimate
     } else {
       // the label came back empty first; wait for the estimate
