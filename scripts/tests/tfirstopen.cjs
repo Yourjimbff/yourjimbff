@@ -224,14 +224,31 @@ t(new RegExp('macro:\\{calories:'+want.calories+', protein:'+want.protein
 t(/say:'45 minute pilates'/.test(demos), 'training rotates to a class, not just lifts');
 t(/\['Pilates','45 minutes'\]/.test(demos), '  and it comes back as one row with the time on it');
 /* PROGRESS IS NOT ONLY A NUMBER (15 Sep). Both sentences are his, written the
-   way he wrote them. The pill is IN the typed sentence because tapping Energy
-   in the real box drops "Energy:" into it - a demo that typed the line bare and
-   then claimed the app filed it under Energy would be showing a step that does
-   not exist. */
-t(/say:'Energy: Feeling really recharged after going to bed at 10pm\. i feel the will to live omfg'/.test(demos),
+   way he wrote them. */
+t(/say:'Feeling really recharged after going to bed at 10pm\. i feel the will to live omfg'/.test(demos),
   'progress rotates to a journal entry, his words exactly');
-t(/say:'Nutrition: day 10 no junk food\. my stomach feels SO good\.'/.test(demos),
+t(/say:'day 10 no junk food\. my stomach feels SO good\.'/.test(demos),
   '  and a second one on the nutrition pill');
+/* PRESS, THEN WRITE (Yusuf, 15 Sep, correcting the first pass: "thats not what
+   i meant ... someone clicks energy, then they write the text"). The first
+   version typed "Energy: " as part of the sentence, because that is the string
+   ciPill stores. It is not what a person DOES: on their screen there is a row
+   of five pills above an empty box. So the row is drawn, the pill is lit, and
+   the sentence types bare. */
+t(!/say:'Energy: /.test(demos) && !/say:'Nutrition: /.test(demos),
+  '  and the pill is never typed as if it were part of the sentence');
+t(/pills:_CI_PILLS, hit:'Energy'/.test(demos) && /pills:_CI_PILLS, hit:'Nutrition'/.test(demos),
+  '  the row is the real journal row, not a second hand-typed copy of it');
+t(/function _obDemoPillsHtml\(d\)/.test(src), 'the demo can draw a pill row');
+t(/\+_obDemoPillsHtml\(d\)\+/.test(src), 'and the markup carries it above the box');
+t(/if\(i===0 && d\.hit && !lit\)\{/.test(runner),
+  '  the pill lights BEFORE the first character, not after');
+t(/lit=true; lightPill\(\);/.test(runner) && /_obDemoT=setTimeout\(step, 620\);/.test(runner),
+  '  and the two actions are a beat apart, so they read as two');
+t(/idle\(\); pills\(\); i=0; lit=false;/.test(runner),
+  '  a new card redraws its pills unlit, so the next loop presses it again');
+t(/\.obDemoPill\.on\{/.test(src) && /\.obDemoPills:empty\{display:none;\}/.test(src),
+  '  a lit pill has a look, and a card with no pills has no row');
 t(/\['Energy','Today'\]/.test(demos) && /\['Nutrition','Today'\]/.test(demos),
   '  each filed under the pill it was typed with');
 t((demos.match(/head:'Journal entry saved'/g)||[]).length===2,
