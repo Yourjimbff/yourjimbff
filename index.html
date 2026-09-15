@@ -15341,8 +15341,12 @@ function _journalDayLabel(d, ds){
   return wk;
 }
 function _journalMealRow(f, foodsEnc, idx){
-  var rmap={nutrient_dense:['#f5c518','Nutrient-dense'],good:['#f5c518','Good'],clean:['#f5c518','Clean'],okay:['#f5c518','Okay'],bad:['#f5c518','Heavy'],unknown:['#888','\u2014']};
-  var rr=rmap[f.rating]||rmap.unknown;
+  // "Off-plan" everywhere, because "Heavy" was only ever said here and on the
+  // feed - nine other screens already used the other word, and the client reads
+  // this one. _ratingChipWorth blanks it entirely when there is nothing to
+  // grade, so a can of sparkling water gets no mark at all.
+  var rmap={nutrient_dense:['#f5c518','Nutrient-dense'],good:['#f5c518','Good'],clean:['#f5c518','Clean'],okay:['#f5c518','Okay'],bad:['#f5c518','Off-plan'],unknown:['#888','']};
+  var rr=_ratingChipWorth(f) ? (rmap[f.rating]||rmap.unknown) : rmap.unknown;
   var tap='openClientMealSwipe(\''+foodsEnc+'\','+idx+')';
   return '<div style="background:var(--s2);border:1px solid var(--border);border-radius:11px;padding:10px 12px;margin-bottom:8px;">'
     +'<div style="display:flex;align-items:center;gap:10px;cursor:pointer;" onclick="'+tap+'">'
@@ -22215,7 +22219,7 @@ function _feedItemHtml(it){
         line+='<div style="font-size:12px;color:rgba(240,236,228,0.6);margin-top:5px;">So far today</div>';
     }catch(e){}
   }
-  else { var f=it.data; var _rm={nutrient_dense:['#f5c518','Nutrient Dense'],good:['#f5c518','Good'],clean:['#f5c518','Clean'],okay:['#f5c518','Okay'],bad:['#f5c518','Heavy']}; var _r=_rm[f.rating];
+  else { var f=it.data; var _rm={nutrient_dense:['#f5c518','Nutrient Dense'],good:['#f5c518','Good'],clean:['#f5c518','Clean'],okay:['#f5c518','Okay'],bad:['#f5c518','Off-plan']}; var _r=_ratingChipWorth(f)?_rm[f.rating]:null;
     var _fuelTag = f._fuel ? '<span style="font-size:11px;color:rgba(240,236,228,0.78);font-weight:600;margin-left:8px;">\u00b7 '+(f._fuel==='post'?'post-workout':'pre-workout')+'</span>' : '';
     var _chip=_r?'<div style="margin-top:6px;"><span style="display:inline-block;font-size:10px;font-weight:800;letter-spacing:0.4px;text-transform:uppercase;color:'+_r[0]+';border:1px solid '+_r[0]+'55;border-radius:20px;padding:2px 10px;vertical-align:top;">'+_r[1]+'</span>'+_fuelTag+'</div>':(f._fuel?'<div style="margin-top:6px;font-size:11px;color:rgba(240,236,228,0.78);font-weight:600;">'+(f._fuel==='post'?'post-workout':'pre-workout')+'</div>':'');
     // HIS WORDS, UNDER THE MACROS (Yusuf, 15 Sep). No button and no overlay -
@@ -38958,9 +38962,27 @@ function jvHideFromList(code,kind){
 function jvStatList(kind){
   if(!jvTriage){ if(typeof jvLoadTriage==='function'){ try{ var _p=jvLoadTriage(); if(_p&&_p.then) _p.then(function(){ jvStatList(kind); }); }catch(e){} } return; }
   var per=jvTriage.per||{}; var _hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
-  var codes=Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer && !_hidden[k]; });
+  /* SAME SEGMENT AS THE STRIP THAT OPENED IT. Without this the tiles counted
+     free people and then listed paying clients. */
+  var codes=Object.keys(CLIENTS).filter(function(k){
+    if(CLIENTS[k].isTrainer || _hidden[k]) return false;
+    try{ return _feedWhoPass(k); }catch(e){ return true; }
+  });
   var list=[], title='';
-  if(kind==='total'){ title='All clients'; list=codes.slice(); }
+  if(kind==='freeall'){
+    title='Free people';
+    list=codes.slice();
+    /* NEWEST FIRST, because the question he is asking this list is "who just
+       came in" - he is counting signups, not auditing a roster. */
+    list.sort(function(a,b){
+      var ta=0, tb=0;
+      try{ ta=new Date((CLIENTS[a]||{}).created_at||0).getTime()||0; }catch(e){}
+      try{ tb=new Date((CLIENTS[b]||{}).created_at||0).getTime()||0; }catch(e){}
+      if(ta!==tb) return tb-ta;
+      return (CLIENTS[a].name||a).localeCompare(CLIENTS[b].name||b);
+    });
+  }
+  else if(kind==='total'){ title='All clients'; list=codes.slice(); }
   else if(kind==='checkedin'){ title='Logged today'; list=codes.filter(function(c){ return per[c]&&per[c].cnt[0]>=1; }); }
   else if(kind==='caughtup'){ title='Caught up today'; var hmap=jvHandledMap(), tk=_jvTodayKey(); list=Object.keys(hmap).filter(function(c){ return hmap[c]===tk && CLIENTS[c] && !CLIENTS[c].isTrainer && !_hidden[c]; }); }
   else if(kind==='activeterm'){ title='Active clients'; list=codes.filter(function(c){ var t=_jvTermState(c, per[c]); return !!(t&&t.active); }); }
@@ -38973,7 +38995,8 @@ function jvStatList(kind){
       if(ca!==cb) return ca-cb;            // quietest first
       return (CLIENTS[a].name||a).localeCompare(CLIENTS[b].name||b);
     });
-  } else {
+  } else if(kind!=='freeall'){
+    // freeall already sorted itself newest-first and must not be re-sorted by name.
     list.sort(function(a,b){ return (CLIENTS[a].name||a).localeCompare(CLIENTS[b].name||b); });
   }
   var _showManage=(kind==='total');
@@ -52710,6 +52733,46 @@ function _wholeFoodFloor(name, rating){
   }catch(e){}
   return rating;
 }
+// NOTHING THAT CARRIES NO CALORIES GETS JUDGED (Yusuf, 15 Sep). Dalton logged a
+// Gorilla Mind energy drink - 8 calories, 2g of carbs - and the app called it
+// "Heavy" on his own journal page. His ruling: "That is not heavy, it's fine."
+//
+// THE MODEL WAS FOLLOWING ORDERS. The logging prompt says bad = "junk, highly
+// processed, fast food, or alcohol", and a canned energy drink is genuinely
+// highly processed, so "bad" was the honest answer to the question it was
+// asked. The question was wrong. The rating scale grades how a MEAL feeds
+// somebody; a sugar-free drink is not a meal and there is nothing there to
+// grade. Black coffee, tea, a diet soda, sparkling water, zero-calorie
+// electrolytes and gum all land in the same place.
+//
+// THE TEST IS THE CALORIE COUNT, NOT THE NAME. A word list would have to guess
+// every brand that will ever exist and would still call a 5-calorie drink junk
+// because of how it is packaged. 25 calories is the line: below it the thing
+// cannot meaningfully help or hurt a day's eating, whatever it is made of.
+var NO_JUDGE_CAL = 25;
+function _drinkFloor(rating, cals){
+  try{
+    var c = +cals || 0;
+    // Zero is ambiguous - it is also what an unread label looks like - so a row
+    // with no calories at all keeps whatever rating it was given. Something
+    // genuinely read as 1-25 calories is the case this exists for.
+    if(c > 0 && c <= NO_JUDGE_CAL) return 'unknown';
+  }catch(e){}
+  return rating;
+}
+// ...and the chip that would have carried it is not drawn at all. 'unknown'
+// renders as an em dash on the client's journal, which is quieter than "Heavy"
+// but still puts a mark beside a can of fizzy water. Nothing is the right
+// amount to say.
+function _ratingChipWorth(f){
+  try{
+    if(!f) return false;
+    var c = +f.calories || 0;
+    if(c > 0 && c <= NO_JUDGE_CAL) return false;
+    var r = String(f.rating||'');
+    return !!r && r!=='unknown';
+  }catch(e){ return false; }
+}
 // One place that decides what each part of the day looks like.
 // Journal is cream on purpose — it's the only thing here that isn't a metric.
 var TL_COLORS={
@@ -61419,7 +61482,21 @@ async function renderMobFrontDesk(){
     return;
   }
   var per=jvTriage.per||{}; var _hidden=(typeof getHiddenClientSet==='function')?getHiddenClientSet():{};
-  var codes=Object.keys(CLIENTS).filter(function(k){ return !CLIENTS[k].isTrainer && !_hidden[k]; });
+  /* THE STRIP ANSWERS ABOUT THE PEOPLE UNDERNEATH IT (Yusuf, 15 Sep, on the
+     Free tab: "If I hit active, it doesn't even show. It actually just shows me
+     all of the current active clients.")
+
+     The Clients/Free segment narrowed the FEED and nothing else, so the tiles
+     went on counting the paying roster while the logs below them were free
+     users - two different groups of people stacked on one screen, each labelled
+     as though it were the other. Every number in this strip now passes through
+     the same _feedWhoPass the feed does, so "Active" on the Free tab means
+     active FREE people and the tile opens that list. */
+  var codes=Object.keys(CLIENTS).filter(function(k){
+    if(CLIENTS[k].isTrainer || _hidden[k]) return false;
+    try{ return _feedWhoPass(k); }catch(e){ return true; }
+  });
+  var _onFree=false; try{ _onFree=(_feedWho()==='free'); }catch(e){}
   // Same definition of "active" as the desktop board — logged in the last 14 days.
   var _nowMs=jvTriage.now||Date.now();
   var _activeN=codes.filter(function(c){ return _jvIsActive(per[c], _nowMs); }).length;
@@ -61448,8 +61525,14 @@ async function renderMobFrontDesk(){
   try{ _spwLoad(false); }catch(e){}
   var html='';
   try{ html+=_spwHtml(); }catch(e){}
+  /* "I can't see a list of the free people. I only see their logs, but I would
+     like a list of their free people." On the Free tab the leading tile is the
+     ROSTER, not the active count - a free account made an hour ago is not
+     "active" under a fourteen-day rule, so that tile was reading 0 next to a
+     feed full of their logs. Tapping it names all of them. */
   html+='<div class="fdStrip">'
-    +tile(_activeN,'Active','activeterm')
+    +(_onFree ? tile(codes.length,'Free people','freeall')
+              : tile(_activeN,'Active','activeterm'))
     +tile(_logT,'Logged today','checkedin')
     +tile(_woT,'Trained','workedout')
     +tile(_spokeT,'Spoke to','spoke')
@@ -70782,6 +70865,7 @@ async function _gradePlateMeal(entry, foodsText){
     var obj=JSON.parse(txt);
     var rating=(['nutrient_dense','good','okay','bad'].indexOf(obj.rating)>=0)?obj.rating:'good';
     rating=_wholeFoodFloor((typeof name!=='undefined'?name:''), rating);
+    rating=_drinkFloor(rating, entry.calories);
     entry.rating=rating;
     /* The grading pass writes its own sentence AFTER the macros are settled,
        so it gets the same check as the first one - otherwise the bug just

@@ -432,3 +432,39 @@ renders no exercises, so an `ex` array on one is invisible to the client.
 live 14 Sep: Chest 6, Shoulders 6, Triceps 7, Back 14, Legs 19, Biceps 8,
 Core 11, Neck 2. `_jvExLibLine()` renders it for the prompt; anything that
 needs the list should call that rather than count again.
+
+## THE CLIENT'S OWN SENTENCE IS THE PRODUCT, NOT THE TIDY NAME
+
+Yusuf, 15 Sep: "my goals for people, if you look at the logs, the most
+important thing is I want to see what people are saying when they're logging
+because I'm gonna need to do a post on that ... that way I can see what
+consumers are logging. Word for Word."
+
+`food_logs.meal_text` is what the client typed or said. `food_logs.name` is
+what the app decided to call it afterwards, and the two are often very
+different — "2x1 protein style no spread" became "2x, Style No Spread". Every
+surface that shows a meal should assume the NAME is the app's guess and the
+MEAL_TEXT is the evidence. Never summarise, re-case or paraphrase meal_text on
+a trainer surface; it is the raw material for his content.
+
+`_feedSaidLine(d)` (v420) is the one rule for drawing it: verbatim, whitespace
+collapsed, clipped at 500, and empty when it only repeats `d.name` (case,
+spacing, punctuation and "&"/"and" ignored, because the namer writes an
+ampersand where the client typed the word). Both the feed card
+(`_feedItemHtml`) and the day peek (`_pfDayRow`) call it — they are separate
+renderers and have drifted apart before, which is why the rule is not inlined
+in either. Measured on 300 live logs: 213 draw a quote, 66% of those name a
+number, 42% name a real unit.
+
+Column names, because this has cost time twice: the table is `food_logs` and
+the client column is `client_code`, NOT `code`. `sbSelect` returns `[]` on
+failure as well as on no-rows, so an empty result is never proof of absence —
+check the column names before concluding the table is empty.
+
+## THE MEAL BOX PLACEHOLDER IS AN INSTRUCTION, NOT AN EXAMPLE
+
+It used to read "12 oz steak, a handful of rice, a handful of peppers" and
+people copied the SHAPE of it — three items, no amounts of their own. v420:
+"Describe or estimate how much you ate, and list everything in it". It is a
+real HTML placeholder on an empty textarea, so it clears the instant anybody
+types; nothing is prefilled and there is nothing to clear by hand.
