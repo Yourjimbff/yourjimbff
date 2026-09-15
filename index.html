@@ -89092,6 +89092,81 @@ function openAccount(){
 function _pgW(v){ try{ return Math.round(wToDisp(v)*10)/10; }catch(e){ return Math.round(v*10)/10; } }
 
 // The weight tile becomes a card you can read without tapping: number, delta, shape.
+var _wtImport=null;
+function _wtImpStatus(t){ try{ var el=document.getElementById('wtImpStatus'); if(el) el.innerHTML=t; }catch(e){} }
+function weightImportOpen(){
+  var box=document.getElementById('wtImportBox'); if(!box) return;
+  if(!box.hidden){ box.hidden=true; return; }
+  box.hidden=false;
+  box.innerHTML='<label class="stImpPick gold"><input type="file" accept="image/*" onchange="weightImportShot(this)" style="display:none;">Screenshot of your weigh-ins</label>'
+    +'<div class="stImpHow">Apple Health, a scale app, a weight chart. It reads the numbers and their dates off the picture; nothing is written until you see the list. On a graph only the points that are actually labelled can be read \u2014 a value guessed off a curve is not going on your record.</div>'
+    +'<div id="wtImpStatus" class="stImpStatus"></div>';
+}
+async function weightImportShot(input){
+  var f=input && input.files && input.files[0]; if(!f) return;
+  _wtImpStatus('Reading the screenshot\u2026');
+  try{
+    var raw=await new Promise(function(res,rej){ var r=new FileReader(); r.onload=function(e){ res(e.target.result); }; r.onerror=rej; r.readAsDataURL(f); });
+    var small=await downscaleImage(raw, 1440, 0.85).catch(function(){ return raw; });
+    var j=await _shotRead(small||raw, 'weight');
+    if(!j || j.error){ _wtImpStatus(j&&j.error==='not_health' ? 'That does not look like a weight screen.' : 'Could not read that screenshot.'); return; }
+    var pts=[];
+    (j.points||[]).forEach(function(p){
+      var ds=_shotDs(p.date); if(!ds) return;
+      var w=parseFloat(p.weight); if(!isFinite(w) || w<=0) return;
+      /* A WEIGHT THAT IS NOT A WEIGHT IS A MISREAD, not a record. 40-1000 is
+         wide enough for every real person in either unit and narrow enough to
+         catch an axis label or a date read as a number. */
+      if(w<40 || w>1000) return;
+      pts.push({ds:ds, w:Math.round(w*10)/10});
+    });
+    if(!pts.length){ _wtImpStatus('No weigh-ins with a date and a printed number on that screen.'); return; }
+    pts.sort(function(a,b){ return a.ds<b.ds?-1:(a.ds>b.ds?1:0); });
+    /* ALREADY ON THE RECORD: same day, same number. Re-importing the same
+       screenshot twice must not double somebody's history. */
+    var have=[];
+    try{ have=await sbSelect('weight_logs','client_code=eq.'+encodeURIComponent(cl.code)+'&select=weight,logged_at&order=logged_at.asc&limit=1000')||[]; }catch(e){ have=[]; }
+    var seen={};
+    have.forEach(function(h){
+      var d=''; try{ d=_tlDateStr(new Date(h.logged_at)); }catch(e){}
+      if(d) seen[d+'|'+(Math.round(parseFloat(h.weight)*10)/10)]=1;
+    });
+    pts.forEach(function(p){ p.dup=!!seen[p.ds+'|'+p.w]; });
+    _wtImport=pts;
+    var fresh=pts.filter(function(p){ return !p.dup; }).length;
+    var unit=''; try{ unit=String(j.unit||wUnit()||'lb'); }catch(e){ unit='lb'; }
+    var left=parseInt(j.unlabelled,10)||0;
+    _wtImpStatus('<b>'+pts.length+' weigh-in'+(pts.length===1?'':'s')+'</b>'
+      +(fresh<pts.length?(' \u00b7 '+(pts.length-fresh)+' already logged'):'')
+      +'<div class="stImpList">'+pts.map(function(p){
+          return '<div class="stImpDay"><span>'+_escHtml(p.ds)+'</span><b>'+p.w+' '+_escHtml(unit)+'</b>'+(p.dup?'<i>logged</i>':'')+'</div>'; }).join('')+'</div>'
+      +(left?('<div class="stImpHow">'+left+' more point'+(left===1?'':'s')+' on that chart had no printed number, so '+(left===1?'it was':'they were')+' left out rather than guessed.</div>'):'')
+      +(fresh?('<button class="stImpBtn gold" onclick="weightImportGo()">Add '+fresh+' weigh-in'+(fresh===1?'':'s')+'</button>'):''));
+  }catch(e){ _wtImpStatus('Could not read that screenshot. '+_escHtml(String(e&&e.message||e))); }
+  try{ input.value=''; }catch(e){}
+}
+async function weightImportGo(){
+  if(!_wtImport || !cl || window._tlRO) return;
+  var todo=_wtImport.filter(function(p){ return !p.dup; }), done=0, failed=0;
+  _wtImpStatus('Adding 0 of '+todo.length+'\u2026');
+  for(var i=0;i<todo.length;i++){
+    var p=todo[i], ok=false;
+    /* DATED TO THE DAY IT WAS TAKEN, at midday so a timezone cannot walk it
+       into the day before - the same thing every other dated write here does. */
+    var iso=''; try{ iso=new Date(p.ds+'T12:00:00').toISOString(); }catch(e){ iso=new Date().toISOString(); }
+    try{
+      var r=await fetch(SB_URL+'/rest/v1/weight_logs',{method:'POST',
+        headers:Object.assign({},sbHeaders(),{'Content-Type':'application/json','Prefer':'return=minimal'}),
+        body:JSON.stringify({client_code:cl.code, weight:p.w, logged_at:iso, notes:'imported'})});
+      ok=r.ok;
+    }catch(e){ ok=false; }
+    if(ok) done++; else failed++;
+    _wtImpStatus('Adding '+(done+failed)+' of '+todo.length+'\u2026');
+  }
+  _wtImpStatus(done+' added'+(failed?(', <b>'+failed+' did not save</b> \u2014 try again'):'')+'.');
+  try{ if(typeof renderWeightJourney==='function') await renderWeightJourney(); }catch(e){}
+  try{ renderWeightCard(); }catch(e){}
+}
 function renderWeightCard(){
   var host=document.getElementById('pgWeightCard'); if(!host) return;
   // THE WEIGH-IN DOOR LIVES HERE NOW (Yusuf, ruling, 23 Aug). The current-status card
@@ -89120,7 +89195,13 @@ function renderWeightCard(){
     ('<div class="ovTapLine" id="ovWeightTap" onclick="gpLogWeight()">'
       + '<span id="ovWeightTapT">Log today\u2019s weight</span>'
       + '<span class="ovTapChev" id="ovWeightChev">\u203a</span></div>'
-    + '<div class="ovDrawer" id="gpWeightDrawer"></div>');
+    + '<div class="ovDrawer" id="gpWeightDrawer"></div>'
+    /* THE HISTORY DOOR (Yusuf, 15 Sep). A line needs two points; somebody who
+       has weighed in once is one screenshot away from a whole year of them. */
+    + '<div class="ovTapLine" id="ovWeightImp" onclick="weightImportOpen()">'
+      + '<span>Import past weigh-ins</span>'
+      + '<span class="ovTapChev">\u203a</span></div>'
+    + '<div id="wtImportBox" class="ovDrawer" hidden></div>');
   // Re-home the real node into the fresh drawer and paint the label off the body's own
   // open state, never off what the last tap intended.
   function _wcSettle(){
@@ -89214,6 +89295,15 @@ function renderWeightCard(){
     +'</div>'
     +spark
     +'<div class="pgSub">'+_escHtml(sub)+'</div>'
+    /* ONE READING DRAWS NO LINE, and saying nothing about that reads as the
+       feature missing. Zadkiel Rios asked Yusuf for "a spark line or something
+       to make the progress feel a little bit more alive" while looking at a
+       card that has drawn one since the Progress page was built - he has
+       exactly one weigh-in, so there was nothing to draw. Now the card says so,
+       and points at the two ways out. */
+    +((series.length<2 && !_tr)
+        ? '<div class="pgSub" style="opacity:0.72;">One reading so far \u2014 the line starts at two. Weigh in again, or import your history below.</div>'
+        : '')
     + door
   +'</div>';
   _wcSettle();
@@ -93973,10 +94063,40 @@ async function stImportFile(input){
 var _SHOT_SYS='You are reading a screenshot from a phone health or fitness app for a coaching app. Reply with ONLY compact JSON, no markdown, no prose. Today is %TODAY%. Dates on the screen without a year are this year unless that would put them in the future, in which case last year. Never invent a day that is not on the screen. If the screen is not a health or fitness screen, reply {"error":"not_health"}.';
 var _SHOT_STEPS=' STEPS: return {"kind":"steps","view":"day|week|month|other","range":{"start":"YYYY-MM-DD","end":"YYYY-MM-DD"},"average_printed":n,"axis_max":n,"days":[{"date":"YYYY-MM-DD","steps":n}],"tallest":{"date":"YYYY-MM-DD","steps":n}}. "view" is the span the chart covers (Apple Health: the D, W or M pill that is lit; 6M and Y are "other"). "range" is the date span printed above the chart, first day to last day: "Sep 3–9, 2026" is start 2026-09-03 end 2026-09-09, "Aug 11–Sep 10, 2026" is start 2026-08-11 end 2026-09-10; a day view has start and end the same. "average_printed" is the AVERAGE number printed above the chart, left out if none is printed. "axis_max" is the top number on the y axis, left out if none. "days": only numbers actually printed on the screen - a day view gives its one total; a bar with a number printed on or beside it gives that number, dated by counting bars from the start of the range. Never estimate a bar; the bars are measured separately. "tallest": your one read of the tallest bar against the axis, so the measurement has a scale if no average is printed. Whole numbers.';
 var _SHOT_CARDIO=' CARDIO: return {"kind":"cardio","sessions":[{"date":"YYYY-MM-DD","activity":"Outdoor Walk","minutes":32,"distance":"2.1 mi","calories":210}]}. One entry per workout on the screen. Use the app’s own activity name. Leave out any field that is not printed; never estimate calories or distance.';
+/* PAST WEIGH-INS OFF A PICTURE (Yusuf, 15 Sep, after Zadkiel Rios asked for a
+   sparkline: "is there a way to upload a photo of someone's previous weigh ins?
+   and import a chart of data. with relevant weight points. and dates").
+
+   The card already draws the line he wants - it has since the Progress page was
+   built - and it needs two readings to draw anything. Zadkiel has exactly one,
+   so his card is right to show nothing, and telling him to weigh in tomorrow
+   gets him a two-point line. The history is the answer, and he was holding it:
+   he sent a screenshot of a weight chart going back to July.
+
+   TWO SHAPES, because that is what people actually have. A LIST - Apple Health,
+   a scale app, a spreadsheet - prints its numbers and dates and is simply read.
+   A CHART prints a few labels and a curve, and the honest answer there is only
+   the points that are actually labelled: a value read off a curve by eye is a
+   guess wearing a decimal point, and this app does not write guesses onto
+   somebody's record. So the model returns what is PRINTED and says how many it
+   had to leave behind. */
+var _SHOT_WEIGHT=' WEIGHT: return {"kind":"weight","unit":"lb|kg","source":"list|chart",'
+  +'"points":[{"date":"YYYY-MM-DD","weight":n}],"unlabelled":n}. '
+  +'One entry per weigh-in you can actually READ. '
+  +'"unit" is the unit printed on the screen - never convert, return the number as shown. '
+  +'"source" is "list" when each reading is printed as a row with its own number, '
+  +'"chart" when it is a graph. '
+  +'ON A CHART, RETURN ONLY POINTS WITH A PRINTED NUMBER AND A DATE YOU CAN PIN. '
+  +'Do not read values off the curve by eye and do not interpolate between labels - '
+  +'a guess on somebody\u2019s weight record is worse than a gap. '
+  +'"unlabelled" is how many further readings are visible on the chart that you could NOT '
+  +'read a number for, so the person can be told what was left behind. '
+  +'Weights are numbers only, one decimal at most. If no weigh-in is readable, return points as [].';
 async function _shotRead(dataUrl, kind){
   var m=String(dataUrl||'').match(/^data:(image\/[a-z]+);base64,(.+)$/i);
   if(!m) throw new Error('not an image');
-  var sys=_SHOT_SYS.replace('%TODAY%', _tlDateStr(new Date()))+(kind==='cardio'?_SHOT_CARDIO:_SHOT_STEPS);
+  var _blk=(kind==='cardio')?_SHOT_CARDIO:((kind==='weight')?_SHOT_WEIGHT:_SHOT_STEPS);
+  var sys=_SHOT_SYS.replace('%TODAY%', _tlDateStr(new Date()))+_blk;
   var content=[{type:'image', source:{type:'base64', media_type:m[1], data:m[2]}},{type:'text', text:sys}];
   var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({model:'claude-sonnet-5', max_tokens:1900, temperature:0, thinking:{type:'disabled'}, messages:[{role:'user',content:content}]})});
