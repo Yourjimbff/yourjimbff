@@ -76,7 +76,18 @@ t(keys[keys.length-1]==='home', 'and it ends by putting it on their home screen'
    to remove this page; i think instead it should be the tutorial". YOUR WEEK
    ONE is gone and the three things the app does are shown instead, so the last
    thing they read before the home-screen step is the third of those. */
-t(keys[keys.length-2]==='t_prog', 'straight after the last of the three demos');
+/* AMENDED 15 Sep: "we're gonna offer a consultation upon the free sign in at
+   some point somewhere along the process." The consult offer now sits between
+   the demos and the home-screen step - AFTER the write, so nobody can lose an
+   account by tapping it, and BEFORE the home-screen step, which stays last
+   because it is the retention action and the 13 Sep ruling still holds. The
+   three demos are still the last thing they are SHOWN about the app. */
+t(keys[keys.length-2]==='consult', 'the free-call offer sits just before the home-screen step');
+t(keys[keys.length-3]==='t_prog', 'straight after the last of the three demos');
+// It must never be a gate: the ordinary Next has to be available on it.
+t(/if\(st\.type==='consult'\) return true;/.test(src), 'the offer is skippable in one tap');
+// And it must not draw before everything is saved.
+t(keys.indexOf('consult') > keys.indexOf('t_prog'), 'it draws after the step that carries the write');
 t(keys.indexOf('plan')<0, 'and the WEEK ONE page is off the flow entirely');
 t(!/_obPlanHtml/.test(src), 'with nothing left behind to draw it');
 t(_OB_STEPS.filter(s=>s.q||s.type==='intro'||s.type==='home').length===_OB_STEPS.length,

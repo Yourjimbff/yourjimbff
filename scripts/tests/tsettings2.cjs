@@ -38,11 +38,20 @@ t(/callsEnabled\(cl\.code\)/.test(calls), 'someone who already has calls still g
 t(/'<div class="gpFlatV"><span class="gpLink" onclick="closeSettings\(\)/.test(calls),
   'and that door is untouched');
 
-console.log('\n  A LINK WITH NOWHERE TO GO IS NOT DRAWN:');
-/* The offer page is Yusuf's marketing site, not this app. Until the address is
-   filled in, the card still makes the offer and there is simply nothing to
-   tap - which is better than a control that does nothing when pressed. */
-t(/var CONSULT_BOOK_URL = '';/.test(src), 'the address is one constant, at the top, and currently empty');
+console.log('\n  THE LINK, FILLED IN AT LAST:');
+/* The offer page is Yusuf's sign-up site, not this app. It stayed EMPTY from
+   13 Sep to 15 Sep, and the empty state was correct while it was empty: the
+   card made the offer and there was simply nothing to tap, which beats a
+   control that does nothing when pressed.
+   15 Sep he pointed at the page. Its booking modal was opened and checked by
+   hand first - real day chips, real slots, "I'll text to confirm" - so this is
+   an address that was tested, not one that was typed in hopefully. */
+t(/var CONSULT_BOOK_URL = 'https:\/\/[^']+';/.test(src),
+  'the address is one constant, at the top, and now set');
+t(/yourjimbffsignup\.netlify\.app/.test(src), 'and it points at the page that holds the booking modal');
+/* The guard stays. An address that is emptied again must go back to saying so
+   rather than opening a blank tab. */
+t(/if\(!u\)\{ try\{ showToast/.test(src), 'an empty address still refuses rather than opening nothing');
 t(/CONSULT_BOOK_URL\s*\n?\s*\? '<div class="gpFlatV"><span class="gpLink" onclick="openConsultBooking\(\)"/.test(calls),
   'and the link only renders once it is set');
 const open=slice('function openConsultBooking(){','// READ-ONLY AND IT SAYS SO');
