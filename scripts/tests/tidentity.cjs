@@ -57,6 +57,23 @@ t(/if\(_sessSigningOut\) return;/.test(src), '  guarded, so a storm of refusals 
 t(/quietly falling back to a key that can still see everything/.test(src),
   'and the file states the rule: never fall back to a key that can see everything');
 
+console.log('\n  SIGNED IN BUT SPEAKING AS NOBODY, HEALED:');
+/* From tonight a request made without a session is answered with SILENCE - zero
+   rows, status 200 - which looks exactly like an empty app rather than an error.
+   sessEnsure is raced against 2.5s at sign-in, so a slow phone can leave someone
+   signed in with no session and no complaint, and every screen blank. */
+t(/async function _sessHeal\(\)/.test(src), 'there is a heal for a session that never arrived');
+t(/if\(!code\) return;                       \/\/ not signed in: nothing to heal/.test(src),
+  'it does nothing for somebody who is not signed in');
+t(/if\(_sessToken\(\)\) return;                \/\/ already carrying one/.test(src),
+  'and nothing for somebody who already has one - it is not a heartbeat');
+t(/try\{ await sessEnsure\(code, true\); \}catch\(e\)\{\}/.test(src), 'otherwise it goes and gets one');
+t(/setTimeout\(function\(\)\{ _sessHeal\(\); \}, 6000\)/.test(src),
+  'checked once shortly after boot, after the sign-in race has settled');
+t(/if\(document\.visibilityState==='visible'\) setTimeout\(_sessHeal, 400\);/.test(src),
+  'and whenever the app comes back to the foreground, which is when a token would have lapsed');
+t(/var _fixing=false;/.test(src), 'guarded, so it cannot pile up on itself');
+
 console.log('\n  WHAT IS STILL TRUE AND MUST NOT BE FORGOTTEN:');
 /* This step gives the database an identity to reason about. It does not itself
    restrict anything — the policies are still permissive and anon still holds
