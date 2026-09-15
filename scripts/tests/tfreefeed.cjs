@@ -108,4 +108,36 @@ console.log(bad?('\n'+bad+' FAILED'):'\nall passed');
   else console.log('  all passed');
 })();
 
+/* ===== AND THE DAY'S NUMBER, WHICH IS THE ONE THAT MOVES ================
+   Yusuf, 14 Sep, launch night: "I love a dashboard on my feed page where I can
+   see how many free people have an account now ... I wanna get competitive
+   with this."
+
+   The TOTAL alone is not a scoreboard - 11 today and 11 last week read
+   identically. The number he watches while he is posting is today's.
+
+   And it must refuse to guess. created_at arrives on the TRAINER tier of the
+   roster read, a moment after the anon tier, so early in a load no free
+   account has one. Counting those as "not today" prints +0 over a day that had
+   four - the same silent undercount the free chip itself shipped with, which
+   is the whole reason this file grew its first half. */
+(function(){
+  const fs3=require('fs');
+  const src3=fs3.readFileSync('index.html','utf8');
+  let b3=0;
+  const t3=(pass,label,extra)=>{ if(!pass) b3++; console.log((pass?'  ok    ':'  FAIL  ')+label+(extra!==undefined?('  '+extra):'')); };
+  console.log('\n  AND TODAY\u2019S NUMBER:');
+  const fn=(src3.match(/function _feedFreeToday\(\)\{[\s\S]*?\n\}/)||[''])[0];
+  t3(!!fn, 'there is a count for today');
+  t3(/isFreeApp\(c\)/.test(fn), 'it counts free accounts by the same test as everything else');
+  t3(/r\.isTrainer \|\| hid\[c\]/.test(fn), 'skipping trainers and hidden people, like the total does');
+  t3(/known \? n : -1/.test(fn), 'and answers "unknown" rather than 0 when no created_at has loaded yet');
+  t3(/_localYmd/.test(fn), 'today is the local day, not the UTC one');
+  const segs=(src3.match(/function _feedWhoSegs\(\)\{[\s\S]*?\n\}/)||[''])[0];
+  t3(/_feedFreeToday\(\)/.test(segs), 'the chip row asks for it');
+  t3(/td>0/.test(segs), 'and shows it only on a day that had one - a standing +0 is a scoreboard telling you off');
+  if(b3){ console.log('  '+b3+' FAILED'); process.exitCode=1; }
+  else console.log('  all passed');
+})();
+
 process.exit((bad||process.exitCode)?1:0);
