@@ -34,10 +34,17 @@ _meFreeApp=()=>true;
    of notes it should say progress entry" (Yusuf, 13 Sep). A note is something
    you jot. An entry is something you put into a record you are keeping - which
    is what this is, and what the Progress tab it feeds is for. */
-t(_ciWord()==='Progress entry', 'the free app calls the box a Progress entry', _ciWord());
-t(_ciWordT()==='Progress entry', 'and so does its tab', _ciWordT());
-t(!/_meFreeApp\(\)\?'Notes'/.test(src) && !/_meFreeApp\(\)\?'Progress notes'/.test(src),
-  'neither "Notes" nor "Progress notes" survives');
+// FOURTH PASS ON THE WORD (Yusuf, 15 Sep): "rename check-in to journal entry
+// for all free users". Check-in -> Notes -> Progress notes -> Progress entry ->
+// Journal entry. "Progress entry" named the tab it feeds; "journal entry" names
+// the thing somebody is actually writing, which is the word they know before
+// they have ever opened it. The setup demos now show two of them, so the demo
+// and the box have to agree.
+t(_ciWord()==='Journal entry', 'the free app calls the box a Journal entry', _ciWord());
+t(_ciWordT()==='Journal entry', 'and so does its tab', _ciWordT());
+t(!/_meFreeApp\(\)\?'Notes'/.test(src) && !/_meFreeApp\(\)\?'Progress notes'/.test(src)
+  && !/_meFreeApp\(\)\?'Progress entry'/.test(src),
+  'none of Notes, Progress notes or Progress entry survives');
 t(_ciWordAdd(false)==='Write an entry', 'an empty day offers to write one');
 t(_ciWordAdd(true)==='Add another entry', 'and a day with one offers another');
 t(!/'Write a note'|'Add another note'/.test(src), 'and the word note is gone from both');

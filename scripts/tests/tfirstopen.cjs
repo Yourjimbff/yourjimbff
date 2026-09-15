@@ -150,11 +150,100 @@ t(/\['1 slice sourdough','23g carbs'\]/.test(demos), '  and the bread answers in
    If the shelf ever changes, this assertion is the thing that notices. */
 t(/macro:\{calories:264, protein:16, carbs:23, fat:11\}/.test(demos),
   'and the total is what those two foods actually come to');
-/* ONE LIFT TYPED, ONE ROW BACK. He typed one exercise, so a second row would
-   be the card claiming the app invented something he never said. */
+/* THREE LIFTS TYPED, THREE ROWS BACK (Yusuf, 15 Sep: "add 4 sets of leg press,
+   and 3 sets of hamstring curls"). The old rule here was one lift, one row -
+   correct while he had typed one. The rule it was protecting is not the COUNT,
+   it is that the card never shows a lift the sentence did not name, so that is
+   what this checks now: every row on the training card has to be findable in
+   the sentence above it. */
 t(/\['Squats','4 sets'\]/.test(demos), '  it populates Squats, 4 sets');
-const trainRows=(demos.match(/train:[\s\S]*?rows:(\[.*?\]\])/)||[])[1]||'';
-t(trainRows.split('],[').length===1, '  and nothing he did not type', trainRows);
+t(/\['Leg press','4 sets'\]/.test(demos), '  and the leg press he added');
+t(/\['Hamstring curls','3 sets'\]/.test(demos), '  and the hamstring curls');
+const trainCard=(demos.match(/\n  train: \{[\s\S]*?\n    foot:'Added to today',/)||[''])[0];
+const trainSay=((trainCard.match(/say:'([^']*)'/)||[])[1]||'').toLowerCase();
+const trainRows=(trainCard.match(/rows:(\[\[[\s\S]*?\]\])/)||[])[1]||'';
+const trainNames=[...trainRows.matchAll(/\['([^']+)','/g)].map(m=>m[1].toLowerCase());
+t(trainNames.length===3, '  three rows, one per lift', trainNames.join(','));
+t(trainNames.every(n=>trainSay.indexOf(n)!==-1),
+  '  and nothing he did not type', trainNames.filter(n=>trainSay.indexOf(n)===-1).join(',')||'-');
+
+console.log('\n  AND EACH ONE SHOWS MORE THAN A SINGLE EXAMPLE:');
+/* ONE EXAMPLE TEACHES THE EXAMPLE, NOT THE RANGE (15 Sep). Somebody who
+   watched the food card learned the app can do eggs. Each demo now carries a
+   `more` list and the loop walks it, first card first, so a glance still gets
+   the short obvious one and staying gets the truer one. */
+t(/function _obDemoCards\(kind\)/.test(src), 'a demo is a list of cards, not one card');
+t(/var d=_obDemoCards\(kind\)\[0\]; if\(!d\) return '';/.test(src),
+  'the markup draws card one, so the screen is never blank on arrival');
+t(/var cards=_obDemoCards\(kind\);/.test(src), 'and the runner owns the rotation from there');
+t(/n=\(n\+1\)%cards\.length; d=cards\[n\];/.test(src), 'it advances once per loop, and wraps');
+/* THE SWAP HAPPENS WHERE NOBODY CAN SEE IT: after the old answer has faded and
+   before the new sentence starts typing. And the card is PAINTED at the reveal,
+   not at the swap, because it carries aria-live - writing into it while it is
+   invisible would read the next answer out four seconds early. */
+const runner=slice('function _obDemoRun(kind){','\n}');
+t(runner.indexOf("out.classList.remove('in')")<runner.indexOf('n=(n+1)%cards.length'),
+  'the card changes only after the old one is off screen');
+t(/paint\(\);\s*\n\s*out\.classList\.add\('in'\);/.test(runner),
+  'and it is written into the page in the same breath as the fade-in');
+t(/function _obDemoBody\(d\)/.test(src) && /\+_obDemoBody\(d\)/.test(src),
+  'both surfaces build the card from one function, so they cannot drift');
+/* A NINETY-CHARACTER SENTENCE AT THUMB SPEED IS SIX SECONDS OF WATCHING
+   SOMEBODY ELSE TYPE. Same rhythm, same jitter, shorter beats once it is long
+   enough to matter. */
+t(/if\(d\.say\.length>45\) wait=Math\.round\(wait\*0\.55\);/.test(src),
+  'a long sentence is typed faster, or it stops being a demo and becomes a wait');
+
+/* THE PLATE HE ACTUALLY TELLS PEOPLE TO BUILD (Yusuf, 15 Sep): "12 ounces of
+   New York strip steak, one handful of potatoes, one handful of mixed salad".
+   Breakfast is the easy case. This is the sentence that proves the box takes
+   ounces AND handfuls in one breath. */
+t(/say:'12 ounces of New York strip steak, one handful of potatoes, one handful of mixed salad'/.test(demos),
+  'food rotates to the dinner he described, word for word');
+t(/\['12 oz NY strip steak','106g protein'\]/.test(demos), '  the steak answers in protein');
+t(/\['1 handful potatoes','13g carbs'\]/.test(demos), '  the potatoes answer in carbs');
+t(/\['1 handful salad mix','Vegetables are free'\]/.test(demos),
+  '  and the salad says his rule out loud');
+/* HIS SHELF AND THE APP'S OWN PALM CONSTANT, the same way the eggs card is
+   priced. meal_components on the live project: Steak 220 cal / 31p / 0c / 11f
+   per palm, Potatoes 58 / 1 / 13 / 0 per handful, Salad Mix 10 / 0 / 2 / 0 per
+   handful. MB_PALM_OZ is 3.5, so 12 oz is 3.4286 palms. If the shelf or the
+   palm constant ever moves, this is the assertion that notices. */
+const palmOz=Number((src.match(/var MB_PALM_OZ = ([\d.]+);/)||[])[1]);
+t(palmOz===3.5, 'a palm is still 3.5 oz', String(palmOz));
+const palms=12/palmOz;
+const want={calories:Math.round(220*palms+58+10), protein:Math.round(31*palms+1),
+            carbs:Math.round(0*palms+13+2), fat:Math.round(11*palms)};
+t(new RegExp('macro:\\{calories:'+want.calories+', protein:'+want.protein
+             +', carbs:'+want.carbs+', fat:'+want.fat+'\\}').test(demos),
+  '  and the total is what that plate really comes to',
+  JSON.stringify(want));
+/* NOT EVERYBODY'S TRAINING IS A BARBELL (Yusuf, 15 Sep: "45 minute pilates ...
+   should save accordingly"). A tutorial that only ever shows lifts tells a
+   class-goer this app is not for them. */
+t(/say:'45 minute pilates'/.test(demos), 'training rotates to a class, not just lifts');
+t(/\['Pilates','45 minutes'\]/.test(demos), '  and it comes back as one row with the time on it');
+/* PROGRESS IS NOT ONLY A NUMBER (15 Sep). Both sentences are his, written the
+   way he wrote them. The pill is IN the typed sentence because tapping Energy
+   in the real box drops "Energy:" into it - a demo that typed the line bare and
+   then claimed the app filed it under Energy would be showing a step that does
+   not exist. */
+t(/say:'Energy: Feeling really recharged after going to bed at 10pm\. i feel the will to live omfg'/.test(demos),
+  'progress rotates to a journal entry, his words exactly');
+t(/say:'Nutrition: day 10 no junk food\. my stomach feels SO good\.'/.test(demos),
+  '  and a second one on the nutrition pill');
+t(/\['Energy','Today'\]/.test(demos) && /\['Nutrition','Today'\]/.test(demos),
+  '  each filed under the pill it was typed with');
+t((demos.match(/head:'Journal entry saved'/g)||[]).length===2,
+  '  and called what the app calls it for a free user');
+/* SETUP ONLY EVER RUNS FOR A FREE APP USER (_obShouldRun), so the demo can say
+   "journal entry" flat out - there is no paid client on the other side of this
+   screen who would then go looking for a Journal tab and find Check-in. */
+t(/if\(!isFreeApp\(cl\.code\)\) return false;/.test(slice('function _obShouldRun(srv){','\n}')),
+  '  which is safe because setup is free-app only');
+t(/s:'Weigh in, or write how it is going\.'/.test(steps),
+  'and the line under it names both, now that both are on screen');
+t(!/Weigh in when you can/.test(steps), 'not just the scale, which is half of it');
 /* Yusuf, 14 Sep, on the served build: "the end result is quickly gone, let it
    linger for another 2 seconds." The typing you follow at a glance; the card
    underneath is the part you have to read. */
