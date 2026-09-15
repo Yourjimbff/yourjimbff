@@ -80035,6 +80035,86 @@ function stageProgressPhoto(input){
   reader.readAsDataURL(f);
 }
 
+/* A PHOTO OF A SCREEN IS NOT A PROGRESS PHOTO (Yusuf, 15 Sep).
+
+   Lauren Burnam uploaded three photos in four minutes. Two were her, in a gym
+   mirror. The first was a screenshot of a run - 9.15 km, 6:58 per km, 1:03:44 -
+   filed under "Front" and drawn on his feed as "Progress photo · Front".
+
+   His ruling: "even if someone hits a progress photo, but you see workout data
+   in there and, like, no person ... it should automatically log as a workout
+   instead."
+
+   The read is deliberately hard to satisfy: a SCREEN, with exercise numbers on
+   it, and NO person anywhere in frame. All three, or the photo is filed exactly
+   as it always was. A progress photo taken in a gym has screens and machines in
+   the background and is still a progress photo, which is why the person test is
+   the one that decides it.
+
+   IT FAILS OPEN, ALWAYS. If the reader cannot be reached, times out, or answers
+   anything this cannot parse, the photo is saved as a progress photo. Nobody
+   ever loses a photo because a classifier was down. */
+function _ppShotPrompt(){
+  return 'Look at this image and reply ONLY with compact JSON, no markdown:\n'
+    + '{"person":true|false,"screen":true|false,"stats":true|false,'
+    + '"activity":"<the exercise, e.g. Run, Walk, Bike, Swim, Rower - or empty>",'
+    + '"detail":"<the numbers exactly as shown, e.g. 9.15 km | 6:58 /km | 1:03:44>",'
+    + '"minutes":<whole minutes of exercise, or null>}\n\n'
+    + 'person: is any human body visible anywhere in the frame, even partly, even in a mirror or reflection? If you are unsure at all, answer true.\n'
+    + 'screen: is this a screenshot, or a photo of a phone/watch/treadmill/monitor display?\n'
+    + 'stats: are there numbers describing exercise - distance, pace, duration, calories, heart rate, a route map, activity rings?\n'
+    + 'activity: name it the way the person would say it. A run is a Run. Never "Workout" or "Cardio" if you can see what it actually was.\n'
+    + 'detail: copy the figures off the screen. Do not invent or convert any number.\n'
+    + 'minutes: the exercise duration in whole minutes if a duration is shown, otherwise null.';
+}
+async function _ppShotRead(dataUrl){
+  try{
+    var small = await downscaleImage(dataUrl, 900, 0.8);
+    var m = String(small).match(/^data:(image\/[a-z]+);base64,(.+)$/i);
+    if(!m) return null;
+    var res = await fetch('/.netlify/functions/analyze', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({max_tokens:300, temperature:0, messages:[{role:'user', content:[
+        {type:'image', source:{type:'base64', media_type:m[1], data:m[2]}},
+        {type:'text', text:_ppShotPrompt()}
+      ]}]})
+    });
+    if(!res.ok) return null;
+    var data = await res.json();
+    var txt=''; (data.content||[]).forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; });
+    txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
+    var i=txt.indexOf('{'), j=txt.lastIndexOf('}');
+    if(i<0||j<i) return null;
+    var o=JSON.parse(txt.slice(i,j+1));
+    // ALL THREE, or it is a progress photo. person===false is required
+    // explicitly: a missing field is not a promise that nobody is in the shot.
+    if(o.person!==false) return null;
+    if(o.screen!==true) return null;
+    if(o.stats!==true) return null;
+    return o;
+  }catch(e){ return null; }
+}
+/* The workout row that screenshot should have been. The activity NAMES ITSELF -
+   "Run", not "Cardio" - which is the same ruling that decided a sauna is called
+   a sauna. The figures are copied, never converted; the screen said 9.15 km and
+   the log says 9.15 km. The image rides along on the workout's own photo column
+   so he can still look at what they logged. */
+function _ppAsWorkout(read, photoVal, dateStr){
+  var act = String((read&&read.activity)||'').trim() || 'Workout';
+  var det = String((read&&read.detail)||'').trim();
+  var mins = null;
+  try{ mins = (read && read.minutes!=null && !isNaN(+read.minutes)) ? Math.round(+read.minutes) : null; }catch(e){}
+  var desc = det;
+  if(mins && det.indexOf(String(mins))<0) desc = (det ? (det + ' \u00b7 ') : '') + mins + ' min';
+  return {
+    client_code: cl.code,
+    title: act,
+    description: desc || null,
+    date_str: dateStr,
+    photo: photoVal,
+    logged_at: new Date().toISOString()
+  };
+}
 async function saveProgressPhoto(){
   if(!_ppNewPhotoData){ showToast('Choose a photo first'); return; }
   if(!cl){ showToast('Not logged in'); return; }
@@ -80048,6 +80128,28 @@ async function saveProgressPhoto(){
   // Upload full-res to Supabase Storage and keep only the URL in the DB. Falls back to inline base64 if the bucket isn't set up yet.
   var photoUrl = await uploadProgressImage(_ppNewPhotoBlob, cl.code);
   var _photoVal = (photoUrl || _ppNewPhotoData);
+  /* THE SCREENSHOT DIVERT. Read before anything is written, so a run that was
+     tapped into the progress-photo slot is logged as the run it is instead of
+     being filed as a body shot and then needing to be moved by hand. Nothing
+     here can cost them the photo: every failure path falls through to the
+     ordinary save below. */
+  try{
+    if(btn) btn.textContent='Reading\u2026';
+    var _shot = await _ppShotRead(_ppNewPhotoData || _photoVal);
+    if(_shot){
+      var _woRow = _ppAsWorkout(_shot, _photoVal, dateStr);
+      var _woRes = await insertWorkoutLog(_woRow);
+      if(_woRes && _woRes.ok){
+        closeProgressPhotoModal();
+        showToast('\u2713 Logged as a workout \u2014 ' + String(_woRow.title));
+        try{ if(typeof loadWorkouts==='function') loadWorkouts(); }catch(e){}
+        return;
+      }
+      // The workout would not save. Fall through and keep it as a photo rather
+      // than leave them with nothing at all.
+    }
+  }catch(e){}
+  if(btn) btn.textContent='Saving...';
   var _isoNow=new Date().toISOString();
   var _attempts=[
     { client_code: cl.code, photo: _photoVal, date_str: dateStr, weight: (wInput!==''? wInput : null), angle: _ppNewAngle||'Front', logged_at: _isoNow },
