@@ -57,6 +57,24 @@ t(/id="lgGoBtn" disabled/.test(paint), 'the button starts disabled');
 t(/onclick="legalTick\(\)"/.test(paint), 'and only the tick row can enable it');
 const acc=between('async function legalAccept(){','/* ---- SETTINGS, AT THE BOTTOM');
 t(/if\(!window\._lgOk\) return;/.test(acc), 'legalAccept refuses to run untickled');
+/* THE HOLE THAT WAS ACTUALLY THERE, found by using the served v440 rather than
+   by reading it. The gate\u2019s own document links called legalRead, which sets
+   _lgStandalone \u2014 so opening the Privacy Policy and pressing Back closed the
+   whole gate and dropped you into the app, un-agreed. Two assertions, because
+   two things were wrong: the caller, and the fact that anything at all could
+   close the gate by accident. */
+t(/onclick="legalReadInline\(/.test(paint) && !/onclick="legalRead\(/.test(paint),
+  'the gate\u2019s own links open the documents INLINE, never standalone');
+const inl=between('function legalReadInline(which){','function legalDocBack(){');
+t(/window\._lgStandalone=false;/.test(inl), '  so Back returns to the agreement');
+t(!/_lgGate/.test(inl), '  and it never lowers the gate');
+const cls=between('function legalClose(force){','function legalTick(){');
+t(/if\(window\._lgGate && !force\) return;/.test(cls),
+  'and legalClose flatly refuses to take the gate down');
+t(/window\._lgGate=true;/.test(between('function _legalShow(){','function legalRead(which){')),
+  '  the gate raises that flag when it opens');
+t(acc.indexOf('window._lgGate=false;') >= 0 && acc.indexOf('window._lgGate=false;') < acc.indexOf('legalClose(true)'),
+  '  and agreeing is the only thing that lowers it');
 const tick=between('function legalTick(){','function _legalPaint(){');
 t(/b\.disabled = !window\._lgOk/.test(tick), 'the tick drives the button both ways');
 
@@ -68,7 +86,7 @@ t(/if\(_legalLocalOk\(code\)\)\{ try\{ await _legalRecord\(code\); \}catch\(e\)\
   'somebody who already agreed is never asked twice — the write is retried instead');
 t(acc.indexOf('_legalMark(code);') < acc.indexOf('_legalRecord(code)'),
   'the tap is marked BEFORE the save, so a failed save cannot re-ask');
-t(/legalClose\(\);/.test(acc), 'and the overlay comes down either way');
+t(/legalClose\(true\);/.test(acc), 'and the overlay comes down either way');
 
 console.log('\n  IT IS RECORDED SOMEWHERE REAL:');
 const rec=between('async function _legalRecord(code){','async function legalGate(){');
