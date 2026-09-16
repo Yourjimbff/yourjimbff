@@ -86,5 +86,49 @@ console.log('\n  THE STORED VALUE IS UNCHANGED:');
    the paid side, so nothing has to be migrated. */
 t(/window\._feedWhoV=\(v==='free'\)\?'free':'clients';/.test(src), "'clients' is still what gets stored");
 
+
+// "i think there is still no way to see the free users logs on the desktop
+// dashboard." (Yusuf, 16 Sep, after the phone chips shipped.)
+//
+// The FILTER always ran on both widths. Only the CONTROL was phone-only, and it
+// defaults to Paid - so the cockpit hid every free account's logs and said
+// nothing about it. _feedWho reads localStorage, which is per device, so
+// flipping it on his phone could never have moved the desktop either.
+console.log('\n  THE DESKTOP HAS THE SWITCH TOO:');
+const deskSrc=defOf('_jvRenderFilters');
+t(/setFeedWho\('clients'\)/.test(deskSrc), 'the cockpit bar can select Paid');
+t(/setFeedWho\('free'\)/.test(deskSrc),    '  and Free');
+t(/_feedPaidCount\(\)/.test(deskSrc) && /_feedFreeCount\(\)/.test(deskSrc),
+  'off the same two counts the phone uses, so they cannot disagree');
+t(/whoNow!=='free'/.test(deskSrc) && /whoNow==='free'/.test(deskSrc),
+  'and each chip lights off the stored value, not off a local guess');
+t(/var whoNow=_feedWho\(\)/.test(deskSrc), '  which is read, not assumed');
+// The house rule: _lift chases identifiers, so a lifted body may not lean on an
+// underscore-prefixed local of its own.
+t(!/\bvar _[A-Za-z]/.test(deskSrc.split('jvChipRow')[0]||''),
+  'no underscore locals introduced in the lifted body');
+
+console.log('\n  AND FREE DOES NOT FILL WITH PAID PEOPLE WHO LOGGED NOTHING:');
+/* _pfDayGroups hands every ACTIVE client a card whether or not they logged.
+   Filter the events and not the roster and the other side's people come back as
+   empty cards - the same fault the Male filter had on 20 Aug, one filter along. */
+const grpSrc=defOf('_pfDayGroups');
+const guards=(grpSrc.match(/_feedWhoPass\(/g)||[]).length;
+t(guards>=2, 'both the event guard and the roster guard consult it', 'found '+guards);
+t(/_jvPassesFilters\(it\.code\) \|\| !_fdChipPass\(it\.code\) \|\| !_feedWhoPass\(it\.code\)/.test(grpSrc),
+  'the event guard has it beside the other two');
+t(/_jvPassesFilters\(c\) \|\| !_fdChipPass\(c\) \|\| !_feedWhoPass\(c\)/.test(grpSrc),
+  'and so does the roster guard');
+
+console.log('\n  THE PASS ITSELF, RUN:');
+global._feedWhoPass=eval('('+defOf('_feedWhoPass').replace(/^function\s+_feedWhoPass/,'function')+')');
+window._feedWhoV='clients';
+t(_feedWhoPass('paid1')===true,  'standing in Paid, a paying client passes');
+t(_feedWhoPass('free1')===false, '  and a free account does not');
+window._feedWhoV='free';
+t(_feedWhoPass('free1')===true,  'standing in Free, a free account passes');
+t(_feedWhoPass('paid1')===false, '  and a paying client does not');
+t(_feedWhoPass('')===true,       'a moment belonging to nobody always passes');
+
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (it lights when he taps it, and both sides count)');
 process.exit(bad?1:0);
