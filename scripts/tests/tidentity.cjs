@@ -101,10 +101,16 @@ t(/var _fixing=false;/.test(src), 'guarded, so it cannot pile up on itself');
    with zero rows and a healthy 200, drew an empty app and stopped. Repairing the
    session afterwards changed nothing anybody could see. */
 t(/if\(got\)\{/.test(src), 'a heal that produced a token does something about the screen');
-t(/sessionStorage\.setItem\('yjb_sess_healed','1'\)/.test(src) && /location\.reload\(\)/.test(src),
-  'it reloads once, so the loaders run again with an identity');
-t(/seen=!!sessionStorage\.getItem\('yjb_sess_healed'\)/.test(src),
-  'and only once - a repeated failure can never become a reload loop');
+t(/sessionStorage\.setItem\('yjb_sess_healed', String\(Date\.now\(\)\)\)/.test(src) && /location\.reload\(\)/.test(src),
+  'it reloads, so the loaders run again with an identity');
+/* A COOLDOWN, NOT A ONE-SHOT (16 Sep). The flag never expired and sessionStorage
+   survives a reload, so the first heal in a tab reloaded and every heal after it
+   was refused - which matters because the auto-update reload puts the page
+   straight back into the state a heal is for. It healed once, went blank on the
+   next deploy, and could not fix itself. A loop is seconds apart; a real second
+   heal is minutes. */
+t(/Date\.now\(\)-last > 90000/.test(src),
+  'and not twice in ninety seconds - a repeated failure can never become a reload loop');
 t(/got=await sessEnsure\(code, true\)/.test(src),
   '  the reload is gated on actually getting a token, not on having tried');
 

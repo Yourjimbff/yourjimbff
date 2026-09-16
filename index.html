@@ -11633,14 +11633,43 @@ function sessForceSignIn(){
   try{ location.reload(); }catch(e){}
 }
 var _sessRecovering=false;
+/* NEVER THROW THE OLD KEY AWAY BEFORE THE NEW ONE IS IN YOUR HAND.
+   Yusuf, 16 Sep: "After every refresh like the auto refresh the app stop
+   showing I have to force a fresh copy sign in and then it shows."
+   MY BUG, FROM v448, AND IT COST HIM HIS SESSION EVERY TIME. This used to call
+   _sessClear() FIRST and mint second. That was survivable while only
+   trainerWrite called it - a rare write, on a settled page. v448 wired it to
+   sbSelect, which is 220 call sites and about twenty-five reads fired in the
+   first second of every launch.
+   Now look at when the app reloads itself: the moment a new version deploys.
+   Which is the moment the session function is COLD. So the launch race is lost,
+   the first read comes back 401, this function wipes the device's perfectly
+   good session, and the re-mint hits the same cold function and fails too. The
+   device is left with no session at all - which is not "retry next time", it is
+   "sign in again", which is exactly what he had to do.
+   _sessClear was never needed: sessEnsure(code, true) skips the cache and
+   overwrites on success. So the old session now survives a failed recovery, and
+   the next read simply tries again.
+   AND IT WILL NOT FIRE WITHOUT KNOWING WHO IT IS. sessEnsure('') returns null,
+   which under the old order meant a cleared session and nothing to replace it. */
+var _sessRecoverP=null;
 async function sessOnDenied(){
-  if(_sessRecovering) return false;
+  var code=''; try{ code=String((cl&&cl.code)||''); }catch(e){ code=''; }
+  if(!code) return false;
+  /* A SCREEN FULL OF REFUSALS IS ONE RECOVERY, AND THE OTHERS WAIT FOR IT.
+     Returning false to the other twenty-four reads is how a healed session
+     still drew an empty page: one read fixed the problem and the rest had
+     already given up. */
+  if(_sessRecoverP) return _sessRecoverP;
   _sessRecovering=true;
-  try{
-    _sessClear();
-    var t=await sessEnsure((cl&&cl.code)||'', true);
-    return !!t;
-  } finally { _sessRecovering=false; }
+  _sessRecoverP=(async function(){
+    try{
+      var t=await sessEnsure(code, true);
+      return !!t;
+    }catch(e){ return false; }
+    finally{ _sessRecovering=false; _sessRecoverP=null; }
+  })();
+  return _sessRecoverP;
 }
 
 // ===== SUPABASE CONFIG =====
@@ -12654,7 +12683,13 @@ async function sbSelect(table, filter, _retried){
     // A REFUSAL, NOT A MISTAKE IN THE QUERY. Trade it for a fresh session and ask
     // once more. sessOnDenied has its own in-flight guard, so a screen firing
     // twenty reads at once mints one token, not twenty.
-    if((res.status===401 || res.status===403) && !_retried){
+    /* 401 ONLY, AND THE DIFFERENCE MATTERS. PostgREST answers 401 for a token it
+       cannot verify - "I don't know who you are" - and 403 for a grant or a
+       policy saying no - "I know exactly who you are and the answer is no". A
+       new session cannot change the second one, and treating it as a session
+       problem meant every legitimate refusal (the private note column, a table
+       a client may not read) tore down a working session to no purpose. */
+    if(res.status===401 && !_retried){
       var _ok=false; try{ _ok=await sessOnDenied(); }catch(e){ _ok=false; }
       if(_ok) return await sbSelect(table, filter, true);
     }
@@ -12881,11 +12916,21 @@ async function checkForUpdate(){
          already empty and wrong, and the alternative is re-running a dozen
          loaders and hoping none was missed. Guarded through sessionStorage so a
          repeated failure can never become a reload loop. */
+      /* THE GUARD IS A COOLDOWN, NOT A ONE-SHOT (16 Sep). It stored a flag that
+         never expired, and sessionStorage survives a reload - so the FIRST heal
+         in a tab reloaded and every heal after it was refused. That matters
+         because the auto-update reload puts the page straight back into the
+         state a heal is for, and by then the flag is already spent: it healed
+         once, went blank on the next deploy, and could not fix itself. His
+         words for that: "it's like not consistent."
+         A loop would be seconds apart; a genuine second heal is minutes. Ninety
+         seconds tells them apart, and nothing here reloads without having a
+         token in hand to reload INTO. */
       if(got){
-        var seen=false;
-        try{ seen=!!sessionStorage.getItem('yjb_sess_healed'); }catch(e){}
-        if(!seen){
-          try{ sessionStorage.setItem('yjb_sess_healed','1'); }catch(e){}
+        var last=0;
+        try{ last=parseInt(sessionStorage.getItem('yjb_sess_healed')||'0',10)||0; }catch(e){}
+        if(Date.now()-last > 90000){
+          try{ sessionStorage.setItem('yjb_sess_healed', String(Date.now())); }catch(e){}
           try{ location.reload(); }catch(e){}
         }
       }
