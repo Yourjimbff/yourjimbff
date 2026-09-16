@@ -439,8 +439,14 @@ const goal=slice('function fdGoalHtml(){','\n}');
 t(/Your nutrition goals/.test(goal), 'the numbers now live on the Food page');
 t(/_fuelTargets\(\)/.test(goal) && !/gw\*|\*\s*0\.|Math\.round\(w\s*\*/.test(goal),
   'printed from the one engine, not computed a second time');
+/* THE LABELS MOVED INTO THE CELL (16 Sep). The four numbers became editable -
+   see tfuelfield.cjs - so the markup is built by _fdFuelCell now and the words
+   reach it as arguments. Same four words on the same card; this checks where
+   they actually are rather than where they used to be. */
+const cell=slice('function _fdFuelCell(k, raw, shown, label){','\n}');
+t(/<i>'\+label\+'<\/i>/.test(cell), 'each number is still named under it');
 ['calories','protein','carbs','fat'].forEach(function(w){
-  t(new RegExp('<i>'+w+'</i>').test(goal), '  '+w);
+  t(new RegExp("'"+w+"'\\)").test(goal), '  '+w);
 });
 t(/You eat for the body underneath the fat/.test(goal),
   'and it still says WHY that number is not their scale weight');

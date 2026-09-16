@@ -57,7 +57,17 @@ t(/\.bnav:not\(\.trainer-mode\) #bnAsk\{order:2;\}/.test(src), 'Jim');
 t(/\.bnav:not\(\.trainer-mode\) #bnProgram\{order:3;\}/.test(src), 'Program');
 t(/\.bnav:not\(\.trainer-mode\) #bnFood\{order:4;\}/.test(src), 'Food');
 t(/\.bnav:not\(\.trainer-mode\) #bnProgress\{order:5;\}/.test(src), 'Progress');
-t(/\.bnav\.trainer-mode #bnFood\{display:none !important;\}/.test(src), 'the trainer bar never shows it');
+/* IT IS ON THE TRAINER BAR NOW, in the slot CRM used to hold (Yusuf, 16 Sep:
+   "my CRM page is really not that useful... we can put the food in place there
+   right now, that food tab so I can see my nutrition goals"). Asked whether CRM
+   should move to the More menu or go, he said gone entirely.
+   ONE SWAP, NOT AN ADDITION. The same number of buttons are visible before and
+   after, so the bar's geometry cannot change - which is the only part of this
+   that could not be proved off a desktop. */
+t(/\.bnav\.trainer-mode #bnCRM\{display:none !important;\}/.test(src), 'CRM is off the trainer bar');
+t(/\.bnav\.trainer-mode #bnFood\{order:3;\}/.test(src), '  and Food holds the slot it had');
+t(!/\.bnav\.trainer-mode #bnFood\{display:none/.test(src), '  with nothing left over to hide it again');
+t(/if\(t==='CRM'\) t='Feed';/.test(src), 'and every route into the board lands on the Day page instead');
 t(/\['bnProgram','bnFollow','bnToday','bnFood'\]/.test(src), 'the trainer bar stays three - he reaches the page from My Food');
 t(/if\(t==='Food'\)\{ try\{ renderFoodTab\(\); \}catch\(e\)\{\} \}/.test(src), 'and switching to it renders it');
 
