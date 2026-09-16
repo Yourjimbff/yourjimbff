@@ -61473,26 +61473,20 @@ async function cfSave(code, file){
 // already written disappears from view. Nothing is migrated and nothing is deleted:
 // moving rows between tables to fix a display problem is how you lose them.
 //
-// Raw fetch on purpose. sbSelect returns [] when a read FAILS, which here would mean a
-// whole table dropping silently out of the list and reading as "no notes yet" — the
-// precise failure this change exists to end.
+// EVERY READ HERE REPORTS ITS OWN FAILURE. sbSelect and trainerOp both answer []
+// when a read FAILS, which in this function would mean a whole table dropping
+// silently out of the list and reading as "no notes yet" — the precise failure
+// this file exists to end. So both halves are raw calls that push into
+// out.failed, and the page says "couldn't load" rather than "nothing here".
+//
+// BOTH HALVES GO THROUGH THE DOOR NOW (16 Sep). The client_notes half used to be
+// a direct table read; see the note on grabClientNotes below.
 async function _cnFetchBoth(code){
   var out={rows:[], failed:[]};
-  async function grab(table, tsCol, filter){
-    try{
-      var res=await fetch(SB_URL+'/rest/v1/'+table+'?'+filter,
-        {headers:sbHeaders(), signal:_sbTimeout(SB_READ_MS)});
-      if(!res.ok){ out.failed.push(table); return; }
-      var rows=await res.json();
-      (rows||[]).forEach(function(r){
-        out.rows.push({id:r.id, store:table, note:r.note, ts:r[tsCol]||null});
-      });
-    }catch(e){ out.failed.push(table); }
-  }
   // coach_notes goes through the trainer door — same reason as every other read of this
   // table. Kept as a raw fetch here rather than trainerOp(), deliberately: trainerOp()
   // returns [] on ANY failure, which for this one function is exactly the silent-failure
-  // shape the comment above grab() says it exists to end. A refused or errored door call
+  // shape the comment above this function says it exists to end. A refused or errored door call
   // reports into out.failed, same as a refused table read always has here.
   async function grabCoachNotes(){
     var t=_sessToken();
@@ -61509,11 +61503,30 @@ async function _cnFetchBoth(code){
       });
     }catch(e){ out.failed.push('coach_notes'); }
   }
-  var q='&client_code=eq.'+encodeURIComponent(code)+'&limit=200';
-  await Promise.all([
-    grab('client_notes','logged_at','select=id,note,logged_at'+q+'&order=logged_at.desc'),
-    grabCoachNotes()
-  ]);
+  /* AND client_notes GOES THROUGH THE DOOR TOO, for the same reason coach_notes
+     does and one more besides. The private `note` column is the most sensitive
+     text in this database — his read of a person, in his own words — and the
+     only way a client can be structurally unable to see it is for the page to
+     have no permission to select it at all. That means the trainer cannot
+     either, from here, so this was the last direct read standing between
+     client_notes and being shut properly. Same shape as grabCoachNotes: a
+     refused door call reports into out.failed rather than reading as no notes. */
+  async function grabClientNotes(){
+    var t=_sessToken();
+    if(!t){ out.failed.push('client_notes'); return; }
+    try{
+      var res=await fetch('/.netlify/functions/trainer',{method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+t},
+        signal:_sbTimeout(SB_READ_MS),
+        body:JSON.stringify({op:'clientNotes',args:{code:code}})});
+      if(!res.ok){ out.failed.push('client_notes'); return; }
+      var rows=await res.json();
+      (rows||[]).forEach(function(r){
+        out.rows.push({id:r.id, store:'client_notes', note:r.note, ts:r.logged_at||null});
+      });
+    }catch(e){ out.failed.push('client_notes'); }
+  }
+  await Promise.all([ grabClientNotes(), grabCoachNotes() ]);
   // The older table has no markers — everything in it was written by you, so it all
   // belongs here. The current one is filtered down to your own reads.
   out.rows=out.rows.filter(function(r){ return r.store==='coach_notes' || _cnIsPrivateNote(r.note); });

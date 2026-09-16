@@ -57,6 +57,19 @@ t((src.match(/'Content-Type':'image\/jpeg', 'x-upsert':'true'/g)||[]).length===0
 t(/async function _mediaUpload\(blob, bucket, coach\)\{/.test(src),
   '  because both of them go through the signed media door');
 
+console.log('\n  THE PRIVATE NOTES ARE NOT READ BY THE PAGE AT ALL:');
+/* The `note` column is his read of a person in his own words, and the only way
+   a CLIENT can be structurally unable to see it is for the page to hold no
+   permission to select it — which means the trainer cannot select it from here
+   either. This was the last direct read standing between client_notes and being
+   shut properly, and it moved to the door on 16 Sep. */
+t(!/select=id,note,logged_at/.test(src), 'nothing selects the private note column directly');
+t(/op:'clientNotes',args:\{code:code\}/.test(src), 'the trainer door is what reads it');
+t(/out\.failed\.push\('client_notes'\)/.test(src), '  and a refused door call says so rather than showing an empty page');
+const both=src.slice(src.indexOf('async function _cnFetchBoth(code){'), src.indexOf('async function _cnFetchBoth(code){')+2600);
+t(!/SB_URL\+'\/rest\/v1\//.test(both), '  and the raw table reader it replaced is gone, not left dangling');
+t((both.match(/\/\.netlify\/functions\/trainer/g)||[]).length===2, '  both halves of that page go through the door');
+
 console.log('\n  THE RECOVERY PATH EXISTS FOR WHEN THE LOCK GOES ON:');
 /* Built before this cutover and not yet wired to a refusal — recorded here so
    the next step has somewhere to land rather than being invented under
