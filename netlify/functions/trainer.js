@@ -57,6 +57,16 @@ const OPS = {
   clientNotesAll: () => `client_notes?select=id,client_code,note,logged_at&order=logged_at.desc&limit=1500`,
   clientPlan:    (a) => `training_plans?client_code=eq.${enc(a.code)}&limit=1`,
 
+  /* ---- THE SEND-ALL MAILBOX (16 Sep) ---------------------------------------
+     His Mac reads these orders and writes back what happened. Both halves used
+     the PUBLIC key, and journal_entries was locked weeks ago - so the read had
+     been answering "no orders" and the write had been refused, quietly, on a
+     button he presses expecting texts to go out. Same table, same rows, same
+     two queries; through the door instead, where the service role can actually
+     see them. His own code only: the order is a row on thegoat and nothing here
+     takes a client_code from the caller. */
+  sendallOrders: () => `journal_entries?select=id,client_code,body,logged_at&client_code=eq.thegoat&entry_type=eq.sendall&order=logged_at.desc&limit=10`,
+
   // ---- what the drafter on his Mac needs to write a reply (15 Sep) ----------
   // send_watch.py built its client brief by reading food_logs, workout_logs and
   // profiles with the PUBLIC key - the same key that ships in the page. Those
@@ -480,6 +490,20 @@ const WRITE_OPS = {
   noteSend: (a) => ({
     method: 'POST', path: 'coach_notes',
     body: { client_code: enc_raw(a.client_code), note: str(a.note, 4000), date_str: str(a.date_str, 40), time_str: str(a.time_str, 20) },
+  }),
+  /* The other half of the send-all mailbox. The row is nailed to his own code
+     and to the one entry_type, so this op can only ever write the outcome of a
+     send-all and never a journal entry on somebody else. */
+  sendallResult: (a, coach) => ({
+    method: 'POST', path: 'journal_entries',
+    body: {
+      client_code: 'thegoat',
+      body: str(a.body, 20000),
+      entry_type: 'sendall-result',
+      title: 'Send all result',
+      shared: false,
+      logged_at: isoTs(a.logged_at || new Date().toISOString()),
+    },
   }),
   noteDelete: (a) => ({ method: 'DELETE', path: `coach_notes?id=eq.${encNoteId(a.id)}` }),
   // Same delete-guard gap as client_contacts above.

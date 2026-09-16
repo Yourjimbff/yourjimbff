@@ -644,7 +644,8 @@ body.hasnav{padding-bottom:86px;}
    _cqParkConsults hands it back before every repaint. With CRM unreachable the
    loan simply never happens and _cqPaintMobile draws it where it lives. */
 .bnav.trainer-mode #bnCRM{display:none !important;}
-.bnav.trainer-mode #bnFood{order:3;}
+.bnav.trainer-mode #bnProgram{order:3;}
+.bnav.trainer-mode #bnFood{order:4;}
 .bnav.trainer-mode .bni-lb{font-size:8px;letter-spacing:0.1px;}
 /* ===== .trainer-only IS A GATE NOW, NOT DECORATION ========================
    It was acted on by exactly two rules — the one below and its reveal at
@@ -714,9 +715,9 @@ body:not(.is-trainer) .trainer-only{display:none !important;}
    permanently — so the nav slot goes rather than offering a second way to the
    same assistant. One surface per width, one shared conversation under both. */
 @media (min-width:1024px){ .bnav #bnJarvis{display:none !important;} }
-.bnav.trainer-mode #bnToday{order:4;}
-.bnav.trainer-mode #bnTraining{order:5;}
-.bnav.trainer-mode #bnClients{order:6;}
+.bnav.trainer-mode #bnToday{order:7;}
+.bnav.trainer-mode #bnTraining{order:8;}
+.bnav.trainer-mode #bnClients{order:5;}
 /* ACTIVITY IS NOT A TAB (Yusuf, ruling, 23 Aug). The feed it opened is the Feed
    tab now — two buttons onto one stream, one of them named for the other's
    contents. The JS hides it too; this is the belt so a trainer bar built before
@@ -12545,7 +12546,19 @@ function _sbGuardDateStrRange(table, filter){
       + 'Use logged_at for any range. table='+table+' filter='+f);
   }catch(e){}
 }
-async function sbSelect(table, filter){
+/* A REFUSED READ IS NOT AN EMPTY TABLE, AND SINCE THE LOCK WENT ON IT IS THE
+   DIFFERENCE BETWEEN A FEED AND A BLANK SCREEN.
+   Before the tables were locked, a read sent without a working session still
+   came back full - the public key could see everything - so a session that had
+   quietly lapsed was invisible. Now the same read answers 401 or 403, sbSelect
+   logs it and hands back [], and the page draws "nothing today" over a database
+   that is perfectly fine. Yusuf, 16 Sep: "Feed view of all logs dropped again."
+   Every other door in this app already trades a refusal for a fresh session -
+   trainerWrite has done it since the cutover. This is the read side of the same
+   move, in the one function 220 callers go through, so none of them have to
+   know. Once per call: if the second attempt is refused too, the session is not
+   the problem and it falls through to the honest [] and the failure counter. */
+async function sbSelect(table, filter, _retried){
   _sbGuardDateStrRange(table, filter);
   try{
     // Pick the right order column per table — not every table has logged_at
@@ -12614,6 +12627,13 @@ async function sbSelect(table, filter){
       // curFilter, not filter — the retries above may have dropped a column the table
       // doesn't have, and page two has to ask the same question page one did.
       return await _sbPageRest(table, curFilter, addedOrder?('&order='+orderCol+'.desc'):'', data);
+    }
+    // A REFUSAL, NOT A MISTAKE IN THE QUERY. Trade it for a fresh session and ask
+    // once more. sessOnDenied has its own in-flight guard, so a screen firing
+    // twenty reads at once mints one token, not twenty.
+    if((res.status===401 || res.status===403) && !_retried){
+      var _ok=false; try{ _ok=await sessOnDenied(); }catch(e){ _ok=false; }
+      if(_ok) return await sbSelect(table, filter, true);
     }
     // Never fail quietly: an empty result and a broken query must not look the same.
     console.error('[sbSelect] '+table+' returned '+res.status+' — treating as empty. '+String(why||'').slice(0,200));
@@ -14830,13 +14850,23 @@ async function _launchAppInner(){ try{ setTimeout(sqInit,600); }catch(e){}
          stylesheet was never the thing deciding who is on this bar.
          Four now: Day, Jarvis, Food, Feed. The column count is set here for the
          same reason, so the grid and the list can never disagree. */
-      ['bnProgram','bnFollow','bnToday'].forEach(function(id){
+      /* HIS BAR, IN HIS OWN ORDER (Yusuf, 16 Sep): "Day, Jarvis, program, food,
+         feed." Five now. The order itself is CSS a few hundred lines up; this is
+         the list that decides who is ON the bar, and it sets the column count
+         beside itself so the two can never disagree.
+         AND THE HIDE LIST IS WHERE IT ACTUALLY LIVES. The first attempt at this
+         changed only the CSS and the bar came back short, because these lines
+         set an INLINE display:none and inline beats a stylesheet. Found by
+         looking at the served page. */
+      ['bnFollow','bnToday'].forEach(function(id){
         var el=document.getElementById(id); if(el) el.style.display='none';
       });
-      var _bfdT=document.getElementById('bnFood'); if(_bfdT) _bfdT.style.display='';
+      ['bnProgram','bnFood'].forEach(function(id){
+        var el=document.getElementById(id); if(el) el.style.display='';
+      });
       var _bcrm=document.getElementById('bnCRM'); if(_bcrm) _bcrm.style.display='none';
       var _ask=document.getElementById('bnAsk'); if(_ask) _ask.style.display='';
-      if(_nav){ _nav.style.gridTemplateColumns='repeat(4,1fr)'; }
+      if(_nav){ _nav.style.gridTemplateColumns='repeat(5,1fr)'; }
     } else {
       // CLIENT: Day · Week(Program for now) · Progress · Jim. Four tabs, one idea
       // each (Yusuf, 20 Aug).
@@ -18327,6 +18357,15 @@ async function _loadTrainerFeedRun(targetId){
     // right on the boundary (or with a skewed clock) still makes it in.
     var _feedSince=new Date(_feedCut-12*3600000).toISOString();
     var _sinceQ='&logged_at=gte.'+encodeURIComponent(_feedSince);
+    /* A WITNESS OVER THE WHOLE BATCH (16 Sep, "Feed view of all logs dropped
+       again"). Every read below is .catch(-> []), and sbSelect answers [] for a
+       refusal as well, so a feed whose reads were all turned away draws exactly
+       like a day nobody logged. That was survivable while the public key could
+       still see everything; with the tables locked it is the difference between
+       a feed and a blank screen, and the screen said the calmer of the two
+       things. _sbFailMark is the counter this file already keeps for precisely
+       this - it is read again once the batch has landed. */
+    var _feedFailMark=null; try{ _feedFailMark=_sbFailMark(); }catch(e){}
     // Fire every independent fetch at once instead of one-after-another — this back-to-back chain was the 20s stall.
     var _foodsP = (lens==='gym') ? Promise.resolve([]) : sbSelect('food_logs','select=id,client_code,name,emoji,calories,protein,carbs,fat,rating,logged_at,date_str,meal,eat_time,meal_text'+_sinceQ+'&order=logged_at.desc.nullslast&limit=400').catch(function(){return [];});
     // exercises added (Yusuf, live) — the fix that reads structured exercises
@@ -18605,9 +18644,13 @@ async function _loadTrainerFeedRun(targetId){
       // thing that has to be true.
       var _anyOlder=false;
       try{ var _fk=_feedWindowFloorK(); _anyOlder=Object.keys(dayMap).some(function(k){ return +k>=_fk && +k!==_todayK && dayMap[k].length; }); }catch(e){}
+      /* AND IT SAYS WHICH OF THE TWO IT IS. An unread feed and an empty one are
+         different sentences, and only one of them is reassuring. */
+      var _readFailed=false; try{ _readFailed=(_feedFailMark!=null) && _sbFailedSince(_feedFailMark); }catch(e){}
       var _cn=_n ? (_n+(_n===1?' thing logged today · ':' things logged today · ')+_pn+(_pn===1?' client':' clients'))
-                 : (_anyOlder ? 'Nothing logged today yet · the last seven days are below'
-                              : 'Nothing logged in the last seven days');
+                 : (_readFailed ? 'The logs did not load \u2014 that is the connection, not an empty day. Pull down in a moment.'
+                   : (_anyOlder ? 'Nothing logged today yet · the last seven days are below'
+                                : 'Nothing logged in the last seven days'));
       html+=_feedDeskControls(_cn);
     }
     // THE FEED IS PEOPLE, ACROSS SEVEN DAYS. One card per client per day, day
@@ -63090,12 +63133,17 @@ function _tabRemembered(){
   }catch(e){ return ''; }
 }
 function switchTab(t){
-  /* CRM IS GONE (Yusuf, 16 Sep). Hiding the button is not the same as closing
-     the door: the app restores the last tab from yjb_tab, so anybody whose last
-     tab WAS the board would land on it on every launch with no way to have
-     asked for it. Every route into that page ends here, so this is the one line
-     that has to hold - and it sends him to the Day page, which is where the bar
-     lands him anyway. */
+  /* CRM IS OFF THE BAR (Yusuf, 16 Sep). Hiding the button is not the same as
+     closing the door: the app restores the last tab from yjb_tab, so anybody
+     whose last tab WAS the board would land on it on every launch having never
+     asked for it. Every route into the TAB ends here, so this is where it is
+     closed, and it lands on the Day page - which is where the bar puts him
+     anyway.
+     THE DESKTOP KEEPS IT ("they can live on the desktop but I think it could be
+     better. It will take a different shape later"). The cockpit reaches the
+     board through jvSetMode('crm'), which has never gone through switchTab, so
+     this line does not touch it. That is the whole reason the redirect is here
+     and not inside the page itself. */
   if(t==='CRM') t='Feed';
   try{ document.body.setAttribute('data-tab', String(t||'')); }catch(e){}
   // The Jarvis tab's composer may hold a draft painted while hidden (see jtGrow).

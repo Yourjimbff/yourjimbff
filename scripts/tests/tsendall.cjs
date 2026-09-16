@@ -68,7 +68,24 @@ t(/String\(d\.order\|\|''\)!==String\(res\.orderId\|\|''\)/.test(rc), 'and never
 t((src.match(/await _jvSendAllReconcile\(\)/g)||[]).length>=2, 'runs on the board read and on the 45 second poll');
 let sw=''; try{ sw=fs.readFileSync(require('path').join(require('os').homedir(),'mnt/Client Files/send_watch.py'),'utf8'); }catch(e){ try{ sw=fs.readFileSync('/Users/yusuf/Documents/Client Files/send_watch.py','utf8'); }catch(e2){ sw=''; } }
 if(sw)
-t(/def post_results\(\)/.test(sw) && /\[SENDALL-RESULT\]/.test(sw) && /entry_type": "sendall-result"/.test(sw) && /RESULTS\.append\(\{"order": str\(item\.get\("order"\)\)/.test(sw), 'send_watch.py writes the result row for every item it handled');
+t(/def post_results\(\)/.test(sw) && /\[SENDALL-RESULT\]/.test(sw) && /RESULTS\.append\(\{"order": str\(item\.get\("order"\)\)/.test(sw), 'send_watch.py writes the result row for every item it handled');
+/* BOTH HALVES MOVED TO THE DOOR (16 Sep). journal_entries was locked weeks ago
+   and both of these still used the public key, so the order read had been
+   answering "no orders" and the result write had been refused - on a button he
+   presses expecting texts to go out. The columns that pin the row to his own
+   code now live on the server, where the caller cannot argue with them. */
+if(sw){
+  t(/_door_rows\("sendallOrders", "thegoat"\)/.test(sw), 'the order read goes through the trainer door');
+  t(/_door_write\("sendallResult", \{"body": body\}\)/.test(sw), 'and so does the result write');
+  t(!/_sb_key\(\)/.test(sw.replace(/#.*$/gm,'')), '  and nothing in that file holds the public key any more');
+  let tj=''; try{ tj=fs.readFileSync('netlify/functions/trainer.js','utf8'); }catch(e){ tj=''; }
+  t(/sendallOrders: \(\) =>/.test(tj), 'the door has the order op');
+  t(/entry_type=eq\.sendall/.test(tj) && /client_code=eq\.thegoat/.test(tj),
+    '  pinned to his own code and the one entry type');
+  t(/sendallResult: \(a, coach\) =>/.test(tj), 'and the result op');
+  t(/client_code: 'thegoat'/.test(tj) && /entry_type: 'sendall-result'/.test(tj),
+    '  which cannot be talked into writing a journal entry on somebody else');
+}
 
 t(/via:\(d\.via\|\|undefined\), order:\(d\.order\|\|undefined\)/.test(src.slice(src.indexOf('function _dfRowNote('), src.indexOf('function _dfFromNote('))) && /via:\(o\.via\?String\(o\.via\):''\), order:\(o\.order\?String\(o\.order\):''\)/.test(src), 'via and order survive the row - written and read back (they were dropped until 7 Sep)');
 t(/via:\(d\.via\|\|undefined\), order:\(d\.order\|\|undefined\),[\s\S]{0,120}?openedAt:\(d\.openedAt\|\|null\)\};/.test(src.slice(src.indexOf('async function dfSetStatus('))), 'and ride through a status change');

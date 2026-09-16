@@ -65,22 +65,33 @@ t(/\.bnav:not\(\.trainer-mode\) #bnProgress\{order:5;\}/.test(src), 'Progress');
    after, so the bar's geometry cannot change - which is the only part of this
    that could not be proved off a desktop. */
 t(/\.bnav\.trainer-mode #bnCRM\{display:none !important;\}/.test(src), 'CRM is off the trainer bar');
-t(/\.bnav\.trainer-mode #bnFood\{order:3;\}/.test(src), '  and Food holds the slot it had');
 t(!/\.bnav\.trainer-mode #bnFood\{display:none/.test(src), '  with nothing left over to hide it again');
 t(/if\(t==='CRM'\) t='Feed';/.test(src), 'and every route into the board lands on the Day page instead');
 /* AND THE LIST THAT ACTUALLY DECIDES. The CSS above is not what puts a button
    on the trainer bar - this does, with an inline display, and inline beats a
    stylesheet. The first attempt changed only the CSS and the bar came back with
    three buttons instead of four. Caught by looking at the served page. */
-const gate=src.slice(src.indexOf("['bnProgram','bnFollow','bnToday']"), src.indexOf("['bnProgram','bnFollow','bnToday']")+700);
-t(gate.length>0, 'the trainer hide list no longer carries bnFood');
-t(/var _bfdT=document\.getElementById\('bnFood'\); if\(_bfdT\) _bfdT\.style\.display='';/.test(gate),
-  '  it is shown on purpose instead');
+const gate=src.slice(src.indexOf("['bnFollow','bnToday'].forEach"), src.indexOf("['bnFollow','bnToday'].forEach")+800);
+t(gate.length>0, 'the trainer hide list carries neither Food nor Program');
+t(/\['bnProgram','bnFood'\]\.forEach\(function\(id\)\{\n        var el=document\.getElementById\(id\); if\(el\) el\.style\.display='';/.test(gate),
+  '  both are shown on purpose instead');
 t(/var _bcrm=document\.getElementById\('bnCRM'\); if\(_bcrm\) _bcrm\.style\.display='none';/.test(gate),
   '  and CRM is hidden in the same place, not only in CSS');
-t(/_nav\.style\.gridTemplateColumns='repeat\(4,1fr\)'/.test(gate),
-  '  with four columns for the four buttons, set beside the list that names them');
-t(!/\['bnProgram','bnFollow','bnToday','bnFood'\]/.test(src), '  and nothing hides it again');
+t(/_nav\.style\.gridTemplateColumns='repeat\(5,1fr\)'/.test(gate),
+  '  with five columns for the five buttons, set beside the list that names them');
+t(!/\['bnProgram','bnFollow','bnToday','bnFood'\]/.test(src), '  and nothing hides them again');
+
+/* HIS ORDER, IN HIS WORDS (16 Sep): "Day, Jarvis, program, food, feed." */
+console.log('\n  AND THE BAR READS IN HIS ORDER:');
+[['bnFeed',1,'Day'],['bnJarvis',2,'Jarvis'],['bnProgram',3,'Program'],['bnFood',4,'Food'],['bnClients',5,'Feed']]
+  .forEach(function(r){
+    t(new RegExp('\\.bnav\\.trainer-mode #'+r[0]+'\\{order:'+r[1]+';\\}').test(src), '  '+r[1]+'. '+r[2]);
+  });
+/* Nothing else may hold one of those five places, or two buttons share a column
+   and one of them is drawn on top of the other. */
+const orders=(src.match(/\.bnav\.trainer-mode #bn[A-Za-z]+\{order:\d+;\}/g)||[]);
+const nums=orders.map(function(o){ return o.match(/order:(\d+)/)[1]; });
+t(new Set(nums).size===nums.length, 'no two buttons claim the same slot', orders);
 t(/if\(t==='Food'\)\{ try\{ renderFoodTab\(\); \}catch\(e\)\{\} \}/.test(src), 'and switching to it renders it');
 
 console.log('\n  TODAY HAS A FRONT DOOR AT LAST:');
