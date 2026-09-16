@@ -13055,6 +13055,25 @@ function viewAsClient(code){
   if(!code || window.VIEWAS) return false;
   try{ sessionStorage.setItem(VA_KEY, String(code).toLowerCase()); }
   catch(e){ try{ if(typeof showToast==='function') showToast('Can’t open the view here'); }catch(_e){} return false; }
+  /* AND HAND THE VIEW THE ONE RECORD IT CANNOT GO AND GET (nightly sweep, 16 Sep).
+     The boot path signs the view in with doLogin(code), but only reaches it when
+     CLIENTS[code] already exists, and inside a view NEITHER roster pass can fill
+     it: the anon clients read is denied by the 7 Aug lockdown, and the door pass
+     is gated on isTrainer(cl.code) while cl is still null before sign-in. So
+     CLIENTS came up empty, the guard fell through, and the view landed on the
+     SIGN-IN SCREEN for every client on the roster. Measured tonight on benp1 and
+     on ug33dkfk86w at 375.
+     The trainer is holding the record at the moment of the tap. Hand it over
+     rather than asking the view to fetch what it is not allowed to fetch. It is
+     the client's own row and it never leaves his browser; sessionStorage dies
+     with the tab exactly as the view itself does. isTrainer is stripped on the
+     way in, for the same reason the yjb_self_client path strips it: a view is
+     never a promotion. */
+  try{
+    var _rec = (typeof CLIENTS!=='undefined' && CLIENTS[code]) ? JSON.parse(JSON.stringify(CLIENTS[code])) : null;
+    if(_rec){ try{ delete _rec.isTrainer; }catch(e){} sessionStorage.setItem(VA_KEY+'_rec', JSON.stringify(_rec)); }
+    else { try{ sessionStorage.removeItem(VA_KEY+'_rec'); }catch(e){} }
+  }catch(e){}
   window._navigatingAway=true;
   window.location.replace(window.location.pathname);
   return true;
@@ -13062,6 +13081,7 @@ function viewAsClient(code){
 // One tap out. Nothing to restore — the overlay never wrote anything.
 function viewAsExit(){
   try{ sessionStorage.removeItem(VA_KEY); }catch(e){}
+  try{ sessionStorage.removeItem(VA_KEY+'_rec'); }catch(e){}
   window._navigatingAway=true;
   window.location.replace(window.location.pathname);
 }
@@ -13231,6 +13251,18 @@ window.addEventListener('load', function(){
            dropped on the way in; the session says what they are, a moment
            later, from the server. */
         if(_self && _self.code===savedCode){ try{ delete _self.isTrainer; }catch(e){} CLIENTS[savedCode]=_self; }
+      }catch(e){}
+    }
+    // The record the trainer handed over at the tap. Only ever read inside a
+    // view, only for the code that view names, and only when nothing else has
+    // filled it — a real sign-in is untouched by this.
+    if(window.VIEWAS && savedCode && !CLIENTS[savedCode]){
+      try{
+        var _vaRec=JSON.parse(sessionStorage.getItem(VA_KEY+'_rec')||'null');
+        if(_vaRec && String(_vaRec.code||savedCode).toLowerCase()===String(savedCode).toLowerCase()){
+          try{ delete _vaRec.isTrainer; }catch(e){}
+          CLIENTS[savedCode]=_vaRec;
+        }
       }catch(e){}
     }
     if(savedCode && !CLIENTS[savedCode]) await loadRosterOrCarryOn();
