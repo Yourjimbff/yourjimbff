@@ -305,8 +305,13 @@ t(/intake_json:JSON\.stringify\(\{active:\(a\.active\|\|'none'\)\}\)/.test(tg2),
    suite (tcarbcap.cjs) rather than four lines in the middle of a setup helper. */
 t(/var T=_fuelTargets\(\);/.test(tg2), 'and it is the same engine the Food page prints');
 t(!/prot\s*=\s*[\d.]+\s*\*/.test(tg2), 'no second formula - the caps only trim, never calculate');
-t(/if\(T\) _obCarbCap\(T, a\.active\);/.test(tg2),
+t(/if\(T\) _carbCap\(T, a\.active\);/.test(tg2),
   'the carb ceiling is applied, off the answer they just gave');
+/* It is a no-op here now - _fuelTargets caps before this line is reached - and
+   it stays for the one case the engine cannot cover: during setup the profile
+   has not been written, so only this call has the answer on the screen. */
+t(/if\(_carbCapNow\(\)>0\) _carbCap\(T, _actLevel\(\)\);/.test(src),
+  '  and the engine itself now carries it for everybody else');
 t(!/_carbCap=_tall/.test(src), 'and it is no longer a rule about how tall they are');
 t(/T\.prot=Math\.round\(_gw\*1\.1\)/.test(tg2), 'and protein stops a tenth over goal weight');
 t(!/T\.cal\s*=/.test(tg2), 'calories are never moved to satisfy a rule about one macro');

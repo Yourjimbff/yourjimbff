@@ -35,6 +35,9 @@ global.profile={};
    wiring that expects a browser; this suite is arithmetic and wants neither. */
 const MINE=['PHASES','_curPhase','_pGender','_clientGender',
             '_actLevel','_actShare','_actStep',
+            /* the engine applies the activity carb ceiling now, so its three
+               pieces are part of the engine and not optional here */
+            'CARB_CAP','FAT_MAX_PCT','_carbCapFor','_carbCapNow','_carbCap',
             '_fuelTargets','pSetFuel','pResetFuel','FUEL_MAX'];
 /* MS_ACT_LO/HI/SHARE share one var statement, so they lift as that whole line
    rather than by name. */
