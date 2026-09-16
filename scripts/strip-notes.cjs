@@ -46,6 +46,26 @@ const fs = require('fs');
 const vm = require('vm');
 
 const file = process.argv[2] || 'index.html';
+/* AND NOTHING ELSE. This rewrites its input IN PLACE, and the only other thing
+   it takes is `--dry <to>`. Somebody who reads that as an output path and runs
+   `strip-notes.cjs index.html out.html` — I did, 16 Sep — gets the second
+   argument ignored and the real file stripped underneath them. The tests pass
+   afterwards, because they assert on code rather than comments, so the first
+   thing that notices is this script refusing to run on its own output at the
+   next deploy. A silently ignored argument is the one thing a script this
+   careful cannot afford. Say no instead. */
+{
+  const extra = process.argv.slice(3).filter(a => a !== '--dry');
+  const dry = process.argv.indexOf('--dry');
+  const dryTo = dry >= 0 ? process.argv[dry + 1] : null;
+  const stray = extra.filter(a => a !== dryTo);
+  if (stray.length) {
+    console.error('strip-notes: I do not know what to do with: ' + stray.join(' '));
+    console.error('strip-notes: this rewrites its input IN PLACE. To write somewhere');
+    console.error('  else without touching the original, use:  --dry <output-path>');
+    process.exit(2);
+  }
+}
 const src = fs.readFileSync(file, 'utf8');
 
 function die(msg) {

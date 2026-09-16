@@ -91,5 +91,30 @@ t(/command = "bash scripts\/stamp-version\.sh"/.test(toml), '  and Netlify runs 
    describes how the app is put together. */
 t(/from = "\/scripts\/\*"[\s\S]{0,120}status = 404/.test(toml), 'and /scripts/* is still 404 to the public');
 
+/* IT REWRITES ITS INPUT IN PLACE, AND SAYS SO WHEN YOU ASK IT NOT TO.
+   16 Sep: I read the second argument as an output path, ran
+   `strip-notes.cjs index.html out.html`, and stripped the real file underneath
+   myself. Every one of the 197 suites still passed - they assert on code, not
+   comments - so the first thing that noticed was this script refusing to run on
+   its own output at the next deploy, four minutes and one failed build later.
+   The gates in here are all about not writing a bad file; this one is about not
+   writing the RIGHT file to the wrong place. */
+console.log('\n  AND IT REFUSES AN ARGUMENT IT DOES NOT UNDERSTAND:');
+const cp=require('child_process');
+const inplaceF=path.join(os.tmpdir(), 'tstrip-inplace-'+process.pid+'.html');
+fs.writeFileSync(inplaceF, fs.readFileSync('index.html'));
+const sizeBefore=fs.statSync(inplaceF).size;
+const r=cp.spawnSync(process.execPath, ['scripts/strip-notes.cjs', inplaceF, inplaceF+'.out'], {encoding:'utf8'});
+t(r.status!==0, 'a stray second argument is refused, not ignored', 'exit '+r.status);
+t(/in place/i.test(r.stderr||''), '  and it says why, in the words that would have saved me');
+t(fs.statSync(inplaceF).size===sizeBefore, '  and the file it refused is untouched',
+  fs.statSync(inplaceF).size+' vs '+sizeBefore);
+const d=cp.spawnSync(process.execPath, ['scripts/strip-notes.cjs', inplaceF, '--dry', inplaceF+'.out'], {encoding:'utf8'});
+t(d.status===0, 'the way that IS supported still works', 'exit '+d.status);
+t(fs.statSync(inplaceF).size===sizeBefore, '  and leaves the original alone too');
+t(fs.existsSync(inplaceF+'.out') && fs.statSync(inplaceF+'.out').size<sizeBefore, '  having written the stripped copy');
+try{ fs.unlinkSync(inplaceF); }catch(e){}
+try{ fs.unlinkSync(inplaceF+'.out'); }catch(e){}
+
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (the notes stay in git and never reach a browser)');
 process.exit(bad?1:0);
