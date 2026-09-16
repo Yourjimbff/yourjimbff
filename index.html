@@ -18278,7 +18278,13 @@ function _feedDayLabelHtml(d){
 // a negative offset ("...-04:00") got a Z stapled on, became NaN, fell through to
 // date_str (local midnight) or 0 — and a 0 fails the recency cut and vanishes.
 function _feedHasTz(s){ return /(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(String(s||'').trim()); }
-function _feedTs(r){ try{ if(r.logged_at){ var s=r.logged_at; var d=new Date(_feedHasTz(s)?s:s+'Z'); if(!isNaN(d.getTime())) return d.getTime(); } }catch(e){} try{ if(r.date_str){ var d2=new Date(r.date_str); if(!isNaN(d2.getTime())) return d2.getTime(); } }catch(e){} return 0; }
+function _feedTs(r){ try{ if(r.logged_at){ var s=r.logged_at; var d=new Date(_feedHasTz(s)?s:s+'Z'); if(!isNaN(d.getTime())) return d.getTime(); } }catch(e){}
+  /* mi_checkins stamps checked_at and has no logged_at, so without this a
+     finished strength check fell through to date_str and landed at midnight -
+     bottom of its own day, on a feed whose only ordering key is time. Nothing
+     else in here carries the column, so nothing else moves. */
+  try{ if(r.checked_at){ var sc=r.checked_at; var dc=new Date(_feedHasTz(sc)?sc:sc+'Z'); if(!isNaN(dc.getTime())) return dc.getTime(); } }catch(e){}
+  try{ if(r.date_str){ var d2=new Date(r.date_str); if(!isNaN(d2.getTime())) return d2.getTime(); } }catch(e){} return 0; }
 // The feed must bucket days the same way logging stamps them, or a 1am meal is
 // filed under today here and yesterday everywhere else. DAY_ROLLOVER_HR = 3.
 function _feedDayStart(ts){
@@ -18662,9 +18668,16 @@ async function _loadTrainerFeedRun(targetId){
     try{
       var _connRows=await _connP;
       window._pfConnByKey={}; window._pfConnRawByKey={};
+      /* THE ROWS THEMSELVES, kept for the card. Until now these were collapsed
+         into a badge that rode on a workout card, so finishing a check with no
+         workout that day produced nothing at all on this feed. Its own seen-set
+         because the badge map can legitimately hold null for a row, and a null
+         would let a second row for the same day through as a second card. */
+      window._pfConnItems=[]; var _connSeen={};
       (_connRows||[]).forEach(function(r){
         if(!r.client_code || !r.date_str) return;
         var key=r.client_code+'|'+r.date_str;
+        if(!_connSeen[key]){ _connSeen[key]=1; window._pfConnItems.push(r); }
         if(window._pfConnByKey[key]!=null) return;   // already have the newer row for this key
         window._pfConnByKey[key]=_tlBestConn(r.ratings);
         // The collapsed token answers "did it show up at all today". The card
@@ -18673,7 +18686,7 @@ async function _loadTrainerFeedRun(targetId){
         // the movement it was given to.
         window._pfConnRawByKey[key]=r.ratings||null;
       });
-    }catch(e){ window._pfConnByKey={}; window._pfConnRawByKey={}; }
+    }catch(e){ window._pfConnByKey={}; window._pfConnRawByKey={}; window._pfConnItems=[]; }
     var moments=(_resAll[4]||[]).filter(function(m){return (m&&m.ts)?(m.ts>=_feedCut):true;});
     var journals=((await _journalP)||[]).filter(function(j){return _feedTs(j)>=_feedCut;});
     try{ var _woT={}; wos.forEach(function(w){ var c=w.client_code; var t=_feedTs(w); if(c&&t){ (_woT[c]=_woT[c]||[]).push(t); } }); var _POST=3*3600000, _PRE=3*3600000; foods.forEach(function(f){ var c=f.client_code; var ft=_feedTs(f); if(!c||!ft||!_woT[c]) return; for(var _wi=0;_wi<_woT[c].length;_wi++){ var _d=ft-_woT[c][_wi]; if(_d>=0&&_d<=_POST){ f._fuel='post'; break; } if(_d<0&&(-_d)<=_PRE){ f._fuel='pre'; break; } } }); }catch(e){}
@@ -18739,6 +18752,9 @@ async function _loadTrainerFeedRun(targetId){
     moments.forEach(function(m){ items.push({ts:m.ts,kind:'moment',data:m}); });
     journals.forEach(function(j){ var c=j.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(j),kind:'journal',code:c,data:j}); });
     steps.forEach(function(r){ var c=r.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:r._ts,kind:'steps',code:c,data:r}); });
+    /* Same shape as every other row here, which is the point: it sorts by time
+       with the rest and carries no lane of its own. */
+    try{ (window._pfConnItems||[]).forEach(function(r){ var c=r.client_code; if(!c||hidden[c]||c===cl.code)return; items.push({ts:_feedTs(r),kind:'conn',code:c,data:r}); }); }catch(e){}
     // One feed, one width, one ordering key: time. Same card, same size for everyone —
     // no priority lane, no gold edge, nothing that quietly reorders the clock.
     // BOTH WIDTHS, ONE FILTER (Yusuf, ruling, 23 Aug). This was desktop-only —
@@ -19475,6 +19491,9 @@ function _pfDayRow(it){
       meta='';
     }
     photo = d.photo||null;
+  } else if(it.kind==='conn'){
+    what='Strength check';
+    meta=_pfConnLine(d.ratings);
   } else if(it.kind==='steps'){
     /* The count as it stands right now, not a total for a finished day - the row
        is still being added to. Said plainly, with no goal and no verdict on it:
@@ -23114,6 +23133,15 @@ function _feedItemHtml(it){
         line+='<div style="font-size:12px;color:rgba(240,236,228,0.6);margin-top:5px;">So far today</div>';
     }catch(e){}
   }
+  /* AND THE PHONE NEEDS ITS OWN (the lesson the steps row above is a monument
+     to): a kind with a branch only in the cockpit chain falls through to the
+     ELSE below, which is the food case, and renders as "logged something" with
+     "a meal" underneath it. */
+  else if(it.kind==='conn'){
+    var _cl2=_pfConnLine(it.data && it.data.ratings);
+    line='<div style="font-size:17px;font-weight:800;color:var(--text);line-height:1.25;">Strength check</div>';
+    if(_cl2) line+='<div style="font-size:12px;color:rgba(240,236,228,0.6);margin-top:5px;">'+_pfEsc(_cl2)+'</div>';
+  }
   else { var f=it.data; var _rm={nutrient_dense:['#f5c518','Nutrient Dense'],good:['#f5c518','Good'],clean:['#f5c518','Clean'],okay:['#f5c518','Okay'],bad:['#f5c518','Off-plan']}; var _r=_ratingChipWorth(f)?_rm[f.rating]:null;
     /* HIS FEED GETS IT TOO, and for the same reason the client's journal does:
        he looked at "8 cal \u00b7 2g C \u00b7 HEAVY" on this card and said the verdict
@@ -23218,7 +23246,7 @@ function _feedItemHtml(it){
   // workout on one card, every time. The spoken one is the one a coach reads, so it is
   // the one that survives. Nothing here is deleted; it is simply no longer emitted.
   var woHtml='';
-  var _verb = it.kind==='food'?((it.data&&it.data._groupCount>1)?('logged '+it.data._groupCount+' foods'):'logged a meal'):(it.kind==='wo'?'logged a workout':(it.kind==='weight'?'logged a weigh-in':(it.kind==='photo'?(_ppIsUpdate(it.data)?'shared an update':'shared a progress photo'):(it.kind==='steps'?'logged steps':'logged something'))));
+  var _verb = it.kind==='food'?((it.data&&it.data._groupCount>1)?('logged '+it.data._groupCount+' foods'):'logged a meal'):(it.kind==='wo'?'logged a workout':(it.kind==='weight'?'logged a weigh-in':(it.kind==='photo'?(_ppIsUpdate(it.data)?'shared an update':'shared a progress photo'):(it.kind==='conn'?'finished a strength check':(it.kind==='steps'?'logged steps':'logged something')))));
   // The "Yusuf liked this \u00b7 5:57 PM" line that used to sit here is gone. A like is a
   // thing you DID, so it belongs in the control you did it with \u2014 not as a floating
   // row above the badges that only appeared after a refresh. Removing it also gives
@@ -50896,6 +50924,32 @@ function _tlIntensityWord(raw){
 // Best signal across every group the session touched — the same "did it show
 // up at all today" rule the map itself uses (see the connection write path
 // above), collapsed to one word for the whole session.
+/* A FINISHED STRENGTH CHECK, IN ONE LINE (Yusuf, 16 Sep: "We should get a feed
+   notification anytime someone finishes a workout assessment").
+
+   ratings is keyed by muscle group - each group carrying its own verdict and
+   the movements underneath it - plus standalone "ex:" keys for a movement rated
+   on its own. HIS WORDS FOR THE VERDICT ALREADY EXIST, in _TL_CONN_PHRASE, and
+   are the ones the Day card has been printing for weeks. A second vocabulary
+   for the same three values is how one client's session ends up described two
+   ways on two screens, so this borrows rather than invents. */
+function _pfConnLine(ratings){
+  try{
+    var r=ratings; if(typeof r==='string'){ try{ r=JSON.parse(r); }catch(e){ return ''; } }
+    if(!r || typeof r!=='object') return '';
+    var groups=[];
+    Object.keys(r).forEach(function(k){
+      /* "ex:Stairmaster" is one movement rated on its own, not a muscle group.
+         It still counts toward the verdict; it just is not a heading. */
+      if(String(k).indexOf('ex:')===0) return;
+      groups.push(k);
+    });
+    var head = groups.length ? (groups.slice(0,3).join(', ') + (groups.length>3 ? (' +'+(groups.length-3)) : '')) : '';
+    var best = _tlBestConn(r);
+    var phrase = best ? (_TL_CONN_PHRASE[best]||'') : '';
+    return [head, phrase].filter(Boolean).join(' \u00b7 ');
+  }catch(e){ return ''; }
+}
 function _tlBestConn(connObj){
   if(!connObj) return null;
   var RANK={felt:3, partial:2, nothing:1}, best=null;
