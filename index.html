@@ -81581,6 +81581,7 @@ function _ppShotPrompt(){
     + '"minutes":<whole minutes of exercise, or null>,'
     + '"body_weight":<the person\'s BODY WEIGHT if the screen shows one, as the number shown, else null>,'
     + '"weight_unit":"lb"|"kg"|"",'
+    + '"weight_updated":"<any date printed with that weight, copied exactly, e.g. Aug 15 - else empty>",'
     + '"steps":<the step count for the day if the screen shows one, as a whole number, else null>}\n\n'
     + 'person: is any human body visible anywhere in the frame, even partly, even in a mirror or reflection? If you are unsure at all, answer true.\n'
     + 'screen: is this a screenshot, or a photo of a phone/watch/treadmill/monitor display?\n'
@@ -81596,6 +81597,13 @@ function _ppShotPrompt(){
     + 'body_weight: ONLY a body weight - a scale reading, a Health/Fitness app weight row, a weight chart\'s latest value. '
     + 'NEVER a dumbbell, a barbell, a plate, a machine stack or a lifted load. If the screen shows no body weight, null.\n'
     + 'weight_unit: the unit printed beside that body weight. Empty if there is none.\n'
+    /* "UPDATED AUG 15" IS THE WHOLE STORY (16 Sep, read off the real one).
+       Raul's screen shows 219.6 lbs under a card footed "Updated Aug 15" - a
+       month-old reading sitting on a summary he took today. Filing that as
+       today's weigh-in would have drawn a 2.4 lb drop he never had. A health
+       summary shows the LAST weight it has, not the weight now. */
+    + 'weight_updated: many health apps print the date that weight was last recorded, often as a footer '
+    + 'like "Updated Aug 15". Copy it exactly if it is there. Empty if it is not.\n'
     + 'steps: the number of steps walked. ONLY a step count - never a distance, a calorie figure, a heart rate or a rep count. If no step count is shown, null.';
 }
 async function _ppShotRead(dataUrl){
@@ -81673,13 +81681,32 @@ function _ppShotSteps(read){
    sbUpsert on step_logs is the same call the workout sheet makes - so a weigh-in
    read off a screenshot is the same kind of fact as one typed by hand, and shows
    up on the same chart. */
+/* THE DAY THE SCALE SAID IT, not the day the screenshot was taken. A health
+   summary carries the LAST weight it has; the number and the day are two facts
+   and only one of them is on the photo. Unreadable or absent, it falls back to
+   the photo's own day, which is what somebody typing a weight in by hand means.
+   Anything more than a year back is refused rather than guessed at. */
+function _ppShotWeightDay(read, fallback){
+  try{
+    var txt=String((read && read.weight_updated)||'').replace(/^\s*updated\s*/i,'').trim();
+    if(!txt) return fallback;
+    var d=new Date(txt + (/\d{4}/.test(txt) ? '' : (' ' + new Date().getFullYear())));
+    if(isNaN(d.getTime())) return fallback;
+    /* A bare "Aug 15" in January is last August, not next. */
+    if(d.getTime() > Date.now() + 86400000) d.setFullYear(d.getFullYear()-1);
+    var days=(Date.now()-d.getTime())/86400000;
+    if(days < 0 || days > 400) return fallback;
+    return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  }catch(e){ return fallback; }
+}
 async function _ppFileStats(read, dateStr){
   var wt = _ppShotWeight(read), st = _ppShotSteps(read);
   var did = [];
   if(wt!=null){
+    var wday = _ppShotWeightDay(read, dateStr);
     var ok=false;
-    try{ ok = await logWeightFromChat({weight:wt, dateStr:dateStr, notes:'Read from a screenshot'}, null); }catch(e){ ok=false; }
-    if(ok) did.push(wt + ' lb');
+    try{ ok = await logWeightFromChat({weight:wt, dateStr:wday, notes:'Read from a screenshot'}, null); }catch(e){ ok=false; }
+    if(ok) did.push(wt + ' lb' + (wday!==dateStr ? (' on ' + wday) : ''));
   }
   if(st!=null){
     try{

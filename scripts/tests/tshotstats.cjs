@@ -46,9 +46,27 @@ t(/if\(unit\.indexOf\('kg'\)>=0\) n = n \* 2\.20462;/.test(w), 'kg is converted 
 const st=between('function _ppShotSteps(read){','/* FILE WHAT IT SAID');
 t(/if\(n < 100 \|\| n > 200000\) return null;/.test(st), 'and a step count outside 100-200,000 is something else');
 
+console.log('\n  AND IT FILES IT ON THE DAY THE SCALE SAID IT:');
+/* READ OFF THE REAL ONE. Raul's screen shows 219.6 lbs under a card footed
+   "Updated Aug 15" - a month-old reading on a summary he took today, while his
+   app already had a newer 222 from this evening. Filing the screenshot's number
+   as today's weigh-in would have drawn a 2.4 lb drop he never had. The number
+   and the day it was taken are two separate facts and only one of them is
+   about the photo. */
+t(/"weight_updated":/.test(prompt), 'the prompt asks for the date printed with the weight');
+t(/Updated Aug 15/.test(prompt), '  named with the shape health apps actually print');
+const day=between('function _ppShotWeightDay(read, fallback){','async function _ppFileStats(read, dateStr){');
+t(day.length>0, '_ppShotWeightDay exists');
+t(/if\(!txt\) return fallback;/.test(day), 'no date on the screen falls back to the photo\u2019s own day');
+t(/if\(isNaN\(d\.getTime\(\)\)\) return fallback;/.test(day), 'and so does one it cannot read');
+t(/if\(days < 0 \|\| days > 400\) return fallback;/.test(day), 'a date more than a year back is refused, not guessed at');
+t(/d\.setFullYear\(d\.getFullYear\(\)-1\)/.test(day), 'and a bare "Aug 15" in January is last August, not next');
+t(/logWeightFromChat\(\{weight:wt, dateStr:wday/.test(src), 'the weigh-in is filed on that day');
+t(/\(wday!==dateStr \? \(' on ' \+ wday\) : ''\)/.test(src), 'and the toast says so when it is not today');
+
 console.log('\n  WHAT IT WRITES GOES THROUGH THE DOORS THAT ALREADY VERIFY:');
 const file=between('async function _ppFileStats(read, dateStr){','function _ppAsWorkout(read, photoVal, dateStr){');
-t(/logWeightFromChat\(\{weight:wt, dateStr:dateStr/.test(file),
+t(/logWeightFromChat\(\{weight:wt, dateStr:wday/.test(file),
   'the weigh-in uses the door that reads its own row back');
 t(/sbUpsert\('step_logs'/.test(file), 'and the steps use the same upsert the workout sheet uses');
 t(/'client_code,date_str'/.test(file), '  keyed so a second screenshot of the same day replaces rather than doubles');
