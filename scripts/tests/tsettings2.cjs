@@ -24,7 +24,7 @@ t(/if\(!cap \|\| !cap\.program\) return '';/.test(prog2), 'and an empty programm
 t(/_gpFlatCard\('Your programme','Yusuf writes this\. It is read-only here\.', body\)/.test(prog2),
   'while a real programme still draws exactly as it did');
 
-console.log('\n  A FREE CALL, NOT A LOCKED DOOR:');
+console.log('\n  AN OFFER, NOT A LOCKED DOOR:');
 const calls=slice('function _gpSecCalls(){','function _gpSecFood(){');
 /* The only survivor of that sentence is the comment recording what it used to
    say, which is the point of the comment. */
@@ -32,8 +32,19 @@ t(!/_gpFlatCard\('Calls','Calls are not switched on/.test(src), '"not switched o
 t((src.match(/Calls are not switched on for your plan/g)||[]).length===1,
   'it survives once, in the note saying what it used to be',
   (src.match(/Calls are not switched on for your plan/g)||[]).length);
-t(/Schedule a free call to discuss your fitness goals\./.test(calls), 'his sentence is the card');
-t(/Book a free consultation/.test(calls), 'and the link says what it does');
+/* HIS SENTENCE, AND IT CHANGED (16 Sep). It was "Schedule a free call to
+   discuss your fitness goals", which he wrote on 13 Sep. Then: "I would remove
+   free call - say something about seeing if 1:1 guidance is right for you."
+   Free is what you call a thing you are trying to get rid of. All three places
+   that carry this offer - here, the setup screen and the Program card - say the
+   same thing now, because three descriptions of one offer is how a client ends
+   up asking which of them they are being sold. */
+t(/See whether 1:1 guidance is right for you\./.test(calls), 'his sentence is the card');
+t(/Talk to Yusuf/.test(calls), 'and the link says what it does');
+/* The COPY, not the note above it - that note quotes his 13 Sep wording on
+   purpose, which is how anyone reading later knows what changed and why. */
+t(!/'Calls','Schedule a free call/.test(calls) && !/>Book a free consultation</.test(calls),
+  '  with nothing a client reads calling it free');
 t(/callsEnabled\(cl\.code\)/.test(calls), 'someone who already has calls still gets their calls');
 t(/'<div class="gpFlatV"><span class="gpLink" onclick="closeSettings\(\)/.test(calls),
   'and that door is untouched');

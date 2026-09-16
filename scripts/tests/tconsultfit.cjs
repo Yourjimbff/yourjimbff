@@ -5,10 +5,15 @@
 // screen is a one-shot: one tap of Next and it never comes back.
 //
 // His filter, in his own words: "Age 23+ anyone who seems qualified some more
-// than like a 15 lb weight loss goal." He does not want seventy calls. He wants
-// the fifteen that could turn into something, and he is short this month, so an
-// hour spent on somebody who wants to lose eight pounds is an hour he cannot
-// afford to give away.
+// than like a 15 lb weight loss goal."
+//
+// THEN HE MOVED IT, same day, once he saw what fifteen cost him: "broaden the
+// goal to be 10, if it's 10 or greater that's better, or 8 or greater than
+// that, that's fine, I can still sell something." Measured on the real
+// seventy-two: over 15 was nineteen people, 10 or more is thirty-nine, 8 or
+// more is forty-three. He named 8 as sellable, so 8 is the bar, and it is
+// greater-or-EQUAL, because somebody sitting exactly on 8 is the person he
+// described.
 //
 // TWO THINGS THIS PROVES. That the filter is his two numbers and that an
 // UNKNOWN never passes it - a missing birthday or a missing goal weight is not
@@ -28,11 +33,13 @@ guard(MINE, n=>eval(n));
 
 console.log('\n  HIS TWO NUMBERS:');
 t(CONSULT_MIN_AGE===23, '23 and over', String(CONSULT_MIN_AGE));
-t(CONSULT_MIN_GAP===15, 'and more than a 15 lb goal', String(CONSULT_MIN_GAP));
+t(CONSULT_MIN_GAP===8, 'and 8 lb or more to move', String(CONSULT_MIN_GAP));
 
 console.log('\n  WHO GETS THE OFFER:');
 t(_consultFits(30, 230, 190)===true,  '30, wants to lose 40');
-t(_consultFits(23, 200, 184)===true,  '23 exactly, 16 lbs - both edges, just inside');
+t(_consultFits(23, 200, 192)===true,  '23 exactly, 8 lbs - both edges, exactly on the line');
+t(_consultFits(40, 200, 190)===true,  'a 10 lb goal, which he called the better one');
+t(_consultFits(40, 200, 185)===true,  'and 15, which used to be the bar');
 /* He said fifteen pounds of weight LOSS because that is the client he pictures.
    Somebody twenty pounds under where they want to be is the same size of goal
    and the same conversation, so the gap is absolute. */
@@ -40,9 +47,10 @@ t(_consultFits(28, 150, 175)===true,  'and 25 lbs the other way is the same size
 
 console.log('\n  AND WHO DOES NOT:');
 t(_consultFits(22, 230, 190)===false, '22 is under his line', '22/40lb');
-t(_consultFits(40, 200, 190)===false, 'a 10 lb goal is not the call he means');
-t(_consultFits(40, 200, 185)===false, 'and exactly 15 is not MORE than 15');
-t(_consultFits(23, 200, 185)===false, '  both edges, just outside');
+t(_consultFits(40, 200, 193)===false, 'a 7 lb goal is under the bar');
+t(_consultFits(22, 200, 192)===false, '  and a qualifying goal does not carry an under-age');
+/* The old bar, kept as a test so nobody quietly walks it back up. */
+t(_consultFits(30, 200, 188)===true,  '12 lb would have been refused at the old 15 and is not now');
 
 console.log('\n  AN UNKNOWN IS NOT A YES:');
 /* This is the half that matters. Treating a blank as a pass puts the offer back
@@ -62,6 +70,11 @@ console.log('\n  THE AGE IS COMPUTED, NEVER A STORED FIELD:');
 const yrs=n=>{ const d=new Date(); d.setFullYear(d.getFullYear()-n); return d.toISOString().slice(0,10); };
 t(_obConsultFits({birthday:yrs(30), weight:230, goal_weight:190})===true, 'born 30 years ago, 40 to lose');
 t(_obConsultFits({birthday:yrs(19), weight:230, goal_weight:190})===false, 'born 19 years ago, same goal, no offer');
+/* NOTHING ABOUT A WRITTEN GOAL (Yusuf, 16 Sep): "remove having to have written
+   a goal to qualify, because people signed in before they were able to create
+   a goal." It was never a gate here and this keeps it that way. */
+t(_obConsultFits({birthday:yrs(30), weight:230, goal_weight:190, goal_text:null})===true,
+  'and no written goal is not a disqualification');
 t(_obConsultFits({weight:230, goal_weight:190})===false, 'no birthday is not 23');
 t(_obConsultFits({})===false && _obConsultFits(null)===false, 'and an empty answer set is not either');
 t(/_ageFromBday\(a\.birthday\)/.test(defOf('_obConsultFits')), 'setup reads the birthday they just typed');
@@ -99,8 +112,27 @@ console.log('\n  AND THE OFFER COMES BACK:');
    they have not used yet. */
 const card=src.slice(src.indexOf('function _pgConsultCard(){'), src.indexOf('function renderProgramTab(){'));
 t(/_meFreeApp\(\)/.test(card), 'it is a free-app card only - a paying client is not sold to');
-t(/_consultFits\(age, p\.weight, \(p\.goal_weight\|\|p\.goalWeight\)\)/.test(card),
+/* "i like B" - their own two numbers and their own name, which is the version
+   that can be written for every single person it is shown to. */
+t(/var gap=Math\.round\(Math\.abs\(w-gw\)\);/.test(card), 'it leads with the distance they typed');
+t(/cl&&cl\.name/.test(card) && /split\(\/\\s\+\/\)\[0\]/.test(card), 'and their first name');
+t(/' to go\.'/.test(card), '  with a version that still reads if there is no name on the account');
+t(/You put in '\+Math\.round\(w\)\+', and '\+Math\.round\(gw\)/.test(card), 'then both numbers back to them');
+t(/1:1 guidance is right for you/.test(card), 'and it asks whether 1:1 guidance is right for them');
+/* His words: "I would remove free call". Free is what you call a thing you are
+   trying to get rid of. */
+/* The COPY, not the word wherever it appears in a note explaining why the copy
+   changed. Each of these is a string a client could read off a screen. */
+[["'A free call with Yusuf'", 'the card title'],
+ ["A free call with Yusuf. No charge, no catch.", 'the setup screen subtitle'],
+ [">Book a free call<", 'the setup screen button'],
+ ["Book a free consultation", 'the link in Settings'],
+ ["Schedule a free call to discuss your fitness goals.", 'the Settings subtitle']
+].forEach(([lit,where])=>{ t(src.indexOf(lit)<0, 'gone: '+where, lit); });
+t(/if\(!_consultFits\(age, w, gw\)\) return '';/.test(card),
   'the same filter, not a second copy of his numbers');
+t(!/>=\s*8|CONSULT_MIN_GAP\s*[=<>]/.test(card.replace(/_consultFits/g,'')),
+  '  and the card never re-states the bar itself');
 t(/openConsultBooking\(\)/.test(card), 'and it opens the booking page the offer screen opens');
 t(/CONSULT_BOOK_URL\|\|''\)\.trim\(\)/.test(card), 'with no card at all when there is no link to open');
 t(/\+ _pgConsultCard\(\)/.test(src), 'and the Program tab hosts it');
