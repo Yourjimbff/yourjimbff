@@ -36,7 +36,14 @@ if(bad){ console.log('tshotwo: FAILED'); process.exit(1); }
 // ---- the gate: all three, and absence is never consent -------------------
 t(/if\(o\.person!==false\) return null;/.test(readSrc), 'a person anywhere in frame means it stays a progress photo');
 t(/if\(o\.screen!==true\)\s*return null;/.test(readSrc), 'it must be a screen');
-t(/if\(o\.stats!==true\)\s*return null;/.test(readSrc),  'it must carry exercise numbers');
+/* IT MUST CARRY NUMBERS, and since 16 Sep there are two kinds that count: the
+   exercise figures this file was built for, and a body weight or a step count
+   off a health summary - see tshotstats.cjs. What has not changed is that a
+   screen carrying NEITHER is left alone, which is the assertion that matters
+   here. */
+t(/var hasNums = \(o\.stats===true\) \|\| _ppShotWeight\(o\)!=null \|\| _ppShotSteps\(o\)!=null;/.test(readSrc),
+  'it must carry exercise numbers, a body weight, or a step count');
+t(/if\(!hasNums\) return null;/.test(readSrc),  '  and a screen with none of them stays a progress photo');
 // !==false / !==true rather than falsy checks: a missing field must not divert.
 t(!/if\(!o\.person\)/.test(readSrc), 'a MISSING person field does not count as "nobody there"');
 

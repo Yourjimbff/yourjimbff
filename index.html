@@ -81578,13 +81578,25 @@ function _ppShotPrompt(){
     + '{"person":true|false,"screen":true|false,"stats":true|false,'
     + '"activity":"<the exercise, e.g. Run, Walk, Bike, Swim, Rower - or empty>",'
     + '"detail":"<the numbers exactly as shown, e.g. 9.15 km | 6:58 /km | 1:03:44>",'
-    + '"minutes":<whole minutes of exercise, or null>}\n\n'
+    + '"minutes":<whole minutes of exercise, or null>,'
+    + '"body_weight":<the person\'s BODY WEIGHT if the screen shows one, as the number shown, else null>,'
+    + '"weight_unit":"lb"|"kg"|"",'
+    + '"steps":<the step count for the day if the screen shows one, as a whole number, else null>}\n\n'
     + 'person: is any human body visible anywhere in the frame, even partly, even in a mirror or reflection? If you are unsure at all, answer true.\n'
     + 'screen: is this a screenshot, or a photo of a phone/watch/treadmill/monitor display?\n'
     + 'stats: are there numbers describing exercise - distance, pace, duration, calories, heart rate, a route map, activity rings?\n'
     + 'activity: name it the way the person would say it. A run is a Run. Never "Workout" or "Cardio" if you can see what it actually was.\n'
     + 'detail: copy the figures off the screen. Do not invent or convert any number.\n'
-    + 'minutes: the exercise duration in whole minutes if a duration is shown, otherwise null.';
+    + 'minutes: the exercise duration in whole minutes if a duration is shown, otherwise null.\n'
+    /* THE NUMBERS SCREEN (Yusuf, 16 Sep, off a real one): "User logged a
+       screenshot where he has his weight and his steps, and it's not a progress
+       photo, but we should extract that information and save it to his profile
+       accordingly." A health app's summary is not a body shot and it is not a
+       run either - it is two facts this app already has columns for. */
+    + 'body_weight: ONLY a body weight - a scale reading, a Health/Fitness app weight row, a weight chart\'s latest value. '
+    + 'NEVER a dumbbell, a barbell, a plate, a machine stack or a lifted load. If the screen shows no body weight, null.\n'
+    + 'weight_unit: the unit printed beside that body weight. Empty if there is none.\n'
+    + 'steps: the number of steps walked. ONLY a step count - never a distance, a calorie figure, a heart rate or a rep count. If no step count is shown, null.';
 }
 async function _ppShotRead(dataUrl){
   try{
@@ -81605,11 +81617,16 @@ async function _ppShotRead(dataUrl){
     var i=txt.indexOf('{'), j=txt.lastIndexOf('}');
     if(i<0||j<i) return null;
     var o=JSON.parse(txt.slice(i,j+1));
-    // ALL THREE, or it is a progress photo. person===false is required
-    // explicitly: a missing field is not a promise that nobody is in the shot.
+    // NOBODY IN THE SHOT, AND IT IS A SCREEN. Both required explicitly: a
+    // missing field is not a promise that nobody is in the picture, and a body
+    // photo must never be diverted away from the album it was meant for.
     if(o.person!==false) return null;
     if(o.screen!==true) return null;
-    if(o.stats!==true) return null;
+    /* AND IT HAS TO SAY SOMETHING. Exercise figures are the original case; a
+       body weight or a step count is the second one (16 Sep). Any of the three
+       is enough, none of them is not. */
+    var hasNums = (o.stats===true) || _ppShotWeight(o)!=null || _ppShotSteps(o)!=null;
+    if(!hasNums) return null;
     return o;
   }catch(e){ return null; }
 }
@@ -81618,6 +81635,62 @@ async function _ppShotRead(dataUrl){
    a sauna. The figures are copied, never converted; the screen said 9.15 km and
    the log says 9.15 km. The image rides along on the workout's own photo column
    so he can still look at what they logged. */
+/* WHAT THE SCREEN SAID, IN THE UNITS THIS APP KEEPS.
+   Bounds rather than trust: a body weight outside 50-700 lb is the model having
+   read a dumbbell or a machine stack, and a step count outside 100-200,000 is
+   a distance, a calorie figure or a phone number. Either way it is thrown away
+   rather than written, because a wrong weight on somebody's chart is worse than
+   no weight at all.
+   THE ONE CONVERSION THIS FILE DOES. Everywhere else the rule is copy, never
+   convert - and it holds for what is DISPLAYED. This is what is STORED, and
+   weight_logs is pounds, so a screen reading kg is converted here, once, where
+   it can be seen. */
+function _ppShotWeight(read){
+  try{
+    var raw = (read && read.body_weight);
+    if(raw==null || raw==='') return null;
+    var n = parseFloat(String(raw).replace(/[^0-9.]/g,''));
+    if(!isFinite(n) || n<=0) return null;
+    var unit = String((read && read.weight_unit)||'').toLowerCase();
+    if(unit.indexOf('kg')>=0) n = n * 2.20462;
+    n = Math.round(n*10)/10;
+    if(n < 50 || n > 700) return null;
+    return n;
+  }catch(e){ return null; }
+}
+function _ppShotSteps(read){
+  try{
+    var raw = (read && read.steps);
+    if(raw==null || raw==='') return null;
+    var n = parseInt(String(raw).replace(/[^0-9]/g,''),10);
+    if(!isFinite(n)) return null;
+    if(n < 100 || n > 200000) return null;
+    return n;
+  }catch(e){ return null; }
+}
+/* FILE WHAT IT SAID, AND SAY WHAT LANDED. Both writes go through the doors the
+   app already uses - logWeightFromChat verifies its row by reading it back, and
+   sbUpsert on step_logs is the same call the workout sheet makes - so a weigh-in
+   read off a screenshot is the same kind of fact as one typed by hand, and shows
+   up on the same chart. */
+async function _ppFileStats(read, dateStr){
+  var wt = _ppShotWeight(read), st = _ppShotSteps(read);
+  var did = [];
+  if(wt!=null){
+    var ok=false;
+    try{ ok = await logWeightFromChat({weight:wt, dateStr:dateStr, notes:'Read from a screenshot'}, null); }catch(e){ ok=false; }
+    if(ok) did.push(wt + ' lb');
+  }
+  if(st!=null){
+    try{
+      var sok = await sbUpsert('step_logs',
+        {client_code:cl.code, steps:st, date_str:dateStr, updated_at:new Date().toISOString()},
+        'client_code,date_str');
+      if(sok!==false){ did.push(st.toLocaleString()+' steps'); try{ window.stepsVal=st; }catch(e){} }
+    }catch(e){}
+  }
+  return did;
+}
 function _ppAsWorkout(read, photoVal, dateStr){
   var act = String((read&&read.activity)||'').trim() || 'Workout';
   var det = String((read&&read.detail)||'').trim();
@@ -81655,6 +81728,24 @@ async function saveProgressPhoto(){
   try{
     if(btn) btn.textContent='Reading\u2026';
     var _shot = await _ppShotRead(_ppNewPhotoData || _photoVal);
+    /* A WEIGHT AND A STEP COUNT ARE NOT A WORKOUT EITHER (16 Sep). Checked
+       before the workout branch because a health summary often carries both a
+       step count and an exercise ring, and the two facts this app has columns
+       for are the ones worth keeping. A screen that names an ACTIVITY is still
+       a workout and falls through to the branch below. */
+    if(_shot && !String((_shot.activity)||'').trim()
+       && (_ppShotWeight(_shot)!=null || _ppShotSteps(_shot)!=null)){
+      var _did = await _ppFileStats(_shot, dateStr);
+      if(_did.length){
+        closeProgressPhotoModal();
+        showToast('\u2713 ' + _did.join(' and ') + ' \u2014 saved from your screenshot');
+        try{ if(typeof loadProgressPhotos==='function') loadProgressPhotos(); }catch(e){}
+        try{ if(typeof updHalo==='function') updHalo(); }catch(e){}
+        try{ if(typeof renderDayTimeline==='function') renderDayTimeline(true); }catch(e){}
+        return;
+      }
+      // Nothing landed. Fall through and keep the picture rather than lose it.
+    }
     if(_shot){
       var _woRow = _ppAsWorkout(_shot, _photoVal, dateStr);
       var _woRes = await insertWorkoutLog(_woRow);
