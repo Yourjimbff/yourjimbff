@@ -12082,18 +12082,41 @@ function _mediaCached(u){
 /* THE LISTENER. Capture phase, because an image's error event does not bubble.
    One attempt per element — _mediaTried is the guard — so a genuinely missing
    file fails once and stays failed rather than asking the door forever. */
+/* THE GUARD REMEMBERS WHICH PICTURE, NOT THAT THERE WAS ONE.
+   First version marked the element with data-msgn="1" after one attempt, which
+   is right for a thumbnail that is drawn once and never changes. It is wrong for
+   the photo viewer: that <img> is created once and REUSED for every photo
+   anybody opens, so the first one healed and every one after it was refused by
+   a flag left over from the picture before. Yusuf, 16 Sep: "expanding on
+   someone's photo seems to have the image not render."
+   So the flag holds the src it was spent on. A new picture in the same element
+   is a new attempt; the same picture failing twice still stops. */
 function _mediaHeal(el){
   if(!el || el.tagName!=='IMG') return;
-  if(el.getAttribute('data-msgn')) return;
   var src=el.getAttribute('src')||'';
+  if(el.getAttribute('data-msgn')===src) return;
   var p=_mediaParse(src); if(!p) return;
-  el.setAttribute('data-msgn','1');
+  el.setAttribute('data-msgn',src);
   var ready=_mediaCached(src);
   if(ready){ el.src=ready; return; }
   _mediaSign([src]).then(function(){
     var u=_mediaCached(src);
     if(u) el.src=u;
   });
+}
+/* AND THE VIEWER DOES NOT WAIT TO FAIL FIRST. Everything else in the app heals
+   on the error event, which costs one dead request and a blink. The viewer is
+   the one surface where that blink is the whole screen, so if a signature is
+   already in hand it is used up front, and if it is not the picture is signed
+   before it is shown rather than after it fails. */
+function _mediaSrcFor(src, done){
+  try{
+    if(!_mediaParse(src)){ done(src); return; }
+    var have=_mediaCached(src);
+    if(have){ done(have); return; }
+    _mediaSign([src]).then(function(){ done(_mediaCached(src)||src); },
+                          function(){ done(src); });
+  }catch(e){ done(src); }
 }
 try{
   document.addEventListener('error', function(e){
@@ -65353,7 +65376,10 @@ function openPhotoLightbox(src){
     })();
     document.body.appendChild(ov);
   }
-  document.getElementById('photoLightboxImg').src=src;
+  var _lbImg=document.getElementById('photoLightboxImg');
+  /* A private bucket needs a signed URL, and this element is reused for every
+     photo, so the raw stored address is what arrives here every time. */
+  _mediaSrcFor(src, function(u){ try{ _lbImg.src=u; }catch(e){} });
   // THE WHOLE ENTRY, NOT A BARE IMAGE (Yusuf, live, 19 Aug) — the client's
   // own words and the macros, reusing the feed card's own already-built
   // rendering (see the cache write next to photoHtml in the feed card

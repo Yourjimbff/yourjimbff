@@ -42,8 +42,21 @@ console.log('\n  THE PAGE HEALS EVERY IMAGE, NOT TWENTY NAMED ONES:');
 t(/document\.addEventListener\('error', function\(e\)\{/.test(src), 'it listens for images that fail');
 t(/\}, true\);/.test(between("document.addEventListener('error'", 'function mediaWarm(')),
   '  in the CAPTURE phase, because an image error does not bubble');
-const heal=between('function _mediaHeal(el){','try{\n  document.addEventListener');
-t(/if\(el\.getAttribute\('data-msgn'\)\) return;/.test(heal), 'one attempt per image, so a missing file fails once');
+const heal=between('function _mediaHeal(el){','/* AND THE VIEWER DOES NOT WAIT TO FAIL FIRST.');
+/* THE GUARD IS PER PICTURE, NOT PER ELEMENT, and that distinction was a real
+   bug: the photo viewer's <img> is created once and reused for every photo
+   anybody opens, so a flag meaning "this element already tried" refused every
+   photo after the first one. Yusuf, 16 Sep: "expanding on someone's photo seems
+   to have the image not render." */
+t(/if\(el\.getAttribute\('data-msgn'\)===src\) return;/.test(heal),
+  'one attempt per PICTURE, so a reused element still heals the next one');
+t(/el\.setAttribute\('data-msgn',src\);/.test(heal), '  and it records which picture it spent the attempt on');
+t(!/data-msgn','1'/.test(src), '  the per-element flag is gone, not left beside it');
+const vf=between('function _mediaSrcFor(src, done){','var SB_BUCKET');
+t(/_mediaCached\(src\)/.test(vf) && /_mediaSign\(\[src\]\)/.test(vf),
+  'and the viewer signs up front rather than failing first');
+t(/_mediaSrcFor\(src, function\(u\)\{ try\{ _lbImg\.src=u; \}catch\(e\)\{\} \}\);/.test(src),
+  '  which is what openPhotoLightbox uses');
 t(/var p=_mediaParse\(src\); if\(!p\) return;/.test(heal), 'and anything that is not one of ours is left alone');
 const parse=between('function _mediaParse(u){','async function _mediaSign(list){');
 t(/\/storage\/v1\/object\/public\//.test(parse), 'it recognises the URL shape already in the database');
