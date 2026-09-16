@@ -19400,8 +19400,17 @@ function _pfDayRow(it){
       }
     }catch(e){}
   } else if(it.kind==='photo'){
-    what='Progress photo';
-    meta = d.angle?_pfEsc(d.angle):'';
+    /* Two different things share this row now. A body shot is a progress photo
+       and says which angle; a screenshot somebody imported is an update, and
+       the figures it carried are already on the feed as their own rows, so this
+       card says where they came from rather than repeating them. */
+    if(_ppIsUpdate(d)){
+      what='Update';
+      meta='Imported from a screenshot';
+    } else {
+      what='Progress photo';
+      meta = d.angle?_pfEsc(d.angle):'';
+    }
     photo = d.photo||null;
   } else if(it.kind==='steps'){
     /* The count as it stands right now, not a total for a finished day - the row
@@ -22900,7 +22909,7 @@ function _feedItemHtml(it){
   // workout on one card, every time. The spoken one is the one a coach reads, so it is
   // the one that survives. Nothing here is deleted; it is simply no longer emitted.
   var woHtml='';
-  var _verb = it.kind==='food'?((it.data&&it.data._groupCount>1)?('logged '+it.data._groupCount+' foods'):'logged a meal'):(it.kind==='wo'?'logged a workout':(it.kind==='weight'?'logged a weigh-in':(it.kind==='photo'?'shared a progress photo':(it.kind==='steps'?'logged steps':'logged something'))));
+  var _verb = it.kind==='food'?((it.data&&it.data._groupCount>1)?('logged '+it.data._groupCount+' foods'):'logged a meal'):(it.kind==='wo'?'logged a workout':(it.kind==='weight'?'logged a weigh-in':(it.kind==='photo'?(_ppIsUpdate(it.data)?'shared an update':'shared a progress photo'):(it.kind==='steps'?'logged steps':'logged something'))));
   // The "Yusuf liked this \u00b7 5:57 PM" line that used to sit here is gone. A like is a
   // thing you DID, so it belongs in the control you did it with \u2014 not as a floating
   // row above the badges that only appeared after a refresh. Removing it also gives
@@ -59392,7 +59401,7 @@ function _citeDayBody(items){
       rows.push('Weigh-in'+(w?(': '+w+' '+unit):''));
       return;
     }
-    if(k==='photo'){ rows.push('Progress photo'); return; }
+    if(k==='photo'){ rows.push(_ppIsUpdate(r) ? 'Update imported from a screenshot' : 'Progress photo'); return; }
     if(k==='checkin'||k==='journal'||k==='note'){
       var said=String(r.body||r.reflection||r.note||r.entry||r.text||'').trim();
       rows.push('Check-in'+(said?(': \u201c'+_citeClip(said)+'\u201d'):''));
@@ -81503,6 +81512,19 @@ async function deleteTodayWorkout(id){
 // Saves photo + date + weight to the `progress_photos` table.
 // Back-dating supported; side-by-side compare supported.
 // ============================================================
+/* AN IMPORT IS NOT A PROGRESS PHOTO (Yusuf, 16 Sep, looking at a real one):
+   "We should just keep that card. So it's not a progress photo. It's like a
+   progress update or daily update. It's like an import of sorts. So I think we
+   should rename it accordingly."
+   The row stays - the card he is looking at is the point - and this is the one
+   value that tells every surface to call it what it is. It lives in the angle
+   column because that column already holds free text, Front/Side/Back, and no
+   migration was on the table tonight; angle=Update reads correctly in the
+   database, which is the test for a marker you cannot give a column of its own. */
+var PP_UPDATE = 'Update';
+function _ppIsUpdate(row){
+  try{ return String((row&&row.angle)||'')===PP_UPDATE; }catch(e){ return false; }
+}
 var progressPhotos = [];      // loaded rows for the active client
 var _ppNewPhotoData = null;    // staged photo (base64) in the add modal
 var _ppNewPhotoBlob = null;    // staged full-res blob for Supabase Storage upload
@@ -81534,7 +81556,11 @@ function rendProgressPhotos(){
     grid.parentNode.insertBefore(filterBar, grid);
   }
   if(filterBar){
-    filterBar.innerHTML = ['All','Front','Side','Back'].map(function(a){
+    /* The fourth chip only appears once there is something behind it. An empty
+       filter is a promise of content that is not there. */
+    var _ppTabs=['All','Front','Side','Back'];
+    try{ if(progressPhotos.some(_ppIsUpdate)) _ppTabs.push(PP_UPDATE); }catch(e){}
+    filterBar.innerHTML = _ppTabs.map(function(a){
       var on=_ppFilter===a;
       return '<button type="button" onclick="_ppSetFilter(\''+a+'\')" style="flex:1;padding:7px;border-radius:9px;border:1px solid '+(on?'#f0ece4':'rgba(240,236,228,0.18)')+';background:'+(on?'rgba(224,196,152,0.12)':'var(--s2)')+';color:'+(on?'var(--gold)':'var(--m2)')+';font-size:11.5px;font-weight:700;cursor:pointer;font-family:\'Plus Jakarta Sans\',sans-serif;">'+a+'</button>';
     }).join('');
@@ -81833,6 +81859,7 @@ function _ppAsWorkout(read, photoVal, dateStr){
 async function saveProgressPhoto(){
   if(!_ppNewPhotoData){ showToast('Choose a photo first'); return; }
   if(!cl){ showToast('Not logged in'); return; }
+  var _ppImported = null;   // what the screenshot reader managed to file, if anything
   var dInput = document.getElementById('ppDate').value;
   var wInput = document.getElementById('ppWeight').value;
   // Convert YYYY-MM-DD to the app's display date format used elsewhere.
@@ -81858,16 +81885,16 @@ async function saveProgressPhoto(){
        a workout and falls through to the branch below. */
     if(_shot && !String((_shot.activity)||'').trim()
        && (_ppShotWeight(_shot)!=null || _ppShotSteps(_shot)!=null)){
+      /* THE CARD IS KEPT (Yusuf, 16 Sep): "We should just keep that card. So
+         it's not a progress photo. It's like a progress update or daily update.
+         It's like an import of sorts."
+         v451 filed the numbers and dropped the picture, which threw away the
+         thing he was looking at. The numbers go where numbers go AND the row is
+         saved - through the one save path below, marked PP_UPDATE so every
+         surface calls it what it is instead of "Progress photo - Front". */
       var _did = await _ppFileStats(_shot, dateStr);
-      if(_did.length){
-        closeProgressPhotoModal();
-        showToast('\u2713 ' + _did.join(' and ') + ' \u2014 saved from your screenshot');
-        try{ if(typeof loadProgressPhotos==='function') loadProgressPhotos(); }catch(e){}
-        try{ if(typeof updHalo==='function') updHalo(); }catch(e){}
-        try{ if(typeof renderDayTimeline==='function') renderDayTimeline(true); }catch(e){}
-        return;
-      }
-      // Nothing landed. Fall through and keep the picture rather than lose it.
+      if(_did.length){ _ppImported = _did; }
+      // Nothing landed? Then it is an ordinary photo and nothing above changed.
     }
     if(_shot){
       var _woRow = _ppAsWorkout(_shot, _photoVal, dateStr);
@@ -81884,8 +81911,14 @@ async function saveProgressPhoto(){
   }catch(e){}
   if(btn) btn.textContent='Saving...';
   var _isoNow=new Date().toISOString();
+  /* AN IMPORT IS NOT AN ANGLE, and this column is where an angle lives - so a
+     screenshot that carried numbers is filed as PP_UPDATE rather than as Front,
+     Side or Back. It is the one field on this row that already holds free text,
+     no migration was available tonight, and it reads correctly in the database:
+     angle=Update says exactly what that row is. */
+  var _ppAngle = (_ppImported && _ppImported.length) ? PP_UPDATE : (_ppNewAngle||'Front');
   var _attempts=[
-    { client_code: cl.code, photo: _photoVal, date_str: dateStr, weight: (wInput!==''? wInput : null), angle: _ppNewAngle||'Front', logged_at: _isoNow },
+    { client_code: cl.code, photo: _photoVal, date_str: dateStr, weight: (wInput!==''? wInput : null), angle: _ppAngle, logged_at: _isoNow },
     { client_code: cl.code, photo: _photoVal, date_str: dateStr, weight: (wInput!==''? wInput : null) },
     { client_code: cl.code, photo: _photoVal, date_str: dateStr },
     { client_code: cl.code, photo: _photoVal }
@@ -81899,12 +81932,16 @@ async function saveProgressPhoto(){
     }catch(_e){ _ppErr=String(_e&&_e.message||_e); }
   }
   if(saved){
-    if(saved.angle==null) saved.angle = _ppNewAngle||'Front';
+    if(saved.angle==null) saved.angle = _ppAngle;
     progressPhotos.unshift(saved);
     progressPhotos.sort(function(a,b){ return _ppDateVal(b) - _ppDateVal(a); });
     rendProgressPhotos();
     closeProgressPhotoModal();
-    showToast('\u2713 Progress photo saved');
+    showToast((_ppImported && _ppImported.length)
+      ? ('\u2713 ' + _ppImported.join(' and ') + ' \u2014 imported from your screenshot')
+      : '\u2713 Progress photo saved');
+    try{ if(typeof updHalo==='function') updHalo(); }catch(e){}
+    try{ if(typeof renderDayTimeline==='function') renderDayTimeline(true); }catch(e){}
   } else {
     if(btn){ btn.textContent='Save'; btn.disabled=false; }
     console.error('progress photo save failed:', _ppErr);

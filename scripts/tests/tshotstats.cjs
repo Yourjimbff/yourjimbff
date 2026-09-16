@@ -74,15 +74,40 @@ t(/notes:'Read from a screenshot'/.test(file), 'and the row says where the numbe
 t(/var did = \[\];/.test(file) && /return did;/.test(file),
   'it reports what actually landed rather than what it tried');
 
+console.log('\n  AND THE CARD IS KEPT, RENAMED (Yusuf, 16 Sep):');
+/* "We should just keep that card. So it's not a progress photo. It's like a
+   progress update or daily update. It's like an import of sorts."
+   The first version filed the numbers and DROPPED the picture - which threw away
+   the thing he was actually looking at. The row is saved either way now, through
+   the one save path, and marked so every surface calls it what it is. */
+t(/var PP_UPDATE = 'Update';/.test(src), 'there is one marker, named once');
+t(/function _ppIsUpdate\(row\)\{/.test(src), '  and one test for it');
+t(/var _ppAngle = \(_ppImported && _ppImported\.length\) \? PP_UPDATE : \(_ppNewAngle\|\|'Front'\);/.test(src),
+  'a screenshot that carried numbers is filed as an Update, not as an angle');
+t(/if\(saved\.angle==null\) saved\.angle = _ppAngle;/.test(src), '  and the local copy agrees with the row');
+t(!/return;\n      \}\n      \/\/ Nothing landed/.test(src), 'nothing returns early any more, so the picture is never dropped');
+t(/if\(_did\.length\)\{ _ppImported = _did; \}/.test(src), '  it records what it imported and carries on to the save');
+
+console.log('\n  AND EVERY SURFACE CALLS IT THAT:');
+t(/what='Update';/.test(src) && /meta='Imported from a screenshot';/.test(src),
+  'the feed card reads Update, not Progress photo - Front');
+t(/_ppIsUpdate\(it\.data\)\?'shared an update':'shared a progress photo'/.test(src),
+  'and the line above it says shared an update');
+t(/_ppIsUpdate\(r\) \? 'Update imported from a screenshot' : 'Progress photo'/.test(src),
+  'the day summary says it too');
+t(/if\(progressPhotos\.some\(_ppIsUpdate\)\) _ppTabs\.push\(PP_UPDATE\);/.test(src),
+  'the album grows a fourth filter only once there is one to show');
+t(/_ppImported\.join\(' and '\) \+ ' \\u2014 imported from your screenshot'/.test(src),
+  'and the toast names what was taken off it');
+
 console.log('\n  THE ORDER IS RIGHT, AND NOTHING IS EVER LOST:');
 const save=between('async function saveProgressPhoto(){','if(btn) btn.textContent=\'Saving...\';');
 t(/!String\(\(_shot\.activity\)\|\|''\)\.trim\(\)/.test(save),
   'a screen that names an activity is still a workout');
 t(save.indexOf('_ppFileStats') < save.indexOf('_ppAsWorkout'),
   'and the numbers branch is checked first, because a health summary carries both');
-t(/if\(_did\.length\)\{/.test(save), 'it only diverts when something actually saved');
-t(/\/\/ Nothing landed\. Fall through and keep the picture rather than lose it\./.test(save),
-  'and a failed write falls through to the ordinary save');
+t(/\/\/ Nothing landed\? Then it is an ordinary photo and nothing above changed\./.test(save),
+  'and a failed write leaves it an ordinary progress photo');
 t(/\}catch\(e\)\{\}/.test(save), 'every failure path here keeps the photo');
 
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (a number on a screen becomes a point on his chart)');
