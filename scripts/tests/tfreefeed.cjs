@@ -133,7 +133,10 @@ console.log(bad?('\n'+bad+' FAILED'):'\nall passed');
   t3(/r\.isTrainer \|\| hid\[c\]/.test(fn), 'skipping trainers and hidden people, like the total does');
   t3(/known \? n : -1/.test(fn), 'and answers "unknown" rather than 0 when no created_at has loaded yet');
   t3(/_localYmd/.test(fn), 'today is the local day, not the UTC one');
-  const segs=(src3.match(/function _feedWhoSegs\(\)\{[\s\S]*?\n\}/)||[''])[0];
+  /* 16 Sep: the chips moved into _feedWhoInner so the tap can repaint them
+     without waiting on the feed load, and _feedWhoSegs is now just the
+     container around them. The content assertions follow the content. */
+  const segs=(src3.match(/function _feedWhoInner\(\)\{[\s\S]*?\n\}/)||[''])[0];
   t3(/_feedFreeToday\(\)/.test(segs), 'the chip row asks for it');
   t3(/td>0/.test(segs), 'and shows it only on a day that had one - a standing +0 is a scoreboard telling you off');
   if(b3){ console.log('  '+b3+' FAILED'); process.exitCode=1; }
