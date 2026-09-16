@@ -25,7 +25,11 @@ t(/\.pgWkCell\.rest \.pgWkT\{color:rgba\(240,236,228,0\.25\);\}/.test(src), 'res
 t(/onclick="pgToggleDay\('\+i\+'\)"/.test(src.slice(src.indexOf('var _cells=_pw.map'), src.indexOf('var _cells=_pw.map')+600)), 'tapping a cell opens that day, same as its row');
 
 console.log('\n  TODAY OPEN, WITH A START:');
-t(/function _pgDefaultOpen\(\)\{[\s\S]{0,120}if\(_pgDayOpen===null\) _pgDayOpen=\(new Date\(\)\.getDay\(\)\+6\)%7;/.test(src), 'today opens by default, only when nothing has been chosen');
+/* 16 Sep: "nothing has been chosen" needed its own flag. null was doing two
+   jobs - nobody-has-picked AND they-just-closed-it - so closing today reopened
+   it on the next repaint and his leg day could not be shut. See tdayshut.cjs. */
+t(/function _pgDefaultOpen\(\)\{[\s\S]{0,160}if\(!_pgDayTouched && _pgDayOpen===null\) _pgDayOpen=\(new Date\(\)\.getDay\(\)\+6\)%7;/.test(src),
+  'today opens by default, only before any day has been tapped');
 t(/\(\(_isTodayRow && ex\.length\) \? '<div class="pgStart" onclick="pgStartToday\(\)"/.test(src), 'Start on today only, and only when the day has something in it');
 t(/function pgStartToday\(\)\{[\s\S]{0,200}switchTab\('Day'\)[\s\S]{0,200}tlToggleWorkout\(ds\)/.test(src), 'Start goes to the Day page and opens the session - the same door as the Day page Start');
 
