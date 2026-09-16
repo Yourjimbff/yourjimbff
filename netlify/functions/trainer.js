@@ -566,6 +566,31 @@ const WRITE_OPS = {
   // Kept separate from clientPatch on purpose — this is the ONE SWITCH, the only
   // place clients.hidden is ever written from the app, same as it's always been.
   clientUnhide: (a) => ({ method: 'PATCH', path: `clients?code=eq.${enc(a.code)}`, body: { hidden: false } }),
+  // ---- what a picture actually is ------------------------------------------
+  // Yusuf, 16 Sep, looking at a card in his feed: "This photo still says
+  // progress photo. It should be something else - because it's also not front."
+  //
+  // A screenshot somebody imported and a photo of their back are the same shape
+  // in this table: a picture, a date, and an angle column. Nothing on the row
+  // can tell the two apart, and the row he was looking at was filed before the
+  // import was recognised at all, so it carries the old default. The only party
+  // who can say what a picture is, is the one looking at it.
+  //
+  // FOUR VALUES AND NOTHING ELSE. The three angles and Update — this column is
+  // free text and a flexible patch here would let a session write anything into
+  // it. Null is allowed and is its own answer: "not an update" is not a claim
+  // about which side of somebody the camera was on, so it clears the column
+  // rather than inventing a replacement.
+  photoRelabel: (a) => {
+    const id = num(a.id);
+    if (!(id > 0)) throw new Error('bad_arg');
+    let angle = null;
+    if (a.angle !== undefined && a.angle !== null && a.angle !== '') {
+      angle = str(a.angle, 12);
+      if (['Front', 'Side', 'Back', 'Update'].indexOf(angle) < 0) throw new Error('bad_arg');
+    }
+    return { method: 'PATCH', path: `progress_photos?id=eq.${id}`, body: { angle: angle } };
+  },
   // New client creation. coach_code is the session's own claim, same as every
   // other insert behind this door — never trusted from args.
   clientInsert: (a, coach) => ({

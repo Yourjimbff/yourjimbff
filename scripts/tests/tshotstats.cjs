@@ -82,8 +82,12 @@ console.log('\n  AND THE CARD IS KEPT, RENAMED (Yusuf, 16 Sep):');
    the one save path, and marked so every surface calls it what it is. */
 t(/var PP_UPDATE = 'Update';/.test(src), 'there is one marker, named once');
 t(/function _ppIsUpdate\(row\)\{/.test(src), '  and one test for it');
-t(/var _ppAngle = \(_ppImported && _ppImported\.length\) \? PP_UPDATE : \(_ppNewAngle\|\|'Front'\);/.test(src),
+t(/var _ppAngle = \(_ppImported && _ppImported\.length\) \? PP_UPDATE : \(_ppNewAngle \|\| null\);/.test(src),
   'a screenshot that carried numbers is filed as an Update, not as an angle');
+/* 16 Sep: the other half of that line used to read `_ppNewAngle||'Front'`, so a
+   photo nobody labelled was filed as a front shot. See tphotolabel.cjs - an
+   unanswered question is worth less than nothing when it looks like an answer. */
+t(!/_ppNewAngle\|\|'Front'/.test(src), '  and one nobody labelled is filed as nothing at all');
 t(/if\(saved\.angle==null\) saved\.angle = _ppAngle;/.test(src), '  and the local copy agrees with the row');
 t(!/return;\n      \}\n      \/\/ Nothing landed/.test(src), 'nothing returns early any more, so the picture is never dropped');
 t(/if\(_did\.length\)\{ _ppImported = _did; \}/.test(src), '  it records what it imported and carries on to the save');
