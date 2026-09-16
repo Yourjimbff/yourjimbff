@@ -12085,36 +12085,54 @@ function mediaWarm(urls){
   }catch(e){}
 }
 var SB_BUCKET = 'progress-photos';
-// Upload a full-res image blob to Supabase Storage; returns the public URL, or null if the bucket isn't reachable.
-async function uploadProgressImage(blob, clientCode){
+/* PUTTING A PHOTO IN, NOW THAT THE BUCKET IS SHUT.
+   This used to POST straight at storage with the public key, and that stopped
+   working the moment the bucket went private: an anon role cannot write to one
+   any more than it can read one. Taking a progress photo has been answering 400
+   ever since, silently, because the caller looks at null and says "couldn't
+   upload" without ever saying why.
+   The door names the file. This side sends a bucket and bytes; the folder is the
+   client code out of the SIGNED token and the filename is generated on the
+   server, so there is no parameter here that could put a file in somebody
+   else's folder even if this page were rewritten by hand.
+   The bytes go straight to storage on a one-shot signed URL rather than through
+   the function, because a 2000px photo is a couple of megabytes and a function
+   has six — a limit somebody would meet on holiday with a good camera and no
+   way to find out why it failed. */
+async function _mediaUpload(blob, bucket, coach){
   if(!blob) return null;
+  var tok=null;
+  try{ tok=_sessToken(); if(!tok){ await sessEnsure(window.cl && cl.code); tok=_sessToken(); } }catch(e){ tok=null; }
+  if(!tok){ try{ console.warn('media upload: no session'); }catch(e){} return null; }
   try{
-    var path = (clientCode||'client') + '/' + Date.now() + '-' + Math.random().toString(36).slice(2,8) + '.jpg';
-    var res = await fetch(SB_URL+'/storage/v1/object/'+SB_BUCKET+'/'+encodeURI(path), {
-      method:'POST',
-      headers:{ 'apikey':SB_KEY, 'Authorization':'Bearer '+SB_KEY, 'Content-Type':'image/jpeg', 'x-upsert':'true' },
-      body: blob
-    });
-    if(!res.ok){ try{ console.warn('Storage upload failed', res.status, await res.text()); }catch(_){ } return null; }
-    return SB_URL+'/storage/v1/object/public/'+SB_BUCKET+'/'+encodeURI(path);
-  }catch(e){ console.error('uploadProgressImage error', e); return null; }
+    var a=await fetch(_MEDIA_SIGN_URL, {method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},
+      body:JSON.stringify({op:'upload', bucket:bucket, coach:(coach===true)})});
+    if(!a.ok){ try{ console.warn('media upload-sign failed', a.status, await a.text()); }catch(e){} return null; }
+    var d=await a.json();
+    if(!d || !d.uploadUrl || !d.url) return null;
+    var b=await fetch(d.uploadUrl, {method:'PUT', headers:{'Content-Type':'image/jpeg','x-upsert':'true'}, body:blob});
+    if(!b.ok){ try{ console.warn('media upload failed', b.status, await b.text()); }catch(e){} return null; }
+    /* Warm the cache with what we just wrote, so the first render does not
+       have to fail once to learn the URL it needs. */
+    try{ _mediaSign([d.url]); }catch(e){}
+    return d.url;
+  }catch(e){ try{ console.warn('media upload threw', e && e.message); }catch(_e){} return null; }
+}
+// Upload a full-res image blob; returns the stored URL, or null if it did not land.
+async function uploadProgressImage(blob, clientCode){
+  return await _mediaUpload(blob, SB_BUCKET, false);
 }
 
 // Meal Library photos live in their own bucket so a saved meal's photo is one
 // small URL reused on every log, not base64 re-sent with every row.
 var MEAL_BUCKET = 'meal-photos';
+/* The two callers pass 'coach' when the meal is a trainer's template and the
+   client's own code otherwise, which is exactly the distinction the door needs
+   — and the door checks is_trainer before it will write to coach/, so asking
+   for it is not the same as getting it. */
 async function uploadMealPhoto(blob, clientCode){
-  if(!blob) return null;
-  try{
-    var path = (clientCode||'coach') + '/' + Date.now() + '-' + Math.random().toString(36).slice(2,8) + '.jpg';
-    var res = await fetch(SB_URL+'/storage/v1/object/'+MEAL_BUCKET+'/'+encodeURI(path), {
-      method:'POST',
-      headers:{ 'apikey':SB_KEY, 'Authorization':'Bearer '+SB_KEY, 'Content-Type':'image/jpeg', 'x-upsert':'true' },
-      body: blob
-    });
-    if(!res.ok){ try{ console.warn('Meal photo upload failed', res.status, await res.text()); }catch(_){ } return null; }
-    return SB_URL+'/storage/v1/object/public/'+MEAL_BUCKET+'/'+encodeURI(path);
-  }catch(e){ console.error('uploadMealPhoto error', e); return null; }
+  return await _mediaUpload(blob, MEAL_BUCKET, String(clientCode||'')==='coach');
 }
 
 // Both write helpers return a BOOLEAN, and roughly twenty-five callers await

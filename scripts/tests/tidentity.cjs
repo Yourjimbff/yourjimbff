@@ -39,13 +39,23 @@ t(/if\(s\.exp <= Math\.floor\(Date\.now\(\)\/1000\)\) return null;/.test(tok),
 t(/if\(cl && cl\.code && s\.code && s\.code!==cl\.code\) return null;/.test(tok),
   'and a session belonging to somebody else is never used for this person');
 
-console.log('\n  THE THREE THAT STAY ON THE PUBLIC KEY ARE CORRECT:');
+console.log('\n  THE TWO THAT STAY ON THE PUBLIC KEY ARE CORRECT:');
+/* IT WAS THREE UNTIL 16 Sep, and the third was a lie the whole time. The two
+   Storage uploads were left on the public key with the reason "they answer to
+   bucket policies, not these" - which was true of a PUBLIC bucket and stopped
+   being true the moment progress-photos was closed. An anon role cannot write
+   to a private bucket any more than it can read one, so both uploads had been
+   answering 400 since the lock went on. They go through the media door now, on
+   a one-shot signed URL, and the public key has no business with storage at
+   all. See tmedia.cjs. */
 const hand=(src.match(/'apikey':\s*SB_KEY/g)||[]).length;
-t(hand===4, 'four places name the key by hand - sbHeaders and three others', hand);
+t(hand===2, 'two places name the key by hand - sbHeaders and _sbAuth', hand);
 t(/headers:\{'Content-Type':'application\/json','apikey':SB_KEY,'Authorization':'Bearer '\+SB_KEY\}/.test(src),
   '  _sbAuth talks to Supabase Auth, which has to be presented the anon key');
-t((src.match(/'Content-Type':'image\/jpeg', 'x-upsert':'true'/g)||[]).length===2,
-  '  and two Storage uploads, which answer to bucket policies, not these');
+t((src.match(/'Content-Type':'image\/jpeg', 'x-upsert':'true'/g)||[]).length===0,
+  '  and no Storage upload carries it any more');
+t(/async function _mediaUpload\(blob, bucket, coach\)\{/.test(src),
+  '  because both of them go through the signed media door');
 
 console.log('\n  THE RECOVERY PATH EXISTS FOR WHEN THE LOCK GOES ON:');
 /* Built before this cutover and not yet wired to a refusal — recorded here so

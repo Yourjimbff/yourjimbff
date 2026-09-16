@@ -32,9 +32,9 @@ t(/if \(path\.indexOf\('\.\.'\) >= 0\) return false;/.test(door), 'and a path ca
 t(/const SAFE = \/\^\[A-Za-z0-9\]/.test(door), '  the path is treated as hostile input even from our own database');
 
 console.log('\n  AND IT CAN ONLY EVER SHOW, NEVER WRITE:');
-t(/String\(body\.op \|\| 'sign'\) !== 'sign'/.test(door), 'sign is the only op it answers to');
-t(!/method: 'DELETE'|method: 'PUT'/.test(door), 'it has no delete and no write');
+t(!/method: 'DELETE'/.test(door), 'it can never delete anything');
 t(!/\/object\/list\//.test(door), 'and it cannot list a folder');
+t(!/method: 'PUT'/.test(door), '  it does not write the bytes itself either');
 t(/event\.httpMethod !== 'POST'/.test(door), 'POST only, so nothing is signed by a link');
 t(/'Cache-Control': 'no-store'/.test(door), 'and a signature is never cached by anything in between');
 
@@ -55,6 +55,31 @@ t(/background-image:url/.test(card), 'the progress card still draws CSS backgrou
 t(/_mediaCached\(u\)/.test(card), '  so it asks for a signature before it draws');
 t(/_mediaSign\(needSign\)\.then/.test(card), '  and redraws when the signatures land');
 t(/!window\._ppWarmKey/.test(card), '  once, not on a loop');
+
+console.log('\n  AND PUTTING ONE IN GOES THROUGH THE SAME DOOR:');
+t(/op !== 'sign' && op !== 'upload'/.test(door), 'there are exactly two ops');
+t(/const folder = wantCoach \? 'coach' : String\(claims\.client_code\);/.test(door),
+  'the FOLDER is the client code out of the token, never a parameter');
+t(/const name = Date\.now\(\) \+ '-' \+ Math\.random\(\)/.test(door), 'and the door names the file itself');
+t(/if \(wantCoach && \(bucket !== 'meal-photos' \|\| claims\.is_trainer !== true\)\)/.test(door),
+  'only a trainer may write to the shared library');
+t(/upload\/sign\//.test(door), 'it hands back a signed upload URL');
+t(!/body: blob|body: bytes|Buffer\.from\(/.test(door), '  so the bytes never come through the function');
+const up=between('async function _mediaUpload(blob, bucket, coach){','// Upload a full-res image blob');
+t(/if\(!tok\)\{/.test(up), 'the page will not even try without a session');
+t(/method:'PUT'/.test(up), 'and PUTs the bytes straight at storage');
+t(!/SB_KEY/.test(up), '  with no public key anywhere in it');
+const prog=between('async function uploadProgressImage(blob, clientCode){','/* The two callers pass');
+t(/_mediaUpload\(blob, SB_BUCKET, false\)/.test(prog), 'progress photos go through it');
+const meal=between('async function uploadMealPhoto(blob, clientCode){','// Both write helpers return a BOOLEAN');
+t(/_mediaUpload\(blob, MEAL_BUCKET/.test(meal), 'and so do meal photos');
+/* The public key is allowed exactly three homes now: the apikey header Supabase
+   requires beside a session, the bearer fallback for a device with no session
+   yet, and the auth endpoint, which is what it is for. Storage is not on that
+   list any more. */
+const keyUses=(src.match(/SB_KEY/g)||[]).length;
+t(keyUses<=5, 'the public key is down to a handful of uses', keyUses);
+t(!/storage\/v1\/object\/[^p][^\s']*'[^)]*SB_KEY/.test(src), 'and none of them is a storage write');
 
 console.log('\n  NOTHING HERE REOPENS A BUCKET:');
 t(!/public=true|public: true/.test(door+src), 'no code anywhere sets a bucket public');

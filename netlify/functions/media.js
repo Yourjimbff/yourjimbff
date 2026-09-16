@@ -71,7 +71,66 @@ exports.handler = async function (event) {
 
   let body = {};
   try { body = JSON.parse(event.body || '{}'); } catch (e) { body = {}; }
-  if (String(body.op || 'sign') !== 'sign') return json(400, { error: 'unknown_op' });
+  const op = String(body.op || 'sign');
+  if (op !== 'sign' && op !== 'upload') return json(400, { error: 'unknown_op' });
+
+  const H0 = { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE, 'Content-Type': 'application/json' };
+
+  /* ---------------------------------------------------------------------
+     PUTTING A PHOTO IN. The anon key cannot write to a private bucket any
+     more than it can read one, so taking a progress photo has been failing
+     with a 400 since the lock went on, exactly as looking at one was.
+
+     THE BYTES DO NOT COME THROUGH HERE. A 2000px photo at quality 0.9 is a
+     couple of megabytes, base64 inflates it by a third, and a function has
+     six to play with — that is a size limit somebody meets on holiday with
+     a good camera and no way to know why it failed. So this hands back a
+     SIGNED UPLOAD URL and the browser PUTs the bytes straight at storage.
+
+     AND IT NAMES THE FILE ITSELF. The caller says which bucket and nothing
+     else: the folder is the client code out of the signed token, and the
+     filename is generated here. There is no parameter anywhere in this
+     request that can put a file in somebody else's folder.
+     --------------------------------------------------------------------- */
+  if (op === 'upload') {
+    const bucket = String(body.bucket || '');
+    if (BUCKETS.indexOf(bucket) < 0) return json(400, { error: 'unknown_bucket' });
+    // The shared meal library is the one folder that is not a person, and only
+    // a trainer may write to it.
+    const wantCoach = body.coach === true;
+    if (wantCoach && (bucket !== 'meal-photos' || claims.is_trainer !== true)) {
+      return json(403, { error: 'not_yours' });
+    }
+    const folder = wantCoach ? 'coach' : String(claims.client_code);
+    if (!SAFE.test(folder)) return json(400, { error: 'bad_folder' });
+    const name = Date.now() + '-' + Math.random().toString(36).slice(2, 10) + '.jpg';
+    const path = folder + '/' + name;
+    try {
+      const r = await fetch(`${URL}/storage/v1/object/upload/sign/${bucket}/${encodeURIComponent(folder)}/${encodeURIComponent(name)}`, {
+        method: 'POST', headers: H0, body: JSON.stringify({}),
+      });
+      if (!r.ok) {
+        const txt = await r.text().catch(() => '');
+        console.warn('media upload-sign ' + bucket + ' -> ' + r.status + ' ' + txt.slice(0, 160));
+        return json(502, { error: 'upload_sign_' + r.status });
+      }
+      const d = await r.json();
+      const rel = String((d && d.url) || '');
+      if (!rel) return json(502, { error: 'no_upload_url' });
+      return json(200, {
+        ok: true,
+        bucket: bucket,
+        path: path,
+        // Where the browser PUTs the bytes.
+        uploadUrl: URL + '/storage/v1' + (rel[0] === '/' ? '' : '/') + rel,
+        // The shape every row in the database already uses, so nothing has to
+        // be migrated and the read path heals it the same way as the old ones.
+        url: `${URL}/storage/v1/object/public/${bucket}/${encodeURIComponent(folder)}/${encodeURIComponent(name)}`,
+      });
+    } catch (e) {
+      return json(502, { error: 'upload_sign_threw' });
+    }
+  }
 
   // One call can carry a page's worth of thumbnails. A feed that signs twenty
   // images one request at a time is twenty cold starts.
@@ -79,7 +138,7 @@ exports.handler = async function (event) {
     : [{ bucket: body.bucket, path: body.path }];
   const expiresIn = Math.min(Math.max(parseInt(body.expires, 10) || 3600, 60), 86400);
 
-  const H = { apikey: SERVICE, Authorization: 'Bearer ' + SERVICE, 'Content-Type': 'application/json' };
+  const H = H0;
   const out = [];
   for (const it of want) {
     const bucket = String((it && it.bucket) || '');
