@@ -11977,6 +11977,113 @@ async function trainerWrite(op, args, _retried){
   }catch(e){ return {ok:false, rows:[]}; }
 }
 
+/* =========================================================================
+   A PRIVATE BUCKET STILL HAS TO BE LOOKABLE-AT.
+
+   Closing the two storage buckets on 15 Sep was right and it is staying shut.
+   What went with it, unnoticed for a day, is every photo in the app: the only
+   URL this file has ever built for a stored image is
+       /storage/v1/object/public/<bucket>/<path>
+   and a private bucket answers 400 to all of them. Progress photos, meal
+   library thumbnails, the picture on a logged meal — all of it, every row
+   already in the database and every new one.
+
+   THE FIX IS ONE LISTENER, NOT FORTY CALL SITES. Roughly twenty places render
+   an <img> from a stored url, and editing each one is twenty chances to miss
+   one and no protection at all for the twenty-first written next week. An
+   image that cannot load fires an error event, and error events can be caught
+   on the way DOWN even though they do not bubble. So: catch it, see whether the
+   src was one of ours, ask the door to sign it, put the signed URL back. Every
+   photo in the app, including the ones in rows written months ago, and
+   including whatever gets rendered tomorrow.
+
+   THE COST is one failed request per image before the real one. That is the
+   price of not migrating a database column at two in the morning, and it is
+   paid once per image per hour — the signature lasts an hour and the answers
+   are kept for the session.
+   ========================================================================= */
+var _MEDIA_SIGN_URL='/.netlify/functions/media';
+var _MEDIA_CACHE={};        // "bucket/path" -> {url, at}
+var _MEDIA_TTL_MS=50*60*1000;
+/* Pull a bucket and a path back out of a stored public URL. Anything that is
+   not one of ours — a data: URL, a picture hosted somewhere else, an absolute
+   link somebody pasted — comes back null and is left alone. */
+function _mediaParse(u){
+  try{
+    var s=String(u||''); if(!s) return null;
+    var k=s.indexOf('/storage/v1/object/public/');
+    if(k<0) return null;
+    var rest=s.slice(k+'/storage/v1/object/public/'.length);
+    var q=rest.indexOf('?'); if(q>=0) rest=rest.slice(0,q);
+    var slash=rest.indexOf('/'); if(slash<1) return null;
+    var bucket=rest.slice(0,slash);
+    var path=rest.slice(slash+1);
+    if(!path) return null;
+    try{ path=decodeURI(path); }catch(e){}
+    return {bucket:bucket, path:path};
+  }catch(e){ return null; }
+}
+async function _mediaSign(list){
+  var items=[], keys=[];
+  for(var i=0;i<list.length;i++){
+    var p=_mediaParse(list[i]); if(!p) continue;
+    var key=p.bucket+'/'+p.path;
+    var hit=_MEDIA_CACHE[key];
+    if(hit && (Date.now()-hit.at)<_MEDIA_TTL_MS) continue;
+    if(keys.indexOf(key)>=0) continue;
+    keys.push(key); items.push(p);
+  }
+  if(!items.length) return;
+  var tok=null;
+  try{ tok=_sessToken(); if(!tok){ await sessEnsure(window.cl && cl.code); tok=_sessToken(); } }catch(e){ tok=null; }
+  if(!tok) return;
+  try{
+    var r=await fetch(_MEDIA_SIGN_URL, {method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},
+      body:JSON.stringify({op:'sign', items:items})});
+    if(!r.ok) return;
+    var d=await r.json();
+    (d && d.items || []).forEach(function(it){
+      if(it && it.url) _MEDIA_CACHE[it.bucket+'/'+it.path]={url:it.url, at:Date.now()};
+    });
+  }catch(e){}
+}
+function _mediaCached(u){
+  var p=_mediaParse(u); if(!p) return null;
+  var hit=_MEDIA_CACHE[p.bucket+'/'+p.path];
+  return (hit && (Date.now()-hit.at)<_MEDIA_TTL_MS) ? hit.url : null;
+}
+/* THE LISTENER. Capture phase, because an image's error event does not bubble.
+   One attempt per element — _mediaTried is the guard — so a genuinely missing
+   file fails once and stays failed rather than asking the door forever. */
+function _mediaHeal(el){
+  if(!el || el.tagName!=='IMG') return;
+  if(el.getAttribute('data-msgn')) return;
+  var src=el.getAttribute('src')||'';
+  var p=_mediaParse(src); if(!p) return;
+  el.setAttribute('data-msgn','1');
+  var ready=_mediaCached(src);
+  if(ready){ el.src=ready; return; }
+  _mediaSign([src]).then(function(){
+    var u=_mediaCached(src);
+    if(u) el.src=u;
+  });
+}
+try{
+  document.addEventListener('error', function(e){
+    try{ _mediaHeal(e && e.target); }catch(_e){}
+  }, true);
+}catch(e){}
+/* AND A HEAD START where a page knows what it is about to draw. Optional, and
+   nothing depends on it: it only warms the cache so the listener above has an
+   answer waiting instead of a round trip. */
+function mediaWarm(urls){
+  try{
+    var list=[];
+    (urls||[]).forEach(function(u){ if(u && _mediaParse(u)) list.push(u); });
+    if(list.length) _mediaSign(list);
+  }catch(e){}
+}
 var SB_BUCKET = 'progress-photos';
 // Upload a full-res image blob to Supabase Storage; returns the public URL, or null if the bucket isn't reachable.
 async function uploadProgressImage(blob, clientCode){
@@ -90784,10 +90891,24 @@ function renderPhotoCard(){
   var ph=[];
   try{ ph=(window.progressPhotos||[]).slice(); }catch(e){}
   var cells='', shown=Math.min(4, ph.length);
+  /* THE ONE PLACE A PHOTO IS NOT AN <img>, and therefore the one place the
+     media healer cannot reach: a CSS background does not fire an error event
+     when it 404s, it just silently draws nothing. So these four are signed up
+     front and the card is drawn a second time when the signatures land. Once
+     per set — _ppWarmed — because the answers are cached for the session and a
+     card that re-rendered itself on every render would never stop. */
+  var needSign=[];
   for(var i=0;i<shown;i++){
     var u=ph[i] && (ph[i].url||ph[i].photo_url||ph[i].src) || '';
-    cells += u ? '<div class="pgCell f" style="background-image:url(\''+u+'\');"></div>'
+    var signed=null; try{ signed=_mediaCached(u); }catch(e){}
+    if(u && !signed && _mediaParse(u)) needSign.push(u);
+    var use=signed||u;
+    cells += use ? '<div class="pgCell f" style="background-image:url(\''+use+'\');"></div>'
                : '<div class="pgCell f"></div>';
+  }
+  if(needSign.length && !window._ppWarmKey){
+    window._ppWarmKey=needSign.join('|');
+    try{ _mediaSign(needSign).then(function(){ window._ppWarmKey=null; try{ renderPhotoCard(); }catch(e){} }); }catch(e){ window._ppWarmKey=null; }
   }
   for(var j=shown;j<4;j++) cells += '<div class="pgCell">+</div>';
 
