@@ -71,7 +71,7 @@ t(/if\(t==='CRM'\) t='Feed';/.test(src), 'and every route into the board lands o
    on the trainer bar - this does, with an inline display, and inline beats a
    stylesheet. The first attempt changed only the CSS and the bar came back with
    three buttons instead of four. Caught by looking at the served page. */
-const gate=src.slice(src.indexOf("['bnFollow','bnToday'].forEach"), src.indexOf("['bnFollow','bnToday'].forEach")+800);
+const gate=src.slice(src.indexOf("['bnFollow','bnToday'].forEach"), src.indexOf("['bnFollow','bnToday'].forEach")+1400);
 t(gate.length>0, 'the trainer hide list carries neither Food nor Program');
 t(/\['bnProgram','bnFood'\]\.forEach\(function\(id\)\{\n        var el=document\.getElementById\(id\); if\(el\) el\.style\.display='';/.test(gate),
   '  both are shown on purpose instead');
@@ -79,6 +79,7 @@ t(/var _bcrm=document\.getElementById\('bnCRM'\); if\(_bcrm\) _bcrm\.style\.disp
   '  and CRM is hidden in the same place, not only in CSS');
 t(/_nav\.style\.gridTemplateColumns='repeat\(5,1fr\)'/.test(gate),
   '  with five columns for the five buttons, set beside the list that names them');
+t(/_bpl\.textContent='Program'/.test(gate), "  and the third one says Program, which is what he calls it");
 t(!/\['bnProgram','bnFollow','bnToday','bnFood'\]/.test(src), '  and nothing hides them again');
 
 /* HIS ORDER, IN HIS WORDS (16 Sep): "Day, Jarvis, program, food, feed." */
