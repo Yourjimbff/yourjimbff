@@ -49,6 +49,35 @@ if ! grep -q '__APP_VERSION__' "$FILE"; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# THE DEVELOPER NOTES COME OUT OF THE COPY BEING PUBLISHED, and only that copy.
+#
+# Yusuf, 15 Sep, from the report he was sent: "remove developer notes from HTML
+# ... Your role level security logic is right within your developer notes also
+# exposed within your html." About 25,000 comments in that file, including a
+# written account of where the app has been soft and why every lock is where it
+# is. In git they are the most valuable thing here; served to the public they
+# are a map.
+#
+# This runs against the working copy Netlify is about to deploy. The repository
+# keeps its comments. strip-notes.cjs refuses to write unless every script block
+# still parses and every string, template character and regex literal in the
+# file is byte-identical to the source — and a refusal exits non-zero, which
+# fails this script, which fails the build, which leaves the previous deploy
+# serving. That is the only acceptable way for something that rewrites the app
+# on its way out of the door to go wrong.
+# ---------------------------------------------------------------------------
+if [ "${SKIP_STRIP_NOTES:-}" = "1" ]; then
+  echo "stamp-version.sh: SKIP_STRIP_NOTES=1 — leaving the developer notes in."
+else
+  command -v node >/dev/null 2>&1 || {
+    echo "stamp-version.sh: node is not on PATH, so the developer notes cannot be" >&2
+    echo "  stripped. Refusing to publish the file with them in it." >&2
+    exit 1
+  }
+  node "$ROOT/scripts/strip-notes.cjs" "$FILE"
+fi
+
 # VERSION is validated above, so it carries no sed metacharacters.
 TMP="$FILE.stamp.tmp"
 sed "s/__APP_VERSION__/$VERSION/g" "$FILE" > "$TMP"

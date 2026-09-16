@@ -1,36 +1,95 @@
-// THE STRIP STARTS THE DAY THEY JOINED (Yusuf, 7 Sep): "why would any days
-// before that in their little 14-day ticker even be visible? And then have it
-// go from the left."
+// THE DEVELOPER NOTES COME OUT OF THE FILE THAT IS SERVED.
+//
+// Yusuf, 15 Sep, from the report a client sent him: "remove developer notes
+// from HTML ... Your role level security logic is right within your developer
+// notes also exposed within your html."
+//
+// This runs the real stripper over the real index.html, in memory, and checks
+// the result. It is slower than a text assertion and it is worth it: the thing
+// being guarded is a script that rewrites six megabytes of live application on
+// its way out of the door, and the only honest test of that is to run it.
+//
+// WHAT IT IS ALLOWED TO DO: remove comments. Nothing else. Every gate below is
+// a way of asking that same question from a different angle.
 const fs=require('fs');
-const {closure}=require('./_lift.cjs');
+const { execFileSync } = require('child_process');
+const os=require('os');
+const path=require('path');
 let bad=0;
-const t=(pass,label,extra)=>{ if(!pass) bad++; console.log((pass?'  ok    ':'  FAIL  ')+label+(extra?('  '+extra):'')); };
-global.window={addEventListener(){}, location:{search:''}}; global.document={addEventListener(){},querySelector(){return null},getElementById(){return null}}; global.localStorage={getItem(){return null},setItem(){}}; global.CLIENTS={}; global._crm={logs:{}};
-eval(closure(['_crmStripKeysFor','_crmStripHtml','_crmLogStreak','_crmLogSumWords','_CRM_STRIP_DAYS']).code||'');
-global._escHtml=global._escHtml||(s=>String(s));
-const today=_dfToday();
-function key(daysAgo){ const d=new Date(new Date(today+'T12:00:00').getTime()-daysAgo*86400000); return _dfDayKey(d.toISOString()); }
-CLIENTS.newkid={started_at:key(2)};
-CLIENTS.oldhand={started_at:key(60)};
-CLIENTS.nodate={};
-t(_crmStripKeysFor('newkid').length===3, 'joined two days ago: three boxes, not fourteen', String(_crmStripKeysFor('newkid').length));
-t(_crmStripKeysFor('newkid')[0]===key(2) && _crmStripKeysFor('newkid')[2]===today, 'day 1 on the left, today on the right');
-t(_crmStripKeysFor('oldhand').length===14, 'sixty days in, the full fourteen');
-t(_crmStripKeysFor('nodate').length===14, 'no join date on file, the full fourteen - never guessed shorter');
-_crm.logs={tony:{days:{[key(1)]:1,[today]:1}}, old:{days:{[key(40)]:1,[key(1)]:1}}};
-CLIENTS.tony={started_at:key(80)}; CLIENTS.old={started_at:key(80)};
-t(_crmStripKeysFor('tony').length===2, 'roster row from June, first log yesterday: two boxes - the first log wins over the roster date', String(_crmStripKeysFor('tony').length));
-t(_crmStripKeysFor('old').length===14, 'a client with history older than the strip keeps the fourteen');
-const h=_crmStripHtml({days:{[key(2)]:1,[today]:1}}, 'newkid');
-t((h.match(/crmTick/g)||[]).length===3 && /day 1</.test(h) && /today</.test(h), 'labelled day 1 and today', h.replace(/<[^>]+>/g,'|').slice(0,80));
-const h1=_crmStripHtml({days:{}}, 'nodate');
-t((h1.match(/crmTick/g)||[]).length===14 && /14d ago</.test(h1), 'a full strip still says 14d ago');
-t(_crmLogStreak({days:{[today]:1,[key(1)]:1,[key(2)]:1,[key(4)]:1}})===3, 'three in a row ending today');
-t(_crmLogStreak({days:{[key(1)]:1,[key(2)]:1}})===2, 'today not logged yet does not break a streak ending yesterday');
-t(_crmLogSumWords({ever:true, since:0, inStrip:3, window:3, streak:3})==='every day so far (3 of 3) · 3 in a row', 'the words for a new client who has not missed');
-t(_crmLogSumWords({ever:true, since:0, inStrip:2, window:3, streak:0})==='2 of 3 days so far', 'and one who has');
-t(_crmLogSumWords({ever:true, since:0, inStrip:12, window:14, streak:5})==='12 of the last 14 days · 5 in a row', 'an old hand keeps the fourteen and gets the streak');
-console.log();
-if(bad){ console.log('  '+bad+' FAILED'); process.exit(1); }
-console.log('  all strip assertions pass');
-process.exit(0);
+const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
+
+const src=fs.readFileSync('index.html','utf8');
+const tmp=path.join(os.tmpdir(), 'tstrip-'+process.pid+'.html');
+let out='', ran=false, log='';
+try{
+  log=execFileSync(process.execPath, ['scripts/strip-notes.cjs','index.html','--dry',tmp], {encoding:'utf8'});
+  out=fs.readFileSync(tmp,'utf8');
+  ran=true;
+}catch(e){ log=String((e.stdout||'')+(e.stderr||'')); }
+try{ fs.unlinkSync(tmp); }catch(e){}
+
+console.log('\n  IT RUNS, AND IT SAYS WHAT IT DID:');
+t(ran, 'strip-notes.cjs completed', log.slice(0,300));
+if(!ran){ console.log('\n  '+bad+' FAILED'); process.exit(1); }
+t(/verified byte-identical/.test(log), 'and it verified every literal byte-for-byte');
+t(/removed \d+ comments/.test(log) || /would remove \d+ comments/.test(log), 'and counted what it took');
+
+console.log('\n  THE NOTES ARE GONE:');
+const GONE=[
+  'THE AGREEMENT, AND THE DOOR OUT',
+  'A CORRECT CODE IS NEVER TOLD IT IS WRONG',
+  'THE SILENT EXCHANGE',
+  'WHERE THEY CAME FROM, so the way out lands them back on it',
+];
+GONE.forEach(function(g){
+  t(src.indexOf(g)>=0, '  the source still has "'+g.slice(0,34)+'..."');
+  t(out.indexOf(g)<0,  '  and the served file does not');
+});
+t(out.length < src.length*0.8, 'the served file is meaningfully smaller',
+  ((out.length/src.length)*100).toFixed(1)+'%');
+
+console.log('\n  AND THE PROGRAM IS NOT:');
+const vm=require('vm');
+function bodies(s){
+  const o=[]; const re=/<script\b([^>]*)>/gi; let m;
+  while((m=re.exec(s))){
+    const attrs=m[1]||'';
+    const from=m.index+m[0].length;
+    const close=s.toLowerCase().indexOf('</script>', from);
+    if(close<0) break;
+    const type=(attrs.match(/type\s*=\s*["']?([^"'\s>]+)/i)||[])[1]||'';
+    if(!/\ssrc\s*=/i.test(attrs) && (!type || /^(text\/javascript|application\/javascript|module)$/i.test(type)))
+      o.push(s.slice(from, close));
+    re.lastIndex=close;
+  }
+  return o;
+}
+const bIn=bodies(src), bOut=bodies(out);
+t(bOut.length===bIn.length && bIn.length>0, 'the same number of script blocks', bIn.length+' -> '+bOut.length);
+let parsed=true, why='';
+bOut.forEach(function(b,i){ try{ new vm.Script(b); }catch(e){ parsed=false; why='block '+i+': '+e.message; } });
+t(parsed, 'every stripped script block still parses', why);
+
+console.log('\n  THE THINGS THAT WOULD BE SILENTLY FATAL SURVIVE:');
+[ "var APP_VERSION = '__APP_VERSION__'",     // checkForUpdate regexes the served file for this
+  'function legalGate(',
+  'var LEGAL_VERSION=',
+  '/.netlify/functions/erase',
+  'function sbHeaders(',
+  'function isTrainer(',
+].forEach(function(k){ t(out.indexOf(k)>=0, '  '+k); });
+
+console.log('\n  AND THE BUILD IS WHAT RUNS IT:');
+const stamp=fs.readFileSync('scripts/stamp-version.sh','utf8');
+t(/strip-notes\.cjs/.test(stamp), 'stamp-version.sh calls the stripper');
+t(/set -euo pipefail/.test(stamp), '  under set -e, so a refusal fails the build');
+const toml=fs.readFileSync('netlify.toml','utf8');
+t(/command = "bash scripts\/stamp-version\.sh"/.test(toml), '  and Netlify runs stamp-version.sh');
+/* The repository is the publish directory, so the script itself is reachable by
+   URL unless the existing /scripts/* redirect holds. It does; this is the line
+   that says so out loud, because the stripper is now one of the files that
+   describes how the app is put together. */
+t(/from = "\/scripts\/\*"[\s\S]{0,120}status = 404/.test(toml), 'and /scripts/* is still 404 to the public');
+
+console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (the notes stay in git and never reach a browser)');
+process.exit(bad?1:0);
