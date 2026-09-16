@@ -73,6 +73,17 @@ t(/setTimeout\(function\(\)\{ _sessHeal\(\); \}, 6000\)/.test(src),
 t(/if\(document\.visibilityState==='visible'\) setTimeout\(_sessHeal, 400\);/.test(src),
   'and whenever the app comes back to the foreground, which is when a token would have lapsed');
 t(/var _fixing=false;/.test(src), 'guarded, so it cannot pile up on itself');
+/* AND A HEAL THAT WORKED HAS TO REACH THE SCREEN. Every surface loads its data
+   once, at boot; a read that went out before the session was in hand came back
+   with zero rows and a healthy 200, drew an empty app and stopped. Repairing the
+   session afterwards changed nothing anybody could see. */
+t(/if\(got\)\{/.test(src), 'a heal that produced a token does something about the screen');
+t(/sessionStorage\.setItem\('yjb_sess_healed','1'\)/.test(src) && /location\.reload\(\)/.test(src),
+  'it reloads once, so the loaders run again with an identity');
+t(/seen=!!sessionStorage\.getItem\('yjb_sess_healed'\)/.test(src),
+  'and only once - a repeated failure can never become a reload loop');
+t(/got=await sessEnsure\(code, true\)/.test(src),
+  '  the reload is gated on actually getting a token, not on having tried');
 
 console.log('\n  WHAT IS STILL TRUE AND MUST NOT BE FORGOTTEN:');
 /* This step gives the database an identity to reason about. It does not itself

@@ -12642,7 +12642,33 @@ async function checkForUpdate(){
       if(typeof _sessToken!=='function') return;
       if(_sessToken()) return;                // already carrying one
       _fixing=true;
-      try{ await sessEnsure(code, true); }catch(e){}
+      var got=null;
+      try{ got=await sessEnsure(code, true); }catch(e){}
+      /* HEALING THE SESSION IS NOT ENOUGH ON ITS OWN (Yusuf, 15 Sep, twice:
+         "feed seems to not see anyones info at all", then "appears that feed is
+         blank again").
+
+         The first report was a cached build. The second was this, and it is the
+         subtler half: every screen loads its data ONCE, at boot. A read that
+         went out before the session was in hand came back with zero rows and a
+         perfectly healthy 200 - because that is now what the database says to
+         somebody it cannot identify - and the page drew an empty app and
+         stopped. Six seconds later this function quietly fixed the session, and
+         nothing asked again. Blank, until he reloaded by hand.
+
+         So a heal that ACTUALLY PRODUCED a token reloads the page, once. Heavy,
+         and deliberately so: it only ever runs in the state where the screen is
+         already empty and wrong, and the alternative is re-running a dozen
+         loaders and hoping none was missed. Guarded through sessionStorage so a
+         repeated failure can never become a reload loop. */
+      if(got){
+        var seen=false;
+        try{ seen=!!sessionStorage.getItem('yjb_sess_healed'); }catch(e){}
+        if(!seen){
+          try{ sessionStorage.setItem('yjb_sess_healed','1'); }catch(e){}
+          try{ location.reload(); }catch(e){}
+        }
+      }
     }catch(e){}
     finally{ _fixing=false; }
   }
@@ -12698,9 +12724,56 @@ window.VIEWAS=null;
 // weigh-in. Nothing reached Ali's phone - this cache is per browser - but the one
 // tool built to show what a client sees was showing three numbers that were Yusuf's.
 // A view reads the server row and remembers nothing.
+/* ===== WHAT A DEVICE IS ALLOWED TO REMEMBER AFTER YOU LEAVE (15 Sep) =====
+   A security review, and it was right: "Full user profiles (Name, Weight,
+   Birthday, Age, and IDs) are stored in localStorage... accessible to any
+   script or malicious browser extension."
+
+   The sharper version of that is what signing out did NOT do. Both sign-out
+   paths cleared yjb_logged_in and the session and stopped there, so a client's
+   name, weight, birthday and goal text stayed on the phone afterwards - through
+   the next person signing in, through the phone being sold, through anything.
+
+   NOTHING HERE IS THE ONLY COPY OF ANYTHING. Every one of these keys is a cache
+   of a server row, so wiping them costs a re-fetch and nothing else. The
+   allowlist is the other way round on purpose: a key has to be named as
+   harmless to survive, so a new cache added later is wiped by default rather
+   than remembered by oversight. */
+var _KEEP_ON_SIGNOUT={
+  'yjb_tab':1,             // which tab was open
+  'yjb_wk_view':1,         // day/week/month
+  'yjb_wk_scroll_hour':1,  // where the calendar was scrolled
+  'yjb_steps_mode':1,      // a display toggle
+  'yjb_just_updated':1     // the update-loop guard
+};
+function _wipePersonal(){
+  try{
+    var kill=[];
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i);
+      if(!k) continue;
+      if(_KEEP_ON_SIGNOUT[k]) continue;
+      if(/^yjb_/.test(k) || /^wodraft:/.test(k) || /^jv_/.test(k)) kill.push(k);
+    }
+    kill.forEach(function(k){ try{ localStorage.removeItem(k); }catch(e){} });
+    try{ sessionStorage.clear(); }catch(e){}
+    return kill.length;
+  }catch(e){ return 0; }
+}
+/* AND THE CACHE ITSELF CARRIES LESS. It exists so the first paint is instant,
+   which needs the numbers the Food and Progress pages show - not the three
+   fields that identify a human being. birthday and phone are identifiers;
+   intake_json is their goal in their own words plus every strength answer they
+   gave. None of the three is needed to draw a screen, so none of them is
+   written to disk. They arrive with the server row a moment later. */
+var _PROF_NEVER_CACHED=['birthday','phone','intake_json'];
 function _profCacheSet(code, obj){
   if(window.VIEWAS) return;
-  try{ localStorage.setItem('yjb_profile_'+code, JSON.stringify(obj)); }catch(e){}
+  try{
+    var safe=Object.assign({}, obj||{});
+    _PROF_NEVER_CACHED.forEach(function(k){ try{ delete safe[k]; }catch(e){} });
+    localStorage.setItem('yjb_profile_'+code, JSON.stringify(safe));
+  }catch(e){}
 }
 function _profCacheGet(code){
   if(window.VIEWAS) return null;
@@ -38095,6 +38168,8 @@ function doLogout(){
   // The session names a person, so it leaves with them. A session left behind is one
   // the next person on this device would send as their own.
   try{ _sessClear(); }catch(e){}
+  // ...and so does everything else this device remembered about them.
+  try{ _wipePersonal(); }catch(e){}
   // The trainer gate leaves with them too, for the same reason the session does.
   // There is no page reload here, so a flag left on <body> would still be there
   // when the next person signs in on this device — and .trainer-only is only a
@@ -38528,6 +38603,7 @@ function jvSignOut(){
   if(!confirm('Sign out?\n\nYou will need your access code to get back in.')) return;
   try{ localStorage.removeItem('yjb_logged_in'); }catch(e){}
   try{ _sessClear(); }catch(e){}      // the session leaves with the person
+  try{ _wipePersonal(); }catch(e){}   // and so does their name, weight and goal
   // AND THE PAGE GOES WITH THEM — see the note at the foot of doLogout. This
   // path clears even less than that one did: no cl, no _tlCache, no plan, and
   // nothing painted. The note below says a reload "can be served from cache and
