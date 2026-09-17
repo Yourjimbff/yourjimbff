@@ -14,7 +14,13 @@ global.window={addEventListener:()=>{}}; global.document={getElementById:()=>nul
 global.localStorage={ getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
 global.CLIENTS={andreaa1:{name:'Andrea Arrants'}, dhruvad1:{name:'Dhruva Daripalli'}, tonyt1:{name:'Tony T'}};
 const MINE=['_crmTapback','_rdClean','_crmRedraftOne','_crmRedraftStale','_crmBall','_crmSortPeople','_crmAnswered','_crmRecentKey','_crmLastPair','_crmSeeFor','_dfDayKey','_dfToday','_crmNiceDate','_crmTopicFacts','_crmTopicShort','_crmRetireDupes','_crmStaleDraft','_crmOvertaken','_dfRowNote','_dfFromNote','_crmSweepTime','_crmClock','_dfHardTells','_dfTells','_dfRefuse','_dfBubbles'];
-eval(closure(['_DF_HARD','_BUB_LONG','_DF_MARK','_DF_SCHEMA','_RD_SYS','_RD_SWEAR','_RD_MODEL','_dfLet','_CRM_BALL_TIER']).code||'');
+/* dfLoadAll is SEEDED, not imported by accident (17 Sep). _lift's var slice used
+   to run past the end of a multi-line constant and swallow whole functions with
+   it, so several names arrived here as a side effect of that overrun. With the
+   slice closing on its own brackets the overrun is gone and the real dependency
+   has to be named. Seeding a genuine dependency is harness maintenance, and the
+   file's own history says so. */
+eval(closure(['_DF_HARD','_BUB_LONG','_DF_MARK','_DF_SCHEMA','_RD_SYS','_RD_SWEAR','_RD_MODEL','_dfLet','_CRM_BALL_TIER','dfLoadAll']).code||'');
 eval(MINE.map(defOf).join('\n'));
 guard(MINE, n=>eval(n));
 global._crm={contacts:{}, rows:[]};

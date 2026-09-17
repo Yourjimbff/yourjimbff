@@ -66,7 +66,38 @@ function _defOf(name){
   // Only a // that follows whitespace is a comment here: "https://" in SB_URL
   // is not, and cutting there turned a one-line constant into a 1,501-line one.
   if(/;\s*$/.test(L[a].replace(/\s+\/\/.*$/,''))) return L[a];
-  let b=a;
+  /* A MULTI-LINE VAR ENDS WHERE ITS BRACKETS CLOSE, NOT WHERE THE NEXT LONE
+     `];` HAPPENS TO SIT (17 Sep). This scanned forward for a line STARTING with
+     `];`, `};` or `);`, which is only how SOME of them are written.
+     _NL_HARMLESS ends `...sticks').split(/\s+/);` on its own last line, so the
+     scan sailed past it for 634 LINES to an unrelated `];` - swallowing
+     _nlSameFood, nlRender, nlPhotoPicked and everything between them. definedIn
+     then counted all of that as part of the constant, and a closure seeded with
+     _nlEcho came back with 2,294 names instead of 80 and died evaluating
+     top-level code it was never meant to touch.
+     It reads exactly like a broken app and is a broken slice - the same family
+     as the missing END anchor already written up in CLAUDE.md.
+     Now it closes on the brackets: the statement ends at the first line where
+     every bracket opened since the start is closed again and the line ends in a
+     semicolon. The old line-shape test is kept as a fallback for anything this
+     cannot balance, so nothing that worked before can end up worse. */
+  let b=a, depth=0, ended=-1;
+  for(let k=a;k<L.length;k++){
+    const bare=String(L[k])
+      .replace(/\\./g,'')                      // escapes first
+      .replace(/'(?:[^'\\]|\\.)*'/g,"''")     // then whole strings
+      .replace(/"(?:[^"\\]|\\.)*"/g,'""')
+      .replace(/`(?:[^`\\]|\\.)*`/g,'``')
+      .replace(/\/\*.*?\*\//g,'')
+      .replace(/\s\/\/.*$/,'');
+    for(const ch of bare){
+      if(ch==='('||ch==='['||ch==='{') depth++;
+      else if(ch===')'||ch===']'||ch==='}') depth--;
+    }
+    if(depth<=0 && /;\s*$/.test(bare)){ ended=k; break; }
+    if(k-a>400) break;                        // runaway: fall back below
+  }
+  if(ended>=0) return L.slice(a,ended+1).join('\n');
   while(b<L.length && !/^\];|^\};|^\);/.test(L[b])) b++;
   return L.slice(a,Math.min(b,L.length-1)+1).join('\n');
 }
