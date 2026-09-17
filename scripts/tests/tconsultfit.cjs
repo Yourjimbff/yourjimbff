@@ -27,7 +27,7 @@ let bad=0;
 const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
 
 global.window={}; global.document={getElementById:()=>null};
-const MINE=['CONSULT_MIN_AGE','CONSULT_MIN_GAP','_consultFits','_ageFromBday','_obConsultFits','_obApplies','_obSkip'];
+const MINE=['CONSULT_MIN_AGE','CONSULT_MIN_GAP','_consultFits','_ageFromBday','_obApplies','_obSkip'];
 eval(MINE.map(defOf).join('\n'));
 guard(MINE, n=>eval(n));
 
@@ -68,17 +68,31 @@ t(_consultFits('nonsense','nonsense','nonsense')===false, 'and nonsense is not a
 console.log('\n  THE AGE IS COMPUTED, NEVER A STORED FIELD:');
 /* A stored age is right for one year and then quietly wrong. */
 const yrs=n=>{ const d=new Date(); d.setFullYear(d.getFullYear()-n); return d.toISOString().slice(0,10); };
-t(_obConsultFits({birthday:yrs(30), weight:230, goal_weight:190})===true, 'born 30 years ago, 40 to lose');
-t(_obConsultFits({birthday:yrs(19), weight:230, goal_weight:190})===false, 'born 19 years ago, same goal, no offer');
-/* NOTHING ABOUT A WRITTEN GOAL (Yusuf, 16 Sep): "remove having to have written
-   a goal to qualify, because people signed in before they were able to create
-   a goal." It was never a gate here and this keeps it that way. */
-t(_obConsultFits({birthday:yrs(30), weight:230, goal_weight:190, goal_text:null})===true,
-  'and no written goal is not a disqualification');
-t(_obConsultFits({weight:230, goal_weight:190})===false, 'no birthday is not 23');
-t(_obConsultFits({})===false && _obConsultFits(null)===false, 'and an empty answer set is not either');
-t(/_ageFromBday\(a\.birthday\)/.test(defOf('_obConsultFits')), 'setup reads the birthday they just typed');
-t(/_ageFromBday\(p\.birthday\)/.test(src), 'and the card does too');
+t(_consultFits(_ageFromBday(yrs(30)), 230, 190)===true, 'born 30 years ago, 40 to lose');
+t(_consultFits(_ageFromBday(yrs(19)), 230, 190)===false, 'born 19 years ago, same goal, no offer');
+t(_consultFits(_ageFromBday(null), 230, 190)===false, 'no birthday is not 23');
+t(/_ageFromBday\(p\.birthday\)/.test(src), 'and the surface that uses it reads the birthday, not an age column');
+
+console.log('\n  AND IT IS OFF THE SETUP OFFER ALTOGETHER NOW:');
+/* Yusuf, 17 Sep, looking at the filtered and unfiltered versions of that screen
+   side by side: "wouldn't it be either or? why both? just do 06, and then go to
+   flow 07." Two versions of one screen was one too many. Everybody who finishes
+   setup sees the same screen and the same times, so the wrapper that asked the
+   filter during setup is gone rather than left behind unused. */
+t(!/_obConsultFits/.test(src), 'no setup-time wrapper around the filter is left in the file');
+const doors=src.slice(src.indexOf('function _ctaDoors(a){'), src.indexOf('function _ctaHtml('));
+t(!/_consultFits|_ctaFits/.test(doors), 'and the offer screen does not ask it');
+t(/h\+=_ctaPickerHtml\(\);/.test(doors), 'the times are drawn for everybody');
+/* The one screen without them is the one where his calendar has none. */
+const picker=src.slice(src.indexOf('function _ctaPickerHtml(){'), src.indexOf('function _ctaDoors(a){'));
+t(/if\(days===null\) return ''/.test(picker), 'unless availability could not be confirmed');
+t(/if\(!days \|\| !days\.length\) return ''/.test(picker), 'or there is genuinely nothing open');
+
+console.log('\n  THE FILTER STILL GUARDS THE SURFACE THAT GOES LOOKING:');
+/* The Program page offers a call to somebody who never asked for one. That is
+   the surface his two numbers are for, and it keeps them. */
+t(/if\(!_consultFits\(age, w, gw\)\) return '';/.test(src),
+  'the Program card still asks before it offers anything');
 
 console.log('\n  THE SCREEN NO LONGER DISAPPEARS:');
 /* CHANGED 16 Sep, on his report: "i never saw the opt in for a call or text from
@@ -104,24 +118,12 @@ global._ob={a:{}};
 t(_obApplies({k:'consult',type:'consult'})===true,
   'somebody who never typed a weight gets it too, which is the case he hit');
 
-console.log('\n  THE FILTER MOVED TO THE CALENDAR, IT DID NOT GO AWAY:');
-/* 17 Sep: the calendar stopped being a button that opened a modal and became
-   the picker itself, drawn inline on both the setup screen and the Today card.
-   The filter did not move again - it still decides whether that picker is drawn
-   at all, and the text door is still there for everybody. */
-const doors=src.slice(src.indexOf('/* TWO DOORS, AND WHICH ONE LEADS'), src.indexOf('function _ctaHtml('));
-t(/if\(_ctaFits\(a\)\) h\+=_ctaPickerHtml\(\)/.test(doors),
-  'the doors ask the filter before drawing the calendar');
-t(/_obConsultPick\(\\?'yes\\?'\)/.test(doors), 'and the text door is drawn either way');
-const fits=src.slice(src.indexOf('function _ctaFits(a){'), src.indexOf('function _ctaAnswers('));
-t(/_consultFits\(age, a\.weight, a\.goal_weight\)/.test(fits),
-  'through the one filter, not a second copy of his rule');
-t(/_ageFromBday\(a\.birthday\)/.test(fits),
-  '  and it reads an age off a birthday when that is all it has');
-t(/I would only text warm \/ hot leads/.test(doors),
-  'and his reason for the split is written down');
-t(/alone\?'ctaGo':'ctaGo2'/.test(doors),
-  'when the calendar is not drawn, the text becomes the main button');
+console.log('\n  BOTH DOORS, AND ONE OF THEM ALWAYS LEADS:');
+const dr=src.slice(src.indexOf('/* NO FILTER ON THIS SCREEN ANY MORE'), src.indexOf('function _ctaHtml('));
+t(/_obConsultPick\(\\?'yes\\?'\)/.test(dr), 'the text door is on the screen whatever else is');
+t(/alone\?'ctaGo':'ctaGo2'/.test(dr),
+  'and it becomes the main button on the days his calendar has nothing in it');
+t(/wouldn't it be either or\? why both\?/.test(dr), 'with his reason written down');
 
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (the call is offered to the people he meant, more than once)');
 process.exit(bad?1:0);
