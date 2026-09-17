@@ -65,7 +65,16 @@ t(/querySelectorAll\('\.jimAskHost'\)\.forEach/.test(src),
   'otherwise an answered card sits on a screen he already visited until a reload');
 t(/^\s*try\{ _jimAskPaint\(\); \}catch\(e\)\{\}$/m.test(src),
   '  painted on every tab, so it no longer matters which page an app opens on',
-  'the ask is its own guard - it clears both hosts for anybody who has answered');
+  'the ask is its own guard - it clears every host it made for anybody who answered');
+/* THE THIRD MISS, AND THE ONE THAT MADE THE OTHER TWO FIXES LOOK LIKE
+   NOTHING. The ask makes its host inside whatever tab is SHOWING. Called from
+   the top of switchTab, the tab showing is still the one being LEFT, so the
+   card kept landing on the page he had just navigated away from - which from
+   the outside is indistinguishable from it never appearing. */
+const _pi = src.indexOf('try{ _jimAskPaint(); }catch(e){}');
+t(_pi > src.indexOf('  _tabOnly(t);'),
+  '  and painted AFTER the active class is set, not before',
+  'before it, the host is made in the tab he is leaving');
 painted=''; paintedFeed=''; t(_jimAskPaint()===true, 'a client who has never answered gets asked');
 t(paintedFeed===painted && /Yes, straight up/.test(paintedFeed),
   '  and both hosts get the same card, so it cannot appear on one screen only');
