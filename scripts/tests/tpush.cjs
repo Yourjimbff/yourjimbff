@@ -17,6 +17,26 @@ let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  '
 function slice(a,b){ const i=src.indexOf(a); if(i<0) return ''; const j=src.indexOf(b,i);
   if(j<0) throw new Error('stale end anchor: '+b); return src.slice(i,j); }
 
+console.log('\n  THE PAGE CARRIES THE BRIDGE, BECAUSE THE SHELL DOES NOT:');
+/* Found on his handset 17 Sep after an hour: the App Store shell opens this
+   live site rather than carrying its own copy, so every ship reaches the
+   installed app immediately - but the plugin JS lives in the app bundle and
+   this page loaded none of it. Capacitor.Plugins.PushNotifications never
+   existed, the push code found no bridge and stopped, and nothing said so. */
+t(/<script src="\/capacitor\.js"><\/script>/.test(src), 'the Capacitor runtime is on the page');
+t(/<script src="\/capacitor-push\.js"><\/script>/.test(src), 'and the push plugin registers against it');
+t(src.indexOf('src="/capacitor.js"') < src.indexOf('src="/capacitor-push.js"'),
+  '  runtime first, since the plugin registers into it');
+t(fs.existsSync('capacitor.js') && fs.existsSync('capacitor-push.js'),
+  'and both files are actually in the repo, not just referenced');
+t(/registerPlugin\('PushNotifications'/.test(fs.readFileSync('capacitor-push.js','utf8')),
+  '  the plugin file registers the right name');
+t(/globalThis/.test(fs.readFileSync('capacitor.js','utf8')),
+  '  and the runtime defines window.Capacitor for the page');
+/* netlify.toml 404s some file types at the root; these two must not be caught. */
+const tom=fs.readFileSync('netlify.toml','utf8');
+t(!/from = "\/\*\.js"/.test(tom), 'and nothing in netlify.toml blocks a root .js file');
+
 console.log('\n  IT IS SILENT ON THE WEB:');
 const det=slice('function _capPush(){','function _pushPlatform');
 t(/window\.Capacitor/.test(det), 'it looks for the native shell');
