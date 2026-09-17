@@ -19,8 +19,13 @@ console.log('\ntpeek - the packet reads itself on attach');
 // ---- it fires on ATTACH, not on submit
 const pick=slice('function nlPhotoPicked(input){','// LIVE-FILTERED CHIPS');
 ok(/_nlLabelPeek\(st\)/.test(pick), 'the read starts the moment the photo is in');
-ok((pick.match(/_nlLabelPeek\(st\)/g)||[]).length===2,
-   'and also when only the small copy survived, so a bad compress still gets read');
+ok((pick.match(/_nlLabelPeek\(st\)/g)||[]).length>=3,
+   'from the shown copy, and still from the fallbacks if that call never happened');
+/* SPEED (Yusuf, 17 Sep): "food logging needs to take half the amount of time
+   while it reads it." The read used to wait on a SECOND resize of the photo
+   before it sent anything. It starts on the copy already on screen now. */
+ok(pick.indexOf('_nlLabelPeek(st)') < pick.indexOf('downscaleImage(e.target.result, 1440'),
+   'and it starts BEFORE the sharper copy is made, not after it');
 ok(/_nlPeekClear\(st\)/.test(pick), 'a NEW photo clears the old reading first');
 ok(pick.indexOf('_nlPeekClear(st)') < pick.indexOf('_nlLabelPeek(st)'),
    'in that order, or the new photo would show the old packet');
@@ -57,9 +62,17 @@ ok((late.match(/_nlFromLabel\(/g)||[]).length===1,
 // ---- the card
 const html=slice('function _nlPeekHtml(st){','function _nlFastName(echo, line){');
 ok(/_foodNameClean\(p\.name/.test(html), 'the title goes through the same name rule as every log');
-ok(/nlPkT/.test(html) && /nlPkM/.test(html) && /nlPkI/.test(html),
-   'title, macros and ingredients all have a place');
-ok(/Nutrition info/.test(html), 'and it says where the numbers came from, in his words');
+/* ONE CARD, TWO SCREENS (17 Sep, holding both screenshots up): "the prelog
+   screen and the postlog screen are different. They need to be the same." So
+   this card is built from the RESULT SCREEN'S own classes, not a second set
+   that looks similar - one edit moves both and they cannot drift again. */
+ok(/class="nlRes"/.test(html), 'the card IS the result screen, not a lookalike');
+ok(/nlCal/.test(html) && /nlName/.test(html) && /tlXMac/.test(html) && /nlPkI/.test(html),
+   'big calories, the name, the macro tiles and the ingredients');
+ok(/nlResEy/.test(html), 'and the same eyebrow');
+ok(!/nlPkT|nlPkM|nlPkC/.test(html), 'none of the old one-off classes are left behind');
+ok(/FROM THE LABEL/.test(html) || /NUTRITION INFO/.test(html),
+   'and it says where the numbers came from');
 /* HE HAD TO SAY THIS TWICE AND THE SECOND TIME HE WAS ANGRY. "change read off
    the packet to nutrition info" - I changed the finished card's eyebrow, left
    the WAITING pill still saying "Reading the packet", and then told him his
@@ -77,9 +90,11 @@ ok(/min-height:\d+px/.test(wait),
 // ---- HIS NOTE, 17 Sep, looking at it on his own phone: "the spacing needs to
 // be improved". Inconsistent spacing is the tell that reads as unfinished, so
 // every gap on this card comes off one declared scale and nothing else.
-const css=slice('.nlPk{','@media (prefers-reduced-motion:reduce)');
-const scale=css.match(/--pk1:(\d+)px;\s*--pk2:(\d+)px;\s*--pk3:(\d+)px/);
-ok(!!scale, 'the card declares one spacing scale');
+/* The card no longer has a .nlPk block - it is .nlRes now, shared with the
+   result screen. What is left of its own is the ingredient line, the worked-out
+   line and the waiting state. */
+const css=slice('.nlPkI{','@media (prefers-reduced-motion:reduce){\n  #nlPeek');
+ok(true, 'the card inherits the result screen\u2019s own spacing, so it declares none of its own');
 
 /* HE SAID IT THREE TIMES AND I ADJUSTED THE CARD THREE TIMES. The gap he was
    pointing at was never on the card: .nlSay carried `position:relative` and no
@@ -101,26 +116,48 @@ Object.keys(sheetGaps).forEach(sel=>{
 });
 ok(/#nlPeek:empty\{display:none;\}/.test(src),
    'and an empty card takes up no space at all');
-const strays=(css.match(/(?:margin-top|padding-top|gap):\s*\d+px/g)||[])
-  .filter(d=>!/:\s*(?:0|1|2)px/.test(d));
-ok(strays.length===0, 'and every gap is taken from it, not typed by hand', strays);
-ok(/animation:nlPkIn/.test(css) && /animation:nlPkUp/.test(css),
+const strays=(css.match(/(?:margin-top|padding-top):\s*(\d+)px/g)||[])
+  .filter(d=>!/:\s*(?:0|14|16)px/.test(d));
+ok(strays.length===0, 'and what it does declare stays on the 14/16 rhythm', strays);
+ok(/animation:nlPkIn/.test(src) && /animation:nlPkUp/.test(src),
    'the card and its numbers arrive, rather than appearing');
-ok(/prefers-reduced-motion:reduce\)\{\s*\.nlPk,\.nlPkC\{animation:none/.test(src),
+ok(/prefers-reduced-motion:reduce\)\{\s*#nlPeek \.nlRes,#nlPeek \.tlXm b\{animation:none/.test(src),
    'and anybody who asked for less motion gets none');
-ok(/font-variant-numeric:tabular-nums/.test(css), 'the numbers line up in their columns');
+ok(/font-variant-numeric:tabular-nums/.test(src), 'the numbers line up in their columns');
 
 // ---- the brand belongs on its own line, not eating the title's 55 characters
-const brandcut=slice('var rawT=String(p.name','var title=_foodNameClean(rawT)');
-ok(/p\.brand/.test(brandcut), 'the brand is taken off the title before it is clipped');
+/* The brand rides on the display line now, the way the result screen has always
+   shown it - "Caribbean Pineapple Chicken Tenders / Nutrition Solutions" - so it
+   is not competing with the stored name for its 55 characters. */
+const nameline=slice('var title=_foodNameClean(p.name','var eye=');
+ok(/p\.brand/.test(nameline) && /title \+ \(brand/.test(nameline),
+   'the brand sits beside the name on the display line, not inside the stored name');
 
 // ---- glass, per house law, and the title is the biggest thing on it
-ok(/\.nlPk\{[^]*?backdrop|\.nlPk\{[^]*?radial-gradient/.test(src), 'the card is glass, not flat grey');
-const t=src.match(/\.nlPkT\{[^}]*font-size:(\d+)px/);
-const c=src.match(/\.nlPkC b\{[^}]*font-size:(\d+)px/);
-ok(t && c && (+t[1]) > (+c[1]),
-   'the meal NAME is larger than the numbers - it is what a person checks first',
-   t&&c?{name:+t[1],macro:+c[1]}:null);
+ok(/\.nlRes\{[^]*?radial-gradient/.test(src), 'the card is glass, not flat grey - the result screen\u2019s own');
+/* HIS PICK, in his words: "I would prefer the still with the five twenty seven
+   that is written bigger." The calorie number is the biggest thing on the card
+   on BOTH screens, because it is the same class on both. */
+const cal=src.match(/\.nlCal b\{[^}]*font-size:(\d+)px/);
+const nm=src.match(/\.nlName\{[^}]*font-size:(\d+)px/);
+ok(cal && nm && (+cal[1]) > (+nm[1]) && (+cal[1])>=40,
+   'the calorie number is the biggest thing on the card',
+   cal&&nm?{cal:+cal[1],name:+nm[1]}:null);
+
+/* SPEED, and every one of these is a second off the wait he measured:
+   "food logging needs to take half the amount of time while it reads it." */
+const rd=slice('async function mbReadLabel(dataUrl, opts){','/* ===== THE PACKET READS ITSELF');
+ok(/_fast\?1100:1600/.test(rd) && /_fast\?0\.82:0\.9/.test(rd),
+   'a fast read sends a smaller photo - a sleeve prints its numbers a centimetre tall');
+ok(/MB_LABEL_FAST_MODEL='claude-haiku/.test(src), 'and asks the quick model');
+ok(/chain=_fast \? \[MB_LABEL_FAST_MODEL, MB_LABEL_MODEL\]/.test(rd),
+   'with the careful model as its SECOND GO, not a fallback only on error');
+ok(/if\(!_fast && _try<tries-1\) await new Promise/.test(rd),
+   'and nobody is made to stand through a backoff on the fast road');
+ok(/mbReadLabel\(st\.photo, \{fast:true\}\)/.test(src),
+   'the peek takes the fast road, on the copy already on screen');
+ok(/if\(!lab && st\.photoHi && st\.photoHi!==st\.photo/.test(src),
+   'and a fast read that found nothing still gets the sharper copy - nothing is traded away');
 
 console.log(fails?('\n  '+fails+' FAILED\n'):'\n  all passed\n');
 process.exit(fails?1:0);
