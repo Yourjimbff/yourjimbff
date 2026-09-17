@@ -120,7 +120,9 @@ t(/ask what they want from you rather than guessing/.test(src), '  then they cho
 
 console.log('\n  AND THE WORST LOG OF SOMEONE\'S WEEK IS NO LONGER MET WITH SILENCE:');
 t(!/var insight = \(!trulyBad && r\.insight\)/.test(src), 'the suppression is gone');
-t(/var insight = \(r\.insight\)/.test(src), 'every log gets an answer now');
+/* The shape changed when the card shipped: the insight is no longer an inline
+   string here, it is built by the one card builder. The claim is the same. */
+t(/var insight = _jimCardHtml\(r\.insight\);/.test(src), 'every log gets an answer now, through the card');
 t(/trulyBad\?'Log it anyway'/.test(src), 'and the honest button text is untouched');
 
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (he reads the person, then the plate)');
