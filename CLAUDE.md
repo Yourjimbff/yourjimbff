@@ -353,6 +353,40 @@ correct where they sit. This very note got it wrong on the way in: the
 escape was typed and a real character landed in the file. Reasoning about which one a
 heredoc produced is always slower than `grep -n ... | cat -A`. Look first.
 
+## NOTHING ASYNC EVER RUNS IN HIS CHROME'S `javascript_tool` (17 Sep)
+
+Code sent to `javascript_tool` runs its synchronous part in the page's own
+world - page globals are visible and writes to `window` persist between calls -
+and then that world stops being scheduled. No timer fires, no promise settles,
+no XHR callback runs. `setInterval(function(){window.t++},200)` leaves `t` at 0
+seconds later. An XHR sits at readyState 1 forever. Calling a page function
+that does `await fetch(...)` returns a promise that never settles.
+
+An hour went into "the extension is blocking my network calls" before the
+interval test proved it was the whole event loop, not the network. It is not
+network policy and there is no wording of the request that gets around it.
+
+So `javascript_tool` is for READING the page and nothing else: DOM, globals,
+computed state, element rectangles. Anything that has to complete - a fetch, a
+function call the page makes over the wire - has to be triggered by a REAL
+input event, which means `computer` clicks, because those enter through the
+browser's own input pipeline and the handler then runs in the page's live loop.
+`element.click()` from injected code does NOT count: the handler runs on the
+injected stack and its await never resumes.
+
+Screenshots need the tab to be the ACTIVE one. A background tab answers
+"Script injection timed out". `tabs_create_mcp` makes a new tab and activates
+it; `navigate` on a background tab does not bring it forward. Coordinates for
+`computer` are in the screenshot's own frame, which is CSS pixels times the
+device ratio - read the element's `getBoundingClientRect()` with
+`javascript_tool`, multiply by frame-width / `window.innerWidth`, click that.
+
+THE CONSEQUENCE WORTH REMEMBERING: when something server-side has to be proved
+and only his browser can reach it, the way to prove it is to SHIP a control
+that does it and click the control. That is how the push door was proved, and
+the control (Account ▸ Notifications) is a better thing to own than a console
+snippet anyway.
+
 ## THE SHIP ROUTE IS `git push`, NOT THE GITHUB WEB UI (14 Sep)
 
 Sessions have been shipping by driving github.com/Yourjimbff/yourjimbff/upload
