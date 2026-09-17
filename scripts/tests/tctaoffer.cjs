@@ -93,7 +93,7 @@ t(/Object\.keys\(patch\)\.forEach/.test(mg), 'and changes only the keys it was h
 /* 17 Sep: it was an upsert, and an upsert proposes a whole new row first, so
    Postgres refused it for a missing name every single time. It never wrote a
    thing. A PATCH has no INSERT arm - see tprofilepatch. */
-t(/sbPatchProfile\(\{intake_json:js\}\)/.test(mg), 'onto the row that already exists, as an update');
+t(/sbPatchProfile\(\{intake_json:base\}\)/.test(mg), 'onto the row that already exists, as an update');
 t(!/sbUpsert/.test(mg), '  and never as an upsert, which silently wrote nothing');
 
 console.log(bad? '\n  '+bad+' FAILED\n' : '\n  all good (the offer reaches him)\n');

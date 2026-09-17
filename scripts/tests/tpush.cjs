@@ -49,7 +49,7 @@ t(/surface:_surfaceTag\(\)/.test(stamp), 'and where it is running');
 t(/no-push-plugin/.test(stamp), 'and whether the bridge to the phone is complete');
 t(/isNativePlatform\(\)\) \? 'native' : 'web-shim'/.test(stamp),
   '  telling the shell apart from a browser that merely loaded the script');
-t(/sbPatchProfile\(\{intake_json:js\}\)/.test(stamp), 'onto their own row, as an update');
+t(/sbPatchProfile\(\{intake_json:base\}\)/.test(stamp), 'onto their own row, as an update');
 t(/if\(window\._obPreview===true\) return false;/.test(stamp), 'and a preview writes nothing');
 t(/_appStamp\(\); \}catch\(e\)\{\} \}, 900\)/.test(src),
   'fired on every sign-in, not only when something breaks');

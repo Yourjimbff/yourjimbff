@@ -43,6 +43,18 @@ console.log('\n  AND EVERY PARTIAL WRITER USES IT:');
   t(!/sbUpsert\('profiles'/.test(body), '    and no longer upserts', p[0]);
 });
 
+console.log('\n  AND jsonb IS SENT AS jsonb:');
+/* intake_json is a jsonb column. Hand it text and it stores a jsonb STRING, so
+   the row reads back as one quoted blob and every query that looks inside it
+   finds nothing - which is how a working write got read as a failed one. */
+t(!/sbPatchProfile\(\{intake_json:js\}\)/.test(src), 'no writer stringifies it first');
+t((src.match(/sbPatchProfile\(\{intake_json:base\}\)/g)||[]).length===4,
+  'all four hand over the object itself',
+  String((src.match(/sbPatchProfile\(\{intake_json:base\}\)/g)||[]).length));
+/* Older rows are already double-wrapped, so every reader still copes. */
+t(/if\(typeof cur==='string'\) base=JSON\.parse\(cur\)\|\|\{\};/.test(src),
+  'and readers still cope with the rows that are already wrapped');
+
 console.log('\n  THE WRITERS THAT ALWAYS WORKED STILL CARRY A NAME:');
 /* Two upserts in this file pass name and have never failed. They are the proof
    of the diagnosis, so they are asserted rather than converted. */
