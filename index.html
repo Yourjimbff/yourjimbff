@@ -5624,6 +5624,7 @@ body.jv-jarvis #jvWall{display:none !important;}
 .jimCardWho{font-size:10px;font-weight:800;letter-spacing:0.13em;text-transform:uppercase;color:#f5c518;}
 /* The point of the card. Bigger than the macros it sits under, not smaller. */
 .jimCardBody{font-size:14px;line-height:1.62;color:#f0ece4;}
+.jimCard.jimThinking .jimCardBody{opacity:0.55;font-style:italic;}
 .jimCardNote{margin-top:9px;font-size:11.5px;font-style:italic;line-height:1.5;color:rgba(240,236,228,0.6);}
 @keyframes jimTwinkle{0%,88%,100%{opacity:1;}93%{opacity:0.55;}}
 @media (prefers-reduced-motion:reduce){.jimSpark{animation:none;}}
@@ -15987,7 +15988,13 @@ function _journalMealRow(f, foodsEnc, idx){
       +'<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;">'+(f.name||'').replace(/</g,'&lt;')+'</div>'
         +'<div style="font-size:10.5px;color:var(--muted);margin-top:1px;">'+(f.calories||0)+' cal \u00b7 '+(f.protein||0)+'p \u00b7 '+(f.carbs||0)+'c \u00b7 '+(f.fat||0)+'f'+(_caf?(' \u00b7 '+_caf):'')+(f.eat_time?(' \u00b7 '+f.eat_time):'')+'</div></div>'
       +'<span style="flex-shrink:0;font-size:9.5px;font-weight:800;color:'+rr[0]+';border:1px solid '+rr[0]+';border-radius:6px;padding:3px 6px;">'+rr[1]+'</span>'
-    +'</div>'+_jimReadHtml(f)+'</div>';
+    /* PLACE TWO (Yusuf, 16 Sep: "kept in two places on the screen immediately
+       and saved under the actual food log itself as a note"). This row used to
+       render the collapsed speech bubble they had to know to tap. That
+       shape is right for the COACH, who is scanning thirty people; it is wrong
+       for the person reading their own meal, where the coaching is the point.
+       Same words, same builder as the log screen, open by default. */
+    +'</div>'+_jimCardHtml(f&&f.insight)+'</div>';
 }
 function _woEmoji(title){
   var t=String(title||'').toLowerCase();
@@ -64897,6 +64904,16 @@ Capture sugar in grams if shown or clearly known, else 0 — tracked quietly, ne
     }
     if(!curParsed) throw (_lastErr||new Error('analyze failed'));
     curResult=curParsed; try{ if(curResult) curResult.raw_text=(text&&text.trim().length>1)?text.trim():null; }catch(e){}
+    /* THE BASELINE IS THE MODEL'S OWN FIRST ANSWER, taken here and nowhere else.
+       Every later edit is measured against it, so the card can open by naming
+       what actually moved instead of guessing. Kept separately from curResult
+       because curResult is mutated in place by every keystroke on a macro. */
+    try{
+      window._jimBase=_jimSnap(curResult);
+      window._jimFirstRead=(curResult&&curResult.insight)?String(curResult.insight):'';
+      _jimRescoreSeq++;                      // any read still in flight is stale
+      if(_jimRescoreTimer){ clearTimeout(_jimRescoreTimer); _jimRescoreTimer=null; }
+    }catch(e){}
     // THE TABLE IS LAW (Yusuf, 30 Aug), AND IT RUNS FIRST. Every food the table
     // covers takes table numbers whatever the model returned; everything else
     // keeps the model's estimate but is still made to obey the arithmetic. The
@@ -64957,6 +64974,9 @@ function _foodItems(){
   return curResult.items;
 }
 function _foodRecalcTotals(){
+  // Every edit to a number, an added food and a removed one all come through
+  // here, so this is the one place the re-read has to be asked for.
+  try{ _jimRescoreSoon(); }catch(e){}
   var it=_foodItems();
   var t={calories:0,protein:0,carbs:0,fat:0};
   it.forEach(function(x){
@@ -85681,6 +85701,115 @@ function _jimCardHtml(text, note){
       +(sub?('<div class="jimCardNote">'+_escHtml(sub)+'</div>'):'')
     +'</div>';
   }catch(e){ return ''; }
+}
+/* ===== THE FEEDBACK IS A CONVERSATION, NOT A VERDICT =====================
+   Yusuf, 16 Sep: "when they edit it, the feedback should change, and it should
+   change conversationally in the feedback. It should go, oh, that's different in
+   this way than when we logged. And then it goes into what the facts are on that
+   thing."
+
+   Until now curResult.insight was written once by the model and frozen. Fix the
+   protein from 3 to 21 and the card still described the pastry. Jordan R's donut
+   was exactly that shape - saved 248 cal with 3g of protein against a label
+   reading 254 and 21.
+
+   THE CHANGE IS COMPUTED HERE, NOT ASKED FOR. The model is told what moved; it
+   is never trusted to diff two sets of numbers it half remembers. That way the
+   opening sentence is always true even when the rest is a judgement call. */
+function _jimSnap(r){
+  try{
+    if(!r) return null;
+    return {cal:+r.calories||0, prot:+r.protein||0, carb:+r.carbs||0, fat:+r.fat||0,
+            name:String(r.name||''), n:(r.items&&r.items.length)||0};
+  }catch(e){ return null; }
+}
+function _jimDiff(base, now){
+  try{
+    if(!base || !now) return null;
+    var parts=[], big=null, bigBy=0;
+    [['prot','protein'],['carb','carbs'],['fat','fat']].forEach(function(pair){
+      var k=pair[0], word=pair[1];
+      var a=base[k], b=now[k];
+      if(Math.round(a)===Math.round(b)) return;
+      parts.push(word+' '+Math.round(a)+'g to '+Math.round(b)+'g');
+      var by=Math.abs(b-a);
+      if(by>bigBy){ bigBy=by; big=word; }
+    });
+    var calMoved = Math.abs(now.cal-base.cal) >= 15;
+    if(calMoved) parts.push('calories '+Math.round(base.cal)+' to '+Math.round(now.cal));
+    if(now.n!==base.n && base.n) parts.push(now.n>base.n ? 'they added a food' : 'they took a food off');
+    if(!parts.length) return null;
+    return {parts:parts, big:big, line:parts.join(', '),
+            up:(now.cal>base.cal), by:Math.round(Math.abs(now.cal-base.cal))};
+  }catch(e){ return null; }
+}
+/* Repaint the words without rebuilding the screen under their thumb - they are
+   mid-edit, and re-rendering the whole panel steals focus out of the input. */
+function _jimCardPaint(text, thinking){
+  try{
+    var host=document.getElementById('foodResultInline'); if(!host) return false;
+    var body=host.querySelector('.jimCardBody'); if(!body) return false;
+    body.textContent=String(text==null?'':text);
+    var card=host.querySelector('.jimCard');
+    if(card) card.classList.toggle('jimThinking', !!thinking);
+    return true;
+  }catch(e){ return false; }
+}
+var _JIM_RESCORE_MS=1400;
+var _jimRescoreTimer=null, _jimRescoreSeq=0;
+function _jimRescoreSoon(){
+  try{
+    if(_jimRescoreTimer) clearTimeout(_jimRescoreTimer);
+    _jimRescoreTimer=setTimeout(function(){ try{ _jimRescore(); }catch(e){} }, _JIM_RESCORE_MS);
+  }catch(e){}
+}
+async function _jimRescore(){
+  var host=document.getElementById('foodResultInline');
+  if(!host || !host.querySelector('.jimCardBody')) return false;
+  if(typeof curResult==='undefined' || !curResult) return false;
+  var base=window._jimBase, now=_jimSnap(curResult);
+  var d=_jimDiff(base, now);
+  if(!d){                                   // they put it back how it was
+    if(window._jimFirstRead) _jimCardPaint(window._jimFirstRead, false);
+    return false;
+  }
+  var seq=++_jimRescoreSeq;
+  _jimCardPaint('Reading that again…', true);
+  var ask='They just corrected a meal they logged, in the app, before saving it.\n\n'
+    +'WHAT THEY FIRST HAD: '+Math.round(base.cal)+' cal, '+Math.round(base.prot)+'g protein, '
+    +Math.round(base.carb)+'g carbs, '+Math.round(base.fat)+'g fat.\n'
+    +'WHAT IT IS NOW: '+Math.round(now.cal)+' cal, '+Math.round(now.prot)+'g protein, '
+    +Math.round(now.carb)+'g carbs, '+Math.round(now.fat)+'g fat.\n'
+    +'WHAT MOVED: '+d.line+'.\n'
+    +'THE FOOD: '+(now.name||'their meal')+'.\n\n';
+  try{ var gl=_jimGoalLine(); if(gl) ask+='ABOUT THEM: '+gl+'\n\n'; }catch(e){}
+  ask+=_jimToneBlock()+'\n\n'
+    +'Write their read again, for the corrected version.\n'
+    +'OPEN BY NAMING WHAT CHANGED, in their terms and not as a sum - "21 grams of '
+    +'protein instead of 3 turns this from a pastry into an actual breakfast" beats '
+    +'"+18g protein". Then give the read on the NEW version.\n'
+    +'Two or three sentences. No greeting, no sign-off, no markdown, no bullet points. '
+    +'Plain sentences only. Return the words themselves and nothing else.';
+  var out='';
+  try{
+    var res=await fetch('/.netlify/functions/analyze',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({messages:[{role:'user',content:ask}],temperature:0.6})});
+    var j=await res.json();
+    out=String((j&&j.content&&j.content[0]&&j.content[0].text)||'').trim();
+  }catch(e){ out=''; }
+  if(seq!==_jimRescoreSeq) return false;        // a newer edit already went out
+  if(!out){
+    /* A FAILED READ MUST NOT LOOK LIKE A READ, and it must not leave the first
+       one standing either - that one describes food they no longer say they ate.
+       Say what is true: the numbers moved and the words have not caught up. */
+    _jimCardPaint('Your numbers changed and I could not read it again just now. '
+      +'What is above is about the first version.', false);
+    return false;
+  }
+  try{ curResult.insight=out; }catch(e){}
+  _jimCardPaint(out, false);
+  return true;
 }
 function _jimGoalRead(prof){
   try{
