@@ -667,6 +667,26 @@ t(iC===keys.length-2, 'with only the home-screen step after it', keys[keys.lengt
 const iFin=keys.indexOf(_OB_STEPS.filter(x=>x.fin)[0].k);
 t(iFin>=0 && iFin<iB, 'and the account is already saved before any of the three draw',
   keys[iFin]+' @'+iFin+' vs blocker @'+iB);
+/* AND NOTHING ON THEM COMPETES WITH THE ANSWER (17 Sep, off the rendered
+   screens). The pledge drew its gold button and then an identical gold Next
+   under it; the offer drew three controls where the loudest after "Yes, text
+   me" was the skip. A skip as loud as the thing it skips is a fork. */
+t(/\(st\.type==='pledge'\|\|st\.type==='consult'\)\s*\?'<button class="obSkip" onclick="obNext\(\)">Continue<\/button>'/.test(src),
+  'the way past these two is a quiet line, not a second gold button');
+t(/\.obSkip\{[^}]*background:none[^}]*\}/.test(src), 'and it carries no fill of its own');
+t(/\.obGo\{[^}]*text-align:center;\}/.test(src),
+  'every gold control centres its label, button or div');
+/* Saying yes IS the action; making them find a second button to confirm it is
+   the app asking whether they meant it. */
+const pl=slice('function _obPledge(){','\nfunction _obConsultBooked');
+t(/setTimeout\(function\(\)\{[^}]*obNext\(\)/.test(pl), 'the pledge carries them onward by itself');
+t(/_OB_STEPS\[_ob\.i\]\.type==='pledge'/.test(pl), 'and only if they are still standing on it');
+const cs=slice('function _obConsultPick(v){','\n/* The picker lives in a modal');
+t(/_OB_STEPS\[_ob\.i\]\.type==='consult'/.test(cs), 'so does the quick yes');
+/* The calendar must not: its picker opens OVER this card. */
+t(/if\(val==='booked'\)\{[\s\S]*?openBooking\(\)[\s\S]*?\}else\{/.test(cs),
+  'but the calendar leaves the card where it is, because the picker sits on it');
+
 /* His goal sentence is what the critique and the offer both point back at. */
 t(keys.indexOf('goal_text')<iB, 'the goal is still asked before the critique that names it');
 
