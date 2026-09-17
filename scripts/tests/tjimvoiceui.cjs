@@ -49,7 +49,20 @@ t(/id="jimVoiceAsk"/.test(src), 'there is a host on the Today page');
    him on Feed. Checking that the card PAINTS is not the same as checking that
    the screen it paints on is a screen he sees, and that is the check that was
    never made. */
-t(/id="jimVoiceAskFeed"/.test(src), 'and one on the Feed, which is where the trainer lands');
+t(/id="jimVoiceAskFeed"/.test(src), 'and one on the Feed tab');
+/* TWO FIXED HOSTS WAS STILL A GUESS. His rightmost nav button says Feed and
+   opens #tClients, and which tab he lands on at all is whatever he was last
+   on - so naming tabs one at a time is the same miss repeated. The third host
+   is made wherever it is needed. */
+t(/document\.querySelector\('\.tab\.active'\)/.test(src),
+  'and one made in whatever tab is actually showing',
+  'naming tabs one at a time is how this was missed twice');
+t(/act\.insertBefore\(h, act\.firstChild\)/.test(src), '  at the top of it, where it will be seen');
+t(/act\.contains\(out\[i\]\)/.test(src),
+  '  and never a second card on a tab that already has one');
+t(/querySelectorAll\('\.jimAskHost'\)\.forEach/.test(src),
+  'every host ever made is collected, so answering clears them all',
+  'otherwise an answered card sits on a screen he already visited until a reload');
 t(/^\s*try\{ _jimAskPaint\(\); \}catch\(e\)\{\}$/m.test(src),
   '  painted on every tab, so it no longer matters which page an app opens on',
   'the ask is its own guard - it clears both hosts for anybody who has answered');
