@@ -21,7 +21,9 @@ global.window={};
 global.localStorage={_d:{},getItem(k){return this._d[k]==null?null:this._d[k];},setItem(k,v){this._d[k]=String(v);}};
 const MINE=['_jimGoalRead','_jimGoalLine','_jimTurboUnlocked','_jimTone','_jimToneSet',
             '_jimNoCritique','_jimNoCritiqueSet','_jimToneName','_jimToneBlock','_jimTenLogs',
-            /* 17 Sep: _jimToneBlock now opens every delivery with the no-dash rule */ '_jimPunct'];
+            /* 17 Sep: _jimToneBlock now opens every delivery with the no-dash rule */ '_jimPunct',
+            /* run 4: the two guards that stand between a wrong sentence and a client */
+            '_noEmDash','_insightMacroSafe','_jimTodaySoFar'];
 eval(MINE.map(defOf).join('\n'));
 eval(src.match(/var _JIM_TONE_KEY=[^\n]*\n/)[0]);
 eval(src.match(/var JIM_TONES=\[[\s\S]*?\];\n/)[0]);
@@ -240,8 +242,8 @@ t(CLAR.indexOf(EM)<0 && CLAR.indexOf(EN)<0, 'and it does not model the habit eit
 t(/function _noEmDash\(/.test(src), '_noEmDash is the floor under the instruction');
 t(/var ins=_noEmDash\(String\(insight\|\|''\)\.trim\(\)\)/.test(src),
   '  and every insight passes through it');
-t(/try\{ out=_noEmDash\(out\); \}catch\(err\)\{\}/.test(src),
-  '  including the nl sheet read, which does not use _insightMacroSafe');
+t(/try\{ out=_insightMacroSafe\(out, e\); \}catch\(err\)\{ try\{ out=_noEmDash\(out\); \}catch\(e2\)\{\} \}/.test(src),
+  '  including the nl sheet read, which now goes through _insightMacroSafe and not only the dash floor');
 eval(defOf('_noEmDash'));
 t(_noEmDash('Clean protein, minimal carbs '+EM+' solid snack anchor.')
     ==='Clean protein, minimal carbs - solid snack anchor.',
@@ -249,6 +251,79 @@ t(_noEmDash('Clean protein, minimal carbs '+EM+' solid snack anchor.')
 t(_noEmDash('walk 15'+EN+'30 minutes')==='walk 15-30 minutes',
   'a digit range keeps its tight hyphen');
 t(_noEmDash('')==='' && _noEmDash(null)==='', 'empty and null are safe');
+
+
+/* ============================================================================
+   RUN 4 OF THE FEEDBACK LOOP, 17 Sep. Three writers, three holes, all measured
+   on insights real clients were shown between 18:20 and 21:31 UTC.
+   ========================================================================= */
+
+console.log('\n  A BACKWARDS SENTENCE IS NOT SAVED BY FIXING ITS NUMBERS:');
+/* andrewn1, 17 Sep 3:35 PM. The row: 602 cal, 37g protein, 82g carbohydrate,
+   14g fat. What he was shown: "You've got protein leading at 82g, carbs are
+   moderate at 14g total". Moving each figure onto its own macro leaves "protein
+   leading at 37g, carbs moderate at 82g", which is arithmetic that still lies. */
+const ANDREW={protein:37, carbs:82, fat:14};
+t(_insightMacroSafe("This is a solid lunch for fat loss. You've got protein leading at 82g, carbs are moderate at 14g total.", ANDREW)==='',
+  'the real andrewn1 line is refused outright, not renumbered');
+t(_insightMacroSafe('Protein is highest here at 37g.', ANDREW)==='',
+  '  and so is the claim on its own, even with the right number attached');
+/* The other direction matters more than the catch: a gate that eats correct
+   sentences gets turned off. These are real lines from the same sample. */
+const ADRIANA={protein:52, carbs:38, fat:11};
+t(_insightMacroSafe('The ratio sits exactly where it should: protein highest, carbohydrate about half that, fat from real food.', ADRIANA).length>20,
+  "adrianap1's textbook line survives, because protein IS the highest");
+const HAYDEN={protein:77, carbs:16, fat:36};
+t(_insightMacroSafe("You've got protein anchoring it, fat from whole foods.", HAYDEN).length>20,
+  '  and so does anchoring, when it anchors');
+/* uncwspmpxdr: 59g protein, 31g carbs, 52g fat. Protein is the bigger NUMBER and
+   fat is where the calories went. A grams test on a calories claim would blank a
+   true sentence, so calories claims are left alone. */
+const COSTCO={protein:59, carbs:31, fat:52};
+t(_insightMacroSafe('Solid protein, but most calories are the fat here.', COSTCO).length>20,
+  'a claim measured in calories is not judged in grams');
+
+console.log('\n  THE TWO SMALL WRITERS CAN SEE THE REST OF THE DAY NOW:');
+/* tonia1, 17 Sep. 44g of protein logged as Lunch at 12:26 PM. A pear logged as
+   Lunch at 1:00 PM came back "a pear on its own ... pair it with protein or fat
+   next time". The rule to group the rows shipped in v499 over a prompt that was
+   never given the rows. */
+global.todayFood=[{id:1,meal:'Lunch',eat_time:'12:26 PM',name:'Head on shrimp in beef broth',calories:328,protein:44,carbs:2,fat:16},
+                  {id:2,meal:'Lunch',eat_time:'1:00 PM',name:'Pear',calories:108,protein:0,carbs:27,fat:0}];
+const SOFAR=_jimTodaySoFar({id:2});
+t(/Head on shrimp/.test(SOFAR), 'the shrimp she ate at 12:26 is in front of the writer judging the pear');
+t(!/Pear/.test(SOFAR), '  and the row being judged is not repeated back to it');
+t(/44g P/.test(SOFAR), '  with the protein it carried');
+t(/on its own/.test(SOFAR), '  and the sentence that came out of not knowing is named');
+global.todayFood=[{id:2,meal:'Lunch',name:'Pear',calories:108,protein:0,carbs:27,fat:0}];
+t(_jimTodaySoFar({id:2})==='', 'the block is empty when there is genuinely nothing else, not a heading over nothing');
+global.todayFood=undefined;
+t(_jimTodaySoFar({id:2})==='', '  and a writer with no day loaded gets nothing rather than a throw');
+t(/_jimTodaySoFar\(entry\)/.test(src), 'the plate grader is handed the rest of the day');
+t(/try\{ ask\+=_jimTodaySoFar\(e\); \}catch\(err\)\{\}/.test(src), '  and so is the nl sheet read');
+
+console.log('\n  THE STANDING PROHIBITION REACHES EVERY WRITER, NOT THE TWO BIG ONES:');
+/* It was written into the analyze prompt and into buildCoachVoice, and neither
+   the plate grader nor the sheet read has ever carried it. Both write insights. */
+t(/NEVER SCOLD ANYONE FOR EATING LIGHT, AND NEVER TELL ANYONE TO EAT MORE/.test(TEN),
+  'the worst failure on the list now rides with the ten logs');
+t(/no sending somebody off to find protein to round a meal out/.test(TEN),
+  '  including the shape it actually took on a pear');
+t(/outranks every ratio,\s+every target and every delivery setting/.test(TEN),
+  '  and it outranks the rest of the block');
+
+console.log('\n  HIS 17 SEP RULING, FROM THE SLEEVE IN HIS HAND:');
+t(/it should usually always say good about Nutrition Solutions meals/.test(TEN),
+  'a portioned meal from a real-food company is a good choice, in his words');
+t(/never gets redirected\s+to a swap/.test(TEN), '  and it is never redirected to a swap');
+t(/Two whole-food starches inside a portioned tray is not the rice-and-bread/.test(TEN),
+  '  and two whole-food starches in one tray is not the rice-and-bread fault');
+t(/NEVER CLAIM A NUTRIENT THE ROW DOES NOT SHOW/.test(TEN),
+  'and the fiber line he guessed at is the one line to drop');
+t(/fiber-rich, protein-packed or nutrient-dense to fill a sentence/.test(TEN),
+  '  which is general: uh5n5nd6drb was told half an apple was fiber-rich');
+t(/HOW ACTIVE THEY ARE DECIDES THE RATIO/.test(TEN), 'and the ratio is read against how much they move');
+t(TEN.indexOf(EM)<0 && TEN.indexOf(EN)<0, 'and none of the new words break the punctuation rule');
 
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (he reads the person, then the plate)');
 process.exit(bad?1:0);

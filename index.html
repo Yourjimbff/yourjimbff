@@ -66244,6 +66244,28 @@ function _insightMacroSafe(insight, row){
     if(Math.abs(Number(num)-truth) < 0.5) return m;   /* already right */
     return String(Math.round(truth))+'g';
   });
+  /* THE NUMBER CAN BE RIGHT AND THE SENTENCE STILL BACKWARDS (17 Sep, run 4).
+     andrewn1 logged 37g protein, 82g carbohydrate, 14g fat and was told "protein
+     leading at 82g, carbs are moderate at 14g total". Moving each figure to its
+     own macro leaves "protein leading at 37g, carbs moderate at 82g" - true in
+     numbers and still a lie in words, because 82g of carbohydrate is not moderate
+     and 37g of protein is not leading it. So a claim about WHICH macro leads is
+     checked against the macros, and a false one takes the whole line with it.
+     A claim measured in CALORIES is left alone: fat led 828 calories at 52g while
+     protein was the larger number in grams, and "most calories are the fat" was
+     true when it was written. */
+  if(!bad){
+    var LEAD=/\b(protein|carbs?|carbohydrates?|fat)\b[^.!?]{0,20}?\b(lead|leads|leading|highest|anchoring|anchors|dominates|dominant)\b/gi;
+    var hit;
+    while((hit=LEAD.exec(out))!==null){
+      var seg=out.slice(Math.max(0,hit.index-40), hit.index+hit[0].length+20);
+      if(/calorie/i.test(seg)) continue;
+      var key=/^protein/i.test(hit[1])?'protein':(/^fat/i.test(hit[1])?'fat':'carbs');
+      var mine=vals[key];
+      if(!mine){ bad=true; break; }
+      if(['protein','carbs','fat'].some(function(k){ return k!==key && vals[k]>mine; })){ bad=true; break; }
+    }
+  }
   return bad ? '' : out;
 }
 /* ===== A FOOD LOG IS NEVER NAMED WITH A SENTENCE ========================
@@ -73763,7 +73785,7 @@ async function logPlateMeal(){
 async function _gradePlateMeal(entry, foodsText){
   try{
     var sys='You grade a logged meal for a whole-foods fitness coaching app. Reply ONLY compact JSON, no markdown, no prose: {"rating": one of "nutrient_dense" | "good" | "okay" | "bad", "insight": string}. rating = overall quality for a fitness client (nutrient_dense = whole, high-protein, minimally processed; good = solid and balanced; okay = fine but not ideal; bad = off-plan / heavily processed / mostly empty calories). WHOLE-FOOD FLOOR: a single real food on its own (fruit, veg, eggs, plain meat/fish, plain yogurt, nuts, rice, oats, potatoes) is NEVER "okay" or "bad": a small portion or low protein is not a downgrade. Only processed/fried/packaged food earns "okay" or "bad". insight = ONE warm, specific sentence (max ~24 words) about this meal. OPEN ON THE MEAL SLOT AND THE CLOCK you were given, per NAME THE MEAL TIME FIRST below: a 79g carbohydrate breakfast and a 79g carbohydrate 9pm snack are not the same event. No greeting, no quotes.'+_jimTenLogs();
-    var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:sys+'\n\nMeal: '+foodsText+' ('+(entry.meal||'Meal')+(entry.eat_time?(', '+entry.eat_time):'')+') ('+Math.round(entry.protein||0)+'g protein, '+Math.round(entry.carbs||0)+'g carbs, '+Math.round(entry.fat||0)+'g fat, '+Math.round(entry.calories||0)+' cal).'}]})});
+    var res=await fetch('/.netlify/functions/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:[{role:'user',content:sys+'\n\nMeal: '+foodsText+' ('+(entry.meal||'Meal')+(entry.eat_time?(', '+entry.eat_time):'')+') ('+Math.round(entry.protein||0)+'g protein, '+Math.round(entry.carbs||0)+'g carbs, '+Math.round(entry.fat||0)+'g fat, '+Math.round(entry.calories||0)+' cal).'+_jimTodaySoFar(entry)}]})});
     var data=await res.json(); var txt=''; if(data&&data.content){ data.content.forEach(function(b){ if(b&&b.type==='text'&&b.text) txt+=b.text; }); }
     txt=(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim();
     var obj=JSON.parse(txt);
@@ -88649,6 +88671,34 @@ function _jimToneName(n){
    actually talk to - never saw a word of it. Four prompts write food_logs.insight
    and one of them had the rules. A rule one writer obeys is not a rule.
    His verbatim record: Client Files/JIM-FEEDBACK-VOICE.md */
+/* WHAT ELSE THEY ATE TODAY, FOR THE TWO WRITERS THAT NEVER GOT IT (17 Sep, run 4).
+   GROUP THE ROWS BEFORE YOU JUDGE ANY ONE OF THEM shipped in v499 and points the
+   model at TODAYS FOOD, which is a section only buildDayContext builds. The plate
+   grader and the sheet read are handed one meal and nothing else, so for them that
+   rule had nothing to read. Same fault as v499, one level down.
+   MEASURED: tonia1 logged 44g of protein as Lunch at 12:26 PM and a pear as Lunch
+   at 1:00 PM, and the pear came back "a pear on its own is short lasting fuel ...
+   pair it with protein or fat next time". It was paired. Half an hour earlier,
+   under the same label, by her. */
+function _jimTodaySoFar(skip){
+  try{
+    var rows=(typeof todayFood!=='undefined' && todayFood) ? todayFood : [];
+    var lines=[];
+    rows.forEach(function(e){
+      if(!e) return;
+      if(skip && ((skip.id!=null && e.id!=null && e.id===skip.id) || e===skip)) return;
+      lines.push('  - '+(e.meal?e.meal+' ':'')+((e.eat_time||e.eatTime)?'@'+(e.eat_time||e.eatTime)+' ':'')
+        +(e.name||'food')+' ('+Math.round(+e.calories||0)+' cal, '+Math.round(+e.protein||0)+'g P, '
+        +Math.round(+e.carbs||0)+'g C, '+Math.round(+e.fat||0)+'g F)');
+    });
+    if(!lines.length) return '';
+    return '\n\n=== THE REST OF TODAY, ALREADY LOGGED ===\n'+lines.join('\n')
+      +'\nRows that share the meal label or the eat time of the one you are judging are the '
+      +'same plate, so judge the plate. '
+      +'Never call a food lonely, bare or "on its own", and never send them looking for protein, '
+      +'when something already logged in that slot is carrying it.';
+  }catch(e){ return ''; }
+}
 function _jimTenLogs(){
   return `
 
@@ -88751,6 +88801,39 @@ feedback.
 
 DO NOT ATTACK A RITUAL. "Coffee is a very ritualistic thing for people." Offer the
 swap beside it and leave it there.
+
+NEVER SCOLD ANYONE FOR EATING LIGHT, AND NEVER TELL ANYONE TO EAT MORE. A clean,
+light, whole-food meal is a win and it is answered as one. No "that is not much",
+no concern about a small portion, no "you have room", no calories left to use, and
+no sending somebody off to find protein to round a meal out. Pushing a person to eat
+more can do real harm and it is never your job. This one outranks every ratio,
+every target and every delivery setting in this file, and it is the standing
+prohibition the whole voice is checked against first.
+
+A PORTIONED MEAL FROM A REAL-FOOD COMPANY IS A GOOD CHOICE, FULL STOP. Holding one of
+his own: "it should usually always say good about Nutrition Solutions meals", and
+"say it's a high quality meal from Nutrition Solutions". Name the company and name the
+quality. It never gets the packaged-convenience treatment and it never gets redirected
+to a swap. The packet's own ingredient line is evidence and it counts in the meal's
+favour - gluten free breading was "the best possible breading I could possibly get for
+this food", and breaded chicken with root vegetables and plantain is "a unique
+combination". Two whole-food starches inside a portioned tray is not the rice-and-bread
+fault and is not scolded as one. If there is a criticism it is the timing or the total
+load for the day, never the food, and two trays back to back is a heavier meal, which
+is where the walk comes in.
+
+NEVER CLAIM A NUTRIENT THE ROW DOES NOT SHOW. He wanted the plantain talked about and
+guessed it was "equipped with fiber, I'm assuming" - the tray prints 2g of fiber for a
+15oz meal, so that is the one line to drop. What is true about plantain is worth more:
+a whole-food starch rather than a refined one, around 490mg of potassium per 100g, and
+resistant starch that digests slower the less ripe it is. The rule under it is general.
+Do not call a food fiber-rich, protein-packed or nutrient-dense to fill a sentence. If
+the number is not in front of you, teach something you are sure of instead.
+
+HOW ACTIVE THEY ARE DECIDES THE RATIO. 55g of carbohydrate against 43g of protein is
+good for somebody very active, better again for somebody gaining, and sufficient on a
+cut for somebody training more than five days a week. The same plate in front of
+somebody who is not training yet is a different read.
 
 HIS WORDS TO REUSE WHERE THEY FIT: sloppy, eating to eat, no rules no measurement
 no restriction, leaner order, short lasting fuel, fun fuel, it's not the end of
@@ -99189,6 +99272,7 @@ async function _nlJimRead(st){
     try{ if(st.line) ask+='THEIR OWN WORDS: "'+String(st.line).slice(0,300)+'"\n'; }catch(err){}
     try{ if(st.slot) ask+='THE SLOT: '+st.slot+'\n'; }catch(err){}
     try{ var gl=_jimGoalLine(); if(gl) ask+='\nABOUT THEM: '+gl+'\n'; }catch(err){}
+    try{ ask+=_jimTodaySoFar(e); }catch(err){}
     try{ ask+=_jimTenLogs(); }catch(err){}
     try{ ask+='\n\n'+_jimToneBlock(); }catch(err){}
     ask+='\n\nWrite their read on this plate. Two or three sentences. No greeting, no sign-off, '
@@ -99202,8 +99286,15 @@ async function _nlJimRead(st){
       out=String((j&&j.content&&j.content[0]&&j.content[0].text)||'').trim();
     }catch(err){ out=''; }
     if(seq!==_nlJimSeq) return false;
-    /* _nlJimRead never passes through _insightMacroSafe, so it gets the floor here. */
-    try{ out=_noEmDash(out); }catch(err){}
+    /* THE GUARD RIDES ON THE WRITER, NOT ON THE SCREEN (17 Sep, run 4). This door
+       PATCHes its read straight onto the row carrying only the dash floor, so the
+       one check that reads the macros back was the one thing it skipped, and
+       andrewn1 was told "protein leading at 82g, carbs are moderate at 14g total"
+       over a row logging 37g of protein and 82g of carbohydrate. _insightMacroSafe
+       runs _noEmDash inside it, so this is the floor plus the numbers. It answers
+       '' when the sentence cannot be sourced to the plate, and an empty answer is
+       treated here exactly like no answer: nothing is shown, nothing is written. */
+    try{ out=_insightMacroSafe(out, e); }catch(err){ try{ out=_noEmDash(out); }catch(e2){} }
     /* THEY DO NOT WAIT FOR IT, AND THEY SHOULD NOT HAVE TO. The read takes a few
        seconds and Log it is right there, so the ordinary case is that the meal
        is already written by the time these words exist. That is exactly how a
