@@ -502,3 +502,56 @@ people copied the SHAPE of it — three items, no amounts of their own. v420:
 "Describe or estimate how much you ate, and list everything in it". It is a
 real HTML placeholder on an empty textarea, so it clears the instant anybody
 types; nothing is prefilled and there is nothing to clear by hand.
+
+## THE FOOD DOOR IS `nlSubmit`, AND THE COACHING WAS ON A DIFFERENT SCREEN (17 Sep)
+
+He opted into Jim's feedback, logged a meal a minute later, and saw nothing.
+Three wrong answers were given before the right one, and the way the right one
+was found is the only part worth copying.
+
+FIRST WRONG ANSWER: "his row saved with no macros." It did not - cal=312 p=20
+c=40 f=8. The query never asked for the macros. **Select the columns your
+conclusion is about.**
+
+SECOND WRONG ANSWER: "the model's answer was truncated before it reached the
+coaching." That IS a real fault on the `showAIResult` path and v518 fixes it -
+`max_tokens` was 1200, the items array comes first, `rating` and `insight` come
+last, and nothing on that path read `stop_reason` while two other call sites in
+this file already did. But his meal never went near that code.
+
+HOW THE THIRD ONE WAS FOUND: wrap the candidates and log a real meal.
+
+    ['onLogMeal','smartLogFromText','commitMeal','showAIResult','_mrReview',
+     'logPlateMeal','insertFoodLog'].forEach(n=>{ const f=window[n];
+       window[n]=function(){ window._trace.push(n); return f.apply(this,arguments); }; });
+
+The trace came back `insertFoodLog` and nothing else. Two minutes, and it ended
+an afternoon of theories.
+
+THE FACT: **there are several food doors and only one of them is used.**
+`#mFood` / `onLogMeal` / `smartLogFromText` / `showAIResult` / `confirmMeal` is
+the OLD meal box. The live door is the **nl sheet** - `nlSubmit`, `nlRender`,
+`nlConfirm`, `_NL_SYS` - and it asks the model for:
+
+    {"name","calories","protein","carbs","fat","rating","tidbit"}
+
+There is no `insight` on it and there never was. `tidbit` is a food fact or a
+compliment, explicitly instructed never to mention what is missing.
+
+So every piece of the coaching engine - `_jimCardHtml`, `_jimTenLogs`,
+`_jimToneBlock`, `_jimGoalLine` - lived behind `showAIResult`, on a screen
+nobody opens. A person could opt in, log, and correctly see nothing.
+
+**Before changing anything about how food is logged, confirm which door runs.**
+The old one still parses, still passes its suites, and still does nothing for
+anybody.
+
+Two more from the same hour:
+- `_nlFastOn()` / `nlSubmitFast` writes the row without ever showing the result
+  screen. That screen is where the read appears, so anyone opted in was being
+  carried past the thing they opted in for. Free logging keeps the fast road.
+- An EMPTY insight draws as NO CARD - `_jimCardHtml` returns `''` on an empty
+  body by design. To the person looking at it there is no difference between
+  "Jim had nothing to add" and "this feature does not work". Any path that can
+  produce an empty read must say something instead.
+
