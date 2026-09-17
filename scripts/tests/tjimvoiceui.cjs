@@ -45,7 +45,14 @@ painted=''; t(_jimAskPaint()===true, 'a client who has never answered gets asked
 t(/Yes, go easy/.test(painted) && /Yes, straight up/.test(painted)
   && /Just the facts/.test(painted) && /No thanks/.test(painted),
   '  three ways in and one way out');
-t(/Want that\?/.test(painted), '  and it asks whether they want it at all');
+/* IT SELLS THE THING NOW (Yusuf, 17 Sep: "thank you for logging. You are now
+   invited to Jim instant coaching feedback, trained on Yusuf's nutrition brain
+   for your goals ... should just be built up and exciting"). A question mark on
+   a checkbox is not an invitation. */
+t(/You\u2019re invited to Jim/.test(painted), '  it invites them by name');
+t(/trained on Yusuf\u2019s nutrition brain/.test(painted), '  and says whose brain it is');
+t(/pointed at your goal/.test(painted), '  and who it is pointed at');
+t(/How should he talk to you\?/.test(painted), '  and the question is how, not whether');
 t(!/Turbo roast/.test(painted), '  and turbo is nowhere near a first morning');
 t(!/No excuses/.test(painted), '  nor is no excuses');
 t(/change this any time in Settings/i.test(painted), '  and it says where to change it');
@@ -67,9 +74,18 @@ _jimVoicePick(0,true);
 t(_jimNoCritique({})===true, 'just the facts turns the switch on');
 t(_jimTone({})===3, '  and leaves a sane tone underneath for when they turn it off', String(_jimTone({})));
 
-console.log('\n  THE TRAINER IS NOT ASKED:');
-global.localStorage._d={}; global.cl={code:'thegoat'}; painted='x';
-t(_jimAskPaint()===false, 'he reads every client’s meals, not his own tone');
+console.log('\n  THE TRAINER IS ASKED TOO:');
+/* HE COULD NOT SEE HIS OWN FEATURE AND THIS TEST WAS GUARDING THE REASON
+   (Yusuf, 17 Sep: "tell me why when I sign in I still don't see the opt in for
+   Jim feedback ... the fact I have not been able to see it is absolutely
+   unacceptable"). The card was skipped for the trainer, he signs in as the
+   trainer, so the one person who had to check it never saw it once. Jim reads
+   food logs and Yusuf logs food; there was never a reason for the gate. */
+global.localStorage._d={}; global.cl={code:'thegoat'}; painted='';
+t(_jimAskPaint()===true, 'he logs food like everybody else, so he is asked like everybody else');
+t(/You\u2019re invited to Jim/.test(painted), '  and gets the same invitation');
+global.cl=null; painted='x';
+t(_jimAskPaint()===false, 'nobody signed in is still nobody to ask');
 t(painted==='', '  and the space is cleared');
 global.cl=null;
 t(_jimAskPaint()===false, 'and nobody signed in is refused cleanly');
