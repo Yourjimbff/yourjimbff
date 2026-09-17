@@ -42,11 +42,32 @@ t(/BadDeviceToken usually means APNS_ENV is wrong/.test(apns),
 t(/isDeadToken\(sent\)/.test(send), 'and the sender acts on that test');
 t(/push_token: null, push_token_at: null/.test(send), '  by clearing both fields');
 
-console.log('\n  NOTHING FAILS QUIETLY:');
+console.log('\n  IT SPEAKS THE ONLY PROTOCOL APPLE ACCEPTS:');
+/* The first real send answered "502 threw" and the cause was the transport,
+   not the key: Node's built-in fetch is undici, HTTP/1.1 only, and Apple's
+   provider API has never accepted HTTP/1.1. No key or host setting rescues
+   that. Asserted here because the failure looks exactly like a bad key. */
+t(/require\('http2'\)/.test(apns), 'the send goes over HTTP/2, from core');
+t(!/await fetch\('https:\/\/' \+ host/.test(apns),
+  '  and not over fetch, which cannot do HTTP/2', 'undici is HTTP/1.1 only');
+t(/client\.close\(\)/.test(apns),
+  'the session is closed per send, not kept across invocations',
+  'a frozen function thaws holding a socket Apple shut hours ago');
+t(/reason: 'timeout'/.test(apns),
+  'and a handshake that never lands times out rather than being killed mid-flight');
+
+console.log('\n  NOTHING FAILS QUIETLY, AND NO TWO FAILURES READ THE SAME:');
 t(/console\.error\('apns: send refused'/.test(apns), 'a refusal is logged with Apple\u2019s reason');
-t(/console\.error\('apns: send threw'/.test(apns), 'and so is a throw');
-t(/return \{ ok: false, status: 0, reason: 'threw' \}/.test(apns),
-  'and it never throws at the thing that triggered it');
+t(/console\.error\('apns: signing threw'/.test(apns), 'an unusable key is logged as a key problem');
+t(/reason: 'key ' \+ String\(\(e && e\.message\)/.test(apns),
+  '  and the reason carries the message, so the app can print it',
+  'one word for every failure is what cost a redeploy to take apart');
+t(/reason: 'session '/.test(apns) && /reason: 'stream '/.test(apns),
+  'a dead connection says which half died');
+t(/reason: 'not_configured'/.test(apns), 'and a missing setting is not dressed up as a failure to send');
+t(!/reason: 'threw' \}/.test(apns),
+  'nothing answers with the bare word "threw" any more',
+  'it covered a broken key and a wrong protocol equally well');
 
 console.log('\n  AND NOBODY CAN PUSH TO A STRANGER\u2019S PHONE:');
 t(/claims\.is_trainer !== true\) return json\(403/.test(send), 'trainer only, checked on the claim');
