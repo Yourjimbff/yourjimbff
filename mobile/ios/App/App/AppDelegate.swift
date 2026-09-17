@@ -33,6 +33,24 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Called when the application is about to terminate. Save data if appropriate. See also applicationDidEnterBackground:.
     }
 
+    // THE TOKEN HAS TO BE HANDED OVER, OR NOTHING EVER ARRIVES.
+    // iOS gives the device token to the AppDelegate and nowhere else. Capacitor's
+    // push plugin listens on NotificationCenter for it. Without these two methods
+    // the app asks for permission, iOS says yes, Apple issues a token, and the
+    // web side's 'registration' listener is never called - which looks exactly
+    // like a phone that simply never gets notifications.
+    func application(_ application: UIApplication,
+                     didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        NotificationCenter.default.post(name: .capacitorDidRegisterForRemoteNotifications,
+                                        object: deviceToken)
+    }
+
+    func application(_ application: UIApplication,
+                     didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        NotificationCenter.default.post(name: .capacitorDidFailToRegisterForRemoteNotifications,
+                                        object: error)
+    }
+
     func application(_ application: UIApplication,
                      configurationForConnecting connectingSceneSession: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
