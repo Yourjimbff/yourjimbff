@@ -194,8 +194,12 @@ t((src.match(/=== WHAT HE ACTUALLY SAYS, MEASURED ON TEN REAL LOGS ===/g)||[]).l
 const writers={
   'the photo / analyze prompt': /coachVoice \+= _jimTenLogs\(\)/,
   'the chat prompt (buildCoachVoice)': /_jimTenLogs\(\)\+'\\n\\n'\+\s*\n\s*'WHOLE-FOOD NUDGE/,
-  'the plate grader (_gradePlateMeal)': /no preamble, no quotes\.'\+_jimTenLogs\(\)/,
-  'the re-grade after a clarify (clarifyMeal)': /so commit to a rating\.'\s*\n\s*\+_jimTenLogs\(\)/
+  'the plate grader (_gradePlateMeal)': /No greeting, no quotes\.'\+_jimTenLogs\(\)/,
+  'the re-grade after a clarify (clarifyMeal)': /so commit to a rating\.'\s*\n\s*\+_jimTenLogs\(\)/,
+  /* v519 found a fifth door and it is the one everybody logs through. Named here
+     so the next voice fix cannot land on four of five paths the way v499 landed
+     on one of four. */
+  'the nl sheet read (_nlJimRead)': /async function _nlJimRead\(st\)\{[\s\S]{0,1600}?_jimTenLogs\(\)/
 };
 Object.keys(writers).forEach(k=>t(writers[k].test(src), '  '+k+' reads it'));
 
@@ -206,6 +210,45 @@ t(/Meal: '\+foodsText\+' \('\+\(entry\.meal\|\|'Meal'\)\+\(entry\.eat_time/.test
 t(/\(e\.meal\|\|'Meal'\)\+\(\(e\.eat_time\|\|e\.eatTime\)/.test(src),
   'and so is the re-grade');
 
+
+
+/* THE PUNCTUATION RULE REACHES EVERY WRITER, NOT SIX OF THEM (17 Sep).
+   Measured: of the 30 insights real clients were shown 15-17 Sep, 29 carried an
+   em dash and 17 opened without naming the meal. v520 put _jimPunct in front of
+   the six delivery settings, which is the right rule in the right words - but
+   THREE prompts that write food_logs.insight never append _jimToneBlock at all,
+   and one of them, the plate grader, wrote both insights logged since. This is
+   v499 exactly: a rule one writer obeys is not a rule. So it rides with the ten
+   logs, which every writer does append. */
+console.log('\n  NO EM DASHES, ON EVERY PATH AND NOT SIX OF SEVEN:');
+const EM='\u2014', EN='\u2013';
+t(/never use an em dash or an en dash/.test(TEN),
+  'the ten-log block carries the punctuation rule, so the bare prompts get it too');
+t(TEN.indexOf(EM)<0 && TEN.indexOf(EN)<0, 'and his own words do not break it');
+const GRADER=(src.match(/var sys='You grade a logged meal[\s\S]*?'\+_jimTenLogs\(\)/)||[''])[0];
+t(GRADER.length>200, 'the plate grader prompt was found', GRADER.length);
+t(GRADER.indexOf(EM)<0 && GRADER.indexOf(EN)<0,
+  'the grader prompt no longer writes in the punctuation it is banning');
+t(/OPEN ON THE MEAL SLOT AND THE CLOCK/.test(GRADER),
+  'and it leads on the slot instead of forbidding a preamble');
+t(!/no preamble/.test(GRADER),
+  '  because "no preamble" was the line fighting NAME THE MEAL TIME FIRST');
+const CLAR=(src.match(/var sys='You are a nutrition coach re-rating[\s\S]*?\+_jimTenLogs\(\)/)||[''])[0];
+t(CLAR.length>200, 'the re-grade prompt was found', CLAR.length);
+t(CLAR.indexOf(EM)<0 && CLAR.indexOf(EN)<0, 'and it does not model the habit either');
+
+t(/function _noEmDash\(/.test(src), '_noEmDash is the floor under the instruction');
+t(/var ins=_noEmDash\(String\(insight\|\|''\)\.trim\(\)\)/.test(src),
+  '  and every insight passes through it');
+t(/try\{ out=_noEmDash\(out\); \}catch\(err\)\{\}/.test(src),
+  '  including the nl sheet read, which does not use _insightMacroSafe');
+eval(defOf('_noEmDash'));
+t(_noEmDash('Clean protein, minimal carbs '+EM+' solid snack anchor.')
+    ==='Clean protein, minimal carbs - solid snack anchor.',
+  'the real 17 Sep line comes back clean');
+t(_noEmDash('walk 15'+EN+'30 minutes')==='walk 15-30 minutes',
+  'a digit range keeps its tight hyphen');
+t(_noEmDash('')==='' && _noEmDash(null)==='', 'empty and null are safe');
 
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (he reads the person, then the plate)');
 process.exit(bad?1:0);

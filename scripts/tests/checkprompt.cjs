@@ -34,7 +34,7 @@ function _liftVar(name){
 // profile the block correctly says nothing about calories - which would mean
 // this suite never checked the half that actually goes to clients.
 var profile={cal_target:1980};
-eval(src.find(l=>l.startsWith('var MB_PALM_OZ'))+'\n'+_liftVar('MT_ROWS')+'\nvar _MT_BY=null;\n'+_liftFn('_mtIndex')+'\n'+_liftFn('_mtPromptBlock')+'\n'+_liftFn('_calTargetSet')+'\n'+_liftFn('_jimCalRange')+'\n'+_liftFn('_jimMealPlanBlock')+'\n'+_liftFn('_jimTenLogs'));
+eval(src.find(l=>l.startsWith('var MB_PALM_OZ'))+'\n'+_liftVar('MT_ROWS')+'\nvar _MT_BY=null;\n'+_liftFn('_mtIndex')+'\n'+_liftFn('_mtPromptBlock')+'\n'+_liftFn('_calTargetSet')+'\n'+_liftFn('_jimCalRange')+'\n'+_liftFn('_jimMealPlanBlock')+'\n'+_liftFn('_jimPunct')+'\n'+_liftFn('_jimTenLogs'));
 let out;
 eval(body+'\nout=buildCoachVoice();');
 // The rules this prompt is supposed to be teaching. Each one is a line that was
