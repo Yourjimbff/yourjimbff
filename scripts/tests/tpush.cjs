@@ -37,6 +37,25 @@ t(/globalThis/.test(fs.readFileSync('capacitor.js','utf8')),
 const tom=fs.readFileSync('netlify.toml','utf8');
 t(!/from = "\/\*\.js"/.test(tom), 'and nothing in netlify.toml blocks a root .js file');
 
+console.log('\n  EVERY SIGN-IN SAYS WHAT IT IS:');
+/* Four versions went into chasing push on his handset on theories about what
+   his phone had loaded, and every theory cost him a reopen and proved nothing,
+   because the only evidence was the ABSENCE of a row. Absence has too many
+   causes. A diagnostic that only runs on the unhappy path cannot be trusted
+   when the unhappy path is silence. */
+const stamp=slice('async function _appStamp(){','var _PUSH_DONE=false;');
+t(/base\.app=\{ v:/.test(stamp), 'the build is written down');
+t(/surface:_surfaceTag\(\)/.test(stamp), 'and where it is running');
+t(/no-push-plugin/.test(stamp), 'and whether the bridge to the phone is complete');
+t(/isNativePlatform\(\)\) \? 'native' : 'web-shim'/.test(stamp),
+  '  telling the shell apart from a browser that merely loaded the script');
+t(/sbUpsert\('profiles', row, 'client_code'\)/.test(stamp), 'onto their own row');
+t(/if\(window\._obPreview===true\) return false;/.test(stamp), 'and a preview writes nothing');
+t(/_appStamp\(\); \}catch\(e\)\{\} \}, 900\)/.test(src),
+  'fired on every sign-in, not only when something breaks');
+t(src.indexOf('_appStamp()') < src.indexOf('_pushInit()'),
+  '  and before push runs, so it lands even when push gives up early');
+
 console.log('\n  IT IS SILENT ON THE WEB:');
 const det=slice('function _capPush(){','function _pushPlatform');
 t(/window\.Capacitor/.test(det), 'it looks for the native shell');
