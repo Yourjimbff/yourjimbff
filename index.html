@@ -15006,6 +15006,35 @@ function _pushPlatform(){
 }
 /* Written where every other fact about a person is written. Best effort: a
    failure here must never be able to interrupt somebody opening their day. */
+/* WHAT HAPPENED, WRITTEN DOWN WHERE IT CAN BE READ (17 Sep). Proved on his own
+   handset within the hour: the permission box appeared, he allowed it, and no
+   token ever reached his row. Nothing anywhere said which half had failed, and
+   Xcode's log strip cannot be read from here. A push feature that fails quietly
+   is indistinguishable from a phone that simply never gets notifications, which
+   is the exact failure this was supposed to make impossible.
+
+   So every run records its own outcome on the row - asked, refused, registered,
+   the token landed, or the error text - inside intake_json, which needs no new
+   column. Small, and it turns "it doesn't work" into one readable line. */
+async function _pushNote(state, detail){
+  try{
+    if(window._obPreview===true) return false;
+    if(!cl || !cl.code) return false;
+    var base={};
+    try{
+      var cur=(typeof profile!=='undefined' && profile) ? profile.intake_json : null;
+      if(typeof cur==='string') base=JSON.parse(cur)||{};
+      else if(cur && typeof cur==='object') base=Object.assign({}, cur);
+    }catch(e){ base={}; }
+    base.push={ state:String(state||''), detail:String(detail==null?'':detail).slice(0,200),
+                at:new Date().toISOString(), platform:_pushPlatform()||'' };
+    var row={client_code:cl.code, intake_json:JSON.stringify(base)};
+    var ok=false;
+    try{ ok=!!(await sbUpsert('profiles', row, 'client_code')); }catch(e){ ok=false; }
+    if(ok){ try{ profile=Object.assign({}, profile||{}, {intake_json:row.intake_json}); }catch(e){} }
+    return ok;
+  }catch(e){ return false; }
+}
 async function _pushSaveToken(tok){
   try{
     if(!tok || !cl || !cl.code) return false;
@@ -15029,7 +15058,8 @@ async function _pushInit(){
        is listening is a token nobody ever hears about. */
     try{
       P.addListener('registration', function(t){
-        try{ _pushSaveToken(t && (t.value||t.token)); }catch(e){}
+        try{ var tv=(t && (t.value||t.token)); _pushNote('token', tv?('len '+String(tv).length):'empty');
+              _pushSaveToken(tv); }catch(e){}
       });
     }catch(e){}
     try{
@@ -15037,6 +15067,7 @@ async function _pushInit(){
         /* Said out loud rather than swallowed. A silent failure here looks
            exactly like a phone that simply never gets notifications. */
         try{ console.warn('[push] registration failed', err); }catch(e){}
+        try{ _pushNote('register_failed', (err && (err.error||err.message))||JSON.stringify(err||{})); }catch(e){}
       });
     }catch(e){}
     /* A TAP ON A NOTIFICATION HAS TO LAND SOMEWHERE. Opening the app to
@@ -15062,8 +15093,10 @@ async function _pushInit(){
       try{ st=await P.requestPermissions(); }catch(e){ st=null; }
       val=(st && st.receive) ? String(st.receive) : '';
     }
-    if(val!=='granted') return false;
-    try{ await P.register(); }catch(e){ return false; }
+    if(val!=='granted'){ try{ _pushNote('not_granted', val||'unknown'); }catch(e){} return false; }
+    try{ _pushNote('granted', ''); }catch(e){}
+    try{ await P.register(); }catch(e){ try{ _pushNote('register_threw', e && e.message); }catch(_e){} return false; }
+    try{ _pushNote('registered', 'waiting for Apple'); }catch(e){}
     return true;
   }catch(e){ return false; }
 }

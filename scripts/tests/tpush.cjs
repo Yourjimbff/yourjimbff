@@ -46,7 +46,7 @@ console.log('\n  ONE ASK, AND ONLY IF iOS WILL ANSWER:');
 t(/checkPermissions\(\)/.test(init), 'it checks what iOS already decided');
 t(/val==='prompt' \|\| val==='prompt-with-rationale'/.test(init),
   'and only asks when iOS has not been asked yet');
-t(/if\(val!=='granted'\) return false;/.test(init), 'a refusal is taken as a refusal');
+t(/if\(val!=='granted'\)\{[\s\S]{0,90}?return false; \}/.test(init), 'a refusal is taken as a refusal');
 t(init.indexOf('register()') > init.indexOf("val!=='granted'"),
   '  and nothing registers without permission');
 
@@ -62,6 +62,27 @@ t(/push_token:String\(tok\)/.test(save) && /push_platform:/.test(save) && /push_
   'with the token, the platform and when it was taken');
 t(/catch\(e\)\{ ok=false; \}/.test(save), 'and a failure cannot interrupt them opening their day');
 t(/if\(!tok \|\| !cl \|\| !cl\.code\) return false;/.test(save), 'no token and no client means no write');
+
+console.log('\n  AND IT SAYS WHICH HALF FAILED:');
+/* Proved on his own handset the hour it shipped: the permission box appeared,
+   he allowed it, and no token reached his row - and nothing anywhere said which
+   half had failed. A push feature that fails quietly is indistinguishable from
+   a phone that never gets notifications, which is the exact thing this was
+   supposed to make impossible. */
+const note=slice('async function _pushNote(','async function _pushSaveToken');
+t(/base\.push=\{ state:/.test(note), 'every run records its own outcome on the row');
+t(/intake_json/.test(note), '  in intake_json, so it needs no new column');
+t(/detail:String\(detail==null\?'':detail\)\.slice\(0,200\)/.test(note),
+  '  with the error text, trimmed');
+t(/if\(window\._obPreview===true\) return false;/.test(note), '  and a preview still writes nothing');
+const init2=slice('async function _pushInit(){','function skipSetup');
+[['not_granted','a refusal'],['granted','permission given'],
+ ['registered','asked Apple and waiting'],['register_failed','Apple refused'],
+ ['register_threw','the call itself threw'],['token','the token arriving']].forEach(function(p){
+  t(new RegExp("_pushNote\\('"+p[0]+"'").test(init2+src), '  '+p[1]+' is written down');
+});
+t((src.match(/_pushNote\(/g)||[]).length>=7, 'every branch reports, none of them silently',
+  String((src.match(/_pushNote\(/g)||[]).length));
 
 console.log(bad? '\n  '+bad+' FAILED\n' : '\n  all good (the phone can be reached)\n');
 process.exit(bad?1:0);
