@@ -90,7 +90,11 @@ console.log('\n  IT CANNOT CLOBBER THE REST OF THEIR SETUP:');
 const mg=slice('async function _ctaMergeIntake(','\nfunction _ctaEligible');
 t(/var base=_ctaIntake\(\);/.test(mg), 'it reads what is already in the row');
 t(/Object\.keys\(patch\)\.forEach/.test(mg), 'and changes only the keys it was handed');
-t(/sbUpsert\('profiles', row, 'client_code'\)/.test(mg), 'onto the row that already exists');
+/* 17 Sep: it was an upsert, and an upsert proposes a whole new row first, so
+   Postgres refused it for a missing name every single time. It never wrote a
+   thing. A PATCH has no INSERT arm - see tprofilepatch. */
+t(/sbPatchProfile\(\{intake_json:js\}\)/.test(mg), 'onto the row that already exists, as an update');
+t(!/sbUpsert/.test(mg), '  and never as an upsert, which silently wrote nothing');
 
 console.log(bad? '\n  '+bad+' FAILED\n' : '\n  all good (the offer reaches him)\n');
 process.exit(bad?1:0);

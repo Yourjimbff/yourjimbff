@@ -12937,6 +12937,47 @@ function _sbNoteFail(table){
 function _sbFailMark(){ try{ return window._sbFailN||0; }catch(e){ return 0; } }
 function _sbFailedSince(mark){ try{ return (window._sbFailN||0)!==mark; }catch(e){ return false; } }
 
+/* A PARTIAL SAVE TO A PROFILE IS AN UPDATE, AND MUST BE SENT AS ONE.
+   FOUND 17 SEP ON THE SERVED SITE, after an afternoon of theories: every
+   partial upsert to profiles came back
+     400 {"code":"23502","message":"null value in column name of relation
+          profiles violates not-null constraint"}
+   An upsert is an INSERT that falls back to an UPDATE, so PostgREST builds the
+   INSERT row FIRST and Postgres checks NOT NULL on it before the conflict is
+   reached. A save of two columns therefore proposes a row with no name and is
+   refused, even though the row exists and only ever needed updating. The two
+   writers in this file that pass name have always worked; every writer that
+   does not has always failed.
+
+   FOUR THINGS SHIPPED TODAY WROTE NOTHING BECAUSE OF IT: the brutally honest
+   critique and the pledge at the end of setup, the consultation answer from the
+   setup screen, the same answer from the Today card, and the push token. All
+   four failed quietly, and the quiet read as "the feature never ran" - which is
+   what sent an hour of his afternoon chasing a phone that was fine.
+
+   A PATCH has no INSERT arm, so NOT NULL columns it does not mention are not
+   its business. It is the right verb for all of these and always was. */
+async function sbPatchProfile(fields){
+  try{
+    if(!cl || !cl.code) return false;
+    if(!fields || !Object.keys(fields).length) return false;
+    var url = SB_URL+'/rest/v1/profiles?client_code=eq.'+encodeURIComponent(cl.code);
+    var res = await fetch(url, {
+      method:'PATCH',
+      headers: Object.assign({}, sbHeaders(), {'Content-Type':'application/json','Prefer':'return=minimal'}),
+      body: JSON.stringify(fields)
+    });
+    if(res && res.ok) return true;
+    var b=''; try{ b = await res.text(); }catch(e){}
+    /* In the server's own words. The entire cost of this bug was that it was
+       quiet, so nothing here is ever swallowed again. */
+    try{ console.error('patch to profiles failed', res?res.status:0, String(b||'').slice(0,300)); }catch(e){}
+    return false;
+  }catch(e){
+    try{ console.error('patch to profiles threw', e&&e.message); }catch(_e){}
+    return false;
+  }
+}
 async function sbUpsert(table, data, onConflict){
   if(_flipRefuse('UPSERT '+table)) return false;
   try{
@@ -15080,21 +15121,19 @@ async function _pushNote(state, detail){
     }catch(e){ base={}; }
     base.push={ state:String(state||''), detail:String(detail==null?'':detail).slice(0,200),
                 at:new Date().toISOString(), platform:_pushPlatform()||'' };
-    var row={client_code:cl.code, intake_json:JSON.stringify(base)};
-    var ok=false;
-    try{ ok=!!(await sbUpsert('profiles', row, 'client_code')); }catch(e){ ok=false; }
-    if(ok){ try{ profile=Object.assign({}, profile||{}, {intake_json:row.intake_json}); }catch(e){} }
+    var js=JSON.stringify(base);
+    var ok=await sbPatchProfile({intake_json:js});
+    if(ok){ try{ profile=Object.assign({}, profile||{}, {intake_json:js}); }catch(e){} }
     return ok;
   }catch(e){ return false; }
 }
 async function _pushSaveToken(tok){
   try{
     if(!tok || !cl || !cl.code) return false;
-    var row={client_code:cl.code, push_token:String(tok),
+    var row={push_token:String(tok),
              push_platform:_pushPlatform()||'ios',
              push_token_at:new Date().toISOString()};
-    var ok=false;
-    try{ ok=!!(await sbUpsert('profiles', row, 'client_code')); }catch(e){ ok=false; }
+    var ok=await sbPatchProfile(row);
     if(ok){ try{ profile=Object.assign({}, profile||{}, row); }catch(e){} }
     return ok;
   }catch(e){ return false; }
@@ -15122,10 +15161,9 @@ async function _appStamp(){
     }catch(e){ base={}; }
     base.app={ v:String(typeof APP_VERSION!=='undefined'?APP_VERSION:'?'),
                surface:_surfaceTag(), cap:cap, at:new Date().toISOString() };
-    var row={client_code:cl.code, intake_json:JSON.stringify(base)};
-    var ok=false;
-    try{ ok=!!(await sbUpsert('profiles', row, 'client_code')); }catch(e){ ok=false; }
-    if(ok){ try{ profile=Object.assign({}, profile||{}, {intake_json:row.intake_json}); }catch(e){} }
+    var js=JSON.stringify(base);
+    var ok=await sbPatchProfile({intake_json:js});
+    if(ok){ try{ profile=Object.assign({}, profile||{}, {intake_json:js}); }catch(e){} }
     return ok;
   }catch(e){ return false; }
 }
@@ -73778,10 +73816,9 @@ async function _obPatchIntake(){
     base.blocker_text=(String(a.blocker_text||'').trim()||null);
     base.pledge=(a.pledge==='yes')?'yes':null;
     base.consult=(a.consult==='yes'||a.consult==='booked')?a.consult:null;
-    var row={client_code:cl.code, intake_json:JSON.stringify(base)};
-    var ok=false;
-    try{ ok=!!(await sbUpsert('profiles', row, 'client_code')); }catch(e){ ok=false; }
-    if(ok){ try{ profile=Object.assign({}, profile||{}, {intake_json:row.intake_json}); }catch(e){} }
+    var js=JSON.stringify(base);
+    var ok=await sbPatchProfile({intake_json:js});
+    if(ok){ try{ profile=Object.assign({}, profile||{}, {intake_json:js}); }catch(e){} }
     return ok;
   }catch(e){ return false; }
 }
@@ -86611,10 +86648,9 @@ async function _ctaMergeIntake(patch){
     if(!cl || !cl.code || !patch) return false;
     var base=_ctaIntake();
     Object.keys(patch).forEach(function(k){ base[k]=patch[k]; });
-    var row={client_code:cl.code, intake_json:JSON.stringify(base)};
-    var ok=false;
-    try{ ok=!!(await sbUpsert('profiles', row, 'client_code')); }catch(e){ ok=false; }
-    if(ok){ try{ profile=Object.assign({}, profile||{}, {intake_json:row.intake_json}); }catch(e){} }
+    var js=JSON.stringify(base);
+    var ok=await sbPatchProfile({intake_json:js});
+    if(ok){ try{ profile=Object.assign({}, profile||{}, {intake_json:js}); }catch(e){} }
     return ok;
   }catch(e){ return false; }
 }

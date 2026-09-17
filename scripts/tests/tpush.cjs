@@ -49,7 +49,7 @@ t(/surface:_surfaceTag\(\)/.test(stamp), 'and where it is running');
 t(/no-push-plugin/.test(stamp), 'and whether the bridge to the phone is complete');
 t(/isNativePlatform\(\)\) \? 'native' : 'web-shim'/.test(stamp),
   '  telling the shell apart from a browser that merely loaded the script');
-t(/sbUpsert\('profiles', row, 'client_code'\)/.test(stamp), 'onto their own row');
+t(/sbPatchProfile\(\{intake_json:js\}\)/.test(stamp), 'onto their own row, as an update');
 t(/if\(window\._obPreview===true\) return false;/.test(stamp), 'and a preview writes nothing');
 t(/_appStamp\(\); \}catch\(e\)\{\} \}, 900\)/.test(src),
   'fired on every sign-in, not only when something breaks');
@@ -96,10 +96,11 @@ t(/switchTab\('Today'\)/.test(init), '  and Today when it names none');
 
 console.log('\n  THE TOKEN IS WRITTEN WHERE EVERY OTHER FACT IS:');
 const save=slice('async function _pushSaveToken(','var _PUSH_DONE');
-t(/sbUpsert\('profiles', row, 'client_code'\)/.test(save), 'onto their own profile row');
+t(/sbPatchProfile\(row\)/.test(save), 'onto their own profile row, as an update');
 t(/push_token:String\(tok\)/.test(save) && /push_platform:/.test(save) && /push_token_at:/.test(save),
   'with the token, the platform and when it was taken');
-t(/catch\(e\)\{ ok=false; \}/.test(save), 'and a failure cannot interrupt them opening their day');
+t(/var ok=await sbPatchProfile\(row\);/.test(save) && /return ok;/.test(save),
+  'and a failure is returned, never thrown at somebody opening their day');
 t(/if\(!tok \|\| !cl \|\| !cl\.code\) return false;/.test(save), 'no token and no client means no write');
 
 console.log('\n  AND WHICH SURFACE IS EVEN RUNNING:');

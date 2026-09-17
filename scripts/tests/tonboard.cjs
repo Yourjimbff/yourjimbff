@@ -359,7 +359,11 @@ t(/async function _obPatchIntake\(\)/.test(src), 'a late answer has a way to be 
 const pi=slice('async function _obPatchIntake(){','\nfunction _obConsultPick');
 t(/base\.blocker_text=/.test(pi) && /base\.pledge=/.test(pi) && /base\.consult=/.test(pi),
   'and it carries all three of them');
-t(/sbUpsert\('profiles', row, 'client_code'\)/.test(pi), 'onto the row that already exists');
+/* 17 Sep: this was an upsert, and an upsert proposes a whole new row first -
+   so Postgres refused it for a missing name every time and the critique and the
+   pledge were never saved for anybody. See tprofilepatch. */
+t(/sbPatchProfile\(\{intake_json:js\}\)/.test(pi), 'onto the row that already exists, as an update');
+t(!/sbUpsert/.test(pi), '  and never as an upsert, which wrote nothing at all');
 t(/if\(window\._obPreview===true\) return false;/.test(pi), 'and a preview still writes nothing');
 t((src.match(/_obPatchIntake\(\);/g)||[]).length>=2,
   'fired from the critique and from the pledge',
