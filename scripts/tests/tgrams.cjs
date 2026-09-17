@@ -68,5 +68,20 @@ none("2 grams fat free cheese");  /* the `free` guard - this is a cheese */
 none("a handful of blueberries");
 none("4 oz wild caught salmon, 4 oz jasmine white rice");
 
+console.log('\n  AND NO EMPTY COMMA HOLES LEFT IN THE NAME:');
+const R=s=>_parseInlineMacros(s).rest;
+const rt=(inp,want)=>t(R(inp)===want, JSON.stringify(want), JSON.stringify(R(inp)));
+/* The three that are on the board right now, reproduced from what they said. */
+rt("9 blackberries, 6 chicken sausage (200 cals, 2 eggs, 1/2 bagel, 1 oz cream cheese",
+   "9 blackberries, 6 chicken sausage, 2 eggs, 1/2 bagel, 1 oz cream cheese");
+rt("160g plain greek chobani yogurt (100 cals, 10g protein), powder peanut butter (5g protein, 55 cals), a mandarin, 150g strawberries and matcha w whole milk",
+   "160g plain greek chobani yogurt, powder peanut butter (5g protein, 55 cals), a mandarin, 150g strawberries and matcha w whole milk");
+rt("Starbucks sugar free protein latte (200 cals, 29g protein, 12g carbs, 4g fat)",
+   "Starbucks sugar free protein latte");
+/* And a name with nothing to clean is not touched. */
+rt("chicken and rice","chicken and rice");
+rt("eggs (large) and toast","eggs (large) and toast");
+rt("4 oz wild caught salmon, 4 oz jasmine white rice","4 oz wild caught salmon, 4 oz jasmine white rice");
+
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all gram assertions pass');
 process.exit(bad?1:0);
