@@ -7227,6 +7227,13 @@ body.tlwnav #tlScroll{height:calc(100vh - 194px);height:calc(100svh - 194px);}
 .nlPkI{font-size:12.5px;line-height:1.6;color:rgba(240,236,228,0.6);margin-top:var(--pk3);}
 .nlPkF{font-size:12px;font-weight:600;color:rgba(240,236,228,0.4);
   margin-top:var(--pk3);padding-top:var(--pk2);border-top:1px solid rgba(255,255,255,0.055);}
+/* What it worked out from their sentence. Gold, because it is the app having
+   understood something, and it replaces the ready line rather than stacking
+   under it - two footers is how a card starts looking cluttered. */
+.nlPkA{font-size:12.5px;line-height:1.5;font-weight:600;color:var(--gold);
+  margin-top:var(--pk3);padding-top:var(--pk2);border-top:1px solid rgba(245,197,24,0.2);
+  animation:nlPkUp .3s cubic-bezier(.16,.84,.26,1) both;}
+.nlPkA.w{color:rgba(240,236,228,0.45);font-weight:500;}
 .nlPkWait{display:flex;align-items:center;gap:var(--pk1);font-size:13px;font-weight:700;
   color:rgba(240,236,228,0.58);padding:var(--pk3);}
 .nlPkDot{width:7px;height:7px;border-radius:50%;background:var(--gold);flex-shrink:0;
@@ -71191,9 +71198,139 @@ async function _nlLabelPeek(st){
     out.ingredients=String(lab.ingredients||'').trim();
     out.serving=String(lab.serving_text||'').trim();
     st.peek=out;
+    try{ if(window._nlAdjPlaceholder) window._nlAdjPlaceholder(st); }catch(e){}
+    /* The packet itself, never overwritten. Every adjustment is measured from
+       here, so editing the sentence re-answers it instead of stacking on the
+       last answer. */
+    st.peekBase={calories:out.calories, protein:out.protein, carbs:out.carbs, fat:out.fat};
+    try{ _nlAdjFor=''; }catch(e){}
     try{ _nlPeekPaint(st); }catch(e){}
     return true;
   }catch(e){ try{ if(st){ st.peekBusy=false; } }catch(_e){} return false; }
+}
+/* ===== THE BOX BECOMES A CONVERSATION ONCE THE PACKET IS READ ============
+   Yusuf, 17 Sep: "it should act as if it is an interactive jim bar alongside
+   description. so it should be able to read commands. For instance, 'i ate half
+   of this' should automatically adjust the macros. 'i didnt eat the plantains' -
+   should remove the carbohydrates from it (NOT ENTIRELY, BUT PROPORTIONALLY).
+   Consider how for instance its breaded chicken, so there are some carbs in
+   that. So it shouldnt take off all of it."
+
+   That last sentence is the whole feature and it is why this cannot be
+   arithmetic. Taking the plantains off a Caribbean Pineapple Chicken Tenders
+   meal does not take off 55g of carbohydrate - the breading carries carbs and
+   so does the sauce. Only something that knows what those words are made of can
+   split the number, and the packet has already told us the words: "breaded
+   chicken nuggets, fresh root vegetables, plantains, fresh pineapple sauce,
+   chives".
+
+   EVERY ADJUSTMENT IS MEASURED FROM THE PRINTED NUMBERS, never from the last
+   answer. They are editing one sentence, not stacking instructions, so
+   "half of it" after "no plantains" means half of the packet with no plantains,
+   not a quarter of anything. peekBase is the packet and it never moves. */
+var _nlAdjSeq=0, _nlAdjTimer=null, _nlAdjFor='';
+function _nlAdjPlaceholder(st){
+  try{
+    var el=document.getElementById('nlLine'); if(!el) return;
+    el.placeholder = (st && st.peek)
+      ? 'Ate half? Left something on the plate? Tell me'
+      : 'Describe or estimate how much you ate, and list everything in it';
+  }catch(e){}
+}
+/* Fires when they stop typing, not on every letter - a request per keystroke is
+   a bill and a flicker. Anything shorter than a few characters is somebody
+   still starting a sentence. */
+function _nlAdjSoon(st){
+  try{
+    if(!st || !st.peek || !st.peekBase) return;
+    if(_nlAdjTimer) clearTimeout(_nlAdjTimer);
+    _nlAdjTimer=setTimeout(function(){ try{ _nlAdjust(st); }catch(e){} }, 1100);
+  }catch(e){}
+}
+function _nlAdjReset(st){
+  /* An empty box means the packet as printed. Going back to nothing has to put
+     the numbers back, or a deleted sentence leaves its effect behind. */
+  try{
+    if(!st || !st.peek || !st.peekBase) return false;
+    var b=st.peekBase;
+    st.peek.calories=b.calories; st.peek.protein=b.protein;
+    st.peek.carbs=b.carbs; st.peek.fat=b.fat;
+    st.peek.adjNote=''; _nlAdjFor='';
+    try{ _nlPeekPaint(st); }catch(e){}
+    return true;
+  }catch(e){ return false; }
+}
+async function _nlAdjust(st){
+  try{
+    if(!st || !st.peek || !st.peekBase) return false;
+    if(window._nl!==st || st.logged) return false;
+    var said=String((document.getElementById('nlLine')||{}).value||'').trim();
+    if(!said){ _nlAdjReset(st); return false; }
+    if(said.length<4) return false;
+    if(said===_nlAdjFor) return false;                  // already answered this sentence
+    _nlAdjFor=said;
+    var seq=++_nlAdjSeq;
+    var b=st.peekBase;
+    st.peek.adjNote='Working that out…'; st.peek.adjBusy=true;
+    try{ _nlPeekPaint(st); }catch(e){}
+    var ask='A packet of food has its nutrition printed on it. The person is about to log it '
+      +'and has just said something about how much of it they actually ate.\n\n'
+      +'WHAT THE PACKET PRINTS, for the whole container:\n'
+      +'  '+Math.round(+b.calories||0)+' calories, '+Math.round(+b.protein||0)+'g protein, '
+      +Math.round(+b.carbs||0)+'g carbs, '+Math.round(+b.fat||0)+'g fat\n';
+    try{ if(st.peek.name) ask+='THE PRODUCT: '+String(st.peek.name)+'\n'; }catch(e){}
+    try{ if(st.peek.ingredients) ask+='WHAT IS IN IT, off the packet: '+String(st.peek.ingredients)+'\n'; }catch(e){}
+    try{ if(st.peek.serving) ask+='SERVING AS PRINTED: '+String(st.peek.serving)+'\n'; }catch(e){}
+    ask+='\nWHAT THEY SAID: "'+said.slice(0,400)+'"\n\n'
+      +'Work out what they actually ate and reply with ONLY compact JSON, no markdown:\n'
+      +'{"calories":n,"protein":n,"carbs":n,"fat":n,"note":"one short line"}\n\n'
+      +'THE RULE THAT MATTERS MOST: a component they left is worth ITS OWN SHARE and not '
+      +'the whole macro. Taking the plantains off a breaded chicken meal does NOT remove all '
+      +'the carbohydrate - the breading carries carbs and so does a sweet sauce. Split the '
+      +'printed numbers across the ingredients by what those foods are actually made of, take '
+      +'away only the part they named, and leave the rest standing. Same in reverse for a '
+      +'fraction: "half of it" is half of everything, "half the plantains" is half of only '
+      +'that one food.\n'
+      +'Rough is right. These are estimates off an ingredient list, and a sensible split beats '
+      +'a precise-looking wrong number.\n'
+      +'If they said nothing that changes the amount - they are just describing it, or naming '
+      +'something they ate ALONGSIDE it - hand the printed numbers back unchanged and say so.\n'
+      +'Never go below zero. Never go above the printed numbers unless they said they had more '
+      +'than one.\n'
+      +'note: one short line in plain words about what you changed and why, no more than about '
+      +'90 characters. "Half of it." "Plantains off, kept the carbs in the breading." '
+      +'"Nothing changed." No greeting, no markdown, no dashes.';
+    var txt='';
+    try{
+      var res=await fetch('/.netlify/functions/analyze',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({messages:[{role:'user',content:ask}],temperature:0.1,max_tokens:400})});
+      var j=await res.json();
+      if(j&&j.content) j.content.forEach(function(x){ if(x&&x.type==='text'&&x.text) txt+=x.text; });
+    }catch(e){ txt=''; }
+    if(seq!==_nlAdjSeq || window._nl!==st) return false;
+    var o=null;
+    try{ o=JSON.parse(String(txt||'').replace(/```json/gi,'').replace(/```/g,'').trim()); }catch(e){ o=null; }
+    st.peek.adjBusy=false;
+    if(!o || !isFinite(+o.calories)){
+      /* A failed read puts the packet back rather than leaving a stale number on
+         screen. Their sentence still goes up with the log either way. */
+      st.peek.calories=b.calories; st.peek.protein=b.protein;
+      st.peek.carbs=b.carbs; st.peek.fat=b.fat;
+      st.peek.adjNote='';
+      try{ _nlPeekPaint(st); }catch(e){}
+      return false;
+    }
+    function cap(v, hi){ var n=Math.round(+v||0); if(n<0) n=0; if(n>hi*4) n=Math.round(hi); return n; }
+    st.peek.calories=cap(o.calories, b.calories||1);
+    st.peek.protein =cap(o.protein,  b.protein||1);
+    st.peek.carbs   =cap(o.carbs,    b.carbs||1);
+    st.peek.fat     =cap(o.fat,      b.fat||1);
+    var changed=(st.peek.calories!==Math.round(+b.calories||0));
+    st.peek.adjNote=changed ? String(o.note||'').trim().slice(0,110) : '';
+    try{ _nlPeekPaint(st); }catch(e){}
+    return true;
+  }catch(e){ try{ if(st&&st.peek) st.peek.adjBusy=false; }catch(_e){} return false; }
 }
 /* Its own container, repainted on its own, because the sheet must never be
    rebuilt while somebody is typing in it - that is how the keyboard goes. */
@@ -71242,7 +71379,9 @@ function _nlPeekHtml(st){
         +cell(Math.round(+p.fat||0)+'g','fat')
       +'</div>'
       +(p.ingredients?('<div class="nlPkI">'+_escHtml(p.ingredients)+'</div>'):'')
-      +'<div class="nlPkF">Ready to log. Add anything you had with it.</div>'
+      +(p.adjNote
+        ? ('<div class="nlPkA'+(p.adjBusy?' w':'')+'">'+_escHtml(p.adjNote)+'</div>')
+        : '<div class="nlPkF">Ready to log. Tell me if you had less, or more.</div>')
     +'</div>';
   }catch(e){ return ''; }
 }
@@ -97711,6 +97850,7 @@ function nlRender(){
   if(st.stage!=='cap'){ try{ if(_nlRecOn) nlStopVoice(); }catch(e){} }
   if(st.stage==='cap'){
     try{ _nlMicPaint(); }catch(e){}
+    try{ if(window._nlAdjPlaceholder) window._nlAdjPlaceholder(st); }catch(e){}
     var ln=document.getElementById('nlLine');
     if(ln) ln.addEventListener('input', function(){
       st.line=ln.value;
@@ -97723,6 +97863,11 @@ function nlRender(){
          thumb and the keyboard goes - the fault the CRM search box just had. */
       var ec=document.getElementById('nlEchoWrap');
       if(ec){ try{ ec.innerHTML=_nlEchoHtml(st); }catch(e2){} }
+      /* ONCE A PACKET HAS BEEN READ THIS BOX IS AN INSTRUCTION, NOT A
+         DESCRIPTION. "I ate half of this" and "I left the plantains" change the
+         numbers on the card above it. Through window, for the same reason the
+         rest of the peek is - the test lifter chases bare identifiers. */
+      try{ if(window._nlAdjSoon) window._nlAdjSoon(st); }catch(e3){}
     });
   }
 }
