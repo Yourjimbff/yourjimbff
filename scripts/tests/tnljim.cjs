@@ -53,5 +53,12 @@ ok(/st\.est=est; st\.stage='res'; nlRender\(\);\s*\n\s*\/\/[^\n]*\n\s*try\{ if\(
 const wr=slice('/* _priced is the whole point','}, st.photo||null);');
 ok(/insight:\(st\.est\.insight\|\|''\)/.test(wr), 'the row saves the words they actually read');
 
+// ---- HOUSE LAW: he does not write em dashes, and Jim is his voice to a client
+const tb=slice('function _jimToneBlock(prof){','async function buildDayContext(askText){');
+const rets=tb.split('\n').filter(l=>/return /.test(l) && /DELIVERY:/.test(l));
+ok(rets.length>=5, 'every delivery setting has a return ('+rets.length+')');
+ok(rets.every(l=>l.indexOf('_jimPunct()+')>=0), 'and every single one carries the no-dash rule');
+ok(/never use an em dash or an en dash/.test(src), 'the rule says what it means');
+
 console.log(fails?('\n  '+fails+' FAILED\n'):'\n  all passed\n');
 process.exit(fails?1:0);

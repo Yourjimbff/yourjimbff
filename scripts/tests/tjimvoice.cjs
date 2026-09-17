@@ -20,7 +20,8 @@ const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==un
 global.window={};
 global.localStorage={_d:{},getItem(k){return this._d[k]==null?null:this._d[k];},setItem(k,v){this._d[k]=String(v);}};
 const MINE=['_jimGoalRead','_jimGoalLine','_jimTurboUnlocked','_jimTone','_jimToneSet',
-            '_jimNoCritique','_jimNoCritiqueSet','_jimToneName','_jimToneBlock','_jimTenLogs'];
+            '_jimNoCritique','_jimNoCritiqueSet','_jimToneName','_jimToneBlock','_jimTenLogs',
+            /* 17 Sep: _jimToneBlock now opens every delivery with the no-dash rule */ '_jimPunct'];
 eval(MINE.map(defOf).join('\n'));
 eval(src.match(/var _JIM_TONE_KEY=[^\n]*\n/)[0]);
 eval(src.match(/var JIM_TONES=\[[\s\S]*?\];\n/)[0]);
