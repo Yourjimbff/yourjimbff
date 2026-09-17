@@ -14954,9 +14954,119 @@ async function _doLoginInner(code){
        that knows whether a human has ever filled this in. */
     var _obSrv=(profiles && profiles.length>0) ? profiles[0] : null;
     try{ setTimeout(function(){ try{ obStart(0, _obSrv); }catch(e){} }, 400); }catch(e){}
+    /* AND THE PHONE ITSELF, IF THIS IS THE PHONE. Same moment for the same
+       reason: the server has answered, so there is a row to write a token onto. */
+    try{ setTimeout(function(){ try{ _pushInit(); }catch(e){} }, 1200); }catch(e){}
   }).catch(function(){});
 }
 
+/* ===== THE PUSH DOOR ====================================================
+   WHY THIS EXISTS AND WHY IT IS THE FIRST THING BUILT FOR THE STORE.
+
+   Apple's guideline 4.2: "Your app should include features, content, and UI
+   that elevate it beyond a repackaged website... apps shouldn't primarily be
+   marketing materials, advertisements, web clippings, content aggregators, or
+   a collection of links." A Capacitor shell pointed at a live URL is the exact
+   shape reviewers reject under it, and being a good app is not a defence - the
+   reviewer's test is whether they could have opened this in Safari.
+
+   A notification on a locked iPhone is the cleanest possible answer, because a
+   web page on iOS cannot do it. It is also the thing this app most needs on its
+   own merits: somebody who logs breakfast and hears nothing until they next
+   choose to open the app is somebody the app is not actually coaching.
+
+   WHAT THIS HALF DOES. It asks for permission, registers with Apple, and writes
+   the device token onto the client's own row. That is all. Sending is a server
+   job and needs an APNs key that only Yusuf can generate, so this half ships
+   first and stands alone: a token sitting on a row costs nothing and is the
+   thing the sending half will need on the day it exists.
+
+   IT IS SILENT ON THE WEB. Everything below returns false in a browser, so
+   nothing changes for anybody who never installs it.
+
+   IT ASKS AT THE RIGHT MOMENT. Not on first paint - a permission box thrown at
+   somebody in their first two seconds is the one people refuse out of reflex,
+   and iOS only ever asks once. This runs after the server has answered, which
+   means after they are signed in and looking at their own day. */
+function _capPush(){
+  try{
+    var c=window.Capacitor;
+    if(!c || !c.Plugins || !c.Plugins.PushNotifications) return null;
+    /* isNativePlatform is the only honest test. A user agent can be anything. */
+    if(typeof c.isNativePlatform==='function' && !c.isNativePlatform()) return null;
+    return c.Plugins.PushNotifications;
+  }catch(e){ return null; }
+}
+function _pushPlatform(){
+  try{
+    var c=window.Capacitor;
+    if(c && typeof c.getPlatform==='function') return String(c.getPlatform()||'');
+  }catch(e){}
+  return '';
+}
+/* Written where every other fact about a person is written. Best effort: a
+   failure here must never be able to interrupt somebody opening their day. */
+async function _pushSaveToken(tok){
+  try{
+    if(!tok || !cl || !cl.code) return false;
+    var row={client_code:cl.code, push_token:String(tok),
+             push_platform:_pushPlatform()||'ios',
+             push_token_at:new Date().toISOString()};
+    var ok=false;
+    try{ ok=!!(await sbUpsert('profiles', row, 'client_code')); }catch(e){ ok=false; }
+    if(ok){ try{ profile=Object.assign({}, profile||{}, row); }catch(e){} }
+    return ok;
+  }catch(e){ return false; }
+}
+var _PUSH_DONE=false;
+async function _pushInit(){
+  try{
+    if(_PUSH_DONE) return false;
+    var P=_capPush(); if(!P) return false;          // a browser, so nothing to do
+    _PUSH_DONE=true;
+    /* THE LISTENERS GO ON BEFORE THE ASK, not after. Registration can answer
+       faster than the next line runs, and a token that arrives before anybody
+       is listening is a token nobody ever hears about. */
+    try{
+      P.addListener('registration', function(t){
+        try{ _pushSaveToken(t && (t.value||t.token)); }catch(e){}
+      });
+    }catch(e){}
+    try{
+      P.addListener('registrationError', function(err){
+        /* Said out loud rather than swallowed. A silent failure here looks
+           exactly like a phone that simply never gets notifications. */
+        try{ console.warn('[push] registration failed', err); }catch(e){}
+      });
+    }catch(e){}
+    /* A TAP ON A NOTIFICATION HAS TO LAND SOMEWHERE. Opening the app to
+       whatever screen it was last on is the behaviour that teaches people the
+       notifications are not worth tapping. */
+    try{
+      P.addListener('pushNotificationActionPerformed', function(ev){
+        try{
+          var d=(ev && ev.notification && ev.notification.data) || {};
+          var t=String(d.tab||'').trim();
+          if(t && typeof switchTab==='function'){ switchTab(t); return; }
+          if(typeof switchTab==='function') switchTab('Today');
+        }catch(e){}
+      });
+    }catch(e){}
+    /* One ask, and only if iOS has not already been asked. checkPermissions
+       answers 'prompt' only the first time; asking again when it says 'denied'
+       does nothing on iOS and is not attempted. */
+    var st=null;
+    try{ st=await P.checkPermissions(); }catch(e){ st=null; }
+    var val=(st && st.receive) ? String(st.receive) : 'prompt';
+    if(val==='prompt' || val==='prompt-with-rationale'){
+      try{ st=await P.requestPermissions(); }catch(e){ st=null; }
+      val=(st && st.receive) ? String(st.receive) : '';
+    }
+    if(val!=='granted') return false;
+    try{ await P.register(); }catch(e){ return false; }
+    return true;
+  }catch(e){ return false; }
+}
 function skipSetup(){
   // Create a minimal default profile so setup never shows again
   var defCal = 1800;
