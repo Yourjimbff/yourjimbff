@@ -34,7 +34,9 @@ guard(MINE, n=>eval(n));
 
 console.log('\n  THE MAIN PAGE ASKS, ONCE:');
 t(/id="jimVoiceAsk"/.test(src), 'there is a host on the Today page');
-t(/if\(t==='Today'\)\{ try\{ _jimAskPaint\(\); \}catch\(e\)\{\} \}/.test(src), '  painted when they open it');
+/* The Today tab now paints two things, so this asserts its own one is there
+   rather than that it is the only one. */
+t(/if\(t==='Today'\)\{ try\{ _jimAskPaint\(\); \}catch\(e\)\{\}/.test(src), '  painted when they open it');
 painted=''; t(_jimAskPaint()===true, 'a client who has never answered gets asked');
 /* Four now, not three: the question became a real question when the opt-in
    ruling landed, so it needs a real no. Still not five INTENSITIES - no excuses
