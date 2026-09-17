@@ -648,5 +648,27 @@ t(/text-wrap:balance/.test(srcAll), 'and the lines break evenly instead of orpha
 const short=_OB_STEPS.filter(x=>x.q&&x.q.length<=34).length;
 t(short>=8, 'every short screen is untouched by it', String(short)+' short screens');
 
+/* THE LANDING IS THREE SCREENS AND THEY ARE ADJACENT (Yusuf, 17 Sep: "we're
+   talking about this being the same place right - once they share one of your
+   top brutally honest critiques ... then there's the question, thank you for
+   sharing that with me ... and then they say yes, then they get the option
+   screen and consultation screen").
+
+   It was NOT the same place: one question and three demos sat between the
+   critique and the thank-you. He had to ask before anyone noticed, so the order
+   is a test now rather than a thing that drifts again. */
+console.log('\n  THE FLOW LANDS IN HIS ORDER:');
+const iB=keys.indexOf('blocker_text'), iP=keys.indexOf('pledge'), iC=keys.indexOf('consult');
+t(iB>=0 && iP===iB+1, 'the thank-you comes straight off the critique, nothing between',
+  keys.slice(Math.max(0,iB),iB+3).join(' > '));
+t(iP>=0 && iC===iP+1, 'and the offer comes straight off the pledge');
+t(iC===keys.length-2, 'with only the home-screen step after it', keys[keys.length-1]);
+/* The write still happens first, so nobody can lose an account on the offer. */
+const iFin=keys.indexOf(_OB_STEPS.filter(x=>x.fin)[0].k);
+t(iFin>=0 && iFin<iB, 'and the account is already saved before any of the three draw',
+  keys[iFin]+' @'+iFin+' vs blocker @'+iB);
+/* His goal sentence is what the critique and the offer both point back at. */
+t(keys.indexOf('goal_text')<iB, 'the goal is still asked before the critique that names it');
+
 console.log(bad? '\n  '+bad+' FAILED\n' : '\n  all good ('+keys.length+' screens)\n');
 process.exit(bad?1:0);
