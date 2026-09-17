@@ -112,6 +112,49 @@ t(/SAY "I DON'T KNOW" WHEN YOU DO NOT KNOW/.test(src), 'and so did not bluffing'
 t(/QUESTION A NUMBER THAT LOOKS WRONG/.test(src), 'a wrong number gets asked about, not coached on');
 t(/JIM-FEEDBACK-VOICE\.md/.test(src), 'the source file is cited in the code');
 
+/* THREE MISSES MEASURED ON REAL SHIPPED INSIGHTS, 17 Sep, first run of the food
+   feedback loop. All three came off logs Jim actually answered, and none of the
+   three was covered by the ten-log block as it stood. Each assertion below is
+   the rule that would have caught the one named above it. */
+console.log('\n  THE THREE MISSES THE LOOP MEASURED, AND THE RULES THAT CATCH THEM:');
+
+/* u6gpr563954, 15 Sep. Popcorn and "Hard Boiled Eggs & Cheese" were logged as the
+   SAME snack at the SAME eat time, twenty six seconds apart. Jim judged the
+   popcorn row alone - "mostly air and carbs, fills the belly without much
+   protein" - when the snack he was actually looking at was 21g of protein
+   against 18g of carbohydrate. This is Adriana Picarella's six rows again. */
+t(/GROUP THE ROWS BEFORE YOU JUDGE ANY ONE OF THEM/.test(src),
+  'the rows are grouped before anything is scored');
+t(/the put together is good/.test(src), '  carrying his own words from the six-row log');
+t(/the same meal label, the same eat time, or logged within a few minutes/.test(src),
+  '  and naming the three signals that say two rows are one plate');
+t(/do not hand down a verdict on the single row/.test(src),
+  '  with the single-row verdict forbidden outright');
+/* A rule the prompt cannot act on is decoration. The day context has to print the
+   meal label and the eat time on every row, or there is nothing to group by. */
+t(/\(e\.meal\?e\.meal\+' ':''\)/.test(src), "TODAY'S FOOD prints each row's meal label");
+t(/\(\(e\.eat_time\|\|e\.eatTime\)\?'@'\+\(e\.eat_time\|\|e\.eatTime\)/.test(src),
+  '  and its eat time, so the grouping rule has something to read');
+
+/* uwbhpzh6hgd, 15 Sep. "A banana and a spoonful of peanut butter. A handful of dry
+   roasted peanuts and 4 ounces of 85/15 ground beef" came back as "most calories
+   are the nuts and peanut butter - next time, swap those for a cleaner carb like
+   berries or rice." Every item in that log is whole food, and his ruling on the
+   walnut log was "the nuts are amazing". */
+t(/This holds for fat exactly as it\s+holds for carbohydrate/.test(src),
+  'whole food is not punished for its FAT either, not only its carbs');
+t(/never swap a whole-food fat out for a carbohydrate/.test(src),
+  '  and swapping a real fat for a carb is named as the error it is');
+
+/* unwt3bwjczr, 15 Sep. "Chipotle protein bowls & tortillas" came back as "most
+   calories are the breading and oils". There is no breading in it. The same
+   sentence shape also blamed "the breading and fries" on a meal logged at 18g of
+   carbohydrate, so the fault is a template, not one bad guess. */
+t(/DO NOT INVENT THE CULPRIT/.test(src), 'the calories are not blamed on an invented ingredient');
+t(/A Chipotle bowl\s+has no breading in it/.test(src), '  with the log that proved it');
+t(/the macros have to agree with you/.test(src),
+  '  and the claim has to survive the row it is written about');
+
 console.log('\n  THE FLOOR, AND NO SETTING IS ABOVE IT:');
 t(/STOP COACHING THE FOOD/.test(src), 'there is a hard stop');
 t(/whatever the delivery setting says, including turbo/.test(src), '  that turbo cannot override');
