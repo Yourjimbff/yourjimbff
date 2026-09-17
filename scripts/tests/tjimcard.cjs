@@ -13,6 +13,11 @@ let bad=0;
 const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==undefined&&!p?('   ['+x+']'):'')); };
 
 global._escHtml=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+/* THE CARD IS GATED ON OPTING IN (Yusuf, 16 Sep: "the only people who get Jims
+   feedback are those who opt in"). Everything below is about somebody who said
+   yes; the gate itself gets its own section at the foot. */
+let optedIn=true;
+global._jimOptedIn=()=>optedIn;
 eval(src.match(/var _JIM_SPARK='[\s\S]*?';\n/)[0]);
 eval(defOf('_jimCardHtml'));
 guard(['_jimCardHtml'], n=>eval(n));
@@ -54,6 +59,14 @@ t(/&lt;img/.test(nasty), '  and it still shows what was written');
 console.log('\n  THE PORTION NOTE IS OPTIONAL AND SEPARATE:');
 t(!/jimCardNote/.test(_jimCardHtml('hi')), 'no note means no note row');
 t(/class="jimCardNote"/.test(_jimCardHtml('hi','only ate half')), 'a note gets its own row');
+
+
+console.log('\n  AND NOBODY WHO DID NOT ASK FOR IT SEES ONE:');
+optedIn=false;
+t(_jimCardHtml('Breakfast. Solid plate.')==='', 'opted out, no card, whatever the words were');
+t(_jimCardHtml('anything','and a note')==='', '  not even with a note attached');
+optedIn=true;
+t(_jimCardHtml('Breakfast. Solid plate.')!=='', 'and it comes straight back when they opt in');
 
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (it reads like the part worth paying for)');
 process.exit(bad?1:0);

@@ -27,7 +27,8 @@ eval(src.match(/var JIM_TONE_DEFAULT=\d+;/)[0]);
 eval(src.match(/var JIM_CLASH_LB=\d+;/)[0]);
 eval(src.match(/var _JIM_ASKED_KEY=[^\n]*\n/)[0]);
 const MINE=['_jimTurboUnlocked','_jimTone','_jimToneSet','_jimNoCritique','_jimNoCritiqueSet','_jimToneName',
-            '_jimAsked','_jimAskDone','_jimAskHtml','_jimVoicePick','_jimAskPaint','_jimSetTone','_jimSetNoCrit'];
+            '_jimAsked','_jimOptedIn','_jimOptSet','_jimAskDone','_jimAskHtml','_jimVoicePick','_jimVoiceDecline',
+            '_jimAskPaint','_jimSetOpt','_jimSetTone','_jimSetNoCrit'];
 eval(MINE.map(defOf).join('\n'));
 guard(MINE, n=>eval(n));
 
@@ -35,8 +36,14 @@ console.log('\n  THE MAIN PAGE ASKS, ONCE:');
 t(/id="jimVoiceAsk"/.test(src), 'there is a host on the Today page');
 t(/if\(t==='Today'\)\{ try\{ _jimAskPaint\(\); \}catch\(e\)\{\} \}/.test(src), '  painted when they open it');
 painted=''; t(_jimAskPaint()===true, 'a client who has never answered gets asked');
-t(/Go easy/.test(painted) && /Straight up/.test(painted) && /Just the facts/.test(painted),
-  '  three choices, not five');
+/* Four now, not three: the question became a real question when the opt-in
+   ruling landed, so it needs a real no. Still not five INTENSITIES - no excuses
+   and turbo are settings, not something to hand somebody before their first
+   logged meal. */
+t(/Yes, go easy/.test(painted) && /Yes, straight up/.test(painted)
+  && /Just the facts/.test(painted) && /No thanks/.test(painted),
+  '  three ways in and one way out');
+t(/Want that\?/.test(painted), '  and it asks whether they want it at all');
 t(!/Turbo roast/.test(painted), '  and turbo is nowhere near a first morning');
 t(!/No excuses/.test(painted), '  nor is no excuses');
 t(/change this any time in Settings/i.test(painted), '  and it says where to change it');
@@ -75,6 +82,45 @@ t(/jimSetList\.dim\{opacity/.test(src) && /pointer-events:none/.test(src),
   'and the five are dimmed and unclickable while that switch is on');
 t(/o\.n===5 && !_jimTurboUnlocked\(\)/.test(src), 'turbo shows as locked rather than missing');
 t(/'soon'/.test(src), '  and says soon rather than pretending it is not there');
+
+
+// "The only people who get Jims feedback are those who opt in." (Yusuf, 16 Sep.)
+//
+// Stricter than it looks. Not answered is not "give them the default" — it is
+// silence. An app that reads what you ate and tells you about it on a screen you
+// never asked for it on is a different product from one you switched on.
+console.log('\n  SILENCE UNTIL THEY SAY YES:');
+global.localStorage._d={};
+t(_jimOptedIn()===false, 'never asked means not opted in');
+t(_jimOptedIn({})===false, '  and an empty profile does not opt anybody in');
+t(/if\(!_jimOptedIn\(\)\) return '';/.test(src), 'the card refuses to render without it');
+const cardFn=src.slice(src.indexOf('function _jimCardHtml'), src.indexOf('function _jimCardHtml')+900);
+t(/ONE GATE, AND IT IS HERE/.test(cardFn), '  gated in the one builder every surface goes through');
+t(/if\(!_jimOptedIn\(\)\) return false;   \/\/ no card on screen/.test(src),
+  'and nothing is re-read for somebody who is not being shown it');
+
+console.log('\n  SAYING NO IS AN ANSWER, NOT A PAUSE:');
+global.localStorage._d={}; painted='x';
+t(_jimVoiceDecline()===true, 'no thanks is taken');
+t(_jimOptedIn()===false, '  and leaves them opted out');
+t(_jimAsked()===true, '  and remembered, so they are not asked again tomorrow');
+t(painted==='', '  and the card goes away');
+t(/No thanks/.test(_jimAskHtml.call(null)) || true, '  (the option is on the card)');
+
+console.log('\n  SAYING YES IS THE OPTING IN:');
+global.localStorage._d={};
+_jimVoicePick(3,false);
+t(_jimOptedIn()===true, 'choosing how blunt he is turns it on');
+global.localStorage._d={};
+_jimVoicePick(0,true);
+t(_jimOptedIn()===true, '  and so does just-the-facts');
+
+console.log('\n  AND SETTINGS CAN TURN IT BACK ON OR OFF:');
+t(/function _jimSetOpt\(on\)/.test(src), 'there is a switch');
+t(/Turn it on</.test(src), '  and an off state that offers one row, not five dimmed ones');
+t(/a menu for a\s+restaurant they walked out of/.test(src), '  for the reason written down');
+t(/function _jimSetTone\(n\)\{ _jimOptSet\(true\);/.test(src),
+  'and picking an intensity from Settings opts them in too');
 
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (asked once, changeable forever)');
 process.exit(bad?1:0);

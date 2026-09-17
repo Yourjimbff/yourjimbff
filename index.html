@@ -85884,6 +85884,11 @@ var _JIM_SPARK='<svg class="jimSpark" viewBox="0 0 24 24" fill="none" aria-hidde
   +'</svg>';
 function _jimCardHtml(text, note){
   try{
+    /* ONE GATE, AND IT IS HERE, because every surface that shows a read goes
+       through this function - the log screen, the journal row, the re-score.
+       Gating at the call sites would mean finding all of them again next time
+       somebody adds one. Not opted in, no card, anywhere. */
+    if(!_jimOptedIn()) return '';
     var body=String(text==null?'':text).trim();
     if(!body) return '';                       // tier 1 is allowed to say nothing
     var sub=String(note==null?'':note).trim();
@@ -85956,6 +85961,7 @@ function _jimRescoreSoon(){
   }catch(e){}
 }
 async function _jimRescore(){
+  if(!_jimOptedIn()) return false;   // no card on screen, nothing to pay for
   var host=document.getElementById('foodResultInline');
   if(!host || !host.querySelector('.jimCardBody')) return false;
   if(typeof curResult==='undefined' || !curResult) return false;
@@ -86015,14 +86021,40 @@ async function _jimRescore(){
 
    ANSWERED IS ITS OWN STATE. Somebody who picked "straight up" and somebody who
    has never been asked both sit on 3; only the first should stop being asked. */
-var _JIM_ASKED_KEY='yjb_jim_asked';
+/* NOBODY GETS THIS WITHOUT ASKING FOR IT (Yusuf, 16 Sep: "the only people who
+   get Jims feedback are those who opt in").
+
+   Stricter than it first looks. Not answered is not "give them the default" - it
+   is SILENCE. An app that reads what you ate and tells you about it on a screen
+   you never asked for it on is a different product from one you switched on, and
+   the difference matters most for the people this app is aimed at.
+
+   Three states, all real: never asked, in, and out. Out is an answer that gets
+   remembered, not a reason to ask again tomorrow. */
+var _JIM_ASKED_KEY='yjb_jim_asked', _JIM_OPT_KEY='yjb_jim_opt';
 function _jimAsked(prof){
   try{
     var pr = prof || (typeof profile!=='undefined' ? profile : null);
-    if(pr && (pr.jim_tone!=null || pr.jim_no_critique!=null)) return true;
+    if(pr && pr.jim_optin!=null) return true;
     var v=null; try{ v=localStorage.getItem(_JIM_ASKED_KEY); }catch(e){}
     return v==='1';
   }catch(e){ return true; }   // never nag on a broken read
+}
+/* THE GATE. Default false, deliberately: an unanswered question is not consent,
+   and a read that throws is not consent either. */
+function _jimOptedIn(prof){
+  try{
+    var pr = prof || (typeof profile!=='undefined' ? profile : null);
+    if(pr && pr.jim_optin!=null) return pr.jim_optin===true || pr.jim_optin==='true';
+    var v=null; try{ v=localStorage.getItem(_JIM_OPT_KEY); }catch(e){}
+    return v==='1';
+  }catch(e){ return false; }
+}
+function _jimOptSet(on){
+  var v=(on===true||on==='true');
+  try{ localStorage.setItem(_JIM_OPT_KEY, v?'1':'0'); }catch(e){}
+  try{ if(typeof profile!=='undefined' && profile) profile.jim_optin=v; }catch(e){}
+  return v;
 }
 function _jimAskDone(){ try{ localStorage.setItem(_JIM_ASKED_KEY,'1'); }catch(e){} }
 /* The three that matter on a first morning: softer, his standard, or facts only.
@@ -86036,11 +86068,12 @@ function _jimAskHtml(){
   }
   return '<div class="jimCard" style="margin:0 0 12px;">'
     +'<div class="jimCardHead">'+_JIM_SPARK+'<span class="jimCardWho">Jim’s read</span></div>'
-    +'<div class="jimCardBody" style="margin-bottom:12px;">Jim looks at every meal you log and tells you '
-    +'what he sees. How blunt do you want him?</div>'
-    +opt('Go easy','Encouraging. Nothing that stings.',"_jimVoicePick(1,false)")
-    +opt('Straight up','What Yusuf would actually say.',"_jimVoicePick(3,false)")
+    +'<div class="jimCardBody" style="margin-bottom:12px;">Jim can look at every meal you log and tell you '
+    +'what he sees. Want that?</div>'
+    +opt('Yes, go easy','Encouraging. Nothing that stings.',"_jimVoicePick(1,false)")
+    +opt('Yes, straight up','What Yusuf would actually say.',"_jimVoicePick(3,false)")
     +opt('Just the facts','No advice. What the food is and does.',"_jimVoicePick(0,true)")
+    +opt('No thanks','Log your food, hear nothing back.',"_jimVoiceDecline()")
     +'<div class="jimAskFoot">You can change this any time in Settings.</div>'
   +'</div>';
 }
@@ -86048,8 +86081,17 @@ function _jimAskHtml(){
    the foot of this file, and the duplicate-name check caught it before it
    shipped. Two functions with one name means the second silently eats the
    first, and the first is what draws Jim's chips. */
+function _jimVoiceDecline(){
+  try{
+    _jimOptSet(false); _jimAskDone();
+    var h=document.getElementById('jimVoiceAsk');
+    if(h) h.innerHTML='';
+    return true;
+  }catch(e){ return false; }
+}
 function _jimVoicePick(tone, noCrit){
   try{
+    _jimOptSet(true);                 // choosing how he talks IS the opting in
     if(noCrit){ _jimNoCritiqueSet(true); _jimToneSet(3); }
     else { _jimNoCritiqueSet(false); _jimToneSet(tone); }
     _jimAskDone();
@@ -86085,8 +86127,21 @@ function _gpSecJim(){
         +'<span class="jimSetTick">'+(on?'✓':(locked?'soon':''))+'</span>'
       +'</div>';
     }).join('');
+    var on=_jimOptedIn();
+    if(!on){
+      /* OFF IS A WHOLE STATE, NOT A DIMMED LIST. Showing five greyed-out
+         intensities to somebody who has said no is showing them a menu for a
+         restaurant they walked out of. One row, one tap back in. */
+      return _gpFlatCard('Jim\u2019s feedback','He can read every meal you log.',
+        '<div class="jimSetRow" onclick="_jimSetOpt(true)" role="button" tabindex="0">'
+          +'<span>Turn it on<div class="jimSetSub">He tells you what he sees after each meal. '
+          +'You choose how blunt.</div></span><span class="jimSetTick">Off</span></div>');
+    }
     return _gpFlatCard('How Jim talks to you','He reads every meal you log.',
-      '<div class="jimSetRow'+(noCrit?' on':'')+'" onclick="_jimSetNoCrit('+(noCrit?'false':'true')+')" role="button" tabindex="0">'
+      '<div class="jimSetRow on" onclick="_jimSetOpt(false)" role="button" tabindex="0">'
+        +'<span>Jim\u2019s feedback<div class="jimSetSub">Turn it off and he says nothing after a meal.</div></span>'
+        +'<span class="jimSetTick">On</span></div>'
+      +'<div class="jimSetRow'+(noCrit?' on':'')+'" onclick="_jimSetNoCrit('+(noCrit?'false':'true')+')" role="button" tabindex="0">'
         +'<span>Do not critique me<div class="jimSetSub">Facts about the food. No advice, ever.</div></span>'
         +'<span class="jimSetTick">'+(noCrit?'✓':'')+'</span>'
       +'</div>'
@@ -86094,8 +86149,9 @@ function _gpSecJim(){
       +'<div class="jimSetList'+(noCrit?' dim':'')+'">'+rows+'</div>');
   }catch(e){ return ''; }
 }
-function _jimSetTone(n){ _jimNoCritiqueSet(false); _jimToneSet(n); _jimAskDone(); try{ renderGoalsPage(); }catch(e){} return true; }
-function _jimSetNoCrit(on){ _jimNoCritiqueSet(on===true||on==='true'); _jimAskDone(); try{ renderGoalsPage(); }catch(e){} return true; }
+function _jimSetOpt(on){ _jimOptSet(on); _jimAskDone(); try{ renderGoalsPage(); }catch(e){} return true; }
+function _jimSetTone(n){ _jimOptSet(true); _jimNoCritiqueSet(false); _jimToneSet(n); _jimAskDone(); try{ renderGoalsPage(); }catch(e){} return true; }
+function _jimSetNoCrit(on){ _jimOptSet(true); _jimNoCritiqueSet(on===true||on==='true'); _jimAskDone(); try{ renderGoalsPage(); }catch(e){} return true; }
 function _jimGoalRead(prof){
   try{
     var p = prof || (typeof profile!=='undefined' ? profile : null);
