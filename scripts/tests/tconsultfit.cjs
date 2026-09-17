@@ -80,20 +80,49 @@ t(_obConsultFits({})===false && _obConsultFits(null)===false, 'and an empty answ
 t(/_ageFromBday\(a\.birthday\)/.test(defOf('_obConsultFits')), 'setup reads the birthday they just typed');
 t(/_ageFromBday\(p\.birthday\)/.test(src), 'and the card does too');
 
-console.log('\n  THE SCREEN IS SKIPPED, NOT GREYED OUT:');
+console.log('\n  THE SCREEN NO LONGER DISAPPEARS:');
+/* CHANGED 16 Sep, on his report: "i never saw the opt in for a call or text from
+   me dude. i signed into this new profile and nothing for the opt in."
+
+   The whole screen used to be skipped for anyone outside his filter - and also
+   for anyone whose numbers were simply MISSING, which is what happens when
+   somebody taps past the weight screens. An offer that silently is not there is
+   an offer nobody can decline, and he could not find his own.
+
+   Split by COST now. A text from him is cheap, so everybody who finishes is
+   offered one. An hour of his time is scarce, so the CALENDAR inside the screen
+   is what the 23-and-over, eight-pound filter governs. His ruling that he does
+   not want seventy calls stands; what changed is that the screen is reachable. */
 global._OB_STEPS=[{k:'intro'},{k:'gender'},{k:'consult',type:'consult'},{k:'home'}];
 global._ob={a:{birthday:yrs(19), weight:200, goal_weight:190}};
 t(_obApplies({k:'gender'})===true, 'every other step applies to everybody');
-t(_obApplies({k:'consult',type:'consult'})===false, 'the offer does not apply to somebody outside the filter');
-t(_obSkip(2, 1)===3, 'going forward it lands past it', String(_obSkip(2,1)));
-t(_obSkip(2,-1)===1, 'and going back it lands before it', String(_obSkip(2,-1)));
-global._ob={a:{birthday:yrs(30), weight:230, goal_weight:190}};
-t(_obApplies({k:'consult',type:'consult'})===true, 'and somebody inside the filter still gets it');
-t(_obSkip(2, 1)===2, '  where it stops the walk', String(_obSkip(2,1)));
-/* The first and last screens always apply, so the walk can never run off an end
-   however many steps in the middle are hidden. */
+t(_obApplies({k:'consult',type:'consult'})===true,
+  'and so does the offer now, even well outside the filter');
+t(_obSkip(2, 1)===2, '  so the walk stops on it going forward', String(_obSkip(2,1)));
+t(_obSkip(2,-1)===2, '  and going back', String(_obSkip(2,-1)));
 global._ob={a:{}};
-global._OB_STEPS=[{k:'intro'},{k:'consult',type:'consult'},{k:'consult',type:'consult'},{k:'home'}];
+t(_obApplies({k:'consult',type:'consult'})===true,
+  'somebody who never typed a weight gets it too, which is the case he hit');
+
+console.log('\n  THE FILTER MOVED TO THE CALENDAR, IT DID NOT GO AWAY:');
+const consultCard=src.slice(src.indexOf("if(st.type==='consult'){"), src.indexOf("if(st.type==='home'){"));
+t(/_obConsultFits\(a\)/.test(consultCard), 'the card asks the filter before drawing the calendar');
+t(consultCard.indexOf('Yes, text me') < consultCard.indexOf('_obConsultFits(a)'),
+  '  after the quick yes, which everybody gets');
+t(/Pick a time instead/.test(consultCard), 'the calendar is still there for the people it is for');
+t(/only for the people his filter picks/.test(consultCard), '  and the reason is written down');
+t(CONSULT_MIN_AGE===23 && CONSULT_MIN_GAP===8, 'and his numbers are untouched',
+  CONSULT_MIN_AGE+'/'+CONSULT_MIN_GAP);
+
+console.log('\n  THE SKIP MACHINERY STILL WORKS, WITH NOTHING LIVE TO SKIP:');
+/* Nothing returns false from _obApplies today. The walk is kept because the next
+   conditional screen will need it, and a machine that is never exercised is a
+   machine nobody can trust later - so it is still proved here on a fixture. */
+/* Reassign the MODULE binding, not a global. _obSkip was lifted into this scope
+   and resolves _obApplies from here, so setting global._obApplies did nothing and
+   the fixture silently tested the real rule instead of the hidden one. */
+_obApplies=function(st){ return !(st && st.type==='hidden'); };
+global._OB_STEPS=[{k:'intro'},{k:'x',type:'hidden'},{k:'y',type:'hidden'},{k:'home'}];
 t(_obSkip(1,-1)===0, 'walking back off the front stops at the first screen', String(_obSkip(1,-1)));
 t(_obSkip(1, 1)===3, 'and forward off the end stops at the last', String(_obSkip(1,1)));
 

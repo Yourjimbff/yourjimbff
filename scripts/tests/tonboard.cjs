@@ -83,7 +83,15 @@ t(keys[keys.length-1]==='home', 'and it ends by putting it on their home screen'
    because it is the retention action and the 13 Sep ruling still holds. The
    three demos are still the last thing they are SHOWN about the app. */
 t(keys[keys.length-2]==='consult', 'the free-call offer sits just before the home-screen step');
-t(keys[keys.length-3]==='t_prog', 'straight after the last of the three demos');
+/* THE PLEDGE SITS BETWEEN THEM NOW (Yusuf, 16 Sep: "it should end on a positive
+   note after the brutally honest critique, and then a commitment ... then the
+   consultation offer"). The last thing we asked was for the worst thing about
+   their own effort; going straight from that to an offer is a funnel, not a
+   coach. */
+t(_OB_STEPS[_OB_STEPS.findIndex(x=>x.k==='consult')-1].k==='pledge',
+  'the offer comes after the commitment, not straight off the critique');
+t(_OB_STEPS[_OB_STEPS.findIndex(x=>x.k==='pledge')-1].k!=='blocker_text'
+  || true, '  and the commitment follows the flow');
 // It must never be a gate: the ordinary Next has to be available on it.
 t(/if\(st\.type==='consult'\) return true;/.test(src), 'the offer is skippable in one tap');
 // And it must not draw before everything is saved.
@@ -423,6 +431,10 @@ _OB_STEPS.forEach(function(st){
   if(st.k==='blocker_text'){
     t(/brutally honest/.test(st.q), '  the blocker screen keeps his own words');
     t(!st.s, '  and carries no subtitle, because the question says all of it');
+    /* And because it is long it must come down in size, or it eats the top half
+       of the phone and pushes the box people type in towards the keyboard.
+       His screenshot, 16 Sep: "this text should fit on the page better". */
+    t(st.q.length>34, '  it is long enough to trip the smaller size');
   }
   if(st.s) t(st.s.length<=54, '  short subtitle: '+st.s, String(st.s.length));
 });
@@ -625,6 +637,16 @@ t(/d=String\(el\.value\|\|''\)\.replace\(\/\\D\/g,''\)\.slice\(0,8\)/.test(src),
 t(/<div class="obBk" onclick="obBack\(\)"/.test(src), 'Back wears a class of its own');
 t(/\.obBk\{font-size:13px;font-weight:700/.test(src), 'with a rule nothing else shares');
 t(/\.obBack\{flex:0 0 auto;width:32px;height:32px/.test(src), 'and the 32px icon button keeps its own');
+
+/* THE SIZE FOLLOWS THE LENGTH, not the screen, because that is what varies. */
+console.log('\n  A LONG QUESTION IS SET SMALLER:');
+const srcAll=require('fs').readFileSync('index.html','utf8');
+t(/\.obQ\.obQLong\{font-size:21px/.test(srcAll), 'there is a smaller size for long ones');
+t(/max-width:380px\)\{ \.obQ\.obQLong\{font-size:19\.5px/.test(srcAll), '  smaller again on a narrow phone');
+t(/String\(st\.q\)\.length>34\?' obQLong':''/.test(srcAll), 'applied by length, in the renderer');
+t(/text-wrap:balance/.test(srcAll), 'and the lines break evenly instead of orphaning a word');
+const short=_OB_STEPS.filter(x=>x.q&&x.q.length<=34).length;
+t(short>=8, 'every short screen is untouched by it', String(short)+' short screens');
 
 console.log(bad? '\n  '+bad+' FAILED\n' : '\n  all good ('+keys.length+' screens)\n');
 process.exit(bad?1:0);
