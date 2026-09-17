@@ -34,7 +34,15 @@ t(fn.indexOf("_TAB_IDS.forEach") < fn.indexOf("el.classList.add('active')"),
 t(/if\(!el\) return false/.test(fn),             'a tab that does not exist is refused');
 
 console.log('\n  switchTab uses the same one clear, so the two routes cannot disagree:');
-const sw = src.slice(src.indexOf('function switchTab(t){'), src.indexOf('function switchTab(t){')+2600);
+/* Bounded by the next function rather than a character count. A fixed window
+   broke the moment a comment was added inside switchTab (17 Sep) and reported
+   "switchTab does not call _tabOnly", which was never true - the call had just
+   fallen off the end of the window. A stale end anchor throws and says so; a
+   short window lies. */
+const _swI = src.indexOf('function switchTab(t){');
+const _swEnd = src.indexOf('\nfunction ', src.indexOf('_tabRemember(t)', _swI));
+if(_swI<0 || _swEnd<0) throw new Error('stale switchTab anchors');
+const sw = src.slice(_swI, _swEnd);
 t(/_tabOnly\(t\)/.test(sw),      'switchTab calls _tabOnly');
 t(/_tabRemember\(t\)/.test(sw),  'and remembers where he is');
 t(!/'Today','Foodlog','Training','Ask','Profile','Clients','Follow','Feed','Program','Jarvis','Progress','CRM'\]\.forEach\(function\(x\)\{ var el=document/.test(sw),

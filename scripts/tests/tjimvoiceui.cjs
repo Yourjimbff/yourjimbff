@@ -19,7 +19,16 @@ global.cl={code:'freeguy'};
 global.isTrainer=c=>c==='thegoat';
 global.setTimeout=()=>{};
 global.renderGoalsPage=()=>{};
-global.document={getElementById:id=>(id==='jimVoiceAsk'?{set innerHTML(v){painted=v;},get innerHTML(){return painted;}}:null)};
+/* TWO HOSTS NOW. #jimVoiceAsk is inside #tToday, and Today is not on the
+   trainer's nav - it is reached through Settings - so his app opens on Feed and
+   the card was on a page he never lands on. #jimVoiceAskFeed is the second
+   host. Both are stubbed here and `painted` is only ever set from the Today
+   one, so every assertion below still reads the card the client sees. */
+let paintedFeed='';
+global.document={getElementById:id=>(
+  id==='jimVoiceAsk' ? {set innerHTML(v){painted=v;}, get innerHTML(){return painted;}} :
+  id==='jimVoiceAskFeed' ? {set innerHTML(v){paintedFeed=v;}, get innerHTML(){return paintedFeed;}} :
+  null)};
 eval(src.match(/var _JIM_SPARK='[\s\S]*?';\n/)[0]);
 eval(src.match(/var _JIM_TONE_KEY=[^\n]*\n/)[0]);
 eval(src.match(/var JIM_TONES=\[[\s\S]*?\];\n/)[0]);
@@ -28,16 +37,25 @@ eval(src.match(/var JIM_CLASH_LB=\d+;/)[0]);
 eval(src.match(/var _JIM_ASKED_KEY=[^\n]*\n/)[0]);
 const MINE=['_jimTurboUnlocked','_jimTone','_jimToneSet','_jimNoCritique','_jimNoCritiqueSet','_jimToneName',
             '_jimAsked','_jimOptedIn','_jimOptSet','_jimAskDone','_jimAskHtml','_jimVoicePick','_jimVoiceDecline',
-            '_jimAskPaint','_jimSetOpt','_jimSetTone','_jimSetNoCrit'];
+            '_jimAskPaint','_jimAskHosts','_jimSetOpt','_jimSetTone','_jimSetNoCrit'];
 eval(MINE.map(defOf).join('\n'));
 guard(MINE, n=>eval(n));
 
 console.log('\n  THE MAIN PAGE ASKS, ONCE:');
 t(/id="jimVoiceAsk"/.test(src), 'there is a host on the Today page');
-/* The Today tab now paints two things, so this asserts its own one is there
-   rather than that it is the only one. */
-t(/if\(t==='Today'\)\{ try\{ _jimAskPaint\(\); \}catch\(e\)\{\}/.test(src), '  painted when they open it');
-painted=''; t(_jimAskPaint()===true, 'a client who has never answered gets asked');
+/* HIS HOME SCREEN IS NOT TODAY (Yusuf, 17 Sep, third time of asking: "I have
+   still yet to see the gym feedback loop appear on my home screen so I can see
+   what people are seeing"). Today is not on the trainer's nav, so the app opens
+   him on Feed. Checking that the card PAINTS is not the same as checking that
+   the screen it paints on is a screen he sees, and that is the check that was
+   never made. */
+t(/id="jimVoiceAskFeed"/.test(src), 'and one on the Feed, which is where the trainer lands');
+t(/^\s*try\{ _jimAskPaint\(\); \}catch\(e\)\{\}$/m.test(src),
+  '  painted on every tab, so it no longer matters which page an app opens on',
+  'the ask is its own guard - it clears both hosts for anybody who has answered');
+painted=''; paintedFeed=''; t(_jimAskPaint()===true, 'a client who has never answered gets asked');
+t(paintedFeed===painted && /Yes, straight up/.test(paintedFeed),
+  '  and both hosts get the same card, so it cannot appear on one screen only');
 /* Four now, not three: the question became a real question when the opt-in
    ruling landed, so it needs a real no. Still not five INTENSITIES - no excuses
    and turbo are settings, not something to hand somebody before their first
@@ -62,7 +80,8 @@ t(_jimAsked()===false, 'not asked yet, even though the tone already reads 3');
 t(_jimTone({})===3, '  because 3 is the default, not an answer', String(_jimTone({})));
 _jimVoicePick(3,false);
 t(_jimAsked()===true, 'picking the default still counts as answered');
-painted=''; t(_jimAskPaint()===false, '  so they are never asked again');
+painted=''; paintedFeed='x'; t(_jimAskPaint()===false, '  so they are never asked again');
+t(paintedFeed==='', '    and the Feed copy is cleared too, not left behind');
 t(painted==='', '  and the space is cleared rather than left holding a card');
 
 console.log('\n  EACH CHOICE LANDS:');
