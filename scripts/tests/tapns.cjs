@@ -16,8 +16,13 @@ t(/dsaEncoding: 'ieee-p1363'/.test(apns),
   'and the raw r||s signature, not the DER envelope OpenSSL returns by default',
   'a DER signature is refused by Apple and reads as a bad key');
 t(/iss: TEAM, iat: now/.test(apns), 'issued by the team, stamped now');
-t(/replace\(\/\\\\n\/g, '\\n'\)/.test(apns),
-  'and a key pasted with escaped newlines still works', 'this is how it arrives from a form field');
+t(/const pem = toPem\(KEY\);/.test(apns),
+  'and the key is normalised before it is signed with, whatever shape it arrived in',
+  'see tapnskey.cjs — the shapes are exercised against a real signer there');
+t(/keyShape\(process\.env\.APNS_KEY_P8\)/.test(apns),
+  '  with the length and markers reported when it still will not parse');
+t(!/APNS_KEY_P8\)\.slice|key\.slice\(0, ?\d+\)/.test(apns) && /[Nn]ever any key material/.test(apns),
+  '  and never a byte of the key itself, which ends up on a screen and in a log');
 
 console.log('\n  IT DOES NOT MINT A TOKEN PER SEND:');
 /* Apple rejects providers that sign a fresh token on every request. */

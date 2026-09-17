@@ -40,6 +40,47 @@ function b64url(buf) {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
+// WHATEVER SHAPE THE KEY ARRIVES IN (17 Sep, second real send). The panel
+// answered "502 key error:1E08010C:DECODER routines::unsupported" - OpenSSL for
+// "this is not a key I can read". The key was there, it was simply not in a
+// shape crypto would take, and there are only a few ways a .p8 gets out of
+// shape between a text file and an environment variable: a single-line paste
+// box eats the newlines, a form escapes them to the two characters \n, a shell
+// wraps the value in quotes, a Windows editor adds carriage returns, or someone
+// base64s the whole file to avoid the newline problem entirely.
+//
+// None of those is the person's mistake to fix. The base64 body is intact in
+// every one of them, so this pulls the body out, ignores how it was wrapped,
+// and rebuilds the PEM the way OpenSSL wants it: 64 characters to a line,
+// between the BEGIN and END lines the file actually carried.
+function toPem(raw) {
+  var s = String(raw || '').trim();
+  if (s.length > 1 && ((s[0] === '"' && s[s.length - 1] === '"') || (s[0] === "'" && s[s.length - 1] === "'"))) {
+    s = s.slice(1, -1);
+  }
+  s = s.replace(/\\r/g, '').replace(/\\n/g, '\n').replace(/\r/g, '').trim();
+  // Someone base64'd the whole file to dodge the newline problem. Unwrap once.
+  if (s.indexOf('-----BEGIN') < 0 && /^[A-Za-z0-9+/=\s]+$/.test(s)) {
+    try {
+      var peek = Buffer.from(s.replace(/\s+/g, ''), 'base64').toString('utf8');
+      if (peek.indexOf('-----BEGIN') === 0) s = peek.trim();
+    } catch (e) { /* it was just a bare body; fall through */ }
+  }
+  var m = s.match(/-----BEGIN ([A-Z0-9 ]+)-----/);
+  var label = m ? m[1] : 'PRIVATE KEY';
+  var body = s.replace(/-----BEGIN [^-]*-----/g, '').replace(/-----END [^-]*-----/g, '').replace(/\s+/g, '');
+  if (!body) return '';
+  return '-----BEGIN ' + label + '-----\n' + (body.match(/.{1,64}/g) || []).join('\n') + '\n-----END ' + label + '-----\n';
+}
+
+// Length and whether the markers were there. Never any key material - this ends
+// up on a screen and in a log, and a private key belongs in neither.
+function keyShape(raw) {
+  var s = String(raw || '');
+  return '[' + s.length + ' chars, ' + (s.indexOf('-----BEGIN') >= 0 ? 'has' : 'no') + ' BEGIN line, '
+       + (s.split('\n').length) + ' line(s)]';
+}
+
 // The provider token is a JWT Apple wants re-signed at most once an hour and at
 // least once every 24. Cached here so a burst of sends is one signature, not
 // one per phone — Apple rejects providers that mint a fresh token per request.
@@ -51,7 +92,7 @@ function providerToken() {
   if (!KEY || !KID || !TEAM) return null;
   const now = Math.floor(Date.now() / 1000);
   if (_tok && (now - _tokAt) < 2400) return _tok;
-  const pem = String(KEY).replace(/\\n/g, '\n').trim();
+  const pem = toPem(KEY);
   const header = b64url(JSON.stringify({ alg: 'ES256', kid: KID }));
   const payload = b64url(JSON.stringify({ iss: TEAM, iat: now }));
   const signer = crypto.createSign('SHA256');
@@ -135,7 +176,7 @@ async function pushOne(token, title, body, data) {
     // wrong file. Nothing downstream can recover from it, and saying "threw"
     // here would hide the one fact that matters.
     console.error('apns: signing threw', e && e.message);
-    return { ok: false, status: 0, reason: 'key ' + String((e && e.message) || 'unusable').slice(0, 140) };
+    return { ok: false, status: 0, reason: 'key ' + String((e && e.message) || 'unusable').slice(0, 140) + ' ' + keyShape(process.env.APNS_KEY_P8) };
   }
   var BUNDLE = process.env.APNS_BUNDLE_ID;
   if (!jwt || !BUNDLE) return { ok: false, status: 0, reason: 'not_configured' };
@@ -175,4 +216,4 @@ function isDeadToken(r) {
   return !!(r && r.status === 410 && r.reason === 'Unregistered');
 }
 
-module.exports = { pushOne, isDeadToken, providerToken };
+module.exports = { pushOne, isDeadToken, providerToken, toPem };
