@@ -15075,6 +15075,10 @@ async function _doLoginInner(code){
        for the whole roster, and it means the next question like this is a read
        rather than an hour of somebody else's afternoon. */
     try{ setTimeout(function(){ try{ _appStamp(); }catch(e){} }, 900); }catch(e){}
+    /* Same breath as the other things written down once a sign-in has settled.
+       Everyone who picked a voice before 17 Sep picked it into their own
+       browser; this is what carries it up. */
+    try{ setTimeout(function(){ try{ _jimVoiceBackfill(); }catch(e){} }, 1600); }catch(e){}
     try{ setTimeout(function(){ try{ _pushInit(); }catch(e){} }, 1200); }catch(e){}
   }).catch(function(){});
 }
@@ -86766,9 +86770,77 @@ function _jimOptSet(on){
   var v=(on===true||on==='true');
   try{ localStorage.setItem(_JIM_OPT_KEY, v?'1':'0'); }catch(e){}
   try{ if(typeof profile!=='undefined' && profile) profile.jim_optin=v; }catch(e){}
+  try{ _jimSaveVoice(); }catch(e){}
   return v;
 }
-function _jimAskDone(){ try{ localStorage.setItem(_JIM_ASKED_KEY,'1'); }catch(e){} }
+function _jimAskDone(){
+  try{ localStorage.setItem(_JIM_ASKED_KEY,'1'); }catch(e){}
+  try{ _jimSaveVoice(); }catch(e){}
+}
+/* IT NEVER LEFT THE BROWSER (Yusuf, 17 Sep: "is it me or has no one opted into
+   jim feedback? what the fuck gives?").
+
+   178 profiles. Zero with an opt-in saved, zero with a tone, zero with
+   anything - because every setter here wrote to localStorage and stopped. The
+   file even said so: "those columns are not added yet - a schema change is
+   waiting on Yusuf's word." Meanwhile the app went on asking people the
+   question, taking their answer, and throwing it away.
+
+   What that cost, and none of it was visible: he could not see a single
+   person's choice or count how many had made one; anyone who cleared their data
+   or opened the app on a second device was asked all over again; and Jim's
+   voice on a phone had no relationship to Jim's voice anywhere else.
+
+   The columns exist now (migrations/2026-09-17-jim-voice-COLUMNS.sql). This is
+   the one place that writes them. It is debounced because choosing a voice
+   calls three setters in a row and that is one decision, not three writes. */
+var _JIM_SAVE_T=null;
+function _jimSaveVoice(){
+  try{
+    if(window._obPreview===true) return false;
+    if(typeof cl==='undefined' || !cl || !cl.code) return false;
+    if(_JIM_SAVE_T){ clearTimeout(_JIM_SAVE_T); _JIM_SAVE_T=null; }
+    _JIM_SAVE_T=setTimeout(function(){
+      _JIM_SAVE_T=null;
+      try{
+        var row={};
+        try{ row.jim_optin=_jimOptedIn(); }catch(e){}
+        /* The column is text. Stored as the number it has always been so every
+           reader's parseInt keeps working. */
+        try{ row.jim_tone=String(_jimTone()); }catch(e){}
+        try{ row.jim_no_critique=_jimNoCritique(); }catch(e){}
+        /* Written once. Rewriting it on every change would turn "when they
+           answered" into "when they last touched a setting". */
+        try{
+          var had=(typeof profile!=='undefined' && profile) ? profile.jim_asked_at : null;
+          if(!had && _jimAsked()) row.jim_asked_at=new Date().toISOString();
+        }catch(e){}
+        try{ if(typeof profile!=='undefined' && profile) profile=Object.assign({}, profile, row); }catch(e){}
+        sbPatchProfile(row);
+      }catch(e){}
+    }, 60);
+    return true;
+  }catch(e){ return false; }
+}
+/* EVERYONE WHO ALREADY ANSWERED. Their choice is sitting in their own browser
+   and nowhere else. On the next sign-in, if the row knows nothing and this
+   browser does, it goes up - so nobody gets asked a question they answered
+   weeks ago, and he can finally count. Runs once per sign-in and writes nothing
+   when there is nothing to carry. */
+function _jimVoiceBackfill(){
+  try{
+    if(window._obPreview===true) return false;
+    if(typeof cl==='undefined' || !cl || !cl.code) return false;
+    if(typeof profile==='undefined' || !profile) return false;
+    if(profile.jim_optin!=null) return false;
+    var asked=null, opt=null;
+    try{ asked=localStorage.getItem(_JIM_ASKED_KEY); }catch(e){}
+    try{ opt=localStorage.getItem(_JIM_OPT_KEY); }catch(e){}
+    if(asked!=='1' && opt==null) return false;
+    _jimSaveVoice();
+    return true;
+  }catch(e){ return false; }
+}
 /* The three that matter on a first morning: softer, his standard, or facts only.
    No excuses and turbo are real settings and live in Settings; neither is
    something to hand somebody before they have logged a single meal. */
@@ -87295,12 +87367,12 @@ function _jimGoalLine(prof){
    The FINDING is identical at every setting. Only the delivery moves. Never
    write five sets of rules; write one and render it.
 
-   PERSISTENCE: profiles.jim_tone / profiles.jim_no_critique are the home for
-   these, so the setting follows the person to any device. Those columns are
-   not added yet - a schema change is waiting on Yusuf's word - so this reads
-   the profile when the field is there and falls back to this browser meanwhile.
-   Do not let the fallback become the design: a per-device setting is the same
-   fault the feed's Paid/Free toggle shipped with on 16 Sep. */
+   PERSISTENCE: profiles.jim_optin / jim_tone / jim_no_critique / jim_asked_at
+   are the home for these, so the setting follows the person to any device.
+   The columns went in 17 Sep and _jimSaveVoice writes them; localStorage is
+   kept as the instant read and the offline fallback, never as the record.
+   For eight days it WAS the record, and the cost was 178 profiles with not one
+   saved answer between them - see _jimSaveVoice. */
 var _JIM_TONE_KEY='yjb_jim_tone', _JIM_NOCRIT_KEY='yjb_jim_nocrit';
 var JIM_TONES=[
   {n:1, key:'easy',     name:'Easy'},
@@ -87332,6 +87404,7 @@ function _jimToneSet(n){
   var v=parseInt(n,10); if(!(v>=1 && v<=5)) return false;
   try{ localStorage.setItem(_JIM_TONE_KEY, String(v)); }catch(e){}
   try{ if(typeof profile!=='undefined' && profile) profile.jim_tone=v; }catch(e){}
+  try{ _jimSaveVoice(); }catch(e){}
   return true;
 }
 function _jimNoCritique(prof){
@@ -87346,6 +87419,7 @@ function _jimNoCritiqueSet(on){
   var v=!!on;
   try{ localStorage.setItem(_JIM_NOCRIT_KEY, v?'true':'false'); }catch(e){}
   try{ if(typeof profile!=='undefined' && profile) profile.jim_no_critique=v; }catch(e){}
+  try{ _jimSaveVoice(); }catch(e){}
   return v;
 }
 function _jimToneName(n){
