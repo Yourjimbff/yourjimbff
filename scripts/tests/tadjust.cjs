@@ -59,7 +59,14 @@ ok(!/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/u.test(adj+ph), 'no emoji (h
 // ---- one footer, never two
 const html=slice('function _nlPeekHtml(st){','function _nlFastName(echo, line){');
 ok(/p\.adjNote\s*\n?\s*\?/.test(html) || /p\.adjNote/.test(html), 'the card shows what it worked out');
-ok(/nlPkA/.test(html) && /nlPkF/.test(html), 'and it replaces the ready line rather than stacking under it');
+/* The ready line is gone entirely (v526) - it said what the Log it button
+   directly under it already said, and cost a block of height on a screen where
+   that button was already touching the bottom edge. So the worked-out line is
+   the only thing that can appear below the ingredients, and it appears only
+   when there is something to say. */
+ok(/nlPkA/.test(html) && !/nlPkF/.test(html),
+   'the worked-out line is the only thing under the ingredients, and only when earned');
+ok(/p\.adjNote \? \(/.test(html), 'nothing is drawn there when there is nothing to say');
 
 console.log(fails?('\n  '+fails+' FAILED\n'):'\n  all passed\n');
 process.exit(fails?1:0);

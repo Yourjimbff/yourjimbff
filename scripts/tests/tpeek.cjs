@@ -60,12 +60,25 @@ ok(/_foodNameClean\(p\.name/.test(html), 'the title goes through the same name r
 ok(/nlPkT/.test(html) && /nlPkM/.test(html) && /nlPkI/.test(html),
    'title, macros and ingredients all have a place');
 ok(/Nutrition info/.test(html), 'and it says where the numbers came from, in his words');
+/* HE HAD TO SAY THIS TWICE AND THE SECOND TIME HE WAS ANGRY. "change read off
+   the packet to nutrition info" - I changed the finished card's eyebrow, left
+   the WAITING pill still saying "Reading the packet", and then told him his
+   phone was stale. His phone was fine. Both strings are asserted now. */
+ok(!/the packet<\/div>/.test(src) && !/Reading the packet/.test(src),
+   'and so does the waiting line - there is no "packet" wording left anywhere');
+ok(/Reading the nutrition info/.test(src), 'the waiting line is his wording too');
+// The ready line said what the Log it button under it already said, and cost a
+// block of height doing it on a screen where that button was hitting the edge.
+ok(!/Ready to log/.test(src), 'the redundant ready line is gone');
+const wait=slice('.nlPkWait{','.nlPkDot{');
+ok(/min-height:\d+px/.test(wait),
+   'the waiting state holds the height the answer will take, so nothing jumps when it lands');
 
 // ---- HIS NOTE, 17 Sep, looking at it on his own phone: "the spacing needs to
 // be improved". Inconsistent spacing is the tell that reads as unfinished, so
 // every gap on this card comes off one declared scale and nothing else.
 const css=slice('.nlPk{','@media (prefers-reduced-motion:reduce)');
-const scale=css.match(/--pk1:(\d+)px;\s*--pk2:(\d+)px;\s*--pk3:(\d+)px;\s*--pk4:(\d+)px/);
+const scale=css.match(/--pk1:(\d+)px;\s*--pk2:(\d+)px;\s*--pk3:(\d+)px/);
 ok(!!scale, 'the card declares one spacing scale');
 const strays=(css.match(/(?:margin-top|padding-top|gap):\s*\d+px/g)||[])
   .filter(d=>!/:\s*(?:0|1|2)px/.test(d));
