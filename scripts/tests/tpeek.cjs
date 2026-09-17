@@ -59,7 +59,26 @@ const html=slice('function _nlPeekHtml(st){','function _nlFastName(echo, line){'
 ok(/_foodNameClean\(p\.name/.test(html), 'the title goes through the same name rule as every log');
 ok(/nlPkT/.test(html) && /nlPkM/.test(html) && /nlPkI/.test(html),
    'title, macros and ingredients all have a place');
-ok(/Read off the packet/.test(html), 'and it says where the numbers came from');
+ok(/Nutrition info/.test(html), 'and it says where the numbers came from, in his words');
+
+// ---- HIS NOTE, 17 Sep, looking at it on his own phone: "the spacing needs to
+// be improved". Inconsistent spacing is the tell that reads as unfinished, so
+// every gap on this card comes off one declared scale and nothing else.
+const css=slice('.nlPk{','@media (prefers-reduced-motion:reduce)');
+const scale=css.match(/--pk1:(\d+)px;\s*--pk2:(\d+)px;\s*--pk3:(\d+)px;\s*--pk4:(\d+)px/);
+ok(!!scale, 'the card declares one spacing scale');
+const strays=(css.match(/(?:margin-top|padding-top|gap):\s*\d+px/g)||[])
+  .filter(d=>!/:\s*(?:0|1|2)px/.test(d));
+ok(strays.length===0, 'and every gap is taken from it, not typed by hand', strays);
+ok(/animation:nlPkIn/.test(css) && /animation:nlPkUp/.test(css),
+   'the card and its numbers arrive, rather than appearing');
+ok(/prefers-reduced-motion:reduce\)\{\s*\.nlPk,\.nlPkC\{animation:none/.test(src),
+   'and anybody who asked for less motion gets none');
+ok(/font-variant-numeric:tabular-nums/.test(css), 'the numbers line up in their columns');
+
+// ---- the brand belongs on its own line, not eating the title's 55 characters
+const brandcut=slice('var rawT=String(p.name','var title=_foodNameClean(rawT)');
+ok(/p\.brand/.test(brandcut), 'the brand is taken off the title before it is clipped');
 
 // ---- glass, per house law, and the title is the biggest thing on it
 ok(/\.nlPk\{[^]*?backdrop|\.nlPk\{[^]*?radial-gradient/.test(src), 'the card is glass, not flat grey');
