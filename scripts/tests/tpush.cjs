@@ -63,6 +63,28 @@ t(/push_token:String\(tok\)/.test(save) && /push_platform:/.test(save) && /push_
 t(/catch\(e\)\{ ok=false; \}/.test(save), 'and a failure cannot interrupt them opening their day');
 t(/if\(!tok \|\| !cl \|\| !cl\.code\) return false;/.test(save), 'no token and no client means no write');
 
+console.log('\n  AND WHICH SURFACE IS EVEN RUNNING:');
+/* An hour went into proving push on his handset with no way to tell, from
+   anything on screen, whether he was looking at the App Store shell or the
+   Safari bookmark. Same name, same version number, and the answer decides
+   whether push is even possible. */
+const surf=slice('function _surfaceTag(){','function rendVersion(){');
+t(/isNativePlatform\(\)\) return 'store'/.test(surf), 'the native shell says store');
+t(/display-mode: standalone/.test(surf), 'the home-screen bookmark says home');
+t(/navigator\.standalone===true\) return 'home'/.test(surf), '  including on older iOS');
+t(/return 'web'/.test(surf), 'and a browser tab says web');
+const rv=slice('function rendVersion(){','function _verTagTap');
+t((rv.match(/sfx/g)||[]).length>=5, 'and every place the version is shown carries it',
+  String((rv.match(/sfx/g)||[]).length));
+
+console.log('\n  THE BRANCH THAT STAYED SILENT NOW SPEAKS:');
+const guard=slice('    var P=_capPush();','    _PUSH_DONE=true;');
+t(/_pushNote\('no_plugin'/.test(guard),
+  'a native shell that cannot see the plugin is a fault, and says so');
+t(/isNativePlatform\(\)\)\{/.test(guard),
+  '  while an ordinary browser still writes nothing at all',
+  'a write on every page load for every client is not diagnostics');
+
 console.log('\n  AND IT SAYS WHICH HALF FAILED:');
 /* Proved on his own handset the hour it shipped: the permission box appeared,
    he allowed it, and no token reached his row - and nothing anywhere said which
