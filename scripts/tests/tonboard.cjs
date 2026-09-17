@@ -361,9 +361,12 @@ t(/base\.blocker_text=/.test(pi) && /base\.pledge=/.test(pi) && /base\.consult=/
   'and it carries all three of them');
 t(/sbUpsert\('profiles', row, 'client_code'\)/.test(pi), 'onto the row that already exists');
 t(/if\(window\._obPreview===true\) return false;/.test(pi), 'and a preview still writes nothing');
-t((src.match(/_obPatchIntake\(\);/g)||[]).length>=3,
-  'fired from the critique, the pledge and the offer',
+t((src.match(/_obPatchIntake\(\);/g)||[]).length>=2,
+  'fired from the critique and from the pledge',
   String((src.match(/_obPatchIntake\(\);/g)||[]).length));
+/* The offer writes through the shared merge instead, because the same button
+   is on the Today card where there is no setup flow to patch. */
+t(/_ctaMergeIntake\(\{consult:val\}\)/.test(src), 'and the offer writes through the shared merge');
 t(/st\.type!=='home'/.test(src), 'it carries its own Done and no second button');
 /* ARE YOU ACTIVE RIGHT NOW (Yusuf, 14 Sep). "What is your experience level?"
    was still on the flow four versions after he picked this, which he caught:
@@ -700,9 +703,11 @@ t(/setTimeout\(function\(\)\{[^}]*obNext\(\)/.test(pl), 'the pledge carries them
 t(/_OB_STEPS\[_ob\.i\]\.type==='pledge'/.test(pl), 'and only if they are still standing on it');
 const cs=slice('function _obConsultPick(v){','\n/* The picker lives in a modal');
 t(/_OB_STEPS\[_ob\.i\]\.type==='consult'/.test(cs), 'so does the quick yes');
-/* The calendar must not: its picker opens OVER this card. */
-t(/if\(val==='booked'\)\{[\s\S]*?openBooking\(\)[\s\S]*?\}else\{/.test(cs),
-  'but the calendar leaves the card where it is, because the picker sits on it');
+/* 17 Sep: the calendar is no longer a modal opened from here - the times are
+   drawn on the screen itself, so there is nothing left to open. */
+t(!/openBooking\(\)/.test(cs), 'and nothing on this path opens a modal any more');
+t(/if\(_ob\)\{ _ob\.a=_ob\.a\|\|\{\}; _ob\.a\.consult=val;/.test(cs),
+  'the answers object is written to only when there is one');
 
 /* His goal sentence is what the critique and the offer both point back at. */
 t(keys.indexOf('goal_text')<iB, 'the goal is still asked before the critique that names it');

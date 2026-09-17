@@ -32,14 +32,16 @@ t(!/_gpFlatCard\('Calls','Calls are not switched on/.test(src), '"not switched o
 t((src.match(/Calls are not switched on for your plan/g)||[]).length===1,
   'it survives once, in the note saying what it used to be',
   (src.match(/Calls are not switched on for your plan/g)||[]).length);
-/* HIS SENTENCE, AND IT CHANGED (16 Sep). It was "Schedule a free call to
-   discuss your fitness goals", which he wrote on 13 Sep. Then: "I would remove
-   free call - say something about seeing if 1:1 guidance is right for you."
-   Free is what you call a thing you are trying to get rid of. All three places
-   that carry this offer - here, the setup screen and the Program card - say the
-   same thing now, because three descriptions of one offer is how a client ends
-   up asking which of them they are being sold. */
-t(/See whether 1:1 guidance is right for you\./.test(calls), 'his sentence is the card');
+/* HIS SENTENCE, AND IT HAS CHANGED TWICE. It was "Schedule a free call to
+   discuss your fitness goals" (13 Sep). Then, 16 Sep: "I would remove free call
+   - say something about seeing if 1:1 guidance is right for you", because free
+   is what you call a thing you are trying to get rid of. Then, 17 Sep, read
+   back to him off the setup screen: that replacement "sounds like a medication
+   ad". Every place that carries this offer says the same thing, so it came off
+   all of them together and the words are the ones he dictated for the offer
+   itself. */
+t(/Want 1:1 help\? Talk it through with me\./.test(calls), 'his sentence is the card');
+t(!/1:1 guidance is right for you/.test(src), 'and the medication ad is nowhere in the file');
 t(/Talk to Yusuf/.test(calls), 'and the link says what it does');
 /* The COPY, not the note above it - that note quotes his 13 Sep wording on
    purpose, which is how anyone reading later knows what changed and why. */

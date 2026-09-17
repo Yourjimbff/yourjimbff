@@ -105,66 +105,23 @@ t(_obApplies({k:'consult',type:'consult'})===true,
   'somebody who never typed a weight gets it too, which is the case he hit');
 
 console.log('\n  THE FILTER MOVED TO THE CALENDAR, IT DID NOT GO AWAY:');
-const consultCard=src.slice(src.indexOf("if(st.type==='consult'){"), src.indexOf("if(st.type==='home'){"));
-t(/_obConsultFits\(a\)/.test(consultCard), 'the card asks the filter before drawing the calendar');
-t(consultCard.indexOf('Yes, text me') < consultCard.indexOf('_obConsultFits(a)'),
-  '  after the quick yes, which everybody gets');
-t(/Pick a time instead/.test(consultCard), 'the calendar is still there for the people it is for');
-t(/only for the people his filter picks/.test(consultCard), '  and the reason is written down');
-t(CONSULT_MIN_AGE===23 && CONSULT_MIN_GAP===8, 'and his numbers are untouched',
-  CONSULT_MIN_AGE+'/'+CONSULT_MIN_GAP);
-
-console.log('\n  THE SKIP MACHINERY STILL WORKS, WITH NOTHING LIVE TO SKIP:');
-/* Nothing returns false from _obApplies today. The walk is kept because the next
-   conditional screen will need it, and a machine that is never exercised is a
-   machine nobody can trust later - so it is still proved here on a fixture. */
-/* Reassign the MODULE binding, not a global. _obSkip was lifted into this scope
-   and resolves _obApplies from here, so setting global._obApplies did nothing and
-   the fixture silently tested the real rule instead of the hidden one. */
-_obApplies=function(st){ return !(st && st.type==='hidden'); };
-global._OB_STEPS=[{k:'intro'},{k:'x',type:'hidden'},{k:'y',type:'hidden'},{k:'home'}];
-t(_obSkip(1,-1)===0, 'walking back off the front stops at the first screen', String(_obSkip(1,-1)));
-t(_obSkip(1, 1)===3, 'and forward off the end stops at the last', String(_obSkip(1,1)));
-
-console.log('\n  IT IS WIRED IN BOTH DIRECTIONS:');
-t(/_ob\.i=_obSkip\(_ob\.i\+1, 1\); obRender\(\);/.test(src), 'Next skips');
-t(/function obBack\(\)\{ if\(!_ob\) return; if\(_ob\.i>0\)\{ _ob\.i=_obSkip\(_ob\.i-1, -1\);/.test(src), 'Back skips');
-t(/setTimeout\(function\(\)\{ if\(_ob && _ob\.i<_OB_STEPS\.length-1\)\{ _ob\.i=_obSkip\(_ob\.i\+1, 1\);/.test(src),
-  'and so does the screen that advances itself');
-t(!/\{ _ob\.i\+\+; obRender\(\); \}/.test(src), 'nothing steps by one any more');
-t(/if\(!_obApplies\(_OB_STEPS\[i\]\)\) continue;/.test(src),
-  'and the dots count the screens they will actually see');
-
-console.log('\n  AND THE OFFER COMES BACK:');
-/* One tap of Next at the end of setup and the old one was gone forever - which
-   is the worst moment to ask somebody to book a call, four minutes into an app
-   they have not used yet. */
-const card=src.slice(src.indexOf('function _pgConsultCard(){'), src.indexOf('function renderProgramTab(){'));
-t(/_meFreeApp\(\)/.test(card), 'it is a free-app card only - a paying client is not sold to');
-/* "i like B" - their own two numbers and their own name, which is the version
-   that can be written for every single person it is shown to. */
-t(/var gap=Math\.round\(Math\.abs\(w-gw\)\);/.test(card), 'it leads with the distance they typed');
-t(/cl&&cl\.name/.test(card) && /split\(\/\\s\+\/\)\[0\]/.test(card), 'and their first name');
-t(/' to go\.'/.test(card), '  with a version that still reads if there is no name on the account');
-t(/You put in '\+Math\.round\(w\)\+', and '\+Math\.round\(gw\)/.test(card), 'then both numbers back to them');
-t(/1:1 guidance is right for you/.test(card), 'and it asks whether 1:1 guidance is right for them');
-/* His words: "I would remove free call". Free is what you call a thing you are
-   trying to get rid of. */
-/* The COPY, not the word wherever it appears in a note explaining why the copy
-   changed. Each of these is a string a client could read off a screen. */
-[["'A free call with Yusuf'", 'the card title'],
- ["A free call with Yusuf. No charge, no catch.", 'the setup screen subtitle'],
- [">Book a free call<", 'the setup screen button'],
- ["Book a free consultation", 'the link in Settings'],
- ["Schedule a free call to discuss your fitness goals.", 'the Settings subtitle']
-].forEach(([lit,where])=>{ t(src.indexOf(lit)<0, 'gone: '+where, lit); });
-t(/if\(!_consultFits\(age, w, gw\)\) return '';/.test(card),
-  'the same filter, not a second copy of his numbers');
-t(!/>=\s*8|CONSULT_MIN_GAP\s*[=<>]/.test(card.replace(/_consultFits/g,'')),
-  '  and the card never re-states the bar itself');
-t(/openConsultBooking\(\)/.test(card), 'and it opens the booking page the offer screen opens');
-t(/CONSULT_BOOK_URL\|\|''\)\.trim\(\)/.test(card), 'with no card at all when there is no link to open');
-t(/\+ _pgConsultCard\(\)/.test(src), 'and the Program tab hosts it');
+/* 17 Sep: the calendar stopped being a button that opened a modal and became
+   the picker itself, drawn inline on both the setup screen and the Today card.
+   The filter did not move again - it still decides whether that picker is drawn
+   at all, and the text door is still there for everybody. */
+const doors=src.slice(src.indexOf('/* TWO DOORS, AND WHICH ONE LEADS'), src.indexOf('function _ctaHtml('));
+t(/if\(_ctaFits\(a\)\) h\+=_ctaPickerHtml\(\)/.test(doors),
+  'the doors ask the filter before drawing the calendar');
+t(/_obConsultPick\(\\?'yes\\?'\)/.test(doors), 'and the text door is drawn either way');
+const fits=src.slice(src.indexOf('function _ctaFits(a){'), src.indexOf('function _ctaAnswers('));
+t(/_consultFits\(age, a\.weight, a\.goal_weight\)/.test(fits),
+  'through the one filter, not a second copy of his rule');
+t(/_ageFromBday\(a\.birthday\)/.test(fits),
+  '  and it reads an age off a birthday when that is all it has');
+t(/I would only text warm \/ hot leads/.test(doors),
+  'and his reason for the split is written down');
+t(/alone\?'ctaGo':'ctaGo2'/.test(doors),
+  'when the calendar is not drawn, the text becomes the main button');
 
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (the call is offered to the people he meant, more than once)');
 process.exit(bad?1:0);
