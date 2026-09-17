@@ -37,8 +37,14 @@ console.log('\n  a photo takes the road that reads it, with or without words:');
    photo AND types what it is every time, and that took the fast road: priced
    the words off the table, committed on them, and filed the photograph without
    one thing looking at it. A photo is the request to have it read. */
-t(/if\(line && \(_nlStated\(line\) \|\| \(!st\.photo && _nlFastOn\(\)\)\)\)/.test(src),
+/* 17 Sep: the same guarantee, one condition wider. The fast road writes without
+   ever showing the result screen, and the result screen is where Jim's read
+   appears - so anybody who opted in was being carried past the thing they opted
+   in for. Free logging keeps the instant road. Photo still never takes it. */
+t(/if\(line && !_jimOptedIn\(\) && \(_nlStated\(line\) \|\| \(!st\.photo && _nlFastOn\(\)\)\)\)/.test(src),
   'the fast path needs a line AND no photo');
+t(/!_jimOptedIn\(\) &&/.test(src),
+  'and it is not taken by anyone who opted into the feedback');
 t(/_nlStated\(line\) \|\|/.test(src),
   'except for her own stated numbers, which never wait for a model whatever is attached');
 t(/nothing to commit on until something has\s*\n\s*read the picture/.test(src) || /photo-only capture still/.test(src),

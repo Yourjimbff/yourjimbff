@@ -97336,6 +97336,14 @@ function nlRender(){
       +(e.partial?'<div class="nlSrc dim">Logged. Counting the calories\u2026</div>':'')
       +(e.source==='label'?'<div class="nlSrc">From the label</div>':(e.source==='estimate'&&st.photo?'<div class="nlSrc dim">Estimated from the photo - still reading the label</div>':''))
       +(e.tidbit?('<div class="nlTid">'+_escHtml(e.tidbit)+'</div>'):'')
+      /* JIM'S READ, ON THE DOOR PEOPLE ACTUALLY USE (17 Sep). The whole coaching
+         engine - the ten logs, the tone, the direction off their two weights -
+         lived on the OLD meal box, which is not the screen anybody logs on any
+         more. _NL_SYS asks this one for a "tidbit": a food fact or a compliment,
+         explicitly told never to mention what is missing. That is a nice line.
+         It is not the thing he is charging for, and it is why somebody could opt
+         in, log a meal and see nothing that looked like feedback. */
+      +'<div id="nlJim">'+(_jimOptedIn()?_jimCardHtml(e.insight||'Reading that...'):'')+'</div>'
       +'<button class="nlGo" id="nlGoBtn" onclick="'+(st.logged?'nlClose()':'nlConfirm()')+'">'+(st.logged?'Done':'Log it')+'</button>'
     +'</div>';
   }
@@ -98240,7 +98248,11 @@ async function nlSubmit(){
      image and her words go up together and one number comes back. */
   /* Stated numbers never wait for a model, whatever the fast switch says:
      there is nothing to work out. */
-  if(line && (_nlStated(line) || (!st.photo && _nlFastOn()))){
+  /* THE FAST ROAD WRITES WITHOUT EVER SHOWING THE RESULT SCREEN, which is the
+     screen Jim's read appears on - so somebody paying for feedback was being
+     taken past it for the sake of a second. Free logging keeps the instant road;
+     that IS the free product. Opting in buys the look at it. */
+  if(line && !_jimOptedIn() && (_nlStated(line) || (!st.photo && _nlFastOn()))){
     var handled=false;
     try{ handled=await nlSubmitFast(st, line); }catch(e){ handled=false; }
     if(handled) return;
@@ -98385,6 +98397,57 @@ async function nlSubmit(){
     }
   }catch(e){ console.error('dry price', e); }
   st.est=est; st.stage='res'; nlRender();
+  // Without await: the numbers are already up and the words land underneath.
+  try{ if(_jimOptedIn()) _nlJimRead(st); }catch(e){}
+}
+/* THE READ FOR THIS DOOR. Same prompt rules as every other read in the file -
+   _jimTenLogs, _jimToneBlock, _jimGoalLine - because there is one voice and it
+   does not change with the screen it is printed on. The words are put on
+   st.est.insight BEFORE Log it, so the row carries what they actually read
+   rather than a second answer written afterwards. */
+var _nlJimSeq=0;
+async function _nlJimRead(st){
+  try{
+    if(!st || !st.est || !_jimOptedIn()) return false;
+    var e=st.est;
+    if(String(e.insight||'').trim()) return false;
+    var seq=++_nlJimSeq;
+    var plate='';
+    try{
+      var it=(e.items&&e.items.length)?e.items:[{name:e.name,calories:e.calories,protein:e.protein,carbs:e.carbs,fat:e.fat}];
+      plate=it.map(function(x){
+        return String(x.name||'food')+' - '+Math.round(+x.calories||0)+' cal, '+Math.round(+x.protein||0)
+          +'g protein, '+Math.round(+x.carbs||0)+'g carbs, '+Math.round(+x.fat||0)+'g fat';
+      }).join('; ');
+    }catch(err){ plate=String(e.name||'their meal'); }
+    var ask='They just logged this and are looking at it on screen.\n\nTHE PLATE: '+plate+'\n';
+    try{ if(st.line) ask+='THEIR OWN WORDS: "'+String(st.line).slice(0,300)+'"\n'; }catch(err){}
+    try{ if(st.slot) ask+='THE SLOT: '+st.slot+'\n'; }catch(err){}
+    try{ var gl=_jimGoalLine(); if(gl) ask+='\nABOUT THEM: '+gl+'\n'; }catch(err){}
+    try{ ask+=_jimTenLogs(); }catch(err){}
+    try{ ask+='\n\n'+_jimToneBlock(); }catch(err){}
+    ask+='\n\nWrite their read on this plate. Two or three sentences. No greeting, no sign-off, '
+      +'no markdown, no bullet points. Plain sentences only. Return the words themselves and nothing else.';
+    var out='';
+    try{
+      var res=await fetch('/.netlify/functions/analyze',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({messages:[{role:'user',content:ask}],temperature:0.6,max_tokens:600})});
+      var j=await res.json();
+      out=String((j&&j.content&&j.content[0]&&j.content[0].text)||'').trim();
+    }catch(err){ out=''; }
+    if(seq!==_nlJimSeq) return false;
+    if(window._nl!==st) return false;              // sheet closed or reopened under it
+    var host=document.getElementById('nlJim');
+    if(!out){
+      // An empty card is worse than an honest line: it reads as the feature being off.
+      if(host) host.innerHTML=_jimCardHtml('I could not read that one just now. The numbers are still right.');
+      return false;
+    }
+    try{ st.est.insight=out; }catch(err){}
+    if(host) host.innerHTML=_jimCardHtml(out);
+    return true;
+  }catch(e){ return false; }
 }
 // One macro, edited on the confirm screen before anything is written.
 // Calories recalculate at 4/4/9 the moment protein, carbs or fat changes.
@@ -98442,6 +98505,7 @@ async function nlConfirm(){
       ok=await logFoodFromChat({
         name:st.est.name, calories:st.est.calories, protein:st.est.protein,
         carbs:st.est.carbs, fat:st.est.fat, rating:(st.est.rating||'unknown'),
+        insight:(st.est.insight||''),
         items:(st.est.items||null), _priced:(st.est._priced?1:0),
         meal:st.slot, eat_time:(st.at||_tlNowClock()), dateStr:st.ds,
         meal_text:(st.line||'')

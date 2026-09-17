@@ -22,8 +22,16 @@ let bad=0; const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  '
 const SAID='7 ounces of salmon, 2 handfuls veggies (zucchini, broccoli, green beans, and 1 handful of sweet potatos';
 
 console.log('  A PHOTO IS NOT DECORATION:');
-const sub=src.slice(src.indexOf('async function nlSubmit(){'), src.indexOf('async function nlSubmit(){')+2600);
-t(/if\(line && \(_nlStated\(line\) \|\| \(!st\.photo && _nlFastOn\(\)\)\)\)\{/.test(sub),
+/* A FIXED-LENGTH WINDOW IS A LIE WAITING TO HAPPEN. This read nlSubmit through
+   a 2600-character slice, so a comment added above the line under test pushed it
+   out of view and the assertion failed on a change that never touched it. Bounded
+   by something the code cannot lose quietly instead. */
+const _s=src.indexOf('async function nlSubmit(){');
+if(_s<0) throw new Error('tlailee: nlSubmit not found');
+const _e=src.indexOf("st.stage='busy'; _nlBusyStart(st);", _s);
+if(_e<0) throw new Error('tlailee: end anchor not found after nlSubmit');
+const sub=src.slice(_s,_e);
+t(/if\(line && !_jimOptedIn\(\) && \(_nlStated\(line\) \|\| \(!st\.photo && _nlFastOn\(\)\)\)\)\{/.test(sub),
   'a photo with words on it takes the road that reads the picture');
 t(/!st\.photo && _nlFastOn\(\)/.test(sub),
   'the fast road is for words alone now, not for words standing next to an unread photograph');

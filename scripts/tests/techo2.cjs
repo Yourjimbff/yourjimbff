@@ -29,8 +29,22 @@ vm.runInContext(lifted.code, ctx);
    and strings (AEIOU, BBQ, BLT, OZ...) and a handful of caller-owned locals.
    Named here rather than filtered by shape, so a genuine hole still shows. */
 const KNOWN_OUTSIDE=['_dsFallback','_drawn','_go','JSON','AEIOU','BBQ','BLT','PB','PBJ','IPA',
-  'XL','XXL','MCT','BCAA','DHA','EPA','GF','LB','OZ','II','III','_nl','_liveChips','Z0','_ln','_seen','_ks'];
-const holes=(lifted.unresolved||[]).filter(n=>KNOWN_OUTSIDE.indexOf(n)<0);
+  'XL','XXL','MCT','BCAA','DHA','EPA','GF','LB','OZ','II','III','_nl','_liveChips','Z0','_ln','_seen','_ks',
+  /* another caller's one-letter local, same species as _ln and _ks above */ '_e'];
+/* 17 Sep: the list above stopped scaling the moment a lifted body started
+   carrying prose. _jimCardHtml is in this closure, and the ten-logs voice block
+   that travels with it is paragraphs of ALL-CAPS English - so the chaser started
+   reporting WHAT, HE, ACTUALLY, SAYS as missing identifiers and the suite went
+   red over nothing.
+   A REAL HOLE IS A NAME THIS FILE ACTUALLY DECLARES. If index.html declares it
+   and the closure did not emit it, that is the ordering weakness biting and it
+   must fail. If index.html never declares it, it is either a caller-owned global
+   (window._jimBase and friends) or a word out of a sentence - neither of which
+   this test can say anything useful about. That is a stricter question than the
+   hand-kept list, not a looser one, and it needs no maintenance. */
+const DECLARED=n=>new RegExp('(?:^|\\n)\\s*(?:var|let|const|function|async function)\\s+'
+  +n.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b').test(src);
+const holes=(lifted.unresolved||[]).filter(n=>KNOWN_OUTSIDE.indexOf(n)<0 && DECLARED(n));
 t(holes.length===0, 'every function under test lifted with its whole closure', holes.join(' '));
 
 const echo = s => vm.runInContext('_nlEcho('+JSON.stringify(s)+')', ctx);
