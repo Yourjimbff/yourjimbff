@@ -65963,6 +65963,159 @@ function _insightMacroSafe(insight, row){
   });
   return bad ? '' : out;
 }
+/* ===== A FOOD LOG IS NEVER NAMED WITH A SENTENCE ========================
+   Yusuf, 17 Sep: "logs for the food should always be neat. No typos,
+   everything case sensitive products, brands, all need to be accurate ...
+   Poor transcription reads as poor app function."
+
+   MEASURED on the 1,363 rows logged in the last 45 days, not guessed:
+     186  the name IS the whole sentence they said
+     139  the name is longer than 55 characters, which is the limit the
+          prompt itself asks for
+      55  the name carries a middle dot with the same food on both sides
+      21  the name is entirely lower case
+
+   What that looks like on a real client's screen, 17 Sep, verbatim:
+     "For Breakfast, I'm Having Chia Seed Pudding. It Has Half a C"
+   Title-cased narration, cut off mid-word. And the row above it:
+     "To Taco Bell flatbread melts, medium Pepsi, cheesy fiesta potato five
+      mild packets / Taco Bell flatbread melts"
+
+   THE MEAL_TEXT IS NOT TOUCHED BY ANY OF THIS AND MUST NEVER BE. His ruling
+   of 15 Sep stands: what the client typed or said is the evidence and the raw
+   material for his content. This cleans the NAME, which is the app's own guess
+   at what to call the meal, and nothing else.
+
+   It runs in insertFoodLog beside _insightMacroSafe - the one door every food
+   row goes through, so no caller can route around it and no future writer has
+   to remember. */
+var _FN_LEAD_RE = new RegExp(
+  '^\\s*(?:'
+  + '(?:for|at|this|on)\\s+(?:my\\s+)?(?:breakfast|lunch|dinner|brunch|supper|snack|dessert|the\\s+morning|morning|afternoon|evening|night|today|tonight)\\b'
+  + '|i\\s*(?:\\u2019|\\u0027)?\\s*(?:m|ve|ll)?\\s*(?:am\\s+)?(?:just\\s+)?(?:having|had|ate|eating|eat|got|made|make|did|do)\\b'
+  + '|(?:just\\s+)?(?:ate|eating|had|having)\\b'
+  + '|(?:my|the)\\s+(?:breakfast|lunch|dinner|snack)\\s+(?:was|is)\\b'
+  + '|today\\b|tonight\\b|so\\s+far\\b|log\\b|logging\\b'
+  + ')[\\s,:.\\u2013-]*', 'i');
+/* Words that are never a food and never belong in a meal name once the
+   narration has been taken off the front. */
+var _FN_STOP = {'and':1,'or':1,'with':1,'of':1,'the':1,'a':1,'an':1,'some':1,'it':1,'was':1,
+                'is':1,'has':1,'have':1,'that':1,'this':1,'for':1,'to':1,'my':1,'i':1,'in':1,
+                'on':1,'plus':1,'then':1,'also':1,'about':1,'like':1,'were':1,'are':1};
+/* A sentence, not a name: it narrates rather than names. Any one of these is
+   enough, and all three are cheap. */
+function _fnIsSentence(s){
+  var t=String(s||'');
+  if(/[.!?]\s+\S/.test(t)) return true;                 // more than one sentence in it
+  if(/\b(i|my|it|we|you)\b/i.test(t)) return true;      // somebody is talking
+  if(t.split(/\s+/).length > 12) return true;           // nobody names a meal in 13 words
+  return false;
+}
+/* Cut to a length without ever cutting a word in half - the thing that made
+   "Half a C" out of "half a cup". */
+function _fnClip(s, max){
+  var t=String(s||'').trim();
+  if(t.length<=max) return t;
+  var cut=t.slice(0, max+1);
+  var sp=cut.lastIndexOf(' ');
+  if(sp>Math.floor(max*0.5)) cut=cut.slice(0,sp);
+  else cut=t.slice(0,max);
+  return cut.replace(/[\s,;:&/.·-]+$/,'').trim();
+}
+/* "<the whole sentence> · <the real name>" happens when the label reader lands
+   on a row that already had a narrated name. Neither side is wrong; one of
+   them is just better. Keep the side that is not a sentence, and when one side
+   already contains the other, keep the shorter. */
+function _fnUnDouble(s){
+  var t=String(s||'');
+  if(t.indexOf('·')<0) return t;
+  var bits=t.split('·').map(function(x){ return x.trim(); }).filter(Boolean);
+  if(bits.length<2) return t;
+  var norm=function(x){ return String(x).toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); };
+  for(var i=0;i<bits.length;i++){
+    for(var j=0;j<bits.length;j++){
+      if(i===j) continue;
+      var a=norm(bits[i]), b=norm(bits[j]);
+      if(a && b && a.indexOf(b)>=0) return _fnIsSentence(bits[i]) ? bits[j] : bits[i];
+    }
+  }
+  var plain=bits.filter(function(x){ return !_fnIsSentence(x); });
+  return plain.length ? plain.join(' · ') : bits[bits.length-1];
+}
+/* Last resort, and only for something that is still a sentence after the
+   narration came off: keep the words that could be food and drop the grammar.
+   Never invents a word - it only removes. */
+function _fnFoodWords(s){
+  var out=[], seen={};
+  String(s||'').split(/[,;.]|\band\b|\bwith\b|\bplus\b/i).forEach(function(chunk){
+    var words=String(chunk).trim().split(/\s+/).filter(function(w){
+      var lc=w.toLowerCase().replace(/[^a-z']/g,'');
+      if(!lc) return false;
+      if(_FN_STOP[lc]===1) return false;
+      if(/^\d+(?:\.\d+)?$/.test(w)) return false;                 // a bare amount
+      return !/^(cup|cups|oz|ounce|ounces|g|gram|grams|tbsp|tsp|scoop|scoops|slice|slices|handful|handfuls|palm|palms|piece|pieces|serving|servings|half|whole|large|small|medium)$/i.test(lc);
+    });
+    var phrase=words.join(' ').trim();
+    /* A one-letter leftover is what a mid-word truncation leaves behind -
+       "half a cup" cut at "Half a C" arrives here as the word "C". Naming part
+       of a meal "C" is worse than leaving that part out. */
+    if(!phrase || phrase.replace(/[^A-Za-z0-9]/g,'').length<2) return;
+    var k=phrase.toLowerCase();
+    if(seen[k]) return;
+    seen[k]=1;
+    out.push(phrase);
+  });
+  return out.slice(0,4).join(', ');
+}
+/* THE ONE RULE, and the only thing any writer has to call. */
+function _foodNameClean(raw){
+  try{
+    var s=String(raw==null?'':raw).replace(/\s+/g,' ').trim();
+    if(!s) return s;
+    s=_fnUnDouble(s);
+    var before=s;
+    var loops=0;
+    while(loops++<3){
+      var next=s.replace(_FN_LEAD_RE,'').trim();
+      if(next===s || !next) break;
+      s=next;
+    }
+    if(!s) s=before;                                   // never hand back nothing
+    s=s.replace(/^[\s,:;.–-]+/,'').trim();
+    if(_fnIsSentence(s)){
+      var reduced=_fnFoodWords(s);
+      if(reduced) s=reduced;
+    }
+    s=_fnClip(s, 55);
+    if(!s) return _fnClip(String(raw).trim(), 55);
+    /* Case is only imposed on something the app itself assembled. A name that
+       already carries capitals is somebody's brand or a label reading - "Anabolic
+       Marinara Meatballs", "Nutrition Solutions" - and re-casing it is how a
+       brand stops being its own name. */
+    var hasCaps=/[A-Z]/.test(s);
+    if(!hasCaps){ try{ s=_titleCap(s); }catch(e){} }
+    return s;
+  }catch(e){ return String(raw||''); }
+}
+/* ===== WHAT THE MICROPHONE HEARD IS NOT ALWAYS WHAT THEY SAID ===========
+   His row, 16 Sep: "To Taco Bell flatbread melts" - two melts, heard as the
+   word "to", so the quantity vanished and the meal priced at 16g of protein
+   when two of those melts are about forty.
+
+   ONE RULE ONLY, AND IT IS DELIBERATELY NARROW: "to" or "too" at the very
+   START of a food line is the number two. Nobody begins a description of what
+   they ate with the preposition. "for" is NOT included, however tempting -
+   "For breakfast I had" and "For dinner I had" are both in the real rows and
+   turning either into a 4 would be worse than the bug.
+
+   This runs on the WORKING COPY the echo and the model read. meal_text keeps
+   every word exactly as it arrived. */
+function _dictFix(line){
+  try{
+    var s=String(line==null?'':line);
+    return s.replace(/^(\s*)(too|to)\s+(?=[A-Za-z])/i, '$12 ');
+  }catch(e){ return String(line||''); }
+}
 async function insertFoodLog(row, photo){
   if(!(await _confirmLogTarget())) return {ok:false, cancelled:true};
   /* Both gates run before anything is written, on the ONE door every food row
@@ -65973,6 +66126,9 @@ async function insertFoodLog(row, photo){
             reason:'macros came back empty, so nothing was written'};
   }
   try{ if(row && row.insight) row.insight=_insightMacroSafe(row.insight, row); }catch(e){}
+  /* The name is the app's own guess and this is the only place it is tidied.
+     meal_text is untouched, always - that is what the client actually said. */
+  try{ if(row && row.name){ var _cn=_foodNameClean(row.name); if(_cn) row.name=_cn; } }catch(e){}
   try{ if(row && !row.logged_at) row.logged_at = new Date().toISOString(); }catch(e){}
   // --- duplicate / double-tap guard: block identical meal re-inserts within a short window ---
   try{
@@ -98077,7 +98233,9 @@ async function nlSubmitFast(st, line){
     ok=await logFoodFromChat({
       name:name, calories:t.calories, protein:t.protein, carbs:t.carbs, fat:t.fat,
       rating:'unknown', meal:st.slot, eat_time:(st.at||_tlNowClock()),
-      dateStr:st.ds, meal_text:(line||'')
+      /* st.line, never the corrected copy. What the microphone heard is fixed
+         for pricing; what the record keeps is what they actually said. */
+      dateStr:st.ds, meal_text:(st.line||line||'')
     }, st.photo||null);
   }catch(e){ ok=false; }
 
@@ -98252,7 +98410,11 @@ async function nlSubmit(){
      said by the moment they pressed it. */
   try{ nlStopVoice(); }catch(e){}
   var line=String((document.getElementById('nlLine')||{}).value||'').trim();
-  st.line=line;
+  st.line=line;                        // raw, and it stays raw - this is meal_text
+  /* What the microphone heard is not always what they said. The echo, the
+     pricing and the model all read the corrected copy; nothing written to the
+     record does. */
+  try{ line=_dictFix(line); }catch(e){}
   if(!line && !st.photo){ try{ showToast('A photo or one line — either works'); }catch(e){} return; }
   /* THE WORDS ARE THE LOG, when he has this on. A photo-only capture still
      takes the old road: there is nothing to commit on until something has
