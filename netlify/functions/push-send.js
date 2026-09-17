@@ -39,7 +39,11 @@ exports.handler = async function (event) {
   const text = String(body.body || '').slice(0, 400);
   const tab = String(body.tab || '').slice(0, 24);
   if (!code) return json(400, { error: 'no_code' });
-  if (!text) return json(400, { error: 'no_body' });
+  // A TITLE ON ITS OWN IS A WHOLE NOTIFICATION. "Yusuf liked your breakfast" is
+  // the entire message; forcing a second line under it would only be filler,
+  // and iOS already prints the app's name above both. What must never happen is
+  // an empty notification, so one of the two has to carry something.
+  if (!text && !title) return json(400, { error: 'no_body' });
 
   // The token comes from the database on the service key, never from the
   // caller. A caller who could name a token could push to a stranger's phone.

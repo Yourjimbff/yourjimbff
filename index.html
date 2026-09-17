@@ -15374,6 +15374,101 @@ async function pushSendTest(){
   if(out){ out.textContent=said; out.style.color = good ? 'var(--gold,#f0bc47)' : '#e07a5f'; }
   if(btn){ btn.disabled=false; btn.textContent='Send a test'; }
 }
+/* THE CLIENT FINDS OUT (17 Sep, his order: "yusuf liked your breakfast, lunch,
+   or dinner / yusuf liked your food / yusuf liked your workout").
+   A like has always been the cheapest thing he does and the one clients never
+   see. It writes a row, paints a heart on HIS screen, and the person who cooked
+   the meal learns about it the next time they happen to open the app - which
+   for most people is never on the day it happened. The like is worth something
+   only if it arrives.
+   IT RIDES THE LIKE AND NEVER LEADS IT. Fired without await, after the row has
+   been read back, so a slow or refused notification cannot make a like feel
+   broken. Every failure here is silence, on purpose: a client with no phone
+   registered, a client on the web, a token Apple has retired - none of those
+   are his problem in the moment he taps a heart. */
+var _PUSHED_LIKES={};
+function _likeFirstName(){
+  try{
+    var n=String((typeof cl!=='undefined' && cl && cl.name) || '').trim();
+    if(n) return n.split(/\s+/)[0];
+  }catch(e){}
+  /* Not "YOURJIMBFF". The sentence is one person telling another they saw them,
+     and it stops being that the moment a brand name is speaking. */
+  return 'Your coach';
+}
+/* WHAT THEY GET TOLD THEY WERE LIKED FOR. "your food" is true of every meal
+   anyone has ever eaten; "your breakfast" is about this morning. The slot comes
+   off the row through the same rule the feed groups by, so the notification and
+   the card he tapped can never name the meal differently. */
+async function _likeWords(kind, refId){
+  var k=String(kind||'').toLowerCase();
+  if(k==='wo') k='workout';
+  if(k==='photo') return {noun:'progress photo', detail:''};
+  if(k==='journal') return {noun:'journal', detail:''};
+  if(k==='workout'){
+    var wt='';
+    try{
+      var wr=await sbSelect('workout_logs','id=eq.'+encodeURIComponent(String(refId))+'&select=title&limit=1');
+      if(wr && wr[0]) wt=String(wr[0].title||'').trim();
+    }catch(e){}
+    return {noun:'workout', detail:wt};
+  }
+  if(k!=='food') return null;
+  var noun='food', detail='';
+  try{
+    var rows=await sbSelect('food_logs','id=eq.'+encodeURIComponent(String(refId))+'&select=name,meal,eat_time,logged_at,date_str&limit=1');
+    var r=rows && rows[0];
+    if(r){
+      detail=String(r.name||'').trim();
+      var slot='';
+      try{ slot=_feedMealGroupKey(r); }catch(e){ slot=''; }
+      if(slot==='breakfast'||slot==='lunch'||slot==='dinner'||slot==='snack') noun=slot;
+    }
+  }catch(e){}
+  return {noun:noun, detail:detail};
+}
+/* One door to a client's lock screen. The function on the other end is trainer
+   only and reads the token off the row itself, so nothing here can aim a
+   notification at somebody it was not meant for. */
+async function _pushToClient(code, title, body, tab){
+  try{
+    if(!code) return false;
+    var tok=null;
+    try{ tok=_sessToken(); if(!tok){ await sessEnsure(window.cl && cl.code); tok=_sessToken(); } }catch(e){ tok=null; }
+    if(!tok) return false;
+    var res=await fetch('/.netlify/functions/push-send', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},
+      body:JSON.stringify({code:String(code), title:String(title||''), body:String(body||''), tab:String(tab||'Today')})
+    });
+    if(res && res.ok) return true;
+    /* Logged, not shown. The only person who could act on "that client has no
+       phone registered" is him, and not in the second he tapped a heart. */
+    try{ var t=await res.text(); console.warn('[push] like notice not sent', res.status, String(t||'').slice(0,160)); }catch(e){}
+    return false;
+  }catch(e){
+    try{ console.warn('[push] like notice threw', e && e.message); }catch(_e){}
+    return false;
+  }
+}
+async function _pushLike(kind, refId, code){
+  try{
+    if(!code || typeof cl==='undefined' || !cl || !cl.code) return false;
+    if(String(code)===String(cl.code)) return false;
+    /* Only he can send one, and push-send would refuse anyone else anyway. The
+       check is here so a client liking something never even makes the call. */
+    if(typeof isTrainer!=='function' || !isTrainer(cl.code)) return false;
+    if(refId==null || refId==='') return false;
+    /* Like, unlike, like again inside one sitting is one person changing their
+       mind, not two notifications. */
+    var key=String(kind)+':'+String(refId)+':'+String(code);
+    if(_PUSHED_LIKES[key]) return false;
+    _PUSHED_LIKES[key]=1;
+    var w=await _likeWords(kind, refId);
+    if(!w || !w.noun) return false;
+    return await _pushToClient(code, _likeFirstName()+' liked your '+w.noun, w.detail||'', 'Today');
+  }catch(e){ return false; }
+}
 function skipSetup(){
   // Create a minimal default profile so setup never shows again
   var defCal = 1800;
@@ -58634,6 +58729,11 @@ async function quickReact(kind, refId, code, reaction, el){
       if(!back || !back.length){ _revert('That like did not save. Tap the heart to try again.'); if(typeof showToast==='function') showToast('Could not confirm that like'); return false; }
     }
     if(el) el._busy=false;
+    /* "will see it" was a promise the app had no way of keeping - it meant "next
+       time they open this", which for most people is not today. Now it is true.
+       Deliberately not awaited: the heart is already gold, and a like must never
+       wait on Apple. */
+    if(isLike){ try{ _pushLike(kind, refId, code); }catch(e){} }
     var nm=_jvSafeName(code, null);
     if(typeof showToast==='function') showToast((isLike?'\u2665 Liked':'\u2713 Reviewed')+' \u2014 '+_jvShareName(code, nm)+' will see it');
     // A LIKE IS NOT A HANDLING (Yusuf, live, 23 Aug — "clear Joseph Silva off
