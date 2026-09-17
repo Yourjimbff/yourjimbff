@@ -20,7 +20,7 @@ const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==un
 global.window={};
 global.localStorage={_d:{},getItem(k){return this._d[k]==null?null:this._d[k];},setItem(k,v){this._d[k]=String(v);}};
 const MINE=['_jimGoalRead','_jimGoalLine','_jimTurboUnlocked','_jimTone','_jimToneSet',
-            '_jimNoCritique','_jimNoCritiqueSet','_jimToneName','_jimToneBlock'];
+            '_jimNoCritique','_jimNoCritiqueSet','_jimToneName','_jimToneBlock','_jimTenLogs'];
 eval(MINE.map(defOf).join('\n'));
 eval(src.match(/var _JIM_TONE_KEY=[^\n]*\n/)[0]);
 eval(src.match(/var JIM_TONES=\[[\s\S]*?\];\n/)[0]);
@@ -167,6 +167,44 @@ t(!/var insight = \(!trulyBad && r\.insight\)/.test(src), 'the suppression is go
    string here, it is built by the one card builder. The claim is the same. */
 t(/var insight = _jimCardHtml\(r\.insight\);/.test(src), 'every log gets an answer now, through the card');
 t(/trulyBad\?'Log it anyway'/.test(src), 'and the honest button text is untouched');
+
+
+/* A RULE ONE WRITER OBEYS IS NOT A RULE (17 Sep, the loop's second run).
+   Anjel-Ali got three insights inside one minute. The matcha was blamed on
+   "whole milk and vanilla syrup", the cutlet sandwich on "mayo", and the tacos
+   on a juice carrying "35g sugar" - on a row whose WHOLE MEAL logged 32g. The
+   tiramisu sitting in the same log was never mentioned. Every one of those is
+   already forbidden by DO NOT INVENT THE CULPRIT, shipped the run before.
+   It never reached her: the block was a local string inside the photo/analyze
+   prompt, and she had typed to Jim in chat. Four prompts write
+   food_logs.insight and exactly one of them had the rules. */
+console.log('\n  THE TEN LOGS REACH EVERY PROMPT THAT WRITES AN INSIGHT:');
+const TEN=_jimTenLogs();
+t(typeof TEN==='string' && TEN.length>3000, 'the block is one function, not a local string', typeof TEN);
+t(/DO NOT INVENT THE CULPRIT/.test(TEN),        '  and it carries the culprit rule');
+t(/NAME THE MEAL TIME FIRST/.test(TEN),         '  and the meal time rule');
+t(/THERE IS ALWAYS A MOVE AFTER THE MEAL/.test(TEN), '  and the move at the end');
+t(/QUESTION A NUMBER THAT LOOKS WRONG/.test(TEN),    '  and the bad-number rule the juice broke');
+t((src.match(/=== WHAT HE ACTUALLY SAYS, MEASURED ON TEN REAL LOGS ===/g)||[]).length===1,
+  'ONE copy of his words in the file, so a fix cannot land on three of four paths');
+
+/* Named one at a time, because a count would pass while the one that actually
+   failed went without. The chat path is the one all 82 clients talk to. */
+const writers={
+  'the photo / analyze prompt': /coachVoice \+= _jimTenLogs\(\)/,
+  'the chat prompt (buildCoachVoice)': /_jimTenLogs\(\)\+'\\n\\n'\+\s*\n\s*'WHOLE-FOOD NUDGE/,
+  'the plate grader (_gradePlateMeal)': /no preamble, no quotes\.'\+_jimTenLogs\(\)/,
+  'the re-grade after a clarify (clarifyMeal)': /so commit to a rating\.'\s*\n\s*\+_jimTenLogs\(\)/
+};
+Object.keys(writers).forEach(k=>t(writers[k].test(src), '  '+k+' reads it'));
+
+/* A rule with nothing to read is decoration - the same finding as v499, where
+   NAME THE MEAL TIME FIRST shipped over a prompt that was never told the time. */
+t(/Meal: '\+foodsText\+' \('\+\(entry\.meal\|\|'Meal'\)\+\(entry\.eat_time/.test(src),
+  'the plate grader is told the meal slot and the clock');
+t(/\(e\.meal\|\|'Meal'\)\+\(\(e\.eat_time\|\|e\.eatTime\)/.test(src),
+  'and so is the re-grade');
+
 
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (he reads the person, then the plate)');
 process.exit(bad?1:0);
