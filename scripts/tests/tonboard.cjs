@@ -413,7 +413,17 @@ t(/phase:a\.phase\|\|'comp'/.test(slice('async function obFinish(){','function _
   'and a flow with no mode screen still writes a phase');
 /* No question and no subtitle in the whole flow runs past a phone line. */
 _OB_STEPS.forEach(function(st){
-  if(st.q) t(st.q.length<=34, '  short question: '+st.q, String(st.q.length));
+  /* ONE SCREEN IS EXEMPT, BY NAME, AND ONLY THIS ONE. Yusuf overruled a shorter
+     headline on 16 Sep: "no, say what is your top brutally honest critique as to
+     why youre not at this goal now?" The short version he rejected could be
+     answered with a shrug. His runs to three lines on a phone and that is the
+     trade he made knowingly. Naming it here rather than raising the cap keeps
+     every other screen honest. */
+  if(st.q && st.k!=='blocker_text') t(st.q.length<=34, '  short question: '+st.q, String(st.q.length));
+  if(st.k==='blocker_text'){
+    t(/brutally honest/.test(st.q), '  the blocker screen keeps his own words');
+    t(!st.s, '  and carries no subtitle, because the question says all of it');
+  }
   if(st.s) t(st.s.length<=54, '  short subtitle: '+st.s, String(st.s.length));
 });
 
