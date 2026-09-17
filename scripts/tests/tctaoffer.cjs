@@ -52,6 +52,14 @@ t(/it\.consult==='yes' \|\| it\.consult==='booked'\) return false/.test(el),
   'never somebody who already took it');
 t(/_ctaWavedOff\(\)\) return false/.test(el), 'never somebody who waved it off');
 t(/g\.length>=12/.test(el), 'and never without a goal worth quoting back');
+/* A ROSTER FACT NOTHING CAN WORK OUT FOR ITSELF (Yusuf, 17 Sep: "mark arrants
+   is a clients husband, not needed"). One list, one line per name, and the
+   people on it keep every other thing the app does. */
+t(/CTA_NOT_A_LEAD\[String\(cl\.code\|\|''\)\.trim\(\)\.toLowerCase\(\)\]\) return false/.test(el),
+  'and never somebody he has said is not a lead');
+t(/var CTA_NOT_A_LEAD = \{/.test(src), 'which is one named list, in one place');
+t(/ujn3g4666bz/.test(src), '  with the name he gave on it');
+t(/client\\u2019s husband/.test(src), '  and why, so the next person can read it');
 
 console.log('\n  THE TIMES ARE REAL TIMES:');
 const ld=slice('async function _ctaLoadDays(){','\nfunction _ctaDayLabel');
