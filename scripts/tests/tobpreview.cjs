@@ -32,8 +32,21 @@ t(obPreview()===true, 'the trainer can open it');
 t(window._obPreview===true, '  and it is flagged as a preview');
 t(started && started.force===1, '  forced, so the usual refusals do not apply', JSON.stringify(started));
 t(started && started.row===null, '  with no server row, which is what a new signup looks like');
-t(/onclick="obPreview\(\)"/.test(src), 'and there is a button for it');
+t(/onclick="obPreview\(\)"/.test(src), 'and there is a door for it');
 t(/Preview setup</.test(src), '  labelled plainly');
+/* IT WAS IN THE WRONG ROOM FIRST. The Calls box is headed "who can book you,
+   and when you're available" - he went looking in Settings, which is where
+   anyone would, and reported he could not see it. */
+const callsBox=src.slice(src.indexOf('id="manageClientsBox"'), src.indexOf('id="manageClientsBox"')+2600);
+t(!/onclick="obPreview\(\)"/.test(callsBox), 'and it is NOT in the Calls box, which is about being booked');
+t(/_gpPreviewRow\(\)/.test(src), 'it sits in Settings, on the Account card');
+global.cl={code:'thegoat'};
+eval(defOf('_gpPreviewRow'));
+global._escHtml=x=>String(x);
+t(/Preview setup/.test(_gpPreviewRow()), '  where the trainer sees it');
+t(/Nothing is saved/.test(_gpPreviewRow()), '  told plainly that it writes nothing');
+global.cl={code:'alim1'};
+t(_gpPreviewRow()==='', 'and a client gets no row at all, not a dead one');
 
 console.log('\n  AND NOBODY ELSE CAN:');
 window._obPreview=false; started=null; toast='';
