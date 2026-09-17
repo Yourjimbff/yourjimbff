@@ -73520,6 +73520,35 @@ function _obSkip(i, dir){
 
    It rides in intake_json rather than a new column, the same way goal_text
    does - no migration, and every reader of that object already opens it. */
+/* THE ANSWERS THAT COME AFTER THE WRITE (17 Sep). obFinish builds the whole
+   profile row in one shot, so every answer given on a screen BELOW it - the
+   critique, the pledge, the offer - was being stashed to this phone and never
+   sent anywhere. Three columns of nulls on people who had actually answered.
+
+   This merges just those three into the row that already exists. It reads the
+   intake object it wrote a moment ago rather than rebuilding it, so nothing
+   else in there can be clobbered by a late tap, and it is best-effort: a person
+   who loses signal on the last screen still has a finished account. */
+async function _obPatchIntake(){
+  try{
+    if(window._obPreview===true) return false;
+    if(!cl || !cl.code || !_ob) return false;
+    var a=_ob.a||{}, base={};
+    try{
+      var cur=(typeof profile!=='undefined' && profile) ? profile.intake_json : null;
+      if(typeof cur==='string') base=JSON.parse(cur)||{};
+      else if(cur && typeof cur==='object') base=Object.assign({}, cur);
+    }catch(e){ base={}; }
+    base.blocker_text=(String(a.blocker_text||'').trim()||null);
+    base.pledge=(a.pledge==='yes')?'yes':null;
+    base.consult=(a.consult==='yes'||a.consult==='booked')?a.consult:null;
+    var row={client_code:cl.code, intake_json:JSON.stringify(base)};
+    var ok=false;
+    try{ ok=!!(await sbUpsert('profiles', row, 'client_code')); }catch(e){ ok=false; }
+    if(ok){ try{ profile=Object.assign({}, profile||{}, {intake_json:row.intake_json}); }catch(e){} }
+    return ok;
+  }catch(e){ return false; }
+}
 function _obConsultPick(v){
   try{
     var val=(v==='yes'||v==='booked')?v:null;
@@ -73528,6 +73557,7 @@ function _obConsultPick(v){
     _ob.a=_ob.a||{};
     _ob.a.consult=val;
     try{ _obSetupStash(); }catch(e){}      // the real name; _obSave is the Jarvis handled-days map
+    try{ _obPatchIntake(); }catch(e){}     // and off this phone, because the row is already written
     var wrap=document.getElementById('obCsWrap');
     if(wrap){
       /* Answer the tap where the tap happened. Repainting the whole step would
@@ -73571,6 +73601,7 @@ function _obPledge(){
     if(!_ob) return false;
     _ob.a=_ob.a||{}; _ob.a.pledge='yes';
     try{ _obSetupStash(); }catch(e){}
+    try{ _obPatchIntake(); }catch(e){}
     var w=document.getElementById('obPledgeWrap');
     if(w) w.innerHTML='<div class="obCsDone">Good. Let\u2019s go.</div>';
     /* AND IT MOVES THEM ON (Yusuf, 17 Sep: "and then they say yes, then they
@@ -73697,6 +73728,9 @@ function obNext(){
   var st=_obStep();
   if(!_obReady(st)){ try{ showToast('Answer this one first'); }catch(e){} return; }
   _obSetupStash();
+  /* The critique is typed on a screen below the write, so leaving it is the
+     moment it has to be sent. Every other answer went up with obFinish. */
+  try{ if(st && st.k==='blocker_text') _obPatchIntake(); }catch(e){}
   if(_ob.i < _OB_STEPS.length-1){ _ob.i=_obSkip(_ob.i+1, 1); obRender(); }
 }
 // A step is answerable or it is not. Nothing is skippable except the two that
@@ -74828,6 +74862,13 @@ function _obTargets(){
 }
 function obRender(){
   var o=document.getElementById('obOverlay'); if(!o||!_ob) return;
+  /* NOBODY IS TOLD TO INSTALL AN APP THEY ARE STANDING INSIDE. That test used
+     to live in obFinish, which is no longer the thing that reaches this step -
+     the ordinary walk does. One guard, at the only door. */
+  try{
+    var _stH=_obStep();
+    if(_stH && _stH.type==='home' && _obInstalled()){ obClose(); return; }
+  }catch(e){}
   /* Every repaint replaces the card, so any demo running against the old one
      is stopped here rather than left writing into a node nobody can see. */
   _obDemoStop();
@@ -75038,9 +75079,21 @@ async function obFinish(){
   /* ONE SCREEN LEFT, AND ONLY FOR SOMEBODY WHO IS NOT ALREADY INSTALLED.
      Everything above has been written by now, so this screen owes nothing -
      closing it from anywhere leaves a finished account either way. */
+  /* THE FLOW IS NOT OVER BECAUSE THE WRITE IS (17 Sep, found on a real signup
+     forty minutes after I caused it).
+
+     This used to jump straight to the home-screen step, which was fine while
+     that step was the only thing left. v484 moved the critique, the pledge and
+     the offer BELOW the demo that carries the write - and this jump skipped
+     clean over all three. Harold Pacheco finished setup at 02:08 and was never
+     shown any of them; his row came back with three nulls and I read it as a
+     man who declined. He was never asked.
+
+     It advances one step now, like every other screen does, and the flow ends
+     where the list ends. */
   try{
-    if(!_obInstalled() && _obStepIndex('home')>=0){
-      _ob.i=_obStepIndex('home');
+    if(_ob && _ob.i < _OB_STEPS.length-1){
+      _ob.i=_obSkip(_ob.i+1, 1);
       obRender();
       try{ if(typeof renderDayTimeline==='function') renderDayTimeline(true); }catch(e){}
       try{ if(typeof renderPhaseUI==='function') renderPhaseUI(); }catch(e){}

@@ -346,7 +346,24 @@ t(/class="obRing" id="obRing"/.test(home), 'the button is circled');
 t(!/class="obPoint"/.test(home), 'and the arrow that pointed at a still picture is gone');
 t(/id="obSheet"/.test(home), 'because the share sheet comes up instead');
 t(/function _obInstalled\(\)/.test(src), 'and somebody already installed never sees it');
-t(/if\(!_obInstalled\(\) && _obStepIndex\('home'\)>=0\)/.test(src), 'checked before it is shown');
+/* THE GUARD MOVED (17 Sep). It used to sit in obFinish, which jumped straight
+   to this step - and that jump flew over the critique, the pledge and the offer
+   the moment v484 put them below the write. obFinish advances one step like
+   everything else now, so the install test belongs at this step's own door. */
+t(/_stH\.type==='home' && _obInstalled\(\)\)\{ obClose\(\); return; \}/.test(src),
+  'checked at the step itself, before it draws');
+t(!/_ob\.i=_obStepIndex\('home'\)/.test(src),
+  'and nothing jumps to the end of the flow any more');
+/* THE THREE SCREENS BELOW THE WRITE HAVE TO REACH THE SERVER THEMSELVES. */
+t(/async function _obPatchIntake\(\)/.test(src), 'a late answer has a way to be saved');
+const pi=slice('async function _obPatchIntake(){','\nfunction _obConsultPick');
+t(/base\.blocker_text=/.test(pi) && /base\.pledge=/.test(pi) && /base\.consult=/.test(pi),
+  'and it carries all three of them');
+t(/sbUpsert\('profiles', row, 'client_code'\)/.test(pi), 'onto the row that already exists');
+t(/if\(window\._obPreview===true\) return false;/.test(pi), 'and a preview still writes nothing');
+t((src.match(/_obPatchIntake\(\);/g)||[]).length>=3,
+  'fired from the critique, the pledge and the offer',
+  String((src.match(/_obPatchIntake\(\);/g)||[]).length));
 t(/st\.type!=='home'/.test(src), 'it carries its own Done and no second button');
 /* ARE YOU ACTIVE RIGHT NOW (Yusuf, 14 Sep). "What is your experience level?"
    was still on the flow four versions after he picked this, which he caught:
