@@ -39,6 +39,23 @@ ok(/if\(!st \|\| !st\.est \|\| !_jimOptedIn\(\)\) return false;/.test(jr), 'nobo
 ok(/if\(String\(e\.insight\|\|''\)\.trim\(\)\) return false;/.test(jr), 'a meal that already has words is left alone');
 ok(/if\(seq!==_nlJimSeq\) return false;/.test(jr), 'a stale read never lands on a newer meal');
 ok(/if\(window\._nl!==st\) return false;/.test(jr), 'and never on a sheet that has closed under it');
+/* THE ORDINARY CASE, and the one that left him opening a logged lunch with no
+   coaching on it: the read takes a few seconds, Log it is right there, and the
+   row is written before the words exist. */
+ok(/if\(out && st\.logged\)\{/.test(jr), 'a read that lands after Log it goes onto the ROW, not a screen that has gone');
+ok(/_jimWrote/.test(jr) && /food_logs\?id=eq\./.test(jr), 'it finds the row it just wrote and patches that one');
+ok(/_tlRefreshDay\(st\.ds\)/.test(jr), 'and the day refreshes so it appears without a reload');
+/* And the card he comes back to has to draw it, which it never did. */
+const back=slice('function _tlMealReadHtml(rows){','function mealFeedbackHtml(items, ds, opts){');
+ok(/_jimCardHtml\(txt\)/.test(back), 'the meal card you come back to draws the read');
+ok(/for\(var i=0;i<rows\.length;i\+\+\)/.test(back), 'one card per plate, not one per food row');
+ok(/_tlMealReadHtml\(rows\)/.test(src), 'and it is actually wired into the expanded meal');
+/* THE ORDINARY CASE, and the one that left him looking at a meal with no
+   coaching on it: the read takes a few seconds, Log it is right there, and the
+   row is written before the words exist. */
+ok(/if\(out && st\.logged\)\{/.test(jr), 'a read that lands after Log it goes onto the ROW, not a screen that has gone');
+ok(/_jimWrote/.test(jr) && /food_logs\?id=eq\./.test(jr), 'it finds the row it just wrote and patches that one');
+ok(/_tlRefreshDay\(st\.ds\)/.test(jr), 'and the day is refreshed so it appears without a reload');
 ok(/_jimTenLogs\(\)/.test(jr) && /_jimToneBlock\(\)/.test(jr) && /_jimGoalLine\(\)/.test(jr),
    'one voice: the same ten logs, tone and goal direction as every other read');
 ok(/could not read that one just now/.test(jr), 'a failed read says so rather than leaving an empty card');
