@@ -80,6 +80,27 @@ ok(/min-height:\d+px/.test(wait),
 const css=slice('.nlPk{','@media (prefers-reduced-motion:reduce)');
 const scale=css.match(/--pk1:(\d+)px;\s*--pk2:(\d+)px;\s*--pk3:(\d+)px/);
 ok(!!scale, 'the card declares one spacing scale');
+
+/* HE SAID IT THREE TIMES AND I ADJUSTED THE CARD THREE TIMES. The gap he was
+   pointing at was never on the card: .nlSay carried `position:relative` and no
+   margin at all, so whatever sat above it - the nutrition card, the reading
+   line - was touching the typing box. MEASURED at 390px after the fix: head to
+   photo 18, photo to card 18, card to box 18, box to chips 18, chips to button
+   18. Every block on this sheet, one number. */
+const sheetGaps={
+  '.nlHead{':        /margin:2px 2px 18px;/,
+  '.nlPhoto{':       /margin-bottom:18px;/,
+  '.nlSay{':         /margin-top:18px;/,
+  '.nlChips{':       /margin:18px 0 0;/,
+  '.nlGo{':          /margin-top:18px;/
+};
+Object.keys(sheetGaps).forEach(sel=>{
+  const i=src.indexOf(sel);
+  const block=i<0?'':src.slice(i, src.indexOf('}', i));
+  ok(i>=0 && sheetGaps[sel].test(block), 'the sheet spaces '+sel+' by 18, like everything else on it');
+});
+ok(/#nlPeek:empty\{display:none;\}/.test(src),
+   'and an empty card takes up no space at all');
 const strays=(css.match(/(?:margin-top|padding-top|gap):\s*\d+px/g)||[])
   .filter(d=>!/:\s*(?:0|1|2)px/.test(d));
 ok(strays.length===0, 'and every gap is taken from it, not typed by hand', strays);
