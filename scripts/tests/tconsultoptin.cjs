@@ -15,7 +15,8 @@ const t=(p,l,x)=>{ if(!p) bad++; console.log((p?'  ok    ':'  FAIL  ')+l+(x!==un
 
 let booked=0, stashed=0;
 global.window={};
-global.openConsultBooking=()=>{ booked++; };
+global.openBooking=()=>{ booked++; };
+global.openConsultBooking=()=>{ throw new Error('the marketing site must not be opened from here'); };
 global._obSetupStash=()=>{ stashed++; };
 global.setTimeout=(fn)=>{ try{ fn(); }catch(e){} };
 global.document={getElementById:id=>(id==='obCsWrap'?{innerHTML:''}:null)};
@@ -68,6 +69,43 @@ t(_obConsultPick('yes')===true, 'no wrapper on screen and it still records the a
 t(_ob.a.consult==='yes', '  which is the half that matters');
 global._ob=null;
 t(_obConsultPick('yes')===false, 'and with no onboarding running at all it refuses cleanly');
+
+
+// "All someone has to do when they see the consult screen is fill out a time, we
+// already have their info." (Yusuf, 16 Sep.)
+//
+// Picking a time opened the marketing site in a NEW TAB, where a person who had
+// just spent four minutes typing their height, weight, goal and phone number into
+// this app was asked for all of it again by a stranger's form.
+console.log('\n  IT BOOKS IN THE APP, NOT ON A FORM THEY ALREADY FILLED IN:');
+t(/window\._bkConsult=true;/.test(src), 'the consult screen flags the picker');
+t(/try\{ openBooking\(\); \}catch\(e\)\{\} \}, 180\);/.test(src), '  and opens the app’s own picker');
+const pick=src.slice(src.indexOf('function _obConsultPick'), src.indexOf('function _obConsultBooked'));
+t(!/openConsultBooking/.test(pick), 'the marketing site is not opened from this screen any more');
+t(/reads his real availability, his real\n       bookings and his blocked time/.test(src),
+  '  because the picker already knows his real week');
+
+console.log('\n  A CONSULT IS NOT PAID FOR OUT OF ANYONE’S PLAN:');
+t(/var isConsult=false; try\{ isConsult=\(window\._bkConsult===true\); \}catch\(e\)\{\}/.test(src),
+  'confirmBooking reads the flag');
+t(/if\(!isConsult && weeklyCallsFor\(cl\.code\)/.test(src), 'the weekly-call gate steps aside for it');
+t(/if\(!isConsult && callsAreCreditOnly\(cl\.code\)/.test(src), '  and so does the credit gate');
+t(/if\(isConsult\)\{ \/\* nothing to spend/.test(src), 'and nothing is deducted for one');
+t(/no calls left on your plan right now/i.test(src),
+  'the sentence a new signup would otherwise have met is still in the file, on the paid path');
+
+console.log('\n  THE EXEMPTION CANNOT LEAK INTO A LATER BOOKING:');
+t(/window\._bkConsult=false; _obConsultBooked\(\);/.test(src), 'the flag is cleared when the booking lands');
+t(/Cleared here and not on the way in/.test(src),
+  '  and not on the way in, so losing the slot mid-decision does not lose the exemption');
+
+console.log('\n  AND THE CARD UNDERNEATH IS TOLD:');
+global.document={getElementById:id=>(id==='obCsWrap'?{innerHTML:''}:null)};
+eval(defOf('_obConsultBooked'));
+t(_obConsultBooked()===true, 'the onboarding card updates after the modal closes');
+t(/Booked\. You will get a reminder\./.test(src), '  and says it landed');
+global.document={getElementById:()=>null};
+t(_obConsultBooked()===false, 'and it says so plainly when the card is no longer on screen');
 
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (two doors, and he is told which one they took)');
 process.exit(bad?1:0);
