@@ -23,7 +23,7 @@ const ok=(c,m,x)=>{ console.log((c?'  ok   ':'  FAIL ')+m+(x!==undefined?('  '+J
 
 console.log('\ntlogan - a read may only sit beside numbers it agrees with');
 
-const lifted=closure(['_feedJimPick','_feedJimText','_feedReadFits','_feedReadCals','_feedJimClean']);
+const lifted=closure(['_feedJimPick','_feedJimText','_feedReadFits','_feedReadCals','_feedJimClean','_jimVoiceFix']);
 const holes=lifted.unresolved.filter(n=>n!=='_groupRows');
 ok(holes.length===0, 'the pickers lift with nothing missing', holes);
 const F=new Function(lifted.code+'\nreturn {_feedJimPick,_feedJimText,_feedReadFits,_feedReadCals};')();
@@ -43,7 +43,12 @@ const card={kind:'food', code:'logan', data:{
 }};
 
 const got=F._feedJimPick(card);
-ok(got.text===BURGER_READ, 'the read is still shown - it is real and it is about a real food');
+/* NOT BYTE-IDENTICAL ANY MORE (18 Sep): every read leaving this picker goes
+   through _jimVoiceFix, and this one opens "Lunch is solid for your goal."
+   The read is the same read; one banned word is not in it. */
+ok(got.text.length>40 && /682 calories/.test(got.text),
+   'the read is still shown - it is real and it is about a real food', got.text.slice(0,50));
+ok(!/\bsolid\b/i.test(got.text), 'with the word Yusuf banned taken out of it', got.text.slice(0,40));
 ok(got.from==='Double Cheeseburger, Twinkie',
    'and it is NAMED with the food it was written about, so 682 is not a contradiction', got.from);
 

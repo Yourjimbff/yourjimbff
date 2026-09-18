@@ -19,6 +19,10 @@ global._escHtml=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(
 let optedIn=true;
 global._jimOptedIn=()=>optedIn;
 eval(src.match(/var _JIM_SPARK='[\s\S]*?';\n/)[0]);
+/* THE CARD RUNS EVERY READ THROUGH THE VOICE FILTER NOW (18 Sep), so the
+   filter has to be in the sandbox with it - _guard names it otherwise and
+   every assertion below fails on a card that never got built. */
+eval(defOf('_jimVoiceFix'));
 eval(defOf('_jimCardHtml'));
 guard(['_jimCardHtml'], n=>eval(n));
 
@@ -27,6 +31,9 @@ const card=_jimCardHtml('Breakfast. That is a solid plate.');
 t(/class="jimCard"/.test(card), 'it has its own surface');
 t(/class="jimCardBody"/.test(card), '  with the coaching as the body');
 t(/Jim’s read/.test(card), '  under his own name');
+/* The sample read above says "a solid plate" on purpose: Yusuf banned that word
+   three times and it kept coming back, so the card is the place to see it gone. */
+t(!/\bsolid\b/i.test(card), '  and the word he banned does not reach the card', card.slice(0,70));
 t(/jimCardBody\{font-size:14px/.test(src), 'and the body is 14px');
 t(!/font-size:12\.5px;color:rgba\(240,236,228,0\.78\);line-height:1\.55;margin-top:12px/.test(src),
   'the old 12.5px grey line is gone');
