@@ -23,7 +23,8 @@ const MINE=['_jimGoalRead','_jimGoalLine','_jimTurboUnlocked','_jimTone','_jimTo
             '_jimNoCritique','_jimNoCritiqueSet','_jimToneName','_jimToneBlock','_jimTenLogs',
             /* 17 Sep: _jimToneBlock now opens every delivery with the no-dash rule */ '_jimPunct',
             /* run 4: the two guards that stand between a wrong sentence and a client */
-            '_noEmDash','_insightMacroSafe','_jimTodaySoFar'];
+            '_noEmDash','_insightMacroSafe','_jimTodaySoFar',
+            /* run 9: the plate, added up in code, read by both gates */ '_jimPlateTotals'];
 eval(MINE.map(defOf).join('\n'));
 eval(src.match(/var _JIM_TONE_KEY=[^\n]*\n/)[0]);
 eval(src.match(/var JIM_TONES=\[[\s\S]*?\];\n/)[0]);
@@ -568,6 +569,57 @@ t(/rating=_drinkFloor\(rating, entry\.calories\);/.test(src),
   '  and the 25-calorie drink floor still runs last (Yusuf, 15 Sep)');
 t(_wholeFoodFloor('Kiwi','okay')==='nutrient_dense', '  and a kiwi is still a kiwi');
 t(src.indexOf('—')<0 || true, '');
+
+/* ===== RUN 9: "FOR YOUR GOAL OF GAINING WEIGHT" SWITCHED EVERY CHECK OFF =====
+   uhbw97ntrw4 logged three rows into one breakfast on 18 Sep - a cinnamon crumb
+   muffin, eggs and toast, and a protein shake - and all three reads carried a
+   figure that was not on his screen. Not one of the gates in _insightMacroSafe
+   ever ran on them: the TARGET escape matched "goal of" in his own standard
+   opener, one clause behind the macro list, on every single read.
+   These five are the real sentences, over the real rows. */
+console.log('\n  A GOAL OF GAINING WEIGHT IS A DIRECTION, NOT A TARGET:');
+const _B=[{id:1,meal:'Breakfast',eat_time:'10:54am',name:'Cinnamon crumb muffin',calories:413,protein:4,carbs:52,fat:21},
+          {id:2,meal:'Breakfast',eat_time:'10:54am',name:'Eggs and Toast',calories:521,protein:25,carbs:40,fat:29},
+          {id:3,meal:'Breakfast',eat_time:'10:54am',name:'Protein shake',calories:130,protein:30,carbs:2,fat:0}];
+global.todayFood=_B;
+t(_jimPlateTotals(_B[2]).rows===3, 'the three rows of one breakfast are one plate', _jimPlateTotals(_B[2]).rows);
+t(_jimPlateTotals(_B[2]).calories===1064, '  and the plate is 1,064 calories, added up in code', _jimPlateTotals(_B[2]).calories);
+t(_jimPlateTotals(_B[2]).protein===59, '  and 59g of protein, which is what he actually ate', _jimPlateTotals(_B[2]).protein);
+const _shake="Breakfast at 10:54 AM. You've got the cinnamon crumb muffin, eggs and toast, and now the protein shake. That's 1,355 calories, 30g protein, 92g carbs, 50g fat. For your goal of gaining weight, this is the right load.";
+t(_insightMacroSafe(_shake,_B[2])==='',
+  '1,355 calories over a 1,064 plate is sourced to nothing, so the line goes',
+  JSON.stringify(_insightMacroSafe(_shake,_B[2])));
+const _eggs="Breakfast at 10:54 AM. That's 521 calories, 25g protein, 37g carbs and 27g fat. For your goal of gaining weight, a heavier breakfast makes sense.";
+t(/40g carbs and 29g fat/.test(_insightMacroSafe(_eggs,_B[1])),
+  '  and the two figures behind the same opener are corrected, not waved through',
+  _insightMacroSafe(_eggs,_B[1]));
+const _muf="Cinnamon crumb muffin at breakfast, 421 calories. For your goal of gaining weight, a heavier meal is right.";
+t(/413 calories/.test(_insightMacroSafe(_muf,_B[0])),
+  '  and 421 over a 413 row comes back as 413', _insightMacroSafe(_muf,_B[0]));
+/* AND THE PLATE'S OWN FIGURE IS NOT A WRONG FIGURE. This is the read doing rule
+   4 properly, and the gram gate used to rewrite its 59g down to this row's 30g. */
+t(_insightMacroSafe("All three together is 59g protein and 94g carbs.",_B[2])
+    ==="All three together is 59g protein and 94g carbs.",
+  '  a correctly grouped read keeps the plate total it quoted',
+  _insightMacroSafe("All three together is 59g protein and 94g carbs.",_B[2]));
+/* AND EVERYTHING THE ESCAPE WAS BUILT FOR IS STILL ESCAPING. */
+const _lone={id:9,meal:'Dinner',eat_time:'7:00 PM',name:'Salmon',calories:609,protein:52,carbs:98,fat:20};
+global.todayFood=[_lone];
+t(_insightMacroSafe("Your goal is 180g of protein a day.",_lone)==="Your goal is 180g of protein a day.",
+  'a goal spoken of as a number is still a target');
+t(_insightMacroSafe("Your protein goal is 207g.",_lone)==="Your protein goal is 207g.",
+  '  and so is a protein goal');
+t(_insightMacroSafe("98g carbs fuels tomorrow's lift. Protein anchor at 52g.",_lone)
+    ==="98g carbs fuels tomorrow's lift. Protein anchor at 52g.",
+  "  and Carly's sentence is still not corrupted");
+t(_insightMacroSafe("Dinner brings you to 996 calories.",_lone)==="Dinner brings you to 996 calories.",
+  '  and a far-off figure on a row with NO siblings is still left alone');
+global.todayFood=undefined;
+/* AND THE COUNT HAS TO POINT AT FOOD THAT IS THERE (run 9, nikoh1). */
+t(/If you cannot name the second one, there is no second one/.test(_jimTenLogs()),
+  'a count of carb sources has to point at the foods it is counting');
+t(/Eggs\s+are not a carbohydrate/.test(_jimTenLogs()),
+  '  and the measured case is in the block, in the words it happened in');
 
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (he reads the person, then the plate)');
 process.exit(bad?1:0);
