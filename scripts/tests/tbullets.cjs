@@ -62,6 +62,46 @@ ok(dup==='', 'and the same name twice is not a two-item plate');
 const many=[]; for(let i=0;i<20;i++) many.push({name:'Food '+i, calories:50});
 ok((F._mealBulletsHtml(many).match(/<li>/g)||[]).length<=10, 'a very long plate is capped');
 
+// ------------------- A SINGLE ROW THAT HOLDS SEVERAL FOODS (Angela's sentence)
+/* She typed one sentence and got one row titled with the whole meal squashed
+   into five words. The foods ride on the row itself now, so the same list is
+   drawn from `items` when the meal is one row and from the grouped rows when
+   it is several. */
+const L2=closure(['_mealItemRows']);
+/* JSON is a browser global, not something this file declares - the lifter's
+   report keeps ALL_CAPS names it cannot resolve. */
+const h2=L2.unresolved.filter(n=>n!=='JSON');
+ok(h2.length===0, 'the row reader lifts with nothing missing', h2);
+const G=new Function(L2.code+'\nreturn {_mealItemRows};')();
+
+const ANGELA={items:[
+  {n:'Eggs', q:2, u:'each', cal:140},
+  {n:'Ricotta cheese', q:1, u:'tbsp', cal:40},
+  {n:'Bacon', q:4, u:'slice', b:'black label', cal:180},
+  {n:'Biscuit', q:1, u:'each', b:'Great Value', cal:190}
+]};
+const rowsA=G._mealItemRows(ANGELA);
+ok(rowsA && rowsA.length===4, 'her one sentence reads back as four foods', rowsA&&rowsA.length);
+ok(/Eggs \u00d72/.test(rowsA[0].name), 'with the quantity on the line', rowsA&&rowsA[0].name);
+ok(/black label/.test(rowsA[2].name), 'and the brand beside the food, not inside its name', rowsA&&rowsA[2].name);
+ok(rowsA[3].calories===190, 'each line carries its own calories');
+
+const hA=F._mealBulletsHtml(rowsA);
+ok((hA.match(/<li>/g)||[]).length===4, 'and it draws as four bullets');
+
+// the column comes back as text from PostgREST on some paths
+ok(G._mealItemRows({items:JSON.stringify(ANGELA.items)}).length===4, 'a JSON string from the column parses too');
+ok(G._mealItemRows({items:[{n:'Eggs',cal:140}]})===null, 'one item is not a list');
+ok(G._mealItemRows({})===null && G._mealItemRows(null)===null, 'and a row with no items does not throw');
+
+// ---- it is stored, and asked for
+ok(/if\(_shp && _shp\.length>1\) row\.items=_shp; else delete row\.items;/.test(src),
+   'the door shapes them and drops an empty array rather than storing a false claim');
+ok(/foodRow\.items=r\.items_shaped/.test(src), 'the estimate path hands them over');
+ok(/select=id,insight,items&limit=40/.test(src), 'and the feed actually asks the database for the column');
+ok(/if\(!_blts\) _blts=_mealBulletsHtml\(_mealItemRows\(it\.data\)\)/.test(src),
+   'the card falls back to the row\u2019s own foods when it is not a group');
+
 // ------------------------------------------------------------- ON THE CARD
 ok(/_mealBulletsHtml\(it\.data&&it\.data\._groupRows\)/.test(src), 'the feed card builds it off the grouped rows');
 ok(/_groupCount\+' foods'/.test(src), 'and the heading says how many, instead of naming them all again');

@@ -19838,7 +19838,7 @@ async function _loadTrainerFeedRun(targetId){
 
        tfeedselect.cjs is the guard: it fails if any column _feedItemHtml
        reads off a food row is neither in the main select nor in a backfill. */
-    var _insBackfill = (async function(){ try{ var _iids=foods.filter(function(f){return f.id!=null;}).slice().sort(function(a,b){return _feedTs(b)-_feedTs(a);}).slice(0,200).map(function(f){return f.id;}); var _im={}; var _ip=[]; for(var _ii=0;_ii<_iids.length;_ii+=40){ var _ic=_iids.slice(_ii,_ii+40); if(_ic.length) _ip.push(sbSelect('food_logs','id=in.('+_ic.join(',')+')&select=id,insight&limit=40').catch(function(){return [];})); } var _ir2=await Promise.all(_ip); _ir2.forEach(function(_if2){ (_if2||[]).forEach(function(r){ if(r && r.insight) _im[r.id]=r.insight; }); }); foods.forEach(function(f){ if(_im[f.id]) f.insight=_im[f.id]; }); }catch(e){} })();
+    var _insBackfill = (async function(){ try{ var _iids=foods.filter(function(f){return f.id!=null;}).slice().sort(function(a,b){return _feedTs(b)-_feedTs(a);}).slice(0,200).map(function(f){return f.id;}); var _im={}; var _ip=[]; for(var _ii=0;_ii<_iids.length;_ii+=40){ var _ic=_iids.slice(_ii,_ii+40); if(_ic.length) _ip.push(sbSelect('food_logs','id=in.('+_ic.join(',')+')&select=id,insight,items&limit=40').catch(function(){return [];})); } var _ir2=await Promise.all(_ip); _ir2.forEach(function(_if2){ (_if2||[]).forEach(function(r){ if(r && (r.insight||r.items)) _im[r.id]={i:r.insight, it:r.items}; }); }); foods.forEach(function(f){ var _e=_im[f.id]; if(!_e) return; if(_e.i) f.insight=_e.i; if(_e.it) f.items=_e.it; }); }catch(e){} })();
     /* _cafBackfill GOES ON THE END, and this is why the comment is here. This
        array is read POSITIONALLY below - _resAll[7] is steps - so slotting a new
        promise in beside the other backfills silently handed steps the wrong
@@ -24401,7 +24401,11 @@ function _feedItemHtml(it){
     /* A PLATE IS ITS FOODS. Several rows logged together stop being a title
        with separators in it and become the list they already were. One food is
        still a title - a bullet with nothing under it is furniture. */
-    var _blts=''; try{ _blts=_mealBulletsHtml(it.data&&it.data._groupRows); }catch(e){ _blts=''; }
+    var _blts='';
+    try{
+      _blts=_mealBulletsHtml(it.data&&it.data._groupRows);
+      if(!_blts) _blts=_mealBulletsHtml(_mealItemRows(it.data));
+    }catch(e){ _blts=''; }
     line=(_blts ? ('<div style="font-weight:800;color:var(--text);font-size:15px;line-height:1.25;">'+(it.data&&it.data._groupCount?(it.data._groupCount+' foods'):'Meal')+'</div>'+_blts)
                 : ('<div style="font-weight:800;color:var(--text);font-size:17px;line-height:1.25;overflow-wrap:anywhere;">'+(f.name||'a meal').replace(/</g,'&lt;')+'</div>'))
       +'<div style="font-size:12px;color:rgba(240,236,228,0.78);margin-top:4px;letter-spacing:0.2px;">'+_feedNumBind(_mealMacLine(f,'short',{time:false}))+(_cafTxt?(' \u00b7 '+_cafTxt):'')+'</div>'+_sdHtml+_chip; }
@@ -27205,6 +27209,23 @@ function _feedDoubleHtml(it){
    breakdown he is asking for is sitting in _groupRows, thrown away at the last
    step, exactly like the itemisation inside a single row. One food stays a
    title; two or more become the list. */
+/* A SINGLE ROW THAT HOLDS SEVERAL FOODS. Angela Walker typed one sentence and
+   got one row whose name was the whole meal squashed into five words. Its
+   foods now ride on the row itself, so the same list is drawn from items when
+   the meal is one row and from the grouped rows when it is several. One
+   renderer, two sources, identical on screen. */
+function _mealItemRows(data){
+  try{
+    if(!data) return null;
+    var it=data.items;
+    if(typeof it==='string'){ try{ it=JSON.parse(it); }catch(e){ return null; } }
+    if(!Array.isArray(it) || it.length<2) return null;
+    return it.map(function(x){
+      return {name:(String(x.n||x.name||'').trim()+(x.q>1?(' \u00d7'+x.q):'')+(x.b?(' \u00b7 '+x.b):'')),
+              calories:(+x.cal||+x.calories||0)};
+    }).filter(function(x){ return x.name; });
+  }catch(e){ return null; }
+}
 function _mealBulletsHtml(rows){
   try{
     if(!Array.isArray(rows) || rows.length<2) return '';
@@ -67085,6 +67106,16 @@ async function insertFoodLog(row, photo){
             reason:'macros came back empty, so nothing was written'};
   }
   try{ if(row && row.insight) row.insight=_insightMacroSafe(row.insight, row); }catch(e){}
+  /* THE FOODS THEMSELVES, KEPT (18 Sep). Shaped on the one door so no caller
+     has to remember to do it, and dropped entirely when there is nothing real
+     to store - an empty array on the row would read as "itemised, and it was
+     one thing", which is a different and wrong claim from "not itemised". */
+  try{
+    if(row && row.items){
+      var _shp=_foodItemsShape(row.items);
+      if(_shp && _shp.length>1) row.items=_shp; else delete row.items;
+    }
+  }catch(e){ try{ delete row.items; }catch(_){} }
   /* The name is the app's own guess and this is the only place it is tidied.
      meal_text is untouched, always - that is what the client actually said. */
   try{ if(row && row.name){ var _cn=_foodNameClean(row.name); if(_cn) row.name=_cn; } }catch(e){}
@@ -91692,6 +91723,12 @@ async function logFoodFromChat(offer, photo, targetCode, dry){
   try{ r.name=_jimFoodLed(r.name, offer.description||offer.meal_text||''); }catch(e){}
   var foodRow = {client_code:_code, name:r.name, emoji:r.emoji, calories:r.calories, protein:r.protein, carbs:r.carbs, fat:r.fat, sugar:r.sugar, caffeine:Math.round(r.caffeine||0), rating:r.rating, insight:r.insight, meal:meal, eat_time:eatTime, graced:false, date_str:_targetDate, meal_text:(offer.meal_text||null)};
   if(_daysAgo>0) foodRow.logged_at = _isoForDateStr(_targetDate, eatTime);
+  /* The lines the model broke this meal into, which _mtApplyResult priced and
+     then shaped. Without this they are computed, used for the totals and
+     dropped, and the row keeps only the title the model invented for the whole
+     plate - which is how one sentence became "Eggs, Bacon & Ricotta Omelette
+     with Biscuit" and "Eggs, Bacon & Biscuit with Ricotta". */
+  try{ if(r && r.items_shaped) foodRow.items=r.items_shaped; }catch(e){}
   var _ins = await insertFoodLog(foodRow, savedPhoto);
   // WHAT THE WRITE ACTUALLY ANSWERED, for the caller's dedupe map. This function
   // returns a bare false for "never landed", "landed but unconfirmed" and
