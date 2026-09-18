@@ -130,8 +130,17 @@ ok(/font-variant-numeric:tabular-nums/.test(src), 'the numbers line up in their 
    shown it - "Caribbean Pineapple Chicken Tenders / Nutrition Solutions" - so it
    is not competing with the stored name for its 55 characters. */
 const nameline=slice('var title=_foodNameClean(p.name','var eye=');
-ok(/p\.brand/.test(nameline) && /title \+ \(brand/.test(nameline),
+ok(/p\.brand/.test(nameline) && /title \+ \(\(brand/.test(nameline),
    'the brand sits beside the name on the display line, not inside the stored name');
+/* AND ONLY ONCE (Yusuf, 17 Sep, off his own dinner). His card read "Cilantro
+   Lime Filet Mignon \u00b7 Nutrition Solutions \u00b7 NUTRITION SOLUTIONS".
+   _nlFromLabel has already joined the brand onto the name - that is where his
+   "the food, then who made it" format is built - and this line appended it a
+   second time from the field kept beside it. */
+ok(/_tl\.indexOf\(_bl\)<0/.test(nameline),
+   'and only when the name does not already carry it');
+ok(/_fnUnDouble\(line\)/.test(nameline),
+   'with the un-doubler on the finished line, so any other route to the same shape is caught');
 
 // ---- glass, per house law, and the title is the biggest thing on it
 ok(/\.nlRes\{[^]*?radial-gradient/.test(src), 'the card is glass, not flat grey - the result screen\u2019s own');
@@ -147,8 +156,21 @@ ok(cal && nm && (+cal[1]) > (+nm[1]) && (+cal[1])>=40,
 /* SPEED, and every one of these is a second off the wait he measured:
    "food logging needs to take half the amount of time while it reads it." */
 const rd=slice('async function mbReadLabel(dataUrl, opts){','/* ===== THE PACKET READS ITSELF');
-ok(/_fast\?1100:1600/.test(rd) && /_fast\?0\.82:0\.9/.test(rd),
-   'a fast read sends a smaller photo - a sleeve prints its numbers a centimetre tall');
+/* THE PIXELS WERE THE ONE THAT COST HIM (17 Sep, 9:21pm). This line used to
+   REQUIRE the fast read to send 1100px, and that is what turned a sleeve
+   printing 765 CALORIES into a card saying 78. Three digits in a circle a
+   centimetre across do not survive that resize, and the comment above this
+   read "NOTHING IS TRADED AWAY", which was simply wrong.
+
+   The other three savings are real and they stay: the quick model, not
+   waiting on a second resize of the photo, and no backoff between goes. Those
+   are worth well over a second between them. The pixels were worth about a
+   hundred and fifty milliseconds. So the speed is asserted where it actually
+   comes from, and the resolution is asserted the other way round. */
+ok(!/_fast\?1100:/.test(rd), 'the fast read no longer sends a smaller photo');
+ok(/downscaleImage\(dataUrl, 1600,/.test(rd), 'both roads send 1600');
+ok(/MB_LABEL_FAST_MODEL, MB_LABEL_MODEL/.test(rd), 'the speed comes from the quick model first');
+ok(/if\(!_fast && _try<tries-1\)/.test(rd), 'and from the fast road skipping the backoff');
 ok(/MB_LABEL_FAST_MODEL='claude-haiku/.test(src), 'and asks the quick model');
 ok(/chain=_fast \? \[MB_LABEL_FAST_MODEL, MB_LABEL_MODEL\]/.test(rd),
    'with the careful model as its SECOND GO, not a fallback only on error');
