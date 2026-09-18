@@ -85,6 +85,18 @@ const PER100 = [
   ['salmon',         OZ,  22.1, 0,    12.4, 'Fish, salmon, Atlantic, farmed, cooked'],
   ['ribeye',         OZ,  23.6, 0,    21.8, 'Beef, rib eye steak, 1/8in, grilled'],
   ['lean beef',      OZ,  28.5, 0,    12.0, 'Beef, ground 90/10, pan-browned'],
+  /* THE WHOLE SHELF, every rung against the FDC entry it was taken from
+     (18 Sep). Six measured, and they are the ones that hold this ladder
+     upright - if a rung drifts, six ounces of somebody's dinner drifts with
+     it, and beef is the food on this roster with the widest spread between
+     what people buy and what the app assumed. All: crumbles, cooked,
+     pan-browned, per 100g. */
+  ['70/30 ground beef', OZ, 26.0, 0, 18.0, 'Beef, ground 70/30, crumbles, cooked, pan-browned'],
+  ['80/20 ground beef', OZ, 27.0, 0, 17.4, 'Beef, ground 80/20, crumbles, cooked, pan-browned'],
+  ['85/15 ground beef', OZ, 27.8, 0, 15.3, 'Beef, ground 85/15, crumbles, cooked, pan-browned'],
+  ['90/10 ground beef', OZ, 28.5, 0, 12.0, 'Beef, ground 90/10, crumbles, cooked, pan-browned'],
+  ['93/7 ground beef',  OZ, 28.8, 0,  9.5, 'Beef, ground 93/7, crumbles, cooked, pan-browned'],
+  ['95/5 ground beef',  OZ, 29.2, 0,  7.5, 'Beef, ground 95/5, crumbles, cooked, pan-browned'],
   ['ny strip',       OZ,  26.1, 0,    18.5, 'Beef, top loin steak, 1/8in, grilled'],
   ['chicken breast', OZ,  31.0, 0,     3.6, 'Chicken breast, meat only, roasted'],
   ['white rice',    125,   2.7, 28.2,  0.28,'Rice, white, long-grain, cooked'],
@@ -132,8 +144,25 @@ console.log('tusda: ' + (fails ? 'FAIL' : 'ok'));
   // what check.sh got caught by - a stray /* pairing with a */ far below ate the
   // whole table - so this does not strip anything, it just asks a question prose
   // cannot accidentally answer.
-  t2((src2.match(/,est:1,/g)||[]).length===1,
-     'exactly one row claims it, so the flag still means something');
+  /* IT USED TO BE ONE ROW. It is four now: mixed vegetables, and the three
+     ground beef grinds that sit between measured rungs - 73/27, 96/4 and 97/3
+     (18 Sep). Counting rows was never the ruling; the ruling is that a row
+     only carries the flag when its numbers are NOT measured, and that the
+     table stays mostly measured. Both of those are what is asked below. */
+  const _est=(src2.match(/,est:1,/g)||[]).length;
+  t2(_est>=1 && _est<=6, 'the flag is on a handful of rows, not sprinkled everywhere ('+_est+')');
+  t2(_est < (src2.match(/\{k:'/g)||[]).length/4,
+     'and the table is still mostly measured food, so the flag still means something');
+  /* EVERY GRIND THAT IS GUESSED SAYS SO, and every grind that was measured does
+     not. 70/30, 80/20, 85/15, 90/10, 93/7 and 95/5 come straight off USDA
+     crumbles-cooked-pan-browned; the other three are read between them. */
+  [['70/30',false],['73/27',true],['80/20',false],['85/15',false],
+   ['90/10',false],['93/7',false],['95/5',false],['96/4',true],['97/3',true]].forEach(function(pair){
+    var re=new RegExp("\\{k:'"+pair[0].replace('/','\\/')+" ground beef',[^\\n]*");
+    var row=(src2.match(re)||[''])[0];
+    t2(!!row && (/,est:1,/.test(row)===pair[1]),
+       pair[0]+' ground beef '+(pair[1]?'says it is estimated':'is measured and says nothing'));
+  });
   if(b2){ console.log('\n'+b2+' FAILED'); process.exit(1); }
   console.log('\n  all pass');
 }
