@@ -7606,6 +7606,19 @@ body.tlwnav #tlScroll{height:calc(100vh - 194px);height:calc(100svh - 194px);}
    was. An empty chip row never deserved space on any screen. */
 #nlPeek:not(:empty) ~ #nlEchoWrap:empty{min-height:0;}
 .nlChips:empty{display:none;}
+/* THE QUESTION, sized like the sheet around it (18px, his spacing). Amber:
+   nothing is wrong, the app simply cannot tell which of two true things it is
+   looking at. Untouched it takes Both, so the chosen one is lit from the
+   start rather than leaving him a dead row to interpret. */
+.nlAsk{margin-top:18px;border-radius:13px;padding:11px 13px 12px;
+  background:rgba(224,176,64,0.06);border:1px solid rgba(224,176,64,0.26);}
+.nlAskQ{font-size:12.5px;line-height:1.5;color:rgba(240,236,228,0.82);}
+.nlAskQ b{color:var(--text);font-weight:800;}
+.nlAskRow{display:flex;gap:8px;margin-top:10px;}
+.nlAskB{flex:1;min-height:38px;border-radius:10px;cursor:pointer;font-family:inherit;
+  font-size:12.5px;font-weight:800;color:var(--text);
+  background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.13);}
+.nlAskB.on{background:rgba(224,176,64,0.18);border-color:rgba(224,176,64,0.5);}
 .nlSrc{font-size:11px;font-weight:800;letter-spacing:0.4px;text-transform:uppercase;color:var(--gold);margin:8px 0 2px;text-align:center;}
 .nlSrc.dim{color:var(--muted);text-transform:none;letter-spacing:0;font-weight:700;}
 .nlDoneOv{position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
@@ -24405,6 +24418,9 @@ function _feedItemHtml(it){
     try{
       _blts=_mealBulletsHtml(it.data&&it.data._groupRows);
       if(!_blts) _blts=_mealBulletsHtml(_mealItemRows(it.data));
+      /* Last: a title written before the items column existed, split on the
+         app's own separator. Names only - see _mealNameSplit. */
+      if(!_blts) _blts=_mealBulletsHtml(_mealNameSplit(it.data));
     }catch(e){ _blts=''; }
     line=(_blts ? ('<div style="font-weight:800;color:var(--text);font-size:15px;line-height:1.25;">'+(it.data&&it.data._groupCount?(it.data._groupCount+' foods'):'Meal')+'</div>'+_blts)
                 : ('<div style="font-weight:800;color:var(--text);font-size:17px;line-height:1.25;overflow-wrap:anywhere;">'+(f.name||'a meal').replace(/</g,'&lt;')+'</div>'))
@@ -27224,6 +27240,39 @@ function _mealItemRows(data){
       return {name:(String(x.n||x.name||'').trim()+(x.q>1?(' \u00d7'+x.q):'')+(x.b?(' \u00b7 '+x.b):'')),
               calories:(+x.cal||+x.calories||0)};
     }).filter(function(x){ return x.name; });
+  }catch(e){ return null; }
+}
+/* EVERYTHING ALREADY LOGGED, WITHOUT TOUCHING THE DATABASE (18 Sep, "go back
+   to last 2 days having bullets as well").
+
+   A grouped meal gets its list from _groupRows and has done retroactively
+   since v547 - nothing was needed there. What had no list was a SINGLE row
+   whose name is several foods joined by the app's own separator, written
+   before the items column existed: "Chobani - Homemade Coffee", "HU Milk
+   Chocolate ... - Trader Joe's Low Fat Cottage Cheese - Half Envy Apple".
+
+   Split on THAT SEPARATOR ONLY. It is the app's own join and it means "these
+   are different foods". Commas are not safe - "Eggs, Bacon & Ricotta Omelette
+   with Biscuit" is one model-written title and cutting it at the comma invents
+   a food called "Bacon & Ricotta Omelette with Biscuit". A guess that looks
+   like data is worse than the title.
+
+   NO CALORIES ON THESE LINES, because the row carries one total for the whole
+   plate and splitting it evenly would be a number nobody measured. The names
+   are real; the per-food figures are not recoverable and are not invented. */
+function _mealNameSplit(data){
+  try{
+    if(!data) return null;
+    var nm=String(data.name||'');
+    if(nm.indexOf('·')<0) return null;
+    var parts=nm.split('·').map(function(x){ return x.trim(); }).filter(Boolean);
+    if(parts.length<2) return null;
+    var seen={}, out=[];
+    parts.forEach(function(p){
+      var k=p.toLowerCase(); if(seen[k]) return; seen[k]=1;
+      out.push({name:p, calories:0});
+    });
+    return out.length>1 ? out : null;
   }catch(e){ return null; }
 }
 function _mealBulletsHtml(rows){
@@ -72514,7 +72563,68 @@ async function mbReadLabel(dataUrl, opts){
    then has the answer already in hand, so the log is instant instead of
    paying for the same read twice. */
 var _nlPeekSeq=0;
-function _nlPeekClear(st){ try{ if(st){ st.peek=null; st.peekRaw=null; st.peekBusy=false; st.peekMiss=false; } }catch(e){} }
+/* ===== THE PICTURE SAYS ONE THING AND THE WORDS SAY ANOTHER ==============
+   Dustin Fultz, 18 Sep: he photographed a Chobani drink label and typed
+   "homemade coffee". The app put the label's numbers on a row and called that
+   row Homemade Coffee - so a yogurt drink was logged under the name of a
+   coffee, and the coffee itself was never logged at all.
+
+   Yusuf: "it is like me taking a picture of the Nutrition Solutions food and
+   then saying two slices of pizza ... just to confirm, and then it goes, you
+   had the Nutrition Solutions meal plus pizza."
+
+   THE APP CANNOT KNOW AND MUST NOT GUESS. A photo of X with the words Y beside
+   it is either one thing described twice, or two things eaten together, and
+   nothing in the capture says which. So it asks, in his own shape: two choices,
+   each showing what it would log.
+
+   IT NEVER BLOCKS. Untouched, Log it takes BOTH - a photo of one food and words
+   naming another is two foods on the evidence, and the cost of being wrong that
+   way is a row he can delete, against a food that silently never existed. */
+function _nlSaidWords(t){
+  return String(t||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').split(' ')
+    .filter(function(w){ return w && w.length>2 &&
+      ' and the with plus from some had ate them this that just made homemade '.indexOf(' '+w+' ')<0; });
+}
+/* -> {label, said} when the photo and the words are naming different foods. */
+function _nlMismatch(st, line){
+  try{
+    if(!st || !st.photo || !st.peek) return null;
+    var said=String(line==null?(st.line||''):line).trim();
+    if(said.length<3) return null;
+    var lab=String((st.peek&&st.peek.name)||'').trim();
+    if(!lab) return null;
+    var A=_nlSaidWords(lab), B=_nlSaidWords(said);
+    if(!A.length || !B.length) return null;
+    /* If ANY real word of the label appears in what they typed, they are
+       describing the same thing and there is nothing to ask. */
+    for(var i=0;i<A.length;i++){ if(B.indexOf(A[i])>=0) return null; }
+    return {label:lab, said:said};
+  }catch(e){ return null; }
+}
+function _nlMismatchHtml(st){
+  try{
+    var m=_nlMismatch(st, null); if(!m) return '';
+    if(st.mismatch) return '';
+    var cal=Math.round(+(st.peek&&st.peek.calories)||0);
+    return '<div class="nlAsk">'
+      +'<div class="nlAskQ">The label says <b>'+_escHtml(m.label)+'</b>'+(cal?(' · '+cal+' cal'):'')
+        +', and you wrote <b>'+_escHtml(m.said)+'</b>.</div>'
+      +'<div class="nlAskRow">'
+        +'<button type="button" class="nlAskB on" onclick="nlAskPick(\'both\')">Both</button>'
+        +'<button type="button" class="nlAskB" onclick="nlAskPick(\'same\')">Same thing</button>'
+      +'</div>'
+    +'</div>';
+  }catch(e){ return ''; }
+}
+function nlAskPick(k){
+  try{
+    var st=window._nl; if(!st) return;
+    st.mismatch=(k==='same')?'same':'both';
+    try{ nlRender(); }catch(e){}
+  }catch(e){}
+}
+function _nlPeekClear(st){ try{ if(st){ st.peek=null; st.peekRaw=null; st.peekBusy=false; st.peekMiss=false; st.mismatch=null; } }catch(e){} }
 async function _nlLabelPeek(st){
   try{
     if(!st || !st.photo) return false;
@@ -99380,6 +99490,7 @@ function nlRender(){
                     +'<span>Take a photo of the plate</span>'))
       +'</div>'
       +'<div id="nlPeek">'+((window._nlPeekHtml && window._nlPeekHtml(st))||'')+'</div>'
+      +(function(){ try{ return _nlMismatchHtml(st); }catch(e){ return ''; } })()
       +'<div class="nlSay">'
         +'<textarea class="nlLine" id="nlLine" rows="2" placeholder="Describe or estimate how much you ate, and list everything in it">'+_escHtml(st.line||'')+'</textarea>'
         +'<button type="button" class="nlMic'+(_nlRecOn?' on':'')+'" id="nlMic" onclick="nlVoice()" aria-label="'+(_nlRecOn?'Stop recording':'Speak your meal')+'">'+_NL_MIC+'</button>'
@@ -100334,6 +100445,14 @@ async function nlSubmit(){
   try{ nlStopVoice(); }catch(e){}
   var line=String((document.getElementById('nlLine')||{}).value||'').trim();
   st.line=line;                        // raw, and it stays raw - this is meal_text
+  /* BOTH, UNLESS THEY SAID OTHERWISE. The label food is named alongside their
+     words so the reader logs two foods instead of putting the label's numbers
+     under the name of something else. st.line is untouched: what they typed is
+     the record, and this only widens what is read. */
+  try{
+    var _mm=_nlMismatch(st, line);
+    if(_mm && st.mismatch!=='same'){ line = _mm.said + ' and ' + _mm.label; }
+  }catch(e){}
   /* What the microphone heard is not always what they said. The echo, the
      pricing and the model all read the corrected copy; nothing written to the
      record does. */

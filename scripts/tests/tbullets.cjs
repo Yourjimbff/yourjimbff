@@ -102,6 +102,33 @@ ok(/select=id,insight,items&limit=40/.test(src), 'and the feed actually asks the
 ok(/if\(!_blts\) _blts=_mealBulletsHtml\(_mealItemRows\(it\.data\)\)/.test(src),
    'the card falls back to the row\u2019s own foods when it is not a group');
 
+// ------------- EVERYTHING ALREADY LOGGED, WITH NO DATABASE WRITE (18 Sep)
+/* "Go back to last 2 days having bullets as well." A grouped meal has had them
+   retroactively since v547. What had none was a single row whose name is
+   several foods joined by the app's own separator, written before the items
+   column existed. */
+const L3=closure(['_mealNameSplit']);
+ok(L3.unresolved.length===0, 'the title splitter lifts with nothing missing', L3.unresolved);
+const H=new Function(L3.code+'\nreturn {_mealNameSplit};')();
+
+const old=H._mealNameSplit({name:"HU Milk Chocolate Cashew Butter Filled \u00b7 Trader Joe's Low Fat Cottage Cheese \u00b7 Half Envy Apple \u00b7 Turkey and Cheese Lavash \u00b7 2 Medjool Dates"});
+ok(old && old.length===5, 'a five-food title already logged splits into five', old&&old.length);
+ok(old && old[0].name==='HU Milk Chocolate Cashew Butter Filled', 'names come back whole', old&&old[0].name);
+ok(old && old.every(x=>x.calories===0),
+   'and NO per-food calories are invented - the row holds one total for the plate');
+ok(H._mealNameSplit({name:'Chobani \u00b7 Homemade Coffee'}).length===2, 'Dustin\u2019s two-food title splits');
+
+/* Commas are NOT safe. "Eggs, Bacon & Ricotta Omelette with Biscuit" is one
+   model-written title, and cutting it at the comma invents a food. */
+ok(H._mealNameSplit({name:'Eggs, Bacon & Ricotta Omelette with Biscuit'})===null,
+   'a comma-written title is left alone rather than guessed at');
+ok(H._mealNameSplit({name:'Fish and chips with sides'})===null, 'and a plain title is left alone');
+ok(H._mealNameSplit({name:'Eggs \u00b7 Eggs'})===null, 'the same food twice is not a two-food plate');
+ok(H._mealNameSplit({})===null && H._mealNameSplit(null)===null, 'a missing name does not throw');
+
+ok(/if\(!_blts\) _blts=_mealBulletsHtml\(_mealNameSplit\(it\.data\)\)/.test(src),
+   'and the card falls back to it last, after the group and the stored items');
+
 // ------------------------------------------------------------- ON THE CARD
 ok(/_mealBulletsHtml\(it\.data&&it\.data\._groupRows\)/.test(src), 'the feed card builds it off the grouped rows');
 ok(/_groupCount\+' foods'/.test(src), 'and the heading says how many, instead of naming them all again');
