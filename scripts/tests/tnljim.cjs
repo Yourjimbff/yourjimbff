@@ -59,7 +59,10 @@ ok(/_tlRefreshDay\(st\.ds\)/.test(jr), 'and the day is refreshed so it appears w
 ok(/_jimTenLogs\(\)/.test(jr) && /_jimToneBlock\(\)/.test(jr) && /_jimGoalLine\(\)/.test(jr),
    'one voice: the same ten logs, tone and goal direction as every other read');
 ok(/could not read that one just now/.test(jr), 'a failed read says so rather than leaving an empty card');
-ok(/st\.est\.insight=out;/.test(jr), 'the words are put on the estimate BEFORE Log it');
+/* Filtered on the way in since 18 Sep - the banned word is taken out before
+   the estimate carries it, not on the way out to a screen. */
+ok(/st\.est\.insight=_jimVoiceFix\(out\);/.test(jr),
+   'the words are put on the estimate BEFORE Log it, with the voice filter on them');
 ok(!/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/u.test(jr), 'no emoji (house law)');
 
 // ---- and it is fired, and the row keeps what they read

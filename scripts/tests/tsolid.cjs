@@ -104,6 +104,23 @@ live.split('\n').forEach((ln,i)=>{
 });
 ok(offenders.length===0, 'no "Solid" is left in live code as an example of a read', offenders);
 
+/* AND IT RUNS ON THE WAY IN, NOT ONLY ON THE WAY OUT (18 Sep, measured on his
+   own rows). v540 filtered at display, which cleaned his feed and left every
+   stored read carrying the word into every other surface and every export.
+   The numbers that settled it: 1,791 of 3,049 stored reads contain "solid",
+   690 OPEN with it, and on the day after the prompt was changed it was still
+   4 of 7 - the prompt moved nothing, because a prompt is a request. */
+const WRITES=[
+  ['_insightMacroSafe', /function _insightMacroSafe\(insight, row\)\{[^]{0,900}?_jimVoiceFix\(insight\)/],
+  ['the chat read',      /r\.insight=out; window\._jimFirstRead/],
+  ['the photo result',   /curResult\.insight=_jimVoiceFix\(out\)/],
+  ['the log sheet',      /st\.est\.insight=_jimVoiceFix\(out\)/],
+  ['the re-score',       /e\.insight=_jimVoiceFix\(newInsight\)/],
+];
+WRITES.forEach(([what,re])=>{ ok(re.test(src), 'the word is taken out before '+what+' stores it'); });
+ok(/out=_jimVoiceFix\(out\); r\.insight=out/.test(src),
+   'and the chat read is filtered before BOTH the row and the first-read cache');
+
 // ------------------------------------------------- IT IS WIRED IN
 ok(/_jimVoiceFix\(v\)/.test(src) && /_jimVoiceFix\(ins\)/.test(src),
    'the feed runs every read through it, so his own board is clean too');
