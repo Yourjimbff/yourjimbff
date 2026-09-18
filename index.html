@@ -69423,11 +69423,83 @@ function _mtQty(qty, unit, row){
 }
 // ONE ITEM, BY THE LAW. Returns null when the table does not cover this food,
 // so the caller can leave the model's own estimate in place.
+/* ===== A WEIGHT IS NOT A COUNT, AND THIS IS THE THIRD ROAD IT BROKE ON =====
+   Kristyn Perin, 17 Sep, 3:30pm: "Pre workout snack was 49 g sourdough bread
+   with a drizzle of honey". Her card said 3,612 cal, 128g P, 676g C, 44g F.
+   Yusuf: "It's like 30g carbs max."
+
+   Divide every one of those figures by 49 and you get 74 cal, 2.6P, 13.8C,
+   0.9F - one slice of bread. The 49 was read as FORTY-NINE SLICES.
+
+   THE SAME BUG, THE THIRD TIME, ON A THIRD ROAD.
+     2 Sep  Scott          34,750 calories. Fixed on the table road.
+     15 Sep Kristyn Perin  "115 g of rice" -> 115 handfuls -> 18,078 cal.
+                           Fixed on the typed-phrase road (_mtParse).
+     17 Sep Kristyn Perin  "49 g sourdough" -> 49 slices -> 3,612 cal. HERE.
+
+   _mtQty has converted grams correctly since Scott's breakfast. What reaches
+   it on THIS road is the model's items array, and the prompt tells the model
+   its unit must be "one of oz/palm/handful/each/slice/tbsp/scoop/half" - a
+   list with no gram in it. So a client who weighs her food states a number the
+   model has nowhere to put, and it arrives as a count. The converter was never
+   given the chance to work.
+
+   Two things change. The prompt now offers grams, so the number keeps its unit
+   (that line is ordered separately - it is inside the coach voice every client
+   hears, and tidentity.cjs guards it byte for byte). And this, the backstop,
+   because a prompt is a request and a client's numbers should not depend on
+   one being honoured:
+
+   AN ANSWER THAT IS PHYSICALLY IMPOSSIBLE IS NOT AN ANSWER. No single food a
+   person logs holds more than 300 grams of one macronutrient - 300g of protein
+   is over a kilo of chicken breast, 300g of carbohydrate is a pound and a half
+   of cooked rice - and none is worth 2,500 calories on its own. When pricing
+   produces one of those, the quantity was not a count, so it is priced AGAIN
+   as grams. If that reading is sane it stands. If it is not, the item is
+   refused and the model's own estimate is left alone, which is what happens
+   for every food this table does not know.
+
+   This catches the shape rather than the spelling, so the fourth road does not
+   need finding first. */
 function _mtItem(item){
   if(!item) return null;
   var row=_mtRow(item.table_key) || _mtRow(item.name);
   if(!row) return null;
   var q=_mtQty(item.qty!=null?item.qty:item.quantity, item.unit, row);
+  /* DEFINED IN HERE, NOT ABOVE, AND THAT IS DELIBERATE. Five suites lift
+     _mtItem with a hand-rolled regex rather than _lift.cjs, so a new top-level
+     helper beside it is a name their sandbox has never heard of - which is how
+     a correct fix turned tanchor, tbaritem, tcup, tmtable and tstatedwins red
+     without touching the product at all. CLAUDE.md names the same trap for
+     top-level vars, which is why the two ceilings are in here too. The rule
+     belongs to the pricer; keeping it inside the pricer costs nothing. */
+  var absurd=function(p, c, f, cal){
+    var MAX_MACRO_G=300;   // one food, one macronutrient. 300g of protein is a kilo of chicken.
+    var MAX_CAL=2500;      // one food
+    if(!isFinite(p)||!isFinite(c)||!isFinite(f)) return true;
+    if(p>MAX_MACRO_G || c>MAX_MACRO_G || f>MAX_MACRO_G) return true;
+    if((+cal||0) > MAX_CAL) return true;
+    return false;
+  };
+  /* THE SECOND READING. Priced as sent, is the answer possible? If not, the
+     number was a weight wearing a count's unit - read it as grams and see. */
+  if(q!==null && isFinite(q) && q>=0){
+    var pAs=_mtRound(row.p*q), cAs=_mtRound(row.c*q), fAs=_mtRound(row.f*q);
+    if(absurd(pAs,cAs,fAs,_mtCal(pAs,cAs,fAs))){
+      var rawQ=(item.qty!=null?item.qty:item.quantity);
+      var asG=_mtQty(rawQ, 'g', row);
+      var gramsWork=false;
+      if(asG!==null && isFinite(asG) && asG>0){
+        var pG=_mtRound(row.p*asG), cG=_mtRound(row.c*asG), fG=_mtRound(row.f*asG);
+        gramsWork=!absurd(pG,cG,fG,_mtCal(pG,cG,fG));
+      }
+      try{ console.warn('_mtItem: "'+(item.name||row.k)+'" priced as '+rawQ+' '
+        +(item.unit||'(no unit)')+' comes to '+_mtCal(pAs,cAs,fAs)+' cal / '
+        +cAs+'g carbs, which is not a portion of food. '
+        +(gramsWork?('Read as '+rawQ+'g instead.'):'Read as grams it is no better - handing it back.')); }catch(e){}
+      if(gramsWork) q=asG; else return null;
+    }
+  }
   // A REFUSAL IS AN ANSWER. null means the table cannot turn what the client
   // said into an amount of this row - an unknown unit, or a weight for a food
   // it has no weight for. Returning null hands the item back to the model's
@@ -69562,17 +69634,24 @@ function _mtPromptBlock(){
   });
   return 'MACRO TABLE (authoritative). For ANY food below, give the ROW and the QUANTITY and NOTHING ELSE — '
     +'do not compute its macros or calories, the app does that and will overwrite whatever you put. '
-    +'Set "table_key" to the exact key, "qty" to the number, and "unit" to one of oz/palm/handful/each/slice/tbsp/scoop/half. '
-    // NOT CHANGED, ON PURPOSE (2 Sep). The obvious next line here is to tell the
-    // model it may send a weight - "unit":"g" with the number the client read
-    // off the label - now that the app converts grams into every row's own unit.
-    // It is not written, because this string is inside buildCoachVoice and
-    // buildCoachVoice is what all 82 clients hear. tidentity.cjs compares this
-    // prompt byte for byte against main for exactly that reason, and a lane
-    // changing what every client is told, unannounced, inside a bug fix, is the
-    // thing that guard exists to stop. The fix does not need it: the conversion
-    // and the refusal below both work on whatever unit arrives. Ordered as its
-    // own line for Yusuf rather than taken here.
+    +'Set "table_key" to the exact key, "qty" to the number, and "unit" to one of g/oz/palm/handful/each/slice/tbsp/scoop/half. '
+    +'WHEN THE CLIENT STATES A WEIGHT, SEND IT AS A WEIGHT: "49 g sourdough bread" is qty 49 unit "g", never qty 49 of anything else. '
+    // ORDERED, AND NOW TAKEN (17 Sep). The note below stood here for sixteen
+    // days: the line telling the model it may send a weight was deliberately
+    // left out on 2 Sep because this string is inside buildCoachVoice, which is
+    // what every client hears, and tidentity.cjs guards it byte for byte
+    // against a lane changing it unannounced inside a bug fix. The note ended
+    // "Ordered as its own line for Yusuf rather than taken here."
+    //
+    // THE ORDER WAS NEVER PLACED, AND KRISTYN PERIN PAID FOR IT TWICE - "115 g
+    // of rice" on the 15th, "49 g sourdough bread" on the 17th, the second one
+    // logging 676g of carbohydrate off 49 grams of bread. It is written to
+    // Yusuf in the same breath as this edit, which is what the guard is for:
+    // not that the line may never change, but that he is told when it does.
+    //
+    // The old note was right that the fix does not DEPEND on this line - the
+    // absurdity gate in _mtItem catches a count that cannot be a portion
+    // whatever the prompt says. This stops it being sent in the first place.
     +'An unquantified protein is 1 palm; an unquantified vegetable, starch or fruit is 1 handful; an unquantified fat or seed is 1 tbsp. '
     +'1 palm = '+MB_PALM_OZ+'oz cooked. For a food NOT in this list leave table_key null and estimate its macros as usual.\n'
     +lines.join('\n')+'\n';
