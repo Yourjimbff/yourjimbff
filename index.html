@@ -4070,6 +4070,12 @@ body.jv-on .feedCard .fcBody{height:86px;overflow:hidden;flex:0 0 auto;}
 .fcJimHd span{font-size:9px;font-weight:800;letter-spacing:0.13em;text-transform:uppercase;color:#f5c518;}
 .fcJimHd .jimSpark{width:13px;height:13px;}
 .fcJimBd{font-size:13px;line-height:1.5;color:#f0ece4;}
+/* "on <the food>" - only drawn when the card is a plate of several foods
+   and the read is about one of them. Quiet, and not gold: it is a label on
+   the read, not a second heading. */
+.fcJimOn{font-size:9px;font-weight:700;font-style:normal;letter-spacing:0.04em;
+  text-transform:none;color:rgba(240,236,228,0.45);min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;}
 /* The absence, said once and quietly. Knowing Jim did NOT write is half of
    what he asked to be able to see, and it may not shout to say it. */
 .fcJimNo{margin-top:9px;font-size:11px;font-style:italic;color:rgba(240,236,228,0.34);}
@@ -19860,6 +19866,26 @@ async function _loadTrainerFeedRun(targetId){
         // actually on the plate behind a count (Yusuf, 10 Aug). Long titles wrap;
         // they don't get cut down to a number.
         var names=g.map(function(f){ return String(f.name||'').trim(); }).filter(Boolean);
+        /* AND NOT TWICE (Yusuf, 17 Sep). Logan Gamero's lunch came back as
+           "Double Cheeseburger, Twinkie · Twinkie" - one row was already
+           named for two foods, and the second row's name was then joined onto
+           it unchanged. A name another name already contains adds nothing and
+           reads as a mistake, which it is. Compared on letters and digits only,
+           so punctuation and case cannot smuggle a duplicate through. */
+        var _nk=function(x){ return String(x).toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); };
+        var _srcNames=names.slice();
+        names=_srcNames.filter(function(nm, ix){
+          var a=_nk(nm);
+          if(!a) return false;
+          for(var k=0;k<_srcNames.length;k++){
+            if(k===ix) continue;
+            var b=_nk(_srcNames[k]);
+            if(!b) continue;
+            if(b===a){ if(k<ix) return false; continue; }  // an exact twin: only the first survives
+            if(b.indexOf(a)>=0) return false;              // this name sits inside another one
+          }
+          return true;
+        });
         var label = names.length ? names.join(' · ') : (g.length+' foods');
         var merged=Object.assign({}, g[0], {
           name: label,
@@ -26880,31 +26906,122 @@ function _jimReadHtml(f){
    RETROACTIVE BY CONSTRUCTION: the insight column has been filled on every
    graded row since it was built, so every log already written gets its read
    the moment this renders. Nothing is backfilled and nothing is rewritten. */
-function _feedJimText(it){
+/* THE READ WAS ABOUT A DIFFERENT MEAL (Yusuf, 17 Sep, off Logan Gamero's
+   lunch, and his whole reply was "What the fuck?").
+
+   The card said 827 cal, 62g protein, 43g fat. The read under it said "43g
+   protein and 18g fat ... at 682 calories total". Two sets of numbers, one
+   card, and the coach reading it has no way to tell which is the meal.
+
+   TWO FAULTS MET HERE AND BOTH ARE MINE.
+
+   1. A GROUPED CARD SHOWED ONE ROW'S READ AS IF IT WERE THE PLATE'S. Logan
+      logged two foods in one sentence, so the feed groups them: the card adds
+      the macros up and shows 827. The merged row is Object.assign({}, g[0],
+      {totals}) - so it carries ROW ZERO's insight beside THE PLATE's numbers.
+      v533 then took the first read it could find and printed it under the
+      total. 682 was honest about the cheeseburger and a lie about the card.
+
+   2. A READ IS WRITTEN ONCE AND THE NUMBERS CAN MOVE AFTERWARDS. Jim writes
+      the read when the meal is first priced. An item edit, the macro table, or
+      the adjust bar can all change the figures after that, and nothing rewrites
+      the read or marks it stale. It goes on quoting numbers the row no longer
+      holds.
+
+   SO: A READ MAY ONLY BE SHOWN BESIDE NUMBERS IT AGREES WITH. Each read is
+   checked against ITS OWN row - not the plate - and a read that names a
+   calorie figure the row does not hold is stale and is not shown. On a grouped
+   card the read is ATTRIBUTED to the food it was written about, so "682
+   calories" reads as a fact about the cheeseburger rather than a contradiction
+   of the card above it.
+
+   CALORIES ONLY, DELIBERATELY. A read often names a protein TARGET ("get 40g
+   in at dinner") and that is not a claim about this meal. A calorie figure in
+   a read is always a claim about what was eaten, so it is the one number that
+   can be checked without inventing failures. */
+
+// Every figure a read states as the calories of the meal it is describing.
+function _feedReadCals(text){
+  var out=[];
   try{
-    if(!it || it.kind!=='food' || !it.data) return '';
-    var pick=function(v){
-      var t=String(v==null?'':v).trim();
-      return (!t || t.toLowerCase()==='null' || t.toLowerCase()==='undefined') ? '' : t;
-    };
-    var ins=pick(it.data.insight);
-    if(ins) return ins;
-    /* A card can be several foods logged together. The group carries its rows,
-       and the first row that got a read speaks for the meal. */
+    var s=String(text==null?'':text);
+    var re=/(\d[\d,]*)\s*(?:k?cal(?:orie|ories)?)\b/gi, m;
+    while((m=re.exec(s))){
+      var v=parseFloat(String(m[1]).replace(/,/g,''));
+      if(isFinite(v)) out.push(v);
+    }
+  }catch(e){}
+  return out;
+}
+
+/* Does this read belong beside this row? -> true/false.
+   A read that never mentions calories is not judged: most reads do not, and
+   silence is not a disagreement. */
+function _feedReadFits(text, row){
+  try{
+    var said=_feedReadCals(text);
+    if(!said.length) return true;
+    var have=+((row&&row.calories)||0);
+    if(!(have>0)) return true;              // nothing to check against
+    for(var i=0;i<said.length;i++){
+      // 8% either way covers rounding and a read that says "about 800"
+      if(Math.abs(said[i]-have) <= Math.max(25, have*0.08)) return true;
+    }
+    return false;
+  }catch(e){ return true; }
+}
+
+function _feedJimClean(v){
+  var t=String(v==null?'':v).trim();
+  return (!t || t.toLowerCase()==='null' || t.toLowerCase()==='undefined') ? '' : t;
+}
+
+/* -> {text, from} . `from` is the food the read was written about, and is set
+   ONLY on a grouped card, where the card's own numbers are a total and the
+   read's are not. */
+function _feedJimPick(it){
+  var none={text:'', from:''};
+  try{
+    if(!it || it.kind!=='food' || !it.data) return none;
     var g=it.data._groupRows;
-    if(g && g.length){ for(var i=0;i<g.length;i++){ var v=pick(g[i]&&g[i].insight); if(v) return v; } }
-    return '';
-  }catch(e){ return ''; }
+    /* A PLATE IS NOT ONE OF ITS FOODS. On a group the merged row carries row
+       zero's insight beside the summed macros, so it.data.insight must not be
+       trusted here - the rows are, each beside its own numbers. */
+    if(g && g.length>1){
+      for(var i=0;i<g.length;i++){
+        var v=_feedJimClean(g[i]&&g[i].insight);
+        if(v && _feedReadFits(v, g[i])){
+          return {text:v, from:String((g[i]&&g[i].name)||'').trim()};
+        }
+      }
+      return none;
+    }
+    var ins=_feedJimClean(it.data.insight);
+    if(ins && _feedReadFits(ins, it.data)) return {text:ins, from:''};
+    return none;
+  }catch(e){ return none; }
+}
+
+// Kept as the plain-text door: every caller that only wants the words.
+function _feedJimText(it){
+  try{ return _feedJimPick(it).text; }catch(e){ return ''; }
 }
 function _feedJimHtml(it){
   try{
     if(!it || it.kind!=='food' || !it.data) return '';
-    var ins=_feedJimText(it);
+    var got=_feedJimPick(it);
+    var ins=got.text;
     if(!ins){
       return '<div class="fcJimNo">Jim did not read this one</div>';
     }
+    /* NAMED, ON A PLATE. The card's figures are the total of several foods and
+       this read is about one of them, so the food it was written about is on
+       the line with it. Without that, a read quoting its own food's calories
+       reads as a contradiction of the card. */
+    var from=String(got.from||'').trim();
     return '<div class="fcJim">'
-      +'<div class="fcJimHd">'+_JIM_SPARK+'<span>Jim’s read</span></div>'
+      +'<div class="fcJimHd">'+_JIM_SPARK+'<span>Jim’s read</span>'
+      +(from?('<em class="fcJimOn">on '+_escHtml(from)+'</em>'):'')+'</div>'
       +'<div class="fcJimBd">'+_escHtml(ins)+'</div>'
     +'</div>';
   }catch(e){ return ''; }
@@ -66360,19 +66477,7 @@ function _insightMacroSafe(insight, row){
      where it only names the direction they are heading. */
   var TARGET=/(target|floor|left|remain|still|before bed|to land|to go|daily|per day|a day|\bgoals?\s+(?:is|are|of|sits|at)\b|\b(?:calorie|cal|protein|carb|carbohydrate|fat|macro|weight)s?\s+goals?\b)/i;
   var bad=false;
-  /* "81 GRAMS" IS THE SAME CLAIM AS "81g" AND IT WALKED STRAIGHT THROUGH
-     (18 Sep, run 6). unqfb7pg36d logged a poke bowl of 678 cal, 60g protein,
-     42g carbohydrate and was told "683 calories across real whole food, spicy
-     and regular tuna carrying 81 grams of protein against 42 grams of
-     carbohydrate". Two wrong figures about his own dinner, with the carbohydrate
-     right beside them so the whole line read as checked. Run on the shipped
-     gate, that sentence comes back unchanged; write the same sentence as "81g"
-     and the same gate returns "60g". The unit was the whole difference: \s*g\b
-     needs a word boundary after the g, and "grams" does not have one. Third run
-     running that a figure was bluffed and third spelling to get past this gate,
-     so it now reads the unit however it is written and answers in the same
-     spelling it was given. */
-  var out=ins.replace(/(\d+(?:\.\d+)?)(\s*)(grams|gram|g)\b/gi, function(m, num, sp, unit, off, whole){
+  var out=ins.replace(/(\d+(?:\.\d+)?)\s*g\b/gi, function(m, num, off, whole){
     /* Symmetric window, and the slice start is remembered so a word's distance
        from the number is measured honestly at the start of a string too. */
     var st=Math.max(0,off-46);
@@ -66398,33 +66503,8 @@ function _insightMacroSafe(insight, row){
     var truth=vals[which];
     if(!truth){ bad=true; return m; }                 /* nothing to source it to */
     if(Math.abs(Number(num)-truth) < 0.5) return m;   /* already right */
-    return String(Math.round(truth))+sp+unit;   /* answered in the spelling it was asked in */
+    return String(Math.round(truth))+'g';
   });
-  /* AND THE CALORIE FIGURE WAS NEVER CHECKED AT ALL (18 Sep, run 6).
-     Of the 58 insights written since 15 Sep, 14 name a calorie figure and six
-     quote a number for it. Five are exact. unqfb7pg36d's said 683 over a row of
-     678, and nothing in this function looked at it, because every check above
-     is keyed to a macro word. Calories are the number a client trusts most and
-     the one they can check on their own screen in a second.
-     THIS ONE IS DELIBERATELY NARROW. A read that correctly GROUPS the rows of a
-     meal quotes a total larger than any single row, and that is rule 4 working,
-     not a fault - so only a figure sitting within 5% of this row's own calories
-     is treated as an attempt to name this row and missed. Anything further off
-     is left exactly as written. Carly's lesson governs: a gate that corrupts a
-     good sentence is worse than the bug it fixes. */
-  var rowCal=Number(row.calories)||0;
-  if(!bad && rowCal>0){
-    out=out.replace(/(\d[\d,]*(?:\.\d+)?)(\s*)(kcals?|calories|calorie|cals?)\b/gi,
-      function(m, num, sp, unit, off, whole){
-        var st=Math.max(0,off-46);
-        if(TARGET.test(String(whole).slice(st, off+46))) return m;   /* a target, not this meal */
-        var said=Number(String(num).replace(/,/g,''));
-        if(!said) return m;
-        if(Math.abs(said-rowCal) < 0.5) return m;                    /* already right */
-        if(Math.abs(said-rowCal) > rowCal*0.05) return m;            /* not this row - leave it */
-        return String(Math.round(rowCal))+sp+unit;
-      });
-  }
   /* THE NUMBER CAN BE RIGHT AND THE SENTENCE STILL BACKWARDS (17 Sep, run 4).
      andrewn1 logged 37g protein, 82g carbohydrate, 14g fat and was told "protein
      leading at 82g, carbs are moderate at 14g total". Moving each figure to its
@@ -89255,30 +89335,6 @@ built on an ingredient they never ate is still a false sentence about their own
 meal. Say it about the foods in front of you or do not say it. Their day works the
 same way: you were not told they trained, so "post-training refuel" and "carbs timed
 right" are facts you do not have.
-
-DO NOT PRESCRIBE WHAT THEY ALREADY DID. A 70 calorie dinner roll at 8:29 PM was
-answered "Light carb before bed - not the move. Protein shake and sleep would've
-landed better." He had logged the protein shake four minutes earlier in the same
-feed, 6:55 PM, 42g of protein, and it was sitting in the rest of today handed to
-you. A swap somebody already made is not coaching, it is proof their day was not
-read. Look through the rest of today for the better option before you offer it.
-And 70 calories of bread does not earn a verdict. "Not the move" is a judgement
-with nothing attached to it, and the criticism in this file is always about what
-happens next - shorter lasting fuel, harder digestion, feeling heavy, stalling out
-- never about whether the food was allowed.
-
-THE FRIED PART IS ADDED FAT AND IT GETS NAMED. A dinner of fish and chips,
-coleslaw, green beans, two ounces of steak, a Twinkie and a glass of milk came to
-937 calories, 39g protein, 76g carbohydrate, 53g fat, and was answered "real food
-across the board, good protein from the steak and fish". Over half those calories
-are fat and most of it arrived in the batter. That is the Chipotle fault exactly -
-the protein portion is fine, the carb and fat portion needs to be smarter - and it
-went unsaid. Batter, deep frying, and oil or cheese poured on top are fat added to
-the food, not fat that came with it; a portioned real-food tray this file already
-rules on is not that and is never treated as it. And 39g of protein on a 937
-calorie dinner is the weakest number on that plate, not its strength. Two ounces of
-steak is not good protein. Do not hand a meal a compliment for the one figure that
-should have been the question.
 
 USE THE SLOT YOU WERE GIVEN. The meal label and the clock come off their own row and
 you open on that one, not a better-sounding one. A snack logged at 3:23 in the
