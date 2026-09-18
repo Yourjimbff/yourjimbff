@@ -136,5 +136,40 @@ ok(/\.mbList\{/.test(src) && /\.mbList \.mbC\{/.test(src), 'the list and its fig
 ok(/font-variant-numeric:tabular-nums/.test(src.slice(src.indexOf('.mbList .mbC{'), src.indexOf('.mbList .mbC{')+220)),
    'the calorie column lines up');
 
+// ============ THE TITLE STAYS, AND BOTH SURFACES GET THE LIST (18 Sep)
+/* "We should still have the titles of the food somewhere" - replacing the title
+   with "3 foods" threw away the one line that says what the meal WAS at a
+   glance. And "not only should this persist on mobile equally as well as
+   desktop": the phone card and the desktop row are different renderers, which
+   is how Jim's read reached one and not the other the night before. */
+/* "logged 3 foods" is the VERB on the header line and stays - it is the card
+   saying what happened. What had to go is the count standing in for the meal's
+   NAME in the body. */
+ok(!/line=\(_blts \?/.test(src), 'the title is no longer replaced by a count');
+ok(/'logged '\+it\.data\._groupCount\+' foods'/.test(src),
+   'while the header still says how many were logged, which is a different line');
+const phone=(()=>{ const i=src.indexOf('THE TITLE STAYS (Yusuf, 18 Sep)');
+  return src.slice(i, i+700); })();
+ok(/f\.name\|\|'a meal'/.test(phone), 'the phone card still draws the real title');
+ok(/'<\/div>'\+_blts/.test(phone), 'with the breakdown under it');
+
+const desk=(()=>{ const i=src.indexOf('THE SAME BREAKDOWN ON THE DESKTOP');
+  return src.slice(i, i+700); })();
+ok(/_mealBulletsHtml\(d&&d\._groupRows\)/.test(desk), 'the desktop row draws it off the grouped rows');
+ok(/_mealItemRows\(d\)/.test(desk) && /_mealNameSplit\(d\)/.test(desk),
+   'and falls back the same three ways the phone does, so they cannot drift');
+
+// ---- the name cap that ate "Beans"
+/* "Chicken Breast Soup with Vegetables and Northern White Beans" is 59
+   characters and arrived as "...and Northern White". */
+ok(/_fnClip\(s, 80\)/.test(src), 'a food name is clipped at 80 now, not 55');
+ok(!/_fnClip\(s, 55\)/.test(src), 'and the old cap is gone');
+const L4=closure(['_fnClip']);
+const K=new Function(L4.code+'\nreturn {_fnClip};')();
+const JAZ='Chicken Breast Soup with Vegetables and Northern White Beans';
+ok(K._fnClip(JAZ,80)===JAZ, 'so Jasmin\u2019s soup keeps its beans', K._fnClip(JAZ,80));
+ok(K._fnClip(JAZ,55).indexOf('Beans')<0, 'which the old cap did not', K._fnClip(JAZ,55));
+ok(K._fnClip('a '.repeat(90),80).length<=80, 'and a sentence is still cut');
+
 console.log(fails? ('\ntbullets: '+fails+' FAILED\n') : '\ntbullets: all good\n');
 process.exit(fails?1:0);

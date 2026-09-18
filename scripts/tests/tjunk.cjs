@@ -76,5 +76,31 @@ ok(/NEVER grill, roast, scold, or express concern about a meal being LOW in calo
 const apos=(junk.match(/(?<!\\)'/g)||[]).length;
 ok(apos<=2, 'no stray apostrophe was written into a single-quoted prompt string', apos);
 
+// ============ FRIED IS FRIED (18 Sep, Daniel Guzman)
+/* Sushi and fried appetizers for dinner, on a fat-loss goal, and the read
+   called it a clean dinner. Yusuf: "it is fried food ... obviously no. It is
+   not a clean dinner. Absolutely not. Fried foods are going to slow them
+   down." */
+ok(/FRIED IS FRIED, AND IT IS NEVER "CLEAN"/.test(src), 'fried food can never be called clean');
+['clean, light, smart or solid','oil is absorbed into the food'].forEach(x=>{
+  ok(src.indexOf(x)>=0, 'and the rule says so in full: '+x.slice(0,34));
+});
+['tempura','katsu','karaage','crispy','breaded'].forEach(w=>{
+  ok(src.indexOf(w)>=0, 'the word "'+w+'" is named so a menu name is recognised');
+});
+
+/* "You need to become more well versed on sushi." A roll is mostly vinegared
+   rice with a little fish, and a crispy or dynamite roll is fried shrimp. */
+ok(/SUSHI IS A CARBOHYDRATE DISH WEARING A PROTEIN NAME/.test(src), 'sushi is read as a carb dish');
+ok(/mostly vinegared white rice/.test(src), 'because that is what a roll mostly is');
+ok(/crispy, crunchy, dynamite, tempura or spicy/.test(src),
+   'and the roll names that mean fried shrimp inside are listed');
+ok(/Never read sushi as a lean protein meal/.test(src), 'so it is never read as lean protein');
+
+// and the RATING cannot round it up either, which is what actually happened
+ok(/FRIED IS THE SAME DOOR/.test(rate), 'the rating treats fried like a drive-through');
+ok(/a sushi order with a fried roll in it is bad, not good/.test(rate),
+   'and a sushi order with a fried roll is bad, not good');
+
 console.log(fails? ('\ntjunk: '+fails+' FAILED\n') : '\ntjunk: all good\n');
 process.exit(fails?1:0);
