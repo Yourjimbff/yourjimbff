@@ -325,5 +325,64 @@ t(/fiber-rich, protein-packed or nutrient-dense to fill a sentence/.test(TEN),
 t(/HOW ACTIVE THEY ARE DECIDES THE RATIO/.test(TEN), 'and the ratio is read against how much they move');
 t(TEN.indexOf(EM)<0 && TEN.indexOf(EN)<0, 'and none of the new words break the punctuation rule');
 
+console.log('\n  RUN 5: HIS OWN OPENER SWITCHED OFF THE NUMBER GUARD:');
+/* uhbw97ntrw4, 17 Sep 22:28. Row: 682 cal, 61g protein, 24g carbohydrate, 38g fat.
+   He was told 43g protein and 18g fat, with numbers, on his own lunch. The guard
+   that shipped the night before to stop exactly this read the word "goal" in Jim's
+   own opening line, inside its 46-character window, and stood down for the whole
+   sentence. This asserts the sentence that actually shipped, not a shape near it. */
+const UHB={protein:61, carbs:24, fat:38};
+const UHB_SENT="Lunch is solid for your goal. You've got 43g protein and 18g fat from real "
+  +"meat and cheese, the carbs are there to fuel you, and at 682 calories total this is "
+  +"the right weight for gaining.";
+const UHB_OUT=_insightMacroSafe(UHB_SENT, UHB);
+t(/61g protein/.test(UHB_OUT), 'the sentence that shipped to uhbw97ntrw4 comes back with his real protein', UHB_OUT);
+t(/38g fat/.test(UHB_OUT), '  and his real fat', UHB_OUT);
+t(!/43g/.test(UHB_OUT) && !/18g/.test(UHB_OUT), '  and carries neither invented figure');
+t(!/\bgoal\|/.test(String(_insightMacroSafe)) , '  bare goal is gone from the target escape');
+t(/goals\?\\s\+\(\?:is\|are\|of\|sits\|at\)/.test(String(_insightMacroSafe).replace(/\\/g,'\\\\'))
+  || /goals\?/.test(String(_insightMacroSafe)), '  and a goal spoken of as a target still is one');
+
+console.log('\n  AND THE TARGET ESCAPE STILL PROTECTS A REAL TARGET:');
+t(_insightMacroSafe('You are still 40g of protein short of your daily target.', UHB)
+  === 'You are still 40g of protein short of your daily target.',
+  'a daily target is not rewritten to this meal');
+t(_insightMacroSafe('His protein goal is 180g a day and this gets him partway.', UHB)
+  === 'His protein goal is 180g a day and this gets him partway.',
+  '  and neither is a goal spoken of as a number');
+t(_insightMacroSafe('That leaves 90g against her protein goal.', UHB)
+  === 'That leaves 90g against her protein goal.',
+  '  and neither is "her protein goal"');
+/* The regression this gate was almost rolled back for. Her own row, her own words. */
+t(_insightMacroSafe("98g carbs fuels tomorrow's lift. Solid protein anchor at 52g.",
+    {protein:52, carbs:98, fat:20}) === "98g carbs fuels tomorrow's lift. Solid protein anchor at 52g.",
+  '  and Carly\'s correct sentence is still left alone');
+/* And the direction-only phrasing, which is now the common opener, is checked. */
+t(/61g protein/.test(_insightMacroSafe('Solid for your goal. 43g protein here.', UHB)),
+  '  while "for your goal" no longer buys a wrong figure a pass');
+
+console.log('\n  RUN 5: THE CREDIT IS INVENTED AS EASILY AS THE CULPRIT:');
+/* haydenh1, 17 Sep 23:28. Banana, PB2 and almond milk, answered with "the fat is
+   coming from the almond butter in the PB2". No almond butter, and PB2 is peanut
+   powder with the fat taken out. DO NOT INVENT THE CULPRIT only ever pointed at
+   blame, so a compliment built on a food nobody ate walked straight through. */
+t(/AND DO NOT INVENT THE CREDIT EITHER/.test(TEN),
+  'the mirror of the culprit rule rides with the ten logs');
+t(/almond butter/.test(TEN), '  named on the sentence that shipped');
+t(/whether you are blaming it for a number or crediting it with one/.test(TEN),
+  '  and it is stated as one rule, both directions');
+t(/post-training refuel/.test(TEN), '  and an invented fact about their day counts too');
+
+console.log('\n  RUN 5: THE SLOT AND THE BRAND:');
+/* ubtnmjqpn2n logged a Snack at 3:23 PM and was told "this is a solid dinner".
+   thegoat logged "Nutrition Solutions Pancakes" and was told "clean carbs". */
+t(/USE THE SLOT YOU WERE GIVEN/.test(TEN), 'the slot handed to the writer is the slot it opens on');
+t(/a solid dinner/.test(TEN), '  named on the read that got it wrong');
+t(/IF THE ROW CARRIES A BRAND THIS FILE HAS A RULING ON, NAME THE BRAND/.test(TEN),
+  'a brand this file rules on gets named out loud');
+t(/Nutrition Solutions\s+Pancakes/.test(TEN) || /"Nutrition Solutions/.test(TEN),
+  '  named on the row that was answered without it');
+t(TEN.indexOf(EM)<0 && TEN.indexOf(EN)<0, 'and run 5 added no dash of its own');
+
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (he reads the person, then the plate)');
 process.exit(bad?1:0);
