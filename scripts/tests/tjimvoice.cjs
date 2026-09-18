@@ -384,5 +384,58 @@ t(/Nutrition Solutions\s+Pancakes/.test(TEN) || /"Nutrition Solutions/.test(TEN)
   '  named on the row that was answered without it');
 t(TEN.indexOf(EM)<0 && TEN.indexOf(EN)<0, 'and run 5 added no dash of its own');
 
+console.log('\n  RUN 6: THE UNIT SPELLED OUT IS THE SAME CLAIM:');
+/* unqfb7pg36d, 18 Sep 01:04. Spicy tuna poke bowl, 678 cal, 60g protein, 42g
+   carbohydrate, 30g fat. He was told "683 calories ... 81 grams of protein
+   against 42 grams of carbohydrate". Written "81g" the shipped gate returned
+   "60g"; written "81 grams" it returned the sentence untouched, because \\s*g\\b
+   wants a word boundary after the g and "grams" has none. */
+const POKE={protein:60, carbs:42, fat:30, calories:678};
+const POKE_SENT="Dinner is solid. You've got 683 calories across real whole food, spicy and "
+  +"regular tuna carrying 81 grams of protein against 42 grams of carbohydrate.";
+const POKE_OUT=_insightMacroSafe(POKE_SENT, POKE);
+t(/60 grams of protein/.test(POKE_OUT), 'the unit spelled out in full is read and corrected', POKE_OUT);
+t(!/81/.test(POKE_OUT), '  and the bluffed figure does not survive', POKE_OUT);
+t(/42 grams of carbohydrate/.test(POKE_OUT), '  while the figure that was right is left alone', POKE_OUT);
+t(/30 gram\b/.test(_insightMacroSafe('There is 12 gram of fat here.', POKE)),
+  '  and the singular is read too');
+t(/60g protein/.test(_insightMacroSafe('81g protein here.', POKE)),
+  '  and the abbreviation still works exactly as it did');
+
+console.log('\n  RUN 6: AND THE CALORIE FIGURE IS CHECKED, NARROWLY:');
+t(/678 calories/.test(POKE_OUT), 'a calorie figure meant for this row is corrected to it', POKE_OUT);
+t(_insightMacroSafe('Across both rows this sitting is 996 calories.', {protein:52,carbs:44,fat:25,calories:609})
+  === 'Across both rows this sitting is 996 calories.',
+  '  and a correctly grouped total is NOT dragged back to one row');
+t(_insightMacroSafe('You have 500 calories left today.', POKE)
+  === 'You have 500 calories left today.',
+  '  and a daily figure is still a target, not this meal');
+t(_insightMacroSafe("98g carbs fuels tomorrow's lift. Solid protein anchor at 52g.",
+    {protein:52, carbs:98, fat:20, calories:800})
+  === "98g carbs fuels tomorrow's lift. Solid protein anchor at 52g.",
+  "  and Carly's sentence is still untouched by any of it");
+
+console.log('\n  RUN 6: THE SUGGESTION THEY HAD ALREADY TAKEN:');
+/* uncwspmpxdr, 18 Sep 03:29. A 70 cal dinner roll answered "Protein shake and
+   sleep would've landed better" four minutes after his 42g protein shake was
+   logged into the same feed. */
+t(/DO NOT PRESCRIBE WHAT THEY ALREADY DID/.test(TEN),
+  'the rest of today is searched before a swap is offered');
+t(/four minutes earlier/.test(TEN), '  named on the read that got it wrong');
+t(/70 calories of bread does not earn a verdict/.test(TEN),
+  '  and a bare verdict on a tiny food is named as the second fault');
+
+console.log('\n  RUN 6: ADDED FAT, AND PRAISING THE WRONG NUMBER:');
+/* uhbw97ntrw4, 18 Sep 02:20. 937 cal, 39g protein, 76g carbohydrate, 53g fat -
+   fish and chips plus two ounces of steak - answered "real food across the
+   board, good protein from the steak and fish". */
+t(/THE FRIED PART IS ADDED FAT AND IT GETS NAMED/.test(TEN),
+  'batter is fat added to the food, not fat that came with it');
+t(/Two ounces of\s+steak is not good protein/.test(TEN),
+  '  and the weakest figure on the plate does not get the compliment');
+t(/portioned real-food tray this file already\s+rules on is not that/.test(TEN),
+  '  while the tray he rules on is explicitly exempted');
+t(TEN.indexOf(EM)<0 && TEN.indexOf(EN)<0, 'and run 6 added no dash of its own');
+
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (he reads the person, then the plate)');
 process.exit(bad?1:0);
