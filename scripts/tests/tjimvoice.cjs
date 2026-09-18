@@ -437,5 +437,58 @@ t(/portioned real-food tray this file already\s+rules on is not that/.test(TEN),
   '  while the tray he rules on is explicitly exempted');
 t(TEN.indexOf(EM)<0 && TEN.indexOf(EN)<0, 'and run 6 added no dash of its own');
 
+console.log('\n  RUN 7: A GROUPED TOTAL IS A REAL TOTAL, NOT ANY NUMBER THAT IS FAR OFF:');
+/* Both reached clients on 18 Sep, hours after run 6's calorie check shipped, and
+   both walked because they sat outside a 5% window that treated "far off" as proof
+   of a grouped read. victoriaa1's dinner had no sibling anywhere in her day. */
+const TURKEY={protein:17, carbs:2, fat:16, calories:220};
+const TURKEY_SENT="This is a clean, light dinner with solid protein and fat from whole foods. "
+  +"You're sitting at 257 calories and 17g protein for the meal, which tracks well "
+  +"against your goal.";
+global.todayFood=undefined;
+const TURKEY_OUT=_insightMacroSafe(TURKEY_SENT, TURKEY);
+t(/220 calories/.test(TURKEY_OUT), 'a figure 17% out on a row with no siblings is corrected', TURKEY_OUT);
+t(!/257/.test(TURKEY_OUT), '  and the bluffed figure does not survive', TURKEY_OUT);
+t(/17g protein/.test(TURKEY_OUT), '  while the figure that was right is left alone', TURKEY_OUT);
+const POD={protein:2, carbs:4, fat:2, calories:45};
+const POD_OUT=_insightMacroSafe('Coffee pod at breakfast is fine, 42 calories sitting there.', POD);
+t(/45 calories/.test(POD_OUT), '  and three calories out on a 45 calorie row is still wrong', POD_OUT);
+
+console.log('\n  RUN 7: AND THE REAL GROUPED TOTAL IS STILL PROTECTED:');
+/* laileek1, run 6: 609 cal of salmon and 387 of chicken logged 89 seconds apart at
+   the same clock time. 996 is the honest number and it must survive - both when the
+   peer rows are there to be added up and when they are not. */
+global.todayFood=[{id:11,meal:'Dinner',eat_time:'11:19 PM',name:'Salmon',calories:609,protein:52,carbs:44,fat:25},
+                  {id:12,meal:'Lunch',eat_time:'11:19 PM',name:'Chicken breast',calories:387,protein:65,carbs:16,fat:7}];
+const SALMON={id:11, meal:'Dinner', eat_time:'11:19 PM', protein:52, carbs:44, fat:25, calories:609};
+t(_insightMacroSafe('Across both rows this sitting is 996 calories.', SALMON)
+  === 'Across both rows this sitting is 996 calories.',
+  'a total that lands on the real plate is left exactly as written');
+/* The reason the window could open to 20% at all: a grouped total only a little
+   above the row is now protected by the rows themselves, not by its distance. */
+const SIDE={id:21, meal:'Dinner', eat_time:'7:00 PM', protein:40, carbs:30, fat:20, calories:600};
+global.todayFood=[SIDE,{id:22,meal:'Dinner',eat_time:'7:00 PM',name:'Side salad',calories:90,protein:2,carbs:6,fat:6}];
+t(_insightMacroSafe('The plate comes to 690 calories.', SIDE)
+  === 'The plate comes to 690 calories.',
+  '  including one sitting inside the old window, which the 5% rule would have wrecked');
+global.todayFood=undefined;
+t(_insightMacroSafe('Across both rows this sitting is 996 calories.', {protein:52,carbs:44,fat:25,calories:609})
+  === 'Across both rows this sitting is 996 calories.',
+  '  and with no peer list to read, distance still protects it');
+t(_insightMacroSafe('You have 500 calories left today.', POKE)
+  === 'You have 500 calories left today.',
+  '  and a daily figure is still a target, not this meal');
+
+console.log('\n  RUN 7: A NUMBER IS NEVER SAID TO HAVE BEEN CHECKED:');
+/* maishas1, 18 Sep 09:35. "The macros logged are close enough to what's on the
+   label" - and then "the fat number should be lower" one sentence later. */
+t(/NEVER SAY A LOGGED NUMBER HAS BEEN CHECKED AGAINST ANYTHING/.test(TEN),
+  'no label, package, barcode or database was ever seen');
+t(/close enough to what's on the label/.test(TEN),
+  '  named on the read that got it wrong');
+t(/ask the question and stop/.test(TEN),
+  '  and the doubt beside it is kept, because that half was right');
+t(TEN.indexOf(EM)<0 && TEN.indexOf(EN)<0, 'and run 7 added no dash of its own');
+
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (he reads the person, then the plate)');
 process.exit(bad?1:0);
