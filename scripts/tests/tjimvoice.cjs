@@ -490,5 +490,27 @@ t(/ask the question and stop/.test(TEN),
   '  and the doubt beside it is kept, because that half was right');
 t(TEN.indexOf(EM)<0 && TEN.indexOf(EN)<0, 'and run 7 added no dash of its own');
 
+console.log('\n  RUN 7b: THE SIBLING THAT WAS ALREADY IN THE LIST:');
+/* adrianap1, 18 Sep 06:14. Tuna and mayonnaise at 06:14:33, dates and dark
+   chocolate at 06:14:58, crackers at 06:15:41 - all three Dinner @ 11:14 PM.
+   The dates were answered alone as "a sweet snack" with 33g of protein sitting
+   25 seconds above them in the rest of today the writer was handed. */
+t(/AND THE SIBLING IS USUALLY ALREADY THERE/.test(TEN),
+  'the rest of today is read before the first sentence, not after');
+t(/twenty-five\s+seconds later/.test(TEN), '  named on the dinner it was ignored on');
+t(/the plate is that row plus this one/.test(TEN),
+  '  and the grouped plate is what the first sentence is about');
+/* AND _jimTodaySoFar STILL HANDS IT OVER, which is the half that was working. */
+global.todayFood=[{id:1, meal:'Dinner', eat_time:'11:14 PM', name:'Tuna and Mayo',
+                   calories:249, protein:33, carbs:0, fat:13},
+                  {id:2, meal:'Dinner', eat_time:'11:14 PM', name:'Dates and dark chocolate',
+                   calories:235, protein:2, carbs:50, fat:3}];
+const ADR=_jimTodaySoFar({id:2});
+t(/Tuna and Mayo/.test(ADR) && /33g P/.test(ADR),
+  '  and the sibling really is in the list the writer is given', ADR);
+t(!/Dates and dark chocolate/.test(ADR), '  with the row being judged left out of it');
+global.todayFood=[];
+t(TEN.indexOf(EM)<0 && TEN.indexOf(EN)<0, 'and run 7b added no dash of its own');
+
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (he reads the person, then the plate)');
 process.exit(bad?1:0);
