@@ -64,6 +64,23 @@ ok(F._feedJimHtml(grouped).indexOf(ANGELA)>=0, 'and it reaches the card');
 ok(F._feedJimText({kind:'food', data:{_groupRows:[{insight:null},{insight:''}]}})==='',
    'a group where nobody was read is still no read');
 
+/* THE SECOND PASS HAS TO REACH THE CARD (17 Sep, the reason v533 showed
+   nothing). The feed fetches `insight` in a second pass, like photo, caffeine
+   and raw_text, and writes it onto the rows it already holds. This runs that
+   exact write and then renders, so the mechanism is proved rather than
+   asserted: before the pass the card honestly says Jim did not read; after it,
+   the read is there, off the SAME object the feed handed the card. */
+const foods=[{id:11,name:'Taco Bell'},{id:12,name:'Chicken and rice'}];
+const item11={kind:'food', code:'ang', data:foods[0]};
+ok(F._feedJimHtml(item11).indexOf('did not read')>=0,
+   'before the second pass lands, the card says Jim did not read');
+const fetched={11:ANGELA};                       // what the pass brings back
+foods.forEach(f=>{ if(fetched[f.id]) f.insight=fetched[f.id]; });   // the pass's own line
+ok(F._feedJimHtml(item11).indexOf(ANGELA)>=0,
+   'and after it lands, the SAME card carries the read');
+ok(F._feedJimHtml({kind:'food',code:'x',data:foods[1]}).indexOf('did not read')>=0,
+   'a row the pass had nothing for still says so');
+
 // ---- IT IS ONLY FOR FOOD
 ['wo','weight','photo','journal','moment','steps','conn'].forEach(k=>{
   ok(F._feedJimHtml({kind:k, data:{insight:ANGELA}})==='', 'nothing is drawn on a '+k+' card');

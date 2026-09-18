@@ -72,7 +72,18 @@ t(/var _cafBackfill = \(async function\(\)/.test(src), 'the same shape as the ph
    steps - so slotting a promise in beside the other backfills silently hands
    steps the wrong result and empties them off his feed with nothing to show it. */
 const all=(src.match(/var _resAll = await Promise\.all\(\[[^\]]*\]\)/)||[''])[0];
-t(/_stepsP,_cafBackfill\]/.test(all), 'and it is LAST, so no positional index moved', all.slice(-60));
+/* THE REAL INVARIANT IS THE INDEX, NOT THE LAST SLOT (re-written 17 Sep, when
+   _insBackfill was correctly appended after this one and turned this line red).
+   "Caffeine is last" was a true fact about the array on the day it was written,
+   not the rule. The rule is that nothing may be inserted BEFORE a slot that is
+   read by position - _resAll[7] is steps, and every reader below counts from
+   there. Appending is always safe; inserting never is. So the test now asserts
+   what actually protects his steps: caffeine still sits after steps, and steps
+   is still index 7. */
+const _slots=all.replace(/^[^\[]*\[|\]\)$/g,'').split(',').map(x=>x.trim());
+t(_slots.indexOf('_stepsP')===7, 'steps is still index 7, which the reader below hard-codes', _slots.indexOf('_stepsP'));
+t(_slots.indexOf('_cafBackfill')>_slots.indexOf('_stepsP'),
+  'and caffeine was APPENDED after it, never inserted before it', _slots);
 t(/var steps=\(_resAll\[7\]\|\|\[\]\)/.test(src), '  which is what _resAll[7] still being steps depends on');
 
 console.log('\n  AND AN INSERT ONLY CARRIES IT WHEN THERE IS SOME:');
