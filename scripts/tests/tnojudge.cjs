@@ -75,8 +75,15 @@ t(/unknown:\['#888',''\]/.test(journal), '...and an unjudged row shows nothing, 
 // The grading pass has to apply it too, or the row is re-rated 'bad' later.
 t(/rating=_drinkFloor\(rating, entry\.calories\);/.test(src),
   'the grading pass applies the floor, so it cannot come back as bad afterwards');
-t(/_wholeFoodFloor\(\(typeof name!=='undefined'\?name:''\), rating\);[\s\S]{0,80}_drinkFloor/.test(src),
+/* 18 Sep: this used to pin the call as _wholeFoodFloor((typeof name!=='undefined'
+   ?name:''), rating) - which read the BROWSER WINDOW's name, not the meal's, so
+   the floor returned on its first line every time it ran here. The order this
+   assertion exists to protect is unchanged and now has three links: whole-food
+   floor, then the junk ceiling, then the drink floor last. */
+t(/_wholeFoodFloor\(_gpName, rating\);[\s\S]{0,200}_drinkFloor/.test(src),
   '...right after the whole-food floor, not instead of it');
+t(/_junkCeiling\(_gpName, rating\);[\s\S]{0,120}_drinkFloor\(rating, entry\.calories\)/.test(src),
+  '...and the 25-calorie drink floor still runs AFTER the junk ceiling, so a 4-calorie coffee is still unjudged');
 
 console.log(bad? ('tnojudge: '+bad+' FAILED') : 'tnojudge: all passed');
 process.exit(bad?1:0);

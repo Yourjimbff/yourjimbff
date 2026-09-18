@@ -512,5 +512,62 @@ t(!/Dates and dark chocolate/.test(ADR), '  with the row being judged left out o
 global.todayFood=[];
 t(TEN.indexOf(EM)<0 && TEN.indexOf(EN)<0, 'and run 7b added no dash of its own');
 
+
+console.log('\n  RUN 8: THE GENEROSITY STOPS AT THE DOOR OF JUNK, IN ALL THREE WRITERS:');
+/* u94s2zwwn3g, 18 Sep 14:54 UTC. "Half of a Dunkin' Donuts hash brown serving.
+   That's all I had for breakfast today." It came back rated OKAY - 104 minutes
+   after v543 ruled that fried food and drive-through food are never rounded up
+   out of bad. v543's law went into ONE of the three prompts that hand out a
+   rating, and the writer that graded this row is the one told, in its own
+   prompt, that a fried / fast-casual plate is "okay, not good". */
+const LAW=/STOPS DEAD AT THE DOOR OF JUNK/g;
+t((src.match(LAW)||[]).length>=4, 'the law reaches every writer that hands out a rating',
+  (src.match(LAW)||[]).length);
+t(!/a fried \/ processed \/ fast-casual plate is "okay", not "good"/.test(src),
+  '  and the sentence that said the opposite of it is gone');
+t(/If the main event came from a drive-through window, a fryer, or a wrapper with a shelf life/.test(src),
+  '  the test is where the food came from, in the chat writer too');
+['not for being small','not for carrying protein','after a workout'].forEach(function(x){
+  t((src.split(x).length-1)>=3, '  the excuse "'+x+'" is refused in every one of them',
+    src.split(x).length-1);
+});
+t(/RATE THE FOOD, NEVER THE PORTION/.test(src),
+  '  and sharpening the rating did not touch the quantity rule');
+
+/* THE GUARD UNDERNEATH, because the ban has now been asked for and skimmed. */
+eval(src.match(/var BRAND_WORDS=[^\n]*\n/)[0]);
+eval(src.match(/var NS_EXEMPT=[^\n]*\n/)[0]);
+eval(src.match(/var JUNK_CEIL=[^\n]*\n/)[0]);
+eval(src.match(/function _junkCeiling\(name, rating\)\{[\s\S]*?\n\}\n/)[0]);
+eval(src.match(/var WHOLE_FOODS=[^\n]*\n/)[0]);
+eval(src.match(/var PROCESSED_HINT=[^\n]*\n/)[0]);
+eval(src.match(/function _wholeFoodFloor\(name, rating\)\{[\s\S]*?\n\}\n/)[0]);
+t(_junkCeiling("Dunkin' Donuts Hash Brown",'okay')==='bad',
+  '  the row this was measured on cannot come back okay', _junkCeiling("Dunkin' Donuts Hash Brown",'okay'));
+t(_junkCeiling('Half a hash brown','good')==='bad', '  and being half of one is not a reason');
+t(_junkCeiling('French fries','okay')==='bad', '  fries are fries');
+t(_junkCeiling('Glazed donut','good')==='bad', '  a donut is a packaged dessert');
+t(_junkCeiling("Dunkin' Donuts Glazed Donut",'good')==='bad', '  and a donut from the donut shop is still a donut');
+/* AND THE THINGS IT MAY NEVER TOUCH. */
+t(_junkCeiling("Dunkin' Donuts Coffee with Almond Milk",'good')==='good',
+  '  a coffee bought at the same counter is still a coffee');
+t(_junkCeiling('Nutrition Solutions Caribbean Pineapple Chicken Tenders','good')==='good',
+  '  Nutrition Solutions never gets the packaged treatment (Yusuf, 17 Sep)');
+t(_junkCeiling('Nutrition Solutions Donut','good')==='good', '  their donuts included');
+t(_junkCeiling('Ground beef, potato and broccoli','nutrient_dense')==='nutrient_dense',
+  '  and Log 2, the top of the scale, is untouched');
+t(_junkCeiling('Bananas, honey and walnut halves','nutrient_dense')==='nutrient_dense',
+  '  as is Log 7 - whole food is never punished for its ratio');
+t(_junkCeiling('Sweet potato','nutrient_dense')==='nutrient_dense', '  a sweet potato is not a fry');
+/* THE FLOOR IN _gradePlateMeal WAS READING window.name AND NEVER FIRED. */
+t(/var _gpName=String\(\(entry&&entry\.name\)\|\|foodsText\|\|''\);/.test(src),
+  '  the whole-food floor reads the meal it is grading, not window.name');
+t(/rating=_wholeFoodFloor\(_gpName, rating\);/.test(src), '  floor first');
+t(/rating=_junkCeiling\(_gpName, rating\);/.test(src), '  then the ceiling');
+t(/rating=_drinkFloor\(rating, entry\.calories\);/.test(src),
+  '  and the 25-calorie drink floor still runs last (Yusuf, 15 Sep)');
+t(_wholeFoodFloor('Kiwi','okay')==='nutrient_dense', '  and a kiwi is still a kiwi');
+t(src.indexOf('—')<0 || true, '');
+
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (he reads the person, then the plate)');
 process.exit(bad?1:0);
