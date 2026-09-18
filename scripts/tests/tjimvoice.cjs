@@ -24,7 +24,8 @@ const MINE=['_jimGoalRead','_jimGoalLine','_jimTurboUnlocked','_jimTone','_jimTo
             /* 17 Sep: _jimToneBlock now opens every delivery with the no-dash rule */ '_jimPunct',
             /* run 4: the two guards that stand between a wrong sentence and a client */
             '_noEmDash','_insightMacroSafe','_jimTodaySoFar',
-            /* run 9: the plate, added up in code, read by both gates */ '_jimPlateTotals'];
+            /* run 9: the plate, added up in code, read by both gates */ '_jimPlateTotals',
+            /* run 10: is a calorie figure counted OF this row's own food? */ '_calsCountedOfThisRow'];
 eval(MINE.map(defOf).join('\n'));
 eval(src.match(/var _JIM_TONE_KEY=[^\n]*\n/)[0]);
 eval(src.match(/var JIM_TONES=\[[\s\S]*?\];\n/)[0]);
@@ -615,6 +616,51 @@ t(_insightMacroSafe("98g carbs fuels tomorrow's lift. Protein anchor at 52g.",_l
 t(_insightMacroSafe("Dinner brings you to 996 calories.",_lone)==="Dinner brings you to 996 calories.",
   '  and a far-off figure on a row with NO siblings is still left alone');
 global.todayFood=undefined;
+/* ===== RUN 10, 18 SEP. "LUNCH IS 515 CALORIES OF BUFFALO CHICKEN BITES" =====
+   victoriaa1's real rows. The buffalo bites are slotted Lunch at 2:30 PM; the
+   coffee and the banana she logged a minute earlier are slotted Breakfast at
+   2:34, so the plate is ONE row and every sibling protection above stands down.
+   515 over 268 is 92% out, which is far enough that the ">20% out is a sentence
+   about something else" escape waved it through on the grounds of being badly
+   wrong. Pasted into origin/main this came back byte for byte unchanged. */
+const _VCOF={id:81,meal:'Breakfast',eat_time:'2:34 PM',name:'Coffees With Half And Half',calories:57,protein:2,carbs:1,fat:5};
+const _VBAN={id:82,meal:'Breakfast',eat_time:'2:34pm',name:'Banana and turkey',calories:125,protein:4,carbs:25,fat:1};
+const _VBUF={id:83,meal:'Lunch',eat_time:'2:30 PM',name:'Buffalo Bites with Dipping Sauces',meal_text:'8 buffalo bites',calories:268,protein:26,carbs:14,fat:12};
+global.todayFood=[_VCOF,_VBAN,_VBUF];
+t(_jimPlateTotals(_VBUF).rows===1,
+  'the buffalo row really does stand alone - a different slot and a different clock',
+  JSON.stringify(_jimPlateTotals(_VBUF)));
+const _V515="Lunch is 515 calories of buffalo chicken bites with two sauces. The bites carry 26g protein and 12g fat against 14g carbs, so the fat is doing most of the work here and it came in fried.";
+t(_insightMacroSafe(_V515,_VBUF)==='',
+  'a calorie figure counted OF this row\'s own food, 247 calories out, takes the line',
+  JSON.stringify(_insightMacroSafe(_V515,_VBUF)));
+t(_insightMacroSafe("Lunch is 268 calories of buffalo bites.",_VBUF)==="Lunch is 268 calories of buffalo bites.",
+  '  and the same sentence with the right figure is untouched');
+t(_insightMacroSafe("Lunch is 515 calories of sweet potato and broccoli.",_VBUF)
+    ==="Lunch is 515 calories of sweet potato and broccoli.",
+  '  and a figure counted of food this row does NOT carry is still left alone');
+t(_insightMacroSafe("That is 996 calories of food today.",_VBUF)==="That is 996 calories of food today.",
+  '  and filler after "of" is not a food - nothing fires');
+global.todayFood=[_lone];
+t(_insightMacroSafe("Across both rows this sitting is 996 calories.",_lone)
+    ==="Across both rows this sitting is 996 calories.",
+  '  and Carly\'s grouped 996 over a 609 row survives run 10 as well');
+t(_insightMacroSafe("Dinner brings you to 996 calories.",_lone)==="Dinner brings you to 996 calories.",
+  '  and so does the running day total');
+t(_insightMacroSafe("Dinner is 609 calories of salmon.",_lone)==="Dinner is 609 calories of salmon.",
+  '  and a correct figure counted of this row\'s own food is untouched');
+global.todayFood=undefined;
+/* ===== RUN 10. THE FOOD THAT DOES NOTHING IS NEVER A WHOLE FOOD ===== */
+t(/NEVER A WHOLE FOOD/.test(_jimTenLogs()),
+  'the food that does nothing came out of a wrapper, a fryer or a freezer box');
+t(/blueberries are the one thing doing nothing for you here/.test(_jimTenLogs()),
+  '  and haydenh1\'s sentence is in the block in the words it happened in');
+t(/maybe replace that granola with blueberries/.test(_jimTenLogs()),
+  '  with his own words prescribing the food it called useless');
+t(/BIGGEST NUMBER ON THE PLATE BEFORE YOU PICK/.test(_jimTenLogs()),
+  'the dominant macro is found before the read picks what to praise');
+t(/4g of protein\s+is not well built/.test(_jimTenLogs()),
+  '  and victoriaa1\'s 4g "well-built" is named as the measured case');
 /* AND THE COUNT HAS TO POINT AT FOOD THAT IS THERE (run 9, nikoh1). */
 t(/If you cannot name the second one, there is no second one/.test(_jimTenLogs()),
   'a count of carb sources has to point at the foods it is counting');
