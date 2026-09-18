@@ -20862,7 +20862,7 @@ function _pfDayRow(it){
            and this one are different renderers, which is how the read reached
            one and not the other last night. Same builder, same three sources. */
         +(function(){ try{
-            return _mealBulletsHtml(d&&d._groupRows) || _mealBulletsHtml(_mealItemRows(d)) || _mealBulletsHtml(_mealNameSplit(d)) || '';
+            return _mealBulletsHtml(d&&d._groupRows) || _mealBulletsHtml(_mealItemRows(d)) || _mealBulletsHtml(_mealNameSplit(d)) || _mealBulletsHtml(_mealTextSplit(d)) || '';
           }catch(e){ return ''; } })()
         +(exHtml?('<div class="pfDayEx">'+exHtml+'</div>'):'')
         +(note?('<div class="pfDayNote">“'+_pfEsc(note)+'”</div>'):'')
@@ -24428,6 +24428,8 @@ function _feedItemHtml(it){
       /* Last: a title written before the items column existed, split on the
          app's own separator. Names only - see _mealNameSplit. */
       if(!_blts) _blts=_mealBulletsHtml(_mealNameSplit(it.data));
+      /* And last of all, the client's own comma list - see _mealTextSplit. */
+      if(!_blts) _blts=_mealBulletsHtml(_mealTextSplit(it.data));
     }catch(e){ _blts=''; }
     /* THE TITLE STAYS (Yusuf, 18 Sep): "we should still have the titles of the
        food somewhere." Replacing it with "3 foods" threw away the one line that
@@ -27282,6 +27284,61 @@ function _mealNameSplit(data){
       var k=p.toLowerCase(); if(seen[k]) return; seen[k]=1;
       out.push({name:p, calories:0});
     });
+    return out.length>1 ? out : null;
+  }catch(e){ return null; }
+}
+/* THE CLIENT'S OWN LIST, WHEN THEY ALREADY WROTE ONE (18 Sep: "go back and
+   clean up everyone's food logs who've been logging food on the free app").
+
+   Thousands of rows were logged before the items column existed. Most carry a
+   model-written title and nothing else. But a large share carry the CLIENT'S
+   OWN SENTENCE on meal_text, and when that sentence is a comma list -
+   "greek yogurt, 3 eggs, turkey bacon, half sweet potato" - the itemisation is
+   already there, written by the person who ate it. This reads that list. It
+   does not write one.
+
+   Doing it here rather than in the database is the honest version of a
+   backfill: nothing is stored, so nothing can be wrong forever. Every row ever
+   logged is covered, not the ones a window caught, and if a rule below turns
+   out to be wrong the fix is a deploy, not a second migration over guessed data.
+
+   THE GUARDS. Each is here because it caught something real in the live rows:
+   - TWO commas at least. "Eggs, Bacon & Ricotta Omelette with Biscuit" is one
+     model title with one comma in it, and cutting it invents a food called
+     "Bacon & Ricotta Omelette with Biscuit".
+   - NOTHING THAT SMELLS OF MACROS. "Ate a few more bites of steak - but
+     estimated ~640 calories | 48g protein | 44g" split into a food called
+     "48g protein". Numbers are not food.
+   - EVERY PART SHORT. Over eight words is prose, not an item, and one prose
+     fragment printed as a food discredits the whole list. One bad part kills
+     the split - the title stands instead.
+   - TWO PARTS MUST SURVIVE, or there is no list.
+
+   NO CALORIES ON THESE LINES, exactly as in _mealNameSplit: the row carries one
+   total for the whole plate, and dividing it evenly would be a number nobody
+   measured. The names are real. The per-food figures are not recoverable and
+   are not invented. */
+function _mealTextSplit(data){
+  try{
+    if(!data) return null;
+    var w=String(data.meal_text||data.raw_text||'').replace(/\s+/g,' ').trim();
+    if(!w) return null;
+    if((w.split(',').length-1)<2) return null;
+    if(/(calorie|kcal|\b\d+\s?g\b\s?(of\s?)?(protein|carb|fat)|protein\s*[:=]|macros)/i.test(w)) return null;
+    var parts=w.split(','), seen={}, out=[];
+    for(var i=0;i<parts.length;i++){
+      var p=String(parts[i]).trim()
+        .replace(/^(?:and|with|plus|&)\s+/i,'')
+        .replace(/^(?:i\s+)?(?:just\s+)?(?:had|ate|having|made|got)\s+/i,'')
+        .replace(/\s+for\s+(?:breakfast|lunch|dinner|a\s+snack|snack)\s*\.?$/i,'')
+        .replace(/[.;:]+$/,'')
+        .trim();
+      if(!p) continue;
+      if(p.length<2 || p.length>59) return null;
+      if(p.split(' ').length>8) return null;
+      var k=p.toLowerCase(); if(seen[k]) continue; seen[k]=1;
+      out.push({name:p.charAt(0).toUpperCase()+p.slice(1), calories:0});
+    }
     return out.length>1 ? out : null;
   }catch(e){ return null; }
 }
