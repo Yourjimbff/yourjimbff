@@ -74,6 +74,42 @@ ok(split('')===null && F._mealTextSplit(null)===null && F._mealTextSplit({})===n
    'nothing in, nothing out');
 ok(split('a, b, c')===null, 'single letters mean the split landed wrong, so it is abandoned');
 
+// ------------------------------- TWENTY-FIVE RANDOM LIVE ROWS, READ ONE BY ONE
+/* Pulled at random from the 4,465 rows in food_logs, with no cherry-picking.
+   Each line below is somebody's actual typing. */
+const real = [
+  ['91/9 beef burgers with American cheese, onions, ketchup, mustard, pickled anchovies', 5],
+  ['Breakfast, coffee, turkey sausage, 2 eggs, a plain waffle', 4],
+  ['Cube steak with gravy, 1/2 can green beans, mashed potatoes', 3],
+  ['Chipotle burrito with steak, queso, carne asada, pinto beans, a sprinkle of cheese', 5],
+  ['Eggs, Bacon, English Muffin, Greek Yogurt & Blueberries', 4],
+  ['6oz ny steak, 1 baked potato, 1/2 zuchini', 3],
+  ['7 ounces chicken breast, handful of broccoli, zucchini, and green beans', 4],
+  ['Chicken breast, mixed vegetables, 1/2 cup dry jasmine rice', 3],
+  ['150g cooked chicken breast, 122g pumpkin ( raw weight), 1 cup broccoli', 3],
+  ['4oz chicken breast, 120g carrots, 40g avocado', 3],
+  ['Babybel cheese, cucumber, and kiwi', 3],
+  ['12 oz steak, a handful of rice, cottage cheese', 3],
+  ['Three eggs, three slices of turkey bacon, a red potato, a tablespoon of cheese', 4],
+  ['2 eggs, Greek yogurt and harissa, cucumbers and cheese', 3],
+  ['Lamb, rice, Greek yogurt and salad with tomatoesc cheese and onions', 3]
+];
+real.forEach(([t,n])=>{
+  ok((split(t)||[]).length===n, 'live row: '+t.slice(0,46), names(t));
+});
+ok(names('Breakfast, coffee, turkey sausage, 2 eggs, a plain waffle').indexOf('Breakfast')<0,
+   'the slot is dropped and the four foods stand - "Breakfast" is not something you ate');
+ok(names('Babybel cheese, cucumber, and kiwi')[2]==='Kiwi',
+   'a joining "and" is not part of the food name');
+ok(names('7 ounces chicken breast, handful of broccoli, zucchini, and green beans')[3]==='Green beans',
+   'nor at the end of a longer list');
+
+/* THE ONE THAT MUST NOT SPLIT, and it is why the request guard exists. */
+ok(split("I would also like to log half a Trader Joe's extra firm tofu , with teriyaki sauce and rice")===null,
+   'somebody talking to the app is not a list, however many commas are in it');
+ok(split('Can you add eggs, bacon, and toast to yesterday')===null,
+   'nor is an instruction to the app');
+
 // ------------------------------------------------- IT IS THE LAST SOURCE ONLY
 /* Order matters and it is the whole design: rows logged together are the
    truth, the stored items column is next, the app's own separator after that,
