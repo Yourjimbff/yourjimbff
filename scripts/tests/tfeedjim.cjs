@@ -102,5 +102,28 @@ ok(/body\.jv-on \.feedCard \.fcExtra\{height:34px/.test(src),
    'board mode still clips .fcExtra, which is why this lives outside it');
 ok(/\.fcJim\{/.test(src) && /\.fcJimNo\{/.test(src), 'both blocks are styled');
 
+/* ===== AND ON THE DESKTOP, WHICH IS A DIFFERENT RENDERER (18 Sep) =========
+   "You know how I can see Jim's read on mobile feed? I cannot see that on
+   desktop. I want to be able to copy paste it."
+   v533 wired _feedItemHtml. The desktop board never calls it - it goes
+   _feedDeskDaysHtml -> _feedPeopleDayHtml -> _pfCard, which draws its own
+   rows - so the read reached his phone and not the machine he works on. */
+const pf=(()=>{ const i=src.indexOf('function _pfJimHtml(it, d){');
+  return i<0 ? '' : src.slice(i, src.indexOf('\nfunction _feedJimHtml', i)); })();
+ok(pf.length>150, 'the desktop card has its own reader for the read');
+ok(/_feedJimPick\(/.test(pf), 'and it asks the SAME picker as the phone, so the two cannot drift');
+ok(/it\.kind!=='food'/.test(pf), 'only on a meal');
+
+// the one thing he actually asked for
+ok(/onclick="event\.stopPropagation\(\);"/.test(pf) && /onmousedown="event\.stopPropagation\(\);"/.test(pf),
+   'a drag across the text does not open the day sheet');
+ok(/user-select:text/.test(src), 'and the text is selectable, which is the whole request');
+
+// it is actually on the row
+const pfRow=(()=>{ const i=src.indexOf("+(rating?('<div class=\"pfDayRating\">'");
+  return src.slice(i, i+400); })();
+ok(/_pfJimHtml\(it, d\)/.test(pfRow), 'the desktop row draws it, under the rating');
+ok(/\.pfDayJim\{/.test(src) && /\.pfDayJimWho\{/.test(src), 'and it is styled');
+
 console.log(fails? ('\ntfeedjim: '+fails+' FAILED\n') : '\ntfeedjim: all good\n');
 process.exit(fails?1:0);
