@@ -40,6 +40,8 @@ const says=src.slice(src.indexOf('function _jimSaysWhen(t){'), src.indexOf('asyn
 const c3={String,RegExp}; vm.createContext(c3); vm.runInContext(says, c3);
 const S=(q)=>vm.runInContext('_jimSaysWhen('+JSON.stringify(q)+')', c3);
 t(S('had this at 8am') && S('last night dinner') && S('this at noon') && !S('chicken and rice') && !S('12 oz steak'), 'the sentence wins only when it actually names a time or a day');
-t(/window\._chatPhotoTaken=null; \}catch/.test(src.slice(src.indexOf('function clearChatPhoto(){'), src.indexOf('function clearChatPhoto(){')+200)), 'clearing the photos clears the stamp');
+/* Since 19 Sep every photo's stamp is kept (window._chatPhotoTakenAll), so the
+   clear takes both the first stamp and the list with it. */
+t(/window\._chatPhotoTaken=null; window\._chatPhotoTakenAll=\[\]; \}catch/.test(src.slice(src.indexOf('function clearChatPhoto(){'), src.indexOf('function clearChatPhoto(){')+240)), 'clearing the photos clears the stamp, and the list of stamps with it');
 console.log(bad?'\n  '+bad+' FAILED':'\n  all photo-time assertions pass');
 process.exit(bad?1:0);
