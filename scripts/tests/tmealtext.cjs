@@ -119,8 +119,12 @@ ok(chain.indexOf('_groupRows')<chain.indexOf('_mealItemRows')
    && chain.indexOf('_mealItemRows')<chain.indexOf('_mealNameSplit')
    && chain.indexOf('_mealNameSplit')<chain.indexOf('_mealTextSplit'),
    'on the desktop card it is last, behind the grouped rows, the column and the separator');
-ok((src.match(/_mealBulletsHtml\(_mealTextSplit\(/g)||[]).length===2,
-   'and it is wired into BOTH renderers, because that is how the read reached one card and not the other',
+/* Two renderers on the 18th - the trainer's feed and the trainer's day card.
+   Four on the 19th, once Yusuf logged his own breakfast and saw no list on
+   the screen he logged from or on his own day: the client's sheet and the
+   client's day card draw it too. */
+ok((src.match(/_mealBulletsHtml\(_mealTextSplit\(/g)||[]).length===4,
+   'and it is wired into all four renderers - both of the trainer\'s and both of the client\'s',
    (src.match(/_mealBulletsHtml\(_mealTextSplit\(/g)||[]).length);
 
 // a stored items column still wins over the sentence

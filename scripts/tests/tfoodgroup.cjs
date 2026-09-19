@@ -58,6 +58,17 @@ ok(g('lettuce')==='Vegetable', 'lettuce: vegetable');
 ok(g('zzyx', null)==='', 'a name it does not know, with no numbers, gets no tag - never a guess dressed as a fact');
 ok(g('zzyx', {p:30,c:2,f:3})==='Lean protein', 'but the numbers alone can decide when there are numbers');
 
+// ------------------------------------ HIS OWN BREAKFAST, ONE FOOD PER LINE
+/* Typed on his phone as four lines with no commas, logged through the fast
+   lane as one row with no foods on it, and drawn nowhere a client looks. */
+const hb=F._mealTextSplit({meal_text:'3 eggs\n1 slice sourdough\n2 slices turkey bacon\n1 slice pepper jack cheese'});
+ok(hb && hb.length===4, 'a line break is a separator', hb&&hb.map(x=>x.name));
+ok(hb && hb.map(x=>x.group).join('|')==='Protein & fat|Processed carbohydrate|Protein & fat|Protein & fat',
+   'eggs, sourdough, turkey bacon and pepper jack each get their kind - and pepper jack is cheese, not a pepper', hb&&hb.map(x=>x.group));
+ok(/items:_items,/.test(src) && /THE FOODS THE TABLE PRICED ARE THE FOODS/.test(src), 'the fast lane now writes its foods onto the row');
+ok(/_mealBulletsHtml\(_mealItemRows\(e\)\)/.test(src), 'the sheet they log from draws the list');
+ok(/_mealBulletsHtml\(_mealItemRows\(rows\[0\]\)\)/.test(src), 'and so does the day card, for a meal of one row');
+
 // ------------------------------------------------- THE RESTAURANT IS GONE
 const bl=F._mealTextSplit({meal_text:'Chipotle with white rice, pinto beans, double carnitas, sour cream, guac, and lettuce'});
 ok(bl && bl[0].name==='White rice', 'the first bullet is the rice, not the restaurant', bl&&bl.map(x=>x.name));

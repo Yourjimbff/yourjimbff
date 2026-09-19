@@ -160,6 +160,28 @@ ok(F._splitFoods('6 oz ground beef 3 eggs').length===2,
    'the log box reads it the same way as the chat sheet', F._splitFoods('6 oz ground beef 3 eggs'));
 ok(F._splitFoods('chicken breast 6 oz').length===1, 'and holds the same line where it must');
 
+// ================================================ "1 SOURDOUGH" IS ONE SLICE
+/* Yusuf, 19 Sep, logging his own breakfast: "3 eggs, 1 sourdough" priced the
+   eggs and answered "worked out when you log it" for the bread. One sourdough
+   is one slice of sourdough. */
+[['1 sourdough',1],['2 slices sourdough',2],['sourdough toast',1],['1 slice of wheat bread',1],['2 ezekiel',2]].forEach(([t,n])=>{
+  const L=echo(t).lines[0];
+  /* the app rounds each macro at the plate, so two slices is 194 not 202 */
+  ok(L && L.known && L.row.k==='bread' && L.calories>=95*n && L.calories<=105*n, t+' is '+n+' slice'+(n>1?'s':'')+' of bread', L&&L.calories);
+});
+ok(echo('3 eggs, 1 sourdough').lines.every(L=>L.known), 'and his breakfast prices whole');
+
+/* AND NOBODY SAYS THE WORD SLICE. "Two turkey bacon" is two slices; so is
+   two bacon, two cheese, two ham, two pizza. The unit on the row decides. */
+[['two turkey bacon','turkey bacon',2],['2 bacon','bacon',2],['3 cheese','cheese slice',3],['2 ham','deli ham',2],
+ ['2 pizza','pizza',2],['4 turkey slices','deli turkey',4],['1 sourdough','bread',1]].forEach(([t,row,n])=>{
+  const L=echo(t).lines[0];
+  ok(L && L.known && L.row.k===row && L.row.u==='slice', t+' is '+n+' slices of '+row, L&&(L.row&&L.row.k)+' '+L.calories);
+});
+const tb=echo('two turkey bacon').lines[0];
+ok(tb && tb.calories>=50 && tb.calories<=70, 'two turkey bacon is about sixty calories, not two palms of turkey breast', tb&&tb.calories);
+ok(!echo('cottage cheese').lines[0].known, 'and "cottage cheese" is not priced as a slice of cheese - the gate holds');
+
 // ============================================ THE AMOUNT NUDGE IS ON THE LINE
 ok(/say it \(6 oz, 2 eggs, 1 cup\)/.test(src), 'the echo asks for an amount when a food has none');
 ok(/_nlQtyBreaks/.test(src) && (src.match(/_nlQtyBreaks\(/g)||[]).length>=3,

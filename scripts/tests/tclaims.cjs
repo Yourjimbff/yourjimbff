@@ -65,7 +65,11 @@ const gb=F._jimClaimGate(bagel, {eat_time:'9:00 PM', name:'Blueberry bagel with 
 ok(!/whole food/.test(gb) && !/no processing/.test(gb) && /bagel brings/.test(gb), '"whole food, no processing" over a bagel is struck', gb);
 const fb=F._jimPlateFlags({name:'Blueberry bagel with a dark chocolate charcoal cracker', calories:420, protein:9});
 ok(/9g OF PROTEIN IN 420 CALORIES/.test(fb) && /whole-food protein/.test(fb), 'the missing protein is handed over as THE finding', fb.slice(0,100));
-ok(/"bagel" IS A PACKAGED OR REFINED FOOD/.test(fb), 'and so is the bagel being a bagel');
+ok(/"bagel" IS A PACKAGED FOOD/.test(fb), 'and so is the bagel being a bagel');
+/* Sourdough is refined starch and not "packaged" - the read said packaged over a
+   slice of it on the 19th, and a client hears that word as junk. */
+const fs2=F._jimPlateFlags({name:'3 eggs, 1 slice sourdough, 2 slices turkey bacon', calories:463, protein:32});
+ok(/"sourdough" IS A REFINED STARCH/.test(fs2) && !/PACKAGED/.test(fs2), 'sourdough is refined starch, never packaged', fs2.slice(0,120));
 ok(F._jimPlateFlags({name:'Salmon and asparagus', calories:250, protein:27})==='', 'a real plate raises no flags at all');
 ok(F._jimPlateFlags({name:'Greek yogurt', calories:120, protein:3})==='', 'and a tiny plate is not flagged for protein - 150 calories is the floor');
 
