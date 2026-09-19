@@ -82,6 +82,32 @@ ok(F._feedLogGapStr(it('8:00 PM','2026-09-18T23:47:00'))!=='' , 'eaten at 8, log
 ok(F._feedLogGapStr(it('11:40 PM','2026-09-18T23:47:00'))==='', 'seven minutes apart is the same time');
 ok(F._feedLogGapStr({kind:'food', ts:Date.now(), data:{eat_time:null}})==='', 'no stated time, no second clock to show');
 
+// ================================================== THE WATCH, THE WALK, THE DOUBLE
+{
+  const W=closure(['_woStats','_woStatsPills','_pmWalkFor']);
+  const mk=new Function('var todayWo=arguments[0]; function _slotLabel(m){ return String(m||""); }'+W.code+'\nreturn {_woStats,_woStatsPills,_pmWalkFor};');
+  const X=mk([]);
+  const st=X._woStats({description:'Watch: 55 min · 575 active cal · 701 total cal · avg HR 155'});
+  ok(st && st.min===55 && st.active===575 && st.total===701 && st.hr===155, 'the watch line reads back as numbers', st);
+  const pills=X._woStatsPills({description:'Watch: 55 min · 575 active cal · 701 total cal · avg HR 155'});
+  ok(/55 min/.test(pills) && /575 active cal/.test(pills) && /155 avg HR/.test(pills), 'and draws as three pills', pills);
+  ok(X._woStatsPills({description:'Bench 3x8 @ 135'})==='', 'a lifted session with no watch line draws none');
+  ok(/"stats":\{"activity"/.test(src) && /active_cal/.test(src) && /avg_hr/.test(src), 'the screenshot reader asks for the watch numbers');
+  ok(/hasStats && !\(parsed\.exercises&&parsed\.exercises\.length\)/.test(src), 'and a summary with numbers and no exercise list is read, not refused');
+  ok(/ws\.active>=500\) hard=true/.test(src), 'five hundred active calories makes it a high-spend day on the next plate');
+  /* the walk */
+  const Y=mk([{title:'Walk after Lunch', dur:'20 min'}]);
+  ok(Y._pmWalkFor({meal:'Lunch'})===20, 'a walk logged after lunch is found again on the lunch card', Y._pmWalkFor({meal:'Lunch'}));
+  ok(Y._pmWalkFor({meal:'Dinner'})===0, 'and not on the dinner card');
+  const walkRow=src.slice(src.indexOf('function _pmWalkHtml'), src.indexOf('function pmWalkToggle'));
+  ok(/Walked after\?/.test(walkRow) && /> min<\/span>/.test(walkRow) && !/placeholder/.test(walkRow), 'the row: a box, a number, and the word min after it - no placeholder text');
+  ok(/title:'Walk after '\+slot/.test(src) && /insertWorkoutLog\(row\)/.test(src.slice(src.indexOf('async function pmWalkSave'), src.indexOf('async function pmWalkSave')+1500)),
+     'a walk is stored as the bout of exercise it is, through the one door workouts use');
+  ok(!/'Solid workout logged'/.test(src) && !/>= 5 \? 'Solid'/.test(src), 'the banned word is no longer stored on workout rows or toasted at people');
+  /* the double */
+  ok(/Logged twice in this meal\. Both are counted/.test(src) && !/Two of them, or one logged twice\?/.test(src), 'the double card states what is true and asks nothing');
+}
+
 // ============================================================== IT IS WIRED
 ok(/_jimClaimGate\(insight, row\)/.test(src), 'the claim gate runs at the one door every stored read passes');
 ok((src.match(/ask\+=_jimClockLine\(/g)||[]).length===2 && (src.match(/ask\+=_jimPlateFlags\(/g)||[]).length===2,

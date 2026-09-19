@@ -95,9 +95,13 @@ ok(/if\(_seen && \(_now-\(\(_seen\.t\)\|\|_seen\)\)<15\*60\*1000\)\{ return \{ok
 const fh=(()=>{ const i=src.indexOf('function _feedDoubleHtml(it){');
   return src.slice(i, src.indexOf('\nfunction _feedJimHtml', i)); })();
 ok(fh.length>200, 'the feed has its own reader for the pair');
-ok(/Two of them, or one logged twice/.test(fh), 'and it asks rather than states');
+/* IT USED TO ASK. Yusuf, 19 Sep, reading it on Jasmine's card: "it says two of
+   them or one logged twice, and I'm not sure - it doesn't show me if she
+   confirmed". A question printed on a feed nobody can answer from is not a
+   question, it is a shrug. It states what is true now. */
+ok(/Logged twice in this meal\. Both are counted/.test(fh) && !/one logged twice\?/.test(fh), 'and it states rather than asks');
 ok(/_groupRows/.test(fh), 'reading the rows themselves, so the 80 pairs already logged are covered');
-ok(/cal counted/.test(fh), 'and it says what the day is currently counting');
+ok(/Both are counted: '\+cal\+' cal/.test(fh), 'and it says what the day is currently counting');
 ok(/\.fcDbl\{/.test(src), 'the band is styled');
 ok(/rgba\(224,176,64/.test(src), 'amber, not red - nothing is wrong until he says it is');
 
