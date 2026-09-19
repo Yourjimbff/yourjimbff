@@ -25,7 +25,8 @@ const MINE=['_jimGoalRead','_jimGoalLine','_jimTurboUnlocked','_jimTone','_jimTo
             /* run 4: the two guards that stand between a wrong sentence and a client */
             '_noEmDash','_insightMacroSafe','_jimTodaySoFar',
             /* run 9: the plate, added up in code, read by both gates */ '_jimPlateTotals',
-            /* run 10: is a calorie figure counted OF this row's own food? */ '_calsCountedOfThisRow'];
+            /* run 10: is a calorie figure counted OF this row's own food? */ '_calsCountedOfThisRow',
+            /* run 11: does the read name anything the sibling rows carry? */ '_rowNamesASibling'];
 eval(MINE.map(defOf).join('\n'));
 eval(src.match(/var _JIM_TONE_KEY=[^\n]*\n/)[0]);
 eval(src.match(/var JIM_TONES=\[[\s\S]*?\];\n/)[0]);
@@ -666,6 +667,68 @@ t(/If you cannot name the second one, there is no second one/.test(_jimTenLogs()
   'a count of carb sources has to point at the foods it is counting');
 t(/Eggs\s+are not a carbohydrate/.test(_jimTenLogs()),
   '  and the measured case is in the block, in the words it happened in');
+
+/* ===== RUN 11. A VERDICT ON THE MEAL, OFF A FRACTION OF THE MEAL =====
+   adrianap1's real lunch, 18 Sep. Three rows inside 172 seconds, all labelled
+   Lunch, all at eat time 3:31 - and the app stores the clock in two spellings,
+   which is why the normaliser matters. Together: 506 cal, 63p, 41C, 11f. */
+const _A_COD ={id:'a1', meal:'Lunch', eat_time:'3:31 PM', name:'Alaska Cod',
+               meal_text:'', calories:200, protein:50, carbs:0, fat:1};
+const _A_RICE={id:'a2', meal:'Lunch', eat_time:'3:31pm', name:'Jasmine rice and edamame',
+               meal_text:'0.5 cup jasmine rice, 0.5 cup edamame', calories:200, protein:12, carbs:29, fat:4};
+const _A_CRK ={id:'a3', meal:'Lunch', eat_time:'3:31pm', name:'Simple Mills Seed Flour Crackers',
+               meal_text:'6 crackers', calories:106, protein:1, carbs:12, fat:6};
+global.todayFood=[_A_COD,_A_RICE,_A_CRK];
+t(JSON.stringify(_jimPlateTotals(_A_COD))==='{"rows":3,"calories":506,"protein":63,"carbs":41,"fat":11}',
+  'her three lunch rows are one plate, 506 cal and 63g protein, across both clock spellings',
+  JSON.stringify(_jimPlateTotals(_A_COD)));
+const _ACOD_SAID="Lunch is clean. 200 calories of protein-dense fish with almost no carbohydrate or fat is exactly what a fat loss day needs, and it lands hard on the goal you're chasing. The banana at breakfast gave you carbs when you needed them, so this meal does its one job perfectly.";
+t(_insightMacroSafe(_ACOD_SAID,_A_COD)==='',
+  'a verdict on Lunch written off 200 calories of a 506 calorie plate takes the line',
+  JSON.stringify(_insightMacroSafe(_ACOD_SAID,_A_COD)));
+t(_rowNamesASibling(_ACOD_SAID,_A_COD)===false,
+  '  and the read named nothing the rice or the crackers carry');
+const _AGROUPED="Lunch is clean. Cod, jasmine rice, edamame and seed crackers come to 506 calories, 63g protein and 41g carbs, and the protein is carrying it.";
+t(_insightMacroSafe(_AGROUPED,_A_COD)===_AGROUPED,
+  '  and the SAME opener on a read that names the siblings is untouched',
+  JSON.stringify(_insightMacroSafe(_AGROUPED,_A_COD)));
+t(_rowNamesASibling(_AGROUPED,_A_COD)===true,
+  '  because it says rice and crackers, which are not this row\'s own food');
+const _ARICE_SAID="Jasmine rice and edamame at lunch. Rice is 29g carbs and 4g fat, edamame brings 12g protein and 4g fat to close it out.";
+t(_insightMacroSafe(_ARICE_SAID,_A_RICE)===_ARICE_SAID,
+  '  and a read that does not take the meal itself as its subject is left alone');
+/* THE ROW THAT IS MOST OF THE PLATE STILL GETS TO SPEAK FOR THE MEAL.
+   jordanr1's real 7:56 PM sitting: the venison tray is 537 of 1047 calories. */
+const _J_HASH={id:'j1', meal:'Breakfast', eat_time:'7:56 PM', name:'Hashbrowns, sausage & cafe con leche',
+               meal_text:'Hashbrowns and sausage with cafe con leche', calories:510, protein:20, carbs:31, fat:34};
+const _J_VEN ={id:'j2', meal:'Lunch', eat_time:'7:56 PM', name:'Venison Mac & Cheese · Nutrition Solutions',
+               meal_text:'', calories:537, protein:59, carbs:53, fat:10};
+global.todayFood=[_J_HASH,_J_VEN];
+t(_jimPlateTotals(_J_VEN).rows===2 && _jimPlateTotals(_J_VEN).calories===1047,
+  'the clock groups two rows logged in the same minute under different slot labels',
+  JSON.stringify(_jimPlateTotals(_J_VEN)));
+const _JVEN_SAID="Lunch is 537 calories of venison mac and cheese. That protein is carrying this meal and it lands clean for a fat loss day.";
+t(_insightMacroSafe(_JVEN_SAID,_J_VEN)===_JVEN_SAID,
+  '  and the row carrying most of the plate keeps its verdict on the meal',
+  JSON.stringify(_insightMacroSafe(_JVEN_SAID,_J_VEN)));
+global.todayFood=undefined;
+t(_insightMacroSafe("Dinner is honest. Chicken breast, rice, red beans and vegetables land clean.",
+   {meal:'Dinner', eat_time:'7:15 PM', name:'Chicken, rice, beans and veg', calories:434, protein:58, carbs:37, fat:6})
+   ==="Dinner is honest. Chicken breast, rice, red beans and vegetables land clean.",
+  '  and a row standing alone is never touched by any of this');
+/* ===== RUN 11. THE TWO VOICE RULES, IN THE WORDS THEY HAPPENED IN ===== */
+t(/ONE CARBOHYDRATE SOURCE IS A RULE ABOUT THE PLATE, NOT ABOUT THE DAY/.test(_jimTenLogs()),
+  'the one-starch rule counts the plate in front of you, not the whole day');
+t(/Rice with the banana at breakfast is the pattern to watch/.test(_jimTenLogs()),
+  '  and adrianap1\'s sentence is in the block in the words it happened in');
+t(/A banana at one meal and rice at another is a normal day of eating/.test(_jimTenLogs()),
+  '  with the answer spelled out, because counting a day back at somebody is how you tell them to eat less');
+t(/THE TWO TRAYS ARRIVED AND NOTHING WAS SAID/.test(_jimTenLogs()),
+  'two portioned trays in one sitting is a heavier meal and the second read is not a second review');
+t(/I had two last night back to back/.test(_jimTenLogs()),
+  '  carrying his own words from the sleeve, 17 Sep');
+t(/end on the walk\. That is the whole coaching and\s+it is not a warning/.test(_jimTenLogs()),
+  '  and rule 9 has to actually arrive on it');
 
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (he reads the person, then the plate)');
 process.exit(bad?1:0);
