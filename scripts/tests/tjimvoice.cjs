@@ -28,7 +28,10 @@ const MINE=['_jimGoalRead','_jimGoalLine','_jimTurboUnlocked','_jimTone','_jimTo
             /* run 10: is a calorie figure counted OF this row's own food? */ '_calsCountedOfThisRow',
             /* run 11: does the read name anything the sibling rows carry? */ '_rowNamesASibling',
             /* run 12: the wrong total, and this row's macros pinned on another meal */
-            '_calsClaimedByMealSubject','_macrosPinnedToAnotherRow','_gramsSpeakOfAnotherRow'];
+            '_calsClaimedByMealSubject','_macrosPinnedToAnotherRow','_gramsSpeakOfAnotherRow',
+            /* run 16: the gate that strikes an invented clock, an invented
+               statistic, and a verdict of worthlessness on real food */
+            '_jimClockKnown','_jimClaimGate'];
 eval(MINE.map(defOf).join('\n'));
 eval(src.match(/var _JIM_TONE_KEY=[^\n]*\n/)[0]);
 eval(src.match(/var JIM_TONES=\[[\s\S]*?\];\n/)[0]);
@@ -877,6 +880,94 @@ t(GRADER.indexOf(EM)<0 && GRADER.indexOf(EN)<0,
   '  and the rewritten grader still writes no em dash and no en dash');
 t(/No greeting, no quotes\.'\+_jimTenLogs\(\)/.test(src),
   '  and the ten logs are still appended last, after the new clause');
+
+/* ==================================================================
+   RUN 16, 19 Sep. THE LENGTH FIX WORKED AND IT BOUGHT A NEW FAULT.
+
+   v561 lifted the one-sentence cap off the plate grader and the reads on that
+   path went from 35 characters to 339, 418, 521 and 558. Every one of them
+   named the clock and the foods. Then, given the room, the writers filled it
+   with things that are not true:
+
+     laileek1     ate at 9:56 AM, with the clock printed in the prompt, and was
+                  told "Breakfast at 7:15 AM".
+     unqfb7pg36d  logged a row whose only word was "Meal" and was told it was
+                  "Eggs, protein powder or similar".
+     uhbw97ntrw4  was told his average "jumped from 30g a day up to 124g over
+                  the last three". His printed days: 173, 101, 129, 59, 70.
+
+   And twice inside two hours, a real food was called worthless and told to
+   leave the plate: berries "just sugar on top", "swap them out for a walk
+   instead", and coconut water "sits here doing nothing for you". Rule 5 is the
+   hardest line in the file and both of those cross it.
+
+   Two writers also still carried a "1-2 sentence" cap that v561 never found,
+   and one of them answered a banana and a slice of sourdough with sixty two
+   characters on 19 Sep. */
+const TENLOGS=_jimTenLogs();
+console.log('\n  NO WRITER IS CAPPED AT ONE SENTENCE ANY MORE:');
+t(!/"insight":"1-2 sentence coaching response"/.test(src),
+  'the 1-2 sentence cap v561 missed is gone from every logger path');
+t((src.match(/THE READ IS TWO TO FOUR SENTENCES, ON EVERY PATH/g)||[]).length>=3,
+  '  and the length law reaches the logger, the re-rate and the block itself');
+t(/Pre-workout carbs, simple fuel\s+to hit your full body session\./.test(TENLOGS),
+  '  carrying the real sixty two character fragment it was written off');
+
+console.log('\n  THE READ DOES NOT INVENT WHAT IT WAS NOT GIVEN:');
+t(/DO NOT INVENT A CLOCK/.test(TENLOGS),
+  'the clock is the row\'s or there is none');
+t(/she was told "Breakfast at 7:15 AM"/.test(TENLOGS),
+  '  named on laileek1\'s real row, against the 9:56 AM in the prompt');
+t(/DO NOT INVENT THE FOOD EITHER/.test(TENLOGS),
+  'a row that names no food leaves the read with no food');
+t(/"Or similar" is the sound of a guess/.test(TENLOGS),
+  '  and points at SAY I DON\'T KNOW rather than restating it');
+t(/NEVER QUOTE A NUMBER ABOUT THEIR HISTORY THAT YOU DID NOT READ OFF A PRINTED/.test(TENLOGS),
+  'no statistic about their record that was not printed');
+t(/were 173, 101, 129, 59 and 70/.test(TENLOGS),
+  '  with uhbw97ntrw4\'s real days against the two invented figures');
+
+console.log('\n  A WHOLE FOOD IS NEVER CALLED WORTHLESS:');
+t(/AND THE BERRY SENTENCE WAS WRITTEN AGAIN/.test(TENLOGS),
+  'run 10\'s rule is recorded as having failed, not restated louder');
+t(/on laileek1's eggs and turkey bacon/.test(TENLOGS),
+  '  with the row it was written on a second time');
+t(/quoting a bad sentence in this block does not\nstop that sentence/.test(TENLOGS),
+  '  and says plainly why the gate now carries it instead');
+t(/maybe replace that granola with blueberries/.test(TENLOGS),
+  '  his own line making blueberries the upgrade still stands above it');
+t(/Add, do not\s+subtract\./.test(TENLOGS),
+  '  and the only removals he has ever coached named beside it');
+t(/just try dropping one and see if she needs it/.test(TENLOGS),
+  '  the one removal he does coach, handed over as an experiment');
+
+console.log('\n  AND THE GATE STOPS ALL THREE AT THE DOOR, ON THE REAL SENTENCES:');
+const ROW1={eat_time:'9:56 AM', name:'3 eggs, 3 slices uncured turkey bacon, 3 handfuls berries'};
+const g1=_jimClaimGate('Breakfast at 7:15 AM: 3 eggs, 3 slices uncured turkey bacon, and a handful each of blueberries and blackberries.', ROW1);
+t(/9:56 AM/.test(g1) && !/7:15/.test(g1),
+  'laileek1 gets the clock she actually ate at, and the sentence survives', g1);
+const g2=_jimClaimGate('The berries are the one thing doing nothing for you here. They are just sugar on top of a meal that already works. Swap them out for a walk instead.', ROW1);
+t(!/doing nothing for you/.test(g2) && !/just sugar/.test(g2) && !/Swap them out/.test(g2),
+  'the berries keep their place on her plate', g2);
+const ROW2={eat_time:'9:00 AM', name:'Tropical fruit bowl'};
+const g3=_jimClaimGate('Coconut water sits here doing nothing for you. Everything else on the plate works.', ROW2);
+t(!/doing nothing for you/.test(g3) && /Everything else on the plate works/.test(g3),
+  'and so does andrewn1\'s coconut water, without taking the rest of the read with it', g3);
+const ROW3={eat_time:'9:49 AM', name:'Eggs with burger and protein shake'};
+const g4=_jimClaimGate('Your average jumped from 30g a day up to 124g over the last three. Walk after this one.', ROW3);
+t(!/average/.test(g4) && /Walk after this one/.test(g4),
+  'the invented statistic is struck and the walk is not', g4);
+
+/* THE GATE DOES NOT OVERREACH. Every removal he HAS coached still gets through,
+   and so does a plain reading of a day that was printed. */
+const ROW4={eat_time:'1:00 PM', name:'Chipotle burrito with queso and sour cream'};
+const g5=_jimClaimGate('Drop the queso and the sour cream and the meal gets leaner straight away.', ROW4);
+t(/queso/.test(g5), 'added fat is still a thing he takes off the plate', g5);
+const g6=_jimClaimGate('Yesterday you logged 129g of protein across four meals.', ROW3);
+t(/129g/.test(g6), 'a printed day is still quotable back to them', g6);
+const g7=_jimClaimGate('Breakfast at 9:49. Eggs, burger patty and the shake are all doing work here.', ROW3);
+t(/9:49/.test(g7) && /burger patty/.test(g7),
+  'and a read whose clock is right is left completely alone', g7);
 
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (he reads the person, then the plate)');
 process.exit(bad?1:0);
