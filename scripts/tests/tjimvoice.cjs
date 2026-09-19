@@ -829,5 +829,54 @@ t(/TEACH ONE TRUE FACT/.test(_jimTenLogs()), '  the fact survives the edit');
 t(/WHEN THE MEAL IS RIGHT, SAY SO AND STOP/.test(_jimTenLogs()), '  and rule 14 survives it too');
 t(/GROUP THE ROWS BEFORE YOU JUDGE ANY ONE OF THEM/.test(_jimTenLogs()), '  and rule 4');
 
+
+/* RUN 15, 19 Sep. THE FRAGMENT WAS NEVER A VOICE FAULT. IT WAS A LENGTH CAP.
+   v560 put "a fragment is not a read, and a category is not a food" into
+   _jimTenLogs, which every writer appends. Four fragments were written after
+   it went live, including the hash brown opener this file has held as a
+   failure since run 10. Measured over the 107 insights real clients were shown
+   15-19 Sep: 43 came back under 100 characters, 64 did not, and both
+   populations were handed the identical voice block. Move: 2/43 against 22/64.
+   Experiment: 0/43 against 5/64. Named the meal: 15/43 against 51/64. The only
+   variable was the room to obey, and the plate grader was capped at ONE
+   sentence of ~24 words while being told fourteen rules that cannot fit in
+   one. The rule was never unreachable. It was unwritable. */
+console.log('\n  THE PLATE GRADER IS GIVEN ROOM TO OBEY THE RULES IT IS HANDED:');
+t(!/ONE warm, specific sentence/.test(GRADER),
+  'the one-sentence cap that wrote the 43 fragments is gone');
+t(!/max ~24 words/.test(GRADER),
+  '  and so is the 24 word ceiling under it');
+t(/A WHOLE READ, NOT A LABEL/.test(GRADER),
+  'the grader asks for a read, not a label');
+t(/Two to four sentences, 40 to 70 words/.test(GRADER),
+  '  with the room the fourteen actually need');
+t(/2 of 43 ended on a move against 22 of 64/.test(GRADER),
+  '  and the measurement that earned the change, off real rows');
+t(/Quick protein hit to start the day\./.test(GRADER),
+  '  carrying harrisons1\'s real fragment');
+t(/Clean start - protein spread, real carbs, berries locked in\./.test(GRADER),
+  '  and benp1\'s, written after v560 shipped to stop it');
+t(/Clean start - caffeine, basically no calories\./.test(GRADER),
+  '  and the hash brown opener this file has held as a failure since run 10');
+t(/THEN WRITE THE FOODS THEY TYPED/.test(GRADER),
+  'the food they typed comes before the macro it contributes');
+t(/"the two cheese squares", never "protein"/.test(GRADER),
+  '  named on the real row it was taken from');
+t(/THEN THE FACT AND THE MOVE/.test(GRADER),
+  'the fact and the move are asked for by name on this path');
+t(/AND A CLEAN PLATE IS NOT A REASON TO SAY LESS below/.test(GRADER),
+  '  and pointed at the rule in the block rather than restating it');
+
+/* THE RULE THIS PATH ALREADY OBEYED SURVIVES THE EDIT, and so does the one
+   the house law protects. Added to, never sanded down. */
+t(/OPEN ON THE MEAL SLOT AND THE CLOCK/.test(GRADER),
+  '  NAME THE MEAL TIME FIRST survives this edit');
+t(/RATE THE FOOD, NEVER THE PORTION/.test(GRADER),
+  '  and so does the standing prohibition on making the portion the subject');
+t(GRADER.indexOf(EM)<0 && GRADER.indexOf(EN)<0,
+  '  and the rewritten grader still writes no em dash and no en dash');
+t(/No greeting, no quotes\.'\+_jimTenLogs\(\)/.test(src),
+  '  and the ten logs are still appended last, after the new clause');
+
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (he reads the person, then the plate)');
 process.exit(bad?1:0);
