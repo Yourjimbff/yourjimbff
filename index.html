@@ -20555,17 +20555,37 @@ function _feedItemMs(it){
   return (it&&it.ts)||0;
 }
 // ONE FORMAT, EVERYWHERE ON THE FEED. Both renderers call this and nothing else.
+/* WHEN THEY ATE, AND WHEN THEY LOGGED, WHEN THE TWO DISAGREE (Yusuf, 19 Sep:
+   "we should see how many minutes ago a log was, and then what time they said
+   it was if there was a discrepancy"). A dinner eaten after an 8pm session
+   and logged at 11:47 showed 11:47 and nothing else, and the read spoke of
+   sleep. The time they SAID is the time on the card; the time it was logged
+   rides beside it whenever it is more than half an hour off. A row with no
+   stated time shows the log time alone, as before - there is no discrepancy
+   to show, because there is no second clock. */
+function _feedLogGapStr(it){
+  try{
+    if(!it || it.kind!=='food' || !it.data || !String(it.data.eat_time||'').trim() || !it.ts) return '';
+    var pc=_parseClock(String(it.data.eat_time).trim()); if(!pc) return '';
+    var lg=new Date(it.ts); if(isNaN(lg.getTime())) return '';
+    var eat=new Date(lg.getTime()); eat.setHours(pc.h, pc.m, 0, 0);
+    var gap=Math.abs(eat.getTime()-lg.getTime());
+    if(gap<30*60000) return '';
+    return ' \u00b7 logged '+_feedTimeStr(it.ts);
+  }catch(e){ return ''; }
+}
 function _feedWhenStr(it, isToday){
   var clock='';
   try{ clock = (it.kind==='food') ? (_mealTimeStr(it.data)||_feedTimeStr(it.ts)) : _feedTimeStr(it.ts); }catch(e){}
-  if(isToday===false) return clock;
+  var gap=''; try{ gap=_feedLogGapStr(it); }catch(e){}
+  if(isToday===false) return clock+gap;
   var today=false;
   try{ today=(_feedDayStart(it.ts).getTime()===_feedDayStart(Date.now()).getTime()); }catch(e){}
-  if(!today) return clock;
+  if(!today) return clock+gap;
   var rel=_feedAgoStr(_feedItemMs(it), 24);
   // A clock that could not be turned into a distance keeps the clock. Nothing on
   // this feed is ever left without a time because a conversion failed.
-  return rel || clock;
+  return (rel || clock)+gap;
 }
 // NUMBERS ARE NEVER CUT (Yusuf, order, 30 Aug — the same law the meal names got
 // on 10 Aug). A macro line is built by _mealMacLine as value tokens joined with
@@ -27350,9 +27370,19 @@ function _mealTextSplit(data){
        log half a Trader Joe s extra firm tofu". */
     if(/^\s*(?:i\b|can you|could you|please|log\b|also\b|add\b)/i.test(w)) return null;
     if(/\b(?:i would|i also|i want|i need|like to log|forgot to)\b/i.test(w)) return null;
-    var parts=w.split(','), seen={}, out=[];
+    /* A COMMA INSIDE BRACKETS IS NOT A LIST (19 Sep). "1 handful of zucchini
+       (broccoli, green beans)" came out as three bullets with a bracket
+       carried on each. The bracketed run stays with its item, and a bracket
+       left over on its own is dropped. */
+    var wp=w.replace(/\(([^()]*)\)/g, function(m, inner){ return '('+inner.replace(/,/g,'\u0001')+')'; });
+    var parts=wp.split(',').map(function(x){ return x.replace(/\u0001/g,','); }), seen={}, out=[];
     for(var i=0;i<parts.length;i++){
-      var p=String(parts[i]).trim()
+      var p=String(parts[i]).trim();
+      /* Only a bracket with no partner is dropped. "(broccoli, green beans)"
+         keeps both; "bacon (" loses the one. */
+      if(p.indexOf('(')>-1 && p.indexOf(')')<0) p=p.replace(/\(/g,'');
+      if(p.indexOf(')')>-1 && p.indexOf('(')<0) p=p.replace(/\)/g,'');
+      p=p.trim()
         .replace(/^(?:and|with|plus|&)\s+/i,'')
         .replace(/^(?:i\s+)?(?:just\s+)?(?:had|ate|having|made|got)\s+/i,'')
         .replace(/\s+for\s+(?:breakfast|lunch|dinner|a\s+snack|snack)\s*\.?$/i,'')
@@ -67144,6 +67174,7 @@ function _insightMacroSafe(insight, row){
      left the stored text carrying it into every other surface and every
      export. It is taken out on the way IN now. */
   try{ insight=_jimVoiceFix(insight); }catch(e){}
+  try{ if(typeof _jimClaimGate==='function') insight=_jimClaimGate(insight, row); }catch(e){}
   var ins=_noEmDash(String(insight||'').trim());
   /* THE LEDGER, AT THE DOOR (18 Sep). Every stored read passes here, so this
      is where Jim learns what he said and where a repeat is counted. Counted,
@@ -89381,6 +89412,8 @@ async function _jimLateRead(r){
     }catch(e){ plate=String(r.name||'their meal'); }
     var ask='They just logged this and are looking at it on screen.\n\nTHE PLATE: '+plate+'\n';
     try{ if(r.raw_text) ask+='THEIR OWN WORDS: "'+String(r.raw_text).slice(0,300)+'"\n'; }catch(e){}
+    try{ ask+=_jimClockLine(r); }catch(e){}
+    try{ ask+=_jimPlateFlags(r); }catch(e){}
     try{ var gl=_jimGoalLine(); if(gl) ask+='\nABOUT THEM: '+gl+'\n'; }catch(e){}
     try{ ask+=_jimTenLogs(); }catch(e){}
     try{ ask+='\n\n'+_jimToneBlock(); }catch(e){}
@@ -90779,6 +90812,102 @@ async function _jimReask(ask, first, hits, code, row){
     return (h2.length<hits.length) ? out : '';
   }catch(e){ return ''; }
 }
+/* THE CLOCK, HONESTLY (Yusuf, 19 Sep). Two clients in one night: Harrison's
+   Parmesan read as "a quick hit to start the day" and a dinner eaten after an
+   8pm session read as "hours before sleep". Both rows carried the time they
+   were LOGGED as the time they were EATEN, because the sheet writes "now" into
+   eat_time when nobody touches the picker, and the read cannot tell a stated
+   clock from a defaulted one. The prompt already named the 11:47 case by
+   name, and it happened again - a rule is a request.
+
+   The app knows the difference (st.atManual, st.atFromPhoto). It now keeps
+   it: an eat_time that was never stated is stored as NOTHING, the screen
+   falls back to the log time exactly as before, and the read is told the
+   clock is unknown. And where the clock is unknown, a sentence about bed,
+   sleep or starting the day is struck at the door - not because of its
+   wording, but because it is a claim with no data behind it. */
+function _jimClockKnown(row){
+  try{
+    if(!row) return false;
+    if(row._clockKnown!=null) return !!row._clockKnown;
+    return !!String(row.eat_time||'').trim();
+  }catch(e){ return false; }
+}
+function _jimClockLine(row){
+  try{
+    if(!row) return '';
+    var lg='';
+    try{ var t=row.logged_at?new Date(row.logged_at):new Date(); if(!isNaN(t.getTime())) lg=t.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }catch(e){}
+    if(_jimClockKnown(row)){
+      var et=String(row.eat_time||row._clockSaid||'').trim();
+      return '\nTHE CLOCK: they ate this at '+et+'.'+(lg&&et&&lg!==et?(' (Logged at '+lg+'.)'):'')+'\n';
+    }
+    return '\nTHE CLOCK: logged at '+(lg||'an unknown time')+'. They did NOT say when they ate it, so the clock '
+      +'is unknown. Do not read this as a late meal or an early one. Do not speak of bed, sleep, '
+      +'tonight, this morning, or starting the day. If the hour matters, say "whenever you ate this".\n';
+  }catch(e){ return ''; }
+}
+/* THE FINDINGS THE MODEL WALKED PAST (Yusuf, 19 Sep, Jasmine's bagel and
+   Rodrigo's bowl). A blueberry bagel and a chocolate cracker read as "whole
+   food, no processing" with "virtually no protein" never mentioned. The
+   numbers were in front of it. These are handed over as FINDINGS, computed,
+   so they cannot be walked past. */
+function _jimPlateFlags(row){
+  try{
+    if(!row) return '';
+    var cal=Math.round(+row.calories||0), pro=Math.round(+row.protein||0);
+    var names=[String(row.name||''), String(row.meal_text||row.raw_text||'')];
+    try{ var its=row.items; if(typeof its==='string'){ its=JSON.parse(its); } (Array.isArray(its)?its:[]).forEach(function(x){ names.push(String((x&&(x.n||x.name))||'')); }); }catch(e){}
+    var text=names.join(' ').toLowerCase();
+    var out=[];
+    if(cal>=150 && (pro<10 || pro*4 < cal*0.12)){
+      out.push('THIS PLATE CARRIES '+pro+'g OF PROTEIN IN '+cal+' CALORIES. That is the finding, and it comes '
+        +'before anything else you might say about it. Name it plainly and point at one whole-food protein '
+        +'source that would have carried it. Do not call this plate a finish, a treat, or clean.');
+    }
+    var REF=/\b(bagel|cracker|crackers|chips|crisps|cookie|cookies|cereal|granola bar|protein bar|bar|pastry|muffin|donut|doughnut|waffle|pancake|pop.?tart|candy|cake|brownie|pretzel|toast|bread|tortilla|wrap)\b/;
+    var m=REF.exec(text);
+    if(m){
+      out.push('"'+m[1]+'" IS A PACKAGED OR REFINED FOOD. This plate is not "whole food", not "unprocessed" and '
+        +'not "no processing". Never say any of those about it.');
+    }
+    if(/\b(white rice|rice)\b/.test(text)){
+      out.push('THERE IS RICE ON THIS PLATE. The move is never brown rice. Yusuf has never once said brown over '
+        +'white. If the amount is the problem, the move is a smaller serving: a quarter or half scoop asked for '
+        +'at the counter, because a full scoop of rice is about 60g of carbohydrate and a full scoop of beans '
+        +'about 50g, and a sitting on a cut wants around 35 to 40g.');
+    }
+    return out.length ? ('\n\nFINDINGS ON THIS PLATE, COMPUTED:\n'+out.map(function(x){ return '  - '+x; }).join('\n')+'\n') : '';
+  }catch(e){ return ''; }
+}
+/* THE GATE FOR CLAIMS, AT THE DOOR (19 Sep). Not voice - claims. A question
+   in a read nobody can answer. A brown-rice swap he has never made. "Whole
+   food" over a bagel. "Before sleep" over a clock the app never had. Each of
+   these was in a real read this week after a prompt rule said not to, so
+   the sentence carrying it is struck here, where every stored read passes. */
+function _jimClaimGate(text, row){
+  try{
+    var s=String(text||'').trim(); if(!s) return s;
+    /* No quote characters inside this regex: check.sh strips strings before
+       it scans, and a quote inside a regex literal reads to it as a string
+       opening, which blanked four thousand lines of the file on first try. */
+    var sents=s.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [s];
+    var food=''; try{ food=[String((row&&row.name)||''), String((row&&(row.meal_text||row.raw_text))||'')].join(' ').toLowerCase(); }catch(e){}
+    var refined=/\b(bagel|cracker|crackers|chips|crisps|cookie|cookies|cereal|bar|pastry|muffin|donut|doughnut|waffle|pancake|candy|cake|brownie|pretzel|toast|bread|tortilla|wrap)\b/.test(food);
+    var clockKnown=_jimClockKnown(row);
+    var keep=[];
+    sents.forEach(function(x){
+      var t=x.trim(); if(!t) return;
+      if(/\?/.test(t)) return;                                             // no questions in a read
+      if(/\bbrown rice\b/i.test(t) && /\b(instead|swap|switch|choose|opt|go with|over|rather|better|move|next time|try)\b/i.test(t)) return;
+      if(refined && /\b(whole[- ]food|unprocessed|no processing|not processed|minimally processed)\b/i.test(t)) return;
+      if(!clockKnown && /\b(before (bed|sleep)|bedtime|to (start|open) (the|your) day|start(ing)? (the|your) day|first thing|late[- ]night|tonight|this morning|this evening|hours? (before|until) (bed|sleep))\b/i.test(t)) return;
+      keep.push(t);
+    });
+    var out=keep.join(' ').replace(/\s+/g,' ').trim();
+    return out;
+  }catch(e){ return String(text||''); }
+}
 function _jimTodaySoFar(skip){
   try{
     var rows=(typeof todayFood!=='undefined' && todayFood) ? todayFood : [];
@@ -91113,6 +91242,29 @@ and who logged her previous dinner at 11:19 PM.
 HIS WORDS TO REUSE WHERE THEY FIT: sloppy, eating to eat, no rules no measurement
 no restriction, leaner order, short lasting fuel, fun fuel, it's not the end of
 the world, put it away, stall out.
+
+=== FOUR THINGS A READ NEVER DOES (Yusuf, 19 Sep, off two real reads) ===
+
+NO QUESTIONS. "How much time do you have between now and dinner" was written
+into a read as a statement, and it is a question either way. A read is not a
+conversation; nobody can answer it. Ask nothing. If a fact is missing, say what
+is true without it. Questions belong in the chat, where there is a reply.
+
+NEVER BROWN RICE OVER WHITE. He has never once said it in his life. A bowl with
+too much rice does not want a different rice, it wants a smaller scoop: a quarter
+or a half asked for at the counter. A full scoop of rice is about 60g of
+carbohydrate and a full scoop of beans about 50g, and a sitting on a cut wants
+around 35 to 40g. That is the move. The rice itself is fine.
+
+A PLATE WITH NO PROTEIN IS TOLD SO. A blueberry bagel and a chocolate cracker
+were called "a sweet finish, whole food, no processing" for a woman losing ten
+pounds. A bagel is processed and the plate had almost no protein, and both of
+those were the read. When the protein is missing, say so first and point at one
+whole-food source that would carry it. Never call a packaged thing whole food.
+
+THE WALK IS NOT THE ANSWER TO EVERY MEAL. If they told you they walked after it,
+it is done and you do not suggest it. If they did not, it is one idea, used
+rarely, never the reflex closer.
 
 === THE SHAPE OF EVERY READ (Yusuf, 18 Sep) ===
 
@@ -101486,7 +101638,7 @@ async function nlSubmitFast(st, line){
   try{
     ok=await logFoodFromChat({
       name:name, calories:t.calories, protein:t.protein, carbs:t.carbs, fat:t.fat,
-      rating:'unknown', meal:st.slot, eat_time:(st.at||_tlNowClock()),
+      rating:'unknown', meal:st.slot, eat_time:_nlEatTime(st),
       /* st.line, never the corrected copy. What the microphone heard is fixed
          for pricing; what the record keeps is what they actually said. */
       dateStr:st.ds, meal_text:(st.line||line||'')
@@ -101844,7 +101996,7 @@ async function nlSubmit(){
       name:est.name, calories:est.calories, protein:est.protein, carbs:est.carbs,
       fat:est.fat, sugar:est.sugar, items:(est.items||null),
       rating:(est.rating||'unknown'), meal:st.slot,
-      eat_time:(st.at||_tlNowClock()), dateStr:st.ds, meal_text:(line||'')
+      eat_time:_nlEatTime(st), dateStr:st.ds, meal_text:(line||'')
     }, null, null, true);
     if(_pf && (+_pf.calories || +_pf.protein || +_pf.carbs || +_pf.fat)){
       if(+_pf.calories!==Math.round(+est.calories||0)){
@@ -101866,6 +102018,18 @@ async function nlSubmit(){
    does not change with the screen it is printed on. The words are put on
    st.est.insight BEFORE Log it, so the row carries what they actually read
    rather than a second answer written afterwards. */
+/* THE TIME THEY SAID, OR NOTHING (19 Sep). "Now" is what the sheet shows
+   when nobody touches the picker; it was being written down as the time they
+   ate. A time they typed, or one read off the photo, is theirs. Anything
+   else is not a fact and is not stored as one. The screen falls back to the
+   log time on its own - see _mealTimeStr and _journalMin. */
+function _nlEatTime(st){
+  try{
+    if(!st) return null;
+    if((st.atManual || st.atFromPhoto) && st.at) return st.at;
+    return null;
+  }catch(e){ return null; }
+}
 var _nlJimSeq=0;
 async function _nlJimRead(st){
   try{
@@ -101884,6 +102048,9 @@ async function _nlJimRead(st){
     var ask='They just logged this and are looking at it on screen.\n\nTHE PLATE: '+plate+'\n';
     try{ if(st.line) ask+='THEIR OWN WORDS: "'+String(st.line).slice(0,300)+'"\n'; }catch(err){}
     try{ if(st.slot) ask+='THE SLOT: '+st.slot+'\n'; }catch(err){}
+    /* The clock as it is known, and the findings the numbers already carry. */
+    try{ e._clockKnown=!!((st.atManual||st.atFromPhoto)&&st.at); e._clockSaid=st.at||''; e.eat_time=_nlEatTime(st); ask+=_jimClockLine(e); }catch(err){}
+    try{ ask+=_jimPlateFlags(Object.assign({}, e, {meal_text:st.line||''})); }catch(err){}
     try{ var gl=_jimGoalLine(); if(gl) ask+='\nABOUT THEM: '+gl+'\n'; }catch(err){}
     try{ ask+=_jimTodaySoFar(e); }catch(err){}
     try{ ask+=_jimTenLogs(); }catch(err){}
@@ -102008,7 +102175,7 @@ async function nlConfirm(){
         carbs:st.est.carbs, fat:st.est.fat, rating:(st.est.rating||'unknown'),
         insight:(st.est.insight||''),
         items:(st.est.items||null), _priced:(st.est._priced?1:0),
-        meal:st.slot, eat_time:(st.at||_tlNowClock()), dateStr:st.ds,
+        meal:st.slot, eat_time:_nlEatTime(st), dateStr:st.ds,
         meal_text:(st.line||'')
       }, st.photo||null);
     }

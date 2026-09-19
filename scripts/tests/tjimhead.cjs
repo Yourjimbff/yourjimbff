@@ -32,7 +32,9 @@ t(/<div class="jimHdT">Jim<\/div>/.test(tab), 'still says Jim, in gold, at the t
 // a screenshot was something he could read, so she pasted a whole training plan
 // by hand to get one run logged. "Tell me your day" was true and told her
 // nothing. His phrase - "Your AI logging assistant" - is untouched.
-t(/Your AI logging assistant\. Tell me your day — food, training, a photo or a screenshot\./.test(tab),
+/* v558 took the em dashes out of the display strings, house law, and left these
+   two lines asserting the dash. The copy they guard is unchanged in every word. */
+t(/Your AI logging assistant\. Tell me your day\. Food, training, a photo or a screenshot\./.test(tab),
   'and now says what he is underneath, naming what he can take');
 
 console.log('\n  THE CHAT BUBBLE:');
@@ -40,7 +42,7 @@ const sheet=slice('<div id="slogPanel"','<div id="slogBody"');
 t(/>Jim<\/div>/.test(sheet), 'the sheet names him');
 t(/color:var\(--gold\)/.test(sheet), 'in the same gold the tab uses');
 t(/font-family:'Plus Jakarta Sans'/.test(sheet), 'and the same face');
-t(/Your AI logging assistant\. Say what you ate or trained — or send a photo or a screenshot\./.test(sheet),
+t(/Your AI logging assistant\. Say what you ate or trained, or send a photo or a screenshot\./.test(sheet),
   'with the same role underneath, in this surface’s own words, inputs named');
 t(!/>Log anything<\/div>/.test(sheet), '"Log anything" is gone - it named the box, not the person');
 t(/onclick="closeSmartLog\(\)"/.test(sheet), 'and the way out is still the first thing in the row');
