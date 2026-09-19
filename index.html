@@ -91562,13 +91562,42 @@ function _jimToneBlock(prof){
     +'better." Say the better version once. Do not press it.';
 }
 
+// EVERY DAY JIM NAMES IS NAMED FOR HIM (Harrison, 19 Sep). His context carried
+// only absolute dates — "Sep 18, 2026:" — plus one line saying what today is,
+// and left the model to work out for itself which of those was "yesterday".
+// It got the arithmetic wrong by a day and printed "Today (Sep 20)" on the
+// 19th. The numbers beside it were right, because the numbers came from this
+// context; only the words were guessed. So nothing here prints a bare date any
+// more: every day heading carries its own relative name and the model is told
+// never to compute one.
+function _jimDayLabel(ds){
+  try{
+    if(ds===null || ds===undefined || ds==='') return '';
+    var d = (ds instanceof Date) ? new Date(ds.getTime()) : new Date(String(ds));
+    if(isNaN(d.getTime())) return String(ds);
+    // Compare calendar days in LOCAL time. Differencing the raw timestamps
+    // would answer 0.96 or 1.04 days across a DST change and round wrong.
+    var a = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    var n = new Date();
+    var b = new Date(n.getFullYear(), n.getMonth(), n.getDate());
+    var diff = Math.round((b.getTime()-a.getTime())/86400000);
+    var full = a.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
+    if(diff===0) return 'TODAY, '+full;
+    if(diff===1) return 'YESTERDAY, '+full;
+    if(diff===-1) return 'TOMORROW, '+full;
+    if(diff>1) return diff+' days ago, '+full;
+    return full;
+  }catch(e){ return String(ds); }
+}
+
 async function buildDayContext(askText){
   if(typeof refreshTodayDate==='function') refreshTodayDate();
   var sections=[];
   // Anchor Jim to the real current date/time so it can never claim the wrong day (a long-open PWA used to go stale).
   try{
     var _now=new Date();
-    sections.push('=== CURRENT DATE & TIME ===\nRight now it is '+_now.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})+' at '+_now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})+', the client\'s local time. Treat THIS as today. Never state or guess a different date — if a log is from an earlier day, name that day relative to this one. "Today" always means '+todayDateStr+'.');
+    var _yst=new Date(_now.getFullYear(),_now.getMonth(),_now.getDate()-1);
+    sections.push('=== CURRENT DATE & TIME ===\nRight now it is '+_now.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})+' at '+_now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})+', the client\'s local time. Treat THIS as today. "Today" always means '+todayDateStr+'. "Yesterday" always means '+_yst.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})+'.\nNEVER COUNT DAYS YOURSELF. Do not add or subtract a day from any date, and do not work out which day a date falls on. Every day of data below is printed with its own name already on it \u2014 TODAY, YESTERDAY, or "N days ago" \u2014 next to its full date. When you name a day out loud, copy the name and the date from the heading you read the numbers off. If a day you want to talk about has no heading here, say the date you were given and nothing more.');
   }catch(e){}
 
   // ===== A QUESTION NAMING A CLIENT GETS THAT CLIENT AND NOBODY ELSE ======
@@ -91677,7 +91706,7 @@ async function buildDayContext(askText){
 
   // TODAY — FOOD
   if(todayFood && todayFood.length>0){
-    var tBits=['=== TODAY\'S FOOD ('+todayDateStr+') ==='];
+    var tBits=['=== TODAY\'S FOOD ('+_jimDayLabel(todayDateStr)+') ==='];
     tBits.push('Running totals: '+Math.round(tots.cal)+' cal · '+Math.round(tots.protein)+'g P · '+Math.round(tots.carbs)+'g C · '+Math.round(tots.fat)+'g F');
     tBits.push('Meals:');
     todayFood.forEach(function(e){
@@ -91718,7 +91747,7 @@ async function buildDayContext(askText){
       if(_days.length){
         var rfBits=['=== RECENT FOOD (last 7 days — do not recap unprompted, but this is what you MOVE, CORRECT or DELETE from when they ask) ==='];
         _days.forEach(function(ds){
-          rfBits.push(ds+':');
+          rfBits.push(_jimDayLabel(ds)+':');
           _byDay[ds].forEach(function(f){
             rfBits.push('  - (id:'+f.id+') '+(f.meal?(f.meal+' '):'')+f.name+' ('+(f.rating||'—')+', '+(f.calories||0)+' cal, '+(f.protein||0)+'g P'+(f.eat_time?(', '+f.eat_time):'')+')');
           });
@@ -91846,14 +91875,14 @@ async function buildDayContext(askText){
           'Use this for duplicate detection. If user describes a workout that matches one of these (same workout type + same day), DO NOT log again — they are talking about THIS existing workout. Append a note to it via [WORKOUT_NOTE] instead, or just respond conversationally.'];
         trimmed.forEach(function(w){
           var d = new Date(w.logged_at);
-          var dayLabel = d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+          var dayLabel = _jimDayLabel(w.date_str || d);
           var timeLabel = d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
           var isToday = w.date_str === todayDateStr;
           // For TODAY's workouts, show the full itemized detail so Jim can edit the log accurately.
           var label = (w.title || 'Workout');
           if(isToday && w.description){ label = (w.title ? w.title + ' — ' : '') + w.description.replace(/\n/g,'; '); }
           else if(!w.title && w.description){ label = w.description.split('\n')[0]; }
-          var line = '[id:'+w.id+'] '+dayLabel+' '+timeLabel+(isToday?' (TODAY)':'')+' — '+label;
+          var line = '[id:'+w.id+'] '+dayLabel+' '+timeLabel+' — '+label;
           if(w.intensity) line += ' ('+w.intensity+'/10)';
           if(w.notes) line += ' · notes: "'+w.notes.replace(/"/g,'\\"').slice(0,80)+'"';
           rwBits.push(line);
@@ -91898,7 +91927,7 @@ async function buildDayContext(askText){
         var lBits=['=== LAST 7 DAYS (FOOD) ==='];
         dateKeys.forEach(function(k){
           var d=byDate[k];
-          lBits.push(k+': '+Math.round(d.cal)+' cal, '+Math.round(d.pro)+'g P, '+d.meals.length+' meals');
+          lBits.push(_jimDayLabel(k)+': '+Math.round(d.cal)+' cal, '+Math.round(d.pro)+'g P, '+d.meals.length+' meals');
         });
         sections.push(lBits.join('\n'));
       }
@@ -91929,7 +91958,7 @@ async function buildDayContext(askText){
             if(c.mood) s+='/'+c.mood;
             return s;
           }).join(' → ');
-          ckBits.push(k+': '+summary);
+          ckBits.push(_jimDayLabel(k)+': '+summary);
         });
         sections.push(ckBits.join('\n'));
       }
@@ -91942,7 +91971,7 @@ async function buildDayContext(askText){
     if(weights && weights.length>0){
       var wlBits=['=== RECENT WEIGHTS ==='];
       weights.forEach(function(w){
-        var dt=w.logged_at?new Date(w.logged_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'';
+        var dt=w.logged_at?_jimDayLabel(new Date(w.logged_at)):'';
         wlBits.push(dt+': '+w.weight+' lbs'+(w.notes?' ('+w.notes+')':''));
       });
       sections.push(wlBits.join('\n'));
@@ -92510,6 +92539,7 @@ function buildCoachVoice(){
     'BOUNDARIES:\n'+
     '- You are a logging companion, NOT tech support. If they say something is missing or not showing in the app, NEVER diagnose it as a bug, sync issue, backend glitch, or display problem, and NEVER tell them to screenshot it or message Yusuf about a technical issue. Their log is saved on your end — reassure them warmly ("it\'s logged on my end, you did the work"), suggest they fully close and reopen the app to refresh, and leave it there. Speculating about glitches to a client is alarming and not your job.\n'+
     '- Never state a date, time, or day of the week you are not certain of. Use the CURRENT DATE & TIME given to you above — do not guess.\n'+
+    '- NEVER DO DATE ARITHMETIC. Do not add a day, subtract a day, or work out what day a date lands on. Every day of their data is printed with its name already attached — TODAY, YESTERDAY, or "N days ago" — beside its full date. Read the name off the heading the numbers came from and say that. Writing "Today (Sep 20)" when the heading said TODAY, Sat, Sep 19, 2026 is the exact failure this rule exists to stop: it puts a false sentence in front of someone whose own log was fine.\n'+
     '- Not a doctor. Real symptoms (pain, injury, dizziness) → "go see someone in person on this." Don\'t freelance medical advice.\n'+
     '- Use the data below. If a section is missing, don\'t pretend to know it.\n'+
     '- THE PROGRAM IS YUSUF\'S, NOT YOURS: when a TODAY\'S PLANNED WORKOUT section is present, that is the plan the coach set. Keep them on it — motivate, explain the intent, scale effort/load guidance, and tailor fuel and recovery around it. You may point them to the substitutes already listed in the plan. But you do NOT redesign it, swap days, or add/remove exercises. Any request to change the program goes back to Yusuf: "That\'s a Yusuf call — I just keep you on the path he set. Message him and he\'ll adjust it."\n'+
