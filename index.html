@@ -15997,6 +15997,10 @@ async function _launchAppInner(){ try{ setTimeout(sqInit,600); }catch(e){}
   function _foodIsToday(f){ var k=_dayKeyOf(f.date_str); if(k) return k===_ftoday; var k2=_dayKeyOf(f.logged_at||f.created_at); return k2 ? (k2===_ftoday) : false; }
   var todayFoods = (_launch[0]||[]).filter(_foodIsToday);
   allFood = todayFoods || [];
+  /* THE SAME EIGHTY ROWS ARE JIM'S MEMORY OF WHAT HE SAID TO THEM. Seeded here,
+     off a fetch that already happened, so the first read of the session already
+     knows the last eighty. */
+  try{ if(typeof _jimLedgerSeed==='function') _jimLedgerSeed(cl.code, _launch[0]||[]); }catch(e){}
   /* SO A CARD CAN TELL "NOTHING TODAY" FROM "NOT READ YET" (13 Sep). An empty
      allFood means both until this is set, and printing 0 for the second one is
      the never-assert sin in its most expensive form: a client's whole day
@@ -66991,6 +66995,19 @@ function _insightMacroSafe(insight, row){
      export. It is taken out on the way IN now. */
   try{ insight=_jimVoiceFix(insight); }catch(e){}
   var ins=_noEmDash(String(insight||'').trim());
+  /* THE LEDGER, AT THE DOOR (18 Sep). Every stored read passes here, so this
+     is where Jim learns what he said and where a repeat is counted. Counted,
+     not blocked: the meal is already logged and a client waiting on a rewrite
+     is a worse screen than a repeat. The two writers that produce most reads
+     ask once more BEFORE they get here - see _jimReask. */
+  try{
+    var _lc=String((row&&row.client_code)||(window.cl&&window.cl.code)||'').toLowerCase();
+    if(_lc && ins && typeof _jimRepeatHits==='function'){
+      var _rh=_jimRepeatHits(_lc, ins, row);
+      if(_rh.length){ try{ console.warn('[jim] repeated to '+_lc+': '+_rh.join(' | ')); }catch(_e){} _jimRepeatCount(_lc, _rh); }
+      _jimLedgerAdd(_lc, ins, row);
+    }
+  }catch(e){}
   if(!ins || !row) return ins;
   var vals={protein:Number(row.protein)||0, carbs:Number(row.carbs)||0, fat:Number(row.fat)||0};
   /* "GOAL" ON ITS OWN IS NOT A TARGET WORD ANY MORE (18 Sep, run 5).
@@ -89210,6 +89227,13 @@ async function _jimLateRead(r){
     // The screen may have moved on, or they may have started editing - in which
     // case _jimRescore owns the card and this answer is already out of date.
     try{ if(curResult!==r) return false; }catch(e){ return false; }
+    /* ONCE MORE IF IT REPEATED (18 Sep). The phrases are named, the facts stay. */
+    try{
+      var _rc=(window.cl&&window.cl.code)||'';
+      var _rh=_rc?_jimRepeatHits(_rc, out, r):[];
+      if(_rh.length){ var _o2=await _jimReask(ask, out, _rh, _rc, r); if(_o2) out=_o2; }
+      try{ if(curResult!==r) return false; }catch(e){ return false; }
+    }catch(e){}
     try{ out=_jimVoiceFix(out); r.insight=out; window._jimFirstRead=out; }catch(e){}
     try{
       var host=document.getElementById('foodResultInline');
@@ -90258,6 +90282,332 @@ function _jimToneName(n){
    at 1:00 PM, and the pear came back "a pear on its own is short lasting fuel ...
    pair it with protein or fat next time". It was paired. Half an hour earlier,
    under the same label, by her. */
+/* ===== JIM REMEMBERS WHAT HE SAID, AND LOOKS THROUGH A DIFFERENT LENS =======
+   (Yusuf, 18 Sep). His words, in order:
+
+   "If the user can predict what Jim says, we have done a terrible job."
+   "We're done with phrases ... it should be, like, within eighty uses."
+   "If we say, hey, stop eating those hash browns, and then it's been three
+    days since the hash browns, and we call it out in the food log - dude,
+    that's invaluable coaching."
+   "Understanding is first, and second is the feedback and advice, and then
+    the third is the unique tailoring to them."
+
+   WHAT WAS MEASURED BEFORE THIS WAS BUILT. "solid" was banned in the prompt
+   twice and stayed in 59% of reads. It was filtered at the door on the 17th
+   and died at 2pm on the 18th - and by 9pm the same night, 6 of the next 11
+   reads shared "carrying this meal" / "lands clean for a fat loss day" /
+   "textbook". A rule cannot stop repetition and a word filter only moves it.
+   The only thing that can: Jim SEES what he already said to this person and
+   is handed a different job each time.
+
+   FOUR PARTS, ALL CLIENT-SIDE, NO MIGRATION:
+     the LEDGER  - the voice of his last reads to this client (phrases minus
+                   the food names and the numbers, which are allowed to
+                   repeat), seeded at boot from the 80 rows already fetched
+     the LENS    - twelve angles from Yusuf's own cycle, rotated per client,
+                   never the last three again
+     the RECALL  - facts computed from their rows: a flagged food that has
+                   or has not come back, the protein trend, what they usually
+                   eat at this slot. Facts, never guesses.
+     the GATE    - at the one door every read goes through: a repeat against
+                   the ledger is counted, and the two main writers ask once
+                   more with the phrases named.
+
+   All of it is handed to every writer through _jimTenLogs, which is the one
+   block every prompt already carries. */
+function _jimVoicePhrases(text, row){
+  try{
+    var STOP={};
+    ('a an the and or but of to in on at for with is are was were it its this that these those your you '
+     +'yours they them their there here as by from into up down out off over than then so if not no yes '
+     +'be been being has have had do does did will would can could should may might just very really '
+     +'about after before again still also too more most some any all each every both which what when '
+     +'where who how why because while during through under between around against without within '
+     +'i me my we our us he she his her him one two three four five six seven eight nine ten '
+     /* THE WORDS THAT NAME THE JOB ARE NOT VOICE. Protein, carbs, fat loss,
+        gaining - a read that could not say these would be a worse read, so
+        they never make a phrase count as a repeat. They are not voice, they
+        are the subject. */
+     +'protein carb carbs carbohydrate carbohydrates fat fats calorie calories cal cals gram grams '
+     +'goal goals loss lose losing gain gaining gains maintain maintaining cut cutting bulk bulking '
+     +'weight weights lb lbs sugar fiber fibre sodium').split(' ')
+      .forEach(function(w){ STOP[w]=1; });
+    var UNIT={g:1,oz:1,cal:1,cals:1,calorie:1,calories:1,gram:1,grams:1,kcal:1,lb:1,lbs:1,mg:1,pm:1,am:1};
+    var food={};
+    try{
+      var src=[String((row&&row.name)||''), String((row&&(row.meal_text||row.raw_text))||'')];
+      var its=(row&&row.items)||[];
+      if(typeof its==='string'){ try{ its=JSON.parse(its); }catch(e){ its=[]; } }
+      (Array.isArray(its)?its:[]).forEach(function(x){ src.push(String((x&&(x.n||x.name))||'')); });
+      src.join(' ').toLowerCase().replace(/[^a-z0-9 ]+/g,' ').split(/\s+/).forEach(function(w){
+        if(w.length>2 && !STOP[w]) food[w]=1;
+        /* the singular of what they logged is theirs too: eggs -> egg */
+        if(w.length>3 && /s$/.test(w)) food[w.slice(0,-1)]=1;
+      });
+    }catch(e){}
+    var toks=String(text||'').toLowerCase().replace(/[^a-z0-9% ]+/g,' ').split(/\s+/).filter(Boolean);
+    var out=[], seen={};
+    for(var i=0;i+3<=toks.length;i++){
+      var g=toks.slice(i,i+3), bad=false, content=0;
+      for(var k=0;k<g.length;k++){
+        var w=g[k];
+        if(/\d/.test(w) || UNIT[w] || food[w]){ bad=true; break; }
+        if(!STOP[w]) content++;
+      }
+      if(bad || content<2) continue;
+      var ph=g.join(' ');
+      if(!seen[ph]){ seen[ph]=1; out.push(ph); }
+    }
+    return out;
+  }catch(e){ return []; }
+}
+function _jimLedgerKey(code){ return 'jim_said_'+String(code||'').toLowerCase(); }
+function _jimLedger(code){
+  try{
+    window._jimLedgers=window._jimLedgers||{};
+    var c=String(code||'').toLowerCase(); if(!c) return null;
+    if(window._jimLedgers[c]) return window._jimLedgers[c];
+    var L={reads:[], seeded:false};
+    try{ var raw=localStorage.getItem(_jimLedgerKey(c)); if(raw){ var j=JSON.parse(raw); if(j&&Array.isArray(j.reads)) L.reads=j.reads.slice(-80); } }catch(e){}
+    window._jimLedgers[c]=L;
+    return L;
+  }catch(e){ return null; }
+}
+function _jimLedgerSave(code, L){
+  try{ localStorage.setItem(_jimLedgerKey(code), JSON.stringify({reads:L.reads.slice(-80)})); }catch(e){}
+}
+/* One read into the ledger. Keyed by a hash of the text so the same read
+   passing the door twice (write, then rescore) does not spend two of the
+   eighty slots. */
+function _jimLedgerAdd(code, text, row){
+  try{
+    var L=_jimLedger(code); if(!L) return;
+    var t=String(text||'').trim(); if(t.length<20) return;
+    var h=0; for(var i=0;i<t.length;i++){ h=(h*31+t.charCodeAt(i))>>>0; }
+    for(var j=0;j<L.reads.length;j++){ if(L.reads[j].h===h) return; }
+    var ph=_jimVoicePhrases(t, row);
+    L.reads.push({h:h, t:Date.now(), p:ph});
+    if(L.reads.length>80) L.reads=L.reads.slice(-80);
+    _jimLedgerSave(code, L);
+  }catch(e){}
+}
+/* THE EIGHTY ROWS THE APP ALREADY FETCHED AT BOOT are the ledger. Nothing
+   extra is asked of the network. */
+function _jimLedgerSeed(code, rows){
+  try{
+    var L=_jimLedger(code); if(!L || L.seeded) return;
+    var list=(Array.isArray(rows)?rows:[]).slice().filter(function(r){ return r && String(r.insight||'').trim().length>=20; });
+    list.sort(function(a,b){ return String(a.logged_at||'').localeCompare(String(b.logged_at||'')); });
+    list.slice(-80).forEach(function(r){ _jimLedgerAdd(code, r.insight, r); });
+    L.seeded=true;
+    window._jimRecent=window._jimRecent||{};
+    window._jimRecent[String(code).toLowerCase()]=(Array.isArray(rows)?rows:[]).slice(0,80);
+  }catch(e){}
+}
+/* The phrases in a candidate read that this client has already been given. */
+function _jimRepeatHits(code, text, row){
+  try{
+    var L=_jimLedger(code); if(!L || !L.reads.length) return [];
+    var have={};
+    L.reads.forEach(function(r){ (r.p||[]).forEach(function(ph){ have[ph]=1; }); });
+    return _jimVoicePhrases(text, row).filter(function(ph){ return !!have[ph]; });
+  }catch(e){ return []; }
+}
+function _jimRepeatCount(code, hits){
+  try{
+    var k='jim_repeats_'+String(code||'').toLowerCase();
+    var n=parseInt(localStorage.getItem(k)||'0',10)||0;
+    localStorage.setItem(k, String(n+1));
+    window._jimLastRepeat={code:code, hits:hits, at:Date.now()};
+  }catch(e){}
+}
+/* THE BAN LIST, AS THE MODEL SEES IT. The most recent phrases first, capped,
+   so the block stays short enough to be obeyed. */
+function _jimSaidBlock(code){
+  try{
+    var L=_jimLedger(code); if(!L || !L.reads.length) return '';
+    var seen={}, list=[];
+    for(var i=L.reads.length-1;i>=0 && list.length<40;i--){
+      (L.reads[i].p||[]).forEach(function(ph){ if(!seen[ph] && list.length<40){ seen[ph]=1; list.push(ph); } });
+    }
+    if(!list.length) return '';
+    return '\n\n=== YOU HAVE ALREADY SAID THESE TO THIS PERSON. NOT AGAIN. ===\n'
+      +'Lifted from your last reads to them. Any of these appearing again, in any tense or '
+      +'with a word swapped, is a repeat, and a repeat is the one thing they can screenshot. '
+      +'Say a different thing, or the same thing in a shape they have never seen from you.\n'
+      +list.map(function(x){ return '  - '+x; }).join('\n');
+  }catch(e){ return ''; }
+}
+/* ---- THE LENS ---------------------------------------------------------- */
+function _jimAngles(){
+  return [
+    {k:'slot',   need:0, t:'THE SLOT. A first meal sets the day up; a last meal closes it out. Read this plate as the move it is in the day, not as a plate on its own.'},
+    {k:'goal',   need:0, t:'THE DISTANCE. How far they are from where they are heading, and whether this plate shortened that or lengthened it. One line, in their direction.'},
+    {k:'output', need:0, t:'THE OUTPUT. What they did or did not do today with their body, and what this plate was for in that light. Fuel for something, or fuel for nothing.'},
+    {k:'weight', need:0, t:'THE WEIGHT OF IT. How heavy or light this sits in the body and what the next three hours feel like because of it.'},
+    {k:'clock',  need:0, t:'THE CLOCK. Hours since the last thing they ate, hours until they sleep, and what that gap does to this plate.'},
+    {k:'idle',   need:0, t:'THE FOOD DOING NOTHING. Name the one item on the plate that is only there out of habit and say plainly what it is not doing for them.'},
+    {k:'swap',   need:0, t:'THE SWAP. Keep the meal, change one thing, and say exactly what that one change buys them.'},
+    {k:'cost',   need:0, t:'THE COST. Find the cheapest calories on the plate - the ones that bought the least - and say what they bought instead.'},
+    {k:'build',  need:1, t:'THE BUILD. How this plate stacks on what is already logged today. What the day now has, and what it still does not.'},
+    {k:'gap',    need:1, t:'THE GAP. What today is still missing after this plate, and the plainest place it could come from.'},
+    {k:'streak', need:2, t:'THE STREAK. One fact about what has improved across their last few days, and this plate as part of it or a break from it.'},
+    {k:'pattern',need:2, t:'THE PATTERN. What they tend to do at this slot, off their own rows, and whether this plate fits the pattern or breaks it.'}
+  ];
+}
+/* Which lens is next for this client. Never one of the last three, never one
+   the data cannot support: build and gap need something logged today, streak
+   and pattern need a few days of rows. The pick is remembered per client so
+   two reads a minute apart still get two lenses. */
+function _jimAngleNext(code){
+  try{
+    var c=String(code||'').toLowerCase(); if(!c) return null;
+    var k='jim_lens_'+c, used=[];
+    try{ used=JSON.parse(localStorage.getItem(k)||'[]'); if(!Array.isArray(used)) used=[]; }catch(e){ used=[]; }
+    var today=0, days=0;
+    try{ today=((typeof todayFood!=='undefined'&&todayFood)?todayFood:[]).length; }catch(e){}
+    try{
+      var rec=(window._jimRecent&&window._jimRecent[c])||[];
+      var ds={}; rec.forEach(function(r){ if(r&&r.date_str) ds[r.date_str]=1; }); days=Object.keys(ds).length;
+    }catch(e){}
+    var recent=used.slice(-3);
+    var ok=_jimAngles().filter(function(a){
+      if(recent.indexOf(a.k)>-1) return false;
+      if(a.need===1 && today<1) return false;
+      if(a.need===2 && days<3) return false;
+      return true;
+    });
+    if(!ok.length) ok=_jimAngles();
+    var pick=ok[Math.floor(Math.random()*ok.length)];
+    used.push(pick.k); if(used.length>12) used=used.slice(-12);
+    try{ localStorage.setItem(k, JSON.stringify(used)); }catch(e){}
+    return pick;
+  }catch(e){ return null; }
+}
+function _jimLensBlock(code){
+  try{
+    var a=_jimAngleNext(code); if(!a) return '';
+    return '\n\n=== THE LENS FOR THIS READ ===\n'
+      +'Moves two and three of the shape look through THIS lens today, and only this one:\n'
+      +a.t+'\n'
+      +'You have used the other lenses on this person recently. Do not reach for them.';
+  }catch(e){ return ''; }
+}
+/* ---- THE RECALL: FACTS OFF THEIR OWN ROWS ------------------------------- */
+function _jimRecallLines(code){
+  try{
+    var c=String(code||'').toLowerCase(); if(!c) return [];
+    var rows=(window._jimRecent&&window._jimRecent[c])||[];
+    if(!rows.length) return [];
+    var out=[];
+    var now=Date.now();
+    var DAY=86400000;
+    var ageD=function(r){ var t=Date.parse(r.logged_at||r.date_str||''); return isNaN(t)?999:Math.floor((now-t)/DAY); };
+    var keyOf=function(n){ return String(n||'').toLowerCase().replace(/[^a-z ]+/g,' ').replace(/\s+/g,' ').trim(); };
+    /* A FLAGGED FOOD, AND WHETHER IT CAME BACK. "Stop eating the hash browns"
+       is only coaching if somebody notices three days later. */
+    var flagged=rows.filter(function(r){ return r && (r.rating==='bad') && ageD(r)<=14 && ageD(r)>=1; })
+                    .sort(function(a,b){ return ageD(a)-ageD(b); }).slice(0,2);
+    flagged.forEach(function(f){
+      var fk=keyOf(f.name); if(!fk) return;
+      /* THE FOOD IS AT THE END OF ITS NAME. "Dunkin hash brown" is a hash brown;
+         the brand in front of it is exactly what stops "hash brown and coffee"
+         matching it three days later. The last two real words are the food. */
+      var head=fk.split(' ').filter(function(w){ return w.length>2; }).slice(-2);
+      if(!head.length) return;
+      var since=rows.filter(function(r){ return r!==f && ageD(r)<ageD(f) && head.every(function(w){ return keyOf(r.name).indexOf(w)>-1; }); });
+      if(since.length) out.push('"'+String(f.name).trim()+'" was rated off-plan '+ageD(f)+' days ago and it is back today or since.');
+      else out.push('"'+String(f.name).trim()+'" was rated off-plan '+ageD(f)+' days ago and has NOT been logged since. That is theirs to be told about, once.');
+    });
+    /* PROTEIN, THIS THREE DAYS AGAINST THE THREE BEFORE. A trend is a fact. */
+    var sum=function(lo,hi){ var t=0, ds={}; rows.forEach(function(r){ var a=ageD(r); if(a>=lo && a<hi){ t+=(+r.protein||0); ds[r.date_str||a]=1; } }); var n=Object.keys(ds).length; return n?Math.round(t/n):0; };
+    var recentP=sum(1,4), priorP=sum(4,7);
+    if(recentP && priorP && Math.abs(recentP-priorP)>=15){
+      out.push('Protein has averaged about '+recentP+'g a day over the last three days, against about '+priorP+'g the three before. '+(recentP>priorP?'Up.':'Down.'));
+    }
+    /* THE USUAL AT THIS SLOT. Only when it is actually usual - three or more. */
+    try{
+      var slot=String((window._mealSlot)||'').toLowerCase();
+      if(slot){
+        var counts={};
+        rows.forEach(function(r){ if(r && String(r.meal||'').toLowerCase().indexOf(slot.slice(0,4))>-1 && ageD(r)>=1){ var k2=keyOf(r.name); if(k2) counts[k2]=(counts[k2]||0)+1; } });
+        var best=null, bn=0; Object.keys(counts).forEach(function(k2){ if(counts[k2]>bn){ bn=counts[k2]; best=k2; } });
+        if(best && bn>=3) out.push('At '+slot+' they most often log "'+best+'" ('+bn+' of their recent '+slot+'s).');
+      }
+    }catch(e){}
+    return out.slice(0,3);
+  }catch(e){ return []; }
+}
+function _jimRecallBlock(code){
+  try{
+    var lines=_jimRecallLines(code); if(!lines.length) return '';
+    return '\n\n=== WHAT IS TRUE ABOUT THIS PERSON, OFF THEIR OWN ROWS ===\n'
+      +'Computed, not guessed. Use ONE of these for the third move if it fits the plate in '
+      +'front of you. If none fits, there is no third move today.\n'
+      +lines.map(function(x){ return '  - '+x; }).join('\n');
+  }catch(e){ return ''; }
+}
+/* The whole person, handed to every writer through _jimTenLogs. Empty when
+   nobody is signed in, which is what a hand-lifted test sees. */
+/* THE SPEND, ON THE PLATE (Yusuf, 18 Sep). A hard session, a high step
+   count and a full day on the feet mean the plate needs MORE in it, not less.
+   His words: it should never be that somebody works their tail off and
+   undereats. A doubled meal after a heavy session is fuel, not a lapse.
+   Today's training and steps, off their own rows, handed to every writer. */
+function _jimOutputBlock(){
+  try{
+    var wo=(typeof todayWo!=='undefined' && todayWo) ? todayWo : [];
+    var steps=0; try{ steps=(typeof stepsVal!=='undefined')?(+stepsVal||0):0; }catch(e){}
+    if(!wo.length && !steps) return '';
+    var lines=[], hard=false;
+    wo.forEach(function(w){
+      if(!w) return;
+      var i=+w.intensity||0;
+      var line='  - '+String(w.title||w.desc||'Training').slice(0,80);
+      if(w.dur||w.duration) line+=' ('+(w.dur||w.duration)+')';
+      if(i) line+=' at '+i+'/10';
+      else if(w.feel) line+=', felt '+String(w.feel);
+      if(i>=7 || /hard|brutal|heavy|destroyed|killed/i.test(String(w.feel||'')+' '+String(w.notes||''))) hard=true;
+      lines.push(line);
+    });
+    if(steps) lines.push('  - Steps today: '+Math.round(steps).toLocaleString());
+    if(steps>=12000) hard=true;
+    var out='\n\n=== WHAT THEY SPENT TODAY ===\n'+lines.join('\n');
+    out+='\nRead the plate against this. A meal after a heavy session is fuel for repair before it is anything else.';
+    if(hard){
+      out+='\nTODAY WAS A HIGH-SPEND DAY. The plate can carry 20 to 40g more protein and 15 to 20g more carbohydrate '
+        +'than a rest day and be RIGHT, not big. A doubled meal after this is fuel, not a lapse, and is never read as one. '
+        +'The failure to watch for today is undereating, not overeating.';
+    }
+    return out;
+  }catch(e){ return ''; }
+}
+function _jimPersonBlock(){
+  try{
+    var code=(window.cl&&window.cl.code)||'';
+    if(!code) return '';
+    return _jimSaidBlock(code)+_jimLensBlock(code)+_jimRecallBlock(code)+_jimOutputBlock();
+  }catch(e){ return ''; }
+}
+/* ONE MORE ASK, WITH THE REPEATS NAMED. Used by the two writers that produce
+   most reads. Returns the second answer only if it repeats less than the first. */
+async function _jimReask(ask, first, hits, code, row){
+  try{
+    if(!hits || !hits.length) return '';
+    var again=ask+'\n\nYOUR FIRST ANSWER REPEATED YOURSELF TO THIS PERSON. These exact phrases are '
+      +'already in their last reads and may not appear: '+hits.map(function(h){ return '"'+h+'"'; }).join(', ')
+      +'. Write it again, same facts, no phrase they have seen from you before. Return only the words.';
+    var res=await fetch('/.netlify/functions/analyze',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({messages:[{role:'user',content:again}],temperature:0.9,max_tokens:600})});
+    var j=await res.json();
+    var out=String((j&&j.content&&j.content[0]&&j.content[0].text)||'').trim();
+    if(!out) return '';
+    var h2=_jimRepeatHits(code, out, row);
+    return (h2.length<hits.length) ? out : '';
+  }catch(e){ return ''; }
+}
 function _jimTodaySoFar(skip){
   try{
     var rows=(typeof todayFood!=='undefined' && todayFood) ? todayFood : [];
@@ -90568,7 +90918,33 @@ HIS WORDS TO REUSE WHERE THEY FIT: sloppy, eating to eat, no rules no measuremen
 no restriction, leaner order, short lasting fuel, fun fuel, it's not the end of
 the world, put it away, stall out.
 
-`+_jimPunct();
+=== THE SHAPE OF EVERY READ (Yusuf, 18 Sep) ===
+
+Three moves, in this order. A client should be able to feel the order even when
+they cannot name it, because it is how he wants them to learn to think about a
+plate: understand it, then judge it for the goal, then make it theirs.
+
+1. WHAT IT IS. Read the plate as it sits: the foods, the slot, the clock, the
+   numbers that matter for that kind of food. Understanding first. No verdict yet.
+
+2. FOR YOUR GOAL. What this plate does for where they are heading, in one line.
+   If a swap is warranted, this is where it goes. If nothing is warranted, say
+   what is working and stop.
+
+3. FOR YOU. Optional, and only when something TRUE is in front of you: a thing
+   they logged before and how this compares; a food you flagged that has not come
+   back; what they usually do at this slot; something they told you about
+   themselves. When the only thing you have is the plate, there is no third move.
+   Never invent one. An invented "for you" reads as a template faster than no
+   line at all.
+
+VARIETY IS A RESULT, NOT A GOAL. Yusuf: "if the user can predict what Jim says,
+we have done a terrible job." A read that names Monday's hash browns cannot be
+predicted, because it could only have been written today, for them. That is
+where the variety comes from. Never from synonyms, never from a fresh way of
+saying the same nothing.
+
+`+_jimPunct()+((typeof _jimPersonBlock==='function')?_jimPersonBlock():'');
 }
 /* HOW HE WRITES, NOT JUST WHAT HE SAYS (17 Sep). Seen on the first real read
    that reached the result screen: "a solid plate for your goal-protein and fat
@@ -90861,7 +91237,7 @@ async function buildDayContext(askText){
       if(w.intensity){
         var intTag = w.intensity >= 9 ? 'PR DAY (' + w.intensity + '/10)' :
                      w.intensity >= 7 ? 'HEAVY (' + w.intensity + '/10)' :
-                     w.intensity >= 5 ? 'SOLID (' + w.intensity + '/10)' :
+                     w.intensity >= 5 ? 'WORKING (' + w.intensity + '/10)' :
                      w.intensity >= 3 ? 'LIGHT (' + w.intensity + '/10)' :
                      'EASY (' + w.intensity + '/10)';
         line += ' — Intensity: ' + intTag;
@@ -101284,6 +101660,15 @@ async function _nlJimRead(st){
       out=String((j&&j.content&&j.content[0]&&j.content[0].text)||'').trim();
     }catch(err){ out=''; }
     if(seq!==_nlJimSeq) return false;
+    /* ONCE MORE IF IT REPEATED (18 Sep). This is the door most reads come
+       through, so it is the one that matters most. The phrases are named, the
+       facts stay, and a second answer only replaces the first if it repeats less. */
+    try{
+      var _rc=(window.cl&&window.cl.code)||'';
+      var _rh=(_rc && out)?_jimRepeatHits(_rc, out, e):[];
+      if(_rh.length){ var _o2=await _jimReask(ask, out, _rh, _rc, e); if(_o2) out=_o2; }
+      if(seq!==_nlJimSeq) return false;
+    }catch(err){}
     /* THE GUARD RIDES ON THE WRITER, NOT ON THE SCREEN (17 Sep, run 4). This door
        PATCHes its read straight onto the row carrying only the dash floor, so the
        one check that reads the macros back was the one thing it skipped, and
