@@ -13,11 +13,11 @@ const ok=(c,m,x)=>{ console.log((c?'  ok   ':'  FAIL ')+m+(x!==undefined?('  '+J
 
 console.log('\ntfoodgroup - every line says what kind of food it is, in his words');
 
-const L=closure(['_foodGroup','_mealItemRows','_mealTextSplit','_mealBulletsHtml','_foodItemsShape']);
+const L=closure(['_foodGroup','_mealItemRows','_mealTextSplit','_mealBulletsHtml','_foodItemsShape','_foodTier','_mealRowsSorted','_jimLoggedHtml']);
 /* _g is declared inside a try on one line in _foodItemsShape; the lifter misses it. */
 const holes=L.unresolved.filter(n=>['JSON','_g'].indexOf(n)<0);
 ok(holes.length===0, 'it lifts with nothing missing', holes);
-const F=new Function('var FOOD_ITEM_MAX=20;'+L.code+'\nreturn {_foodGroup,_mealItemRows,_mealTextSplit,_mealBulletsHtml,_foodItemsShape};')();
+const F=new Function('var FOOD_ITEM_MAX=20;'+L.code+'\nreturn {_foodGroup,_mealItemRows,_mealTextSplit,_mealBulletsHtml,_foodItemsShape,_foodTier,_mealRowsSorted,_jimLoggedHtml};')();
 const g=(n,m)=>F._foodGroup(n,m||null);
 
 // ------------------------------------------------------ RODRIGO'S BOWL
@@ -85,6 +85,32 @@ const html=F._mealBulletsHtml(rows);
 ok(/<span class="mbG">Natural carbohydrate<\/span>/.test(html) && /<span class="mbG">Protein &amp; fat<\/span>/.test(html), 'the kind is drawn under the food on the bullet');
 ok(/"group" - the kind of food it is, EXACTLY one of: "Protein & fat", "Lean protein"/.test(src), 'and the model is asked to tag every row it writes from the same list');
 ok(/A restaurant is never a food: "Chipotle with white rice" is a row called "white rice"/.test(src), 'and told the restaurant is not a food');
+
+// ------------------------------------------- PROTEIN, THEN VEG, THEN CARBS
+/* Yusuf, 19 Sep, off his own Day card: "Food should start in order of protein
+   than vegetables than carbohydrates. That is how they should be listed." */
+const tiers=[['eggs',0],['chicken breast',0],['chicken nuggets',0],['broccoli',1],['white rice',2],['sourdough',2],['french fries',2],['olive oil',3],['Big Mac',4],['zzyx',5]];
+tiers.forEach(([n,t])=>{ ok(F._foodTier({name:n})===t, n+' sits in tier '+t, F._foodTier({name:n})); });
+ok(F._foodTier({name:'zzyx', group:'Vegetable'})===1, 'a row that already carries its kind is ranked by it, not re-read');
+
+const typed=[{name:'1 sourdough',cal:90},{name:'lettuce'},{name:'3 eggs',cal:210},{name:'olive oil'},{name:'6 slices turkey bacon',cal:180},{name:'white rice'}];
+const sorted=F._mealRowsSorted(typed).map(r=>r.name);
+ok(sorted.join('|')==='3 eggs|6 slices turkey bacon|lettuce|1 sourdough|white rice|olive oil',
+   'protein first, then the vegetable, then the carbohydrates, then the fat', sorted);
+ok(sorted.indexOf('3 eggs')<sorted.indexOf('6 slices turkey bacon') && sorted.indexOf('1 sourdough')<sorted.indexOf('white rice'),
+   'inside a tier the foods keep the order they were logged in');
+ok(F._mealRowsSorted(typed)!==typed && typed[0].name==='1 sourdough', 'the logged rows are not reordered in place');
+const one=[{name:'3 eggs'}];
+ok(F._mealRowsSorted(one)===one, 'a plate of one is handed back as it is');
+ok(F._mealRowsSorted(null)===null, 'and nothing stays nothing');
+
+const bh=F._mealBulletsHtml([{name:'1 sourdough',calories:90,group:'Processed carbohydrate'},{name:'3 eggs',calories:210,group:'Protein & fat'},{name:'lettuce',calories:5,group:'Vegetable'}]);
+const order=(bh.match(/<span class="mbN">([^<]+)/g)||[]).map(x=>x.replace('<span class="mbN">',''));
+ok(order.join('|')==='3 eggs|lettuce|1 sourdough', 'the bullet list every surface draws leads with the protein', order);
+ok(/_mealRowsSorted\(rows\)\.map\(function\(r\)\{/.test(src), 'the Day card breakdown of a many-row meal is sorted the same way');
+const cl=F._jimLoggedHtml([{n:'Breakfast',cal:480,p:32,c:30,f:24,items:[{n:'sourdough',q:1,u:'slice',cal:90},{n:'eggs',q:3,cal:210},{n:'turkey bacon',q:6,u:'slice',cal:180}]}]);
+const clo=(cl.match(/<span class="clN">([^<]+)/g)||[]).map(x=>x.replace('<span class="clN">',''));
+ok(clo.join('|')==='3 eggs|6 slice turkey bacon|1 slice sourdough', 'and so is the card Jim shows in the chat', clo);
 
 console.log(fails? ('\n  '+fails+' FAILED\n') : '\n  all good\n');
 process.exit(fails?1:0);
