@@ -796,5 +796,38 @@ t(/"if you trained today", never "after\s+rows"/.test(_jimTenLogs()),
 t(/several hours\s+before sleep/.test(_jimTenLogs()),
   '  and laileek1\'s gentler version of the same fault named beside it');
 
+console.log('\n  THE ELEVEN WORD READ, AND THE CATEGORY STANDING IN FOR THE FOOD:');
+t(/A FRAGMENT IS NOT A READ, AND A CATEGORY IS NOT A FOOD/.test(_jimTenLogs()),
+  'a read that names the macro instead of the food is not a read');
+t(/Clean start - protein spread, real carbs, berries locked in\./.test(_jimTenLogs()),
+  '  carrying benp1\'s real eleven words');
+t(/Eggs are not "protein"\. Potatoes are\s+not "real carbs"\./.test(_jimTenLogs()),
+  '  with the substitution named on his own two foods');
+t(/SAME OPENER this file already holds as a failure/.test(_jimTenLogs()),
+  '  and tied to the hash brown read it repeats');
+t(/AND A CLEAN PLATE IS NOT A REASON TO SAY LESS/.test(_jimTenLogs()),
+  'rule 14 stops a correction, never the fact and the walk');
+t(/let's give it a little bit more of a coaching/.test(_jimTenLogs()),
+  '  in his words off a meal he approved of outright');
+t(/it's good for your skin or something like that/.test(_jimTenLogs()),
+  '  and his own instruction for the fact');
+t(/nine named no move and nine\s+taught no fact/.test(_jimTenLogs()),
+  '  with the measurement that earned the rule');
+t(/WHEN THERE IS NOTHING TO FIX, THE FACT AND THE MOVE ARE WHAT THE READ IS FOR/.test(_jimTenLogs()),
+  '  and the shape of a read on a plate with nothing wrong with it');
+t(/none of it is a "but"/.test(_jimTenLogs()),
+  '  which is not a "but" bolted onto praise');
+t(/sweet potato sat there\s+unremarked and so did the walk/.test(_jimTenLogs()),
+  '  carrying adrianap1\'s real dinner as the case in point');
+
+/* THE RULES THAT WERE ALREADY THERE STAY THERE. A voice block is added to,
+   never sanded down, so the run that adds a rule proves the old ones survived
+   its own edit. */
+t(/NAME EVERY FOOD YOU WERE GIVEN/.test(_jimTenLogs()), '  NAME EVERY FOOD survives the edit');
+t(/THERE IS ALWAYS A MOVE AFTER THE MEAL/.test(_jimTenLogs()), '  the move survives the edit');
+t(/TEACH ONE TRUE FACT/.test(_jimTenLogs()), '  the fact survives the edit');
+t(/WHEN THE MEAL IS RIGHT, SAY SO AND STOP/.test(_jimTenLogs()), '  and rule 14 survives it too');
+t(/GROUP THE ROWS BEFORE YOU JUDGE ANY ONE OF THEM/.test(_jimTenLogs()), '  and rule 4');
+
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (he reads the person, then the plate)');
 process.exit(bad?1:0);
