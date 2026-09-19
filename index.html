@@ -10997,7 +10997,7 @@ body.hasnav #tToday{padding-bottom:96px;}
     <div id="journalTabHost" style="display:none;"></div>
     <div class="chat-header jimHd" id="askChatHeader">
       <div class="jimHdT">Jim</div>
-      <div class="jimHdS">Your AI logging assistant. Tell me your day. Food, training, a photo or a screenshot.</div>
+      <div class="jimHdS">Your AI logging assistant. Food, training, weight, steps, a photo or a screenshot. Ask me how I work.</div>
     </div>
     <div class="chat-scroll" id="chatScroll">
       <div class="chat-empty" id="chatEmpty">
@@ -14265,7 +14265,8 @@ var JIM_INVITE_BUCKETS = {
   afternoon: [
     "Catch me up — everything you've eaten and done so far.",
     "Tell me your day so far and I'll log every meal.",
-    "Trained yet? Eaten? Say it all in one go, I've got it."
+    "Trained yet? Eaten? Say it all in one go, I've got it.",
+    "Not sure what I can do? Ask me how I work."
   ],
   evening: [
     "Walk me through everything you ate today — I'll log it all.",
@@ -73021,7 +73022,19 @@ function _mbLabelPrompt(){
     +'Reply with ONLY compact JSON. No markdown fence, no prose:\n'
     +'{"seen":"","name":"","brand":"","ingredients":"","serving_text":"","servings_per_container":null,'
     +'"calories":null,"protein":null,"carbs":null,"fibre":null,"fat":null,"sugar":null,'
-    +'"kind":"","confidence":"high"}\n\n'
+    +'"kind":"","confidence":"high","items":[]}\n\n'
+    /* THE TABLE IS THE MEAL (Dustin Fultz, 19 Sep). He photographed a chat
+       screenshot: three rows - a protein shake, a coffee with milk, a filet -
+       each with its own numbers, and a TOTAL line. The reader took the total
+       as one product, named it nothing, and the app called it "Meal" with no
+       rows. Jim then guessed "eggs" at a plate that had none. The rows were
+       printed in the picture. */
+    +'items — ONLY when the photo is a LIST or TABLE of several foods, each with its own numbers '
+    +'(a chat screenshot, a tracking-app summary, a receipt, a handwritten list): one entry per '
+    +'printed row, in order, as printed: [{"name":"Oko vanilla protein shake","calories":170,'
+    +'"protein":30,"carbs":8,"fat":3.5}, ...]. Leave out any TOTAL row - put the total in the '
+    +'top-level numbers instead (if no total is printed, add the rows up for the top level). '
+    +'For a single product or a single label, items is [].\n'
     +'seen — FILL THIS FIRST, before any other field. Transcribe the macro text exactly as it '
     +'appears in the photo, e.g. "570 CALORIES  66 PROTEIN  50 CARBS  10 FAT  3 FIBER". '
     +'Copying the numbers out before you assign them is what stops them being guessed. If you '
@@ -75079,7 +75092,32 @@ function _labelName(raw){
   var nm='';
   try{ nm=_mbLabelName(raw.brand, raw.name)||''; }catch(e){}
   nm=nm||String((raw&&raw.name)||'').trim();
-  return (_labelTitleCase(nm)||'Packaged food').slice(0,55);
+  /* A table with no title is named by its rows: "Protein shake, coffee & filet
+     mignon" - never "Packaged food", never "Meal". */
+  var fromRows=false;
+  if(!nm){ try{ nm=_labelItemsName(raw); fromRows=!!nm; }catch(e){} }
+  var out=(_labelTitleCase(nm)||'Packaged food');
+  /* A name made of three foods needs the room; cut at a word, not mid-food. */
+  if(fromRows){ if(out.length>80){ out=out.slice(0,80).replace(/\s+\S*$/,''); } return out; }
+  return out.slice(0,55);
+}
+function _labelItems(raw){
+  try{
+    var its=(raw&&Array.isArray(raw.items))?raw.items:[];
+    var out=[];
+    its.forEach(function(x){
+      if(!x) return;
+      var n=String(x.name||x.n||'').replace(/\s+/g,' ').trim(); if(!n) return;
+      out.push({n:n, q:1, u:'each', cal:Math.round(+x.calories||+x.cal||0), p:Math.round(+x.protein||+x.p||0), c:Math.round(+x.carbs||+x.c||0), f:Math.round(+x.fat||+x.f||0)});
+    });
+    return out.length>1 ? out : null;
+  }catch(e){ return null; }
+}
+function _labelItemsName(raw){
+  var its=_labelItems(raw); if(!its) return '';
+  var short=its.map(function(x){ return String(x.n).replace(/\s*\([^)]*\)\s*/g,' ').replace(/\b\d+(?:\.\d+)?\s*(?:g|ml|oz|lb|lbs)\b.*$/i,'').replace(/[\s,;:\-]+$/,'').replace(/\s+/g,' ').trim(); }).filter(Boolean);
+  if(short.length<2) return '';
+  return short.length===2 ? (short[0]+' & '+short[1]) : (short.slice(0,-1).join(', ')+' & '+short[short.length-1]);
 }
 // Multiply, never re-derive. Printed calories legitimately disagree with 4/4/9
 // (fibre, sugar alcohols, rounding) and the brief is to use what's printed.
@@ -75154,12 +75192,14 @@ function foodLabelLogIt(){
   var qty=''; try{ qty=mbFormatQty(n); }catch(e){ qty=String(n); }
   // Hand smartLogFromText an exact-numbers row. It owns the insert, the day/time
   // stamping and the whole refresh tail — duplicating that here is how paths drift.
+  var _lit=(n===1)?_labelItems(raw):null;   // rows only at one serving - a multiple would need each row scaled
   window._foodLabelConfirmed={
     // an em-dash, not parens: serving text usually contains its own "(85g)" and
     // wrapping it gives "Waffles (2 × 2 waffles (85g))"
-    name:_labelName(raw)+(serv?(' — '+(n===1?serv:(qty+' × '+serv))):''),
+    name:_labelName(raw)+((serv && !_lit)?(' — '+(n===1?serv:(qty+' × '+serv))):''),
     calories:m.calories, protein:m.protein, carbs:m.carbs, fat:m.fat,
-    insight:'Numbers read from the product label'+(serv?(' — one serving is '+serv+'.'):'.')
+    items:_lit,
+    insight:_lit ? 'Numbers read from the list in the photo.' : ('Numbers read from the product label'+(serv?(' — one serving is '+serv+'.'):'.'))
   };
   _foodLabelRaw=null; _foodLabelServings=1;
   var host=document.getElementById('foodResultInline'); if(host) host.innerHTML='';
@@ -75471,7 +75511,7 @@ async function smartLogFromText(q){
   if(_lbl){
     // straight off the panel: printed numbers, logged as given, provenance in insight
     await _push(
-      {client_code:cl.code,name:_lbl.name,emoji:'',calories:_lbl.calories,protein:_lbl.protein,carbs:_lbl.carbs,fat:_lbl.fat,rating:'good',insight:_lbl.insight,meal:meal,eat_time:eatTime,graced:false,date_str:logDs},
+      {client_code:cl.code,name:_lbl.name,emoji:'',calories:_lbl.calories,protein:_lbl.protein,carbs:_lbl.carbs,fat:_lbl.fat,rating:'good',insight:_lbl.insight,meal:meal,eat_time:eatTime,graced:false,date_str:logDs,items:(_lbl.items||null)},
       {name:_lbl.name,emoji:'',calories:_lbl.calories,protein:_lbl.protein,carbs:_lbl.carbs,fat:_lbl.fat,rating:'good',insight:_lbl.insight,meal:meal,eat_time:eatTime,eatTime:eatTime,graced:false,photo:null,date_str:logDs,note:''},
       true          // worth remembering: it's a real product with real numbers
     );
@@ -75978,6 +76018,10 @@ var EX_LIB = {
   ],
   Back: [
     {n:'Deadlift', s:4, r:'6-8', c:1, v:'Any variation: conventional, sumo or trap bar'},
+    /* HIS CALL, 19 Sep: "one exercise we should add is rack pulls - a compound
+       pull day exercise". Bar off pins at knee height; upper back, traps and
+       the whole erector chain, heavier than the floor allows. */
+    {n:'Rack Pull', s:4, r:'5-6', c:1, v:'Bar set on pins at or just below the knee. Heavy'},
     {n:'Barbell Row', s:4, r:'8', c:1, v:'Any variation: barbell or smith'},
     {n:'Chest-Supported Row', s:3, r:'10', c:1, v:'Any variation: t-bar or machine'},
     {n:'Smith Machine Row', s:4, r:'8', c:1, v:''},
@@ -79698,7 +79742,8 @@ var _PB_LIB={
     hard:[
       {n:'Pull Downs / Pull Ups', m:'outer_back'},
       {n:'Barbell Row',           m:'centre_back'},
-      {n:'Deadlift',              m:'centre_back'}
+      {n:'Deadlift',              m:'centre_back'},
+      {n:'Rack Pull',             m:'centre_back'}
     ],
     work:[
       {n:'High Row',        m:'outer_back'},
@@ -92193,6 +92238,7 @@ function buildCoachVoice(){
     '[WORKOUT_LOG]{"title":"Pull Day","description":"itemized list","exercises":[{"name":"Machine rows","sets":2},{"name":"Barbell bent-over rows","sets":4,"detail":"135 lbs"}],"daysAgo":0,"time":"8:00 AM"}[/WORKOUT_LOG]\n'+
     'WHICH DAY: workouts default to TODAY. If they say they trained on an earlier day ("trained yesterday but forgot to log it", "did legs on Tuesday", "two days ago"), add "daysAgo" (1=yesterday, 2=two days ago, etc.). Never refuse a back-date or send them to edit it manually — just stamp the right day and confirm ("Logged your pull day for yesterday").\n'+
     'WHAT TIME: if they say WHEN it happened — a clock time ("my morning walk at 8:00am", "trained at 6"), or a part of day ("this morning", "after lunch", "tonight") — add "time" in h:mm AM/PM. Resolve it against the CURRENT DATE & TIME above, and use the same 12-hour format. Leave "time" out entirely when they did not say — it then records at the time they tell you, which is the honest default. This applies to walks exactly as it does to lifting.\n\n'+
+    'WHEN THEY ASK HOW YOU WORK OR WHAT YOU CAN DO, in any wording: answer from THIS list and nothing outside it, in plain words, no markdown. Food: a sentence, a photo, a label, or both - broken into the foods and amounts they said, each priced, a read against their goal; back-dated when they say a day or time; corrected when they say "actually"; removed when they say "wipe that"; two photos at one sitting are one meal. Training: a sentence, a workout-app screenshot or a watch summary - exercises, sets, reps, weight, time, active calories, heart rate, and how it felt. Weight: "187 this morning". Steps: a number or a screenshot. Progress photos, when they say that is what it is. Swapping two program days for the week. A whole day in one message, each piece logged where it belongs. Coaching: portioning a plate for fat loss or muscle, what a day is missing, what a food does, a meal plan out of their own foods. NOT through this chat: journal entries and sleep - say so plainly, they have their own pages. Never claim anything not on this list.\n\n'+
     'ONE MESSAGE, MULTIPLE ENTRIES — THE "words" FIELD: if this reply will contain MORE THAN ONE [FOOD_LOG] and/or [WORKOUT_LOG] marker total (e.g. they described a whole day in one message — breakfast, a walk, lunch, dinner), give EACH marker\'s JSON a "words" field: the exact clause of their message that produced THAT entry, copied character-for-character from what they actually typed — never reworded, never summarized, never shared between two entries. If you cannot cleanly tell where one entry\'s clause ends and the next begins, omit "words" for that entry rather than guess. When your reply has only ONE entry total, omit "words" entirely — the whole message is used automatically. Example for a message covering breakfast and a walk: [FOOD_LOG]{"name":"Eggs & Toast",...,"words":"eggs and toast for breakfast"}[/FOOD_LOG] [WORKOUT_LOG]{"title":"Walk",...,"words":"walked 20 minutes"}[/WORKOUT_LOG]\n\n'+
     'Then your VISIBLE reply must:\n'+
     '1. Itemize what you logged, one exercise per line, with sets and any weight they gave — exactly as you understood it. Format like:\n'+
@@ -93497,7 +93543,7 @@ function _jimFoodRowById(id){
 // rows and every client's own rows behave identically to yesterday.
 async function applyFoodEdit(id, fields, forCode){
   if(id==null || !fields) return false;
-  var allowed=['name','emoji','calories','protein','carbs','fat','sugar','rating','insight','meal','eat_time','date_str','felt'];
+  var allowed=['name','emoji','calories','protein','carbs','fat','sugar','rating','insight','meal','eat_time','date_str','felt','items'];
   var patch={};
   allowed.forEach(function(k){ if(fields[k]!==undefined && fields[k]!==null && fields[k]!=='') patch[k]=fields[k]; });
   // ===== A MOVE MOVES BOTH DATE FIELDS (Spencer R, 26 Aug) ===============
@@ -96743,6 +96789,34 @@ function _jimProgressPhotoAsked(t){ return _JIM_PROGRESS_RE.test(String(t||''));
    right to. But when Jim has just asked "meal, progress or workout?", a one
    word reply is the whole answer and has no room for the noun. Both shapes
    count here, and nowhere else. */
+/* HOW JIM WORKS, IN HIS OWN WORDS (Yusuf, 19 Sep: "we should be able to ask
+   Jim how he works in the chat logger, and he should be able to have a
+   comprehensive list of what he does"). Every line below is something the
+   chat actually does today - a marker it emits, a photo it reads, a write it
+   makes. Nothing aspirational, because a client who tries a thing on this list
+   has to find it works. Two doors: the direct question gets this text as is,
+   with no model in the way, and the model carries the same list for every
+   other way of asking. */
+function _jimHowIWorkText(){
+  return 'Here is what I do.\n\n'
+    +'FOOD. Tell me what you ate, send a photo, or both. I break it into the foods and the amounts you said, price each one, and give you a read on the plate against your goal. '
+    +'Say "yesterday" or a time and it lands there. Say "actually that was 8 oz" and I fix it. Say "wipe that" and it is gone. '
+    +'A nutrition label photo is read as printed. Two photos taken at one sitting are one meal.\n\n'
+    +'TRAINING. Tell me what you did, or send a screenshot from your workout app or your watch. Exercises, sets, reps, weight, time, active calories, heart rate - whatever is there. '
+    +'Tell me how it felt and that goes on it too.\n\n'
+    +'WEIGHT. "187 this morning" logs a weigh-in.\n\n'
+    +'STEPS. A number or a screenshot of your step count.\n\n'
+    +'PROGRESS PHOTOS. Send one and say it is a progress photo; it goes in your progress album, not your food.\n\n'
+    +'YOUR PROGRAM. Ask to swap two days this week and I move them.\n\n'
+    +'A WHOLE DAY. Give me everything in one message - breakfast, the walk, lunch, the session, dinner - and I log each piece where it belongs.\n\n'
+    +'COACHING. Ask me how to portion a plate for fat loss or for building muscle, what is missing from your day, what a food actually does for you, or to build a meal plan out of the foods you already eat.\n\n'
+    +'Not through this chat yet: journal entries and sleep. Those live on their own pages.';
+}
+function _jimHowIWorkAsk(t){
+  var q=String(t||'').trim().toLowerCase().replace(/[?.!]+$/,'').trim();
+  if(!q || q.length>70) return false;
+  return /^(?:(?:so |hey |hi |yo |ok |okay )?(?:jim,? *)?(?:how do you work|how does this work|what can you do|what do you do|what are you able to do|what can i (?:ask|tell) you|how do (?:you|i) log (?:my )?(?:food|meals|a meal|training|workouts|a workout|weight|steps)|how do i use (?:you|this)|what should i (?:tell|send) you|help|what do you log)(?: for me| here| in here| exactly)?)$/.test(q);
+}
 function _jimSaysProgress(t){
   var s=String(t||'').trim();
   if(!s) return false;
@@ -97380,6 +97454,8 @@ async function jimDoor(text, photos, opts){
        alone. */
     try{
       var _isTr=false; try{ _isTr=(typeof isTrainer==='function' && cl && isTrainer(cl.code)); }catch(e){}
+      /* THE DIRECT QUESTION GETS THE LIST, EXACTLY (19 Sep). */
+      if((!photos || !photos.length) && _jimHowIWorkAsk(text)) return _jimHowIWorkText();
       if(!_isTr && (!photos || !photos.length) && _jimProgramAsk(text)){
         var _sw=null; try{ _sw=_jimSwapPlan(text); }catch(e){}
         if(_sw){
@@ -102006,6 +102082,13 @@ async function _nlEnrichRun(st, echo, rowId){
 function _nlLabelLanded(st, lab){
   if(!st || !lab) return;
   lab.source='label';
+  /* A TABLE IN THE PHOTO IS THE PLATE, ROW BY ROW (Dustin Fultz, 19 Sep). The
+     rows ride on as items, and a list with no title is named by its rows. */
+  try{
+    var _li=_labelItems(lab);
+    if(_li){ lab.items=_li; if(!String(lab.name||'').trim()) lab.name=_labelTitleCase(_labelItemsName(lab)); }
+    else { delete lab.items; }
+  }catch(e){}
   var rowId=null;
   if(st.logged){
     try{ var w=window._jimWrote||[]; for(var i=w.length-1;i>=0;i--){ if(w[i] && w[i].table==='food_logs'){ rowId=w[i].id; break; } } }catch(e){}
@@ -102026,6 +102109,7 @@ function _nlLabelLanded(st, lab){
            a fact, which is the exact rule the reader itself obeys. */
         var _patch={calories:Math.round(+lab.calories||0), protein:Math.round(+lab.protein||0), carbs:Math.round(+lab.carbs||0), fat:Math.round(+lab.fat||0), name:(lab.name||undefined)};
         if(lab.sugar!=null) _patch.sugar=Math.round(+lab.sugar||0);
+        if(lab.items) _patch.items=lab.items;
         return applyFoodEdit(rowId, _patch)
           .then(function(ok){ if(ok){ try{ _tlRefreshDay(st.ds); }catch(e){} try{ showToast('Label read - '+Math.round(+lab.calories||0)+' cal, corrected'); }catch(e){} } });
       }).catch(function(){});
@@ -102472,7 +102556,7 @@ var EX_MUSCLE = {
   'Single-Arm Tricep Extension':'triceps', 'Dips':'triceps, lower chest',
   'Skull Crushers':'triceps long head', 'Close-Grip Bench Press':'triceps, chest',
   // Back
-  'Deadlift':'whole posterior chain', 'Chest-Supported Row':'mid back',
+  'Deadlift':'whole posterior chain', 'Rack Pull':'upper back, traps and erectors', 'Chest-Supported Row':'mid back',
   'Back Extension':'lower back and glutes', 'Farmer\u2019s Carry':'grip and traps',
   'Barbell Row':'mid back', 'Smith Machine Row':'mid back',
   'Machine Rows':'mid back', 'Cable Row':'mid back',
@@ -102555,6 +102639,7 @@ var EX_ALIAS={
      entry in the library now (rear delts plus external rotation, a different
      job from a fly). Old rows that say it still resolve, to itself. */
   'deadlifts':'Deadlift','conventional deadlift':'Deadlift','trap bar deadlift':'Deadlift',
+  'rack pulls':'Rack Pull','rack pull':'Rack Pull','block pulls':'Rack Pull','block pull':'Rack Pull','pin pulls':'Rack Pull',
   'sumo deadlift':'Deadlift','romanian deadlifts':'Romanian Deadlift',
   'skullcrushers':'Skull Crushers','lying tricep extension':'Skull Crushers',
   'close grip bench':'Close-Grip Bench Press','close grip bench press':'Close-Grip Bench Press',

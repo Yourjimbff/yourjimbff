@@ -61,8 +61,10 @@ t(JSON.stringify(names(_PB_LIB.Push.hard))===JSON.stringify(
 t(JSON.stringify(names(_PB_LIB.Push.work))===JSON.stringify(
    ['Cable Chest Fly','Lateral Raises','Front Raises','Tricep Extension']),
   'push accessories', names(_PB_LIB.Push.work).join(', '));
+/* Rack Pull joined the pull compounds on 19 Sep, his call: "a compound pull day
+   exercise". Last on the list, after the deadlift it is a partial of. */
 t(JSON.stringify(names(_PB_LIB.Pull.hard))===JSON.stringify(
-   ['Pull Downs / Pull Ups','Barbell Row','Deadlift']),
+   ['Pull Downs / Pull Ups','Barbell Row','Deadlift','Rack Pull']),
   'pull compounds', names(_PB_LIB.Pull.hard).join(', '));
 t(JSON.stringify(names(_PB_LIB.Pull.work))===JSON.stringify(
    ['High Row','Single-Arm Row','Rear Delt Flies','Shrugs']),

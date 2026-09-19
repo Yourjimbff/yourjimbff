@@ -100,7 +100,7 @@ t(/Or just say what you did and I will log that instead/.test(route),
 // Both surfaces keep HIS sentence - "Your AI logging assistant" - and both now
 // name the inputs after it, because "tell me your day" told Lauren nothing
 // about the screenshot she was holding.
-t(/Tell me your day\. Food, training, a photo or a screenshot/.test(src),
+t(/Food, training, weight, steps, a photo or a screenshot\. Ask me how I work/.test(src),
   'the Jim tab names what he takes');
 t(/Say what you ate or trained, or send a photo or a screenshot/.test(src),
   'the chat bubble does too, in its own words');

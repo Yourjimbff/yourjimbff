@@ -34,7 +34,8 @@ t(/<div class="jimHdT">Jim<\/div>/.test(tab), 'still says Jim, in gold, at the t
 // nothing. His phrase - "Your AI logging assistant" - is untouched.
 /* v558 took the em dashes out of the display strings, house law, and left these
    two lines asserting the dash. The copy they guard is unchanged in every word. */
-t(/Your AI logging assistant\. Tell me your day\. Food, training, a photo or a screenshot\./.test(tab),
+/* 19 Sep: the line now names the five things he takes and invites the question. */
+t(/Your AI logging assistant\. Food, training, weight, steps, a photo or a screenshot\. Ask me how I work\./.test(tab),
   'and now says what he is underneath, naming what he can take');
 
 console.log('\n  THE CHAT BUBBLE:');
