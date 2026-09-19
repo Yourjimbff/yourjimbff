@@ -26,7 +26,9 @@ const MINE=['_jimGoalRead','_jimGoalLine','_jimTurboUnlocked','_jimTone','_jimTo
             '_noEmDash','_insightMacroSafe','_jimTodaySoFar',
             /* run 9: the plate, added up in code, read by both gates */ '_jimPlateTotals',
             /* run 10: is a calorie figure counted OF this row's own food? */ '_calsCountedOfThisRow',
-            /* run 11: does the read name anything the sibling rows carry? */ '_rowNamesASibling'];
+            /* run 11: does the read name anything the sibling rows carry? */ '_rowNamesASibling',
+            /* run 12: the wrong total, and this row's macros pinned on another meal */
+            '_calsClaimedByMealSubject','_macrosPinnedToAnotherRow','_gramsSpeakOfAnotherRow'];
 eval(MINE.map(defOf).join('\n'));
 eval(src.match(/var _JIM_TONE_KEY=[^\n]*\n/)[0]);
 eval(src.match(/var JIM_TONES=\[[\s\S]*?\];\n/)[0]);
@@ -729,6 +731,70 @@ t(/I had two last night back to back/.test(_jimTenLogs()),
   '  carrying his own words from the sleeve, 17 Sep');
 t(/end on the walk\. That is the whole coaching and\s+it is not a warning/.test(_jimTenLogs()),
   '  and rule 9 has to actually arrive on it');
+
+/* ===== RUN 12. THE WRONG TOTAL, THE BORROWED MACROS, AND THE UNANSWERED QUESTION =====
+   All three are up54qnk25p7's and harrisons1's real rows from 19 Sep, and every
+   sentence below is the one that actually reached them. */
+console.log('\n  A CALORIE FIGURE CLAIMED BY THE CLAUSE IT SITS IN:');
+const flat ={id:'F1',meal:'Dinner',eat_time:'11:41 PM',name:'Pepperoni flatbread',
+             meal_text:'4/8ths of a pepperoni flatbread',calories:404,protein:18,carbs:38,fat:20};
+const bowl ={id:'B1',meal:'Lunch', eat_time:'11:40 PM',name:'Chipotle carnitas bowl',
+             meal_text:'white rice, pinto beans, double carnitas, sour cream, guacamole and lettuce',
+             calories:785,protein:39,carbs:65,fat:41};
+global.todayFood=[flat];
+const REAL_FLAT="Dinner at this time is 4/8ths of a pepperoni flatbread, 101 calories, 18g protein, 38g carbs, 20g fat.";
+t(_insightMacroSafe(REAL_FLAT, flat)==='',
+  'the 101 calorie flatbread dies - 303 calories of nothing, and he was told it twice',
+  _insightMacroSafe(REAL_FLAT, flat));
+t(_calsClaimedByMealSubject(REAL_FLAT, REAL_FLAT.indexOf('101'), flat)===true,
+  '  because the food sourcing the figure sits BEFORE it, which run 10 never looked at');
+const lk={id:'L1',meal:'Dinner',eat_time:'11:47 PM',name:'7 oz chicken breast, 1 handful',
+  meal_text:'7 oz chicken breast, 1 handful veggies (zucchini, broccoli, green beans) and 1 handful sweet potatoes.',
+  calories:467,protein:66,carbs:35,fat:7};
+global.todayFood=[lk];
+const LK="Dinner at this time is 467 calories, 66g protein, 35g carbs and 7g fat. Chicken breast, zucchini, broccoli, green beans and sweet potatoes all whole food.";
+t(_insightMacroSafe(LK, lk)===LK, '  laileek1\'s read, the same opening shape and every figure right, is untouched');
+global.todayFood=[flat];
+const TEACH="Dinner is a pepperoni flatbread, 404 calories. A slice runs about 60 calories.";
+t(_insightMacroSafe(TEACH, flat)===TEACH, '  a teaching fact in its own sentence keeps its own number');
+
+console.log('\n  THIS ROW\'S MACROS, PINNED ONTO A MEAL HE ATE HOURS EARLIER:');
+global.todayFood=[bowl, flat];
+const FALSE_RECALL="Dinner is a pepperoni flatbread, 404 calories. You logged a Chipotle carnitas bowl at lunch carrying 18g protein, 38g carbs, and 20g fat. This flatbread lands light on protein.";
+t(_macrosPinnedToAnotherRow(FALSE_RECALL, flat)===true,
+  'the bowl\'s three figures are the flatbread\'s - right about the wrong food');
+t(_insightMacroSafe(FALSE_RECALL, flat)==='', '  so the line dies');
+const TRUE_RECALL="Dinner is a pepperoni flatbread, 404 calories. You logged a Chipotle carnitas bowl at lunch carrying 39g protein, 65g carbs, and 41g fat. This one lands lighter.";
+t(_insightMacroSafe(TRUE_RECALL, flat)===TRUE_RECALL,
+  '  AND THE TRUE ONE SURVIVES - on origin/main this gate rewrote it INTO the false one',
+  _insightMacroSafe(TRUE_RECALL, flat));
+t(_macrosPinnedToAnotherRow(TRUE_RECALL, flat)===false, '  and is not accused of anything');
+const banana={id:'X1',meal:'Breakfast',eat_time:'10:02 AM',name:'Banana',meal_text:'a banana',calories:105,protein:1,carbs:24,fat:0};
+const cod   ={id:'X2',meal:'Lunch',eat_time:'3:31 PM',name:'Alaska Cod',meal_text:'Alaska cod',calories:200,protein:50,carbs:0,fat:1};
+global.todayFood=[banana, cod];
+const MENTION="Lunch is Alaska cod, 200 calories. The banana at breakfast gave you carbs when you needed them.";
+t(_insightMacroSafe(MENTION, cod)===MENTION, '  another meal named without numbers at it is untouched');
+const gA={id:'A1',meal:'Lunch',eat_time:'3:31 PM',name:'Alaska Cod',meal_text:'Alaska cod',calories:200,protein:50,carbs:0,fat:1};
+const gB={id:'A2',meal:'Lunch',eat_time:'3:31 PM',name:'Jasmine rice and edamame',meal_text:'jasmine rice and edamame',calories:306,protein:13,carbs:41,fat:10};
+global.todayFood=[gA,gB];
+const GROUPED="Lunch is Alaska cod with jasmine rice and edamame, 506 calories, 63g protein and 41g carbs.";
+t(_insightMacroSafe(GROUPED, gA)===GROUPED, '  and rule 4 working - a correctly grouped plate - is still never touched');
+
+console.log('\n  THE QUESTION THEY TYPED, AND THE TRAINING NOBODY LOGGED:');
+t(/THEY ASKED YOU SOMETHING\. ANSWER IT FIRST/.test(_jimTenLogs()),
+  'a question in the meal text is answered in the first sentence, with the figure');
+t(/Where does that\s+put me/.test(_jimTenLogs()),
+  '  carrying harrisons1\'s own typed words');
+t(/Done for today what's my total\?/.test(_jimTenLogs()),
+  '  and uh5n5nd6drb\'s');
+t(/Never answer a\s+question with a verdict on the food/.test(_jimTenLogs()),
+  '  and the answer is not a review of the plate');
+t(/AND NEVER INVENT THE TRAINING/.test(_jimTenLogs()),
+  'Jim does not bluff what somebody did today any more than it bluffs a nutrient');
+t(/"if you trained today", never "after\s+rows"/.test(_jimTenLogs()),
+  '  with the replacement spelled out');
+t(/several hours\s+before sleep/.test(_jimTenLogs()),
+  '  and laileek1\'s gentler version of the same fault named beside it');
 
 console.log(bad?('\n  '+bad+' FAILED'):'\n  all good (he reads the person, then the plate)');
 process.exit(bad?1:0);
